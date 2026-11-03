@@ -79,3 +79,9 @@
 - Exercised immediate English/Chinese switching, reload and server-restart persistence, retained profile/connection input nodes and values, preserved business titles/provider names, Chinese reports/connections/Hub/Board/Game, 390px and desktop layouts, static-demo browser-language detection, and outward-send/secret protection.
 - Updated both READMEs and generated application/static-demo assets. Original checkout stays separate from `feat/interface-i18n` in `C:/project/taskuary-i18n`.
 
+## Upstream integration verification
+
+- Resolved the upstream button-stress merge while retaining localization, canonical action identities, repeat-click protection and behavior regressions. Rebuilt both generated frontend bundles from source rather than combining generated code.
+- Fixed a keyboard regression in the incoming pointer-repeat guard: Enter/Space activations have no pointer position and must not be swallowed or claim a later pointer press. Added a failing-before/passing-after behavioral regression. Browser fixtures default explicitly to English while retaining any test-selected language across reloads.
+- Verification after resolution: frontend suite 1,418 passed; affected backend suite 199 passed; actual-browser suite 18 passed, including repeated Approve, navigation during pending actions, reminder/note double-clicks, settings keyboard controls and bilingual outward-send protection. Both frontend builds succeeded with the existing bundle warnings.
+

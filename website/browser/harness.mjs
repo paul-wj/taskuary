@@ -259,6 +259,8 @@ export async function startHarness({ fresh = false, bin = "", tour = false } = {
       await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
       await page.evaluateOnNewDocument((fixtureTokenValue) => {
         localStorage.setItem("taskuary_token", fixtureTokenValue);
+        // Fixtures use English unless a test explicitly switches; retain that choice on reload.
+        if (!localStorage.getItem("taskuary.language")) localStorage.setItem("taskuary.language", "en");
       }, token);
       await page.evaluateOnNewDocument((allowedHttpOrigin) => {
         const NativeWebSocket = window.WebSocket;

@@ -35,6 +35,50 @@ test("a click on the backdrop after a moment shuts it as before, and a click on 
   w.off();
 });
 
+// THE PAGE CHANGED UNDER A STILL POINTER (the button stress, 2026-11-02): a triple-click on Not a task ticked a to-do box of the task drawn in
+// its place; a double-click on Change ▾'s Priority picked a priority from the menu it opened at the same spot
+test("a click at the same spot a moment later on another control is the first click's repeat; the same control, a moved hand or a later click are not", () => {
+  const on = {};
+  const doc = { addEventListener: (k, f) => { on[k] = f; }, removeEventListener: (k) => { delete on[k]; } };
+  installSecondClick(doc);
+  const control = () => { const c = { matches: () => false, contains: (x) => x === c }; c.closest = () => c; return c; };
+  const click = (target, timeStamp, x = 100, y = 200) => { const e = { target, timeStamp, clientX: x, clientY: y, isTrusted: true, stopped: false,
+    preventDefault() {}, stopImmediatePropagation() { this.stopped = true; } }; on.click(e); return e; };
+  const done = control(), box = control(), label = control();
+  click(done, 1000);
+  assert.ok(click(box, 1070).stopped, "the next task's box under the pointer was ticked");
+  assert.ok(click(box, 1140).stopped, "...nor by the third click");
+  assert.ok(!click(box, 1000 + GRACE_MS + 10).stopped, "a press after the moment is a press");
+  click(done, 3000);
+  assert.ok(!click(done, 3070).stopped, "the same button's second click is the page's to judge");
+  assert.ok(!click(box, 3100, 300, 200).stopped, "another place is another press");
+  label.control = box;
+  click(label, 5000);
+  assert.ok(!click(box, 5001).stopped, "a label's click on its own box is one control");
+  click(done, 7000);
+  const code = { target: box, timeStamp: 7050, clientX: 100, clientY: 200, isTrusted: false, stopped: false, preventDefault() {}, stopImmediatePropagation() { this.stopped = true; } };
+  on.click(code);
+  assert.ok(!code.stopped, "the page's own click() is never a hand's repeat");
+});
+
+test("keyboard activation is not a repeated pointer press and does not claim the next pointer press", () => {
+  for (const initialDetail of [0, 1]) {
+    let hear;
+    const doc = { addEventListener: (_, fn) => { hear = fn; }, removeEventListener() {} };
+    installSecondClick(doc);
+    const control = () => { const el = { matches: () => false }; el.closest = () => el; return el; };
+    const click = (target, timeStamp, detail) => {
+      const event = { target, timeStamp, detail, clientX: 0, clientY: 0, isTrusted: true, stopped: false,
+        preventDefault() {}, stopImmediatePropagation() { this.stopped = true; } };
+      hear(event);
+      return event;
+    };
+    click(control(), 1000, initialDetail);
+    assert.equal(click(control(), 1050, 0).stopped, false, "Enter or Space must activate the focused control");
+    assert.equal(click(control(), 1100, 1).stopped, false, "keyboard activation has no pointer position to repeat");
+  }
+});
+
 test("the page installs it once, at start", () => {
   const doc = { addEventListener() {}, removeEventListener() {} };
   installSecondClick(doc);

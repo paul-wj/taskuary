@@ -8,7 +8,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { getLocale, t, translateDescriptor } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 import { cannotStart, draftCanSend, useCapabilities } from "./capabilities.js";
-import { movesOf, useVerbs } from "./actionRow.js";
+import { movesOf, repeatClick, useVerbs } from "./actionRow.js";
 import { choice, hint as btnHint, label as btn, liveVerb, VERBS } from "./buttons.js";
 import { Button, TextField } from "@mui/material";
 import SendRoundedIcon from "@mui/icons-material/SendRounded";
@@ -711,7 +711,8 @@ export function ReplyCard({ card, onDone, onSent, onOpenTask, onTimeline }) {
     } catch (e) { setErr(failOf(e)); }
     setBusy("");
   };
-  const redraft = async () => {
+  const redraft = async (e) => {
+    if (repeatClick(`${card.rid}:redraft`, e)) return;    // a double-click is one Redraft (actionRow.repeatClick)
     setBusy("redraft"); setErr("");
     try { const { data } = await api.post(`/api/reviews/${card.rid}/draft`); setRv((r) => ({ ...r, DraftText: data.draft, DraftNeeds: data.needs || null, Stale: false })); setText(null); }
     catch (e) { setErr(failOf(e)); }
