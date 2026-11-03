@@ -11,19 +11,23 @@
 // with every one of those recoveries unreachable - a red banner over something that had already
 // healed (seen on the owner's Timeline, 2026-09-10). So the structure is kept ON THE ERROR, where
 // only the deciding code looks for it.
+import { translateDescriptor } from "./i18n.js";
+
 export const detailText = (d) => Array.isArray(d)
   ? d.map((x) => `${(x.loc || []).join(".")}: ${x.msg || JSON.stringify(x)}`).join(" · ")
   : JSON.stringify(d);
 
 // WHAT A FAILED SAVE SAYS TO THE OWNER. The server's own sentence when it sent one (they are
 // written for the owner); when nothing answered at all, that - never axios's "Network Error".
-export const plainError = (e, fallback = "That didn't save. Try again in a moment.") => {
-  if (typeof e?.detail?.message === "string") return e.detail.message;   // a structured refusal's own words
+export const errorPresentation = (e, fallback = "That didn't save. Try again in a moment.", { localFallback = true } = {}) => {
+  if (typeof e?.detail?.message === "string") return { message: e.detail.message };
   const d = e?.response?.data?.detail;
-  if (d) return typeof d === "string" ? d : detailText(d);
-  if (e && !e.response) return "Taskuary isn't answering. Check the app is still running, then try again.";
-  return fallback;
+  if (d) return { message: typeof d === "string" ? d : detailText(d) };
+  if (e && !e.response) return { source: "Taskuary isn't answering. Check the app is still running, then try again.", values: {} };
+  return localFallback ? { source: fallback, values: {} } : { message: fallback };
 };
+export const errorText = (presentation) => presentation?.source !== undefined
+  ? translateDescriptor(presentation) : presentation?.message ?? "";
 
 export function keepDetail(e) {
   const d = e?.response?.data?.detail;

@@ -6,10 +6,13 @@ import { label as btnLabel } from "./buttons.js";
 import { openAppLink } from "./appLinks.js";
 import { placeHref } from "./words.js";
 import ConnectAi from "./ConnectAi.jsx";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 // A failed digest names its way on: the connection that would fix it, and the digest written again. `sourceId` is
 // the Morning digest report when the caller knows it; else it is looked up by name, the way the cards spot one.
 function DigestWayOn({ sourceId, noAi = false }) {
+  useLocale();
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState("");
   const again = async () => {
@@ -18,21 +21,25 @@ function DigestWayOn({ sourceId, noAi = false }) {
       let sid = sourceId;
       if (sid == null) sid = ((await api.get("/api/sources")).data?.data || [])
         .find((s) => s.Channel === "report" && /^Morning digest\b/i.test(s.Address || ""))?.SourceId;
-      if (sid == null) throw new Error("the Morning digest report is not here any more");
+      if (sid == null) {
+        setSaid({ source: "It could not be started - the Morning digest report is not here any more." });
+        setBusy(false);
+        return;
+      }
       const { data } = await api.post(`/api/reports/${sid}/rerun`);
-      setSaid(`Writing it again in the background. ${data?.lands || "If it fails, the bell says why."}`);
-    } catch (e) { setSaid(`It could not be started - ${e?.response?.data?.detail || e?.message || "the app did not answer"}.`); }
+      setSaid({ source: "Writing it again in the background. {detail}", detail: data?.lands || null });
+    } catch (e) { setSaid({ source: "It could not be started - {detail}.", detail: e?.response?.data?.detail || e?.message || null }); }
     setBusy(false);
   };
   return <Box sx={{ mt: 0.75 }}>
     <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
-      <Button size="small" variant="outlined" disabled={busy} onClick={again}>{busy ? "Starting…" : btnLabel("try_again")}</Button>
+      <Button size="small" variant="outlined" disabled={busy} onClick={again}>{busy ? t("Starting…") : btnLabel("try_again")}</Button>
       {/* the AI section, by its place (words.json): "#connector=" named no card, and the bare Connections landing opened (2026-10-19) */}
       {/* ...and with none connected, the one button every "no AI" line carries (owner-approved, 2026-10-21) */}
       {noAi ? <ConnectAi variant="outlined" />
-        : <Button size="small" component="a" href={placeHref("ai")} onClick={(e) => { e.preventDefault(); openAppLink(placeHref("ai")); }}>Check the AI connection</Button>}
+        : <Button size="small" component="a" href={placeHref("ai")} onClick={(e) => { e.preventDefault(); openAppLink(placeHref("ai")); }}>{t("Check the AI connection")}</Button>}
     </Box>
-    {said && <Typography sx={{ fontSize: 12, mt: 0.5, color: "#55697a" }}>{said}</Typography>}
+    {said && <Typography sx={{ fontSize: 12, mt: 0.5, color: "#55697a" }}>{t(said.source, { detail: said.detail || t(said.source.startsWith("Writing") ? "If it fails, the bell says why." : "the app did not answer") })}</Typography>}
   </Box>;
 }
 
@@ -73,15 +80,16 @@ const Sections = ({ sections }) => <Box sx={{ display: "grid", gap: 1.25 }}>
 </Box>;
 
 export default function DigestText({ text, sourceId = null }) {
-  const digest = parseDigest(text);
+  useLocale();
+  const digest = parseDigest(text, t);
   return <Box sx={{ textAlign: "left" }}>
     {digest.error && <Alert severity="error" variant="outlined" sx={{ mb: 1.25, alignItems: "flex-start",
       bgcolor: "#fff8f5", borderColor: "#e6bcb2", "& .MuiAlert-message": { width: "100%" } }}>
-      <Typography sx={{ fontSize: 13, fontWeight: 600, mb: 0.35 }}>{digest.plain}</Typography>
-      {digest.sections.length > 0 && <Typography sx={{ fontSize: 12.25, lineHeight: 1.5 }}>What it would have read is folded below, not yet summarised.</Typography>}
+      <Typography sx={{ fontSize: 13, fontWeight: 600, mb: 0.35 }}>{t(digest.plain)}</Typography>
+      {digest.sections.length > 0 && <Typography sx={{ fontSize: 12.25, lineHeight: 1.5 }}>{t("What it would have read is folded below, not yet summarised.")}</Typography>}
       {/* the AI's own words are the detail, never the headline */}
       <Box component="details" sx={{ mt: 0.4, "& summary": { cursor: "pointer", fontSize: 12, color: "#817b72" } }}>
-        <summary>What the AI said</summary>
+        <summary>{t("What the AI said")}</summary>
         <Typography sx={{ fontSize: 12, color: "#817b72", whiteSpace: "pre-wrap" }}>{digest.error}</Typography>
       </Box>
       <DigestWayOn sourceId={sourceId} noAi={/^No active AI connector/.test(digest.error)} />
@@ -93,9 +101,9 @@ export default function DigestText({ text, sourceId = null }) {
     {digest.error && digest.sections.length > 0 && <Box component="details" sx={{ mt: 0.75,
       "& summary": { cursor: "pointer", color: "#65766a", fontSize: 12, fontWeight: 600, py: 0.5 },
       "&[open] summary": { mb: 0.75 } }}>
-      <summary>Show unreviewed source data</summary>
+      <summary>{t("Show unreviewed source data")}</summary>
       <Typography variant="caption" sx={{ display: "block", color: "#817b72", mb: 0.8 }}>
-        The AI did not judge or summarize these items. They are grouped only to make the source readable.
+        {t("The AI did not judge or summarize these items. They are grouped only to make the source readable.")}
       </Typography>
       <Sections sections={digest.sections} />
     </Box>}

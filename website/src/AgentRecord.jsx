@@ -12,7 +12,8 @@ import PublishedPages, { FOLD } from "./PublishedPages.jsx";
 import { BORDER, DIM, FAINT, INK, PANEL, PANEL2, mono } from "./theme.jsx";
 import { cardParts, hasMore, heldLines, lastWords, madeOnce, moreParts, plain, resultLine, recordFacts, recordHead, recordSteps, resultParts, runCost, runHeads, runsOf, sourceLabel, splitFiles } from "./agentRecord.js";
 import AgentStory, { StoryLine, Timeline } from "./AgentStory.jsx";
-import { plural } from "./timeWords.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 import { outputRefs } from "./taskOutputs.js";
 import BriefLine from "./BriefLine.jsx";
 
@@ -21,6 +22,7 @@ const head = { fontSize: 11, fontWeight: 600, color: FAINT, letterSpacing: ".04e
 const link = { fontSize: 11, minHeight: 0, p: 0, minWidth: 0 };
 
 const Step = ({ s }) => {
+  useLocale();
   const [open, setOpen] = useState(false);
   if (s.k === "tool") return (
     <Box>
@@ -34,17 +36,17 @@ const Step = ({ s }) => {
     </Box>);
   if (s.k === "plan") return (
     <Box sx={{ fontSize: 12, color: DIM }}>
-      <Box component="span" sx={{ fontWeight: 600 }}>Plan</Box>
+      <Box component="span" sx={{ fontWeight: 600 }}>{t("Plan")}</Box>
       {s.items.map((i, n) => <Box key={n} sx={{ pl: 1 }}>{i.status === "completed" ? "✓" : i.status === "in_progress" ? "▸" : "○"} {i.text}</Box>)}
     </Box>);
-  if (s.k === "result") return <Typography sx={{ fontSize: 12, color: FAINT, fontStyle: "italic" }}>Its answer — shown above.</Typography>;
+  if (s.k === "result") return <Typography sx={{ fontSize: 12, color: FAINT, fontStyle: "italic" }}>{t("Its answer — shown above.")}</Typography>;
   if (s.k === "error") return <Typography sx={{ fontSize: 12, color: "#8a3646" }}>⚠ {s.text}</Typography>;
   if (s.k === "brief") return <BriefLine text={s.text} />;
   if (s.k === "gap") return <Typography sx={{ fontSize: 11.5, color: FAINT }}>… {s.text}</Typography>;
   if (s.k === "screen") return (
     <Box sx={{ ...mono, fontSize: 11, whiteSpace: "pre-wrap", bgcolor: PANEL2, p: 1, borderRadius: 1, maxHeight: 420, overflow: "auto", color: INK }}>{s.text}</Box>);
   // told / thought / said: a label, the words folded to a few lines until clicked
-  const label = { you: "Told", thought: "Thought", said: "Said" }[s.k] || s.k;
+  const label = { you: t("Told"), thought: t("Thought"), said: t("Said") }[s.k] || s.k;
   const long = s.text.length > 320;
   return (
     <Box sx={{ display: "flex", gap: 1, fontSize: 12.5, minWidth: 0 }}>
@@ -59,11 +61,12 @@ const Step = ({ s }) => {
 
 // its plan and every step, the one part kept behind a button
 const Steps = ({ s }) => {
+  useLocale();
   const steps = recordSteps(s);
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 1.2 }}>
-      {!!s.plan?.length && <Box><Typography sx={head}>Its plan</Typography><Step s={{ k: "plan", items: s.plan }} /></Box>}
-      {!!s.refused?.length && <Box><Typography sx={head}>Refused by the floor</Typography>
+      {!!s.plan?.length && <Box><Typography sx={head}>{t("Its plan")}</Typography><Step s={{ k: "plan", items: s.plan }} /></Box>}
+      {!!s.refused?.length && <Box><Typography sx={head}>{t("Refused by the floor")}</Typography>
         {s.refused.map((r, i) => <Typography key={i} sx={{ fontSize: 12, color: DIM, overflowWrap: "anywhere" }}>{r.text}</Typography>)}</Box>}
       {!!steps.length && <Box sx={{ display: "flex", flexDirection: "column", gap: 0.6, maxHeight: 640, overflow: "auto", pr: 0.5 }}>
         {steps.map((x, i) => <Step key={i} s={x} />)}
@@ -77,11 +80,12 @@ const rowsSx = { display: "grid", gridTemplateColumns: "72px minmax(0, 1fr)", co
 
 // the files it saved in the checkout, by path - past FOLD the rest behind "Show N more" (the owner, 2026-10-28: "a million attachments")
 const FileNames = ({ files }) => {
+  useLocale();
   const [all, setAll] = useState(false), shown = all ? files : files.slice(0, FOLD);
   return <>
     {shown.map((f) => <Typography key={f} noWrap title={f} sx={{ ...mono, fontSize: 11.5, color: INK }}>{f}</Typography>)}
     {files.length > FOLD && <Button size="small" data-tq-files-more="" sx={{ ...link, textAlign: "left" }} onClick={() => setAll(!all)}>
-      {all ? "Show fewer" : `Show ${files.length - FOLD} more`}</Button>}
+      {all ? t("Show fewer") : t("Show {count} more", { count: files.length - FOLD })}</Button>}
   </>;
 };
 
@@ -90,39 +94,40 @@ const FileNames = ({ files }) => {
 // happened + a folded last message + files + its own "Every step" button, under a second section that told the same run again.
 // Earlier runs are under the record, one line each (EarlierRuns), never inside one run's More
 export const SessionRecord = ({ s, pages = [], draft = "", startOpen = false, timeline = [], since = null, inChat = false }) => {
+  useLocale();
   const [more, setMore] = useState(startOpen);
   const { lead, rows, message, isReply } = cardParts(s, draft), { mine, other } = splitFiles(s.files, s.cwd);
   const parts = moreParts(s, { draft, timeline, since });
   return (
     <Box>
       <Typography sx={{ fontSize: 11.5, color: FAINT, mb: 0.5 }}>{recordFacts(s).join(" · ")}</Typography>
-      {inChat ? null : lead ? <Box><Typography sx={head}>What happened</Typography><Box sx={{ fontSize: 14, lineHeight: 1.45, color: INK }}><Md text={lead} /></Box></Box>
-        : <Typography sx={{ fontSize: 12.5, color: DIM }}>It ended without a written result{parts.length ? " - More has what it did." : "."}</Typography>}
-      {!!rows.length && <Box sx={rowsSx}>{rows.map(([k, v]) => <React.Fragment key={k}><Box>{k}</Box><Box><Md text={v} /></Box></React.Fragment>)}</Box>}
+      {inChat ? null : lead ? <Box><Typography sx={head}>{t("What happened")}</Typography><Box sx={{ fontSize: 14, lineHeight: 1.45, color: INK }}><Md text={lead} /></Box></Box>
+        : <Typography sx={{ fontSize: 12.5, color: DIM }}>{t(parts.length ? "It ended without a written result - More has what it did." : "It ended without a written result.")}</Typography>}
+      {!!rows.length && <Box sx={rowsSx}>{rows.map(([k, v]) => <React.Fragment key={k}><Box>{t(k)}</Box><Box><Md text={v} /></Box></React.Fragment>)}</Box>}
       {/* what it made to be LOOKED AT belongs with what happened (the owner, 2026-10-10: "it's important to see it") */}
       {!!pages.length && <Box sx={{ mt: 0.9 }}><PublishedPages pages={pages} deliver /></Box>}
       {!!parts.length && <Box sx={sec}>
-        <Button size="small" sx={{ ...link, textAlign: "left" }} onClick={() => setMore(!more)}>More · {parts.join(", ")} {more ? "▾" : "▸"}</Button>
+        <Button size="small" sx={{ ...link, textAlign: "left" }} onClick={() => setMore(!more)}>{t("More")} · {parts.join(", ")} {more ? "▾" : "▸"}</Button>
         {more && <Box sx={{ display: "flex", flexDirection: "column", gap: 1.3, mt: 1 }}>
           {message && <Box>
-            <Typography sx={head}>Its last message{isReply && <Box component="span" sx={{ textTransform: "none", fontWeight: 400 }}> · the reply it drafted, also in Close out</Box>}</Typography>
+            <Typography sx={head}>{t("Its last message")}{isReply && <Box component="span" sx={{ textTransform: "none", fontWeight: 400 }}> · {t("the reply it drafted, also in Close out")}</Box>}</Typography>
             <Box sx={{ fontSize: 13, color: INK }}><Md text={message} /></Box>
           </Box>}
           {s.files?.length > 0 && <Box>
-            <Typography sx={head}>Files it saved</Typography>
+            <Typography sx={head}>{t("Files it saved")}</Typography>
             <FileNames files={mine} />
             {!!other.length && <Typography title={other.join("\n")} sx={{ fontSize: 12, color: FAINT, mt: mine.length ? 0.4 : 0 }}>
-              {mine.length ? "and " : ""}{plural(other.length, "scratch file")} it used while working</Typography>}
+              {t(mine.length ? (other.length === 1 ? "and {count} scratch file it used while working" : "and {count} scratch files it used while working") : (other.length === 1 ? "{count} scratch file it used while working" : "{count} scratch files it used while working"), { count: other.length })}</Typography>}
           </Box>}
-          {!!timeline.length && <Box><Typography sx={head}>The run</Typography><Timeline steps={timeline} /></Box>}
+          {!!timeline.length && <Box><Typography sx={head}>{t("The run")}</Typography><Timeline steps={timeline} /></Box>}
           {/* what ended it upstream (a merge, a close) - ADDED to what the agent did, never in its place (the owner, 2026-10-12) */}
           {since?.text && <Box>
-            <Typography sx={head}>Since then{since.at && <Box component="span" sx={{ textTransform: "none", fontWeight: 400 }}> · {String(since.at).slice(0, 16)}</Box>}</Typography>
+            <Typography sx={head}>{t("Since then")}{since.at && <Box component="span" sx={{ textTransform: "none", fontWeight: 400 }}> · {String(since.at).slice(0, 16)}</Box>}</Typography>
             <Typography sx={{ fontSize: 12.5, color: INK }}>{since.text}</Typography>
           </Box>}
           {hasMore(s) && <Box>
-            <Typography sx={head}>{s.source === "conversation" ? "The working behind its answers" : "Every step"}
-              {s.source && <Box component="span" sx={{ textTransform: "none", fontWeight: 400 }}> · from {sourceLabel(s.source)}</Box>}</Typography>
+            <Typography sx={head}>{t(s.source === "conversation" ? "The working behind its answers" : "Every step")}
+              {s.source && <Box component="span" sx={{ textTransform: "none", fontWeight: 400 }}> · {t("from {source}", { source: sourceLabel(s.source) })}</Box>}</Typography>
             <Steps s={s} />
           </Box>}
         </Box>}
@@ -141,6 +146,7 @@ export const SessionRecord = ({ s, pages = [], draft = "", startOpen = false, ti
 // session's terminal is above (`live`, its sid), or the sender wrote again since - and every kept run is one of those lines (`title`)
 export const AgentRecord = ({ taskId, pages = [], draft = "", stamp, story = null, folded = false, inChat = false, result = false, diff = null, diffOpen = false, onDiff = null, bare = false,
   history = false, title = "", live = "" }) => {
+  useLocale();
   const [rec, setRec] = useState(null);
   useEffect(() => {
     let live = true;
@@ -161,7 +167,7 @@ export const AgentRecord = ({ taskId, pages = [], draft = "", stamp, story = nul
   if (folded) {
     const lead = now ? plain(cardParts(now, draft).lead) : "";
     return story ? <Box sx={{ mt: 1, pl: { xs: 0, sm: 4 } }}>
-      <StoryLine kind={story.kind} line={story.line} why={story.why} />
+      <StoryLine kind={story.kind} line={story.line} why={story.why} line_i18n={story.line_i18n} why_i18n={story.why_i18n} />
       {lead && <Typography sx={{ mt: 0.4, pl: 3, fontSize: 13, lineHeight: 1.45, color: DIM, overflow: "hidden",
         display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{lead}</Typography>}
     </Box> : null;
@@ -179,7 +185,7 @@ export const AgentRecord = ({ taskId, pages = [], draft = "", stamp, story = nul
   return (
     // `bare`: the page's white focus is the box (the owner, 2026-10-25), and the record reads as plain sections inside it
     <Box sx={bare ? { width: "100%" } : { width: "100%", bgcolor: PANEL, px: 1.35, py: 1.15, border: `1px solid ${BORDER}`, borderRadius: 1.5 }}>
-      {state && <Box sx={{ mb: 1, pb: 1, borderBottom: `1px solid ${BORDER}` }}><StoryLine kind={state.kind} line={state.line} why={state.why} /></Box>}
+      {state && <Box sx={{ mb: 1, pb: 1, borderBottom: `1px solid ${BORDER}` }}><StoryLine kind={state.kind} line={state.line} why={state.why} line_i18n={state.line_i18n} why_i18n={state.why_i18n} /></Box>}
       {s && !chat && result ? <ResultView s={s} pages={madeOnce(pages, outputs || [])} diff={diff} since={since} draft={draft} story={story} diffOpen={diffOpen} onDiff={onDiff} />
         : s && !chat ? <RunSummaries sessions={[s, ...before]} pages={pages}
           full={<SessionRecord s={s} draft={draft} startOpen timeline={story?.steps || []} since={since} />} />
@@ -194,6 +200,7 @@ export const AgentRecord = ({ taskId, pages = [], draft = "", stamp, story = nul
 // its Open (agentRecord.madeOnce) - and nothing else: no state sentence, no last message, no record. The Result heading unfolds the rest.
 // `pages`: the task's shown and published pages; the files it left for the task are read here (outputs.py)
 export const ResultSummary = ({ taskId, stamp, pages = [], said = "", onRecord = null }) => {
+  useLocale();
   const [rec, setRec] = useState(null), [outputs, setOutputs] = useState([]);
   useEffect(() => {
     let live = true;
@@ -210,15 +217,15 @@ export const ResultSummary = ({ taskId, stamp, pages = [], said = "", onRecord =
     <Box data-tq-result-summary="" sx={{ mt: 0.9, display: "flex", flexDirection: "column", gap: 0.9 }}>
       {held.waiting.map((l, i) => <Typography key={i} data-tq-result-held="" sx={{ fontSize: 13, fontWeight: 600, color: INK }}>{l}</Typography>)}
       {did ? <Box data-tq-result-did="" sx={{ fontSize: 13.5, lineHeight: 1.5, color: INK }}><Md text={did} /></Box>
-        : <Typography sx={{ fontSize: 12.5, color: DIM }}>It ended without a written result - open the Result for what it did.</Typography>}
+        : <Typography sx={{ fontSize: 12.5, color: DIM }}>{t("It ended without a written result - open the Result for what it did.")}</Typography>}
       {rest && <Box data-tq-result-rest="" sx={{ fontSize: 13.5, lineHeight: 1.5, color: INK }}><Md text={rest} /></Box>}
       {held.after.map((l, i) => <Typography key={i} data-tq-result-ran="" sx={{ fontSize: 12.5, color: DIM }}>{l}</Typography>)}
-      {found && <Box data-tq-result-found=""><Typography sx={head}>What it found</Typography>
+      {found && <Box data-tq-result-found=""><Typography sx={head}>{t("What it found")}</Typography>
         <Box sx={{ fontSize: 13, lineHeight: 1.5, color: INK }}><Md text={found} /></Box></Box>}
-      {!!made.length && <Box data-tq-result-made=""><Typography sx={head}>What it made</Typography><PublishedPages pages={made} verb="Open" deliver /></Box>}
+      {!!made.length && <Box data-tq-result-made=""><Typography sx={head}>{t("What it made")}</Typography><PublishedPages pages={made} verb="Open" deliver /></Box>}
       {/* the conversation it came out of is one quiet link under it, never the page (2026-10-28) */}
       {onRecord && <Box><Button size="small" data-tq-full-result="" aria-expanded="false" onClick={onRecord}
-        sx={{ ...link, textAlign: "left" }}>The whole conversation ›</Button></Box>}
+        sx={{ ...link, textAlign: "left" }}>{t("The whole conversation ›")}</Button></Box>}
       <EarlierRuns runs={runHeads(rec.sessions).slice(1)} />
     </Box>);
 };
@@ -227,29 +234,30 @@ export const ResultSummary = ({ taskId, stamp, pages = [], said = "", onRecord =
 // it resolved it, the summary and its last words whole - then what it made (the files it saved, the pages and files it made for the
 // task, the run's diff counted), and the terminal as ONE line that replays the session step by step. Never the raw log on top.
 const ResultView = ({ s, pages, diff, since, draft, story, diffOpen = false, onDiff = null }) => {
+  useLocale();
   const [replay, setReplay] = useState(false);
   const { rows, summary, writeup } = resultParts(s), { mine } = splitFiles(s.files, s.cwd);
   const made = !!(mine.length || pages.length || diff);
   return (
     <Box data-tq-result="" sx={{ display: "flex", flexDirection: "column", gap: 1.1 }}>
-      {!rows.length && !summary && !writeup && <Typography sx={{ fontSize: 12.5, color: DIM }}>It ended without a written result - the replay has what it did.</Typography>}
-      {rows.map(([k, v]) => <Box key={k} data-tq-result-part={k}><Typography sx={head}>{k}</Typography><Box sx={{ fontSize: 13.5, lineHeight: 1.5, color: INK }}><Md text={v} /></Box></Box>)}
-      {summary && <Box data-tq-result-part="Summary"><Typography sx={head}>Summary</Typography><Box sx={{ fontSize: 13.5, lineHeight: 1.5, color: INK }}><Md text={summary} /></Box></Box>}
-      {writeup && <Box data-tq-result-part="write-up"><Typography sx={head}>{rows.length || summary ? "Its write-up" : "What it did"}</Typography>
+      {!rows.length && !summary && !writeup && <Typography sx={{ fontSize: 12.5, color: DIM }}>{t("It ended without a written result - the replay has what it did.")}</Typography>}
+      {rows.map(([k, v]) => <Box key={k} data-tq-result-part={k}><Typography sx={head}>{t(k)}</Typography><Box sx={{ fontSize: 13.5, lineHeight: 1.5, color: INK }}><Md text={v} /></Box></Box>)}
+      {summary && <Box data-tq-result-part="Summary"><Typography sx={head}>{t("Summary")}</Typography><Box sx={{ fontSize: 13.5, lineHeight: 1.5, color: INK }}><Md text={summary} /></Box></Box>}
+      {writeup && <Box data-tq-result-part="write-up"><Typography sx={head}>{t(rows.length || summary ? "Its write-up" : "What it did")}</Typography>
         <Box sx={{ fontSize: 13.5, lineHeight: 1.5, color: INK }}><Md text={writeup} /></Box></Box>}
       {made && <Box data-tq-result-files="" sx={sec}>
-        <Typography sx={head}>What it made</Typography>
+        <Typography sx={head}>{t("What it made")}</Typography>
         {diff && <Typography data-tq-diff-stat="" sx={{ ...mono, fontSize: 11.5, color: DIM, mb: 0.4 }}>
-          {plural(diff.files, "file")} changed <Box component="span" sx={{ color: "#47654a" }}>+{diff.added}</Box> <Box component="span" sx={{ color: "#6b2733" }}>−{diff.removed}</Box>
+          {t(diff.files === 1 ? "{count} file changed" : "{count} files changed", { count: diff.files })} <Box component="span" sx={{ color: "#47654a" }}>+{diff.added}</Box> <Box component="span" sx={{ color: "#6b2733" }}>−{diff.removed}</Box>
           {onDiff && <Box component="span" data-tq-diff-toggle="">{" · "}<Button size="small" aria-expanded={diffOpen} onClick={onDiff}
-            sx={{ ...link, fontSize: 11.5, verticalAlign: "baseline", textTransform: "none" }}>{diffOpen ? "Hide diff" : "Show diff"}</Button></Box>}</Typography>}
+            sx={{ ...link, fontSize: 11.5, verticalAlign: "baseline", textTransform: "none" }}>{t(diffOpen ? "Hide diff" : "Show diff")}</Button></Box>}</Typography>}
         <FileNames files={mine} />
         {!!pages.length && <Box sx={{ mt: mine.length || diff ? 0.75 : 0 }}><PublishedPages pages={pages} deliver /></Box>}
       </Box>}
-      {since?.text && <Box sx={sec}><Typography sx={head}>Since then</Typography><Typography sx={{ fontSize: 12.5, color: INK }}>{since.text}</Typography></Box>}
+      {since?.text && <Box sx={sec}><Typography sx={head}>{t("Since then")}</Typography><Typography sx={{ fontSize: 12.5, color: INK }}>{since.text}</Typography></Box>}
       <Box sx={sec}>
         <Button size="small" data-tq-replay="" aria-expanded={replay} sx={{ ...link, textAlign: "left" }} onClick={() => setReplay(!replay)}>
-          {replay ? "▾" : "▶"} Replay the session{s.at ? ` · ${String(s.at).slice(11, 16)}` : ""}
+          {replay ? "▾" : "▶"} {t("Replay the session")}{s.at ? ` · ${String(s.at).slice(11, 16)}` : ""}
           {runCost(s).map((x) => ` · ${x}`).join("")}</Button>
         {replay && <Box sx={{ mt: 1 }}><SessionRecord s={s} draft={draft} startOpen timeline={story?.steps || []} /></Box>}
       </Box>
@@ -261,19 +269,20 @@ const ResultView = ({ s, pages, diff, since, draft, story, diffOpen = false, onD
 // what happened, files, the timeline and every step - the run's record as it was - behind one Full transcript. The runs before it are
 // one line each under the record (EarlierRuns, 2026-10-29), where every run's last words stood open in a column
 const RunSummaries = ({ sessions, pages, full }) => {
+  useLocale();
   const [open, setOpen] = useState(false);
   const [{ s, n, said }] = runsOf(sessions);
   return (
     <Box>
       <Box data-tq-run-latest={n}>
-        <Typography sx={head}>Run {n}{n > 1 ? " · latest" : ""}
+        <Typography sx={head}>{t("Run {number}", { number: n })}{n > 1 ? ` · ${t("latest")}` : ""}
           <Box component="span" sx={{ textTransform: "none", fontWeight: 400 }}> · {recordFacts(s).slice(0, 2).join(" · ")}</Box></Typography>
         {said ? <Box sx={{ fontSize: 13.5, lineHeight: 1.5, color: INK }}><Md text={said} /></Box>
-          : <Typography sx={{ fontSize: 12.5, color: DIM }}>It ended without a written result.</Typography>}
+          : <Typography sx={{ fontSize: 12.5, color: DIM }}>{t("It ended without a written result.")}</Typography>}
       </Box>
       {!!pages.length && <Box sx={{ mt: 1 }}><PublishedPages pages={pages} deliver /></Box>}
       <Box sx={{ mt: 1.1, pt: 1, borderTop: `1px solid ${BORDER}` }}>
-        <Button size="small" sx={{ ...link, textAlign: "left" }} onClick={() => setOpen(!open)}>Full transcript {open ? "▾" : "▸"}</Button>
+        <Button size="small" sx={{ ...link, textAlign: "left" }} onClick={() => setOpen(!open)}>{t("Full transcript")} {open ? "▾" : "▸"}</Button>
         {open && <Box sx={{ mt: 1 }}>{full}</Box>}
       </Box>
     </Box>);
@@ -314,13 +323,19 @@ export const FoldList = ({ mark, title, count, first = false, folded = false, ch
 };
 
 // AN EARLIER RUN, folded to its line - when it ended, which agent, what came of it - and opened in place to its whole record
-const Earlier = ({ r }) => <FoldLine mark={{ "data-tq-run-before": r.n }} head={`Run ${r.n} · ${r.at} · ${r.who}`} line={r.line} empty="no written result">
-  <SessionRecord s={r.s} /></FoldLine>;
+const Earlier = ({ r }) => {
+  useLocale();
+  return <FoldLine mark={{ "data-tq-run-before": r.n }} head={`${t("Run {number}", { number: r.n })} · ${r.at} · ${r.who}`} line={r.line} empty={t("no written result")}>
+    <SessionRecord s={r.s} /></FoldLine>;
+};
 
 // THE RUNS BEFORE THE LATEST (the owner, 2026-10-29: "nothing earlier is dropped or replaced"), under its report, newest first, each one line
 // that opens in place (agentRecord.runHeads). `first`: nothing above it - a live terminal leads, or the sender wrote again - so no rule over it.
 // `folded`: a live terminal leads, and the list is one line under it that opens it (FoldList)
-export const EarlierRuns = ({ runs, title = "", first = false, folded = false }) => !runs?.length ? null : (
-  <FoldList mark={{ "data-tq-runs-before": "" }} title={title || "Earlier runs"} count={runs.length} first={first} folded={folded}>
-    {runs.map((r) => <Earlier key={r.s.sid || r.n} r={r} />)}
-  </FoldList>);
+export const EarlierRuns = ({ runs, title = "", first = false, folded = false }) => {
+  useLocale();
+  return !runs?.length ? null : (
+    <FoldList mark={{ "data-tq-runs-before": "" }} title={title || t("Earlier runs")} count={runs.length} first={first} folded={folded}>
+      {runs.map((r) => <Earlier key={r.s.sid || r.n} r={r} />)}
+    </FoldList>);
+};

@@ -4,13 +4,16 @@
 import React from "react";
 import { Box } from "@mui/material";
 import { FAINT, INK, PANEL2 } from "./theme.jsx";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 export const BRIEF_LABEL = "Taskuary's instructions";
 
 export default function BriefLine({ text, children }) {
+  useLocale();
   return (
     <Box component="details" data-tq-brief="" sx={{ minWidth: 0, fontSize: 12, color: FAINT }}>
-      <Box component="summary" sx={{ cursor: "pointer", width: "fit-content", fontWeight: 600, "&:hover": { color: INK } }}>{BRIEF_LABEL}</Box>
+      <Box component="summary" sx={{ cursor: "pointer", width: "fit-content", fontWeight: 600, "&:hover": { color: INK } }}>{t(BRIEF_LABEL)}</Box>
       <Box sx={{ mt: 0.5, p: 1, borderRadius: 1, bgcolor: PANEL2, color: INK, fontSize: 12.5, lineHeight: 1.45, whiteSpace: "pre-wrap",
         overflowWrap: "anywhere", "& p": { m: 0, whiteSpace: "pre-wrap" } }}>{children ?? text}</Box>
     </Box>);

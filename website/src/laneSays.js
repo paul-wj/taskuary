@@ -1,5 +1,6 @@
 import vocab from "../../taskuary/lanes.json" with { type: "json" };
 import { AGENT_SHOWN } from "./kinds.js";   // an agent with no name given is Taskuary, never "the agent"
+import { t } from "./i18n.js";
 // ONE SENTENCE PER SUB-STATE of a blocked agent - the same entry workerstate.says reads on the
 // server. Seven surfaces each spelled "parked at its prompt" their own way (the 2026-09-18 audit's
 // top open item), and none could say "stuck on a rate limit", because each composed its sentence
@@ -13,8 +14,8 @@ const SUB = { approval_needed: "approval", stalled: "stalled", input_needed: "as
 export const subState = (x) => x?.state || SUB[x?.request?.kind || x?.request_kind] || (x?.asking ? "asking" : "parked");
 
 export const says = (sub, agent, text = "") => {
-  const s = SAYS[sub] || SAYS.parked, t = String(text || "").replace(/\s+/g, " ").trim().slice(0, 300);
-  return (t && s.line ? s.line : s.bare).replace("{agent}", agent || AGENT_SHOWN).replace("{text}", t);
+  const s = SAYS[sub] || SAYS.parked, textValue = String(text || "").replace(/\s+/g, " ").trim().slice(0, 300);
+  return t(textValue && s.line ? s.line : s.bare, { agent: agent || AGENT_SHOWN, text: textValue });
 };
 
 // ...and the one for an agent started that has said nothing yet: "Starting Taskuary on Codex…" - the pane's band says it
@@ -22,5 +23,5 @@ export const says = (sub, agent, text = "") => {
 const WORKING = vocab.lanes.find((l) => l.key === "working").says;
 export const starting = (agent, brain = "") => {
   const s = WORKING.starting, b = String(brain || "").trim();
-  return (b ? s.line : s.bare).replace("{agent}", agent || AGENT_SHOWN).replace("{text}", b);
+  return t(b ? s.line : s.bare, { agent: agent || AGENT_SHOWN, text: b });
 };

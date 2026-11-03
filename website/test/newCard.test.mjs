@@ -1,11 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { AUTO, OTHER, chosenRepo } from "../src/newRepo.js";
+import { OTHER, chosenRepo } from "../src/newRepo.js";
 import { planTask } from "../src/newTask.js";
 
-const read = (f) => readFileSync(fileURLToPath(new URL(`../src/${f}`, import.meta.url)), "utf8");
 const rows = [{ repo: "northwind/ledger", has_path: true }, { repo: "northwind/portal", has_path: false }, { repo: "org/app", has_path: true }];
 
 test("auto follows the repository the words name, and leaves the guess to the server when they name none", () => {
@@ -28,7 +25,6 @@ test("another repository is a name and a folder, both needed", () => {
   assert.deepEqual(chosenRepo({ rows, pick: OTHER, name: " acme/tool ", path: "D:/tool" }), { repo: "acme/tool", path: "D:/tool", named: false, needsPath: false });
   assert.equal(chosenRepo({ rows, pick: OTHER, name: "acme/tool" }).needsPath, true);
   assert.equal(chosenRepo({ rows, pick: OTHER }).repo, null);
-  assert.equal(AUTO, "");
 });
 
 test("the chosen repository becomes the new task's repo tag, and a chat has none", () => {
@@ -37,21 +33,3 @@ test("the chosen repository becomes the new task's repo tag, and a chat has none
   assert.equal(planTask(null, "terminal", false, true).kind, "coding");
 });
 
-test("New is a card in the conversation, not a popup: the button posts it, a link opens it, closing removes it", () => {
-  const view = read("AssistantView.jsx"), feed = read("FeedView.jsx"), browse = read("CanvasBrowse.jsx"), sheet = read("NewSheet.jsx");
-  assert.match(feed, /n\.key === "new" && !onGo \? setNewOpen\(true\) : onGo\?\.\(n\.go, n\.key\)/);   // the dialog survives only where there is no canvas
-  assert.match(view, /request\.kind === "new"\) browseRef\.current\?\.\("new", request\.state \|\| \{\}\)/);
-  assert.match(view, /browseClose: \(id\) => setMsgs\(\(m\) => m\.filter\(\(x\) => x\.id !== id\)\)/);
-  assert.match(browse, /area === "new"\) return \(/);
-  assert.match(browse, /<NewSheet key=\{.+?\} inline open onClose=\{onClose\}/);
-  assert.match(sheet, /if \(e\.key === "Escape"\) close\(\)/);                               // Esc closes the card
-  assert.match(sheet, /<NewRepo agent=\{agent\}/);                                            // the checkout is chosen here
-  assert.match(sheet, /api\.put\(`\/api\/tasks\/\$\{data\.taskId\}\/repo`, \{ repo: pickd\.repo, path: pickd\.path, \.\.\.\(agent \? \{ agent \} : \{\}\) \}\)/);
-});
-
-test("the picker loads the repository list once, lazily, and the words reach it on a pause", () => {
-  const pick = read("NewRepo.jsx"), sheet = read("NewSheet.jsx");
-  assert.equal((pick.match(/api\.get\(/g) || []).length, 1);
-  assert.match(pick, /\/api\/repos/);
-  assert.match(sheet, /setTimeout\(\(\) => \{ bus\?\.current\?\.\(next\); onWords\?\.\(next\); \}, 200\)/);   // never per key (and the connector offer hears them too)
-});

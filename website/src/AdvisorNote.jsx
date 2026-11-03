@@ -14,6 +14,9 @@ import { TaskuaryMark } from "./ui.jsx";
 import { ALERT_INK, DIM, INK, label } from "./theme.jsx";
 import { MARKS, MARK_HINT } from "./learnedGroups.js";
 import { WorkstreamSelect } from "./Workstream.jsx";
+import { t, translateDescriptor } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
+import { ALL_LABELS } from "./buttons.js";
 
 // the moves a memory line takes from the task: the owner's own line Forget only, a learned one all three (learnedGroups.marksFor)
 export const memoryMarks = (r) => (r?.kind !== "memory" || !r.key ? [] : r.own ? ["forget"] : ["keep", "wrong", "forget"]);
@@ -26,12 +29,13 @@ export const fixOf = (note) => (note?.advice?.fix?.verb && note.advice.fix.note 
 // ...and WRONG WORKSTREAM is said here too (the owner, 2026-11-01): `workstream` is the task's {taskId, value, onDone}, its picker drawn
 // under what the line rests on - moving the task re-reads it under the right hat
 export default function AdvisorNote({ note, onDraft = null, onFix = null, workstream = null, sx }) {
+  useLocale();
   const [at, setAt] = useState(null), [done, setDone] = useState({}), [err, setErr] = useState(""), [fixing, setFixing] = useState(false);
   const fix = onFix ? fixOf(note) : null;
   const runFix = async () => {
     setErr(""); setFixing(true);
     try { await onFix(fix); }
-    catch (e) { setErr(e?.response?.data?.detail || e?.message || "That did not start - nothing was changed."); }
+    catch (e) { setErr(e?.response?.data?.detail || e?.message || { source: "That did not start - nothing was changed.", values: {} }); }
     finally { setFixing(false); }
   };
   if (!note?.line) return null;
@@ -39,45 +43,45 @@ export default function AdvisorNote({ note, onDraft = null, onFix = null, workst
   const mark = async (r, how) => {
     setErr("");
     try { await api.post("/api/learned/mark", { key: r.key, how }); setDone((d) => ({ ...d, [r.key]: how })); }
-    catch (e) { setErr(e?.response?.data?.detail || "That did not go through - nothing was changed."); }
+    catch (e) { setErr(e?.response?.data?.detail || { source: "That did not go through - nothing was changed.", values: {} }); }
   };
   return (
-    <Box component="section" aria-label="Advisor" data-tq-advisor="" sx={{ flexShrink: 0, mb: 1, px: 1.25, py: 0.6, borderRadius: 2, bgcolor: "#f3f5f7",
+    <Box component="section" aria-label={t("Advisor")} data-tq-advisor="" sx={{ flexShrink: 0, mb: 1, px: 1.25, py: 0.6, borderRadius: 2, bgcolor: "#f3f5f7",
       borderLeft: "3px solid #55697a", minWidth: 0, ...sx }}>
       <Box data-tq-advisor-note={note.draft ? "draft" : "task"} sx={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", columnGap: 0.75, rowGap: 0.25,
         minWidth: 0, fontSize: 13, lineHeight: 1.45 }}>
         <Box component="span" sx={{ display: "inline-flex", alignItems: "center", gap: 0.5, alignSelf: "center" }}>
-          <TaskuaryMark size={12} /><Typography component="span" sx={{ ...label, color: "#55697a" }}>Advisor</Typography></Box>
+          <TaskuaryMark size={12} /><Typography component="span" sx={{ ...label, color: "#55697a" }}>{t("Advisor")}</Typography></Box>
         <Box component="span" data-tq-advisor-line="" sx={{ color: INK, fontWeight: 500, minWidth: 0, overflowWrap: "anywhere" }}>{note.line}</Box>
         {note.draft && onDraft && <button type="button" className="tq-next-why" data-tq-advisor-draft="" onClick={onDraft}
-          style={{ padding: "1px 4px", fontSize: 12 }}>See the draft</button>}
+          style={{ padding: "1px 4px", fontSize: 12 }}>{t("See the draft")}</button>}
         {fix && <button type="button" className="tq-next-why" data-tq-advisor-fix={fix.verb} disabled={fixing} onClick={runFix}
-          title={fix.note} style={{ padding: "1px 4px", fontSize: 12, fontWeight: 600 }}>{fixing ? "Starting…" : fix.label}</button>}
+          title={fix.note} style={{ padding: "1px 4px", fontSize: 12, fontWeight: 600 }}>{fixing ? t("Starting…") : fix.verb === "continue" ? t("Continue with this") : fix.verb === "redraft" ? t("Redraft with this") : fix.label}</button>}
         <button type="button" className="tq-next-why" aria-haspopup="dialog" aria-expanded={!!at} onClick={(e) => setAt(e.currentTarget)}
-          style={{ padding: "1px 4px", fontSize: 12 }}>Why?</button>
+          style={{ padding: "1px 4px", fontSize: 12 }}>{t("Why?")}</button>
       </Box>
-      {err && !at && <Box role="alert" sx={{ color: ALERT_INK, fontSize: 12 }}>{err}</Box>}
+      {err && !at && <Box role="alert" sx={{ color: ALERT_INK, fontSize: 12 }}>{translateDescriptor(err)}</Box>}
       <Popover open={!!at} anchorEl={at} onClose={() => setAt(null)} anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
         transformOrigin={{ vertical: "top", horizontal: "left" }} slotProps={{ paper: { sx: { borderRadius: 2.5, maxWidth: 420 } } }}>
-        <div className="tq-next-pop" role="dialog" aria-label="Why the Advisor says this">
+        <div className="tq-next-pop" role="dialog" aria-label={t("Why the Advisor says this")}>
           <div className="said">{a.line || note.line}</div>
-          {a.label && <div className="pick">Lit: <b>{a.label}</b> - the dark button</div>}
+          {a.label && <div className="pick">{t("Lit:")} <b>{ALL_LABELS.includes(a.label) ? t(a.label) : a.label}</b> {t("- the dark button")}</div>}
           {/* what it rests on, in words: an evidence id ("out13") or the model's name tells someone who never wrote code nothing */}
           {rests.length ? (
-            <div className="rests"><div className="head">What it rests on</div>
+            <div className="rests"><div className="head">{t("What it rests on")}</div>
               <ul>{rests.map((r) => (
                 <li key={r.id} data-tq-advisor-rests={r.kind || ""}>
-                  {r.kind === "memory" ? <>What Taskuary knows: “{r.label}”</> : r.label}
-                  {memoryMarks(r).length > 0 && (done[r.key] ? <Box component="span" data-tq-advisor-marked={done[r.key]} sx={{ display: "block", color: DIM, fontSize: 12 }}>{MARKED[done[r.key]]}</Box>
+                  {r.kind === "memory" ? t("What Taskuary knows: “{label}”", { label: r.label }) : r.label}
+                  {memoryMarks(r).length > 0 && (done[r.key] ? <Box component="span" data-tq-advisor-marked={done[r.key]} sx={{ display: "block", color: DIM, fontSize: 12 }}>{t(MARKED[done[r.key]])}</Box>
                     : <Box component="span" data-tq-advisor-marks="" sx={{ display: "flex", gap: 0.25, mt: 0.25 }}>
-                      {memoryMarks(r).map((m) => <button key={m} type="button" className="tq-next-why" data-tq-mark={m} title={MARK_HINT[m]}
-                        onClick={() => mark(r, m)} style={{ padding: "1px 6px", fontSize: 12, color: m === "wrong" ? ALERT_INK : undefined }}>{MARKS[m]}</button>)}
+                      {memoryMarks(r).map((m) => <button key={m} type="button" className="tq-next-why" data-tq-mark={m} title={t(MARK_HINT[m])}
+                        onClick={() => mark(r, m)} style={{ padding: "1px 6px", fontSize: 12, color: m === "wrong" ? ALERT_INK : undefined }}>{t(MARKS[m])}</button>)}
                     </Box>)}
                 </li>))}</ul></div>)
-            : <Box className="fact" sx={{ color: DIM }}>{a.by === "check" ? "Read from the agent's work by the AI, after it stopped." : a.by === "model" ? "Read from this item by the AI." : "A fact Taskuary keeps about this item."}</Box>}
-          {workstream?.taskId && <Box data-tq-advisor-workstream="" sx={{ mt: 0.75, color: DIM, fontSize: 12 }}>Wrong workstream? Move it:
+            : <Box className="fact" sx={{ color: DIM }}>{t(a.by === "check" ? "Read from the agent's work by the AI, after it stopped." : a.by === "model" ? "Read from this item by the AI." : "A fact Taskuary keeps about this item.")}</Box>}
+          {workstream?.taskId && <Box data-tq-advisor-workstream="" sx={{ mt: 0.75, color: DIM, fontSize: 12 }}>{t("Wrong workstream? Move it:")}
             <WorkstreamSelect taskId={workstream.taskId} value={workstream.value} onDone={(s) => { setAt(null); workstream.onDone?.(s); }} /></Box>}
-          {err && <Box role="alert" sx={{ color: ALERT_INK, fontSize: 12 }}>{err}</Box>}
+          {err && <Box role="alert" sx={{ color: ALERT_INK, fontSize: 12 }}>{translateDescriptor(err)}</Box>}
         </div>
       </Popover>
     </Box>

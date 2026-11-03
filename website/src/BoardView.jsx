@@ -14,7 +14,7 @@ import GridViewIcon from "@mui/icons-material/GridView";
 import ForumIcon from "@mui/icons-material/Forum";
 import AddIcon from "@mui/icons-material/Add";
 import api from "./api";
-import { durSince, plural } from "./timeWords.js";
+import { durSince } from "./timeWords.js";
 import AgentWall from "./AgentWall.jsx";
 import NewSheet from "./NewSheet.jsx";
 import { agentName, saidOf } from "./agentWork.js";
@@ -28,6 +28,8 @@ import { label } from "./buttons.js";
 import { LANE_META, KIND_META } from "./funnelPile.js";
 import { remindWaiting } from "./taskFilter.js";
 import { AGENT_SHOWN, shownAgent, instructionsHint } from "./kinds.js";
+import { t as tr } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 // Not every ask is about a codebase - "what does this policy mean", "draft me a note", "prepare
 // me for this meeting". The task carries `repo:none`, which is the one answer the picker could
@@ -85,22 +87,24 @@ export const FileChips = ({ files }) => (files || []).length === 0 ? null : (
 // IS what it asked (the owner, 2026-09-08: "assistant still looks like coding cli?"). A
 // conversation's peephole is its words.
 const ChatTail = ({ run, name }) => {
+  useLocale();
   const waiting = run.kind === "session" && isWaiting(run);
   const said = saidOf(run);
   return (
     <Box sx={{ mt: 0.7 }}>
       <Typography sx={{ ...mono, fontSize: 9, letterSpacing: ".11em", textTransform: "uppercase", color: FAINT }}>
-        {waiting ? says(subState(run), name) : `${name} is working`}
+        {waiting ? says(subState(run), name) : tr("{name} is working", { name })}
       </Typography>
       {said && <Typography sx={{ color: INK, fontSize: 11.5, lineHeight: 1.45, mt: 0.2,
         display: "-webkit-box", WebkitLineClamp: 4, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{said}</Typography>}
       {!said && <Typography sx={{ color: FAINT, fontSize: 11.5, mt: 0.2 }}>
-        {waiting ? "It is waiting on your answer." : "Working on it."}</Typography>}
+        {tr(waiting ? "It is waiting on your answer." : "Working on it.")}</Typography>}
     </Box>
   );
 };
 
 const LiveTail = ({ run, chat, name }) => {
+  useLocale();
   const waiting = run.kind === "session" && isWaiting(run);
   if (chat) return <ChatTail run={run} name={name} />;
   // a session reports what the agent HOLDS (ui.WorkPane); the raw-tail pane below stays only for
@@ -120,7 +124,7 @@ const LiveTail = ({ run, chat, name }) => {
     <Typography variant="caption" sx={{ ...mono, fontSize: 9.5, color: waiting ? CATPPUCCIN.yellow : CATPPUCCIN.cyan,
       ...(waiting ? {} : { "@keyframes tqBlink": { "50%": { opacity: 0.25 } }, animation: "tqBlink 1.1s step-end infinite" }) }}>
       {waiting ? `⏸ ${run.line || says(subState(run), shownAgent(run))}`
-        : `▮ ${shownAgent(run)} working ${elapsed(run.StartedAt)}`}
+        : `▮ ${tr("{name} working {elapsed}", { name: shownAgent(run), elapsed: elapsed(run.StartedAt) })}`}
     </Typography>
   </Box>
   );
@@ -132,18 +136,19 @@ const LiveTail = ({ run, chat, name }) => {
 const NOTE_FIELDS = ["found", "did", "next"];
 const noteBody = (n) => String(n || "").replace(/^HANDOVER NOTE\s*/i, "").trim();
 
-const NoteChip = ({ onOpen }) => (
-  <Tooltip arrow title="what this agent left for whoever picks the task up next">
+const NoteChip = ({ onOpen }) => {
+  useLocale();
+  return <Tooltip arrow title={tr("what this agent left for whoever picks the task up next")}>
     <Box onClick={(e) => { e.stopPropagation(); onOpen(); }}
       sx={{ display: "inline-flex", alignItems: "center", gap: 0.3, px: 0.6, height: 16,
         borderRadius: 0.75, bgcolor: "#e3e6e1", border: "1px solid #d2d6cf", cursor: "pointer",
         "&:hover": { bgcolor: "#d2d6cf" } }}>
       <Typography sx={{ color: ROLES.working.ink, fontWeight: 600, fontSize: 8.5, letterSpacing: ".05em" }}>
-        ✎ NOTE
+        ✎ {tr("NOTE")}
       </Typography>
     </Box>
-  </Tooltip>
-);
+  </Tooltip>;
+};
 
 // found / did / next as sections, each with its own colour and icon so the eye can jump
 // straight to "the next step" - plus the files git says that agent actually touched, which
@@ -157,6 +162,7 @@ const SECTION = {
 };
 
 const NoteDialog = ({ open, task, onClose }) => {
+  useLocale();
   const body = noteBody(task?.HandoverNote);
   const [proof, setProof] = useState(null);
   useEffect(() => {
@@ -175,21 +181,20 @@ const NoteDialog = ({ open, task, onClose }) => {
       <DialogTitle sx={{ fontSize: 14.5, pb: 0.5 }}>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
           <Typography sx={{ ...mono, color: "#55697a", fontWeight: 600, fontSize: 12 }}>{task?.ref}</Typography>
-          <Typography sx={{ color: INK, fontWeight: 600, fontSize: 14 }}>the handover note</Typography>
+          <Typography sx={{ color: INK, fontWeight: 600, fontSize: 14 }}>{tr("the handover note")}</Typography>
         </Box>
         <Typography variant="caption" sx={{ color: FAINT, display: "block", fontWeight: 400, mt: 0.25 }}>
-          Written when this session paused — and this is the same text the next agent is seeded
-          with, so what you read here is what it will know.
+          {tr("Written when this session paused — and this is the same text the next agent is seeded with, so what you read here is what it will know.")}
         </Typography>
       </DialogTitle>
       <DialogContent sx={{ pb: 1 }}>
-        {!body && <Empty>No note on this task.</Empty>}
+        {!body && <Empty>{tr("No note on this task.")}</Empty>}
         {secs.length ? secs.map(([k, v]) => (
           <Box key={k} sx={{ mb: 1, px: 1.25, py: 0.9, bgcolor: SECTION[k].bg,
             border: `1px solid ${SECTION[k].bd}`, borderRadius: 2 }}>
             <Typography variant="caption" sx={{ color: SECTION[k].fg, fontWeight: 600, fontSize: 9.5,
               letterSpacing: ".08em", display: "block", mb: 0.35 }}>
-              {SECTION[k].icon} {SECTION[k].title}
+              {SECTION[k].icon} {tr(SECTION[k].title)}
             </Typography>
             <Typography variant="body2" sx={{ color: INK, whiteSpace: "pre-wrap", fontSize: 12.5, lineHeight: 1.55 }}>{v}</Typography>
           </Box>
@@ -201,7 +206,7 @@ const NoteDialog = ({ open, task, onClose }) => {
           <Box sx={{ mt: 1.5 }}>
             <Typography variant="caption" sx={{ color: ROLES.working.ink, fontWeight: 600, fontSize: 9.5,
               letterSpacing: ".08em", display: "block", mb: 0.5 }}>
-              ✎ FILES IT TOUCHED — {files.length}, per git
+              ✎ {tr("FILES IT TOUCHED — {count}, per git", { count: files.length })}
             </Typography>
             <Box sx={{ maxHeight: 168, overflowY: "auto", border: `1px solid ${BORDER}`, borderRadius: 2 }}>
               {files.map((f, i) => (
@@ -218,11 +223,11 @@ const NoteDialog = ({ open, task, onClose }) => {
         )}
         {proof && !files.length && (
           <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 1.5 }}>
-            No file changes recorded yet — the agent may have only read, or not committed.
+            {tr("No file changes recorded yet — the agent may have only read, or not committed.")}
           </Typography>
         )}
       </DialogContent>
-      <DialogActions><Button onClick={onClose}>Close</Button></DialogActions>
+      <DialogActions><Button onClick={onClose}>{tr("Close")}</Button></DialogActions>
     </Dialog>
   );
 };
@@ -245,16 +250,17 @@ const localToday = () => {
 // a run's status in the agent vocabulary the rest of the app speaks (taskLifecycle.AGENT)
 const RUN_WORD = { running: AGENT.working, stopped: AGENT.stopped, failed: AGENT.stopped, error: AGENT.stopped };
 const COLS = [
-  { key: "queued", title: `${LANE_META.queued.mark} ${LANE_META.queued.word}`, dot: "#867f74" },
-  { key: "working", title: `${LANE_META.working.mark} ${LANE_META.working.word}`, dot: "#6f8a6e" },
-  { key: "blocked", title: `${LANE_META.blocked.mark} ${LANE_META.blocked.word}`, dot: ALERT },
+  { key: "queued", meta: LANE_META.queued, dot: "#867f74" },
+  { key: "working", meta: LANE_META.working, dot: "#6f8a6e" },
+  { key: "blocked", meta: LANE_META.blocked, dot: ALERT },
   // ...one name for both lanes it holds (the owner, 2026-10-28): "stopped and saved · agent stopped" wrapped to two lines at 1366px - a
   // session ended by you is an agent stopped too
-  { key: "left", title: `${LANE_META.stopped.mark} ${LANE_META.stopped.word}`, dot: "#a09787" },
-  { key: "agentdone", title: `${KIND_META.agentdone.mark} ${KIND_META.agentdone.word}`, dot: "#47654a" },
+  { key: "left", meta: LANE_META.stopped, dot: "#a09787" },
+  { key: "agentdone", meta: KIND_META.agentdone, dot: "#47654a" },
 ];
 
 export default function BoardView({ onOpenTask, active = true }) {
+  useLocale();
   const [tasks, setTasks] = useState(null);
   const [err, setErr] = useState("");
   const [view, setView] = useState("columns");   // columns | wall - the Studio's office is the Game's now (2026-10-15)
@@ -277,7 +283,7 @@ export default function BoardView({ onOpenTask, active = true }) {
     // opens one, a to-do is the owner's own list. Both stay in Tasks and Review (isAgentKind).
     try { setTasks(((await api.get("/api/tasks", { params: { active: 1 } })).data.data || [])
       .filter((t) => t.Status !== "dropped" && isAgentKind(t.Kind))); }
-    catch (e) { setErr(e?.response?.data?.detail || "Failed to load the board"); }
+    catch (e) { setErr(e?.response?.data?.detail || { fallback: "Failed to load the board" }); }
   }, []);
   useEffect(() => { load(); return active ? onLive("task-changed", load) : undefined; }, [load, active]);
   // live tails arrive as run-tail (the cards are a status wall you watch); the task page has the full trace
@@ -303,20 +309,20 @@ export default function BoardView({ onOpenTask, active = true }) {
     // THE BOARD IS A VIEW THE ASSISTANT READS (pageView.js, the assistant audit 2026-11-02): unmarked, "switch to the wall" asked on it had
     // no page under it, and a VIEW open of the Board waited on a root that never drew
     <Box data-tq-browse="board" data-tq-view-label="Agent board">
-      {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 1.5 }}>{err}</Alert>}
+      {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 1.5 }}>{err.fallback ? tr(err.fallback) : err}</Alert>}
       {/* four things on one line is a laptop's worth of room; below that they wrap rather than
           push the page sideways */}
       <Box sx={{ display: "flex", alignItems: "center", mb: 1.25, gap: 1.5, flexWrap: "wrap" }}>
-        <Typography sx={{ color: INK, fontWeight: 600, fontSize: 15, flex: "1 1 auto" }}>Agent board</Typography>
+        <Typography sx={{ color: INK, fontWeight: 600, fontSize: 15, flex: "1 1 auto" }}>{tr("Agent board")}</Typography>
         {view === "notes" && <Typography variant="caption" sx={{ color: FAINT, fontSize: 10.5 }}>
-          Short-lived task and checkout coordination — agents read it before starting; hard-earned reusable discoveries belong in the Hub.
+          {tr("Short-lived task and checkout coordination — agents read it before starting; hard-earned reusable discoveries belong in the Hub.")}
         </Typography>}
         {view === "floor" && <Typography variant="caption" sx={{ color: FAINT, fontSize: 10.5 }}>
-          One desk per agent that can run at once — an empty desk is capacity you are not using.
+          {tr("One desk per agent that can run at once — an empty desk is capacity you are not using.")}
         </Typography>}
         {/* the same board, two ways to look at it - columns to move work, the floor to see how
             much of your capacity is actually busy */}
-        <Box role="tablist" aria-label="Board view"
+        <Box role="tablist" aria-label={tr("Board view")}
           sx={{ display: "flex", gap: 0.25, bgcolor: PANEL2, border: `1px solid ${BORDER}`, borderRadius: 2, p: "3px" }}>
           {[{ k: "columns", label: "Columns", icon: <ViewKanbanIcon sx={{ fontSize: 14 }} /> },
             { k: "wall", label: "Wall", icon: <GridViewIcon sx={{ fontSize: 14 }} /> },
@@ -328,20 +334,20 @@ export default function BoardView({ onOpenTask, active = true }) {
                   fontSize: 12, fontWeight: view === o.k ? 700 : 500, cursor: "pointer",
                   color: view === o.k ? INK : DIM, bgcolor: view === o.k ? PANEL : "transparent",
                   boxShadow: view === o.k ? "0 1px 2px rgba(30,50,38,.10)" : "none" }}>
-                {o.icon}{o.label}
+                {o.icon}{tr(o.label)}
               </Box>
             ))}
         </Box>
         {/* the funnel's front door, as big as the task button: pick the agent, paste the prompts */}
         <Button size="small" variant="outlined" disableElevation onClick={() => setFeedOpen(true)}
-          sx={{ color: "#6b5f45", borderColor: "#d8cfbe", bgcolor: "#f1ead9", "&:hover": { borderColor: "#8a7a5c", bgcolor: "#e9dfc5" } }}>✎ Feed the agent</Button>
+          sx={{ color: "#6b5f45", borderColor: "#d8cfbe", bgcolor: "#f1ead9", "&:hover": { borderColor: "#8a7a5c", bgcolor: "#e9dfc5" } }}>✎ {tr("Feed the agent")}</Button>
         <Button size="small" variant="contained" disableElevation startIcon={<AddIcon sx={{ fontSize: 15 }} />}
-          onClick={() => setNewOpen(true)} sx={{ background: GRADIENT }}>{label("new_task")}</Button>
+          onClick={() => setNewOpen(true)} sx={{ background: GRADIENT }}>{tr(label("new_task"))}</Button>
       </Box>
       <Dialog open={feedOpen} onClose={() => setFeedOpen(false)} maxWidth="md" fullWidth PaperProps={{ sx: { borderRadius: 3 } }}>
-        <DialogTitle sx={{ pb: 0.5 }}>Feed the agent
+        <DialogTitle sx={{ pb: 0.5 }}>{tr("Feed the agent")}
           <Typography variant="caption" sx={{ color: FAINT, display: "block", fontWeight: 400, mt: 0.25 }}>
-            Queue prompts for an agent - one, or a whole list. They land one per stop, in order, never mid-turn.
+            {tr("Queue prompts for an agent - one, or a whole list. They land one per stop, in order, never mid-turn.")}
           </Typography>
         </DialogTitle>
         <DialogContent>
@@ -356,11 +362,11 @@ export default function BoardView({ onOpenTask, active = true }) {
                 </Box>
               ))}
             {(tasks || []).filter((t) => t.Kind !== "reply" && t.Status !== "done" && t.Status !== "dropped").length === 0 && (
-              <Typography variant="caption" sx={{ color: FAINT }}>No open coding task yet - make one with New task for the agent, then feed it.</Typography>
+              <Typography variant="caption" sx={{ color: FAINT }}>{tr("No open coding task yet - make one with New task for the agent, then feed it.")}</Typography>
             )}
           </Box>
           {feedTask ? <TellAgent taskId={feedTask} taskRef={(tasks || []).find((t) => t.TaskId === feedTask)?.ref} onQueued={load} />
-            : <Typography variant="caption" sx={{ color: FAINT }}>Pick the task above - ▮ marks one with an agent on it right now.</Typography>}
+            : <Typography variant="caption" sx={{ color: FAINT }}>{tr("Pick the task above - ▮ marks one with an agent on it right now.")}</Typography>}
         </DialogContent>
       </Dialog>
 
@@ -394,14 +400,14 @@ export default function BoardView({ onOpenTask, active = true }) {
                   both to the middle of two lines, out of line with the columns beside it (the 2026-10-27 sweep) */}
               <Box sx={{ display: "flex", alignItems: "flex-start", gap: 0.6, px: 0.4, pb: 0.85 }}>
                 <Box sx={{ width: 7, height: 7, mt: "5px", flexShrink: 0, borderRadius: "50%", bgcolor: col.dot }} />
-                <Typography variant="body2" sx={{ color: INK, fontWeight: 600, flex: 1, fontSize: 11.5 }}>{col.title}</Typography>
+                <Typography variant="body2" sx={{ color: INK, fontWeight: 600, flex: 1, fontSize: 11.5 }}>{col.meta.mark} {tr(col.meta.word)}</Typography>
                 <Chip size="small" label={cards.length} sx={{ height: 16, fontSize: 9.5, bgcolor: PANEL,
                   border: `1px solid ${BORDER}`, color: DIM, "& .MuiChip-label": { px: 0.65 } }} />
               </Box>
               {col.key === "agentdone" && <Typography variant="caption" sx={{ display: "block", color: FAINT, fontSize: 10, px: 0.4, mb: 0.85, lineHeight: 1.3 }}>
-                Finished today, or a reply it drafted waiting for your yes — search finds older finished work.
+                {tr("Finished today, or a reply it drafted waiting for your yes — search finds older finished work.")}
               </Typography>}
-              {!cards.length && <Empty>Nothing here.</Empty>}
+              {!cards.length && <Empty>{tr("Nothing here.")}</Empty>}
               {cards.map((t) => {
                 // a chat session reports its agent as the literal string "assistant" - the name of
                 // the thing that helps you run Taskuary, not of the agent working this task
@@ -431,11 +437,11 @@ export default function BoardView({ onOpenTask, active = true }) {
                     <ChannelIcon channel={t.Source} sx={{ fontSize: 12 }} />
                     {assignedAgent(t.Assignee) && !badge && <Chip size="small" icon={<TaskuaryMark size={10} />}
                       label={chat ? AGENT_SHOWN : (brain || AGENT_SHOWN)}   /* never the profile - it is on hover (the owner, 2026-10-28) */
-                      title={`${chat ? AGENT_SHOWN : brain || AGENT_SHOWN} works this task · ${instructionsHint(assignedAgent(t.Assignee))}`}
+                      title={`${tr("{name} works this task", { name: chat ? AGENT_SHOWN : brain || AGENT_SHOWN })} · ${instructionsHint(assignedAgent(t.Assignee))}`}
                       sx={{ height: 15, fontSize: 8.5, bgcolor: "#e3e6e1", color: "#47654a",
                         "& .MuiChip-label": { px: 0.55 }, "& .MuiChip-icon": { ml: 0.35 } }} />}
                     {t.RunStatus && (
-                      <Chip size="small" label={`${chat ? AGENT_SHOWN : brain || AGENT_SHOWN} · ${t.State === "blocked" ? AGENT.waiting : RUN_WORD[t.RunStatus] || t.RunStatus}`
+                      <Chip size="small" label={`${chat ? AGENT_SHOWN : brain || AGENT_SHOWN} · ${t.State === "blocked" ? tr(AGENT.waiting) : RUN_WORD[t.RunStatus] ? tr(RUN_WORD[t.RunStatus]) : t.RunStatus}`
                         + (live[t.TaskId] ? ` · ${elapsed(live[t.TaskId].StartedAt)}` : "")}
                         sx={{ height: 15, fontSize: 8.5, fontWeight: 600, "& .MuiChip-label": { px: 0.7 },
                           bgcolor: t.RunStatus === "running" ? "#eae4d8" : t.RunStatus === "error" ? "#f0e2e4" : "#dfeade",
@@ -450,16 +456,16 @@ export default function BoardView({ onOpenTask, active = true }) {
                     {t.Title}
                   </Typography>
                   {t.Playbook && (
-                    <Typography variant="caption" title={t.Playbook.uses?.length ? `uses ${t.Playbook.uses.join(", ")}` : ""}
+                    <Typography variant="caption" title={t.Playbook.uses?.length ? tr("uses {items}", { items: t.Playbook.uses.join(", ") }) : ""}
                       sx={{ color: "#6b5f45", display: "block", mt: 0.35, fontSize: 9.5, fontWeight: 600,
                         whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                      Playbook · {t.Playbook.title}
+                      {tr("Playbook")} · {t.Playbook.title}
                     </Typography>
                   )}
                   {!t.Playbook && t.Source === "report" && t.SearchSources && (
                     <Typography variant="caption" sx={{ color: "#6b5f45", display: "block", mt: 0.35, fontSize: 9.5,
                       whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                      Report · {String(t.SearchSources).split(",")[0]}
+                      {tr("Report")} · {String(t.SearchSources).split(",")[0]}
                     </Typography>
                   )}
                   {/* a held-back dispatch says so ON the card - who it waits for and why, readable
@@ -475,13 +481,13 @@ export default function BoardView({ onOpenTask, active = true }) {
                         to this agent, and the card is where they look for it */}
                     {t.Waiting > 0 && (
                       <Chip size="small" onClick={(e) => { e.stopPropagation(); setFeedTask(t.TaskId); setFeedOpen(true); }}
-                        label={`✎ ${plural(t.Waiting, "queued prompt")}`}
-                        title="waiting in the funnel - lands at the agent's next stop; click to add more"
+                        label={`✎ ${tr(t.Waiting === 1 ? "{count} queued prompt" : "{count} queued prompts", { count: t.Waiting })}`}
+                        title={tr("waiting in the funnel - lands at the agent's next stop; click to add more")}
                         sx={{ height: 15, fontSize: 8.5, bgcolor: "#f1ead9", border: "1px solid #d8cfbe", color: "#6b5f45", fontWeight: 600,
                           cursor: "pointer", "& .MuiChip-label": { px: 0.7 } }} />
                     )}
                     <Box sx={{ flex: 1 }} />
-                    <Typography variant="caption" sx={{ color: "#55697a", fontWeight: 600, fontSize: 9.5 }}>open →</Typography>
+                    <Typography variant="caption" sx={{ color: "#55697a", fontWeight: 600, fontSize: 9.5 }}>{tr("open →")}</Typography>
                   </Box>
                 </Box>
                 );

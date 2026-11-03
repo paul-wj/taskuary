@@ -4,21 +4,29 @@
 import React from "react";
 import { Md } from "./md.jsx";
 import "./agentStepRows.css";
+import { t, translateDescriptor } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
+import { stepsOf } from "./agentSteps.js";
 
 // A step is one line. What it did is a row whose raw call - the command, its output - waits behind the row's own disclosure, for
 // debugging; what it SAID is its own words, in the type the answer is in.
 // ...a failure the agent made good by trying again (`recovered`, agentSteps.stepsOf) says so quietly; red is for one it did not
 const STATUS_WORD = { running: "working", recovered: "retried - worked", error: "failed" };
 export const StepRow = ({ step }) => {
+  useLocale();
+  const summary = step.summary_i18n ? translateDescriptor(step.summary_i18n) : step.summary;
   if (step.kind === "said") return <div className="tq-aui-said"><Md text={step.summary} /></div>;
-  if (step.kind === "note" || step.kind === "error") return <div className={`tq-aui-note tq-aui-note-${step.kind}`}>{step.summary}</div>;
-  const head = <><span className="tq-aui-tool-dot" /><span>{step.summary}</span>
-    {step.status !== "done" && <em>{STATUS_WORD[step.status] || "failed"}</em>}</>;
+  if (step.kind === "note" || step.kind === "error") return <div className={`tq-aui-note tq-aui-note-${step.kind}`}>{summary}</div>;
+  const head = <><span className="tq-aui-tool-dot" /><span>{summary}</span>
+    {step.status !== "done" && <em>{t(STATUS_WORD[step.status] || "failed")}</em>}</>;
   const cls = `tq-aui-step tq-aui-step-${step.kind} tq-aui-tool-${step.status === "done" ? "complete" : step.status}`;
   return step.detail
     ? <details className={cls}><summary>{head}</summary><pre>{step.detail}</pre></details>
     : <div className={cls}><div className="tq-aui-step-line">{head}</div></div>;
 };
-export const AgentSteps = ({ data }) => (
-  <div className="tq-aui-steps">{(data?.steps || []).map((st) => <StepRow key={st.id} step={st} />)}</div>
-);
+export const AgentSteps = ({ data }) => {
+  const locale = useLocale();
+  const steps = React.useMemo(() => Array.isArray(data?.trace) ? stepsOf(data.trace, data.opts) : data?.steps || [],
+    [data?.trace, data?.opts, data?.steps, locale]);
+  return <div className="tq-aui-steps">{steps.map((st) => <StepRow key={st.id} step={st} />)}</div>;
+};

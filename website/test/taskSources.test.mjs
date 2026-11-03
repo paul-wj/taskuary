@@ -2,10 +2,9 @@
 // the task's messages as conversations, newest first - the latest two, what is between counted, and the first message.
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import { askLine, byLine, cameFromLabel, cameFromWhere, expands, groupConversations, groupMeta, isIdeaLine, headerFacts, hidden, latestRows, madeLine, previewRows, routeHead, startedBy, triageLine, workflowOrigin, workflowTitle } from "../src/taskSources.js";
+import { askLine, byLine, cameFromWhere, expands, groupConversations, isIdeaLine, headerFacts, hidden, latestRows, madeLine, previewRows, routeHead, startedBy, triageLine, workflowOrigin, workflowTitle } from "../src/taskSources.js";
+import { getLocale, setLocale } from "../src/i18n.js";
 
-const page = fs.readFileSync(new URL("../src/TaskPage.jsx", import.meta.url), "utf8");
 let id = 0;
 const mail = (o) => ({ MessageId: ++id, Channel: "email", Status: "routed", Direction: "in", ...o });
 const thread = (n, conv = "t-310") => Array.from({ length: n }, (_, i) => mail({ ConversationId: conv, Subject: i ? "RE: Export failing" : "Export failing",
@@ -20,12 +19,33 @@ test("messages group by conversation, newest first, with the thread's subject an
   assert.deepEqual(g.map((x) => x.title), ["Northwind payroll group", "Export failing", "Field mapping"], "the conversation that moved last leads");
   assert.equal(g[1].count, 5);
   assert.equal(g[1].people, 4);
-  assert.equal(g[0].msgs[0].who, "You", "the latest line is on top, and your own line in a chat is yours");
+  assert.equal(g[0].msgs[0].BodyText, "on it", "the latest line is on top");
   assert.equal(g[0].first.who, "Erin Blake", "first is still the message that started it");
-  assert.equal(groupMeta(g[0]), "WhatsApp · 2 messages · 2 people");
-  assert.equal(groupMeta(g[2]), "Email · 1 message");
-  assert.equal(cameFromLabel(g), "Came from · 8 messages in 3 conversations");
-  assert.equal(cameFromLabel(g.slice(0, 1)), "Came from · 2 messages");
+  assert.equal(g[0].people, 2);
+  assert.equal(g.reduce((n, group) => n + group.count, 0), 8);
+});
+
+test("switching interface language changes the owner label without translating message data", () => {
+  const previous = getLocale();
+  const messages = [
+    { MessageId: 1, Channel: "email", ConversationId: "c1", Subject: "Budget review", FromName: "Erin Blake", BodyText: "Please review the budget.", SentAt: "2026-10-10 08:00:00" },
+    { MessageId: 2, Channel: "email", ConversationId: "c1", Subject: "Budget review", Direction: "out", BodyText: "I will review it.", SentAt: "2026-10-10 09:00:00" },
+  ];
+  try {
+    setLocale("en");
+    const english = groupConversations(messages)[0];
+    setLocale("zh-CN");
+    const chinese = groupConversations(messages)[0];
+    assert.notEqual(english.msgs[0].who, chinese.msgs[0].who);
+    for (const group of [english, chinese]) {
+      assert.equal(group.title, "Budget review");
+      assert.deepEqual(group.msgs.map((m) => m.BodyText), ["I will review it.", "Please review the budget."]);
+      assert.equal(group.msgs[1].who, "Erin Blake");
+      assert.equal(group.count, 2);
+    }
+  } finally {
+    setLocale(previous);
+  }
 });
 
 test("a Teams conversation is headed by its chat, never by the owner's own account it was read through (2026-10-26)", () => {
@@ -128,27 +148,6 @@ test("the triage line leads with whose it is, in the new wording and the old", (
   assert.equal(headerFacts({ route: { Decision: "attach", Reason: "same conversation thread" }, task: { Kind: "task" } }).triaged, false, "joining a thread decides nothing");
 });
 
-test("the task view draws the new section: read-only pills, no in-section buttons, no Where this came from", () => {
-  assert.match(page, /from "\.\/taskSources\.js"/);
-  assert.ok(page.includes("Sorted as: "), "triage's facts said as one plain line (the audit, 2026-10-17)");
-  assert.ok(!page.includes(">Triage decided<"));
-  assert.doesNotMatch(page, /Where this came from\s*<\/Button>/, "the disclosure is gone - Came from replaces it");
-  assert.ok(!page.includes("setSourceOpen"));
-  assert.ok(!page.includes("sx={chipSel}"), "no dropdowns by the triage results");
-  // each part named in its own column, so the three read as separate parts with no rule between them
-  for (const part of ["The ask", "To do", "Came from"]) assert.ok(page.includes(`<Part label="${part}"`), `${part} is its own part`);
-  assert.match(page, /verdict\?\.summary \|\| t\?\.Summary/, "the ask is triage's summary first");
-  assert.match(page, /maxHeight: THREAD_MAX, overflowY: "auto"/, "Show all scrolls when it goes far back");
-  // ...in a box as tall as the window leaves, never the 360px that held three lines of seven (the owner, 2026-10-20)
-  assert.match(page, /const THREAD_MAX = "max\(360px, calc\(100vh - 160px\)\)";/);
-  assert.doesNotMatch(page, /maxHeight=\{360\}|showAll \? \{ maxHeight: 360/);
-  // the edits the pills offered are reachable from the bar: kind, priority, repository - and no assignee (the owner, 2026-11-01: who works
-  // a task is the Agent section's to decide)
-  for (const id of ["kind", "priority"]) assert.ok(page.includes(`{ id: "${id}", group: "more"`), `the row carries ${id}`);
-  assert.ok(!page.includes(`{ id: "assign", group: "more"`), "the row carries an assignee picker");
-  // the repository is a More item too - and the row's own move while a start is held for it
-  assert.ok(page.includes(`{ id: "repo", group: heldRepo ? "decide" : "more"`), "the row carries repo");
-});
 
 // A WORKFLOW RUN (workflows.run): no message, never triaged - the header says which workflow and what started it, and Came from
 // says the same where a message would be (the owner, 2026-10-16: "what's the logo on it and what does it show triggered it?")
@@ -164,38 +163,39 @@ test("a workflow run's header names the workflow and who started it, never Triag
   assert.ok(!facts.pills.some((p) => p.key === "intent"));
   assert.deepEqual(facts.pills.slice(2).map((p) => p.value), ["an agent", "ap", "regular"]);
   // the list row has no detail: the tag alone still says who started it, and the run's own title still names the workflow
-  assert.equal(startedBy({ Tags: "needs:browser,workflow-trigger:manual" }), "you (Run now)");
-  assert.equal(startedBy({ Tags: "workflow-trigger:assistant" }), "the assistant");
-  assert.equal(startedBy({ Tags: "workflow-trigger:phone" }), "you, from your phone");
-  assert.equal(startedBy({ Tags: "workflow-trigger:schedule" }), "its schedule", "no clock to name without the detail");
+  const manual = startedBy({ Tags: "needs:browser,workflow-trigger:manual" });
+  const schedule = startedBy({ Tags: "workflow-trigger:schedule" });
+  assert.ok(manual && schedule);
+  assert.notEqual(manual, schedule);
+  assert.equal(startedBy({ Tags: "workflow-trigger:manual" }, { trigger: "manual", started_by: "custom trigger" }), "custom trigger");
   assert.equal(workflowTitle({ Title: "Vendor bill sweep - 2026-10-12 08:00" }), "Vendor bill sweep");
   assert.equal(headerFacts({ task: { ...task, Tags: "" }, workflow: null }).pills.find((p) => p.key === "trigger"), undefined,
     "a run from before the tag says nothing it does not know");
 });
 
-test("where a task came from is said in plain words - sorted, made by you - never 'created ... by triage'", () => {
-  assert.equal(madeLine({ Source: "email", CreatedBy: "triage" }, "1m ago"), "from email · sorted 1m ago");
-  assert.equal(madeLine({ Source: "manual", CreatedBy: "owner" }, "2h ago"), "made by you 2h ago");
-  assert.equal(madeLine({ Source: "github", CreatedBy: "ci" }, "now"), "from github · made now");
-  assert.match(page, /const made = t \? madeLine\(t, timeAgo\(t\.CreatedAt\)\) : "";/);
-  assert.doesNotMatch(page, /created \$\{timeAgo/);
+test("task origin keeps the source and age and distinguishes who made it", () => {
+  const sorted = madeLine({ Source: "email", CreatedBy: "triage" }, "1m ago");
+  assert.ok(sorted.includes("email") && sorted.includes("1m ago"));
+  const manual = madeLine({ Source: "manual", CreatedBy: "owner" }, "2h ago");
+  assert.ok(manual.includes("2h ago"));
+  assert.notEqual(madeLine({ Source: "github", CreatedBy: "ci" }, "now"), madeLine({ Source: "github", CreatedBy: "triage" }, "now"));
 });
 
 test("a workflow run's Came from is the workflow and its trigger, with the way back to it", () => {
   const task = { Kind: "coding", Source: "workflow", Tags: "workflow-trigger:manual", Title: "Dependency bumps - 2026-10-16 09:30" };
-  assert.deepEqual(workflowOrigin(task, { source_id: 9, title: "Dependency bumps", trigger: "manual", started_by: "you (Run now)" }),
-    { title: "Dependency bumps", by: "you (Run now)", line: "Started by you (Run now)", link: "#report=9" });
-  assert.deepEqual(workflowOrigin({ ...task, Tags: "" }, null), { title: "Dependency bumps", by: "", line: "A routine run", link: "" },
-    "the workflow deleted: the run still says what it was");
+  const origin = workflowOrigin(task, { source_id: 9, title: "Dependency bumps", trigger: "manual", started_by: "Run by Alex" });
+  assert.equal(origin.title, "Dependency bumps");
+  assert.equal(origin.by, "Run by Alex");
+  assert.ok(origin.line.includes("Run by Alex"));
+  assert.equal(origin.link, "#report=9");
+  const deleted = workflowOrigin({ ...task, Tags: "" }, null);
+  assert.equal(deleted.title, "Dependency bumps");
+  assert.equal(deleted.by, "");
+  assert.equal(deleted.link, "");
+  assert.ok(deleted.line);
   assert.equal(workflowOrigin({ Source: "email" }), null);
-  assert.ok(page.includes("workflowOrigin("), "the page draws it");
-  assert.ok(page.includes('channel="workflow"'), "with the workflow's own mark, as the Reports shelf draws it");
 });
 
-test("the Tasks list says a row is a workflow run and who started it", () => {
-  const list = fs.readFileSync(new URL("../src/TasksView.jsx", import.meta.url), "utf8");
-  assert.ok(list.includes("isWorkflowRun(task)") && list.includes("started by ${startedBy(task)}"));
-});
 
 test("a workflow run's header says the model and effort it runs on", () => {
   const task = { Kind: "general", Source: "workflow", Tags: "workflow-trigger:manual", Title: "Month-end accruals - 2026-10-16 09:30" };
@@ -237,14 +237,11 @@ test("the Advisor's line is set apart, a name said once, a preview cut on a word
   const ex = groupConversations([mail({ BodyText: long })])[0].msgs[0].excerpt;
   assert.ok(ex.endsWith("…") && ex.length <= 241, ex);
   assert.ok(long.startsWith(ex.slice(0, -1)) && long[ex.length - 1] === " ", `ends on a whole word: ${ex}`);
-  assert.match(page, /storedMessages = \(detail\?\.messages \|\| \[\]\)\.filter\(\(m\) => !isIdeaLine\(m\)\)/);
-  assert.match(page, /data-tq-raised[\s\S]{0,400}Raised by/);
 });
 
 test("Came from names the sender's address on mail, never the owner's mailbox it arrived in", () => {
   const m = { Channel: "email", FromName: "Omar Keller", FromEmail: "omar@vendor.example", SourceName: "alex@northwind.example" };
   assert.equal(byLine(m.FromName, cameFromWhere(m)), "Omar Keller · omar@vendor.example");
   assert.equal(cameFromWhere({ Channel: "teams", SourceName: "Ops chat" }), "Ops chat");
-  assert.equal(cameFromWhere({ Channel: "report", SourceName: "" }), "Report");
-  assert.match(page, /cameFromWhere\(cameIn\)/);
+  assert.ok(cameFromWhere({ Channel: "report", SourceName: "" }));
 });

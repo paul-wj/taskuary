@@ -13,6 +13,8 @@ import { ACCENT, BORDER, DIM, FAINT, INK } from "./theme.jsx";
 import { ChannelIcon } from "./ui.jsx";
 import { label } from "./buttons.js";
 import { deliverables } from "./taskOutputs.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 // what a task can send on (slots.KINDS): email, and the chats outbound.send_out carries
 export const TASK_CHANNELS = ["email", "teams", "whatsapp", "telegram", "imessage", "discord"];
@@ -37,6 +39,7 @@ const Label = ({ children }) => <Typography sx={{ fontSize: 11.5, fontWeight: 60
 const field = { "& .MuiInputBase-root": { fontSize: 13, bgcolor: "#fcfaf7" } };
 
 export default function EmailSomeone({ open, task, detail, onClose, onDrafted }) {
+  useLocale();
   const [targets, setTargets] = useState([]), [boxes, setBoxes] = useState([]);
   const [channel, setChannel] = useState("email"), [from, setFrom] = useState("");
   const [to, setTo] = useState([]), [chat, setChat] = useState(null), [cc, setCc] = useState([]);
@@ -66,16 +69,15 @@ export default function EmailSomeone({ open, task, detail, onClose, onDrafted })
         ? { channel, to: to[0], cc, about, mailbox: from || null, attach: files.filter((f) => picked.has(f.key)).map(({ kind, id, path }) => (kind === "output" ? { kind, path } : { kind, id })) }
         : { channel, to: chat.to, name: chat.name || "", about });
       onDrafted?.();
-    } catch (e) { setErr(e?.response?.data?.detail || "Could not draft it"); }
+    } catch (e) { setErr(e?.response?.data?.detail ? { text: e.response.data.detail } : { key: "Could not draft it" }); }
     finally { setBusy(false); }
   };
   return (
     <Dialog open={open} onClose={() => !busy && onClose?.()} fullWidth maxWidth="sm" PaperProps={{ sx: { borderRadius: 3 } }}>
-      <DialogTitle>{label("share")} · {detail?.ref || ""}</DialogTitle>
+      <DialogTitle>{t(label("share"))} · {detail?.ref || ""}</DialogTitle>
       <DialogContent sx={{ pt: "8px !important", display: "flex", flexDirection: "column", gap: 1.6 }}>
         <Typography variant="body2" sx={{ color: DIM }}>
-          The AI writes a short summary of what this task's work delivered, for the person you pick. It waits in Close out for you
-          to edit and send - nothing is sent now. Sending it leaves the task open until you Mark done.
+          {t("The AI writes a short summary of what this task's work delivered, for the person you pick. It waits in Close out for you to edit and send - nothing is sent now. Sending it leaves the task open until you Mark done.")}
         </Typography>
         {targets.length > 1 && (
           <Box sx={{ display: "flex", gap: 0.75, flexWrap: "wrap" }}>
@@ -92,7 +94,7 @@ export default function EmailSomeone({ open, task, detail, onClose, onDrafted })
         )}
         {email && boxes.length > 1 && (
           <Box>
-            <Label>From</Label>
+            <Label>{t("From")}</Label>
             <Select size="small" fullWidth value={from} onChange={(e) => setFrom(e.target.value)} sx={{ fontSize: 13, bgcolor: "#fcfaf7" }}>
               {boxes.map((b) => <MenuItem key={b.address} value={b.address} sx={{ fontSize: 13 }}>{b.address}
                 <Typography component="span" sx={{ ml: 1, fontSize: 11, color: FAINT }}>{b.card}</Typography></MenuItem>)}
@@ -100,40 +102,40 @@ export default function EmailSomeone({ open, task, detail, onClose, onDrafted })
           </Box>
         )}
         <Box>
-          <Label>To</Label>
+          <Label>{t("To")}</Label>
           {email
             // one person: each message the task owes goes to one recipient; copy anyone else in
-            ? <EmailRecipients value={to} onChange={(v) => setTo(v.slice(-1))} options={people} placeholder="Search contacts or type an email address" />
+            ? <EmailRecipients value={to} onChange={(v) => setTo(v.slice(-1))} options={people} placeholder={t("Search contacts or type an email address")} />
             : <ChatRecipient key={channel} channel={channel} options={people} value={chat} onChange={setChat} />}
         </Box>
         {email && (
           <Box>
-            <Label>CC</Label>
-            <EmailRecipients value={cc} onChange={setCc} options={people} placeholder="Optional" />
+            <Label>{t("CC")}</Label>
+            <EmailRecipients value={cc} onChange={setCc} options={people} placeholder={t("Optional")} />
           </Box>
         )}
         <Box>
-          <Label>Anything to add?</Label>
+          <Label>{t("Anything to add?")}</Label>
           <TextField fullWidth multiline minRows={3} value={about} onChange={(e) => setAbout(e.target.value)}
-            placeholder="Optional - e.g. the template is attached; they can start using it Monday" sx={field} />
-          <Typography variant="caption" sx={{ color: FAINT }}>Left empty, it is just the results.</Typography>
+            placeholder={t("Optional - e.g. the template is attached; they can start using it Monday")} sx={field} />
+          <Typography variant="caption" sx={{ color: FAINT }}>{t("Left empty, it is just the results.")}</Typography>
         </Box>
         {email && (
           <Box>
-            <Label>Attach</Label>
+            <Label>{t("Attach")}</Label>
             {files.length ? files.map((f) => (
               <FormControlLabel key={f.key} sx={{ display: "flex", m: 0, "& .MuiTypography-root": { fontSize: 12.5 } }}
                 control={<Checkbox size="small" checked={picked.has(f.key)} onChange={() => flip(f.key)} />} label={f.name} />
-            )) : <Typography variant="caption" sx={{ color: FAINT }}>No files on this task yet.</Typography>}
-            <Typography variant="caption" sx={{ color: FAINT, display: "block" }}>Anything else: {label("attach")} on the draft.</Typography>
+            )) : <Typography variant="caption" sx={{ color: FAINT }}>{t("No files on this task yet.")}</Typography>}
+            <Typography variant="caption" sx={{ color: FAINT, display: "block" }}>{t("Anything else: {attach} on the draft.", { attach: t(label("attach")) })}</Typography>
           </Box>
         )}
-        {err && <Typography variant="body2" sx={{ color: "#a33b3b" }}>{err}</Typography>}
+        {err && <Typography variant="body2" sx={{ color: "#a33b3b" }}>{err.text || t(err.key)}</Typography>}
       </DialogContent>
       <DialogActions>
-        <Button onClick={onClose} disabled={busy}>Cancel</Button>
+        <Button onClick={onClose} disabled={busy}>{t("Cancel")}</Button>
         <Button variant="contained" disableElevation onClick={go} disabled={busy || !ready}>
-          {busy ? <CircularProgress size={15} /> : label("redraft", "none")}
+          {busy ? <CircularProgress size={15} /> : t(label("redraft", "none"))}
         </Button>
       </DialogActions>
     </Dialog>

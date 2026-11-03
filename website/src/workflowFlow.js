@@ -1,7 +1,7 @@
 // A workflow as steps (taskuary/flow.py): the list the editor edits, and the words a run is read back in. Pure, so the editor's
 // rules - ids that never move, an agent only last, a token only for a step above - are tested without a browser.
 import { toShape } from "./sourceShape.js";
-import { plural } from "./timeWords.js";
+import { t } from "./i18n.js";
 
 export const KINDS = ["source", "ai", "task", "draft", "agent"];
 export const KIND_WORDS = { source: "Read/write a system", ai: "AI judgment", task: "Open a task", draft: "Draft a message", agent: "Hand to an agent" };
@@ -84,14 +84,14 @@ export const tokenInQuery = (s) => s?.kind === "source"
   && [s.query, s.filter].some((v) => [...String(v || "").matchAll(/\{\{\s*([^{}.\s]+)/g)].some((m) => !["inputs", "run"].includes(m[1])));
 
 // what the owner still has to fill in before Save means anything (the server's flow.validate has the last word)
-export const missingIn = (s) => s.kind === "source" ? (!s.type ? "a system" : "")
-  : s.kind === "ai" ? (!String(s.prompt || "").trim() ? "a prompt" : s.output === "fields" && !(s.fields || []).length ? "the fields it fills" : "")
-    : s.kind === "task" ? (!String(s.title || "").trim() ? "a title" : "")
-      : s.kind === "draft" ? (!String(s.to || "").trim() ? "who it goes to" : !String(s.about || "").trim() ? "what it is about" : "")
-        : s.kind === "agent" ? (!String(s.prompt || s.skill || "").trim() ? "what the agent does" : "") : "";
+export const missingIn = (s) => s.kind === "source" ? (!s.type ? t("a system") : "")
+  : s.kind === "ai" ? (!String(s.prompt || "").trim() ? t("a prompt") : s.output === "fields" && !(s.fields || []).length ? t("the fields it fills") : "")
+    : s.kind === "task" ? (!String(s.title || "").trim() ? t("a title") : "")
+      : s.kind === "draft" ? (!String(s.to || "").trim() ? t("who it goes to") : !String(s.about || "").trim() ? t("what it is about") : "")
+        : s.kind === "agent" ? (!String(s.prompt || s.skill || "").trim() ? t("what the agent does") : "") : "";
 export const firstMissing = (flow) => {
   const i = (flow || []).findIndex((s) => missingIn(s));
-  return i < 0 ? "" : `step ${i + 1} needs ${missingIn(flow[i])}`;
+  return i < 0 ? "" : t("step {number} needs {missing}", { number: i + 1, missing: missingIn(flow[i]) });
 };
 
 // the list as it is saved: a source step's text fields in the executor's shapes (sourceShape.toShape), empties dropped
@@ -105,14 +105,15 @@ export const toSaved = (flow) => (flow || []).map((s) => {
 // ── a run, read back ───────────────────────────────────────────────────────────────────────────────────────────────────
 export const STATUS = { repaired: "failed, then repaired", ok: "done", failed: "failed", skipped: "skipped", waiting: "waiting for your yes", dry: "test only" };
 export const secs = (ms) => `${((ms || 0) / 1000).toFixed(1)}s`;
-export const recHead = (r) => !r ? "" : r.status === "failed" ? `failed: ${r.error || ""}`
-  : r.status === "waiting" ? "waiting for your yes" : r.head || STATUS[r.status] || "";
+export const recHead = (r) => !r ? "" : r.status === "failed" ? t("failed: {error}", { error: r.error || "" })
+  : r.status === "waiting" ? t("waiting for your yes") : r.head || (STATUS[r.status] ? t(STATUS[r.status]) : "");
 export const tally = (recs) => {
   const ran = (recs || []).filter((r) => !["skipped", "repaired"].includes(r.status));
   const ai = ran.filter((r) => USES_AI.has(r.kind)).length;
   const ms = (recs || []).reduce((n, r) => n + (r.ms || 0), 0), fixed = (recs || []).some((r) => r.status === "repaired");
   // a repair is a model call too (flow.repair): "no AI used" over a run that repaired itself would be untrue
-  return `Ran ${plural(ran.length, "step")} in ${secs(ms)}, ${ai ? `${ai} with AI` : fixed ? "AI only for the repair" : "no AI used"}`;
+  return t(ran.length === 1 ? "Ran {count} step in {time}, {ai}" : "Ran {count} steps in {time}, {ai}", {
+    count: ran.length, time: secs(ms), ai: ai ? t("{count} with AI", { count: ai }) : t(fixed ? "AI only for the repair" : "no AI used") });
 };
 // `short`: where the failed step's own row already says the error, the line above it does not say it again
 export const runWords = (recs, short = false) => {
@@ -120,14 +121,16 @@ export const runWords = (recs, short = false) => {
   if (i < 0) return tally(recs);
   // the step's own number: a repaired record is the same step tried again, not a step of its own (Step 3 failed on a one-step run)
   const n = recs.slice(0, i).filter((r) => r.status !== "repaired").length + 1;
-  return recs[i].status === "failed" ? `Step ${n} failed${short ? "" : `: ${recs[i].error || ""}`}` : `Waiting for your yes on step ${n}`;
+  return recs[i].status === "failed" ? short ? t("Step {number} failed", { number: n }) : t("Step {number} failed: {error}", { number: n, error: recs[i].error || "" }) : t("Waiting for your yes on step {number}", { number: n });
 };
 // what the editor's last tests came to - a test never writes, so it never says "ran"
 export const testWords = (recs) => {
   const bad = (recs || []).findIndex((r) => r.status === "failed");
-  if (bad >= 0) return `Step ${bad + 1} failed - its output is on the step.`;
+  if (bad >= 0) return t("Step {number} failed - its output is on the step.", { number: bad + 1 });
   const dry = (recs || []).filter((r) => r.status === "dry").length;
-  return `${plural(recs.length, "step")} ${recs.length === 1 ? "has" : "have"} output below${dry ? `; ${dry} would write, so ${dry === 1 ? "it" : "they"} only said what ${dry === 1 ? "it" : "they"} would do` : ""}.`;
+  const prefix = recs.length === 1 ? "{count} step has output below" : "{count} steps have output below";
+  const suffix = dry ? `; {dry} would write, so ${dry === 1 ? "it only said what it would do" : "they only said what they would do"}` : "";
+  return t(`${prefix}${suffix}.`, { count: recs.length, dry });
 };
 // the last record per step id, for "Test this step" to start from (the last run's, then each test as it comes back)
 export const outputsOf = (recs) => Object.fromEntries((recs || []).filter((r) => r?.id).map((r) => [r.id, r]));

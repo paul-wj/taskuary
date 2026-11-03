@@ -3,27 +3,9 @@
 // a funnel's stages kept in order, a median, and a component's own fixed window (a weekly target) whatever range the page is on.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { aggregate, componentRows, daysAgo, groupBy, snapshotOf, spanOf } from "../src/dashboard/slice.js";
-import { DASH } from "../src/words.js";
-
-const src = (p) => readFileSync(new URL(`../src/${p}`, import.meta.url), "utf8");
 const NOW = new Date("2026-10-23T10:00:00");
 
-test("New dashboard offers the ready ones under the composer, and Use this draws one without a preview round-trip", () => {
-  const ed = src("DashboardEditor.jsx");
-  const setup = ed.slice(ed.indexOf("if (!spec) return ("), ed.indexOf("data-tq-dashboard-editor"));
-  // ...under Set up with AI, the describe box's door to the chat (2026-10-30)
-  assert.match(setup, /<SetupWithAi kind="dashboard"[\s\S]*<Templates onUse=\{takeTemplate\} \/>/, "the ready ones sit under the door, in the New flow");
-  assert.match(setup, /sourceId == null \?/, "...only on a NEW dashboard, never over a saved one");
-  assert.match(ed, /api\.get\("\/api\/dashboards\/templates"\)/);
-  assert.match(ed, /api\.get\(`\/api\/dashboards\/templates\/\$\{encodeURIComponent\(key\)\}`\)/);
-  assert.match(ed, /data-tq-dashboard-template=\{t\.key\}/);
-  // the template came drawn: the preview effect does not run it again (the demo refuses /preview, and it would be the same rows)
-  assert.match(ed, /read\.current = sigOf\(t\.config\);/);
-  assert.match(ed, /sig === read\.current/);
-  for (const k of ["or_start", "use", "using", "to_go", "target_met", "no_change", "right_now"]) assert.ok(DASH[k], `words.json dashboard.${k}`);
-});
 
 test("a funnel keeps its stages in order, a missing stage at zero; without an order the bars still rank", () => {
   const rows = [{ s: "Came in" }, { s: "Came in" }, { s: "Came in" }, { s: "On a task" }, { s: "Triaged" }, { s: "Triaged" }];

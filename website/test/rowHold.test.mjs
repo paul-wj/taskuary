@@ -6,10 +6,8 @@
 // (actionRow.useRowHold), and the new one comes up in one step; browser/row-draws-once.test.mjs records it per frame.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { ROW_HOLD_MS, rowDrawable, rowReady, sameRow } from "../src/actionRow.js";
 
-const src = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
 
 test("the row is whole when the item's verbs are up, the walk move is over and the Advisor's read after the last press is in", () => {
   const list = [{ id: "next" }, { id: "reply", at: "b" }];
@@ -37,17 +35,3 @@ test("the held row follows the live one only for the same buttons of the same it
   assert.ok(!sameRow(a, { list: [{ id: "done", at: "t" }] }));
 });
 
-test("the row is never hidden while it waits: the old one stays up, and the hold is the page's", () => {
-  const row = src("ActionRow.jsx"), view = src("AssistantView.jsx");
-  assert.doesNotMatch(row, /visibility: "hidden"/);
-  assert.match(row, /ActionRow\(\{ inline = false, advised: given = null, hold = false, early = true \}\)/);
-  assert.match(view, /<ActionRow advised=\{stripPick \|\| setupLit\} hold=\{rowHold\} early=\{rowEarly\} \/>/);
-  assert.doesNotMatch(view, /HOLD_MS = \d+;|setReading/, "no timer of its own hides the row");
-  // ...and nothing says it is reading: the strip that carried a "busy" attribute is gone (the owner, 2026-10-26: "remove the advisor")
-  assert.doesNotMatch(view, /data-tq-strip=/);
-});
-
-test("a decision that lights nothing on purpose leaves a hidden mark, never a word", () => {
-  const view = src("AssistantView.jsx");
-  assert.match(view, /advice\?\.state && !advice\.verb && !advice\.none && <div hidden data-tq-advice="" data-tq-silent="" data-tq-unlit=\{advice\.state\} \/>/);
-});

@@ -2,6 +2,8 @@
 // content underneath. The Assistant (the Timeline's rail + Taskuary's chat) in the middle,
 // Board, Tasks and Reports to its left, Hub, Connections and Settings to its right.
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { getLocale, t, translateDescriptor } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 import { Badge, Box, Button, CircularProgress, IconButton, ListItemIcon, ListItemText, Menu, MenuItem, Popover, Select, Snackbar, Tooltip, Typography,
   useMediaQuery } from "@mui/material";
 import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
@@ -41,7 +43,6 @@ import { SEARCH_PICKED, SearchBar, openSearch } from "./SearchEverything.jsx";
 import BugReportDialog from "./BugReportDialog.jsx";
 import { label as btnLabel } from "./buttons.js";
 import { REPORT_EVENT, bellError, openBugReport } from "./bugReportOpen.js";
-import { plural } from "./timeWords.js";
 const AssistantGame = React.lazy(() => import("./AssistantGame.jsx"));
 
 // The strip reads left to right as the day does: what arrived (Timeline), what is being worked
@@ -77,8 +78,10 @@ const SUPPORT_URL ="https://github.com/ldbumble/taskuary/issues/new/choose";
 // report that failed - in the last few hours (problems.STALE_HOURS) - each with the way to where it is fixed. The setup chip beside it says
 // what is not yet set up; this says what was working and is not. Grey and quiet when nothing is.
 // "3h ago" alone hides a day boundary: the clock time says which morning
-const fmtWhen = (s) => fmtStamp(asUtc(s), [], { weekday: "short", hour: "numeric", minute: "2-digit" });
+const fmtWhen = (s) => fmtStamp(asUtc(s), getLocale() === "zh-CN" ? "zh-CN" : [], { weekday: "short", hour: "numeric", minute: "2-digit" });
+const raiseText = (r) => r.finished ? t("{agent} finished", { agent: r.agent }) : handRaiseWhat(r);
 function Bell({ onGo, onAsk }) {
+  useLocale();
   const [items, setItems] = useState([]);
   const [el, setEl] = useState(null);
   const [busy, setBusy] = useState(null);
@@ -104,8 +107,8 @@ function Bell({ onGo, onAsk }) {
   };
   return (
     <>
-      <Tooltip title={n ? `${plural(n, "thing")} failing — click to see` : news.length ? news[news.length - 1].title : "Nothing is failing"}>
-        <IconButton size="small" onClick={(e) => { setEl(e.currentTarget); load(); }} sx={{ position: "relative" }}>
+      <Tooltip title={n ? t(n === 1 ? "{count} thing failing — click to see" : "{count} things failing — click to see", { count: n }) : news.length ? news[news.length - 1].title : t("Nothing is failing")}>
+        <IconButton size="small" aria-label={t("Notifications")} onClick={(e) => { setEl(e.currentTarget); load(); }} sx={{ position: "relative" }}>
           {n ? <NotificationsActiveIcon sx={{ fontSize: 18, color: ALERT }} /> : <NotificationsNoneIcon sx={{ fontSize: 18, color: DIM }} />}
           {!n && news.length > 0 && (
             <Box component="span" sx={{ position: "absolute", top: 3, right: 3, width: 7, height: 7, borderRadius: 99, bgcolor: "#47654a" }} />
@@ -120,41 +123,41 @@ function Bell({ onGo, onAsk }) {
       </Tooltip>
       {/* ...open, a view of its own to the Assistant (pageView.js: a dialog over the page is the page), each button named by its problem;
           shut, "clear the error on the bell" is its tool (problems.dismiss) */}
-      <Popover open={!!el} anchorEl={el} onClose={() => setEl(null)} data-tq-view="bell" data-tq-view-label="The bell - what is failing right now"
+      <Popover open={!!el} anchorEl={el} onClose={() => setEl(null)} data-tq-view="bell" data-tq-view-label={t("The bell - what is failing right now")}
         anchorOrigin={{ vertical: "bottom", horizontal: "right" }} transformOrigin={{ vertical: "top", horizontal: "right" }}
         slotProps={{ paper: { sx: { width: 440, p: 1.5, mt: 0.5 } } }}>
-        <Typography sx={{ fontWeight: 600, fontSize: 13, color: INK, mb: n ? 0.25 : 0.5 }}>{n ? "Failing right now" : "Nothing is failing"}</Typography>
-        {!n && <Typography variant="caption" sx={{ color: DIM, display: "block" }}>Connections, the triage brain and reports are all working. Anything you dismissed comes back if it fails again after working.</Typography>}
+        <Typography sx={{ fontWeight: 600, fontSize: 13, color: INK, mb: n ? 0.25 : 0.5 }}>{n ? t("Failing right now") : t("Nothing is failing")}</Typography>
+        {!n && <Typography variant="caption" sx={{ color: DIM, display: "block" }}>{t("Connections, the triage brain and reports are all working. Anything you dismissed comes back if it fails again after working.")}</Typography>}
         {items.map((p) => (
           <Box key={p.key} sx={{ py: 0.85, borderTop: `1px solid ${BORDER}`, display: "flex", gap: 1.25, alignItems: "flex-start" }}>
             <Box sx={{ flex: 1, minWidth: 0 }}>
               <Typography variant="body2" sx={{ fontWeight: 600, color: INK, fontSize: 12.5 }}>{p.title}</Typography>
               <Typography variant="caption" sx={{ color: DIM, display: "block", lineHeight: 1.45, wordBreak: "break-word" }}>{p.detail}</Typography>
               {/* the two said in the assistant's voice (problems.collect `kind`) are a state, not a failure: "since" */}
-              {p.since && <Typography variant="caption" sx={{ color: FAINT }} title={p.since}>{p.kind ? "since" : "failed"} {timeAgo(p.since)} · {fmtWhen(p.since)}</Typography>}
+              {p.since && <Typography variant="caption" sx={{ color: FAINT }} title={p.since}>{p.kind ? t("since") : t("failed")} {timeAgo(p.since)} · {fmtWhen(p.since)}</Typography>}
             </Box>
             <Box sx={{ display: "flex", flexDirection: "column", gap: 0.4, alignItems: "stretch", flexShrink: 0 }}>
-              <Button size="small" variant="outlined" sx={{ fontSize: 11, whiteSpace: "nowrap" }} aria-label={`${p.fix || "Fix"}: ${p.title}`}
-                onClick={() => { setEl(null); onGo(p); }}>{p.fix || "Fix"} →</Button>
+              <Button size="small" variant="outlined" sx={{ fontSize: 11, whiteSpace: "nowrap" }} aria-label={`${p.fix || t("Fix")}: ${p.title}`}
+                onClick={() => { setEl(null); onGo(p); }}>{p.fix || t("Fix")} →</Button>
               {/* "Restart bridge starts it" is said right here, so the button is here too (problems.collect `restart`) */}
               {p.restart && p.connector && <Button size="small" variant="outlined" data-tq-restart-bridge="" disabled={busy === `restart:${p.key}`}
                 sx={{ fontSize: 11, whiteSpace: "nowrap" }} onClick={() => restart(p)}>
-                {busy === `restart:${p.key}` ? "Restarting…" : "Restart bridge"}</Button>}
+                {busy === `restart:${p.key}` ? t("Restarting…") : t("Restart bridge")}</Button>}
               {/* the chat looks into it: reads the app's own health, does the simple repair or says why (troubleshoot.py) */}
-              <Button size="small" variant="outlined" sx={{ fontSize: 11, whiteSpace: "nowrap" }} aria-label={`Ask the assistant: ${p.title}`}
-                onClick={() => { setEl(null); onAsk(p); }}>Ask the assistant</Button>
+              <Button size="small" variant="outlined" sx={{ fontSize: 11, whiteSpace: "nowrap" }} aria-label={t("Ask the assistant: {title}", { title: p.title })}
+                onClick={() => { setEl(null); onAsk(p); }}>{t("Ask the assistant")}</Button>
               {/* Reading it, not fixing it. It holds until this failure ends, and comes back if it fails again after
                   working (problems.signature), so this quiets something you have decided to live with. */}
-              <Button size="small" disabled={busy === p.key} sx={{ fontSize: 10.5, color: FAINT, textTransform: "none" }} aria-label={`Dismiss: ${p.title}`}
-                title="I have read this. It returns if it fails again after working."
-                onClick={() => put(p)}>{busy === p.key ? "…" : "Dismiss"}</Button>
+              <Button size="small" disabled={busy === p.key} sx={{ fontSize: 10.5, color: FAINT, textTransform: "none" }} aria-label={t("Dismiss: {title}", { title: p.title })}
+                title={t("I have read this. It returns if it fails again after working.")}
+                onClick={() => put(p)}>{busy === p.key ? "…" : t("Dismiss notification")}</Button>
               <Button size="small" sx={{ fontSize: 10.5, color: DIM, textTransform: "none", p: 0, minWidth: 0 }}
-                onClick={() => { setEl(null); openBugReport(bellError(p)); }}>{btnLabel("report_bug")}</Button>
+                onClick={() => { setEl(null); openBugReport(bellError(p)); }}>{t(btnLabel("report_bug"))}</Button>
             </Box>
           </Box>
         ))}
         {news.length > 0 && (
-          <Typography sx={{ fontWeight: 600, fontSize: 12, color: DIM, mt: n ? 1 : 0, mb: 0.25 }}>Back to normal</Typography>
+          <Typography sx={{ fontWeight: 600, fontSize: 12, color: DIM, mt: n ? 1 : 0, mb: 0.25 }}>{t("Back to normal")}</Typography>
         )}
         {news.map((p) => (
           <Box key={p.key} sx={{ py: 0.85, borderTop: `1px solid ${BORDER}`, display: "flex", gap: 1.25, alignItems: "flex-start" }}>
@@ -164,10 +167,10 @@ function Bell({ onGo, onAsk }) {
               {p.since && <Typography variant="caption" sx={{ color: FAINT }} title={p.since}>{timeAgo(p.since)}</Typography>}
             </Box>
             <Box sx={{ display: "flex", flexDirection: "column", gap: 0.4, alignItems: "stretch", flexShrink: 0 }}>
-              <Button size="small" variant="outlined" sx={{ fontSize: 11, whiteSpace: "nowrap" }} aria-label={`${p.fix || "Show me"}: ${p.title}`}
-                onClick={() => { setEl(null); onGo(p); }}>{p.fix || "Show me"} →</Button>
-              <Button size="small" disabled={busy === p.key} sx={{ fontSize: 10.5, color: FAINT, textTransform: "none" }} aria-label={`Got it: ${p.title}`}
-                onClick={() => put(p)}>{busy === p.key ? "…" : "Got it"}</Button>
+              <Button size="small" variant="outlined" sx={{ fontSize: 11, whiteSpace: "nowrap" }} aria-label={`${p.fix || t("Show me")}: ${p.title}`}
+                onClick={() => { setEl(null); onGo(p); }}>{p.fix || t("Show me")} →</Button>
+              <Button size="small" disabled={busy === p.key} sx={{ fontSize: 10.5, color: FAINT, textTransform: "none" }} aria-label={t("Got it: {title}", { title: p.title })}
+                onClick={() => put(p)}>{busy === p.key ? "…" : t("Got it")}</Button>
             </Box>
           </Box>
         ))}
@@ -194,19 +197,21 @@ function useDemo() {
    underneath the tabs. What it has to do is answer "is any of this real?" at a glance; the rest
    of the sentence is what a tooltip is for. */
 function DemoBadge({ demo }) {
+  useLocale();
   if (!demo) return null;
   return (
-    <Tooltip title={`Everything here is invented${demo.owner ? ` - you are ${demo.owner}, who does not exist` : ""}: the people, the mail, the agents. Nothing sends, nothing connects, and no real system is reachable from this page.`}>
+    <Tooltip title={demo.owner ? t("Everything here is invented - you are {owner}, who does not exist: the people, the mail, the agents. Nothing sends, nothing connects, and no real system is reachable from this page.", { owner: demo.owner }) : t("Everything here is invented: the people, the mail, the agents. Nothing sends, nothing connects, and no real system is reachable from this page.")}>
       <Box sx={{ display: { xs: "none", sm: "flex" }, alignItems: "center", gap: 0.5, px: 0.9, py: 0.3, borderRadius: 99,
         flexShrink: 0, border: "1px solid #d8cfbe", bgcolor: "#f1ead9" }}>
         <Box sx={{ width: 7, height: 7, borderRadius: "50%", bgcolor: "#8a7a5c" }} />
-        <Typography variant="caption" noWrap sx={{ fontWeight: 600, color: "#6b5f45" }}>demo data</Typography>
+        <Typography variant="caption" noWrap sx={{ fontWeight: 600, color: "#6b5f45" }}>{t("demo data")}</Typography>
       </Box>
     </Tooltip>
   );
 }
 
 function StaleBuild() {
+  useLocale();
   const [stale, setStale] = useState("");
   useEffect(() => {
     // the static demo IS a recording: its /api/build is whatever the instance it was dumped
@@ -225,7 +230,7 @@ function StaleBuild() {
       api.get("/api/build").then(({ data }) => {
         if (!mine) mine = data?.asset || "";
         const s = staleWhat(mine, data);
-        setStale(s);
+        setStale(s ? { restart: /restart/.test(s), version: data.disk_version } : null);
         if (act && buildMove(mine, data, { busy: isBusy(), reloaded: reloadedFor() }) === "reload" && markReloaded(data.asset)) window.location.reload();
       }).catch(() => {});
     };
@@ -237,26 +242,27 @@ function StaleBuild() {
     return () => { clearInterval(t); window.removeEventListener("focus", onFocus); off(); };
   }, []);
   if (!stale) return null;
-  const restart = /restart/.test(stale);
+  const restart = stale.restart;
   return (
-    <Tooltip title={restart ? "pyproject.toml carries a newer version than this server started with - the header, the API and the CLI all report the old one until Taskuary is restarted. Nothing is lost by restarting."
-      : "Taskuary has been updated on disk since this page was opened. Nothing is lost by reloading."}>
+    <Tooltip title={restart ? t("pyproject.toml carries a newer version than this server started with - the header, the API and the CLI all report the old one until Taskuary is restarted. Nothing is lost by restarting.")
+      : t("Taskuary has been updated on disk since this page was opened. Nothing is lost by reloading.")}>
       <Box onClick={() => !restart && window.location.reload()}
         sx={{ display: "flex", alignItems: "center", gap: 0.6, cursor: restart ? "default" : "pointer", px: 1, py: 0.3,
           borderRadius: 99, border: "1px solid #d8cfbe", bgcolor: "#f1ead9" }}>
         <Box sx={{ width: 7, height: 7, borderRadius: "50%", bgcolor: "#6f8a6e" }} />
-        <Typography variant="caption" sx={{ fontWeight: 600, color: "#55697a" }}>{stale}</Typography>
+        <Typography variant="caption" sx={{ fontWeight: 600, color: "#55697a" }}>{restart ? t("v{version} on disk — restart Taskuary", { version: stale.version }) : t("A new version is running – Reload")}</Typography>
       </Box>
     </Tooltip>
   );
 }
 
 function ServerVersion() {
+  useLocale();
   const [v, setV] = useState(null);
   useEffect(() => { api.get("/api/version").then(({ data }) => setV(data)).catch(() => {}); }, []);
   if (!v) return null;
   return (
-    <Tooltip title={`server started ${v.started} — if this version looks old, restart taskuary`}>
+    <Tooltip title={t("server started {started} — if this version looks old, restart taskuary", { started: v.started })}>
       <Typography variant="caption" sx={{ color: "#a9a294", fontFamily: "Consolas, monospace", fontSize: 10.5,
         display: { xs: "none", md: "block" } }}>
         v{v.version}
@@ -272,24 +278,25 @@ const SWITCH_VIEWS = [
   { k: "game", label: "Game", icon: () => <SportsEsportsIcon sx={{ fontSize: 19 }} />,
     title: "The same items as an office you walk around - people in the lobby, fyi's in the coffee room" },
 ];
-export const ViewSwitch = ({ view, onView }) => (
-  <Box role="tablist" aria-label="View" data-tq-view-switch={view}
+export const ViewSwitch = ({ view, onView }) => {
+  useLocale();
+  return <Box role="tablist" aria-label={t("View")} data-tq-view-switch={view}
     sx={{ display: "flex", gap: 0.4, p: 0.4, ml: { xs: 0.25, md: 1 }, borderRadius: 99, bgcolor: "#efe9df", border: "1px solid #ddd5c8", flexShrink: 0 }}>
     {SWITCH_VIEWS.map((v) => {
       const on = view === v.k;
       return (
-        <Box key={v.k} component="button" type="button" role="tab" aria-selected={on} data-tq-view={v.k} title={v.title}
+        <Box key={v.k} component="button" type="button" role="tab" aria-selected={on} data-tq-view={v.k} title={t(v.title)}
           // ...and Chat during setup is setup, as it was left: a page opened over it goes (W2; AssistantView acts on it only in setup)
           onClick={() => { onView(v.k); if (v.k === "chat") window.dispatchEvent(new Event("tq-setup-back")); }}
           sx={{ display: "flex", alignItems: "center", gap: 0.8, height: 34, px: { xs: 1.1, md: 1.8 }, borderRadius: 99, border: 0, cursor: "pointer",
             fontFamily: "inherit", fontSize: 13.5, fontWeight: 600, whiteSpace: "nowrap", color: on ? "#fff" : INK,
             background: on ? BRAND.solid : "transparent", "&:hover": on ? {} : { bgcolor: "#fff" } }}>
-          {v.icon(on)}<Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>{v.label}</Box>
+          {v.icon(on)}<Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>{t(v.label)}</Box>
         </Box>
       );
     })}
   </Box>
-);
+};
 
 // QUIT, ON THE TOP LINE (the owner, 2026-10-25: "Quit is an explicit option ... in the browser version's top line"). In the browser
 // nothing else stops the server; the desktop window has the tray's Quit, so it is not drawn there. No box asks: the hover says what
@@ -303,17 +310,18 @@ function useQuit(onStopped) {
   const quit = async () => {
     setBusy(true); setErr("");
     try { onStopped((await api.post("/api/quit", {})).data.stopped || []); }
-    catch (e) { setBusy(false); setErr(e?.response?.data?.detail || "Taskuary did not stop - close the terminal that runs it"); }
+    catch (e) { setBusy(false); setErr(e?.response?.data?.detail || { source: "Taskuary did not stop - close the terminal that runs it", values: {} }); }
   };
   return { can: !inDesktop() && !DEMO, running, busy, err, read, quit };
 }
 function QuitButton({ onStopped }) {
+  useLocale();
   const q = useQuit(onStopped);
   if (!q.can) return null;
   return (
-    <Tooltip title={q.err || quitTitle(q.running)}>
+    <Tooltip title={q.err ? translateDescriptor(q.err) : quitTitle(q.running)}>
       <span onMouseEnter={q.read} onFocus={q.read}>
-        <IconButton size="small" onClick={q.quit} disabled={q.busy} aria-label="Quit Taskuary" data-tq-quit="">
+        <IconButton size="small" onClick={q.quit} disabled={q.busy} aria-label={t("Quit Taskuary")} data-tq-quit="">
           {q.busy ? <CircularProgress size={14} /> : <PowerSettingsNewIcon sx={{ fontSize: 17, color: DIM }} />}
         </IconButton>
       </span>
@@ -324,6 +332,7 @@ function QuitButton({ onStopped }) {
 // HELP, AND ON A PHONE REFRESH AND QUIT INSIDE IT (the owner, 2026-10-27: the top bar is one row there - the title had the room it took).
 // The same three actions: Report a problem, the same refresh, the same Quit with no box asking - its hover's words under it, read on open
 function HelpMenu({ onReload, onStopped }) {
+  useLocale();
   const [el, setEl] = useState(null), q = useQuit(onStopped);
   const item = (icon, words, sub, onClick, more = {}) => (
     <MenuItem onClick={onClick} {...more} sx={{ minHeight: 40 }}>
@@ -331,14 +340,14 @@ function HelpMenu({ onReload, onStopped }) {
       <ListItemText primary={words} secondary={sub} primaryTypographyProps={{ fontSize: 13.5 }} secondaryTypographyProps={{ fontSize: 11.5, whiteSpace: "normal" }} />
     </MenuItem>);
   return (<>
-    <IconButton size="small" aria-label="Help" aria-haspopup="menu" aria-expanded={!!el} data-tq-help="" onClick={(e) => { setEl(e.currentTarget); if (q.can) q.read(); }}>
+    <IconButton size="small" aria-label={t("Help")} aria-haspopup="menu" aria-expanded={!!el} data-tq-help="" onClick={(e) => { setEl(e.currentTarget); if (q.can) q.read(); }}>
       <HelpOutlineIcon sx={{ fontSize: 17, color: DIM }} />
     </IconButton>
     <Menu anchorEl={el} open={!!el} onClose={() => setEl(null)} anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
       transformOrigin={{ vertical: "top", horizontal: "right" }} slotProps={{ paper: { sx: { maxWidth: 300 } } }}>
-      {item(<HelpOutlineIcon sx={{ fontSize: 18 }} />, "Report a problem", null, () => { setEl(null); openBugReport(); })}
-      {item(<RefreshIcon sx={{ fontSize: 18 }} />, "Refresh", null, () => { setEl(null); onReload(); }, { "data-tq-reload": "" })}
-      {q.can && item(q.busy ? <CircularProgress size={14} /> : <PowerSettingsNewIcon sx={{ fontSize: 18 }} />, "Quit Taskuary", q.err || quitTitle(q.running), q.quit,
+      {item(<HelpOutlineIcon sx={{ fontSize: 18 }} />, t("Report a problem"), null, () => { setEl(null); openBugReport(); })}
+      {item(<RefreshIcon sx={{ fontSize: 18 }} />, t("Refresh"), null, () => { setEl(null); onReload(); }, { "data-tq-reload": "" })}
+      {q.can && item(q.busy ? <CircularProgress size={14} /> : <PowerSettingsNewIcon sx={{ fontSize: 18 }} />, t("Quit Taskuary"), q.err ? translateDescriptor(q.err) : quitTitle(q.running), q.quit,
         { disabled: q.busy, "data-tq-quit": "" })}
     </Menu>
   </>);
@@ -346,6 +355,7 @@ function HelpMenu({ onReload, onStopped }) {
 
 // ...and what the tab shows once it has: plain, and nothing left on it that would call a server that is gone
 export function Stopped({ stopped }) {
+  useLocale();
   const [title, line] = stoppedLines(stopped);
   return (
     <Box data-tq-stopped="" sx={{ minHeight: "100vh", display: "grid", placeItems: "center", bgcolor: BG, px: 2, textAlign: "center" }}>
@@ -359,6 +369,7 @@ export function Stopped({ stopped }) {
 }
 
 export default function TaskHubPage() {
+  useLocale();
   // Honor a deep link on the first render. Starting every reload on Assistant meant its hidden
   // conversation, feed and funnel all fetched before #task=356 (or a report) was allowed to load.
   // On a busy live session that left the requested page looking completely blank for many seconds.
@@ -413,8 +424,7 @@ export default function TaskHubPage() {
   const onRaise = useCallback((r) => {
     // already looking at this very task's session: no ring, you are watching it stop
     if (isWatchingTask(tabRef.current, selRef.current, r.tid)) return;
-    const what = handRaiseWhat(r);
-    setRaisedQueue((q) => enqueueHandRaise(q, { ...r, what }));
+    setRaisedQueue((q) => enqueueHandRaise(q, r));
     (async () => {
       let sound = "chime", desktop = true;
       try {
@@ -426,7 +436,7 @@ export default function TaskHubPage() {
       // sound or OS popup would be noise and would look unrelated to the thing now on screen.
       if (isWatchingTask(tabRef.current, selRef.current, r.tid)) return;
       playSound(sound);
-      if (desktop) desktopNotify(`${r.ref} · ${what}`, r.title || r.tail || "", () => openTask(r.tid));
+      if (desktop) desktopNotify(`${r.ref} · ${raiseText(r)}`, r.title || r.tail || "", () => openTask(r.tid));
     })();
   }, []);
   const liveRows = useCallback((rows) => setRaisedQueue((q) => pruneHandRaises(q, rows)), []);
@@ -561,8 +571,8 @@ export default function TaskHubPage() {
           onClose={() => setRaisedQueue(dismissHandRaise)}
           anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
           sx={{ mb: 8 }}
-          message={raised ? `${raised.ref} · ${raised.what}${raised.title ? ` — ${raised.title}` : ""}` : ""}
-          action={raised && <Button size="small" sx={{ color: ACCENT, fontWeight: 600 }} onClick={() => { openTask(raised.tid); setRaisedQueue(dismissHandRaise); }}>Open</Button>} />
+          message={raised ? `${raised.ref} · ${raiseText(raised)}${raised.title ? ` — ${raised.title}` : ""}` : ""}
+          action={raised && <Button size="small" sx={{ color: ACCENT, fontWeight: 600 }} onClick={() => { openTask(raised.tid); setRaisedQueue(dismissHandRaise); }}>{t("Open")}</Button>} />
         {/* ── slim top bar ───────────────────────────────────────────── */}
         {/* Full width, deliberately. Constraining this to the page column squeezed the tab strip
             until its overflowX put a horizontal SCROLLBAR under the nav - a slider you have to
@@ -603,8 +613,8 @@ export default function TaskHubPage() {
           {/* ...and the static demo has the same Setup, which says how to install Taskuary: the chat's own setup button went (the owner,
               2026-10-19) and the demo was left with no way to that page. A server run with --demo keeps its badge where it was */}
           {(DEMO || !demo) && <SetupChip state={DEMO ? DEMO_SETUP : setup} onOpen={openSetup} />}
-          {phone ? <HelpMenu onReload={() => setTick(tick + 1)} onStopped={setStopped} /> : <Tooltip title="Report a problem">
-            <IconButton onClick={() => openBugReport()} size="small" aria-label="Report a problem">
+          {phone ? <HelpMenu onReload={() => setTick(tick + 1)} onStopped={setStopped} /> : <Tooltip title={t("Report a problem")}>
+            <IconButton onClick={() => openBugReport()} size="small" aria-label={t("Report a problem")}>
               <HelpOutlineIcon sx={{ fontSize: 17, color: DIM }} />
             </IconButton>
           </Tooltip>}
@@ -614,8 +624,8 @@ export default function TaskHubPage() {
             if (p.report) { openAppLink(`report=${p.report}`); return; }
             go(p.where || "Connections");
           }} onAsk={(p) => { go("Assistant"); askAssistant(`${p.title}: ${p.detail}${p.error ? ` (${p.error})` : ""}. Can you look into it and fix it?`); }} />
-          {!phone && <Tooltip title="Refresh">
-            <IconButton size="small" onClick={() => setTick(tick + 1)}><RefreshIcon sx={{ fontSize: 17, color: DIM }} /></IconButton>
+          {!phone && <Tooltip title={t("Refresh")}>
+            <IconButton size="small" aria-label={t("Refresh")} onClick={() => setTick(tick + 1)}><RefreshIcon sx={{ fontSize: 17, color: DIM }} /></IconButton>
           </Tooltip>}
           {!phone && <QuitButton onStopped={setStopped} />}
         </Box>

@@ -1,5 +1,6 @@
 import { closeoutOf } from "./reviewProposal.js";
 import { WORD } from "./lanes.js";
+import { t } from "./i18n.js";
 // Task, agent and reply are deliberately separate state machines. Keep these labels pure so
 // Tasks, Timeline and tests cannot quietly invent different meanings for the same record.
 export const STAY_OPEN_TAG = "stay:open";
@@ -35,7 +36,7 @@ export const reopenedDetail = (d) => d?.task ? { ...d, task: { ...d.task, Status
 // ...and a CLOSED task with nobody to answer says who closed it and why (the detail's `closedWhy`), never the advice for an open
 // one ("Work it, or write what you found on the task") - on a done task that told the owner nothing (2026-10-21)
 export const closedLine = (task, closedWhy) => task?.Status !== "done" ? null
-  : closedWhy || "Closed. Nobody sent this one, so no reply was owed.";
+  : closedWhy || t("Closed. Nobody sent this one, so no reply was owed.");
 
 // `finished`: the agent closed the task itself (the server's state, taskstate.py) - its report is its result, never
 // "stopped and saved" (T6). `handed`: false when no agent was ever given this task - it has no agent state at all, not
@@ -82,15 +83,15 @@ export const pendingReplyReview = (reviews = []) =>
 // one thing that closes a task by itself is its agent saying done on a task nobody is owed an answer on (wrapup.wrap, selfclose)
 const closesItself = (manual, owesEmails, noSender) => !manual && noSender && !owesEmails;
 export const completionLine = (manual, owesEmails, noSender = false) => closesItself(manual, owesEmails, noSender)
-  ? "Automatic task. When its agent says it is done, Taskuary closes it."
-  : !manual ? "Automatic task. When its agent is done, Taskuary prepares the reply; sending it leaves the task open - Mark done closes it."
-  : owesEmails ? "You control completion. Ending an agent run leaves this task open, and so does sending its emails - Mark done closes it."
-  : noSender ? "You control completion. Ending an agent run leaves this task open; press Mark done when it's finished."
-  : "You control completion. Ending an agent run leaves this task open, and so does sending the reply - Mark done closes it.";
+  ? t("Automatic task. When its agent says it is done, Taskuary closes it.")
+  : !manual ? t("Automatic task. When its agent is done, Taskuary prepares the reply; sending it leaves the task open - Mark done closes it.")
+  : owesEmails ? t("You control completion. Ending an agent run leaves this task open, and so does sending its emails - Mark done closes it.")
+  : noSender ? t("You control completion. Ending an agent run leaves this task open; press Mark done when it's finished.")
+  : t("You control completion. Ending an agent run leaves this task open, and so does sending the reply - Mark done closes it.");
 // ...and the same answer as a FACT on the settings row, beside the pills it belongs with: the sentence above sat
 // right-aligned across two lines and explained ("Hate the why. Just tell me what." - the owner); it is the tooltip now.
 export const completionFact = (manual, owesEmails, noSender = false) => closesItself(manual, owesEmails, noSender)
-  ? "closes itself when its agent is done" : "stays open until you Mark done";
+  ? t("closes itself when its agent is done") : t("stays open until you Mark done");
 export const slotReviews = (reviews = []) => (reviews || []).filter((review) => review.Kind === "slot");
 // what one Approve all may send: drafted, addressed, and asked for - never an address the agent added on its own
 export const bulkSendable = (items = [], reviews = []) => {

@@ -4,6 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { ANIM, BADGE, agentGone, railStatus, rowWhy, stateStatus, statusLabel, taskStatus } from "../src/railStatus.js";
 import { LANE_META, rowMeta } from "../src/funnelPile.js";
+import { t } from "../src/i18n.js";
 
 test("the header's status is exactly the rail row's mark and word, for every lane", () => {
   for (const lane of Object.keys(LANE_META)) {
@@ -45,9 +46,9 @@ test("the live session's word leads, then the rail's row, then the server's stat
 });
 
 test("the state is readable without colour or motion: its words are the icon's label", () => {
-  assert.equal(statusLabel(railStatus({ lane: "approve" })), "ready to send");
-  assert.equal(statusLabel(railStatus({ lane: "working" }), "Coding agent"), "Coding agent is working on this");
-  assert.equal(statusLabel(railStatus({ lane: "working" })), "an agent is working on this");
+  assert.equal(statusLabel(railStatus({ lane: "approve" })), t(railStatus({ lane: "approve" }).word));
+  assert.equal(statusLabel(railStatus({ lane: "working" }), "Coding agent"), t("{agent} is working on this", { agent: "Coding agent" }));
+  assert.equal(statusLabel(railStatus({ lane: "working" })), t("{agent} is working on this", { agent: t("an agent") }));
   assert.equal(statusLabel(null), "");
 });
 
@@ -59,7 +60,7 @@ test("only waiting on you and ready to send wear a badge; every other state is t
   for (const lane of ["yours", "queued", "saved", "stopped", "time", "theirs", "broken", "unjudged", "forgotten"]) {
     const st = railStatus({ lane });
     assert.equal(st.badge, "", `${lane}: the plain logo`); assert.equal(st.spins, false);
-    assert.equal(statusLabel(st), st.word, `${lane}: its words are its label`);
+    assert.equal(statusLabel(st), t(st.word), `${lane}: its words are its label`);
     assert.ok(st.mark, `${lane}: the header pill still has its mark`);
   }
   assert.equal(railStatus({ lane: "approve", not_sent: true }).badge, "", "a refused send is said in words, not a flag");

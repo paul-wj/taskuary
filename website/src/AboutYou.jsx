@@ -9,6 +9,8 @@ import api from "./api";
 import { PANEL, PANEL2, BORDER, DIM, FAINT, INK, mono } from "./theme.jsx";
 import { ChannelIcon } from "./ui.jsx";
 import { ABOUT_SECTIONS, secId } from "./settingsMap.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 const [S_YOU, S_CHANNEL, S_TOLD] = ABOUT_SECTIONS;   // the rail's sub-entries scroll to these three
 
@@ -16,7 +18,25 @@ const svgUri = (svg) => `data:image/svg+xml;utf8,${encodeURIComponent(svg || "")
 const CHANNEL_LABEL = { email: "Email", teams: "Microsoft Teams", telegram: "Telegram", whatsapp: "WhatsApp", slack: "Slack", github: "GitHub" };
 // what a connector learned reads GREEN; what you typed here reads grey - honest about the source
 const TYPED = "you typed it here";
+const PROFILE_KINDS = new Set(["address", "Microsoft account", "mailbox", "chat id", "your chat id", "your chat (JID)", "notify chat id", "your number", "your bot", "login", "handle", "phone"]);
+const PROFILE_SOURCES = new Set(["your owner address (Docs / here)", "a mailbox under Sources", "a mailbox under Sources (off)", "the Teams card, under Sources", "the bridge is running older code than the one on disk", TYPED]);
+const profileSource = (source) => {
+  if (PROFILE_SOURCES.has(source)) return t(source);
+  const patterns = [
+    [/^Sign in with Microsoft on the Outlook card "([\s\S]*)"$/, 'Sign in with Microsoft on the Outlook card "{name}"'],
+    [/^your own chat on the (telegram|whatsapp|teams) card "([\s\S]*)"$/, 'your own chat on the {channel} card "{name}"'],
+    [/^the WhatsApp account paired through WhatsApp card "([\s\S]*)"$/, 'the WhatsApp account paired through WhatsApp card "{name}"'],
+    [/^Telegram card "([\s\S]*)" \(getMe\)$/, 'Telegram card "{name}" (getMe)'],
+    [/^GitHub card "([\s\S]*)" - who its PAT authenticates as$/, 'GitHub card "{name}" - who its PAT authenticates as'],
+  ];
+  for (const [pattern, key] of patterns) {
+    const match = pattern.exec(source);
+    if (match) return t(key, match.length === 3 ? { channel: match[1], name: match[2] } : { name: match[1] });
+  }
+  return source;
+};
 export default function AboutYou() {
+  useLocale();
   const [p, setP] = useState(null);
   const [err, setErr] = useState("");
   const [preview, setPreview] = useState(null);       // {svg, style, seed} not yet kept
@@ -36,63 +56,62 @@ export default function AboutYou() {
     setPreview(data);
   };
   const keep = async () => { if (preview) { await save({ owner_avatar_style: preview.style, owner_avatar_seed: preview.seed }); setPreview(null); } };
-  if (!p) return err ? <Typography sx={{ color: "#6b2733" }}>{err}</Typography> : <CircularProgress size={22} sx={{ m: 4 }} />;
+  if (!p) return err ? <Typography sx={{ color: "#6b2733" }}>{["could not load your profile", "save failed"].includes(err) ? t(err) : err}</Typography> : <CircularProgress size={22} sx={{ m: 4 }} />;
   const f = p.facts;
   const activeStyle = preview?.style || f.owner_avatar_style || "monogram";
   const byChannel = p.identities.reduce((acc, i) => { (acc[i.channel] = acc[i.channel] || []).push(i); return acc; }, {});
   // no width of its own: every settings page is as wide as the shell's column (2026-09-18)
   return (
     <Box>
-      {err && <Typography variant="body2" sx={{ color: "#6b2733", mb: 1 }}>{err}</Typography>}
+      {err && <Typography variant="body2" sx={{ color: "#6b2733", mb: 1 }}>{["could not load your profile", "save failed"].includes(err) ? t(err) : err}</Typography>}
 
       {/* the card: avatar, name, the line under it */}
       <Box id={secId("about", S_YOU)} sx={{ display: "flex", gap: 3, alignItems: "flex-start", p: 2.5, border: `1px solid ${BORDER}`, borderRadius: 3, bgcolor: PANEL2, mb: 3, flexWrap: "wrap" }}>
         <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
-          <Box component="img" alt="your avatar" src={svgUri(preview ? preview.svg : p.avatar)}
+          <Box component="img" alt={t("your avatar")} src={svgUri(preview ? preview.svg : p.avatar)}
             sx={{ width: 128, height: 128, borderRadius: 4, boxShadow: "0 6px 18px rgba(40,30,20,.14)" }} />
           <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 0.5, width: 128 }}>
             {p.styles.map((s) => (
               <Box key={s} component="button" type="button" aria-pressed={activeStyle === s} onClick={() => shuffle(s)}
                 sx={{ px: 0.9, py: 0.25, borderRadius: 99, cursor: "pointer", fontSize: 10.5, fontWeight: 600, userSelect: "none", textAlign: "center", fontFamily: "inherit",
                   bgcolor: activeStyle === s ? "#eae4d8" : "#fff",
-                  border: `1px solid ${BORDER}`, color: "#55697a" }}>{s}</Box>
+                  border: `1px solid ${BORDER}`, color: "#55697a" }}>{["monogram", "rings", "grid", "waves"].includes(s) ? t(s) : s}</Box>
             ))}
           </Box>
           <Box sx={{ display: "flex", gap: 0.5 }}>
-            <Button size="small" startIcon={<ShuffleIcon sx={{ fontSize: 14 }} />} onClick={() => shuffle()} sx={{ fontSize: 11.5, textTransform: "none" }}>Generate another</Button>
-            {preview && <Button size="small" variant="contained" disableElevation startIcon={<CheckIcon sx={{ fontSize: 14 }} />} onClick={keep} sx={{ fontSize: 11.5, textTransform: "none" }}>Keep</Button>}
+            <Button size="small" startIcon={<ShuffleIcon sx={{ fontSize: 14 }} />} onClick={() => shuffle()} sx={{ fontSize: 11.5, textTransform: "none" }}>{t("Generate another")}</Button>
+            {preview && <Button size="small" variant="contained" disableElevation startIcon={<CheckIcon sx={{ fontSize: 14 }} />} onClick={keep} sx={{ fontSize: 11.5, textTransform: "none" }}>{t("Keep")}</Button>}
           </Box>
         </Box>
         <Box sx={{ flex: 1, minWidth: 280 }}>
-          <TextField variant="standard" value={f.owner_name} placeholder="Your name" onChange={(e) => setP({ ...p, facts: { ...f, owner_name: e.target.value } })}
+          <TextField variant="standard" value={f.owner_name} placeholder={t("Your name")} onChange={(e) => setP({ ...p, facts: { ...f, owner_name: e.target.value } })}
             onBlur={(e) => saveOwner(e.target.value.trim(), f.owner_email)} onKeyDown={(e) => e.key === "Enter" && e.target.blur()}
-            inputProps={{ "aria-label": "Your name", style: { fontSize: 24, fontWeight: 600, color: INK, letterSpacing: "-.01em" } }} fullWidth />
+            inputProps={{ "aria-label": t("Your name"), style: { fontSize: 24, fontWeight: 600, color: INK, letterSpacing: "-.01em" } }} fullWidth />
           <Box sx={{ display: "flex", gap: 1, mt: 0.75, flexWrap: "wrap" }}>
-            <TextField variant="standard" value={f.owner_title} placeholder="role or title" onChange={(e) => setP({ ...p, facts: { ...f, owner_title: e.target.value } })}
-              onBlur={(e) => save({ owner_title: e.target.value.trim() })} inputProps={{ "aria-label": "Role or title", style: { fontSize: 13, color: DIM } }} sx={{ width: 220 }} />
-            <TextField variant="standard" value={f.owner_company} placeholder="company" onChange={(e) => setP({ ...p, facts: { ...f, owner_company: e.target.value } })}
-              onBlur={(e) => save({ owner_company: e.target.value.trim() })} inputProps={{ "aria-label": "Company", style: { fontSize: 13, color: DIM } }} sx={{ width: 220 }} />
+            <TextField variant="standard" value={f.owner_title} placeholder={t("role or title")} onChange={(e) => setP({ ...p, facts: { ...f, owner_title: e.target.value } })}
+              onBlur={(e) => save({ owner_title: e.target.value.trim() })} inputProps={{ "aria-label": t("Role or title"), style: { fontSize: 13, color: DIM } }} sx={{ width: 220 }} />
+            <TextField variant="standard" value={f.owner_company} placeholder={t("company")} onChange={(e) => setP({ ...p, facts: { ...f, owner_company: e.target.value } })}
+              onBlur={(e) => save({ owner_company: e.target.value.trim() })} inputProps={{ "aria-label": t("Company"), style: { fontSize: 13, color: DIM } }} sx={{ width: 220 }} />
           </Box>
           {/* the one owner fact worth editing here - your address, which the docs fill in as {{owner}}.
               Everything per-channel lives in its own card below, never as a loose field. */}
           <TextField variant="standard" value={f.owner_email} placeholder="you@yourdomain.com"
             onChange={(e) => setP({ ...p, facts: { ...f, owner_email: e.target.value } })}
             onBlur={(e) => saveOwner(f.owner_name, e.target.value.trim())} onKeyDown={(e) => e.key === "Enter" && e.target.blur()}
-            inputProps={{ "aria-label": "Email address", style: { fontSize: 13, color: DIM, ...mono } }} sx={{ width: 300, mt: 0.75 }} />
-          <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.25 }}>your owner address — agents sign as this</Typography>
-          <TextField variant="standard" fullWidth multiline value={f.owner_bio} placeholder="a line about you — what you own, how you like things done; the agents read this"
+            inputProps={{ "aria-label": t("Email address"), style: { fontSize: 13, color: DIM, ...mono } }} sx={{ width: 300, mt: 0.75 }} />
+          <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.25 }}>{t("your owner address — agents sign as this")}</Typography>
+          <TextField variant="standard" fullWidth multiline value={f.owner_bio} placeholder={t("a line about you — what you own, how you like things done; the agents read this")}
             onChange={(e) => setP({ ...p, facts: { ...f, owner_bio: e.target.value } })} onBlur={(e) => save({ owner_bio: e.target.value.trim() })}
-            inputProps={{ "aria-label": "About you", style: { fontSize: 13, color: INK, lineHeight: 1.5 } }} sx={{ mt: 1.5 }} />
+            inputProps={{ "aria-label": t("About you"), style: { fontSize: 13, color: INK, lineHeight: 1.5 } }} sx={{ mt: 1.5 }} />
         </Box>
       </Box>
 
       {/* who you are on each channel, with provenance */}
-      <Typography id={secId("about", S_CHANNEL)} sx={{ ...mono, fontSize: 10, letterSpacing: 1, color: FAINT, mb: 1 }}>WHO YOU ARE, PER CHANNEL</Typography>
+      <Typography id={secId("about", S_CHANNEL)} sx={{ ...mono, fontSize: 10, letterSpacing: 1, color: FAINT, mb: 1 }}>{t("WHO YOU ARE, PER CHANNEL")}</Typography>
       <Typography variant="body2" sx={{ color: DIM, mb: 1.5 }}>
-        Everything a connector has learned about you, and where it learned it. Nothing here is guessed from mail — it is what you signed in as,
-        typed under Sources, or set as the chat that pings you.
+        {t("Everything a connector has learned about you, and where it learned it. Nothing here is guessed from mail — it is what you signed in as, typed under Sources, or set as the chat that pings you.")}
       </Typography>
-      {!p.identities.length && <Typography variant="body2" sx={{ color: FAINT, mb: 2 }}>Nothing yet — connect a mailbox or a chat and it shows up here.</Typography>}
+      {!p.identities.length && <Typography variant="body2" sx={{ color: FAINT, mb: 2 }}>{t("Nothing yet — connect a mailbox or a chat and it shows up here.")}</Typography>}
       {/* one card per channel: the value leads, the kind is a small label, and where it came from
           is a quiet chip right beside it - green when read live off a connector, grey when typed */}
       {Object.entries(byChannel).map(([ch, rows]) => (
@@ -101,7 +120,7 @@ export default function AboutYou() {
           <Box sx={{ display: "flex", alignItems: "center", gap: 1, px: 2, py: 1.1, borderBottom: `1px solid ${BORDER}`,
             background: "linear-gradient(180deg,#fffefc,#fbf9f6)" }}>
             <ChannelIcon channel={ch} sx={{ fontSize: 17 }} />
-            <Typography sx={{ fontWeight: 600, fontSize: 13.5, color: INK }}>{CHANNEL_LABEL[ch] || ch}</Typography>
+            <Typography sx={{ fontWeight: 600, fontSize: 13.5, color: INK }}>{ch === "email" ? t("Email") : CHANNEL_LABEL[ch] || ch}</Typography>
             <Box sx={{ flex: 1 }} />
             <Typography sx={{ ...mono, fontSize: 10.5, color: FAINT }}>{rows.length}</Typography>
           </Box>
@@ -110,16 +129,16 @@ export default function AboutYou() {
             return (
               <Box key={i} sx={{ display: "grid", gridTemplateColumns: "96px minmax(0,1fr) auto", gap: 1.75, alignItems: "center",
                 px: 2, py: 1, borderTop: i ? "1px solid #efeae2" : 0 }}>
-                <Typography sx={{ ...mono, fontSize: 10.5, letterSpacing: ".04em", textTransform: "uppercase", color: FAINT }}>{r.kind}</Typography>
+                <Typography sx={{ ...mono, fontSize: 10.5, letterSpacing: ".04em", textTransform: "uppercase", color: FAINT }}>{PROFILE_KINDS.has(r.kind) ? t(r.kind) : r.kind}</Typography>
                 <Typography noWrap sx={{ ...mono, fontSize: 13, color: INK, fontWeight: r.primary ? 700 : 500 }}
                   title={r.value + (r.name ? ` · ${r.name}` : "")}>
                   {r.value}{r.name ? <Box component="span" sx={{ color: FAINT }}>{`  ·  ${r.name}`}</Box> : null}
-                  {r.primary ? <Box component="span" sx={{ color: "#6b5f45", fontSize: 11, ml: 0.75 }}>★ owner</Box> : null}
+                  {r.primary ? <Box component="span" sx={{ color: "#6b5f45", fontSize: 11, ml: 0.75 }}>{t("★ owner")}</Box> : null}
                 </Typography>
-                <Typography title={r.source} sx={{ justifySelf: "end", fontSize: 11, whiteSpace: "nowrap", maxWidth: 220,
+                <Typography title={profileSource(r.source)} sx={{ justifySelf: "end", fontSize: 11, whiteSpace: "nowrap", maxWidth: 220,
                   overflow: "hidden", textOverflow: "ellipsis", borderRadius: 99, px: 1, py: 0.25,
                   color: live ? "#4c6450" : FAINT, bgcolor: live ? "#eef3ec" : "#f4f1ec",
-                  border: `1px solid ${live ? "#cddac9" : BORDER}` }}>{r.source}</Typography>
+                  border: `1px solid ${live ? "#cddac9" : BORDER}` }}>{profileSource(r.source)}</Typography>
               </Box>
             );
           })}
@@ -127,9 +146,9 @@ export default function AboutYou() {
       ))}
 
       {/* honesty about the gap between "known here" and "told to the agents" */}
-      <Typography id={secId("about", S_TOLD)} sx={{ ...mono, fontSize: 10, letterSpacing: 1, color: FAINT, mt: 3, mb: 1 }}>WHAT THE AGENTS ARE TOLD ABOUT YOU</Typography>
+      <Typography id={secId("about", S_TOLD)} sx={{ ...mono, fontSize: 10, letterSpacing: 1, color: FAINT, mt: 3, mb: 1 }}>{t("WHAT THE AGENTS ARE TOLD ABOUT YOU")}</Typography>
       <Typography variant="body2" sx={{ color: DIM, mb: 1 }}>
-        Agents read SOUL.md, where your name and email are filled in as tokens. Below is all of it, exactly as they read it; edit it on the Docs page.
+        {t("Agents read SOUL.md, where your name and email are filled in as tokens. Below is all of it, exactly as they read it; edit it on the Docs page.")}
       </Typography>
       <Box component="pre" sx={{ ...mono, fontSize: 12, whiteSpace: "pre-wrap", color: INK, bgcolor: PANEL2, border: `1px solid ${BORDER}`, borderRadius: 2, p: 1.5, m: 0 }}>
         {p.told_to_agents}

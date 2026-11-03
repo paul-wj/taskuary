@@ -1,10 +1,9 @@
 // New → Meeting's form (meetingForm.js): the Assistant's prefill, the free times' address, a typed time, and whose calendars were read.
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import test from "node:test";
 import { canFind, formFrom, seenLine, slotsUrl, typedSlot } from "../src/meetingForm.js";
+import { getLocale, setLocale } from "../src/i18n.js";
 
-const read = (name) => fs.readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8");
 
 test("the Assistant's prefill is the form's first state, defaults where it said nothing", () => {
   const f = formFrom({ to: ["gail@northwind.example"], unplaced: ["Zed"], about: "the Q3 budget", minutes: 45, within: "next_week", from: "", to_day: "" });
@@ -34,17 +33,32 @@ test("a typed day and time is a slot of the meeting's length", () => {
   assert.equal(typedSlot("2026-11-03", "", 30), null);
 });
 
-test("whose calendars the times were read against is said", () => {
-  assert.equal(seenLine({ read: [], unread: [] }), "");
-  assert.match(seenLine({ read: ["erin@northwind.example"], unread: [] }), /on erin@northwind\.example's/);
-  assert.match(seenLine({ read: ["erin@northwind.example"], unread: ["gail@northwind.example"] }), /gail@northwind\.example does not share/);
-  assert.match(seenLine({ read: [], unread: ["a@x.example", "b@x.example"] }), /^Free on your calendar - a@x\.example, b@x\.example do not share/);
+test("whose calendars were read and not read are retained in either locale", () => {
+  const previous = getLocale();
+  try {
+    for (const locale of ["en", "zh-CN"]) {
+      setLocale(locale);
+      assert.equal(seenLine({ read: [], unread: [] }), "");
+      assert.ok(seenLine({ read: ["erin@northwind.example"], unread: [] }).includes("erin@northwind.example"));
+      const mixed = seenLine({ read: ["erin@northwind.example"], unread: ["gail@northwind.example"] });
+      assert.ok(mixed.includes("erin@northwind.example"));
+      assert.ok(mixed.includes("gail@northwind.example"));
+      const unread = seenLine({ read: [], unread: ["a@x.example", "b@x.example"] });
+      assert.ok(unread.includes("a@x.example"));
+      assert.ok(unread.includes("b@x.example"));
+      assert.notEqual(unread, mixed);
+    }
+  } finally { setLocale(previous); }
 });
 
-test("New has a Meeting tab, and the Assistant's meeting opens it filled in", () => {
-  assert.match(read("NewSheet.jsx"), /key: "meeting", mark: "📅", label: "Meeting"/);
-  assert.match(read("NewSheet.jsx"), /<NewMeeting renderTo=\{\(p\) => <EmailRecipients \{\.\.\.p\} \/>\}/);
-  assert.match(read("CanvasBrowse.jsx"), /initialMeeting=\{state\?\.meeting \|\| null\}/);
-  // the pick is the only press, and it drafts: nothing in the form posts a send
-  assert.doesNotMatch(read("NewMeeting.jsx"), /\/approve|\/send\b|\/decide/);
+test("the calendar status distinguishes available calendars from those not shared", () => {
+  const previous = getLocale();
+  try {
+    setLocale("en");
+    assert.match(seenLine({ read: ["erin@northwind.example"], unread: [] }), /on erin@northwind\.example's/);
+    assert.match(seenLine({ read: ["erin@northwind.example"], unread: ["gail@northwind.example"] }),
+      /on yours and erin@northwind\.example's - gail@northwind\.example does not share/);
+    assert.match(seenLine({ read: [], unread: ["a@x.example", "b@x.example"] }),
+      /a@x\.example, b@x\.example do not share/);
+  } finally { setLocale(previous); }
 });

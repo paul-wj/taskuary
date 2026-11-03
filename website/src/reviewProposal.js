@@ -1,4 +1,5 @@
 import { label } from "./buttons.js";
+import { t } from "./i18n.js";
 
 export const proposalFrom = (review) => {
   if (review?.Kind !== "action") return null;
@@ -16,17 +17,21 @@ export const proposalFrom = (review) => {
 // endless"): Approve / Decline / Remind me (the task's own - 2026-10-02: "not yet is really remind me later"). Only `then` - what it does THERE - differs; a new connector adds a line.
 // ...and Approve is the one word for every proposal (buttons.json: approve's `action` state) - "Merge & close", "Run action" and
 // "Save playbook" were three more names for the same press
-const APPROVE = label("approve", "action");
+const approve = () => t(label("approve", "action"));
 export const CLOSEOUT = {
-  merge_pr: { label: APPROVE, busy: "merging…", then: "merges the pull request on GitHub", reject: null,
+  merge_pr: { get label() { return approve(); }, busy: "merging…", then: "merges the pull request on GitHub", reject: null,
     // the other answer, where the system has one: the work is not wanted - the PR closes unmerged
     alt: { verb: "close_pr", label: "Decline", busy: "declining…", then: "closes the pull request without merging it" } },
-  close_issue: { label: APPROVE, busy: "closing…", then: "closes the issue on GitHub", reject: null },
+  close_issue: { get label() { return approve(); }, busy: "closing…", then: "closes the issue on GitHub", reject: null },
   // a Jira, Monday or Linear item (trackers.py, 2026-10-25): the comment, then the move to the tracker's own done state
-  close_item: { label: APPROVE, busy: "closing…", then: "posts the comment and moves the item to done", reject: null },
+  close_item: { get label() { return approve(); }, busy: "closing…", then: "posts the comment and moves the item to done", reject: null },
 };
 const TRACKER = { jira: "Jira", monday: "Monday", linear: "Linear" };
-export const closeoutOf = (review) => CLOSEOUT[proposalFrom(review)?.action] || null;
+export const closeoutOf = (review) => {
+  const co = CLOSEOUT[proposalFrom(review)?.action];
+  return co ? { ...co, label: approve(), busy: t(co.busy), then: t(co.then),
+    alt: co.alt ? { ...co.alt, label: t(co.alt.label), busy: t(co.alt.busy), then: t(co.alt.then) } : co.alt } : null;
+};
 
 // a playbook's file name from its title - playbooks.slugify's rule: lower case, every other run of characters one "-", cut, trimmed
 const slugify = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 60).replace(/^-+|-+$/g, "");
@@ -41,7 +46,7 @@ const PLUMBING = new Set(["action", "type", "flow_run", "connector_id", "why", .
 export const toolWhere = (p) => {
   const k = WHERE_KEYS.find((x) => p?.[x]);
   const sys = String(p?.type || "").replace(/_/g, " ");
-  return k ? `${String(p[k])} · ${sys}` : sys || "a connected system";
+  return k ? `${String(p[k])} · ${sys}` : sys || t("a connected system");
 };
 export const toolBody = (p) => {
   const body = p?.text ?? p?.body ?? p?.message ?? p?.query ?? p?.script;
@@ -65,41 +70,42 @@ export const reviewText = (review) => {
 export const proposalPresentation = (review) => {
   if (review?.Kind !== "action") return null;
   const proposal = proposalFrom(review);
-  const co = CLOSEOUT[proposal?.action];
+  const co = closeoutOf(review);
   // A TRACKER ITEM'S CLOSE-OUT (2026-10-25): where it goes, and the done state the tracker itself names - or, where it names none or its
   // workflow has no move there, that it is the comment alone, said before the press
   if (co && proposal.action === "close_item") {
-    const sys = TRACKER[proposal.tracker] || "the tracker", at = `${proposal.item || ""} in ${sys}`;
+    const sys = TRACKER[proposal.tracker] || t("the tracker"), item = proposal.item || t("the item");
+    const at = t("{item} in {system}", { item: proposal.item || "", system: sys });
     return {
       kind: "closeout",
-      title: review.Title || review.Subject || `Close ${proposal.item || "the item"} in ${sys}`,
-      context: proposal.no_done ? `The agent finished · ${proposal.no_done}, so ${APPROVE} posts the comment alone`
-        : `The agent finished · ${APPROVE} comments on ${proposal.item || "the item"} and moves it to ${proposal.status || "done"}`,
-      destinationLabel: "Close",
-      destination: proposal.no_done ? `${at} · comment only` : `${at} → ${proposal.status || "its done state"}`,
+      title: review.Title || review.Subject || t("Close {item} in {system}", { item, system: sys }),
+      context: proposal.no_done ? t("The agent finished · {reason}, so {action} posts the comment alone", { reason: proposal.no_done, action: approve() })
+        : t("The agent finished · {action} comments on {item} and moves it to {status}", { action: approve(), item, status: proposal.status || t("done") }),
+      destinationLabel: t("Close"),
+      destination: proposal.no_done ? t("{destination} · comment only", { destination: at }) : t("{destination} → {status}", { destination: at, status: proposal.status || t("its done state") }),
       approveLabel: co.label,
-      then: proposal.no_done ? `posts the comment on ${at}` : `posts the comment on ${at} and moves it to ${proposal.status || "done"}`,
+      then: proposal.no_done ? t("posts the comment on {destination}", { destination: at }) : t("posts the comment on {destination} and moves it to {status}", { destination: at, status: proposal.status || t("done") }),
       busyLabel: co.busy,
       rejectLabel: co.reject,
       alt: null,
-      placeholder: proposal.no_done ? "Write the comment to post" : "No comment - only the move to done",
+      placeholder: proposal.no_done ? t("Write the comment to post") : t("No comment - only the move to done"),
     };
   }
   if (co) {
     const pr = proposal.action === "merge_pr";
     return {
       kind: "closeout",
-      title: review.Title || review.Subject || (pr ? "Merge the pull request" : "Close the issue"),
-      context: pr ? `The agent finished · the task closes when pull request #${proposal.number || ""} merges, or you close it`
-        : "The agent finished · the task closes with the issue",
-      destinationLabel: pr ? "Merge" : "Close",
-      destination: pr ? `${proposal.repo || ""}#${proposal.number || ""}` : "the GitHub issue this task came from",
+      title: review.Title || review.Subject || (pr ? t("Merge the pull request") : t("Close the issue")),
+      context: pr ? t("The agent finished · the task closes when pull request #{number} merges, or you close it", { number: proposal.number || "" })
+        : t("The agent finished · the task closes with the issue"),
+      destinationLabel: pr ? t("Merge") : t("Close"),
+      destination: pr ? `${proposal.repo || ""}#${proposal.number || ""}` : t("the GitHub issue this task came from"),
       approveLabel: co.label,
       then: co.then,
       busyLabel: co.busy,
       rejectLabel: co.reject,
       alt: co.alt || null,
-      placeholder: pr ? "No summary - GitHub writes the merge message" : "No comment - the reply carries it",
+      placeholder: pr ? t("No summary - GitHub writes the merge message") : t("No comment - the reply carries it"),
     };
   }
   if (PAGES.has(proposal?.action)) {
@@ -111,14 +117,14 @@ export const proposalPresentation = (review) => {
     const amend = proposal.action === "amend_playbook";
     return {
       kind: "playbook",
-      title: title ? `Playbook · ${title}` : "New playbook",
-      context: amend ? "What the outcome ledger counted about this kind of work, added to its playbook · nothing is sent"
-        : "Playbook proposal · nothing will be sent to the conversation",
-      destinationLabel: "Save to",
-      destination: `Reports → Playbooks → ${slug}.md`,         // where playbooks live (PlaybookShelf.jsx)
-      approveLabel: APPROVE,
-      busyLabel: "saving…",
-      rejectLabel: "Discard proposal",
+      title: title ? t("Playbook · {title}", { title }) : t("New playbook"),
+      context: amend ? t("What the outcome ledger counted about this kind of work, added to its playbook · nothing is sent")
+        : t("Playbook proposal · nothing will be sent to the conversation"),
+      destinationLabel: t("Save to"),
+      destination: t("Reports → Playbooks → {slug}.md", { slug }),         // where playbooks live (PlaybookShelf.jsx)
+      approveLabel: approve(),
+      busyLabel: t("saving…"),
+      rejectLabel: t("Discard proposal"),
     };
   }
   // A TOOL RUN IN WORDS (the owner, 2026-10-21): what it will write, send or run, and where - never the proposal's JSON. The
@@ -126,72 +132,72 @@ export const proposalPresentation = (review) => {
   // content, read-only - an edit to them was never what ran (proposals.execute runs the proposal as queued)
   if (proposal?.action === "run_tool") return {
     kind: "action",
-    title: proposal.flow_run ? "A routine step waits for your yes" : "Run a step in a connected system",
-    context: review.Reason || "Proposed action · nothing will be sent to the conversation",
-    destinationLabel: "Where",
+    title: proposal.flow_run ? t("A routine step waits for your yes") : t("Run a step in a connected system"),
+    context: review.Reason || t("Proposed action · nothing will be sent to the conversation"),
+    destinationLabel: t("Where"),
     destination: toolWhere(proposal),
-    approveLabel: APPROVE,
-    busyLabel: "running…",
-    rejectLabel: "Dismiss",
+    approveLabel: approve(),
+    busyLabel: t("running…"),
+    rejectLabel: t("Dismiss", {}, "task-action"),
     readOnly: true,
   };
   // A HELD BROWSER ACT (browsergate.py, 2026-10-25): what the agent's browser would do and on which page, in words - Approve runs that
   // exact command there, so the words are read-only like a tool run's
   if (proposal?.action === "browser_act") return {
     kind: "action",
-    title: "The agent's browser waits for your yes",
-    context: review.Reason || "Held before it ran · it can't be undone",
-    destinationLabel: "On",
-    destination: proposal.url || proposal.site || "the agent's browser",
-    approveLabel: APPROVE,
-    busyLabel: "running…",
-    rejectLabel: "Dismiss",
+    title: t("The agent's browser waits for your yes"),
+    context: review.Reason || t("Held before it ran · it can't be undone"),
+    destinationLabel: t("On"),
+    destination: proposal.url || proposal.site || t("the agent's browser"),
+    approveLabel: approve(),
+    busyLabel: t("running…"),
+    rejectLabel: t("Dismiss", {}, "task-action"),
     readOnly: true,
   };
   // ...AND A HELD SHELL STEP (shellgate.py, the owner 2026-10-28): a push, a merge, a public post, a publish or a mail the agent tried to
   // run - Approve runs that exact command in the folder it was held in
   if (proposal?.action === "shell_act") return {
     kind: "action",
-    title: "The agent's step waits for your yes",
-    context: review.Reason || "Held before it ran · it leaves this computer",
-    destinationLabel: "In",
-    destination: proposal.cwd || "the agent's folder",
-    approveLabel: APPROVE,
-    busyLabel: "running…",
-    rejectLabel: "Dismiss",
+    title: t("The agent's step waits for your yes"),
+    context: review.Reason || t("Held before it ran · it leaves this computer"),
+    destinationLabel: t("In"),
+    destination: proposal.cwd || t("the agent's folder"),
+    approveLabel: approve(),
+    busyLabel: t("running…"),
+    rejectLabel: t("Dismiss", {}, "task-action"),
     readOnly: true,
   };
   // ...AND A HELD DESKTOP ACT (agentdesktop.py, 2026-10-31): what an app on the owner's desktop would do - Approve runs that exact command
   if (proposal?.action === "desktop_act") return {
     kind: "action",
-    title: "The agent's desktop step waits for your yes",
-    context: review.Reason || "Held before it ran · it can't be undone",
-    destinationLabel: "On",
-    destination: "an app on your desktop",
-    approveLabel: APPROVE,
-    busyLabel: "running…",
-    rejectLabel: "Dismiss",
+    title: t("The agent's desktop step waits for your yes"),
+    context: review.Reason || t("Held before it ran · it can't be undone"),
+    destinationLabel: t("On"),
+    destination: t("an app on your desktop"),
+    approveLabel: approve(),
+    busyLabel: t("running…"),
+    rejectLabel: t("Dismiss", {}, "task-action"),
     readOnly: true,
   };
   if (proposal?.action === "repair_workflow") return {
     kind: "action",
-    title: "Repair this routine's steps",
-    context: "A step failed · the AI wrote a fix · the steps change only if you approve",
-    destinationLabel: "Changes",
-    destination: "the routine's saved steps",
-    approveLabel: APPROVE,
-    busyLabel: "saving…",
-    rejectLabel: "Dismiss",
+    title: t("Repair this routine's steps"),
+    context: t("A step failed · the AI wrote a fix · the steps change only if you approve"),
+    destinationLabel: t("Changes"),
+    destination: t("the routine's saved steps"),
+    approveLabel: approve(),
+    busyLabel: t("saving…"),
+    rejectLabel: t("Dismiss", {}, "task-action"),
   };
   return {
     kind: "action",
-    title: review.Subject || review.Title || "Proposed action",
-    context: "Proposed action · nothing will be sent to the conversation",
-    destinationLabel: "Action",
-    destination: String(proposal?.action || "proposed action").replaceAll("_", " "),
-    approveLabel: APPROVE,
-    busyLabel: "running…",
-    rejectLabel: "Dismiss",
+    title: review.Subject || review.Title || t("Proposed action"),
+    context: t("Proposed action · nothing will be sent to the conversation"),
+    destinationLabel: t("Action"),
+    destination: proposal?.action ? String(proposal.action).replaceAll("_", " ") : t("proposed action"),
+    approveLabel: approve(),
+    busyLabel: t("running…"),
+    rejectLabel: t("Dismiss", {}, "task-action"),
   };
 };
 
@@ -203,4 +209,4 @@ export const REVIEW_STATUS = {
   rejected: "rejected", no_reply: "no reply needed", closed_unsent: "closed without sending",
   superseded: "overtaken",
 };
-export const reviewStatusLabel = (status) => REVIEW_STATUS[status] || String(status || "").replace(/_/g, " ");
+export const reviewStatusLabel = (status) => REVIEW_STATUS[status] ? t(REVIEW_STATUS[status]) : String(status || "").replace(/_/g, " ");

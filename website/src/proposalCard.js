@@ -2,6 +2,7 @@
 // card is built from the proposal the server returned, never from a guess about the words; the receipt
 // after the click is what the server said happened. The action words themselves are no longer here -
 // they are concierge.CHIPS, chosen per item and rendered inside the assistant's own line.
+import { t } from "./i18n.js";
 
 export function proposalOf(data) { return data && data.proposal && data.proposal.id ? data.proposal : null; }
 
@@ -27,28 +28,28 @@ export function describe(p) {
   // sentence in full - is what the owner saw (2026-09-24: "the box itself looks weird. text/title etc.. also it
   // doesn't say which repo it's in")
   if (p.kind === "task.create_from_text") {
-    const t = String(p.params?.title || "").trim(), x = String(p.params?.text || "").trim();
+    const title = String(p.params?.title || "").trim(), x = String(p.params?.text || "").trim();
     // a checkout nobody NAMED is the words' best match - worth a look before it opens, so it says it is a guess
-    const repo = p.params?.kind === "coding" ? (!p.params?.repo ? "not clear from the words - you pick it when it starts"
-      : p.clear === false ? `${p.params.repo} - a best guess, say which if it is another` : p.params.repo) : "";
-    // ...and a general job names its worker: the card is here because one was not clear, so say so and invite a name
-    const agent = p.params?.kind === "general" ? (p.params?.profile || "none fits clearly - the default agent, or say which one") : "";
+    const repo = p.params?.kind === "coding" ? (!p.params?.repo ? t("not clear from the words - you pick it when it starts")
+      : p.clear === false ? t("{repo} - a best guess, say which if it is another", { repo: p.params.repo }) : p.params.repo) : "";
+    // a general job names its worker
+    const agent = p.params?.kind === "general" ? (p.params?.profile || t("none fits clearly - the default agent, or say which one")) : "";
     // a title that is only the brief cut short says nothing the brief does not: show the brief, once
-    const cut = !t || x.startsWith(t.replace(/[\s.…]+$/, ""));
-    return { title: p.label || p.kind, target: cut ? x : t, detail: cut ? "" : x,
-             params: [...(agent ? [["agent", agent]] : []), ...(repo ? [["repository", repo]] : [])], confirm: p.label || "Confirm", cancel: "Cancel", preview: false };
+    const cut = !title || x.startsWith(title.replace(/[\s.…]+$/, ""));
+    return { title: p.label || p.kind, target: cut ? x : title, detail: cut ? "" : x,
+             params: [...(agent ? [["agent", agent]] : []), ...(repo ? [["repository", repo]] : [])], confirm: p.label || t("Confirm"), cancel: "Cancel", preview: false };
   }
   // A REPORT reads the way the report builder does: its name, the prompt as a section of its own, then the settings -
   // not "source: agent / inputs: ... / summary instructions: ..." (the owner, 2026-09-24: "some technical summary")
   if (p.kind === "report.create" && p.params?.prompt) {
     const rows = [["reads", p.params.reads], ["runs", p.params.runs], ["reaches you", p.params.reaches_you], ["goes to", p.params.goes_to]];
-    return { title: p.label || "Create the report", target: p.params.title || p.summary || "", detailHead: "Prompt", detail: p.params.prompt,
-             params: rows.filter(([, v]) => v != null && v !== ""), confirm: p.label || "Confirm", cancel: "Cancel", preview: true };
+    return { title: p.label || t("Create the report"), target: p.params.title || p.summary || "", detailHead: t("Prompt"), detail: p.params.prompt,
+             params: rows.filter(([, v]) => v != null && v !== ""), confirm: p.label || t("Confirm"), cancel: "Cancel", preview: true };
   }
   const params = Object.entries(p.params || {}).filter(([k, v]) => v != null && v !== "" && !hidden.has(k))
     .map(([k, v]) => [k.replace(/_/g, " "), show(v)]).filter(([, v]) => v !== "" && v != null);
   // a proposed report can be dry-run before the click (PW-195): read-only, nothing filed, sent, activated or started
-  return { title: p.label || p.title || p.kind, target: p.summary || "", params, confirm: p.label || "Confirm", cancel: "Cancel", preview: p.kind === "report.create" };
+  return { title: p.label || p.title || p.kind, target: p.summary || "", params, confirm: p.label || t("Confirm"), cancel: "Cancel", preview: p.kind === "report.create" };
 }
 
 // a hand-off to an agent (PW-135): when it STARTS, the walk moves on once and the delegated task stays in
@@ -58,20 +59,27 @@ export const isHandoff = (p) => ["task.create_from_message", "task.create_from_t
 
 export function afterExecute(p, res) {
   const label = p.label || p.title || p.kind;
-  if (res?.status === "done" && res.duplicate) return { receipt: `Already done - ${label}.`, settle: false, status: "done" };
+  if (res?.status === "done" && res.duplicate) return { receipt: `Already done - ${label}.`, receipt_i18n: { source: "Already done - {label}.", values: { label } }, settle: false, status: "done" };
   // the server's own receipt when it wrote one (it names the task and what became of it); ours was a
   // shorter second "Done" drawn beside it (2026-09-23)
   // ...a close-out whose merge landed but whose reply did not is done, and NOT settled: the reply still waits on you
-  if (res?.status === "done") return { receipt: res.receipt || `Done - ${label}.`, settle: !!p.settles && !res.outcome?.reply_error, status: "done", handoff: isHandoff(p) && !!(res.outcome?.started || res.outcome?.chat || (p.kind === "task.create_from_text" && res.outcome?.taskId)),
+  if (res?.status === "done") return { receipt: res.receipt || `Done - ${label}.`,
+    ...(!res.receipt ? { receipt_i18n: { source: "Done - {label}.", values: { label } } } : {}),
+    settle: !!p.settles && !res.outcome?.reply_error, status: "done", handoff: isHandoff(p) && !!(res.outcome?.started || res.outcome?.chat || (p.kind === "task.create_from_text" && res.outcome?.taskId)),
     ...(res.outcome?.taskId ? { tid: res.outcome.taskId } : {}) };
   if (res?.status === "error" && res.outcome?.dispatch === "needs_repo")
-    return { receipt: `Not started - ${res.error || "it needs a repository first"}. Pick one on the card and confirm again.`, settle: false, status: "error",
-             repo: { taskId: res.outcome.taskId, agent: res.outcome.agent } };
+    return { receipt: `Not started - ${res.error || "it needs a repository first"}. Pick one on the card and confirm again.`,
+             receipt_i18n: { source: "Not started - {reason}. Pick one on the card and confirm again.", values: { reason: res.error || { source: "it needs a repository first", values: {} } } },
+             settle: false, status: "error", repo: { taskId: res.outcome.taskId, agent: res.outcome.agent } };
   // ...and for a press on a proposal that moved or was cancelled: the server's recorded line, its buttons under it (a 409 body
   // carries both) - "Say it again" with only Next under it was the way on (re-audit, 2026-10-18)
-  if (res?.status === "stale" || res?.status === "cancelled") return { receipt: res.receipt || `Not done - ${res.error || "the proposal is out of date"}. Nothing moved.`, settle: false, status: res.status };
+  if (res?.status === "stale" || res?.status === "cancelled") return { receipt: res.receipt || `Not done - ${res.error || "the proposal is out of date"}. Nothing moved.`,
+    ...(!res.receipt ? { receipt_i18n: { source: "Not done - {reason}. Nothing moved.", values: { reason: res.error || { source: "the proposal is out of date", values: {} } } } } : {}),
+    settle: false, status: res.status };
   // the server's sentence for a failure too: it says "Not sent" for a reply, and it is the one the phone got (2026-09-29)
-  return { receipt: res?.receipt || `Not done - ${res?.error || "it failed"}. Nothing moved.`, settle: false, status: res?.status || "error" };
+  return { receipt: res?.receipt || `Not done - ${res?.error || "it failed"}. Nothing moved.`,
+    ...(!res?.receipt ? { receipt_i18n: { source: "Not done - {reason}. Nothing moved.", values: { reason: res?.error || { source: "it failed", values: {} } } } } : {}),
+    settle: false, status: res?.status || "error" };
 }
 
 // What the page does after a confirmed proposal: move the walk on, settle the item on the table first,
@@ -119,7 +127,8 @@ export function liveProposal(given, own) {
 export const holdsProposal = (m, p) => !!m?.proposal && (m.proposal.id === p?.id || (!!p?.replaces && m.proposal.id === p.replaces));
 export const isLive = (p) => !!p && p.version != null && (p.status || "proposed") === "proposed";
 
-export function afterCancel(p) { return { receipt: `Cancelled - nothing changed; ${p.ref || "it"} is where it was.`, status: "cancelled" }; }
+export function afterCancel(p) { return { receipt: `Cancelled - nothing changed; ${p.ref || "it"} is where it was.`,
+  receipt_i18n: { source: "Cancelled - nothing changed; {ref} is where it was.", values: { ref: p.ref || { source: "it", values: {} } } }, status: "cancelled" }; }
 
 // The owner said yes IN WORDS. The server (concierge.confirm_open) had already run the operation by the
 // time the answer came back, so there is no button left to press and no second execute to do - the card

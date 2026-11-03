@@ -73,11 +73,15 @@ export async function* streamAssistant(taskId, body, signal) {
   });
   if (!response.ok) {
     let message = `Assistant request failed (${response.status})`;
+    let presentation = { source: "Assistant request failed ({status})", values: { status: response.status } };
     try {
       const data = await response.json();
       message = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail || data);
+      presentation = null;
     } catch { /* keep status */ }
-    const e = new Error(message); record({ message, stack: e.stack, config: { url: `/api/tasks/${taskId}/assistant/stream` } });
+    const e = new Error(message);
+    if (presentation) e.presentation = presentation;
+    record({ message, stack: e.stack, config: { url: `/api/tasks/${taskId}/assistant/stream` } });
     throw e;
   }
   try {

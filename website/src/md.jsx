@@ -10,12 +10,15 @@ import { BORDER, DIM, INK, PANEL, mono } from "./theme.jsx";
 import { linkRefs, looksMd, refParts } from "./mdText.js";
 import { appLink, linkRoad, openAppLink, ownPath } from "./appLinks.js";
 import { plainCitations } from "./taskOutputs.js";
-import { attUrl, saveFile } from "./Attachments.jsx";
+import { attUrl, useSave } from "./Attachments.jsx";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 export { looksMd };
 
 const TASK_LINK = /#task=(\d+)/;
 // `onTask` (the chat's): a task link opens it as a press of its rail row does, and a bare ref keeps its own words
 const A = ({ href, children, onTask }) => {
+  useLocale();
   // ...BY ITS ROAD (appLinks.linkRoad, the owner 2026-11-02): the web alone opens a new tab - the system browser, from the desktop window -
   // and the app's own address, written out whole or as a path, stays in the window like its #links
   const road = linkRoad(href), own = ownPath(href) || "", hash = own.includes("#") ? own.slice(own.indexOf("#")) : href;
@@ -26,7 +29,7 @@ const A = ({ href, children, onTask }) => {
   const file = road === "file";
   // ...SAVED where it is (Attachments.saveFile), never a new tab: the desktop window handed that tab to the system browser, and a file
   // moved or deleted since the link was written opened a raw 404 there - now it is a line beside the link
-  const [err, setErr] = React.useState(""), [saved, setSaved] = React.useState(""), raw = file ? own : href;
+  const [err, save, saved] = useSave(), raw = file ? own : href;
   if (file) href = attUrl({ url: own }, true);
   return (<>
     <a href={href} target={road === "outside" ? "_blank" : undefined} data-tq-file-link={file ? "" : undefined} data-tq-road={road} rel="noreferrer" style={{ color: "#55697a", fontWeight: 600, textDecoration: "none" }}
@@ -34,9 +37,9 @@ const A = ({ href, children, onTask }) => {
       onClick={(e) => {
         if (m) { e.preventDefault(); if (onTask) onTask(Number(m[1])); else openAppLink(`task=${m[1]}`); }
         else if (page) { e.preventDefault(); openAppLink(page); }
-        else if (file) { e.preventDefault(); setErr(""); setSaved(""); saveFile({ url: raw }).then(setSaved, (x) => setErr(x.message)); }
+        else if (file) { e.preventDefault(); save({ url: raw }); }
       }}>
-      {m && !bare ? `open TQ-${String(m[1]).padStart(4, "0")} →` : children}
+      {m && !bare ? t("open TQ-{id} →", { id: String(m[1]).padStart(4, "0") }) : children}
     </a>
     {err && <span data-tq-file-error="" style={{ color: DIM, fontWeight: 400 }}> — {err}</span>}
     {saved && <span data-tq-file-saved="" style={{ color: DIM, fontWeight: 400 }}> — {saved}</span>}
@@ -69,7 +72,10 @@ const sx = {
 
 // A picture in markdown is never fetched: the text came from a model or a stranger, and loading it is a
 // request to whatever server they named (the page's CSP refuses it too). It stays a link the owner can choose to open.
-const Img = ({ src, alt }) => <A href={src}>{`[image${alt ? `: ${alt}` : ""}]`}</A>;
+const Img = ({ src, alt }) => {
+  useLocale();
+  return <A href={src}>{alt ? t("[image: {alt}]", { alt }) : t("[image]")}</A>;
+};
 
 const keepRefs = (kids) => React.Children.map(kids, (k) => typeof k !== "string" ? k
   : refParts(k).map((p, i) => i % 2 ? <span key={i} className="ref">{p}</span> : p));

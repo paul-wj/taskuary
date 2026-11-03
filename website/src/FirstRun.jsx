@@ -24,8 +24,9 @@ import { useVerbs } from "./actionRow.js";
 import { buttonOf, cardOf, doneOf, frontierOf, landOn, navMoves, nextOf, openAt, prevOf, reachable, requiredDone } from "./setupSteps.js";
 import { openBugReport } from "./bugReportOpen.js";
 import { AI_SHELF, AI_WHY, SETUP_AI } from "./aiShelf.js";
-import { label as btnLabel } from "./buttons.js";
-import { plural } from "./timeWords.js";
+import { label as btnLabel, VERBS } from "./buttons.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 const CHECK_MS = 200_000;           // its test, then one test email sorted (firstrun._prove, 90s at most): past this we say so
 const INSTALL_MS = 6 * 60_000;
@@ -35,6 +36,32 @@ const stop = (x) => { const s = String(x).trim(); return /[.!?…]$/.test(s) ? s
 const errText = (e) => stop(e?.response?.data?.detail || (e?.code === "ECONNABORTED" ? "That took too long." : e?.message) || "That didn't work.");
 // the logo each CLI wears is its maker's - the same mark as that maker's API card on Connections
 const CLI_LOGO = { claude: "anthropic", codex: "openai", gemini: "gemini", copilot: "github" };
+const CLI_SUBS = new Set(["Claude Code - if you pay for Claude", "ChatGPT's coding tool - if you pay for ChatGPT",
+  "Google's coding tool - free with a Google account", "GitHub's coding tool - if you pay for Copilot", "Already on this computer"]);
+const fixLine = (fix) => {
+  if (!fix?.why || !fix.title) return fix?.why || "";
+  if (fix.why === "That doesn't look like a whole key - copy it again and paste the full thing.") return t("That doesn't look like a whole key - copy it again and paste the full thing.");
+  const name = fix.title, retry = VERBS.try_again.label, why = fix.why;
+  if (fix.key) {
+    const patterns = [
+      ["That key didn't work (", "). Copy all of it again and press Connect.", "That key didn't work ({detail}). Copy all of it again and press Connect."],
+      [`${name} didn't answer (`, "). Check it is running and the model is named, then press Connect.", "{name} didn't answer ({detail}). Check it is running and the model is named, then press Connect."],
+      ["The key works, but ", ". Pick another AI, or another model on its card.", "The key works, but {detail}. Pick another AI, or another model on its card."],
+    ];
+    const match = patterns.find(([prefix, suffix]) => why.startsWith(prefix) && why.endsWith(suffix));
+    if (match) return t(match[2], { name, detail: why.slice(match[0].length, -match[1].length) });
+  }
+  const known = [
+    [`${name} can't be installed on this computer - pick ChatGPT or an API key instead.`, "{name} can't be installed on this computer - pick ChatGPT or an API key instead."],
+    [`${name} isn't on this computer yet. Press Install ${name} - it takes about a minute.`, "{name} isn't on this computer yet. Press Install {name} - it takes about a minute."],
+    [`${name} is signed in, but it didn't answer the test. What it said is below - press Update ${name}, or ${retry}.`, "{name} is signed in, but it didn't answer the test. What it said is below - press Update {name}, or {retry}."],
+    [`${name} is signed in, but it didn't answer the test. Press ${retry}, or pick another AI.`, "{name} is signed in, but it didn't answer the test. Press {retry}, or pick another AI."],
+    [`${name} is installed but needs you to sign in once. Press Sign in to ${name} - Taskuary checks it by itself when you're done.`, "{name} is installed but needs you to sign in once. Press Sign in to {name} - Taskuary checks it by itself when you're done."],
+    [`${name} is installed but needs you to sign in once. Sign in to it on this computer, then pick it again.`, "{name} is installed but needs you to sign in once. Sign in to it on this computer, then pick it again."],
+  ];
+  const key = known.find(([source]) => source === why)?.[1];
+  return key ? t(key, { name, retry: t(retry) }) : why;
+};
 const MAIL_TYPES = ["outlook", "gmail", "imap"];      // the main source's shelf before the server says (firstrun.source_types)
 
 // THE QUESTION, in the Advisor's own line (ActionRow's AdvisorNext draws the same row over the composer)
@@ -80,6 +107,7 @@ function Light({ root, card, canvas, onShown }) {
 // open stands alone with its setup under it: under all twenty-one, the form landed a screen away from the card that opened it
 // `group`: {label, cards} drawn under the shelf with a heading of its own - the coding tools, after the AI most people have
 function Shelf({ cards, more, opened, detail, onAll, allLabel = "Show all", group = null }) {
+  useLocale();
   const [all, setAll] = useState(false);
   const every = group ? [...cards, ...group.cards] : cards;
   const one = opened && every.find((c) => c.key === opened);
@@ -88,8 +116,8 @@ function Shelf({ cards, more, opened, detail, onAll, allLabel = "Show all", grou
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
       <CardGrid>{shown.map((c) => <ConnCard key={c.key} c={c} />)}</CardGrid>
-      {one ? <>{detail}{onAll && <Box><Button size="small" onClick={onAll} sx={small}>{allLabel}</Button></Box>}</>
-        : cards.length > FIRST && (all ? <Box><Button size="small" onClick={() => setAll(false)} sx={small}>Show fewer</Button></Box>
+      {one ? <>{detail}{onAll && <Box><Button size="small" onClick={onAll} sx={small}>{t(allLabel)}</Button></Box>}</>
+        : cards.length > FIRST && (all ? <Box><Button size="small" onClick={() => setAll(false)} sx={small}>{t("Show fewer")}</Button></Box>
           // MORE IS A CARD'S WEIGHT (the owner, 2026-10-20: "More AI options does not stand out enough"): the same frame, size and
           // logo slot as the cards beside it, in the same place and doing the same thing - so the rest of the choices are seen
           : <CardGrid><Box role="button" tabIndex={0} data-tq-shelf-more="" onClick={() => setAll(true)}
@@ -100,13 +128,13 @@ function Shelf({ cards, more, opened, detail, onAll, allLabel = "Show all", grou
               <Box sx={{ display: "flex", alignItems: "center", gap: 1.1 }}>
                 <Box sx={{ width: 30, height: 30, borderRadius: 2, bgcolor: "#e9e3d8", flexShrink: 0, display: "flex", alignItems: "center",
                   justifyContent: "center", color: "#55697a", fontWeight: 700, fontSize: 15 }}>+{cards.length - FIRST}</Box>
-                <Typography noWrap sx={{ color: INK, fontWeight: 600, fontSize: 13, flex: 1, minWidth: 0 }}>{more} options</Typography>
+                <Typography noWrap sx={{ color: INK, fontWeight: 600, fontSize: 13, flex: 1, minWidth: 0 }}>{t("{more} options", { more: t(more) })}</Typography>
               </Box>
               <Typography sx={{ color: FAINT, fontSize: 11.5, lineHeight: 1.5, pt: 1, minHeight: "3em" }}>
-                {`${cards.length - FIRST} more to choose from - open to see them all`}</Typography>
+                {t("{count} more to choose from - open to see them all", { count: cards.length - FIRST })}</Typography>
             </Box></CardGrid>)}
       {!one && group?.cards.length > 0 && <>
-        <Typography sx={{ fontSize: 12.5, fontWeight: 600, color: DIM, mt: 1 }} data-tq-firstrun-group="">{group.label}</Typography>
+        <Typography sx={{ fontSize: 12.5, fontWeight: 600, color: DIM, mt: 1 }} data-tq-firstrun-group="">{t(group.label)}</Typography>
         <CardGrid>{group.cards.map((c) => <ConnCard key={c.key} c={c} />)}</CardGrid>
       </>}
     </Box>
@@ -116,6 +144,7 @@ function Shelf({ cards, more, opened, detail, onAll, allLabel = "Show all", grou
 // `revisit`: opened from Set up Taskuary on an install that may be set up already - every question stays open, so the AI or
 // the mailbox can be changed from the same cards
 export default function FirstRun({ onWalk, onFinish, onChanged, revisit = false, hidden = false }) {
+  useLocale();
   const [st, setSt] = useState(null), [err, setErr] = useState("");
   const [loadErr, setLoadErr] = useState(""), [fails, setFails] = useState(0);   // the FIRST load failing: said, retried, Try again
   const [conns, setConns] = useState([]), [sources, setSources] = useState([]);
@@ -206,12 +235,12 @@ export default function FirstRun({ onWalk, onFinish, onChanged, revisit = false,
   const fixed = fix && (st.ais.find((a) => a.name === fix.name) || { name: fix.name, title: fix.title, installed: true });
   const nav = navMoves(st, view, reopened);
   const VERB = {
-    back: { label: "Back", tone: "s", run: () => go(prevOf(view, st)), title: "The step before" },
+    back: { label: t("Back"), tone: "s", run: () => go(prevOf(view, st)), title: t("The step before") },
     // ...past the optional steps, a first run lands on Setup complete before More connections (afterAbout)
-    next: { label: "Next", tone: "p", run: () => { const n = nextOf(view, st); go(firstPass.current && n === "other" ? "done" : n); }, title: "The next step" },
-    walk: { label: btnLabel("walk"), tone: "p", run: finishThen(onWalk), title: "Everything waiting, most important first" },
-    finish: { label: reopened ? "Back to my day" : "Finish setup", tone: "p", run: finishThen(onFinish),
-      title: "Setup is done - the canvas shows your day. Setup on the top bar opens this again." },
+    next: { label: t("Next"), tone: "p", run: () => { const n = nextOf(view, st); go(firstPass.current && n === "other" ? "done" : n); }, title: t("The next step") },
+    walk: { label: t(btnLabel("walk")), tone: "p", run: finishThen(onWalk), title: t("Everything waiting, most important first") },
+    finish: { label: t(reopened ? "Back to my day" : "Finish setup"), tone: "p", run: finishThen(onFinish),
+      title: t("Setup is done - the canvas shows your day. Setup on the top bar opens this again.") },
   };
   // Back takes the row's leading slot (the one Next takes on a card): the row shows two moves of a kind and folds the rest behind a
   // ▾, and Back, Walk and Finish as one kind put Finish setup behind it on the last step
@@ -235,18 +264,18 @@ export default function FirstRun({ onWalk, onFinish, onChanged, revisit = false,
   // ...and the fix the line names is a button too (the Advisor audit, 2026-10-15): "Press Install" and "Press Change" named buttons
   // setup did not have - an AI to install, and a brain failing on the real mail, which only Back three times could reach
   const fixRow = !st ? [] : [
-    ...(view === "ai" && fix?.fix === "install" && fixed?.install && !busy ? [{ id: "setup:install", group: "decide", tone: "p", label: `Install ${fixed.title}`,
-      title: "Installs it on this computer, then checks it works", run: () => install(fixed) }] : []),
+    ...(view === "ai" && fix?.fix === "install" && fixed?.install && !busy ? [{ id: "setup:install", group: "decide", tone: "p", label: t("Install {name}", { name: fixed.title }),
+      title: t("Installs it on this computer, then checks it works"), run: () => install(fixed) }] : []),
     // (on Setup complete its big button is Change AI itself - SetupDone)
-    ...(view !== "ai" && view !== "done" && st.ai_error ? [{ id: "setup:change-ai", group: "decide", tone: "p", label: "Change AI",
-      title: "Back to Your AI, to pick one that sorts what comes in", run: () => go("ai") }] : []),
+    ...(view !== "ai" && view !== "done" && st.ai_error ? [{ id: "setup:change-ai", group: "decide", tone: "p", label: t("Change AI"),
+      title: t("Back to Your AI, to pick one that sorts what comes in"), run: () => go("ai") }] : []),
   ];
   // ONE filled move, and only when the lit move is on the row (rowLit): a card or the open setup's button lit leaves the row outlined
   const toneOf = (id) => (id === rowLit ? "p" : "s");
   // ABOUT YOUR WORK MOVES ITS OWN QUESTIONS (FirstRunAbout's Back and Next, one question a screen): only the way back to the day stays
   // ...and SETUP COMPLETE has its one big button on the canvas (SetupDone), nothing in the row
   const navShown = view === "done" ? [] : view === "about" ? nav.filter((m) => m.id === "finish") : nav;
-  useVerbs("setup", [...navShown.map((m) => ({ id: `setup:${m.id}`, group: m.id === "back" ? "next" : "decide", disabled: !!m.disabled, why: m.why || "",
+  useVerbs("setup", [...navShown.map((m) => ({ id: `setup:${m.id}`, group: m.id === "back" ? "next" : "decide", disabled: !!m.disabled, why: m.why ? t(m.why) : "",
     ...VERB[m.id], tone: toneOf(`setup:${m.id}`) })), ...fixRow.map((v) => ({ ...v, tone: toneOf(v.id) }))], !hidden && navShown.length + fixRow.length > 0);
   // an error is about the step it happened on: it followed the owner to the next one (the Advisor audit, 2026-10-15)
   useEffect(() => { setErr(""); }, [view]);
@@ -307,9 +336,9 @@ export default function FirstRun({ onWalk, onFinish, onChanged, revisit = false,
     endSignin(); moveOn();                           // another AI picked: the ChatGPT sign-in waiting in a tab is not the move any more
     if (!ai.installed && ai.install && !ai.done) { install(ai); return; }
     setBusy(ai.name); setOpen(null); setBrowse(false);
-    setSaid(`Checking that ${ai.title} works - it sorts one test email, up to two minutes…`);
+    setSaid({ key: "Checking that {name} works - it sorts one test email, up to two minutes…", values: { name: ai.title } });
     try { await api.post("/api/setup/first-run/ai", { name: ai.name }, { timeout: CHECK_MS }); }
-    catch (e) { setBusy(""); setSaid(""); setErr(`${errText(e)} Pick it again to retry.`); return; }
+    catch (e) { setBusy(""); setSaid(""); setErr({ key: "{error} Pick it again to retry.", values: { error: errText(e) } }); return; }
     await reload(); setBusy(""); setSaid("");         // what happened is the server's line now; cleared only once it is drawn (no flicker back)
   };
   // CHATGPT IS A BROWSER SIGN-IN, not a CLI in a terminal (the owner, 2026-10-15: "for chatgpt regular why are you opening a
@@ -334,10 +363,10 @@ export default function FirstRun({ onWalk, onFinish, onChanged, revisit = false,
     const me = { cid: c.ConnectorId }; signRef.current = me;
     const gone = () => signRef.current !== me;
     // ...and read again: the server keeps the failure as setup's fix, so its card is the one that stands with it
-    const failed = (why) => { if (!gone()) { endSignin(`The ChatGPT sign-in didn't finish: ${why}. Pick ChatGPT to try again, or pick another AI.`); reload(); } };
+    const failed = (why) => { if (!gone()) { endSignin({ key: "The ChatGPT sign-in didn't finish: {why}. Pick ChatGPT to try again, or pick another AI.", values: { why } }); reload(); } };
     let flow;
     try { flow = (await api.post(`/api/connectors/${c.ConnectorId}/chatgpt/signin`)).data; }
-    catch (e) { if (!gone()) { signRef.current = null; setSignFail({ cid: c.ConnectorId, focus: true }); setErr(`${errText(e)} Pick ChatGPT to try again, or pick another AI.`); } return; }
+    catch (e) { if (!gone()) { signRef.current = null; setSignFail({ cid: c.ConnectorId, focus: true }); setErr({ key: "{error} Pick ChatGPT to try again, or pick another AI.", values: { error: errText(e) } }); } return; }
     if (gone()) return;
     me.flow = flow.flow;
     setSigning({ cid: c.ConnectorId, flow: flow.flow, url: flow.url });
@@ -363,22 +392,22 @@ export default function FirstRun({ onWalk, onFinish, onChanged, revisit = false,
     failed("it took longer than ten minutes");
   };
   const planCheck = async (cid) => {
-    setErr(""); setBusy(`c${cid}`); setSaid("Checking ChatGPT works - it sorts one test email, up to two minutes…");
+    setErr(""); setBusy(`c${cid}`); setSaid({ key: "Checking ChatGPT works - it sorts one test email, up to two minutes…" });
     try { await api.post("/api/setup/first-run/connector", { cid }, { timeout: CHECK_MS }); }
-    catch (e) { setErr(`${errText(e)} Pick ChatGPT to try again.`); }
+    catch (e) { setErr({ key: "{error} Pick ChatGPT to try again.", values: { error: errText(e) } }); }
     await reload(); setBusy(""); setSaid("");
   };
   const cancelSignin = () => { endSignin(); setErr(""); };
   const install = async (ai, verb = "Installing") => {
     // ...picked from every card (Pick a different AI): it stands alone while it installs, and with its failure after
-    setErr(""); setBusy(ai.name); setOpen(null); setBrowse(false); setSaid(`${verb} ${ai.title}… this takes about a minute.`);
+    setErr(""); setBusy(ai.name); setOpen(null); setBrowse(false); setSaid({ key: verb === "Updating" ? "Updating {name}… this takes about a minute." : "Installing {name}… this takes about a minute.", values: { name: ai.title } });
     try {
       await api.post("/api/cli/install", { name: ai.install });
       const until = Date.now() + INSTALL_MS;
       for (;;) {
         await new Promise((r) => setTimeout(r, 2500));
         const { data } = await api.get("/api/cli/install/state");
-        if (data.phase === "installing" && data.detail) setSaid(`${data.detail} (this can take a few minutes)`);
+        if (data.phase === "installing" && data.detail) setSaid({ key: "{detail} (this can take a few minutes)", values: { detail: data.detail } });
         if (data.phase === "done") break;
         if (data.phase === "failed") throw new Error(data.detail || "the installer stopped");
         if (Date.now() > until) throw new Error("the install is taking too long");
@@ -386,16 +415,16 @@ export default function FirstRun({ onWalk, onFinish, onChanged, revisit = false,
       setBusy(""); await pick({ ...ai, installed: true, done: true });   // installed: test it right away - one click, the whole step
     // A FAILED INSTALL STANDS ALONE WITH ITS ERROR, as a ChatGPT sign-in that did not finish does (the setup sweep, 2026-10-28): the
     // whole shelf came back with the failure only in the line, and no card said which one it was
-    } catch (e) { setBusy(""); setSaid(""); setInstFail({ name: ai.name, focus: true }); setErr(`${ai.title} didn't install: ${errText(e)} Pick it again to retry, or pick another AI.`); }
+    } catch (e) { setBusy(""); setSaid(""); setInstFail({ name: ai.name, focus: true }); setErr({ key: "{name} didn't install: {error} Pick it again to retry, or pick another AI.", values: { name: ai.title, error: errText(e) } }); }
   };
 
   // the bar is never blank: while setup loads it says so, or what went wrong - and the failure is tried again, by itself or by Try again
   stRef.current = st;
-  const loadLine = loadErr && `${loadErr} Trying again in a moment.`;
-  if (!st) lineRef.current = loadLine || "Getting set up…";
+  const loadLine = loadErr && t("{error} Trying again in a moment.", { error: loadErr });
+  if (!st) lineRef.current = loadLine || t("Getting set up…");
   if (!st) return <Box sx={{ p: 2, display: "flex", gap: 1, alignItems: "center" }}><CircularProgress size={16} />
-    <Typography sx={{ color: DIM }}>{loadLine || "Getting set up…"}</Typography>
-    {loadErr && <Button size="small" onClick={reload}>{btnLabel("try_again")}</Button>}</Box>;
+    <Typography sx={{ color: DIM }}>{loadLine || t("Getting set up…")}</Typography>
+    {loadErr && <Button size="small" onClick={reload}>{t(btnLabel("try_again"))}</Button>}</Box>;
 
   const byType = (types) => types.flatMap((t) => conns.filter((c) => c.Type === t));
   // plain: the same card, its state in a first-time owner's words (connCardOf) - the Connections page keeps its own
@@ -418,7 +447,7 @@ export default function FirstRun({ onWalk, onFinish, onChanged, revisit = false,
   const cliCards = st.ais.map((ai) => {
     const [state, words] = stateOf(ai);
     return { key: `cli-${ai.name}`, title: ai.title, channel: CLI_LOGO[ai.name] || "cli", go: busy ? undefined : () => pick(ai),
-      state, plain: true, desc: `${words} · ${ai.sub}` };
+      state, plain: true, desc: `${t(words)} · ${CLI_SUBS.has(ai.sub) ? t(ai.sub) : ai.sub}` };
   });
   // ChatGPT: the plan, signed in through the browser (planSignin) - not the Codex CLI's terminal
   const plan = byType(["chatgpt"])[0], planKey = plan && `c${plan.ConnectorId}`;
@@ -431,13 +460,13 @@ export default function FirstRun({ onWalk, onFinish, onChanged, revisit = false,
   const planFailed = !!plan && (signFail?.cid === plan.ConnectorId || (!!plan.LastError && !plan.HasSecret));
   const planCard = plan && { ...card(plan, true), title: "ChatGPT", channel: "openai", plain: true, pick: `connector:${plan.ConnectorId}`,
     state: signing || planBusy || planOn ? "on" : fix?.key === planKey || planFailed ? "failing" : "off",
-    desc: `${signing ? "Signing in…" : planBusy ? "Checking it works…" : planFailed ? "Sign-in didn't finish - pick it to try again" : fix?.key === planKey ? "Signed in · not answering"
-      : planOn ? "Your AI - it sorts what comes in" : "Not set up"}` + " · sign in with your ChatGPT account",
+    desc: `${t(signing ? "Signing in…" : planBusy ? "Checking it works…" : planFailed ? "Sign-in didn't finish - pick it to try again" : fix?.key === planKey ? "Signed in · not answering"
+      : planOn ? "Your AI - it sorts what comes in" : "Not set up")} · ${t("sign in with your ChatGPT account")}`,
     // ...and pressable while a sign-in waits: pressing it again starts a fresh one - it did nothing, and the old one never ended
     go: busy || planOn ? undefined : () => planSignin(plan) };
   const keyCards = byType(SETUP_AI).map((c) => {
     const k = card(c, true);
-    return { ...k, desc: AI_WHY[c.Type] ? `${k.desc} · ${AI_WHY[c.Type]}` : k.desc, type: c.Type, pick: `connector:${c.ConnectorId}` };
+    return { ...k, desc: AI_WHY[c.Type] ? `${k.desc} · ${t(AI_WHY[c.Type])}` : k.desc, type: c.Type, pick: `connector:${c.ConnectorId}` };
   });
   // WHAT MOST PEOPLE HAVE LEADS (the non-coder audit, 2026-10-17): the first four were ChatGPT and three coding tools, with the
   // organisation's card and the keys under More AI. ChatGPT, the organisation card when there is one, the keys - and the coding
@@ -469,10 +498,10 @@ export default function FirstRun({ onWalk, onFinish, onChanged, revisit = false,
   const aboutDue = q === "about";
   // the mail is sorted in the background: setup never waits on it, and says so (the owner, 2026-10-15: "it never says emails 45 are
   // processed, moving on or doing it in background as no need to wait") - and a mailbox read with nothing in it says that (st.empty)
-  const sortingLine = st.step === "reading" ? (st.sorting ? ` What came in is being sorted in the background - ${plural(st.sorting, "item")} to go; no need to wait.`
-    : st.empty ? " Connected - nothing new to sort yet." : " What came in is being read in the background - no need to wait.") : "";
-  // the brain failing on the real mail, said the same on every step - the server's own line only came with its "reading" step
-  const aiErr = st.ai_error ? `${st.brain?.name || "Your AI"} isn't sorting what comes in - ${st.ai_error}.` : "";
+  const sortingLine = st.step === "reading" ? (st.sorting ? t(st.sorting === 1 ? " What came in is being sorted in the background - {count} item to go; no need to wait." : " What came in is being sorted in the background - {count} items to go; no need to wait.", { count: st.sorting })
+    : st.empty ? t(" Connected - nothing new to sort yet.") : t(" What came in is being read in the background - no need to wait.")) : "";
+  // the brain failing on the real mail, said the same on every step
+  const aiErr = st.ai_error ? t("{name} isn't sorting what comes in - {error}.", { name: st.brain?.name || t("Your AI"), error: st.ai_error }) : "";
   // THE PICKED CARD STANDS ALONE with its one next step under it (the owner, 2026-10-15: "i clicked chat gpt the other boxes should
   // go away, otherwise it looks like nothing happens ... you act something happens, show whats next step clearly. any error lead them
   // to fix"). Checking: say so. Needs sign-in: one button that runs the CLI's own login, and the check runs by itself when it ends.
@@ -489,21 +518,20 @@ export default function FirstRun({ onWalk, onFinish, onChanged, revisit = false,
   // a "Successfully logged in" was sent straight back to Sign in (the owner, 2026-10-15). What it said, and the moves that can fix it.
   const stuck = q === "ai" && ["update", "retry"].includes(fix?.fix);
   const said_ = fix?.detail && <Typography sx={{ fontSize: 12.5, color: DIM, fontFamily: "monospace", whiteSpace: "pre-wrap", maxWidth: 760 }}>
-    What it said: {fix.detail}</Typography>;
+    {t("What it said:")} {fix.detail}</Typography>;
   const cli = signin && { name: fix.name, setup: fix.setup, installed: true };
   const cliDetail = busy ? (
     <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}><CircularProgress size={14} />
-      <Typography sx={{ color: DIM, fontSize: 13.5 }}>Checking it works by sorting one test email - up to two minutes.</Typography></Box>
+      <Typography sx={{ color: DIM, fontSize: 13.5 }}>{t("Checking it works by sorting one test email - up to two minutes.")}</Typography></Box>
   ) : signing ? (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 1, alignItems: "flex-start" }}>
       <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}><CircularProgress size={14} />
-        <Typography sx={{ fontSize: 14 }}>Finish signing in to ChatGPT in your browser - Taskuary carries on by itself when you're done.</Typography></Box>
+        <Typography sx={{ fontSize: 14 }}>{t("Finish signing in to ChatGPT in your browser - Taskuary carries on by itself when you're done.")}</Typography></Box>
       {/* a work ChatGPT can refuse other apps - OpenAI's own page says so in a code (3p_delegated_access_policy_denied, 2026-10-16) */}
-      <Typography sx={{ fontSize: 12.5, color: DIM, maxWidth: 620 }}>If OpenAI says your workspace's policy denies it, use Codex
-        instead - press Cancel and pick Codex. (A workspace setting blocks other apps; its admin can change it.)</Typography>
+      <Typography sx={{ fontSize: 12.5, color: DIM, maxWidth: 620 }}>{t("If OpenAI says your workspace's policy denies it, use Codex instead - press Cancel and pick Codex. (A workspace setting blocks other apps; its admin can change it.)")}</Typography>
       <Box sx={{ display: "flex", gap: 1 }}>
-        <Button variant="outlined" href={signing.url} target="_blank" rel="noreferrer">Open the sign-in page</Button>
-        <Button size="small" sx={{ color: DIM }} onClick={cancelSignin}>Cancel</Button>
+        <Button variant="outlined" href={signing.url} target="_blank" rel="noreferrer">{t("Open the sign-in page")}</Button>
+        <Button size="small" sx={{ color: DIM }} onClick={cancelSignin}>{t("Cancel")}</Button>
       </Box>
     </Box>
   ) : signin ? (
@@ -511,31 +539,30 @@ export default function FirstRun({ onWalk, onFinish, onChanged, revisit = false,
       {!pane?.sid ? <>
         {/* the why is the Advisor's line above; under the card is only the thing to press */}
         <Button variant="contained" disableElevation disabled={!!opening}
-          onClick={() => openSetup({ ...cli, login: true })}>{opening ? "Opening…" : `Sign in to ${fix.title}`}</Button>
+          onClick={() => openSetup({ ...cli, login: true })}>{opening ? t("Opening…") : t("Sign in to {name}", { name: fix.title })}</Button>
       </> : <>
         <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}><CircularProgress size={14} />
-          <Typography sx={{ fontSize: 14 }}>A sign-in page opened in your browser - finish signing in there. Taskuary checks {fix.title} by
-            itself when you're done.</Typography></Box>
+          <Typography sx={{ fontSize: 14 }}>{t("A sign-in page opened in your browser - finish signing in there. Taskuary checks {name} by itself when you're done.", { name: fix.title })}</Typography></Box>
         <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
-          {url && <Button variant="outlined" href={url} target="_blank" rel="noreferrer">Open the sign-in page</Button>}
-          <Button size="small" onClick={check}>Check now</Button>
-          <Button size="small" sx={{ color: DIM }} onClick={() => setDetails((v) => !v)}>{details ? "Hide details" : "Show details"}</Button>
+          {url && <Button variant="outlined" href={url} target="_blank" rel="noreferrer">{t("Open the sign-in page")}</Button>}
+          <Button size="small" onClick={check}>{t("Check now")}</Button>
+          <Button size="small" sx={{ color: DIM }} onClick={() => setDetails((v) => !v)}>{t(details ? "Hide details" : "Show details")}</Button>
         </Box>
         <Box sx={{ width: "100%", display: details ? "block" : "none" }}><CliPane pane={pane} height="34vh" hint={false} onExit={ended} /></Box>
       </>}
-      {note?.bad && <Typography sx={{ fontSize: 13, color: "#9b2c2c" }}>{note.text} - try again, or pick a different AI.</Typography>}
+      {note?.bad && <Typography sx={{ fontSize: 13, color: "#9b2c2c" }}>{t("{detail} - try again, or pick a different AI.", { detail: note.text })}</Typography>}
     </Box>
   ) : stuck ? (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 1, alignItems: "flex-start" }}>
       {said_}
       <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
-        {fix.key && plan && fix.key === planKey && <Button variant="contained" disableElevation onClick={() => planSignin(plan)}>Sign in again</Button>}
+        {fix.key && plan && fix.key === planKey && <Button variant="contained" disableElevation onClick={() => planSignin(plan)}>{t("Sign in again")}</Button>}
         {fix.fix === "update" && fix.install && <Button variant="contained" disableElevation
-          onClick={() => install({ ...fixed, install: fix.install }, "Updating")}>Update {fix.title}</Button>}
-        <Button variant={fix.fix === "update" || fix.key ? "outlined" : "contained"} disableElevation onClick={check}>{btnLabel("try_again")}</Button>
+          onClick={() => install({ ...fixed, install: fix.install }, "Updating")}>{t("Update {name}", { name: fix.title })}</Button>}
+        <Button variant={fix.fix === "update" || fix.key ? "outlined" : "contained"} disableElevation onClick={check}>{t(btnLabel("try_again"))}</Button>
         <Button onClick={() => openBugReport({ message: `${fix.title} didn't answer the setup test
 ${fix.detail || ""}`, screen: "Setup",
-          route: `first-run ${fix.name}` })}>{btnLabel("report_bug")}</Button>
+          route: `first-run ${fix.name}` })}>{t(btnLabel("report_bug"))}</Button>
       </Box>
     </Box>
   ) : null;
@@ -558,39 +585,40 @@ ${fix.detail || ""}`, screen: "Setup",
   // what detection PROVED is on this machine - the only CLI the line may name when nothing is lit, and then as one choice of many
   const found = st.ais.filter((a) => a.installed);
   // ...and THE LINE NAMES IT by the words the screen draws: the card's title, the button's own label, the row verb's
-  lineRef.current = said || err || {
-    // ...a sign-in running says its own line: the last card's failure stood over it and read as if ChatGPT had failed (the UI audit, 2026-10-21)
-    ai: (signing ? "Finish signing in to ChatGPT in your browser - Taskuary carries on by itself when you're done." : "") || (!browse && fix?.why) ||(aiErr ? `${aiErr} Pick another AI - it is checked on a test email first.` : st.step === "ai" ? `What AI do you have? ${!litCard
-      ? (found.length === 1 ? `${found[0].title} is on this computer - pick it if that is the one you use, or pick any other` : "Pick the one you use")
-      : litCard.state === "on" ? `${litCard.title} is connected here - pick ${litCard.title} to make it your AI`
-      : litCard.state === "failing" ? `${litCard.title} didn't work last time - pick ${litCard.title} to try again, or pick another`
-      : `Pick its card - ${litCard.title} if that is the one you pay for`}. Taskuary checks it works, then uses it to sort what comes in.`
-      : `Your AI is ${st.brain?.name || "set"} - it sorts what comes in and runs the Assistant. Pick another here to switch, or press ${VERB.next.label}.`),
-    // a brain failing on the real mail is said on every step past the AI, with Change AI in the row - "no need to wait" over mail
-    // that was not being sorted at all was the opposite of true (the Advisor audit, 2026-10-15)
-    mail: aiErr ? `${aiErr} Change AI picks one that does.` : doneOf(st, "mail") ? `Your main source is connected.${sortingLine} Another source can be added the same way - a second one of the same kind is Add another on its card - or press ${VERB.next.label}.`
-      // a sign-in that failed: why, and what to do - not the question again under the card's own error (2026-10-16)
-      // ...and once that card is shut (a reload), the card to open again is the one lit, by its title
-      : st.mail_error ? (litCard ? `${st.mail_error} Pick ${litCard.title} to fix it - or pick a different source.`
-        : `${st.mail_error} Fix it in the card and press Connect again - or pick a different source.`)
-      : `Where does your work come in? Connect your email, chat or task system - ${!litCard ? "pick its card" : oneSignIn
-        ? `email is the usual one: ${litCard.title} is one sign-in` : `email is the usual one: start with ${litCard.title} if that is yours`}.`,
-    about: aiErr ? `${aiErr} Change AI picks one that does.` : aboutLine || "A few questions about your work - filled in from your email where I can.",
-    done: aiErr ? `${aiErr} Change AI picks one that does.` : "You're set up. Anything else you connect is optional - Connections has it all, any time.",
-    other: aiErr ? `${aiErr} Change AI picks one that does.` : connSug ? (connLine || (connSug.failed ? "I couldn't suggest connections just now - pick a section below, or skip it: nothing more is needed."
+  const aiProblem = aiErr ? t("{error} Change AI picks one that does.", { error: aiErr }) : "";
+  const aiChoice = !litCard
+    ? (found.length === 1 ? t("{name} is on this computer - pick it if that is the one you use, or pick any other", { name: found[0].title }) : t("Pick the one you use"))
+    : litCard.state === "on" ? t("{name} is connected here - pick {name} to make it your AI", { name: litCard.title })
+    : litCard.state === "failing" ? t("{name} didn't work last time - pick {name} to try again, or pick another", { name: litCard.title })
+    : t("Pick its card - {name} if that is the one you pay for", { name: litCard.title });
+  const mailChoice = !litCard ? t("pick its card") : oneSignIn
+    ? t("email is the usual one: {name} is one sign-in", { name: litCard.title })
+    : t("email is the usual one: start with {name} if that is yours", { name: litCard.title });
+  lineRef.current = (said ? t(said.key, said.values) : "") || (err && typeof err === "object" ? t(err.key, err.values) : err) || {
+    ai: (signing ? t("Finish signing in to ChatGPT in your browser - Taskuary carries on by itself when you're done.") : "") || (!browse && fixLine(fix))
+      || (aiErr ? t("{error} Pick another AI - it is checked on a test email first.", { error: aiErr })
+        : st.step === "ai" ? t("What AI do you have? {choice}. Taskuary checks it works, then uses it to sort what comes in.", { choice: aiChoice })
+        : t("Your AI is {name} - it sorts what comes in and runs the Assistant. Pick another here to switch, or press {next}.", { name: st.brain?.name || t("set"), next: VERB.next.label })),
+    mail: aiProblem || (doneOf(st, "mail") ? t("Your main source is connected.{sorting} Another source can be added the same way - a second one of the same kind is Add another on its card - or press {next}.", { sorting: sortingLine, next: VERB.next.label })
+      : st.mail_error ? (litCard ? t("{error} Pick {name} to fix it - or pick a different source.", { error: st.mail_error, name: litCard.title })
+        : t("{error} Fix it in the card and press Connect again - or pick a different source.", { error: st.mail_error }))
+      : t("Where does your work come in? Connect your email, chat or task system - {choice}.", { choice: mailChoice })),
+    about: aiProblem || aboutLine || t("A few questions about your work - filled in from your email where I can."),
+    done: aiProblem || t("You're set up. Anything else you connect is optional - Connections has it all, any time."),
+    other: aiProblem || (connSug ? (connLine || t(connSug.failed ? "I couldn't suggest connections just now - pick a section below, or skip it: nothing more is needed."
       : "Nothing else is needed - connect more here any time, from Connections."))
-      : "Looking at what you told me about your work to suggest what to connect…",
-    dev: st.developer_mode ? "Developer mode is on: work that changes code goes to a coding agent, and you can connect GitHub next."
-      : "Are you a developer? Most people leave this off - every job then goes to a general agent.",
-    github: st.github ? "GitHub is connected - coding agents can work in your repositories."
-      : "Connect GitHub if your code is there. It is optional: a coding agent also works without it, in a scratch folder.",
+      : t("Looking at what you told me about your work to suggest what to connect…")),
+    dev: t(st.developer_mode ? "Developer mode is on: work that changes code goes to a coding agent, and you can connect GitHub next."
+      : "Are you a developer? Most people leave this off - every job then goes to a general agent."),
+    github: t(st.github ? "GitHub is connected - coding agents can work in your repositories."
+      : "Connect GitHub if your code is there. It is optional: a coding agent also works without it, in a scratch folder."),
   }[q];
   const named = canvas ? shown.label : litCard ? litCard.title : [...fixRow, ...navShown.map((m) => ({ id: `setup:${m.id}`, ...VERB[m.id] }))].find((v) => v.id === litId)?.label;
   // an open setup says what to do on it; any line that does not name the lit control yet ends by naming it
   if (!said && !err && !fix && !st.mail_error && !aiErr && canvas && open && conn && shown.label)
-    lineRef.current = shown.off ? `Fill in ${conn.Name} below, then press ${shown.label}.` : `Press ${shown.label} on ${conn.Name} below.`;
+    lineRef.current = shown.off ? t("Fill in {name} below, then press {label}.", { name: conn.Name, label: shown.label }) : t("Press {label} on {name} below.", { label: shown.label, name: conn.Name });
   else if (!said && named && !lineRef.current.includes(named))
-    lineRef.current = `${lineRef.current} ${litCard ? `Pick ${named}.` : q === "other" ? `Press ${named} when you're done.` : `Press ${named}.`}`;
+    lineRef.current = t("{line} {instruction}", { line: lineRef.current, instruction: t(litCard ? "Pick {name}." : q === "other" ? "Press {name} when you're done." : "Press {name}.", { name: named }) });
   const shelf = (k, cards, more, group = null) => q === k && (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
       <Shelf cards={cards} more={more} opened={(open && `c${open.id}`) || (k === "ai" && focus) || null} group={group}
@@ -610,12 +638,10 @@ ${fix.detail || ""}`, screen: "Setup",
       {shelf("ai", ai, "More AI", { label: "If you use a coding tool", cards: coding })}
       {shelf("mail", mail, "More chat and task")}
       {q === "dev" && <Box data-tq-setup-dev="" sx={{ display: "flex", flexDirection: "column", gap: 1, maxWidth: 680 }}>
-        <Typography sx={{ fontSize: 16, fontWeight: 600, color: INK }}>Are you a developer?</Typography>
-        <Typography sx={{ fontSize: 13.5, color: DIM }}>Turn this on only if you write code and use a coding tool such as Claude Code or
-          Codex. Then work that changes code goes to a coding agent in your code. Off, every job goes to a general agent - most people
-          leave it off. You can change it any time in Settings.</Typography>
+        <Typography sx={{ fontSize: 16, fontWeight: 600, color: INK }}>{t("Are you a developer?")}</Typography>
+        <Typography sx={{ fontSize: 13.5, color: DIM }}>{t("Turn this on only if you write code and use a coding tool such as Claude Code or Codex. Then work that changes code goes to a coding agent in your code. Off, every job goes to a general agent - most people leave it off. You can change it any time in Settings.")}</Typography>
         <FormControlLabel control={<Switch checked={!!st.developer_mode} disabled={devBusy} onChange={(e) => setDev(e.target.checked)} />}
-          label="Developer mode" />
+          label={t("Developer mode")} />
       </Box>}
       {shelf("github", byType(["github"]).map((c) => card(c, false)), "More")}
       {aboutDue && <FirstRunAbout again={!!st.about_done} onBack={() => go("mail")} onLine={setAboutLine} onSaved={afterAbout} hidden={hidden}

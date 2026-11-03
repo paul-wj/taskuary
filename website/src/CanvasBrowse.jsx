@@ -12,6 +12,8 @@ import ArrowBackIosNewIcon from "@mui/icons-material/ArrowBackIosNew";
 import { BORDER, DIM, FAINT, INK, PANEL } from "./theme.jsx";
 import { nothingMatches } from "./searchHits.js";
 import { lazyView } from "./lazyView.jsx";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 // each area is its own chunk, all asked for as soon as this one runs (lazyView): a deep link lands without a second wait
 const ConnectorsView = lazyView(() => import("./ConnectorsView.jsx"));
 const ReportsView = lazyView(() => import("./ReportsView.jsx"));
@@ -26,9 +28,10 @@ const chipSx = (on) => ({ height: 30, px: 1.6, borderRadius: 99, border: `1px so
 // detail: the view's own element for the one open card, or null. `openLabel` names the open card for the assistant.
 export function BrowseFrame({ title, summary, sections = [], section, onSection, note, cards = [], detail = null, onBack,
   openLabel = "", search = null, tools = null, onOpenCard, live = true, empty = null, query = "", searched = "", onReopen = null, wide = false, noneAction = null }) {
+  useLocale();
   // ONE WAY TO SAY A PAGE'S BOX FOUND NOTHING (verify, 2026-10-20): a page that forgot to pass its own line said "Nothing here." under
   // the words typed - Settings did. `query` is the box's words; while there are any, the frame says it, the way the search does
-  const none = String(query || "").trim() ? nothingMatches(query, searched || title) : empty || "Nothing here.";
+  const none = String(query || "").trim() ? nothingMatches(query, searched || title) : empty || t("Nothing here.");
   // ...and a page with nothing opened on it still says WHERE the owner is: a question typed over the Connections wall went to the
   // assistant with no context at all, and "which AI agent tool do I need for this thing to work" was answered about the app in
   // general (the owner, 2026-10-01: "the open field should be the top of query ... that is current context")
@@ -121,9 +124,10 @@ const NoSubject = ({ onOpenCard }) => { useEffect(() => { onOpenCard?.(null); },
 // One browse card on the chat line: which area, and its state ({section, open}) - the view keeps the rest.
 // `live` is false once a newer browse card is posted, so only one detail is ever mounted.
 export default function CanvasBrowse({ area, state, onState, live, onOpenCard, onNavigate, onOpenTask, onReopen, onClose, onSaid }) {
+  useLocale();
   const frame = (props) => <BrowseFrame {...props} live={live} onOpenCard={onOpenCard} onReopen={onReopen} />;
   const common = { browse: frame, browseState: state, onBrowseState: onState };
-  if (!live) return frame({ title: AREA_TITLES[area] });
+  if (!live) return frame({ title: t(AREA_TITLES[area]) });
   // NEW is the one area that starts something: the card is the sheet's own form, in the conversation, and closing it
   // takes the line away (an earlier browse card folds to its title; this one has nothing left to read once it is closed)
   if (area === "new") return (

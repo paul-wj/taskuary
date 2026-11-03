@@ -9,6 +9,8 @@ import { lazyGeneral } from "./lazyGeneral.js";
 import { TaskuaryMark } from "./ui.jsx";
 import { ASSISTANT, BORDER, DIM, GRADIENT, INK, PANEL, PANEL2 } from "./theme.jsx";
 import { openAppLink } from "./appLinks.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 const GeneralWorkspace = React.lazy(lazyGeneral("GeneralWorkspace"));
 const DockActions = React.lazy(lazyGeneral("DockActions"));
@@ -26,9 +28,10 @@ const WALKTHROUGHS = [
   ["Waiting on you", "Walk me through the drafts and proposals waiting for my yes, exactly one item at a time. Name the rv number and its task when available so the action card shows the exact draft. Explain the decision, recommend Send, Redraft, or Dismiss, ask one question, then stop and wait for my answer."],
 ];
 
-const errorText = (e) => e?.response?.data?.detail || e?.message || "Taskuary could not open.";
+const errorText = (e) => e?.response?.data?.detail || e?.message || true;
 
 export default function FloatingAssistant({ onNavigate, onChanged, activeTab }) {
+  useLocale();
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [mounted, setMounted] = useState(false);
@@ -114,15 +117,15 @@ export default function FloatingAssistant({ onNavigate, onChanged, activeTab }) 
             <TaskuaryMark size={27} sx={{ boxShadow: "0 1px 5px #0002" }} />
             <Box sx={{ minWidth: 0, flex: 1 }}>
               <Typography sx={{ fontSize: 13.5, lineHeight: 1.2, fontWeight: 600 }}>Taskuary</Typography>
-              <Typography sx={{ fontSize: 10.5, opacity: 0.78 }}>{busy ? "Working on your last message…" : "Talk it through. Take action."}</Typography>
+              <Typography sx={{ fontSize: 10.5, opacity: 0.78 }}>{busy ? t("Working on your last message…") : t("Talk it through. Take action.")}</Typography>
             </Box>
-            <Tooltip title={expanded ? "Return to compact view" : "Fill the workspace beside your work rail"}>
-              <IconButton size="small" aria-label={expanded ? "Return Taskuary to compact view" : "Expand Taskuary"}
+            <Tooltip title={expanded ? t("Return to compact view") : t("Fill the workspace beside your work rail")}>
+              <IconButton size="small" aria-label={expanded ? t("Return Taskuary to compact view") : t("Expand Taskuary")}
                 onClick={() => setExpanded((v) => !v)} sx={{ color: "white" }}>
                 {expanded ? <CloseFullscreenIcon sx={{ fontSize: 17 }} /> : <OpenInFullIcon sx={{ fontSize: 17 }} />}
               </IconButton>
             </Tooltip>
-            <IconButton size="small" aria-label="Close Taskuary" onClick={() => setOpen(false)} sx={{ color: "white" }}>
+            <IconButton size="small" aria-label={t("Close Taskuary")} onClick={() => setOpen(false)} sx={{ color: "white" }}>
               <CloseIcon sx={{ fontSize: 19 }} />
             </IconButton>
           </Box>
@@ -131,38 +134,38 @@ export default function FloatingAssistant({ onNavigate, onChanged, activeTab }) 
               <Button key={label} size="small" variant={picker === kind ? "contained" : "outlined"}
                 disabled={!task} onClick={() => chooseStarter(kind)}
                 sx={{ minHeight: 25, px: 0.8, py: 0.2, fontSize: 10.5, textTransform: "none", borderColor: BORDER, color: INK, bgcolor: PANEL2 }}>
-                {label}
+                {t(label)}
               </Button>
             ))}
             <Box sx={{ flex: 1 }} />
             {["Assistant", "Tasks"].map((tab) => (
               <Button key={tab} size="small" endIcon={<LaunchIcon sx={{ fontSize: "12px !important" }} />} onClick={() => go(tab)}
-                sx={{ minWidth: 0, px: 0.55, py: 0.2, fontSize: 10.5, color: DIM, textTransform: "none" }}>{tab}</Button>
+                sx={{ minWidth: 0, px: 0.55, py: 0.2, fontSize: 10.5, color: DIM, textTransform: "none" }}>{t(tab)}</Button>
             ))}
           </Box>
           {picker && (
             <Box sx={{ px: 1, py: 0.7, display: "flex", alignItems: "center", gap: 0.55, flexWrap: "wrap",
               bgcolor: PANEL2, borderBottom: `1px solid ${BORDER}` }}>
               <Typography sx={{ mr: 0.25, color: DIM, fontSize: 10.5 }}>
-                {picker === "walk" ? "Where should we start?" : "What do you want to add?"}
+                {picker === "walk" ? t("Where should we start?") : t("What do you want to add?")}
               </Typography>
               {picker === "walk" ? WALKTHROUGHS.map(([label, text]) => (
                 <Button key={label} size="small" variant="outlined" onClick={() => ask(text)}
-                  sx={{ minHeight: 25, px: 0.8, py: 0.2, fontSize: 10.5, textTransform: "none" }}>{label}</Button>
+                  sx={{ minHeight: 25, px: 0.8, py: 0.2, fontSize: 10.5, textTransform: "none" }}>{t(label)}</Button>
               )) : <>
                 <Button size="small" variant="outlined" onClick={addTask}
-                  sx={{ minHeight: 25, px: 0.8, py: 0.2, fontSize: 10.5, textTransform: "none" }}>Task</Button>
+                  sx={{ minHeight: 25, px: 0.8, py: 0.2, fontSize: 10.5, textTransform: "none" }}>{t("Task")}</Button>
                 <Button size="small" variant="outlined" onClick={addReport}
-                  sx={{ minHeight: 25, px: 0.8, py: 0.2, fontSize: 10.5, textTransform: "none" }}>Report</Button>
+                  sx={{ minHeight: 25, px: 0.8, py: 0.2, fontSize: 10.5, textTransform: "none" }}>{t("Report")}</Button>
                 <Button size="small" variant="outlined" onClick={() => go("Connections")}
-                  sx={{ minHeight: 25, px: 0.8, py: 0.2, fontSize: 10.5, textTransform: "none" }}>Connection</Button>
+                  sx={{ minHeight: 25, px: 0.8, py: 0.2, fontSize: 10.5, textTransform: "none" }}>{t("Connection")}</Button>
               </>}
             </Box>
           )}
           <Box sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
             {!task && !error && <Box sx={{ flex: 1, display: "grid", placeItems: "center" }}><CircularProgress size={22} /></Box>}
             {error && <>
-              <Alert severity="error" sx={{ borderRadius: 0 }}>{error}</Alert>
+              <Alert severity="error" sx={{ borderRadius: 0 }}>{error === true ? t("Taskuary could not open.") : error}</Alert>
               <React.Suspense fallback={<Box sx={{ flex: 1, display: "grid", placeItems: "center" }}><CircularProgress size={22} /></Box>}>
                 <DockActions messages={[]} expanded={expanded} onNavigate={go} onChanged={onChanged} />
               </React.Suspense>
@@ -178,8 +181,8 @@ export default function FloatingAssistant({ onNavigate, onChanged, activeTab }) 
           </Box>
         </Box>
       )}
-      <Tooltip title={open ? "Taskuary is open" : "Ask Taskuary about your day"} placement="left">
-        <Box component="button" aria-label={open ? "Taskuary is open" : "Open Taskuary"} onClick={() => open ? setOpen(false) : show()}
+      <Tooltip title={open ? t("Taskuary is open") : t("Ask Taskuary about your day")} placement="left">
+        <Box component="button" aria-label={open ? t("Taskuary is open") : t("Open Taskuary")} onClick={() => open ? setOpen(false) : show()}
           sx={{ position: "fixed", zIndex: 1451, right: { xs: 14, sm: 24 }, bottom: { xs: 14, sm: 22 },
             width: 52, height: 52, p: 0, borderRadius: "50%", border: "1px solid rgba(255,255,255,.72)",
             display: open && expanded ? "none" : "grid", placeItems: "center", cursor: "pointer", background: GRADIENT,

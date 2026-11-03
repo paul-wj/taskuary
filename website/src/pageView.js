@@ -113,14 +113,14 @@ function domButtons(root) {
   root.querySelectorAll("button, [role=button], [role=tab], [data-tq-view-press]").forEach((el) => {
     if (out.length >= MAX_BUTTONS || el.closest(SKIP) || !shown(el) || el.matches("[role=combobox], [aria-haspopup=listbox]")) return;
     const label = (el.getAttribute("aria-label") || words(el) || el.getAttribute("title") || "").slice(0, 80); if (!label) return;
-    let id = el.getAttribute("data-tq-view-btn") || slug(label); const n = (seen.get(id) || 0) + 1; seen.set(id, n); if (n > 1) id = `${id}#${n}`;
+    let id = el.getAttribute("data-tq-view-btn") || el.getAttribute("data-tq-verb") || slug(label); const n = (seen.get(id) || 0) + 1; seen.set(id, n); if (n > 1) id = `${id}#${n}`;
     out.push({ id, label, enabled: !(el.disabled || el.getAttribute("aria-disabled") === "true"), ...(el.hasAttribute("data-tq-send") ? { send: true } : {}), el });
   });
   return out;
 }
 // a task's own buttons are its row's (the dock draws them, the task registers them): pressed the row's road, the same as a click there
 const rowButtons = () => (rowNow().list || []).filter((v) => !["next", "back"].includes(v.group) && v.label)
-  .map((v) => ({ id: `row:${v.id}`, label: v.label, enabled: !v.disabled, row: v.id, of: v.of, ...(isSend({ id: v.id, label: v.label }) ? { send: true } : {}) }));
+  .map((v) => ({ id: `row:${v.id}`, label: v.label, enabled: !v.disabled, row: v.id, of: v.of, ...(isSend(v) ? { send: true } : {}) }));
 
 let lastResult = new Map();     // area -> the last Test / Preview answer the page reported (viewResult)
 let rev = 0, results = 0, latest = null;
@@ -131,10 +131,13 @@ export function readView(root = currentRoot()) {
   const fields = [...(x.fields || []).map((f) => ({ ...f, kind: f.kind || "text", extra: true })), ...domFields(root)];
   // ...one button per name: a row verb the page also draws (a draft's Send under it, Mark done in Close out) is the row's, pressed the row's
   // road, and lit where the page draws it
-  const dom = domButtons(root), rows = area === "task" ? rowButtons() : [], seen = new Set();
-  const buttons = [...(x.buttons || []).map((b) => ({ ...b, enabled: b.enabled !== false, extra: true })),
-    ...rows.map((b) => ({ ...b, el: dom.find((d) => norm(d.label) === norm(b.label))?.el })), ...dom]
-    .filter((b) => { const k = norm(b.label); if (seen.has(k)) return false; seen.add(k); return true; });
+  const dom = domButtons(root), rows = area === "task" ? rowButtons() : [], seen = new Map(), buttons = [];
+  for (const b of [...(x.buttons || []).map((b) => ({ ...b, enabled: b.enabled !== false, extra: true })),
+    ...rows.map((b) => ({ ...b, el: dom.find((d) => norm(d.label) === norm(b.label))?.el })), ...dom]) {
+    const key = norm(b.label), prior = seen.get(key);
+    if (prior) { if (isSend(b)) prior.send = true; continue; }
+    seen.set(key, b); buttons.push(b);
+  }
   const title = x.title || root.getAttribute("data-tq-view-label") || root.querySelector("[data-tq-view-label]")?.getAttribute("data-tq-view-label") || "";
   return { root, area, title, item: x.item || null, fields, buttons, last: lastResult.get(area) || null };
 }
@@ -266,35 +269,49 @@ async function waitRoot(area, knob) {
   return currentRoot();
 }
 const step = (n, summary, status = "done", kind = "run") => ({ id: `view-${Date.now()}-${n}`, kind, summary, status });
+const ui = (source, values = {}) => ({ source, values });
+const english = (descriptor) => descriptor.source.replace(/\{([^{}]+)\}/g, (match, key) =>
+  Object.prototype.hasOwnProperty.call(descriptor.values, key)
+    ? String(descriptor.values[key]?.source ? english(descriptor.values[key]) : descriptor.values[key]) : match);
+const uiStep = (n, source, values = {}, status = "done", kind = "run") => {
+  const summary_i18n = ui(source, values);
+  return { ...step(n, english(summary_i18n), status, kind), summary_i18n };
+};
 const cut = (s, n = 60) => { s = String(s ?? ""); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
 
 // one op, on the live page, checked again here: still there, still enabled, a send never pressed, a secret never set
 async function runOne(op, n) {
   // ...a refusal is not a failure: it is the line the owner drew, said as a step like any other
-  if (op.op === "refused") return step(n, `${op.target} ${op.why || "is yours to do"}`, "done", "read");
+  if (op.op === "refused") return uiStep(n, "{target} {reason}", { target: op.target, reason: op.why || ui("is yours to do") }, "done", "read");
   if (op.op === "open") {
-    if (!opener) return step(n, "Could not bring that page up here", "error");
+    if (!opener) return uiStep(n, "Could not bring that page up here", {}, "error");
     const { op: _o, area, ...state } = op;
     opener(area, state);
     const r = await waitRoot(area, state.knob);
     // ...Search's hits land a beat after its words: what follows presses one, so wait for the answer to those words
     for (let i = 0; area === "search" && state.query && i < 40 && !r?.querySelector('[data-tq-search-settled="true"]'); i++) await wait(100);
     await wait(150);                              // ...its frame names what is open once the card has drawn
-    return step(n, `Opened ${(r && readView(r)?.title) || area}`, "done", "read");
+    return uiStep(n, "Opened {page}", { page: (r && readView(r)?.title) || area }, "done", "read");
   }
   const v = readView();
-  if (!v) return step(n, "Nothing is open to work on", "error");
+  if (!v) return uiStep(n, "Nothing is open to work on", {}, "error");
   if (op.op === "set") {
     const f = find(v.fields, op.field, "key", "label");
-    if (!f) return step(n, `Could not find ${op.field} on the page`, "error");
-    if (f.secret || isSecret(f.key, f.label)) return step(n, `${f.label} is yours to paste into its field - I never see or type a secret`, "done", "read");
-    if (f.disabled) return step(n, `${f.label} is greyed out`, "error");
+    if (!f) return uiStep(n, "Could not find {name} on the page", { name: op.field }, "error");
+    if (f.secret || isSecret(f.key, f.label)) return uiStep(n, "{field} is yours to paste into its field - I never see or type a secret", { field: f.label }, "done", "read");
+    if (f.disabled) return uiStep(n, "{field} is greyed out", { field: f.label }, "error");
     if (f.extra) await f.set(op.value);
-    else if (f.kind === "choice" && f.el.matches("[role=combobox]")) { if (!(await pickCombo(f.el, op.value))) return step(n, `${f.label} has no ${cut(op.value)}`, "error"); }
+    else if (f.kind === "choice" && f.el.matches("[role=combobox]")) { if (!(await pickCombo(f.el, op.value))) return uiStep(n, "{field} has no {value}", { field: f.label, value: cut(op.value) }, "error"); }
     else setDom(f.el, op.value);
     if (f.el) flash(f.el);
-    if (f.said) return step(n, f.said(op.value));      // an extra that runs something says what it ran ("Asked the builder for ...")
-    return step(n, f.kind === "switch" ? `Turned ${/^(on|true|1|yes|enabled?)$/i.test(String(op.value).trim()) ? "on" : "off"} ${f.label}` : `Set ${f.label} to ${cut(op.value)}`);
+    if (f.said) {
+      const said = f.said(op.value);
+      return said && typeof said === "object" && typeof said.source === "string" && said.values
+        ? { ...step(n, english(said)), summary_i18n: said } : step(n, said);
+    }
+    return f.kind === "switch"
+      ? uiStep(n, /^(on|true|1|yes|enabled?)$/i.test(String(op.value).trim()) ? "Turned on {field}" : "Turned off {field}", { field: f.label })
+      : uiStep(n, "Set {field} to {value}", { field: f.label, value: cut(op.value) });
   }
   const name = op.button || op.target;
   const b = find(v.buttons, name, "id", "label"), f = b ? null : find(v.fields, name, "key", "label");
@@ -303,13 +320,13 @@ async function runOne(op, n) {
     if (b?.row && lighter) lighter(b.row, b.label);
     if (b?.el || f?.el) light(b?.el || f.el);
     else if (b?.row) light(document.querySelector(`.tq-dock [data-tq-verb="${CSS.escape(b.row)}"]`));
-    if (!b && !f) return step(n, `Could not find ${name} on the page`, "error");
+    if (!b && !f) return uiStep(n, "Could not find {name} on the page", { name }, "error");
     const what = b?.label || f?.label;
-    return step(n, b && isSend(b) ? `Lit ${what} for you - a send is yours to press` : b && isInstall(b) ? `Lit ${what} for you - installing is yours to press`
-      : `Pointed at ${what}`, "done", "read");
+    return uiStep(n, b && isSend(b) ? "Lit {name} for you - a send is yours to press" : b && isInstall(b) ? "Lit {name} for you - installing is yours to press"
+      : "Pointed at {name}", { name: what }, "done", "read");
   }
-  if (!b) return step(n, `Could not find ${name} on the page`, "error");
-  if (!b.enabled) return step(n, `${b.label} is greyed out`, "error");
+  if (!b) return uiStep(n, "Could not find {name} on the page", { name }, "error");
+  if (!b.enabled) return uiStep(n, "{field} is greyed out", { field: b.label }, "error");
   const before = lastResult.get(v.area)?.at;
   if (b.extra) await b.press();
   // ...waited for only a beat: a close on the walk's table is a walk move (railwalk.leave), and it waits for the turn that pressed it to
@@ -322,8 +339,11 @@ async function runOne(op, n) {
     await wait(300);                              // ...the page's own answer (its Test line) draws a beat after the button lets go
   }
   const res = lastResult.get(v.area);
-  const said = res && res.at !== before ? ` - ${res.ok ? "passed" : "failed"}${res.detail ? `: ${cut(res.detail, 120)}` : ""}` : "";
-  return step(n, `Pressed ${b.label}${said}`, res && res.at !== before && !res.ok ? "error" : "done");
+  const hasResult = res && res.at !== before;
+  const source = !hasResult ? "Pressed {name}" : res.ok
+    ? res.detail ? "Pressed {name} - passed: {detail}" : "Pressed {name} - passed"
+    : res.detail ? "Pressed {name} - failed: {detail}" : "Pressed {name} - failed";
+  return uiStep(n, source, { name: b.label, ...(res?.detail ? { detail: cut(res.detail, 120) } : {}) }, hasResult && !res.ok ? "error" : "done");
 }
 // the ops in order, each a step the chat draws as it lands; the owner's own hand on the page, or the chat's Stop, drops the rest
 // ...and what the page answered to a press of its own (a Test's result) - the Assistant hears it next, as the walk heard a Test
@@ -332,9 +352,9 @@ export async function run(ops = [], onStep = () => {}) {
   acting = true; stopped = false;
   try {
     for (let i = 0; i < ops.length; i++) {
-      if (stopped) { steps.push(step(i, "Stopped - your hand on the page wins", "error", "read")); onStep([...steps]); break; }
+      if (stopped) { steps.push(uiStep(i, "Stopped - your hand on the page wins", {}, "error", "read")); onStep([...steps]); break; }
       let s;
-      try { s = await runOne(ops[i], i); } catch (e) { s = step(i, `Could not do that - ${e?.message || "it failed"}`, "error"); }
+      try { s = await runOne(ops[i], i); } catch (e) { s = uiStep(i, "Could not do that - {reason}", { reason: e?.message || ui("it failed") }, "error"); }
       steps.push(s); onStep([...steps]);
       await wait(120);
     }

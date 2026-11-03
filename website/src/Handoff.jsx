@@ -11,13 +11,18 @@ import { ContactPicker, useContacts } from "./ui.jsx";
 import { FAINT, selSx } from "./theme.jsx";
 import { label } from "./buttons.js";
 import { usualHandWhy } from "./taskFilter.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 const msgOf = (e, fallback) => (e?.response?.status === 404
   ? "This needs the new server — restart Taskuary and try again."
   : e?.response?.data?.detail || fallback);
+const errorState = (e, fallback) => e?.response?.status === 404 ? { key: "This needs the new server — restart Taskuary and try again." }
+  : e?.response?.data?.detail || { key: fallback };
 
 // `onLeave` / `onStay`: the page puts the task down at the press and takes it back with the reason if the send fails
 export const Handoff = ({ taskId, onSent, onLeave, onStay }) => {
+  useLocale();
   const [to, setTo] = useState("");
   const [channel, setChannel] = useState("email");
   // the channels with a connection behind them - the same list + New offers
@@ -47,7 +52,7 @@ export const Handoff = ({ taskId, onSent, onLeave, onStay }) => {
   const draft = async () => {
     setBusy("draft"); setErr("");
     try { setText((await call({ to, channel, draft_only: true })).draft); }
-    catch (e) { setErr(msgOf(e, "Could not write the message")); }
+    catch (e) { setErr(errorState(e, "Could not write the message")); }
     setBusy("");
   };
   const send = async () => {
@@ -56,12 +61,12 @@ export const Handoff = ({ taskId, onSent, onLeave, onStay }) => {
     // sends first and only then sets the task to waiting on them (forward only), so a send that fails hands it back with the reason
     onLeave?.();
     try { const d = await call({ to, channel, text }); setSent(d.sent); onSent?.(); }
-    catch (e) { const msg = msgOf(e, "Could not send it"); setErr(msg); onStay?.(msg); }
+    catch (e) { const msg = msgOf(e, "Could not send it"); setErr(errorState(e, "Could not send it")); onStay?.(msg); }
     setBusy("");
   };
   if (sent) return (
     <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>
-      ✓ sent to {(sent.to || []).join(", ") || "the chat"} by {sent.channel}
+      {t("✓ sent to {recipient} by {channel}", { recipient: (sent.to || []).join(", ") || t("the chat"), channel: sent.channel })}
     </Typography>
   );
   return (
@@ -70,15 +75,15 @@ export const Handoff = ({ taskId, onSent, onLeave, onStay }) => {
         {/* whatever this install can actually send on, not a hardcoded two. "teams" with nobody
             named still posts into the task's OWN chat, which is why it stays listed separately. */}
         <Select size="small" value={channel} onChange={(e) => setChannel(e.target.value)} sx={{ ...selSx, minWidth: 110 }}>
-          <MenuItem value="email" sx={{ fontSize: 12.5 }}>email</MenuItem>
-          <MenuItem value="teams" sx={{ fontSize: 12.5 }}>Teams chat</MenuItem>
+          <MenuItem value="email" sx={{ fontSize: 12.5 }}>{t("email")}</MenuItem>
+          <MenuItem value="teams" sx={{ fontSize: 12.5 }}>{t("Teams chat")}</MenuItem>
           {targets.filter((x) => !["email", "teams"].includes(x)).map((x) => (
             <MenuItem key={x} value={x} sx={{ fontSize: 12.5 }}>{x}</MenuItem>
           ))}
         </Select>
         {/* the press opens on the one thing to type first (the 2026-10-28 flow walk: a name typed after Hand it to a person went nowhere) */}
         <ContactPicker people={people} value={to} onChange={setTo} onPick={setTo} channel={channel} autoFocus
-          placeholder="who should own this — name or email" sx={{ flex: 1, minWidth: 220 }} />
+          placeholder={t("who should own this — name or email")} sx={{ flex: 1, minWidth: 220 }} />
         <Button size="small" onClick={draft} disabled={!!busy}>
           {busy === "draft" ? <CircularProgress size={12} /> : text ? label("redraft") : label("redraft", "none")}
         </Button>
@@ -86,12 +91,12 @@ export const Handoff = ({ taskId, onSent, onLeave, onStay }) => {
       {usual && to === usual.to && (
         <Typography variant="caption" sx={{ color: FAINT, mt: -0.5 }} data-tq-handoff-usual="">{usualHandWhy(usual)}</Typography>)}
       <TextField multiline minRows={4} size="small" value={text} onChange={(e) => setText(e.target.value)}
-        placeholder="What they need to know. Draft with AI writes it from this task's own context — you edit before it goes." />
+        placeholder={t("What they need to know. Draft with AI writes it from this task's own context — you edit before it goes.")} />
       <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
-        <Button size="small" variant="contained" disableElevation disabled={!!busy || !to.trim() || !text.trim()}
+        <Button size="small" variant="contained" disableElevation disabled={!!busy || !to.trim() || !text.trim()} data-tq-view-btn="handoff:send" data-tq-send=""
           startIcon={busy === "send" ? <CircularProgress size={11} sx={{ color: "#fff" }} /> : <ForwardToInboxIcon sx={{ fontSize: 15 }} />}
-          onClick={send}>Send it</Button>
-        {err && <Typography variant="caption" sx={{ color: "#6b2733" }}>{err}</Typography>}
+          onClick={send}>{t("Send it")}</Button>
+        {err && <Typography variant="caption" sx={{ color: "#6b2733" }}>{typeof err === "object" ? t(err.key) : err}</Typography>}
       </Box>
     </Box>
   );

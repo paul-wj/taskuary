@@ -20,6 +20,9 @@ import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import api from "./api";
+import { getLocale, t, translateDescriptor } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
+import { asUtc, fmtStamp, tzNow } from "./dates.js";
 import { nothingMatches } from "./searchHits.js";
 import { NL, SOURCE_KEYS, WORKFLOW_TYPES, addField, firstConnected, isWorkflowConfig, showValue, toShape, toSources } from "./sourceShape.js";
 import { ASSISTANT, GRADIENT, PANEL2, BORDER, DIM, FAINT, INK, ACCENT2, card, mono, PILL_COLORS, ALERT, ALERT_INK } from "./theme.jsx";
@@ -266,6 +269,23 @@ const CARD_LABELS = { mssql: "SQL Server", winrm: "Remote Windows", database: "A
   intacct: "Sage Intacct", amazon_sp: "Amazon Seller Central", stripe: "Stripe" };
 const BLANK = { type: "mssql", title: "", every_minutes: "", daily_at: "" };
 const parse = (s) => { try { return JSON.parse(s || "{}"); } catch { return {}; } };
+// Keep app-authored messages as templates until render; server and user text stays verbatim.
+const uiMessage = (source, values = {}) => ({ source, values });
+const displayMessage = translateDescriptor;
+const displayStamp = (stamp, fallback, { year = true, seconds = false } = {}) => {
+  if (!stamp || getLocale() !== "zh-CN") return fallback;
+  const date = asUtc(stamp);
+  if (!Number.isFinite(date.getTime())) return fallback;
+  return fmtStamp(date, "zh-CN", { ...(year ? { year: "numeric" } : {}), month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", ...(seconds ? { second: "2-digit" } : {}), hour12: false,
+    ...(tzNow() ? { timeZone: tzNow() } : {}) });
+};
+const invoiceStatus = (status) => {
+  const labels = { done: "done", needs_attention: "needs attention", review: "review", ready: "ready",
+    needs_amounts: "needs amounts", needs_amount: "needs amount", review_ready: "review ready",
+    draft: "draft", sent: "sent", skipped: "skipped", error: "error" };
+  return Object.prototype.hasOwnProperty.call(labels, status) ? t(labels[status]) : String(status || "").replaceAll("_", " ");
+};
 const isWorkflowSource = (s) => isWorkflowConfig(parse(s?.ConfigJson));
 // a dashboard is a report you look at (dashboards.py): its own shelf, its own editor
 const isDashboardSource = (s) => parse(s?.ConfigJson).type === "dashboard";
@@ -328,14 +348,21 @@ export const judgeQuestions = (c, lines = ROUTE_LINES) => aiLines(c, lines)
 const CONDITIONAL = ["ai", "rule"];
 const LINE_KEYS = ["how", "when", "rule", "count", "text"];
 const sameLine = (a, b) => LINE_KEYS.every((k) => String(a?.[k] ?? "").trim() === String(b?.[k] ?? "").trim());
-const lineWords = (r) => r.how === "always" ? "every run" : r.how === "ai" ? `the AI decides - ${(r.when || "").trim()}`
-  : r.how === "rule" ? `when ${(RULES.find((o) => o.v === r.rule)?.label || r.rule).replace("…", r.text ? ` "${r.text}"` : ` ${r.count ?? ""}`)}` : "never";
+const lineWords = (r) => {
+  if (r.how === "always") return t("every run");
+  if (r.how === "ai") return t("the AI decides - {condition}", { condition: (r.when || "").trim() });
+  if (r.how !== "rule") return t("never");
+  const known = RULES.find((o) => o.v === r.rule);
+  const label = known ? t(known.label) : r.rule;
+  return t("when {rule}", { rule: label.replace("…", r.text ? ` "${r.text}"` : ` ${r.count ?? ""}`) });
+};
 // the short name a replayed run wears, so reading down the strip the DIFFERENCE is what stands out
 const LINE_CHIP = { timeline: "Reports", alert: "reached you", send: "sent out", triage: "triaged" };
 
 // `browse` (the assistant canvas, CanvasBrowse.jsx): Reports and Workflows are the sections, each report its tab row, and
 // one report its own editor - drawn through the canvas's frame instead of this tab's rail.
 export default function ReportsView({ browse = null, browseState = {}, onBrowseState = null }) {
+  useLocale();
   const [sources, setSources] = useState(null);
   const pbs = usePlaybooks();          // the third shelf: Reports / Workflows / Playbooks (PlaybookShelf.jsx)
   const [types, setTypes] = useState([]);
@@ -358,7 +385,7 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
         api.get("/api/reports/last-runs").catch(() => ({ data: { data: {} } }))]);
       setSources((s.data.data || []).filter((x) => x.Channel === "report"));
       setTypes(t.data.data || []); setConnectors(c.data.data || []); setLastRuns(r.data.data || {});
-    } catch (e) { setErr(e?.response?.data?.detail || "The reports could not be loaded."); }
+    } catch (e) { setErr(e?.response?.data?.detail || uiMessage("The reports could not be loaded.")); }
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -405,29 +432,29 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
     try {
       const { data } = await api.post(`/api/reports/${sid}/rerun`);
       // a workflow run IS a task: open it where the agent and its browser can be watched (the owner, 2026-10-08)
-      if (data.task_id) { setNote({ sid, ok: true, detail: `${data.title || "Routine"} started as ${data.ref} — opening it.` }); openAppLink(`task=${data.task_id}`); }
+      if (data.task_id) { setNote({ sid, ok: true, detail: uiMessage("{title} started as {ref} — opening it.", { title: data.title || uiMessage("Routine"), ref: data.ref }) }); openAppLink(`task=${data.task_id}`); }
       // where a report lands is its own routing, and a failure is the bell's alone (reports.run_lands)
-      else setNote({ sid, ok: true, detail: `${data.title || "Report"} is running in the background — you can leave this tab. ${data.lands || "If it fails, the bell says why."}` });
-    } catch (e) { setNote({ sid, ok: false, detail: e?.response?.data?.detail || "report could not be queued" }); }
+      else setNote({ sid, ok: true, detail: uiMessage("{title} is running in the background — you can leave this tab. {lands}", { title: data.title || uiMessage("Report"), lands: data.lands || uiMessage("If it fails, the bell says why.") }) });
+    } catch (e) { setNote({ sid, ok: false, detail: e?.response?.data?.detail || uiMessage("report could not be queued") }); }
     setRunning(null); load();
   };
   // a report's clock, on or off - its row's switch and its builder's are this one road (the owner, 2026-11-02)
   const switchOn = async (s) => {
     try { await api.post("/api/sources", { SourceId: s.SourceId, Active: !s.Active }); }
-    catch (e) { setNote({ sid: s.SourceId, ok: false, detail: `${titleOf(s)} could not be switched ${s.Active ? "off" : "on"} — ${e?.response?.data?.detail || "the app did not answer"}. Try again.` }); }
+    catch (e) { setNote({ sid: s.SourceId, ok: false, detail: uiMessage("{title} could not be switched {state} — {error}. Try again.", { title: parse(s.ConfigJson).title || s.Address || uiMessage("report {id}", { id: s.SourceId }), state: uiMessage(s.Active ? "off" : "on"), error: e?.response?.data?.detail || uiMessage("the app did not answer") }) }); }
     load();
   };
   const syncNow = async () => {
     setSyncing(true); setNote(null);
     try {
       const { data } = await api.post("/api/reports/due");
-      setNote({ ok: true, detail: data?.report === "busy"
+      setNote({ ok: true, detail: uiMessage(data?.report === "busy"
         ? "Reports are already running — whatever is due goes in that pass. If one fails, the bell says why."
-        : "Running every report that is due, in the background — if none is due, nothing runs. If one fails, the bell says why." });
+        : "Running every report that is due, in the background — if none is due, nothing runs. If one fails, the bell says why.") });
       setTimeout(() => { setSyncing(false); load(); }, 3000);
     } catch (e) {
       setSyncing(false);
-      setNote({ ok: false, detail: e?.response?.data?.detail || "The due reports could not be started — try again in a moment." });
+      setNote({ ok: false, detail: e?.response?.data?.detail || uiMessage("The due reports could not be started — try again in a moment.") });
     }
   };
   const retry = () => { setErr(""); load(); };
@@ -438,10 +465,10 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
     const low = meta.confidence === "low";
     // a workflow's page has no steps: what it says is check it, then save (WorkflowEditor)
     const wf = isWorkflowConfig(config) && config.type !== "zoho_monthly_invoices";
-    setDraftNote(meta.error ? { severity: "warning", text: `It drafted this, but: ${meta.error}. Fix that below before you save — nothing is saved yet.` }
-      : { severity: low ? "warning" : "info", text: `${meta.explain || "Drafted."} ${wf
+    setDraftNote(meta.error ? { severity: "warning", text: uiMessage("It drafted this, but: {error}. Fix that below before you save — nothing is saved yet.", { error: meta.error }) }
+      : { severity: low ? "warning" : "info", text: uiMessage("{explain} {instruction}", { explain: meta.explain || uiMessage("Drafted."), instruction: uiMessage(wf
         ? (low ? "It is not confident about this one — check every field below before you save." : "Check it below, then Save or Save & run now.")
-        : low ? "It is not confident about this one — preview it in step 2 before you save." : "Check it below and preview it in step 2 before you save."}` });
+        : low ? "It is not confident about this one — preview it in step 2 before you save." : "Check it below and preview it in step 2 before you save.") }) });
   };
   onDraftRef.current = onDraft;
   // THE DESCRIBE-IT, AS THE ASSISTANT'S (2026-10-30): the box that drafted a report from words is gone from the page - its door opens the
@@ -462,33 +489,33 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
   // ...and the one open, by its id (the everyday-asks audit, 2026-11-02): "run it" over a report's builder named it by its title alone, so
   // the Assistant's report.run guessed among titles; source_id is what its report tools take
   const openNow = browse ? browseState.open : bucket;
-  useViewExtras("reports", { item: typeof openNow === "number" ? { kind: "report", id: openNow } : null, fields: [{ key: "describe", label: composeKind === "workflow" ? "Describe the routine you want" : composeKind === "dashboard" ? DASH.describe : "Describe the report you want",
-    value: "", set: compose, said: (v) => `Asked the builder for: ${String(v).length > 70 ? `${String(v).slice(0, 69)}…` : v}` }] });
+  useViewExtras("reports", { item: typeof openNow === "number" ? { kind: "report", id: openNow } : null, fields: [{ key: "describe", label: t(composeKind === "workflow" ? "Describe the routine you want" : composeKind === "dashboard" ? DASH.describe : "Describe the report you want"),
+    value: "", set: compose, said: (v) => uiMessage("Asked the builder for: {request}", { request: String(v).length > 70 ? `${String(v).slice(0, 69)}…` : v }) }] });
 
   // a failed load is said, with a way to try again - a spinner here waited for ever
   if (!sources) return err
-    ? <Alert severity="error" sx={{ m: 2 }} action={<Button color="inherit" size="small" onClick={retry}>{btnLabel("try_again")}</Button>}>{err}</Alert>
+    ? <Alert severity="error" sx={{ m: 2 }} action={<Button color="inherit" size="small" onClick={retry}>{btnLabel("try_again")}</Button>}>{displayMessage(err)}</Alert>
     : <CircularProgress size={22} sx={{ m: 4 }} />;
 
   /* Reports and workflows use the same durable scheduler rows, but they are not the same
      product concept. The rail says which is which; selecting either still opens it directly. */
-  const titleOf = (s) => parse(s.ConfigJson).title || s.Address || `report ${s.SourceId}`;
+  const titleOf = (s) => parse(s.ConfigJson).title || s.Address || t("report {id}", { id: s.SourceId });
   const reportSources = sources.filter((s) => !isWorkflowSource(s) && !isDashboardSource(s));
   const workflowSources = sources.filter(isWorkflowSource);
   const dashboardSources = sources.filter(isDashboardSource);
   const railItems = [
-    { section: "Reports", first: true },
-    { key: "reports", label: "All reports", n: reportSources.length || null },
+    { section: t("Reports"), first: true },
+    { key: "reports", label: t("All reports"), n: reportSources.length || null },
     ...reportSources.map((s) => ({ key: s.SourceId, label: titleOf(s) })),
-    { key: "new-report", label: "+ New report" },
-    { section: "Dashboards" },
-    { key: "dashboards", label: "All dashboards", n: dashboardSources.length || null },
+    { key: "new-report", label: t("+ New report") },
+    { section: t("Dashboards") },
+    { key: "dashboards", label: t("All dashboards"), n: dashboardSources.length || null },
     ...dashboardSources.map((s) => ({ key: s.SourceId, label: titleOf(s) })),
-    { key: "new-dashboard", label: DASH.new },
-    { section: "Routines" },
-    { key: "workflows", label: "All workflows", n: workflowSources.length || null },
+    { key: "new-dashboard", label: t(DASH.new) },
+    { section: t("Routines") },
+    { key: "workflows", label: t("All workflows"), n: workflowSources.length || null },
     ...workflowSources.map((s) => ({ key: s.SourceId, label: titleOf(s) })),
-    { key: "new-agent", label: "+ New routine" },
+    { key: "new-agent", label: t("+ New routine") },
   ];
   // the canvas keeps its own place: a section, then one report (or a new one) open in it
   const bucketNow = browse ? (browseState.open ?? browseState.section ?? "reports") : bucket;
@@ -514,7 +541,7 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
         const c = parse(s.ConfigJson);
         // both halves, not the first one: "on startup" alone hid the Monday cron behind it
         const sched = [c.on_startup && startupText(c), c.cron && cronText(c.cron),
-          c.every_minutes && `every ${c.every_minutes}m`, c.daily_at && `daily ${c.daily_at}`]
+          c.every_minutes && t("every {minutes}m", { minutes: c.every_minutes }), c.daily_at && t("daily {time}", { time: c.daily_at })]
           .filter(Boolean).join(" + ");
         // NO CLOCK IS A REPORT THAT STOPPED (D2, the owner 2026-09-28): it said "daily" and ran only by hand, so
         // it wears a red border and says so - a workflow is started by hand on purpose and is left alone
@@ -531,24 +558,24 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
             <Box sx={{ flex: 1, minWidth: 0 }}>
               <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13.5 }} noWrap>{c.title || s.Address}</Typography>
               <Typography variant="caption" sx={{ ...mono, color: FAINT }}>
-                {asSteps(c) && c.flow.length ? plural(c.flow.length, "step")
-                  : (c.sources || []).length > 1 ? `${c.sources.length} sources` : (TYPE_LABELS[c.type] || c.type || "rest")} · {sched || "no schedule"}{s.LastPolledAt ? ` · ran ${timeAgo(s.LastPolledAt)}` : " · never ran"}
+                {asSteps(c) && c.flow.length ? t(c.flow.length === 1 ? "{count} step" : "{count} steps", { count: c.flow.length })
+                  : (c.sources || []).length > 1 ? t("{count} sources", { count: c.sources.length }) : (TYPE_LABELS[c.type] ? t(TYPE_LABELS[c.type]) : c.type || "rest")} · {sched || t("no schedule")}{s.LastPolledAt ? ` · ${t("ran {time}", { time: timeAgo(s.LastPolledAt) })}` : ` · ${t("never ran")}`}
               </Typography>
               {unscheduled && <Typography variant="caption" sx={{ color: ALERT_INK, display: "block" }}>
-                No schedule — it only runs when you press Run now. Give it one in step 3.</Typography>}
+                {t("No schedule — it only runs when you press Run now. Give it one in step 3.")}</Typography>}
             </Box>
             {c.ai_prompt && <Box sx={{ display: "flex", alignItems: "center", gap: 0.4, px: 1, py: 0.25, borderRadius: 99,
               bgcolor: "#eae4d8", border: "1px solid #d8cfbe" }}>
               <AutoAwesomeIcon sx={{ fontSize: 12, color: "#55697a" }} />
-              <Typography variant="caption" sx={{ color: "#55697a", fontWeight: 600, fontSize: 10 }}>AI summary</Typography>
+              <Typography variant="caption" sx={{ color: "#55697a", fontWeight: 600, fontSize: 10 }}>{t("AI summary")}</Typography>
             </Box>}
             {/* each named for its report (the everyday-asks audit, 2026-11-02): the Assistant reads the shelf by these names, and five
                 rows of "Run now" and a switch with no name at all left it nothing to tell the AP ageing's from the headcount's */}
-            <Button size="small" disabled={running === s.SourceId} aria-label={`Run now: ${c.title || s.Address}`}
+            <Button size="small" disabled={running === s.SourceId} aria-label={t("Run now: {name}", { name: c.title || s.Address })}
               startIcon={running === s.SourceId ? <CircularProgress size={12} /> : <PlayArrowIcon sx={{ fontSize: 14 }} />}
-              onClick={(e) => { e.stopPropagation(); runNow(s.SourceId); }}>{running === s.SourceId ? "Running…" : "Run now"}</Button>
-            <Button size="small" aria-label={`Edit: ${c.title || s.Address}`} onClick={() => openOne(s.SourceId)}>Edit</Button>
-            <Switch checked={!!s.Active} onClick={(e) => e.stopPropagation()} inputProps={{ "aria-label": `${c.title || s.Address} on its clock` }}
+              onClick={(e) => { e.stopPropagation(); runNow(s.SourceId); }}>{t(running === s.SourceId ? "Running…" : "Run now")}</Button>
+            <Button size="small" aria-label={t("Edit: {name}", { name: c.title || s.Address })} onClick={() => openOne(s.SourceId)}>{t("Edit")}</Button>
+            <Switch checked={!!s.Active} onClick={(e) => e.stopPropagation()} inputProps={{ "aria-label": t("{name} on its clock", { name: c.title || s.Address }) }}
               onChange={() => switchOn(s)} />
           </Box>
           {lastRuns[s.SourceId] && <LastRun r={lastRuns[s.SourceId]} sid={s.SourceId} onChanged={load}
@@ -556,14 +583,14 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
           </Box>
         );
   };
-  const wizardNote = draft && !selectedSource ? draftNote : null;
+  const wizardNote = draft && !selectedSource && draftNote ? { ...draftNote, text: displayMessage(draftNote.text) } : null;
   const carried = carry && carry.sid === openId ? carry : null;
   const saved = (then) => (sid, c) => { setDraft(null); setCarry(c ? { sid, ...c } : null); then(sid); };
   // a workflow has its own page (WorkflowEditor): what it does, who, where, what it asks, when it is done, when it runs
   const agentWorkflow = workflowOpen && !invoiceOpen;
   // a workflow that only reads is a report (the owner, 2026-10-18): the same reads open in the report builder, nothing saved yet
   const asReportDraft = (config, meta = {}) => {
-    onDraft(config, { explain: "Made from the routine's reads - preview it, then save it as a report.", ...meta });
+    onDraft(config, { explain: uiMessage("Made from the routine's reads - preview it, then save it as a report."), ...meta });
     if (browse) onBrowseState?.({ section: "reports", open: "draft" }); else setBucket("draft");
   };
   const toInvoices = () => { setDraft(null); if (browse) onBrowseState?.({ section: "workflows", open: "new-invoices" }); else setBucket("new-invoices"); };
@@ -580,8 +607,8 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
         composer={<>
           <SetupWithAi kind="workflow" sx={{ mb: 2 }} />
           <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: -1.25, mb: 2 }}>
-            Monthly Zoho invoices have a form of their own — <Box component="span" onClick={toInvoices}
-              sx={{ color: "#55697a", fontWeight: 600, cursor: "pointer", "&:hover": { textDecoration: "underline" } }}>open it</Box>.
+            {t("Monthly Zoho invoices have a form of their own —")} <Box component="span" onClick={toInvoices}
+              sx={{ color: "#55697a", fontWeight: 600, cursor: "pointer", "&:hover": { textDecoration: "underline" } }}>{t("open it", {}, "form")}</Box>.
           </Typography>
         </>} />
     : invoiceOpen
@@ -613,18 +640,18 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
     // a link to a report that has since been removed: the list, and why - never an empty editor saving to a missing id
     const missing = typeof browseState.open === "number" && !sources.some((x) => x.SourceId === browseState.open);
     return browse({
-      title: "Reports", wide: true,
-      summary: `${plural(reportSources.length, "report")} · ${plural(dashboardSources.length, "dashboard")} · ${plural(workflowSources.length, "workflow")} · ${plural(pbs.books.length, "playbook")} · reports read and summarise, dashboards show the numbers, workflows write, playbooks say how a kind of job is done`,
+      title: t("Reports"), wide: true,
+      summary: t("{reports} · {dashboards} · {workflows} · {playbooks} · reports read and summarise, dashboards show the numbers, workflows write, playbooks say how a kind of job is done", { reports: plural(reportSources.length, "report"), dashboards: plural(dashboardSources.length, "dashboard"), workflows: plural(workflowSources.length, "workflow"), playbooks: plural(pbs.books.length, "playbook") }),
       // DASHBOARDS BESIDE REPORTS (the owner, 2026-10-23): Reports, Dashboards, Workflows, Playbooks - and the + New chips in that order
-      sections: [{ key: "reports", label: "Reports", n: reportSources.length },
-        { key: "dashboards", label: placeName("dashboards").split(" → ").pop(), n: dashboardSources.length },
-        { key: "workflows", label: "Routines", n: workflowSources.length },
-        { key: "playbooks", label: "Playbooks", n: pbs.books.length },
+      sections: [{ key: "reports", label: t("Reports"), n: reportSources.length },
+        { key: "dashboards", label: t(placeName("dashboards").split(" → ").pop()), n: dashboardSources.length },
+        { key: "workflows", label: t("Routines"), n: workflowSources.length },
+        { key: "playbooks", label: t("Playbooks"), n: pbs.books.length },
         // both ways in, always - not the open shelf's only: a new workflow was one click into Workflows away (the owner, 2026-10-15:
         // "it should say new workflow and new report right away without clicking in"). "new-invoices" is reached from the new workflow
         // ...and the third (the owner, 2026-10-22: "no new playbook ui either??"): New playbook's own dialog, opened on its shelf
-        { key: "new-report", label: "+ New report" }, { key: "new-dashboard", label: DASH.new }, { key: "new-agent", label: "+ New routine" },
-        { key: NEW_PB, label: "+ New playbook" }],
+        { key: "new-report", label: t("+ New report") }, { key: "new-dashboard", label: t(DASH.new) }, { key: "new-agent", label: t("+ New routine") },
+        { key: NEW_PB, label: t("+ New playbook") }],
       section,
       onSection: (key) => {
         setDraft(null); setDashDraft(null);
@@ -646,13 +673,13 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
           <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
             <Button size="small" variant="outlined" disableElevation onClick={syncNow} disabled={syncing}
               startIcon={syncing ? <CircularProgress size={12} /> : <SyncIcon sx={{ fontSize: 15 }} />}>
-              {syncing ? "Running…" : "Run due now"}
+              {t(syncing ? "Running…" : "Run due now")}
             </Button>
             {/* ...and beside it, the describe box's door to the chat (SetupWithAi) */}
             {section === "reports" && <SetupWithAi kind="report" onOpen={() => { setDraft(null); onBrowseState?.({ section, open: "new-report" }); }} />}
             {section === "dashboards" && <SetupWithAi kind="dashboard" onOpen={() => { setDashDraft(null); onBrowseState?.({ section, open: "new-dashboard" }); }} />}
             {section === "workflows" && <SetupWithAi kind="workflow" onOpen={() => { setDraft(null); onBrowseState?.({ section, open: "new-agent" }); }} />}
-            {note && <Typography variant="body2" sx={{ fontWeight: 600, color: note.ok ? "#47654a" : "#6b2733" }}>{note.ok ? "✓" : "✗"} {note.detail}</Typography>}
+            {note && <Typography variant="body2" sx={{ fontWeight: 600, color: note.ok ? "#47654a" : "#6b2733" }}>{note.ok ? "✓" : "✗"} {displayMessage(note.detail)}</Typography>}
           </Box>
         </Box>
       ) : null,
@@ -660,53 +687,53 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
           onOpen={() => onBrowseState?.({ section: "playbooks", open: `${PB_OPEN}${b.slug}` })} onToggle={(on) => pbs.setOn(b.slug, on)} /> })),
           // ...and under them, Recently deleted - with nothing on the shelf the shelf's own empty line still leads
           ...(pbs.deleted.length ? [
-            ...(pbs.books.length ? [] : [{ key: "pb-none", node: <Typography sx={{ fontSize: 12.5, color: FAINT, p: 1 }}>{pbs.err || PB_EMPTY}</Typography> }]),
+            ...(pbs.books.length ? [] : [{ key: "pb-none", node: <Typography sx={{ fontSize: 12.5, color: FAINT, p: 1 }}>{pbs.err || t(PB_EMPTY)}</Typography> }]),
             { key: "pb-deleted", node: <PlaybooksDeleted items={pbs.deleted} onRestore={pbs.restore} /> }] : [])]
         : [...sectionRows.map((x) => ({ key: String(x.SourceId), node: row(x) })),
           ...(sectionRows.length && binKinds ? [{ key: "recently-deleted", node: <RecentlyDeleted kinds={binKinds} onRestored={load} /> }] : [])],
       detail: browseState.open != null && !missing ? (pbSlug != null ? <PlaybookDetail key={pbSlug} slug={pbSlug} onGone={back} />
         : wizard(back, (sid) => onBrowseState?.({ ...browseState, open: sid }))) : null,
       onBack: back,
-      openLabel: pbSlug != null ? (pbSlug === "new" ? "a new playbook being written (Reports - Playbooks)" : `the playbook "${pbBook?.title || pbSlug}" (Reports - Playbooks), its words open`)
-        : browseState.open === "new-report" ? "a new report being set up (Reports)"
-        : section === "dashboards" && !openSource && browseState.open != null ? "a new dashboard being set up (Reports - Dashboards)"
-        : openSource && section === "dashboards" ? `the dashboard "${titleOf(openSource)}" (Reports - Dashboards), drawn with its buttons`
-        : openSource ? (section === "workflows" ? `the routine "${titleOf(openSource)}" (Routines), its steps open`
-          : `the report "${titleOf(openSource)}" (Reports), its editor open`) : "",
-      empty: section === "playbooks" ? (pbs.err || (pbs.loaded ? PB_EMPTY : "Reading the playbooks…")) : section === "dashboards" ? DASH.empty : section === "workflows" ? "No routines yet - + New routine describes one and sets it up." : "No reports yet - + New report walks you through one.",
-      note: missing ? `That report (#${browseState.open}) is not here any more - these are the ones there are.` : "",
+      openLabel: pbSlug != null ? (pbSlug === "new" ? t("a new playbook being written (Reports - Playbooks)") : t('the playbook "{title}" (Reports - Playbooks), its words open', { title: pbBook?.title || pbSlug }))
+        : browseState.open === "new-report" ? t("a new report being set up (Reports)")
+        : section === "dashboards" && !openSource && browseState.open != null ? t("a new dashboard being set up (Reports - Dashboards)")
+        : openSource && section === "dashboards" ? t('the dashboard "{title}" (Reports - Dashboards), drawn with its buttons', { title: titleOf(openSource) })
+        : openSource ? (section === "workflows" ? t('the routine "{title}" (Routines), its steps open', { title: titleOf(openSource) })
+          : t('the report "{title}" (Reports), its editor open', { title: titleOf(openSource) })) : "",
+      empty: section === "playbooks" ? (pbs.err || (pbs.loaded ? t(PB_EMPTY) : t("Reading the playbooks…"))) : section === "dashboards" ? t(DASH.empty) : section === "workflows" ? t("No routines yet - + New routine describes one and sets it up.") : t("No reports yet - + New report walks you through one."),
+      note: missing ? t("That report (#{id}) is not here any more - these are the ones there are.", { id: browseState.open }) : "",
     });
   }
 
   return (
-    <SideRail title="Reports & routines" q={q} setQ={setQ} placeholder="Search reports and routines…"
+    <SideRail title={t("Reports & routines")} q={q} setQ={setQ} placeholder={t("Search reports and routines…")}
       items={railItems} value={bucket} onChange={setBucket}
-      note="Reports only read data and summarize it. Routines write data or keep state. Their connections live on the Connections tab.">
-      {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 1.5 }}>{err}</Alert>}
+      note={t("Reports only read data and summarize it. Routines write data or keep state. Their connections live on the Connections tab.")}>
+      {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 1.5 }}>{displayMessage(err)}</Alert>}
       {open ? (
         wizard(() => { setBucket(invoiceOpen ? "workflows" : backTo); setDraft(null); load(); }, (sid) => setBucket(sid))
       ) : (<>
       <Box sx={{ display: "flex", alignItems: "center", mb: 2 }}>
         <Typography sx={{ color: INK, fontWeight: 600, fontSize: 15, flex: 1, minWidth: 0 }} noWrap>
-          {q ? `Matches for “${q}”` : workflowOverview ? "Scheduled routines" : dashOverview ? "Dashboards" : "Scheduled reports"}
+          {q ? t("Matches for “{query}”", { query: q }) : t(workflowOverview ? "Scheduled routines" : dashOverview ? "Dashboards" : "Scheduled reports")}
         </Typography>
         <Button size="small" variant="outlined" disableElevation onClick={syncNow} disabled={syncing} sx={{ mr: 1 }}
           startIcon={syncing ? <CircularProgress size={12} /> : <SyncIcon sx={{ fontSize: 15 }} />}>
-          {syncing ? "Running…" : "Run due now"}
+          {t(syncing ? "Running…" : "Run due now")}
         </Button>
         {/* both, whichever list is open - the open one's is the filled button */}
         <Button size="small" variant={workflowOverview ? "outlined" : "contained"} disableElevation startIcon={<AddIcon sx={{ fontSize: 15 }} />}
-          onClick={() => { setQ(""); setDraft(null); setBucket("new-report"); }} sx={{ mr: 1, ...(workflowOverview ? {} : { background: GRADIENT }) }}>New report</Button>
+          onClick={() => { setQ(""); setDraft(null); setBucket("new-report"); }} sx={{ mr: 1, ...(workflowOverview ? {} : { background: GRADIENT }) }}>{t("New report")}</Button>
         <Button size="small" variant={workflowOverview ? "contained" : "outlined"} disableElevation startIcon={<AddIcon sx={{ fontSize: 15 }} />}
-          onClick={() => { setQ(""); setDraft(null); setBucket("new-agent"); }} sx={workflowOverview ? { background: GRADIENT } : {}}>New routine</Button>
+          onClick={() => { setQ(""); setDraft(null); setBucket("new-agent"); }} sx={workflowOverview ? { background: GRADIENT } : {}}>{t("New routine")}</Button>
       </Box>
-      {note && <Typography variant="body2" sx={{ mb: 1.5, fontWeight: 600, color: note.ok ? "#47654a" : "#6b2733" }}>{note.ok ? "✓" : "✗"} {note.detail}</Typography>}
+      {note && <Typography variant="body2" sx={{ mb: 1.5, fontWeight: 600, color: note.ok ? "#47654a" : "#6b2733" }}>{note.ok ? "✓" : "✗"} {displayMessage(note.detail)}</Typography>}
       <UndoLine kinds={["report", "workflow", "dashboard"]} onRestored={load} />
       {!workflowOverview && !dashOverview && <SetupWithAi kind="report" sx={{ mb: 2 }} onOpen={() => { setDraft(null); setBucket("new-report"); }} />}
       {dashOverview && <SetupWithAi kind="dashboard" sx={{ mb: 2 }} onOpen={() => { setDashDraft(null); setBucket("new-dashboard"); }} />}
-      {!list.length && <Empty>{q ? nothingMatches(q, workflowOverview ? "Routines" : "Reports") : dashOverview ? DASH.empty : workflowOverview
+      {!list.length && <Empty>{q ? nothingMatches(q, t(workflowOverview ? "Routines" : "Reports")) : dashOverview ? t(DASH.empty) : t(workflowOverview
         ? "No routines yet — New routine describes one and sets it up."
-        : "No reports yet — New report walks you through source, query, AI summary and schedule."}</Empty>}
+        : "No reports yet — New report walks you through source, query, AI summary and schedule.")}</Empty>}
       {list.map((s) => row(s))}
       {!q && <RecentlyDeleted kinds={[workflowOverview ? "workflow" : dashOverview ? "dashboard" : "report"]} onRestored={load} />}
       </>)}
@@ -725,6 +752,7 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
 const chatFilter = (opts, st) => recipientOptions(opts, st.inputValue, 8).slice(0, 8);
 
 function Destination({ dest, onChange, targets, inboxes = {} }) {
+  useLocale();
   const chans = targets.map((t) => t.channel);
   const ch = dest.channel || chans[0] || "";
   const opts = targets.find((t) => t.channel === ch)?.to || [];
@@ -733,7 +761,7 @@ function Destination({ dest, onChange, targets, inboxes = {} }) {
   const chatOpts = [...opts].sort((a, b) => (b.mine ? 1 : 0) - (a.mine ? 1 : 0));
   const picked = String(dest.to || "").split(",").map((x) => x.trim()).filter(Boolean);
   const named = (to) => recipientLabel(opts.find((o) => o.to === to) || { to });
-  const empty = ch ? `no ${ch} chat seen yet` : "connect a channel first";
+  const empty = ch ? t("no {channel} chat seen yet", { channel: ch }) : t("connect a channel first");
   // a chat Taskuary READS is refused at send time; a report saved before the picker knew that still holds
   // one, and said nothing about it for a week (the owner, 2026-09-24: "i am not getting those messages?")
   const inbox = picked.filter((to) => (inboxes[ch] || []).includes(to));
@@ -741,15 +769,15 @@ function Destination({ dest, onChange, targets, inboxes = {} }) {
     <>
       {inbox.length > 0 && (
         <Typography variant="caption" sx={{ flexBasis: "100%", order: 99, color: "#9b2c2c", fontWeight: 600, fontSize: 11.5 }}>
-          Not sent: Taskuary reads {named(inbox[0])} as an inbox, so nothing is ever posted there. Pick your own chat.
+          {t("Not sent: Taskuary reads {name} as an inbox, so nothing is ever posted there. Pick your own chat.", { name: named(inbox[0]) })}
         </Typography>
       )}
       <Select size="small" value={ch} sx={{ bgcolor: "#fff", fontSize: 12.5, minWidth: 130 }} displayEmpty
         onChange={(e) => onChange({ channel: e.target.value, to: "" })}>
         {(!ch || chans.includes(ch) ? chans : [...chans, ch]).map((c) => (
-          <MenuItem key={c} value={c} sx={{ fontSize: 12 }}>{c}{chans.includes(c) ? "" : " — not set up"}</MenuItem>
+          <MenuItem key={c} value={c} sx={{ fontSize: 12 }}>{c}{chans.includes(c) ? "" : ` — ${t("not set up")}`}</MenuItem>
         ))}
-        {!chans.length && <MenuItem value="" sx={{ fontSize: 12, color: FAINT }}>nothing can send yet</MenuItem>}
+        {!chans.length && <MenuItem value="" sx={{ fontSize: 12, color: FAINT }}>{t("nothing can send yet")}</MenuItem>}
       </Select>
       {ch === "email" ? (
         <Autocomplete multiple freeSolo size="small" sx={{ flex: 1, minWidth: 240 }} options={opts.map((o) => o.to)}
@@ -757,8 +785,8 @@ function Destination({ dest, onChange, targets, inboxes = {} }) {
           renderOption={(props, o) => (
             <li {...props} style={{ fontSize: 12.5 }}>{named(o)}{named(o) !== o && <span style={{ color: FAINT }}>&nbsp;&middot; {o}</span>}</li>
           )}
-          renderInput={(params) => <TextField {...params} sx={{ bgcolor: "#fff" }} label="to — who gets it"
-            placeholder={picked.length ? "" : "pick, or type an address"} />} />
+          renderInput={(params) => <TextField {...params} sx={{ bgcolor: "#fff" }} label={t("to — who gets it")}
+            placeholder={picked.length ? "" : t("pick, or type an address")} />} />
       ) : (
         /* A paired WhatsApp account knows every group its owner is in - around forty here - and a
            plain Select rendered all of them, unsorted, off the bottom of the screen (the owner,
@@ -766,24 +794,24 @@ function Destination({ dest, onChange, targets, inboxes = {} }) {
            time, and type to reach the rest. */
         <Autocomplete size="small" sx={{ flex: 1, minWidth: 240 }} autoHighlight
           options={chatOpts} filterOptions={chatFilter}
-          value={chatOpts.find((o) => o.to === picked[0]) || (picked[0] ? { to: picked[0], name: named(picked[0]), hint: "saved, not seen lately" } : null)}
+          value={chatOpts.find((o) => o.to === picked[0]) || (picked[0] ? { to: picked[0], name: named(picked[0]), hint: t("saved, not seen lately") } : null)}
           onChange={(_e, v) => onChange({ to: v?.to || "" })}
           getOptionLabel={(o) => (o ? recipientLabel(o) : "")}
           isOptionEqualToValue={(o, v) => o.to === v.to}
-          noOptionsText={opts.length ? "no chat matches that" : empty}
+          noOptionsText={opts.length ? t("no chat matches that") : empty}
           renderOption={(props, o) => (
             <li {...props} key={o.to} style={{ display: "block", paddingTop: 4, paddingBottom: 4 }}>
               <Typography variant="body2" sx={{ fontSize: 12.5, color: INK, fontWeight: 600 }}>
                 {recipientLabel(o)}
-                {o.mine && <Chip size="small" label="yours" sx={{ ml: 0.75, height: 16, fontSize: 9.5 }} />}
+                {o.mine && <Chip size="small" label={t("yours")} sx={{ ml: 0.75, height: 16, fontSize: 9.5 }} />}
               </Typography>
               <Typography variant="caption" sx={{ ...mono, color: FAINT, fontSize: 10 }}>
                 {[recipientLabel(o) === o.to ? "" : o.to, o.hint].filter(Boolean).join(" · ")}
               </Typography>
             </li>
           )}
-          renderInput={(params) => <TextField {...params} sx={{ bgcolor: "#fff" }} label="to — the chat it lands in"
-            placeholder={opts.length ? "type to search your chats" : empty} />} />
+          renderInput={(params) => <TextField {...params} sx={{ bgcolor: "#fff" }} label={t("to — the chat it lands in")}
+            placeholder={opts.length ? t("type to search your chats") : empty} />} />
       )}
     </>
   );
@@ -793,32 +821,33 @@ function Destination({ dest, onChange, targets, inboxes = {} }) {
 // answers the operational question in one glance: what is enabled, what it reads, when it runs,
 // and what the result is allowed to do.
 function SavedReportSummary({ source, workflow = false }) {
+  useLocale();
   if (!source) return null;
   const c = parse(source.ConfigJson);
   const sourceList = Array.isArray(c.sources) && c.sources.length ? c.sources : [c];
-  const labels = sourceList.map((s) => s.label || TYPE_LABELS[s.type] || s.type).filter(Boolean);
+  const labels = sourceList.map((s) => s.label || (TYPE_LABELS[s.type] ? t(TYPE_LABELS[s.type]) : s.type)).filter(Boolean);
   const watched = (Array.isArray(c.watch_sources) ? c.watch_sources.length : 0)
     + (Array.isArray(c.watch_source_ids) ? c.watch_source_ids.length : 0);
   // what it reads is the CARDS it chose, named - not a fixed sentence that was true of one report
   const reads = c.type === "assistant"
     ? [cardsLine(cardsOf(c)), watched ? plural(watched, "configured data source") : ""]
-      .filter(Boolean).join(" and ") || "nothing yet — add a Taskuary card or a source"
-    : labels.length > 1 ? `${labels.length} sources — ${labels.join(", ")}` : labels[0] || "one report source";
+      .filter(Boolean).join(t(" and ")) || t("nothing yet — add a Taskuary card or a source")
+    : labels.length > 1 ? t("{count} sources — {labels}", { count: labels.length, labels: labels.join(", ") }) : labels[0] || t("one report source");
   return (
     <Box sx={{ ...card, ml: { xs: 0, sm: 4 }, mt: 2, p: 1.5, maxWidth: 720,
       bgcolor: source.Active ? "#f2f7f1" : PANEL2, borderColor: source.Active ? "#cfdcc9" : BORDER }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 0.8, mb: 0.65 }}>
         <StatusDot ok={!!source.Active} />
         <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13.5 }}>
-          {source.Active ? `Enabled ${workflow ? "workflow" : "report"}` : `Disabled ${workflow ? "workflow" : "report"}`}
+          {t(source.Active ? (workflow ? "Enabled workflow" : "Enabled report") : (workflow ? "Disabled workflow" : "Disabled report"))}
         </Typography>
       </Box>
       <Typography variant="body2" sx={{ color: INK, lineHeight: 1.55, fontSize: 12.5 }}>
-        Reads {reads}. Runs {reportSchedule(c)}.
+        {t("Reads {reads}. Runs {schedule}.", { reads, schedule: reportSchedule(c) })}
       </Typography>
       <Typography variant="caption" sx={{ color: DIM, display: "block", mt: 0.45, lineHeight: 1.5 }}>
-        {c.ai_prompt ? "AI writes the summary. " : "Uses the source result as-is. "}
-        {source.RouteWords ? `Where each run goes — ${source.RouteWords}.` : ""}
+        {t(c.ai_prompt ? "AI writes the summary. " : "Uses the source result as-is. ")}
+        {(source.RouteWords_i18n || source.RouteWords) ? t("Where each run goes — {route}.", { route: source.RouteWords_i18n ? translateDescriptor(source.RouteWords_i18n) : source.RouteWords }) : ""}
       </Typography>
     </Box>
   );
@@ -827,6 +856,7 @@ function SavedReportSummary({ source, workflow = false }) {
 /* A workflow is not a source-query-summary form. Its idle page is the month's workbench:
    customers and schedule at the top, durable amounts in the middle, Review handoff at the end. */
 function InvoiceWorkflowWizard({ sourceId, sources, connectors, reload, onBack, onSaved, draft, note = null, carry = null, onCarried }) {
+  useLocale();
   const cur = sources.find((s) => s.SourceId === sourceId);
   const initial = cur ? parse(cur.ConfigJson) : (draft || { type: "zoho_monthly_invoices", title: "Monthly customer invoices", cron: "0 9 1 * *" });
   const zohoCards = connectors.filter((c) => c.Type === "zoho_invoice");
@@ -841,7 +871,7 @@ function InvoiceWorkflowWizard({ sourceId, sources, connectors, reload, onBack, 
   const loadCustomers = useCallback(async () => {
     if (!cfg.connector_id) return setCustomers([]);
     try { setCustomers((await api.get(`/api/connectors/${cfg.connector_id}/zoho/customers`)).data.data || []); }
-    catch (e) { setMsg(e?.response?.data?.detail || "Connect and test Zoho Invoice first."); setCustomers([]); }
+    catch (e) { setMsg(e?.response?.data?.detail || uiMessage("Connect and test Zoho Invoice first.")); setCustomers([]); }
   }, [cfg.connector_id]);
   const loadBatches = useCallback(async () => {
     if (!cur) return;
@@ -856,98 +886,101 @@ function InvoiceWorkflowWizard({ sourceId, sources, connectors, reload, onBack, 
     ? c.customers.filter((x) => String(x.customer_id) !== String(customer.customer_id))
     : [...c.customers, customer] }));
   const save = async () => {
-    setBusy("save"); setMsg("");
+    setMsg("");
+    if (!String(cfg.title || "").trim()) { setMsg(uiMessage("Give this routine a title.")); return; }
+    if (!cfg.connector_id) { setMsg(uiMessage("Choose a Zoho Invoice connection.")); return; }
+    if (!cfg.customers.length) { setMsg(uiMessage("Choose at least one customer.")); return; }
+    setBusy("save");
     try {
-      if (!String(cfg.title || "").trim()) throw new Error("Give this routine a title.");
-      if (!cfg.connector_id) throw new Error("Choose a Zoho Invoice connection.");
-      if (!cfg.customers.length) throw new Error("Choose at least one customer.");
       const body = { Channel: "report", Address: cfg.title, ConnectorId: Number(cfg.connector_id), Active: true,
         ConfigJson: JSON.stringify({ ...cfg, type: "zoho_monthly_invoices", connector_id: Number(cfg.connector_id) }) };
       if (cur) body.SourceId = cur.SourceId;
       const { data } = await api.post("/api/sources", body); await reload();
-      const said = "Saved. The schedule opens a batch; it never sends invoices.";
+      const said = uiMessage("Saved. The schedule opens a batch; it never sends invoices.");
       setMsg(said); onSaved?.(data.sourceId, cur ? null : { msg: said });
-    } catch (e) { setMsg(e?.response?.data?.detail || e.message || "Save failed"); }
+    } catch (e) { setMsg(e?.response?.data?.detail || e.message || uiMessage("Save failed")); }
     setBusy("");
   };
   const openMonth = async () => {
     setBusy("open"); setMsg("");
     try { setBatch((await api.post(`/api/reports/${cur.SourceId}/invoice-batches`, { period })).data); await loadBatches(); }
-    catch (e) { setMsg(e?.response?.data?.detail || "Could not open the batch"); }
+    catch (e) { setMsg(e?.response?.data?.detail || uiMessage("Could not open the batch")); }
     setBusy("");
   };
   const patchItem = async (item, patch) => {
     try {
       await api.patch(`/api/invoice-batches/${batch.BatchId}/items/${item.ItemId}`, patch);
       setBatch((await api.get(`/api/invoice-batches/${batch.BatchId}`)).data);
-    } catch (e) { setMsg(e?.response?.data?.detail || "Could not save that amount"); }
+    } catch (e) { setMsg(e?.response?.data?.detail || uiMessage("Could not save that amount")); }
   };
   const prepare = async () => {
     setBusy("prepare"); setMsg("");
     try {
       const { data } = await api.post(`/api/invoice-batches/${batch.BatchId}/prepare`); setBatch(data.batch);
-      setMsg(data.errors?.length ? `${plural(data.created, "draft")} created; ${data.errors.length} need attention: ${data.errors.join("; ")}`
-        : `${plural(data.created, "draft")} created${data.reused ? `, ${plural(data.reused, "existing draft")} reused` : ""}. They are waiting on the task.`);
-    } catch (e) { setMsg(e?.response?.data?.detail || "Could not prepare drafts"); }
+      const drafts = uiMessage(data.created === 1 ? "{count} draft" : "{count} drafts", { count: data.created });
+      setMsg(data.errors?.length ? uiMessage("{drafts} created; {count} need attention: {errors}", { drafts, count: data.errors.length, errors: data.errors.join("; ") })
+        : uiMessage(data.reused ? "{drafts} created, {reused} reused. They are waiting on the task." : "{drafts} created. They are waiting on the task.",
+          { drafts, reused: uiMessage(data.reused === 1 ? "{count} existing draft" : "{count} existing drafts", { count: data.reused }) }));
+    } catch (e) { setMsg(e?.response?.data?.detail || uiMessage("Could not prepare drafts")); }
     setBusy("");
   };
   return (
     <Box sx={{ maxWidth: 1050, mx: "auto" }}>
-      <Crumb section="Routines" onBack={onBack} title={cur ? cfg.title : "New monthly invoice routine"} />
+      <Crumb section={t("Routines")} onBack={onBack} title={cur ? cfg.title : t("New monthly invoice routine")} />
       {note && <Alert severity={note.severity} sx={{ mb: 1.5, fontSize: 12.5 }}>{note.text}</Alert>}
       <Box sx={{ ...card, p: 2, mb: 2 }}>
-        <Typography variant="overline" sx={{ color: ACCENT2, letterSpacing: 1.4, fontSize: 10 }}>ROUTINE SETUP</Typography>
-        <Typography sx={{ color: INK, fontWeight: 600, fontSize: 15, mb: 0.4 }}>Monthly invoices → Zoho drafts → Review</Typography>
-        <Typography variant="body2" sx={{ color: DIM, mb: 1.5 }}>The schedule starts a monthly checklist. You confirm amounts; Prepare creates drafts; approving each Review card sends it.</Typography>
+        <Typography variant="overline" sx={{ color: ACCENT2, letterSpacing: 1.4, fontSize: 10 }}>{t("ROUTINE SETUP")}</Typography>
+        <Typography sx={{ color: INK, fontWeight: 600, fontSize: 15, mb: 0.4 }}>{t("Monthly invoices → Zoho drafts → Review")}</Typography>
+        <Typography variant="body2" sx={{ color: DIM, mb: 1.5 }}>{t("The schedule starts a monthly checklist. You confirm amounts; Prepare creates drafts; approving each Review card sends it.")}</Typography>
         <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "minmax(240px,1fr) 250px 220px" }, gap: 1 }}>
-          <TextField size="small" label="routine title" value={cfg.title || ""} onChange={(e) => setCfg({ ...cfg, title: e.target.value })} />
+          <TextField size="small" label={t("routine title")} value={cfg.title || ""} onChange={(e) => setCfg({ ...cfg, title: e.target.value })} />
           <Select size="small" displayEmpty value={cfg.connector_id || ""} onChange={(e) => setCfg({ ...cfg, connector_id: e.target.value, customers: [] })}>
-            <MenuItem value="" disabled>Zoho Invoice connection</MenuItem>
-            {zohoCards.map((c) => <MenuItem key={c.ConnectorId} value={c.ConnectorId}>{c.Name}{c.Active ? "" : " — off"}</MenuItem>)}
+            <MenuItem value="" disabled>{t("Zoho Invoice connection")}</MenuItem>
+            {zohoCards.map((c) => <MenuItem key={c.ConnectorId} value={c.ConnectorId}>{c.Name}{c.Active ? "" : ` — ${t("off")}`}</MenuItem>)}
           </Select>
-          <TextField size="small" label="monthly cron" value={cfg.cron || ""} helperText={cronText(cfg.cron || "0 9 1 * *")}
+          <TextField size="small" label={t("monthly cron")} value={cfg.cron || ""} helperText={cronText(cfg.cron || "0 9 1 * *")}
             onChange={(e) => setCfg({ ...cfg, cron: e.target.value })} />
         </Box>
-        <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 1 }}>Customers included each month</Typography>
+        <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 1 }}>{t("Customers included each month")}</Typography>
         <Box sx={{ maxHeight: 210, overflowY: "auto", border: `1px solid ${BORDER}`, borderRadius: 1.5, mt: 0.5, bgcolor: "#fff" }}>
-          {!customers.length && <Typography variant="body2" sx={{ color: DIM, p: 1.5 }}>No customers loaded. Save and connect the Zoho card, then return here.</Typography>}
+          {!customers.length && <Typography variant="body2" sx={{ color: DIM, p: 1.5 }}>{t("No customers loaded. Save and connect the Zoho card, then return here.")}</Typography>}
           {customers.map((c) => <Box key={c.customer_id} onClick={() => toggle(c)} sx={{ display: "flex", alignItems: "center", px: 1, borderBottom: `1px solid ${BORDER}`, cursor: "pointer" }}>
             <Checkbox size="small" checked={picked.has(String(c.customer_id))} />
             <Typography sx={{ fontSize: 13, color: INK, flex: 1 }}>{c.customer_name}</Typography>
-            <Typography variant="caption" sx={{ color: FAINT }}>{c.recipient || "no email in Zoho"}</Typography>
+            <Typography variant="caption" sx={{ color: FAINT }}>{c.recipient || t("no email in Zoho")}</Typography>
           </Box>)}
         </Box>
         <Box sx={{ display: "flex", gap: 1, alignItems: "center", mt: 1.25 }}>
-          <Button variant="contained" disableElevation disabled={!!busy} onClick={save}>{busy === "save" ? "Saving…" : cur ? "Save routine" : "Save routine"}</Button>
-          <Typography variant="caption" sx={{ color: DIM }}>{cfg.customers.length} selected · no automatic sending</Typography>
+          <Button variant="contained" disableElevation disabled={!!busy} onClick={save}>{t(busy === "save" ? "Saving…" : "Save routine")}</Button>
+          <Typography variant="caption" sx={{ color: DIM }}>{t("{count} selected · no automatic sending", { count: cfg.customers.length })}</Typography>
         </Box>
       </Box>
       {cur && <Box sx={{ ...card, p: 2 }}>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap", mb: 1.5 }}>
-          <Box sx={{ flex: 1 }}><Typography variant="overline" sx={{ color: ACCENT2, letterSpacing: 1.4, fontSize: 10 }}>MONTHLY BATCH</Typography>
-            <Typography sx={{ fontWeight: 600, color: INK }}>{batch ? `${batch.Period} · ${String(batch.Status).replaceAll("_", " ")}` : "No batch opened yet"}</Typography></Box>
+          <Box sx={{ flex: 1 }}><Typography variant="overline" sx={{ color: ACCENT2, letterSpacing: 1.4, fontSize: 10 }}>{t("MONTHLY BATCH")}</Typography>
+            <Typography sx={{ fontWeight: 600, color: INK }}>{batch ? `${batch.Period} · ${invoiceStatus(batch.Status)}` : t("No batch opened yet")}</Typography></Box>
           {batches.length > 1 && <Select size="small" value={batch?.BatchId || ""} onChange={async (e) => setBatch((await api.get(`/api/invoice-batches/${e.target.value}`)).data)}>
-            {batches.map((b) => <MenuItem key={b.BatchId} value={b.BatchId}>{b.Period} · {String(b.Status).replaceAll("_", " ")}</MenuItem>)}</Select>}
-          <Button variant="outlined" disabled={!!busy} onClick={openMonth}>{busy === "open" ? "Opening…" : `Open ${period}`}</Button>
+            {batches.map((b) => <MenuItem key={b.BatchId} value={b.BatchId}>{b.Period} · {invoiceStatus(b.Status)}</MenuItem>)}</Select>}
+          <Button variant="outlined" disabled={!!busy} onClick={openMonth}>{busy === "open" ? t("Opening…") : t("Open {period}", { period })}</Button>
         </Box>
         {batch?.items?.map((item) => <Box key={item.ItemId} sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "minmax(170px,1fr) 110px 130px minmax(180px,1fr) 140px" }, gap: 1, alignItems: "center", py: 1, borderTop: `1px solid ${BORDER}` }}>
           <Box><Typography sx={{ fontWeight: 600, fontSize: 13, color: INK }}>{item.CustomerName}</Typography>
-            <Typography variant="caption" sx={{ color: item.Error ? "#6b2733" : FAINT }}>{item.Error || "copied from the latest prior invoice"}</Typography></Box>
-          <Typography variant="caption" sx={{ color: DIM }}>last: {item.PreviousAmount == null ? "—" : `${item.Currency} ${Number(item.PreviousAmount).toFixed(2)}`}</Typography>
-          <TextField size="small" type="number" label="this month" value={item.Amount ?? ""} disabled={["review_ready", "sent"].includes(item.Status)}
+            <Typography variant="caption" sx={{ color: item.Error ? "#6b2733" : FAINT }}>{item.Error || t("copied from the latest prior invoice")}</Typography></Box>
+          <Typography variant="caption" sx={{ color: DIM }}>{t("last: {amount}", { amount: item.PreviousAmount == null ? "—" : `${item.Currency} ${Number(item.PreviousAmount).toFixed(2)}` })}</Typography>
+          <TextField size="small" type="number" label={t("this month")} value={item.Amount ?? ""} disabled={["review_ready", "sent"].includes(item.Status)}
             onChange={(e) => setBatch({ ...batch, items: batch.items.map((x) => x.ItemId === item.ItemId ? { ...x, Amount: e.target.value } : x) })}
             onBlur={(e) => e.target.value && patchItem(item, { Amount: e.target.value })} />
-          <TextField size="small" label="send to" value={item.Recipient || ""} disabled={["review_ready", "sent"].includes(item.Status)}
+          <TextField size="small" label={t("send to")} value={item.Recipient || ""} disabled={["review_ready", "sent"].includes(item.Status)}
             onChange={(e) => setBatch({ ...batch, items: batch.items.map((x) => x.ItemId === item.ItemId ? { ...x, Recipient: e.target.value } : x) })}
             onBlur={(e) => patchItem(item, { Recipient: e.target.value })} />
-          <Typography variant="caption" sx={{ color: item.Status === "sent" ? "#47654a" : DIM, fontWeight: 600 }}>{String(item.Status || "").replaceAll("_", " ")}{item.InvoiceNumber ? ` · ${item.InvoiceNumber}` : ""}</Typography>
+          <Typography variant="caption" sx={{ color: item.Status === "sent" ? "#47654a" : DIM, fontWeight: 600 }}>{invoiceStatus(item.Status)}{item.InvoiceNumber ? ` · ${item.InvoiceNumber}` : ""}</Typography>
         </Box>)}
         {batch?.items?.length > 0 && <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 1.5 }}>
-          <Button variant="contained" disableElevation disabled={!!busy || batch.Status === "done"} onClick={prepare}>{busy === "prepare" ? "Preparing…" : "Prepare Zoho drafts"}</Button>
-          <Typography variant="caption" sx={{ color: DIM }}>Each prepared customer becomes a separate approval on the task.</Typography>
+          <Button variant="contained" disableElevation disabled={!!busy || batch.Status === "done"} onClick={prepare}>{t(busy === "prepare" ? "Preparing…" : "Prepare Zoho drafts")}</Button>
+          <Typography variant="caption" sx={{ color: DIM }}>{t("Each prepared customer becomes a separate approval on the task.")}</Typography>
         </Box>}
       </Box>}
-      {msg && <Alert severity={/failed|could not|need attention|Choose|No /.test(msg) ? "warning" : "success"} sx={{ mt: 1.5 }}>{msg}</Alert>}
+      {msg && <Alert severity={/failed|could not|need attention|Choose|No /.test(msg.source || msg) ? "warning" : "success"} sx={{ mt: 1.5 }}>{displayMessage(msg)}</Alert>}
     </Box>
   );
 }
@@ -974,14 +1007,15 @@ const WHERE_RUNS_GO = "Settings › How mail is sorted › Where runs go";
 function judgeWords(judge, cfg, brains) {
   const brainLabel = (value) => (brains || []).find((b) => b.value === value)?.label;
   if (judge?.kind === "decision") return [judge.display || "TypeSafe Jev",
-    `It reads what came back and answers yes or no to each line above — nothing else is asked of it, which is why a model that only decides can do this job. Chosen for every report under ${WHERE_RUNS_GO}. A run it does not answer for reaches you anyway.`];
-  if (judge?.value) return [brainLabel(judge.value) || judge.display || "The brain chosen under Where runs go",
-    `It reads what came back and answers yes or no to each line above. Chosen for every report under ${WHERE_RUNS_GO}. A run it does not answer for reaches you anyway.`];
-  return ["The brain that writes this report",
-    `That is ${brainLabel(cfg.ai_brain) || "the AI that sorts your mail"} — the same AI the summary above runs on, picked there. To have one judge for every report, or a model that only decides, pick it under ${WHERE_RUNS_GO}. A run it does not answer for reaches you anyway.`];
+    t("It reads what came back and answers yes or no to each line above — nothing else is asked of it, which is why a model that only decides can do this job. Chosen for every report under {settings}. A run it does not answer for reaches you anyway.", { settings: t(WHERE_RUNS_GO) })];
+  if (judge?.value) return [brainLabel(judge.value) || judge.display || t("The brain chosen under Where runs go"),
+    t("It reads what came back and answers yes or no to each line above. Chosen for every report under {settings}. A run it does not answer for reaches you anyway.", { settings: t(WHERE_RUNS_GO) })];
+  return [t("The brain that writes this report"),
+    t("That is {brain} — the same AI the summary above runs on, picked there. To have one judge for every report, or a model that only decides, pick it under {settings}. A run it does not answer for reaches you anyway.", { brain: brainLabel(cfg.ai_brain) || t("the AI that sorts your mail"), settings: t(WHERE_RUNS_GO) })];
 }
 
 function RoutingCard({ cfg, setCfg, targets, inboxes, brains, firstDest, sourceId }) {
+  useLocale();
   const [replay, setReplay] = useState(null);
   const [busy, setBusy] = useState(false);
   const [showPrompt, setShowPrompt] = useState(false);
@@ -1018,14 +1052,14 @@ function RoutingCard({ cfg, setCfg, targets, inboxes, brains, firstDest, sourceI
     setBusy(true);
     try {
       setReplay((await api.post(`/api/reports/${sourceId}/replay`, { ...cfg, route: view })).data);
-    } catch (e) { setReplay({ error: e?.response?.data?.detail || "the last runs could not be replayed" }); }
+    } catch (e) { setReplay({ error: e?.response?.data?.detail || uiMessage("the last runs could not be replayed") }); }
     setBusy(false);
   };
   return (
     <Box sx={{ mt: 2, ...card, p: 1.5, maxWidth: 720, bgcolor: "#fffdf7", borderColor: "#d8cfbe" }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, mb: 0.25 }}>
         <AutoAwesomeIcon sx={{ fontSize: 15, color: "#55697a" }} />
-        <Typography variant="caption" sx={{ color: "#55697a", fontWeight: 600, flex: 1 }}>ONE PROMPT THAT ROUTES EACH RUN</Typography>
+        <Typography variant="caption" sx={{ color: "#55697a", fontWeight: 600, flex: 1 }}>{t("ONE PROMPT THAT ROUTES EACH RUN")}</Typography>
       </Box>
       {drawn.map((line) => {
         const [how, when, r] = shownAs(line);
@@ -1034,63 +1068,63 @@ function RoutingCard({ cfg, setCfg, targets, inboxes, brains, firstDest, sourceI
           <Box key={line} sx={{ mt: 1, pt: 1, borderTop: `1px solid ${BORDER}` }}>
             <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
               <Box sx={{ flex: 1, minWidth: 180 }}>
-                <Typography variant="body2" sx={{ fontWeight: 600 }}>{label}</Typography>
-                <Typography variant="caption" sx={{ color: FAINT }}>{hint}</Typography>
+                <Typography variant="body2" sx={{ fontWeight: 600 }}>{t(label)}</Typography>
+                <Typography variant="caption" sx={{ color: FAINT }}>{t(hint)}</Typography>
               </Box>
               <Select size="small" value={how} sx={{ bgcolor: "#fff", fontSize: 12.5, minWidth: 150 }}
                 onChange={(e) => set(line, { how: e.target.value, ...(e.target.value === "rule" && !r.rule ? { rule: "something_came_back" } : {}) })}>
-                <MenuItem value="always" sx={{ fontSize: 12 }}>every run</MenuItem>
-                <MenuItem value="ai" sx={{ fontSize: 12 }}>ask the AI</MenuItem>
-                <MenuItem value="rule" sx={{ fontSize: 12 }}>when a rule trips</MenuItem>
+                <MenuItem value="always" sx={{ fontSize: 12 }}>{t("every run")}</MenuItem>
+                <MenuItem value="ai" sx={{ fontSize: 12 }}>{t("ask the AI")}</MenuItem>
+                <MenuItem value="rule" sx={{ fontSize: 12 }}>{t("when a rule trips")}</MenuItem>
                 <MenuItem value="never" sx={{ fontSize: 12 }} disabled={line === "timeline" && !canSilenceTimeline}>
-                  {line === "timeline" && !canSilenceTimeline ? "never — needs a destination under “Send it somewhere”" : "never"}</MenuItem>
+                  {t(line === "timeline" && !canSilenceTimeline ? "never — needs a destination under “Send it somewhere”" : "never")}</MenuItem>
               </Select>
             </Box>
             {how === "ai" && (
               <TextField fullWidth multiline minRows={1} size="small" sx={{ bgcolor: "#fff", mt: 0.8, "& .MuiInputBase-root": { fontSize: 13 } }}
-                placeholder={line === "alert" ? "a job has not run in over two hours"
+                placeholder={t(line === "alert" ? "a job has not run in over two hours"
                     : line === "triage" ? "something failed that someone has to fix"
-                    : "anything happened that is worth my knowing about"}
+                    : "anything happened that is worth my knowing about")}
                 value={when} onChange={(e) => set(line, { when: e.target.value })} />
             )}
             {how === "rule" && (
               <Box sx={{ display: "flex", gap: 1, mt: 0.8, flexWrap: "wrap", alignItems: "center" }}>
                 <Select size="small" value={r.rule || "something_came_back"} sx={{ bgcolor: "#fff", fontSize: 12.5, minWidth: 200 }}
                   onChange={(e) => set(line, { rule: e.target.value })}>
-                  {RULES.map((o) => <MenuItem key={o.v} value={o.v} sx={{ fontSize: 12 }}>{o.label}</MenuItem>)}
+                  {RULES.map((o) => <MenuItem key={o.v} value={o.v} sx={{ fontSize: 12 }}>{t(o.label)}</MenuItem>)}
                 </Select>
                 {RULES.find((o) => o.v === r.rule)?.count && (
-                  <TextField size="small" type="number" sx={{ bgcolor: "#fff", width: 120 }} label="how many"
+                  <TextField size="small" type="number" sx={{ bgcolor: "#fff", width: 120 }} label={t("how many")}
                     value={r.count ?? ""} onChange={(e) => set(line, { count: e.target.value === "" ? "" : Number(e.target.value) })} />
                 )}
                 {RULES.find((o) => o.v === r.rule)?.text && (
-                  <TextField size="small" sx={{ bgcolor: "#fff", flex: 1, minWidth: 160 }} label="the words"
+                  <TextField size="small" sx={{ bgcolor: "#fff", flex: 1, minWidth: 160 }} label={t("the words")}
                     value={r.text || ""} onChange={(e) => set(line, { text: e.target.value })} />
                 )}
               </Box>
             )}
             {how === "ai" && blank(when) && (
               <Typography variant="caption" sx={{ color: "#8c6d3b", display: "block", mt: 0.5 }}>
-                Say what to look for — until you do, this line happens on every run.
+                {t("Say what to look for — until you do, this line happens on every run.")}
               </Typography>
             )}
             {line === "timeline" && how === "never" && (
               <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.5 }}>
-                This report is for whoever it is sent to, not for you. Turning “Send it somewhere” off puts it back under Reports on your work rail.
+                {t("This report is for whoever it is sent to, not for you. Turning “Send it somewhere” off puts it back under Reports on your work rail.")}
               </Typography>
             )}
             {line === "timeline" && CONDITIONAL.includes(how) && !ownTriage && (
               <Box sx={{ mt: 0.8, pl: 1, borderLeft: `2px solid ${BORDER}` }}>
                 <Box component="label" sx={{ display: "flex", alignItems: "center", gap: 0.5, cursor: "pointer" }}>
                   <Switch size="small" checked={view.triage.how !== "never"} onChange={(e) => judgeIt(e.target.checked)} />
-                  <Typography variant="body2" sx={{ fontSize: 12.5, fontWeight: 600 }}>{LINE_SAYS.triage[0]}</Typography>
+                  <Typography variant="body2" sx={{ fontSize: 12.5, fontWeight: 600 }}>{t(LINE_SAYS.triage[0])}</Typography>
                 </Box>
-                <Typography variant="caption" sx={{ color: FAINT, display: "block" }}>{LINE_SAYS.triage[1]}</Typography>
+                <Typography variant="caption" sx={{ color: FAINT, display: "block" }}>{t(LINE_SAYS.triage[1])}</Typography>
                 {/* the brief triage reads a run it is sent against (reports.work_brief) - only worth asking for once a run can get there */}
                 {view.triage.how !== "never" && (
                   <TextField fullWidth multiline minRows={1} size="small" sx={{ bgcolor: "#fff", mt: 0.8, "& .MuiInputBase-root": { fontSize: 13 } }}
-                    label="Make it a task when… (blank = your triage rules alone)"
-                    placeholder="any error at all, or a job that did not run when it should have"
+                    label={t("Make it a task when… (blank = your triage rules alone)")}
+                    placeholder={t("any error at all, or a job that did not run when it should have")}
                     value={cfg.watch_for || ""} onChange={(e) => setCfg({ ...cfg, watch_for: e.target.value })} />
                 )}
               </Box>
@@ -1098,17 +1132,17 @@ function RoutingCard({ cfg, setCfg, targets, inboxes, brains, firstDest, sourceI
             {line === "timeline" && ownTriage && (
               <Box sx={{ mt: 0.8, pl: 1, borderLeft: `2px solid ${BORDER}`, display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
                 <Typography variant="caption" sx={{ color: FAINT, flex: 1, minWidth: 200 }}>
-                  Triage judges it on its own condition: {cfg.type === "assistant" && view.triage.how === "always" ? "every idea it says" : lineWords(view.triage)}
+                  {t("Triage judges it on its own condition: {condition}", { condition: cfg.type === "assistant" && view.triage.how === "always" ? t("every idea it says") : lineWords(view.triage) })}
                 </Typography>
-                {CONDITIONAL.includes(how) && <Button size="small" onClick={() => judgeIt(true)} sx={{ fontSize: 12, color: INK }}>use this condition</Button>}
-                <Button size="small" onClick={() => judgeIt(false)} sx={{ fontSize: 12, color: INK }}>stop</Button>
+                {CONDITIONAL.includes(how) && <Button size="small" onClick={() => judgeIt(true)} sx={{ fontSize: 12, color: INK }}>{t("use this condition")}</Button>}
+                <Button size="small" onClick={() => judgeIt(false)} sx={{ fontSize: 12, color: INK }}>{t("stop")}</Button>
               </Box>
             )}
             {line === "alert" && how !== "never" && (
               <Box sx={{ display: "flex", gap: 1, mt: 0.8, flexWrap: "wrap" }}>
                 <Destination dest={cfg.alert?.to ? cfg.alert : { ...firstDest() }} targets={targets} inboxes={inboxes}
                   onChange={(d) => setCfg({ ...cfg, alert: { ...(cfg.alert || {}), ...firstDest(), ...d } })} />
-                <TextField size="small" sx={{ bgcolor: "#fff", flex: 1, minWidth: 180 }} label="what to say (optional)"
+                <TextField size="small" sx={{ bgcolor: "#fff", flex: 1, minWidth: 180 }} label={t("what to say (optional)")}
                   value={cfg.alert?.note || ""} onChange={(e) => setCfg({ ...cfg, alert: { ...(cfg.alert || {}), note: e.target.value } })} />
               </Box>
             )}
@@ -1125,17 +1159,17 @@ function RoutingCard({ cfg, setCfg, targets, inboxes, brains, firstDest, sourceI
         <Box sx={{ mt: 1.2, pt: 1.2, borderTop: `1px solid ${BORDER}` }}>
           <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
             <Typography variant="body2" sx={{ fontSize: 12.5 }}>
-              <b>{judgeWords(judge, cfg, brains)[0]}</b> decides where each run goes
+              <b>{judgeWords(judge, cfg, brains)[0]}</b> {t("decides where each run goes")}
             </Typography>
             <Button size="small" onClick={() => { openAppLink(JUDGE_HASH); }} sx={{ fontSize: 12, color: INK }}>
-              {judge?.value ? "change the judge" : "pick one judge for every report"}</Button>
+              {t(judge?.value ? "change the judge" : "pick one judge for every report")}</Button>
             <Button size="small" onClick={() => setShowPrompt(!showPrompt)} sx={{ fontSize: 12, color: INK }}>
-              {showPrompt ? "hide the prompt ⌃" : "see the prompt ⌄"}</Button>
+              {t(showPrompt ? "hide the prompt ⌃" : "see the prompt ⌄")}</Button>
             <Box sx={{ flex: 1 }} />
             {!!sourceId && (
               <Button size="small" disableElevation variant="outlined" disabled={busy} onClick={runReplay}
                 sx={{ fontSize: 12, color: INK, borderColor: BORDER }}>
-                {busy ? "reading the last runs…" : "try it on the last 5 runs"}</Button>
+                {t(busy ? "reading the last runs…" : "try it on the last 5 runs")}</Button>
             )}
           </Box>
           <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.8 }}>
@@ -1145,29 +1179,29 @@ function RoutingCard({ cfg, setCfg, targets, inboxes, brains, firstDest, sourceI
             <Box component="pre" sx={{ mt: 0.8, p: 1, bgcolor: "#fff", border: `1px solid ${BORDER}`, borderRadius: 1,
               fontSize: 11.5, whiteSpace: "pre-wrap", color: INK, maxHeight: 260, overflow: "auto" }}>
               {(judge?.kind === "decision" ? judgeQuestions(cfg, shown) : judgePrompt(cfg, shown))
-                || "nothing is asked — every line is set to every run or never"}
+                || t("nothing is asked — every line is set to every run or never")}
             </Box>
           )}
         </Box>
       ) : (
         <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 1.2, pt: 1.2, borderTop: `1px solid ${BORDER}` }}>
-          No AI is asked — this report routes itself, and a run costs nothing but the query.
+          {t("No AI is asked — this report routes itself, and a run costs nothing but the query.")}
         </Typography>
       )}
       {replay && (
         <Box sx={{ mt: 1.2, pt: 1.2, borderTop: `1px solid ${BORDER}` }}>
           <Typography variant="overline" sx={{ color: ACCENT2, letterSpacing: 1.5, fontSize: 10, display: "block" }}>
-            ON THE LAST RUNS THIS WOULD HAVE
+            {t("ON THE LAST RUNS THIS WOULD HAVE")}
           </Typography>
-          {replay.error ? <Typography variant="caption" sx={{ color: "#8c3b3b" }}>{replay.error}</Typography>
-            : !replay.data?.length ? <Typography variant="caption" sx={{ color: FAINT }}>This report has not run yet — there is nothing to replay.</Typography>
+          {replay.error ? <Typography variant="caption" sx={{ color: "#8c3b3b" }}>{displayMessage(replay.error)}</Typography>
+            : !replay.data?.length ? <Typography variant="caption" sx={{ color: FAINT }}>{t("This report has not run yet — there is nothing to replay.")}</Typography>
               : replay.data.map((r) => {
-                const went = ROUTE_LINES.filter((l) => r[l] && (l !== "send" || cfg.deliver?.to)).map((l) => LINE_CHIP[l]);
+                const went = ROUTE_LINES.filter((l) => r[l] && (l !== "send" || cfg.deliver?.to)).map((l) => t(LINE_CHIP[l]));
                 return (
                   <Box key={r.runId} sx={{ display: "flex", gap: 1, mt: 0.4, alignItems: "baseline", flexWrap: "wrap" }}>
-                    <Typography variant="caption" sx={{ color: FAINT, minWidth: 108, fontVariantNumeric: "tabular-nums" }}>{String(r.at || "").slice(5, 16)}</Typography>
+                    <Typography variant="caption" sx={{ color: FAINT, minWidth: 108, fontVariantNumeric: "tabular-nums" }}>{displayStamp(r.at, String(r.at || "").slice(5, 16), { year: false })}</Typography>
                     <Typography variant="caption" sx={{ color: went.length ? INK : FAINT, fontWeight: went.length ? 600 : 400, minWidth: 148 }}>
-                      {went.length ? `● ${went.join(" · ")}` : "— quiet, nowhere at all"}
+                      {went.length ? `● ${went.join(" · ")}` : t("— quiet, nowhere at all")}
                     </Typography>
                     <Typography variant="caption" sx={{ color: FAINT, flex: 1, minWidth: 160 }}>{r.why}</Typography>
                   </Box>
@@ -1181,6 +1215,7 @@ function RoutingCard({ cfg, setCfg, targets, inboxes, brains, firstDest, sourceI
 
 function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, onSaved, draft, workflow = false,
   note = null, lastRun = null, carry = null, onCarried, onRun = null, running = false, onSwitch = null, said = null, routeAsk = null, onRouteTaken }) {
+  useLocale();
   const cur = sources.find((s) => s.SourceId === sourceId);
   // a composed draft is a STARTING POINT, not a saved report: it lands in the same boxes the
   // owner would have filled in, and nothing exists until they preview it and press save
@@ -1322,21 +1357,21 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
       const c = bodyCfg();
       if (c.type === "mssql") {
         const { data } = await api.post("/api/mssql/test", c);
-        setTest(data.ok ? { ok: true, detail: `connected · ${data.version} · db ${data.database}` } : { ok: false, detail: data.error });
+        setTest(data.ok ? { ok: true, detail: uiMessage("connected · {version} · db {database}", { version: data.version, database: data.database }) } : { ok: false, detail: data.error });
       } else if (c.type === "mcp") {
         const { data } = await api.post("/api/mcp/tools", c);
-        setTest(data.ok ? { ok: true, detail: `server ok · tools: ${(data.data || []).map((t) => t.name).join(", ") || "(none)"}` } : { ok: false, detail: data.error });
+        setTest(data.ok ? { ok: true, detail: uiMessage("server ok · tools: {tools}", { tools: (data.data || []).map((tool) => tool.name).join(", ") || uiMessage("(none)") }) } : { ok: false, detail: data.error });
       } else {
         const { data } = await api.post("/api/reports/preview", { ...c, ai_prompt: undefined });
         setTest(data.ok ? { ok: true, detail: data.headline } : { ok: false, detail: data.error });
       }
-    } catch (e) { setTest({ ok: false, detail: e?.response?.data?.detail || "test call failed" }); }
+    } catch (e) { setTest({ ok: false, detail: e?.response?.data?.detail || uiMessage("test call failed") }); }
     setBusy("");
   };
   const runPreview = async () => {
     setBusy("preview"); setPreview(null);
     try { setPreview((await api.post("/api/reports/preview", bodyCfg())).data); }
-    catch (e) { setPreview({ ok: false, error: e?.response?.data?.detail || "preview failed" }); }
+    catch (e) { setPreview({ ok: false, error: e?.response?.data?.detail || uiMessage("preview failed") }); }
     setBusy("");
   };
   /* "Save report is not working" - it was refusing, correctly, and saying so into a state that
@@ -1351,12 +1386,12 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
   const remove = async () => {
     setRemoveErr("");
     try { await removeNow(() => api.delete(`/api/sources/${cur.SourceId}`), workflow ? "workflow" : "report", cfg.title || cur?.Address); await reload(); onBack(); }
-    catch (e) { setRemoveErr(e?.response?.data?.detail || e?.message || "It could not be removed."); }
+    catch (e) { setRemoveErr(e?.response?.data?.detail || e?.message || uiMessage("It could not be removed.")); }
   };
   const save = async () => {
     setSaveErr(""); setSavedMsg("");
     const c = bodyCfg();
-    if (!c.title) { setSaveErr(`Give the ${workflow ? "workflow" : "report"} a title first — it is the headline each run shows (step 1).`); return false; }
+    if (!c.title) { setSaveErr(uiMessage(workflow ? "Give the workflow a title first — it is the headline each run shows (step 1)." : "Give the report a title first — it is the headline each run shows (step 1).")); return false; }
     // saving an edit is not switching it back on: a report the owner turned off stays off
     const active = cur ? !!cur.Active : true;
     const body = { Channel: "report", Address: c.title, ConfigJson: JSON.stringify(c), Active: active };
@@ -1364,14 +1399,14 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
     try {
       const { data } = await api.post("/api/sources", body);
       await reload();
-      const msg = !active ? "saved — it is switched off, so it does not run on its schedule until you turn it back on in the list"
+      const msg = uiMessage(!active ? "saved — it is switched off, so it does not run on its schedule until you turn it back on in the list"
         : (c.every_minutes || c.daily_at || c.cron || c.on_startup) ? "saved — enabled and scheduled"
-          : "saved — it has no schedule, so it runs only when you press Run now";
+          : "saved — it has no schedule, so it runs only when you press Run now");
       setSavedMsg(msg);
       onSaved?.(data.sourceId, cur ? null : { step, msg });
       return true;
     } catch (e) {
-      setSaveErr(e?.response?.data?.detail || e?.message || "the server refused to save it");
+      setSaveErr(e?.response?.data?.detail || e?.message || uiMessage("the server refused to save it"));
       return false;
     }
   };
@@ -1382,60 +1417,59 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
   const watchChoices = sources.filter((s) => s.SourceId !== cur?.SourceId
       && parse(s.ConfigJson).type !== "assistant" && !isWorkflowSource(s))
     .map((s) => { const c = parse(s.ConfigJson); return { id: s.SourceId, title: c.title || s.Address,
-      type: (c.sources || []).length > 1 ? `${c.sources.length} sources` : (TYPE_LABELS[c.type] || c.type || "report"), active: !!s.Active }; });
+      type: (c.sources || []).length > 1 ? t("{count} sources", { count: c.sources.length }) : (TYPE_LABELS[c.type] ? t(TYPE_LABELS[c.type]) : c.type || t("Report")), active: !!s.Active }; });
   const watchedIds = (Array.isArray(cfg.watch_source_ids) ? cfg.watch_source_ids : []).map(Number);
   return (
     <Box sx={{ maxWidth: 980, mx: "auto" }}>
       <Box sx={{ display: "flex", alignItems: "flex-start", gap: 1 }}>
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Crumb section={workflow ? "Routines" : "Reports"} onBack={onBack}
-            title={cur ? (parse(cur.ConfigJson).title || `Edit ${workflow ? "workflow" : "report"}`) : `New ${workflow ? "AI agent workflow" : "report"}`} />
+          <Crumb section={t(workflow ? "Routines" : "Reports")} onBack={onBack}
+            title={cur ? (parse(cur.ConfigJson).title || t(workflow ? "Edit workflow" : "Edit report")) : t(workflow ? "New AI agent workflow" : "New report")} />
         </Box>
         {/* ITS ROW'S RUN NOW AND SWITCH, HERE TOO (the owner, 2026-11-02), as a routine's header has them: the shelf's own handlers, named so
             the Assistant's view finds them - "run it" and "pause it" over an open builder press these */}
         {cur && onSwitch && <Box sx={{ display: "flex", alignItems: "center", mt: 0.25, flexShrink: 0 }}>
           <Switch size="small" checked={!!cur.Active} onChange={() => onSwitch(cur)}
-            inputProps={{ "aria-label": `${parse(cur.ConfigJson).title || cur.Address} on its clock` }} />
-          <Typography variant="caption" sx={{ color: DIM }}>{cur.Active ? "on" : "off"}</Typography>
+            inputProps={{ "aria-label": t("{name} on its clock", { name: parse(cur.ConfigJson).title || cur.Address }) }} />
+          <Typography variant="caption" sx={{ color: DIM }}>{t(cur.Active ? "on" : "off")}</Typography>
         </Box>}
         {cur && onRun && <Button size="small" variant="outlined" disabled={running} onClick={onRun} sx={{ mt: 0.25, flexShrink: 0 }}
-          startIcon={running ? <CircularProgress size={12} /> : <PlayArrowIcon sx={{ fontSize: 16 }} />}>{running ? "Running…" : "Run now"}</Button>}
+          startIcon={running ? <CircularProgress size={12} /> : <PlayArrowIcon sx={{ fontSize: 16 }} />}>{t(running ? "Running…" : "Run now")}</Button>}
         {cur && <Button size="small" color="error" startIcon={<DeleteOutlineIcon sx={{ fontSize: 15 }} />}
           onClick={remove} sx={{ mt: 0.25, flexShrink: 0 }}>
-          Remove {workflow ? "routine" : "report"}
+          {t(workflow ? "Remove routine" : "Remove report")}
         </Button>}
       </Box>
       {/* ...and what they answered, here: the shelf's line is off screen while the builder is open */}
-      {cur && said?.sid === cur.SourceId && <Typography variant="body2" sx={{ mb: 1.5, fontWeight: 600, color: said.ok ? "#47654a" : "#6b2733" }}>{said.ok ? "✓" : "✗"} {said.detail}</Typography>}
-      {removeErr && <Alert severity="error" sx={{ mb: 1.5, fontSize: 12.5 }}>{removeErr}</Alert>}
+      {cur && said?.sid === cur.SourceId && <Typography variant="body2" sx={{ mb: 1.5, fontWeight: 600, color: said.ok ? "#47654a" : "#6b2733" }}>{said.ok ? "✓" : "✗"} {displayMessage(said.detail)}</Typography>}
+      {removeErr && <Alert severity="error" sx={{ mb: 1.5, fontSize: 12.5 }}>{displayMessage(removeErr)}</Alert>}
       {/* the bell's "Open the report" lands here: the failure it rang for is the first thing on the page */}
       {cur && lastRun?.failed && (
         <Alert severity="error" sx={{ mb: 1.5, fontSize: 12.5 }}>
-          Its last run failed{lastRun.error ? `: ${String(lastRun.error).slice(0, 400)}` : "."} Fix it below and Preview it in step 2 —
-          that runs it without filing anything. The next run that works clears the bell.
+          {t("Its last run failed{error} Fix it below and Preview it in step 2 — that runs it without filing anything. The next run that works clears the bell.", { error: lastRun.error ? `: ${String(lastRun.error).slice(0, 400)}` : "." })}
           <LastRun r={lastRun} sid={cur.SourceId} flush />
         </Alert>
       )}
       {note && <Alert severity={note.severity} sx={{ mb: 1.5, fontSize: 12.5 }}>{note.text}</Alert>}
       <Stepper nonLinear activeStep={step} orientation="vertical" sx={{ "& .MuiStepLabel-label": { fontSize: 13.5, fontWeight: 600 } }}>
         <Step completed={!!String(cfg.title || "").trim() && srcs.some((x) => x.type)}>
-          <StepButton onClick={() => setStep(0)}>Pipeline</StepButton>
+          <StepButton onClick={() => setStep(0)}>{t("Pipeline")}</StepButton>
           <StepContent>
             <Typography variant="body2" sx={{ color: DIM, mt: 0.5, mb: 1.5 }}>
-              {workflow
+              {t(workflow
                 ? "Give the AI agent a saved skill or a plain-English job that writes data. It runs with write access on this routine's schedule and puts its result on your work rail."
                 : isAssistant
                 ? "Point it at the systems it should read on every check — write the query here, or reuse a data view you already saved. This report reads only those sources; the general Advisor and Morning digest are separate."
-                : "Sources at the top feed one prompt at the bottom. Add as many as you want — the same connection twice with different queries is fine, and every source's rows reach the summary together."}
+                : "Sources at the top feed one prompt at the bottom. Add as many as you want — the same connection twice with different queries is fine, and every source's rows reach the summary together.")}
             </Typography>
-            <TextField required label="title — the headline each run shows" value={cfg.title || ""} sx={{ bgcolor: "#fff", maxWidth: 720, mb: 2 }}
+            <TextField required label={t("title — the headline each run shows")} value={cfg.title || ""} sx={{ bgcolor: "#fff", maxWidth: 720, mb: 2 }}
               fullWidth onChange={(e) => setCfg({ ...cfg, title: e.target.value })} />
 
             {isAssistant && (
               <Box sx={{ ...card, p: 1.5, mb: 1.5, maxWidth: 720, bgcolor: PANEL2 }}>
-                <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13, mb: 0.4 }}>What it reads</Typography>
+                <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13, mb: 0.4 }}>{t("What it reads")}</Typography>
                 <Typography variant="caption" sx={{ color: DIM, display: "block", mb: 1 }}>
-                  Taskuary's own tables (the Taskuary cards) and anything a report can read — Intacct queries, databases, REST or MCP tools, cloud systems, files, agent skills. Every card has a Test that shows its data; the prompt can place a card where it talks about it (Insert source, under the prompt). This check reads only the sources below.
+                  {t("Taskuary's own tables (the Taskuary cards) and anything a report can read — Intacct queries, databases, REST or MCP tools, cloud systems, files, agent skills. Every card has a Test that shows its data; the prompt can place a card where it talks about it (Insert source, under the prompt). This check reads only the sources below.")}
                 </Typography>
                 {/* "I don't know what fields off hand Intacct has set up" - so this step cannot be a
                     form. Describe what the Advisor should keep an eye on and the composer adds
@@ -1457,10 +1491,10 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
                     scrolls sideways rather than folding into a column (the owner, 2026-09-20). */}
                 {stripOverflows && (
                   <Box sx={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 0.25, mb: 0.25 }}>
-                    <Typography variant="caption" sx={{ color: FAINT, mr: 0.5 }}>{watchSrcs.length} sources, left to right</Typography>
-                    <IconButton size="small" aria-label="scroll the sources left" sx={{ p: 0.3 }}
+                    <Typography variant="caption" sx={{ color: FAINT, mr: 0.5 }}>{t("{count} sources, left to right", { count: watchSrcs.length })}</Typography>
+                    <IconButton size="small" aria-label={t("scroll the sources left")} sx={{ p: 0.3 }}
                       onClick={() => stripRef.current?.scrollBy({ left: -372, behavior: "smooth" })}><ChevronLeftIcon sx={{ fontSize: 18 }} /></IconButton>
-                    <IconButton size="small" aria-label="scroll the sources right" sx={{ p: 0.3 }}
+                    <IconButton size="small" aria-label={t("scroll the sources right")} sx={{ p: 0.3 }}
                       onClick={() => stripRef.current?.scrollBy({ left: 372, behavior: "smooth" })}><ChevronRightIcon sx={{ fontSize: 18 }} /></IconButton>
                   </Box>
                 )}
@@ -1481,25 +1515,25 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
                       justifyContent: "center", gap: 0.5, cursor: "pointer", borderStyle: "dashed", bgcolor: "#fff",
                       color: DIM, "&:hover": { borderColor: "#d8cfbe", color: "#55697a" } }}>
                     <AddIcon sx={{ fontSize: 20 }} />
-                    <Typography variant="body2" sx={{ fontWeight: 600 }}>add a data source</Typography>
-                    <Typography variant="caption" sx={{ color: FAINT }}>no saved report needed</Typography>
+                    <Typography variant="body2" sx={{ fontWeight: 600 }}>{t("add a data source")}</Typography>
+                    <Typography variant="caption" sx={{ color: FAINT }}>{t("no saved report needed")}</Typography>
                   </Box>
                 </Box>
                 {/* what the Taskuary cards in the list cost, priced by the server from the same choice the run reads */}
                 {!!cards.length && blockRows && (
                   <Box sx={{ mb: 1.25, mt: -0.5 }}>
                     <Typography sx={{ ...mono, fontSize: 11, color: DIM }}>
-                      Taskuary cards: {costLine(blockRows.total_tokens, blockRows.runs_per_day, blockRows.cost)}
+                      {t("Taskuary cards: {cost}", { cost: costLine(blockRows.total_tokens, blockRows.runs_per_day, blockRows.cost) })}
                     </Typography>
                     {!!blockRows.unpriced?.length && (
                       <Typography sx={{ ...mono, fontSize: 10.5, color: FAINT, mt: 0.3 }}>
-                        not in that total: {blockRows.unpriced.map((u) => u.label.toLowerCase()).join(", ")} — read live when the check runs
+                        {t("not in that total: {names} — read live when the check runs", { names: blockRows.unpriced.map((u) => u.label.toLowerCase()).join(", ") })}
                       </Typography>
                     )}
                   </Box>
                 )}
                 <Typography variant="caption" sx={{ color: INK, fontWeight: 600, display: "block", mb: 0.5 }}>
-                  …and pull these saved data views too (optional)
+                  {t("…and pull these saved data views too (optional)")}
                 </Typography>
                 <Autocomplete multiple options={watchChoices} value={watchChoices.filter((o) => watchedIds.includes(o.id))}
                   getOptionLabel={(o) => o.title || ""} isOptionEqualToValue={(o, v) => o.id === v.id}
@@ -1507,13 +1541,13 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
                   renderOption={(props, o) => (
                     <Box component="li" {...props} key={o.id} sx={{ display: "flex", gap: 1 }}>
                       <Typography sx={{ fontSize: 12.5, flex: 1 }}>{o.title}</Typography>
-                      <Typography variant="caption" sx={{ color: FAINT }}>{o.type}{o.active ? "" : " · report schedule off"}</Typography>
+                      <Typography variant="caption" sx={{ color: FAINT }}>{o.type}{o.active ? "" : ` · ${t("report schedule off")}`}</Typography>
                     </Box>
                   )}
                   renderInput={(params) => <TextField {...params} size="small" sx={{ bgcolor: "#fff" }}
-                    placeholder={watchChoices.length ? "Choose views…" : "Create another report/data view first"} />} />
+                    placeholder={t(watchChoices.length ? "Choose views…" : "Create another report/data view first")} />} />
                 <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.75 }}>
-                  A view may stay disabled as a standalone report and still be pulled here. Its query and credentials remain owned by that view and its connector.
+                  {t("A view may stay disabled as a standalone report and still be pulled here. Its query and credentials remain owned by that view and its connector.")}
                 </Typography>
               </Box>
             )}
@@ -1540,7 +1574,7 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
                   justifyContent: "center", gap: 0.5, cursor: "pointer", borderStyle: "dashed",
                   color: DIM, "&:hover": { borderColor: "#d8cfbe", color: "#55697a" } }}>
                 <AddIcon sx={{ fontSize: 20 }} />
-                <Typography variant="body2" sx={{ fontWeight: 600 }}>add a source</Typography>
+                <Typography variant="body2" sx={{ fontWeight: 600 }}>{t("add a source")}</Typography>
               </Box>}
             </Box>
 
@@ -1553,13 +1587,13 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
               <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, mb: 0.75 }}>
                 <AutoAwesomeIcon sx={{ fontSize: 15, color: "#55697a" }} />
                 <Typography variant="caption" sx={{ color: "#55697a", fontWeight: 600 }}>
-                  {isAssistant ? "WHAT SHOULD THE ADVISOR SURFACE?" : `ONE PROMPT OVER ALL ${srcs.length > 1 ? `${srcs.length} SOURCES` : "THE ROWS"}`}
+                  {isAssistant ? t("WHAT SHOULD THE ADVISOR SURFACE?") : srcs.length > 1 ? t("ONE PROMPT OVER ALL {count} SOURCES", { count: srcs.length }) : t("ONE PROMPT OVER ALL THE ROWS")}
                 </Typography>
               </Box>
               <TextField fullWidth multiline minRows={3} value={cfg.ai_prompt || ""} sx={{ bgcolor: "#fff" }} inputRef={promptRef}
-                placeholder={isAssistant
+                placeholder={t(isAssistant
                   ? "Tell me only what needs attention now. Across finance and operations, flag unusual totals or changes, thresholds crossed, missing expected activity, failures, and contradictions. Give the number, comparison, and source."
-                  : AI_FIELD[3]} onChange={(e) => setCfg({ ...cfg, ai_prompt: e.target.value })} />
+                  : AI_FIELD[3])} onChange={(e) => setCfg({ ...cfg, ai_prompt: e.target.value })} />
               {/* a source named in the prompt gets its rows placed there (reports.substitute); the
                   rest follow underneath as they always have. The menu writes the token, so nobody
                   has to know its spelling. */}
@@ -1567,8 +1601,8 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
                 const opts = promptSources({ sources: (isAssistant ? watchSrcs : srcs).map(toShape).filter((x) => x.type) });
                 return !!opts.length && (
                   <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, mt: 0.6, flexWrap: "wrap" }}>
-                    <Button size="small" variant="outlined" onClick={(e) => setInsertAt(e.currentTarget)} sx={{ fontSize: 11.5, py: 0.1 }}>Insert source</Button>
-                    <Typography variant="caption" sx={{ color: FAINT }}>puts that source's rows where the cursor is — the rest follow the prompt</Typography>
+                    <Button size="small" variant="outlined" onClick={(e) => setInsertAt(e.currentTarget)} sx={{ fontSize: 11.5, py: 0.1 }}>{t("Insert source")}</Button>
+                    <Typography variant="caption" sx={{ color: FAINT }}>{t("puts that source's rows where the cursor is — the rest follow the prompt")}</Typography>
                     <Menu open={!!insertAt} anchorEl={insertAt} onClose={() => setInsertAt(null)}>
                       {opts.map((o) => (
                         <MenuItem key={o.key} sx={{ fontSize: 12.5 }} onClick={() => insertToken(o.key)}>
@@ -1583,7 +1617,7 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
                 <Box sx={{ display: "flex", gap: 1, mt: 1, alignItems: "center", flexWrap: "wrap" }}>
                   <Select size="small" displayEmpty value={cfg.ai_brain || ""} sx={{ bgcolor: "#fff", fontSize: 12.5, minWidth: 230 }}
                     onChange={(e) => setCfg({ ...cfg, ai_brain: e.target.value })}>
-                    <MenuItem value="" sx={{ fontSize: 12 }}>the triage brain (default)</MenuItem>
+                    <MenuItem value="" sx={{ fontSize: 12 }}>{t("the triage brain (default)")}</MenuItem>
                     {/* only brains that can actually answer: a connector with no key saved is
                         not a choice, it is a trap. A saved pick that lost its key stays
                         visible - disabled - instead of silently vanishing. Labels are worded
@@ -1594,7 +1628,7 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
                     {cfg.ai_brain && !brains.some((b) => b.value === cfg.ai_brain && b.ready) && (
                       <MenuItem value={cfg.ai_brain} disabled sx={{ fontSize: 12 }}>
                         {cfg.ai_brain.startsWith("cli:") ? cfg.ai_brain.slice(4)
-                          : (brains.find((b) => b.value === cfg.ai_brain) || {}).label || cfg.ai_brain} — not connected
+                          : (brains.find((b) => b.value === cfg.ai_brain) || {}).label || cfg.ai_brain} — {t("not connected")}
                       </MenuItem>
                     )}
                   </Select>
@@ -1605,21 +1639,21 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
                     onChange={(_e, v) => setCfg({ ...cfg, ai_model: v || "" })}
                     onInputChange={(_e, v, why) => { if (why === "input") setCfg({ ...cfg, ai_model: v }); }}
                     renderInput={(params) => (
-                      <TextField {...params} label="model (optional — the brain's default)" sx={{ bgcolor: "#fff" }} />
+                      <TextField {...params} label={t("model (optional — the brain's default)")} sx={{ bgcolor: "#fff" }} />
                     )} />
                   <Typography variant="caption" sx={{ color: FAINT }}>
-                    {isAssistant ? "which AI performs the proactive cross-system check" : "which AI writes this summary — a heavier model for the weekly review, the cheap tier for pings"}
+                    {t(isAssistant ? "which AI performs the proactive cross-system check" : "which AI writes this summary — a heavier model for the weekly review, the cheap tier for pings")}
                   </Typography>
                 </Box>
               )}
               {cfg.ai_prompt && !aiActive && !cfg.ai_brain && (
                 <Typography variant="body2" sx={{ mt: 0.75, fontWeight: 600, color: "#55697a" }}>
-                  ⚠ AI prompt set, but no active AI connector — the raw data will file until you enable one ({placeName("ai")}).
+                  {t("⚠ AI prompt set, but no active AI connector — the raw data will file until you enable one ({place}).", { place: placeName("ai") })}
                 </Typography>
               )}
               {!cfg.ai_prompt && (
                 <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.5 }}>
-                  {isAssistant ? "Add a general instruction so it knows what is worth interrupting you about." : "Leave it empty to file the raw rows with no AI pass."}
+                  {t(isAssistant ? "Add a general instruction so it knows what is worth interrupting you about." : "Leave it empty to file the raw rows with no AI pass.")}
                 </Typography>
               )}
             </Box>
@@ -1630,14 +1664,14 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
             <Box sx={{ mt: 2, ...card, p: 1.5, maxWidth: 720 }}>
               <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                 <Typography variant="overline" sx={{ color: ACCENT2, letterSpacing: 1.5, fontSize: 10, flex: 1 }}>
-                  SEND IT SOMEWHERE (OPTIONAL)
+                  {t("SEND IT SOMEWHERE (OPTIONAL)")}
                 </Typography>
                 <Switch size="small" checked={!!cfg.deliver}
                   onChange={(e) => setCfg({ ...cfg, deliver: e.target.checked ? { ...firstDest(), gate: "review" } : undefined })} />
               </Box>
               {!cfg.deliver ? (
                 <Typography variant="caption" sx={{ color: FAINT }}>
-                  Off — the report shows under Reports on your work rail and goes nowhere else.
+                  {t("Off — the report shows under Reports on your work rail and goes nowhere else.")}
                 </Typography>
               ) : (
                 <>
@@ -1645,22 +1679,22 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
                     <Destination dest={cfg.deliver} targets={targets} inboxes={inboxes}
                       onChange={(d) => setCfg({ ...cfg, deliver: { ...cfg.deliver, ...d } })} />
                     <TextField size="small" sx={{ bgcolor: "#fff", flex: 1, minWidth: 180 }}
-                      label="subject (blank = the report's headline)" value={cfg.deliver.subject || ""}
+                      label={t("subject (blank = the report's headline)")} value={cfg.deliver.subject || ""}
                       onChange={(e) => setCfg({ ...cfg, deliver: { ...cfg.deliver, subject: e.target.value } })} />
                   </Box>
                   <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.8 }}>
-                    Whether a given run actually goes out is one of the lines under “one prompt that routes each run”, below.
+                    {t("Whether a given run actually goes out is one of the lines under “one prompt that routes each run”, below.")}
                   </Typography>
                   <Box sx={{ display: "flex", gap: 1, mt: 1, alignItems: "center", flexWrap: "wrap" }}>
                     <Select size="small" value={cfg.deliver.gate || "review"} sx={{ bgcolor: "#fff", fontSize: 12.5, minWidth: 260 }}
                       onChange={(e) => setCfg({ ...cfg, deliver: { ...cfg.deliver, gate: e.target.value } })}>
-                      <MenuItem value="review" sx={{ fontSize: 12 }}>wait for me to approve it (Review)</MenuItem>
-                      <MenuItem value="auto" sx={{ fontSize: 12 }}>send it without asking</MenuItem>
+                      <MenuItem value="review" sx={{ fontSize: 12 }}>{t("wait for me to approve it (Review)")}</MenuItem>
+                      <MenuItem value="auto" sx={{ fontSize: 12 }}>{t("send it without asking")}</MenuItem>
                     </Select>
                     <Typography variant="caption" sx={{ color: (cfg.deliver.gate === "auto") ? "#55697a" : FAINT, flex: 1, minWidth: 200 }}>
-                      {cfg.deliver.gate === "auto"
+                      {t(cfg.deliver.gate === "auto"
                         ? "This report will send on its schedule with nobody reading it first. Everything else in Taskuary waits for you — this is the one place you can turn that off, deliberately."
-                        : "Each run lands on the task as a draft. Approving it sends; editing first is fine."}
+                        : "Each run lands on the task as a draft. Approving it sends; editing first is fine.")}
                     </Typography>
                   </Box>
                 </>
@@ -1677,15 +1711,15 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
             <Box sx={{ mt: 2, ...card, p: 1.5, maxWidth: 720 }}>
               <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                 <Typography variant="overline" sx={{ color: ACCENT2, letterSpacing: 1.5, fontSize: 10, flex: 1 }}>
-                  RETIRE THE PREVIOUS RUN
+                  {t("RETIRE THE PREVIOUS RUN")}
                 </Typography>
                 <Switch size="small" checked={cfg.expire !== false}
                   onChange={(e) => setCfg({ ...cfg, expire: e.target.checked })} />
               </Box>
               <Typography variant="caption" sx={{ color: FAINT }}>
-                {cfg.expire !== false
+                {t(cfg.expire !== false
                   ? "On — when this runs, the run before it is marked done and leaves your work rail. Nothing is deleted: search finds it, with its rows and its chart. A run that became a task is left alone."
-                  : "Off — every run waits for you separately, and they stack up in the reports band until you clear them by hand."}
+                  : "Off — every run waits for you separately, and they stack up in the reports band until you clear them by hand.")}
               </Typography>
             </Box>
             {/* On a report that already exists, Continue SAVES. The routing card above lives in cfg
@@ -1695,26 +1729,26 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
                 A new report still has nowhere to save to until it has a title, so it only advances. */}
             <Box sx={{ mt: 1.5, display: "flex", alignItems: "center", gap: 1.5 }}>
               <Button variant="contained" disableElevation onClick={async () => { if (cur && !(await save())) return; setStep(1); }}>
-                {cur ? "Save & continue" : "Continue"}</Button>
-              {saveErr && <Typography variant="body2" sx={{ color: "#6b2733" }}>{saveErr}</Typography>}
-              {savedMsg && <Typography variant="body2" sx={{ color: "#47654a" }}>{savedMsg}</Typography>}
+                {t(cur ? "Save & continue" : "Continue")}</Button>
+              {saveErr && <Typography variant="body2" sx={{ color: "#6b2733" }}>{displayMessage(saveErr)}</Typography>}
+              {savedMsg && <Typography variant="body2" sx={{ color: "#47654a" }}>{displayMessage(savedMsg)}</Typography>}
             </Box>
           </StepContent>
         </Step>
         <Step completed={!!test?.ok || !!preview?.ok}>
-          <StepButton onClick={() => setStep(1)}>Test & preview</StepButton>
+          <StepButton onClick={() => setStep(1)}>{t("Test & preview")}</StepButton>
           <StepContent>
             <Typography variant="body2" sx={{ color: DIM, mt: 0.5, mb: 1 }}>
-              Test checks the source; Preview runs the whole pipeline — query + AI — exactly like a scheduled run, without filing anything.
+              {t("Test checks the source; Preview runs the whole pipeline — query + AI — exactly like a scheduled run, without filing anything.")}
             </Typography>
             <Box sx={{ display: "flex", gap: 1 }}>
               <Button variant="contained" disableElevation disabled={busy === "test"} onClick={runTest}
-                startIcon={busy === "test" ? <CircularProgress size={12} sx={{ color: "#fff" }} /> : <BoltIcon sx={{ fontSize: 15 }} />}>Test source</Button>
+                startIcon={busy === "test" ? <CircularProgress size={12} sx={{ color: "#fff" }} /> : <BoltIcon sx={{ fontSize: 15 }} />}>{t("Test source")}</Button>
               <Button variant="outlined" disabled={busy === "preview"} onClick={runPreview}
-                startIcon={busy === "preview" ? <CircularProgress size={12} /> : <AutoAwesomeIcon sx={{ fontSize: 15 }} />}>Preview pipeline</Button>
-              <Button onClick={() => setStep(2)}>Continue</Button>
+                startIcon={busy === "preview" ? <CircularProgress size={12} /> : <AutoAwesomeIcon sx={{ fontSize: 15 }} />}>{t("Preview pipeline")}</Button>
+              <Button onClick={() => setStep(2)}>{t("Continue")}</Button>
             </Box>
-            {test && <Typography variant="body2" sx={{ mt: 1, fontWeight: 600, color: test.ok ? "#47654a" : "#6b2733" }}>{test.ok ? "✓" : "✗"} {test.detail}</Typography>}
+            {test && <Typography variant="body2" sx={{ mt: 1, fontWeight: 600, color: test.ok ? "#47654a" : "#6b2733" }}>{test.ok ? "✓" : "✗"} {displayMessage(test.detail)}</Typography>}
             {preview && (preview.ok ? (
               <Box sx={{ mt: 1 }}>
                 <Typography variant="body2" sx={{ fontWeight: 600, color: "#47654a" }}>✓ {preview.headline}</Typography>
@@ -1725,56 +1759,56 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
                 {preview.chart && (
                   <Box sx={{ mt: 1 }}>
                     <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 0.5 }}>
-                      The chart this report will hand back, from {plural(preview.rows, "row")}:
+                      {t("The chart this report will hand back, from {rows}:", { rows: plural(preview.rows, "row") })}
                     </Typography>
                     <Box sx={{ border: `1px solid ${BORDER}`, borderRadius: 1.5, overflow: "auto", bgcolor: "#fff" }}
                       dangerouslySetInnerHTML={{ __html: preview.chart }} />
                   </Box>
                 )}
               </Box>
-            ) : <Typography variant="body2" sx={{ mt: 1, fontWeight: 600, color: "#6b2733" }}>✗ {preview.error}</Typography>)}
+            ) : <Typography variant="body2" sx={{ mt: 1, fontWeight: 600, color: "#6b2733" }}>✗ {displayMessage(preview.error)}</Typography>)}
           </StepContent>
         </Step>
         <Step completed={!!cur}>
-          <StepButton onClick={() => setStep(2)}>Schedule & save</StepButton>
+          <StepButton onClick={() => setStep(2)}>{t("Schedule & save")}</StepButton>
           <StepContent>
             <Box sx={{ display: "flex", gap: 1, mt: 1, alignItems: "center", flexWrap: "wrap" }}>
               {/* the workflow editor's own picker (B3): a free "daily at HH:MM" box saved "7am", which the scheduler cannot read */}
               <SchedulePicker sched={sched} setSched={setSched} cron={cfg.cron} />
               <Box sx={{ display: "flex", alignItems: "center" }}
-                title="It's local — opening the app IS a schedule. Runs once per launch, after the startup catch-up.">
+                title={t("It's local — opening the app IS a schedule. Runs once per launch, after the startup catch-up.")}>
                 <Switch checked={!!cfg.on_startup}
                   onChange={(e) => { if (e.target.checked) setSchedState({ mode: "manual" });
                     setCfg({ ...(e.target.checked ? withSchedule(cfg, { mode: "manual" }) : cfg), on_startup: e.target.checked }); }} />
-                <Typography variant="caption" sx={{ color: DIM }}>or on app startup</Typography>
+                <Typography variant="caption" sx={{ color: DIM }}>{t("or on app startup")}</Typography>
               </Box>
               <Button variant="contained" disableElevation onClick={save} disabled={!cfg.title}
-                title={cfg.title ? "" : `the ${workflow ? "workflow" : "report"} needs a title - step 1`}>Save {workflow ? "workflow" : "report"}</Button>
+                title={cfg.title ? "" : t(workflow ? "the workflow needs a title - step 1" : "the report needs a title - step 1")}>{t(workflow ? "Save workflow" : "Save report")}</Button>
             </Box>
             <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.5 }}>
-              A time missed while the app was closed runs once when it opens.
+              {t("A time missed while the app was closed runs once when it opens.")}
             </Typography>
             {!!cfg.watch_for && (
               <Box sx={{ mt: 1.25 }}>
                 <Box sx={{ display: "flex", gap: 1, mt: 1.25, flexWrap: "wrap", alignItems: "center" }}>
                   <TextField size="small" value={(cfg.deliver_findings || {}).to || ""}
                     onChange={(e) => setCfg({ ...cfg, deliver_findings: { ...(cfg.deliver_findings || { channel: "email" }), to: e.target.value } })}
-                    label="Send the findings to (optional)" placeholder="nobody — findings stay under Reports on your rail"
+                    label={t("Send the findings to (optional)")} placeholder={t("nobody — findings stay under Reports on your rail")}
                     sx={{ minWidth: 280, "& .MuiInputBase-root": { fontSize: 13 } }} />
                   <Typography variant="caption" sx={{ color: FAINT, flex: 1, minWidth: 200 }}>
-                    Still drafted for your approval first — nothing about a report makes a send automatic.
+                    {t("Still drafted for your approval first — nothing about a report makes a send automatic.")}
                   </Typography>
                 </Box>
               </Box>
             )}
             {!cfg.title && (
               <Typography variant="caption" sx={{ mt: 0.5, display: "block", color: "#55697a", fontWeight: 600 }}>
-                No title yet — <Box component="span" sx={{ textDecoration: "underline", cursor: "pointer" }}
-                  onClick={() => setStep(0)}>add one in step 1</Box> and this button wakes up.
+                {t("No title yet —")} <Box component="span" sx={{ textDecoration: "underline", cursor: "pointer" }}
+                  onClick={() => setStep(0)}>{t("add one in step 1")}</Box> {t("and this button wakes up.")}
               </Typography>
             )}
-            {saveErr && <Alert severity="error" sx={{ mt: 1, fontSize: 12.5 }}>{saveErr}</Alert>}
-            {savedMsg && <Typography variant="body2" sx={{ mt: 1, fontWeight: 600, color: "#47654a" }}>✓ {savedMsg}</Typography>}
+            {saveErr && <Alert severity="error" sx={{ mt: 1, fontSize: 12.5 }}>{displayMessage(saveErr)}</Alert>}
+            {savedMsg && <Typography variant="body2" sx={{ mt: 1, fontWeight: 600, color: "#47654a" }}>✓ {displayMessage(savedMsg)}</Typography>}
           </StepContent>
         </Step>
       </Stepper>
@@ -1796,11 +1830,12 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
 const PICKS = {
   aws_service: { list: (d) => d.services, top: (d) => d.seen, label: "your keys already see these", rest: "everything botocore knows" },
   aws_operation: { list: (d) => d.operations, top: (d) => d.read, label: "reads only — safe for a report", rest: "everything else this service does" },
-  aws_log_group: { list: (d) => d.log_groups, objects: true, group: (o) => `in ${o.region || "the default region"}` },
-  aws_bucket: { list: (d) => d.buckets, objects: true, group: (o) => `in ${o.region || "the default region"}` },
+  aws_log_group: { list: (d) => d.log_groups, objects: true, group: (o) => t("in {region}", { region: o.region || t("the default region") }) },
+  aws_bucket: { list: (d) => d.buckets, objects: true, group: (o) => t("in {region}", { region: o.region || t("the default region") }) },
 };
 
 function AwsPicker({ label, which, value, placeholder, service, onChange }) {
+  useLocale();
   const [cat, setCat] = useState(null);
   const spec = PICKS[which];
   useEffect(() => {
@@ -1825,17 +1860,17 @@ function AwsPicker({ label, which, value, placeholder, service, onChange }) {
       isOptionEqualToValue={(o, v) => (typeof o === "string" ? o : o.name) === (typeof v === "string" ? v : v?.name)}
       onChange={(_e, v) => onChange(typeof v === "string" || !v ? { value: v ?? "" } : { value: v.name, region: v.region })}
       onInputChange={(_e, v, reason) => reason === "input" && onChange({ value: v })}
-      groupBy={spec.objects ? spec.group : (spec.rest ? (o) => (top.has(o) ? spec.label : spec.rest) : undefined)}
+      groupBy={spec.objects ? spec.group : (spec.rest ? (o) => t(top.has(o) ? spec.label : spec.rest) : undefined)}
       renderInput={(params) => (
         <TextField {...params} label={label} sx={{ bgcolor: "#fff" }}
           // the placeholder used to show s3 examples whatever the service was, which reads as a
           // suggestion rather than as an example and is wrong for every other service
-          placeholder={which === "aws_operation" ? (service ? `an operation on ${service}` : "") : placeholder}
-          helperText={which === "aws_operation" && !service ? "pick a service first"
+          placeholder={which === "aws_operation" ? (service ? t("an operation on {service}", { service }) : "") : placeholder}
+          helperText={which === "aws_operation" && !service ? t("pick a service first")
             : cat?.error ? cat.error
-              : empty ? "nothing discovered yet — run Discover on the AWS card"
-                : hit ? `in ${hit.region || "the default region"}`
-                  : value && spec.objects ? "typed by hand — set the region below if it is not the card's first"
+              : empty ? t("nothing discovered yet — run Discover on the AWS card")
+                : hit ? t("in {region}", { region: hit.region || t("the default region") })
+                  : value && spec.objects ? t("typed by hand — set the region below if it is not the card's first")
                     : undefined} />
       )} />
   );
@@ -1859,10 +1894,11 @@ function AwsPicker({ label, which, value, placeholder, service, onChange }) {
    card fills itself in, and the Assistant's Pipeline step gets the whole set of systems the ask
    needs plus the instruction to judge them by. */
 function SourceComposer({ typeHint, one, hint, onSources }) {
+  useLocale();
   // ...A DOOR TO THE CHAT NOW (2026-10-30): "let AI fill this in" opens the Assistant on this setup, and the composer that wrote the cards
   // is a field it fills here (pageView view extras) - the cards land through the same onSources, and what it asks back is heard next
   const n = useId();
-  const what = one ? `What the ${typeHint || "source"} card should return` : hint;
+  const what = one ? t("What the {type} card should return", { type: typeHint || t("source") }) : t(hint);
   const fill = async (ask) => {
     const { data } = await api.post("/api/reports/compose-sources", { ask: String(ask || ""), type: typeHint || undefined });
     if (data.sources?.length) {
@@ -1870,11 +1906,11 @@ function SourceComposer({ typeHint, one, hint, onSources }) {
       viewResult({ action: "compose", ok: !data.error, detail: data.error || data.explain || (one ? "Filled it in." : "Added them.") });
     } else viewResult({ action: "compose", ok: false, detail: data.questions?.length ? `It needs to know: ${data.questions.join(" ")}` : data.error || "It could not write that card." });
   };
-  useViewExtras("reports", { fields: [{ key: `sources${n}`, label: what, value: "", set: fill, said: (v) => `Asked for the cards: ${String(v).length > 70 ? `${String(v).slice(0, 69)}…` : v}` }] });
+  useViewExtras("reports", { fields: [{ key: `sources${n}`, label: what, value: "", set: fill, said: (v) => uiMessage("Asked for the cards: {request}", { request: String(v).length > 70 ? `${String(v).slice(0, 69)}…` : v }) }] });
   return (
     // ...the button is a door to the chat, out of its view (data-tq-view-skip, 2026-11-02): the chat fills the cards through the field above
     <Button size="small" data-tq-setup-ai="sources" data-tq-view-skip="" onClick={() => openHelp(one ? `Fill in the ${typeHint || "source"} card with me` : `Help me with this: ${hint}`)}
-      startIcon={<AutoAwesomeIcon sx={{ fontSize: 14 }} />} sx={{ fontSize: 11.5, alignSelf: "flex-start" }}>let AI fill this in</Button>
+      startIcon={<AutoAwesomeIcon sx={{ fontSize: 14 }} />} sx={{ fontSize: 11.5, alignSelf: "flex-start" }}>{t("let AI fill this in")}</Button>
   );
 }
 
@@ -1882,6 +1918,7 @@ function SourceComposer({ typeHint, one, hint, onSources }) {
    because the alternative is a list in our heads that is wrong the day somebody adds a field.
    Click one and it lands in the card's "fields" box. */
 function IntacctFields({ object, connectorId, onPick }) {
+  useLocale();
   const [open, setOpen] = useState(false);
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState("");
@@ -1892,27 +1929,27 @@ function IntacctFields({ object, connectorId, onPick }) {
     try {
       const { data } = await api.get("/api/intacct/fields", { params: { obj, connector_id: connectorId } });
       if (data.ok) setRows(data.data || []); else setErr(data.error);
-    } catch (e) { setErr(e?.response?.data?.detail || "the lookup failed"); }
+    } catch (e) { setErr(e?.response?.data?.detail || uiMessage("the lookup failed")); }
   };
   const shown = (rows || []).filter((f) => !q || (f.ID + " " + f.LABEL).toLowerCase().includes(q.toLowerCase()));
   return (
     <>
       <Button size="small" onClick={load} disabled={!obj} sx={{ fontSize: 11.5, alignSelf: "flex-start" }}>
-        {obj ? "What fields does " + obj + " have?" : "Name an object to see its fields"}
+        {obj ? t("What fields does {object} have?", { object: obj }) : t("Name an object to see its fields")}
       </Button>
       <Dialog open={open} onClose={() => setOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle sx={{ fontSize: 15, fontWeight: 600 }}>
-          {obj}{rows ? " — " + rows.length + " fields in this company" : ""}
+          {obj}{rows ? ` — ${t("{count} fields in this company", { count: rows.length })}` : ""}
         </DialogTitle>
         <DialogContent>
-          {err && <Alert severity="error" sx={{ fontSize: 12.5 }}>{err}</Alert>}
+          {err && <Alert severity="error" sx={{ fontSize: 12.5 }}>{displayMessage(err)}</Alert>}
           {!rows && !err && <CircularProgress size={20} sx={{ m: 2 }} />}
           {rows && (
             <>
-              <TextField size="small" fullWidth autoFocus placeholder="filter…" value={q}
+              <TextField size="small" fullWidth autoFocus placeholder={t("filter…")} value={q}
                 onChange={(e) => setQ(e.target.value)} sx={{ bgcolor: "#fff", mb: 1 }} />
               <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 0.75 }}>
-                straight from Sage, custom fields included{onPick ? " — click one to add it to this card" : ""}
+                {t("straight from Sage, custom fields included")}{onPick ? ` — ${t("click one to add it to this card")}` : ""}
               </Typography>
               <Box sx={{ maxHeight: 420, overflow: "auto" }}>
                 {shown.map((f) => (
@@ -1924,7 +1961,7 @@ function IntacctFields({ object, connectorId, onPick }) {
                     <Typography variant="caption" sx={{ ...mono, color: FAINT }}>{f.DATATYPE}</Typography>
                   </Box>
                 ))}
-                {!shown.length && <Typography sx={{ fontSize: 12, color: FAINT, py: 1 }}>nothing matches that.</Typography>}
+                {!shown.length && <Typography sx={{ fontSize: 12, color: FAINT, py: 1 }}>{t("nothing matches that.")}</Typography>}
               </Box>
             </>
           )}
@@ -1938,6 +1975,7 @@ function IntacctFields({ object, connectorId, onPick }) {
    assembled and without the AI pass in the way. The wizard's own Test showed the HEADLINE only
    ("12 items"), which is the one thing you can already guess; the rows are the question. */
 export function SourceTest({ src }) {
+  useLocale();
   const [out, setOut] = useState(null);
   const [busy, setBusy] = useState(false);
   const run = async () => {
@@ -1946,29 +1984,29 @@ export function SourceTest({ src }) {
     try {
       const { data } = await api.post("/api/reports/preview", { ...c, ai_prompt: undefined });
       setOut(data);
-    } catch (e) { setOut({ ok: false, error: e?.response?.data?.detail || "the call failed" }); }
+    } catch (e) { setOut({ ok: false, error: e?.response?.data?.detail || uiMessage("the call failed") }); }
     setBusy(false);
   };
   return (
     <>
       <Button size="small" onClick={run} disabled={busy} startIcon={busy ? <CircularProgress size={12} /> : <PlayArrowIcon sx={{ fontSize: 14 }} />}
-        sx={{ fontSize: 11.5, alignSelf: "flex-start" }}>{busy ? "calling…" : "Test — show me the data"}</Button>
+        sx={{ fontSize: 11.5, alignSelf: "flex-start" }}>{t(busy ? "calling…" : "Test — show me the data")}</Button>
       <Dialog open={!!out} onClose={() => setOut(null)} maxWidth="md" fullWidth>
         <DialogTitle sx={{ fontSize: 15, fontWeight: 600 }}>
-          {out?.ok ? out.headline || "it returned nothing" : "that call did not work"}
+          {out?.ok ? out.headline || t("it returned nothing") : t("that call did not work")}
         </DialogTitle>
         <DialogContent>
           {out?.ok ? (
             <>
               <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 0.75 }}>
-                exactly what a scheduled run would hand the prompt{out.rows ? ` — ${out.rows} rows` : ""}
+                {t("exactly what a scheduled run would hand the prompt")}{out.rows ? ` — ${t("{count} rows", { count: out.rows })}` : ""}
               </Typography>
               <Box component="pre" sx={{ ...mono, fontSize: 11, whiteSpace: "pre-wrap", wordBreak: "break-word",
                 bgcolor: PANEL2, border: `1px solid ${BORDER}`, borderRadius: 1, p: 1, m: 0, maxHeight: 460, overflow: "auto" }}>
-                {out.summary || "(the call succeeded and returned no rows)"}
+                {out.summary || t("(the call succeeded and returned no rows)")}
               </Box>
             </>
-          ) : <Alert severity="error" sx={{ fontSize: 12.5 }}>{out?.error}</Alert>}
+          ) : <Alert severity="error" sx={{ fontSize: 12.5 }}>{displayMessage(out?.error)}</Alert>}
         </DialogContent>
       </Dialog>
     </>
@@ -1991,6 +2029,7 @@ const FILE_FIELD_FOR = { tail: ['', '.log', '.txt', '.md', '.out', '.err'], shee
 export function SourceCard({ src, index, count, typeOptions, connectors, dragging, onDragStart, onDragEnd,
                       onDropHere, onChange, onRetype, onCopy, onRemove, onFill, removable = count > 1,
                       writeEnabled = false, bare = false, test = null, extra = null, renames = {} }) {
+  useLocale();
   const fields = (FIELDS[src.type] || []).filter(([, key]) => {
     if (key === "ai_prompt") return false;
     if (src.type !== "local_file") return true;
@@ -2018,12 +2057,12 @@ export function SourceCard({ src, index, count, typeOptions, connectors, draggin
         {onDragStart && <DragIndicatorIcon sx={{ fontSize: 16, color: "#cfc9bf" }} />}
         {/* ...and the name the prompt calls it by, so "source 3 of 5" and [taskuary.work] read as one card */}
         <Typography variant="caption" sx={{ ...mono, color: FAINT, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-          title={`name it in the prompt as ${tokenOf(sourceKey(src, index + 1))}`}>
-          source {index + 1} of {count}{src.type && src.type !== "assistant" && (src.type !== "taskuary" || src.card) ? ` · ${tokenOf(sourceKey(src, index + 1))}` : ""}
+          title={t("name it in the prompt as {token}", { token: tokenOf(sourceKey(src, index + 1)) })}>
+          {t("source {index} of {count}", { index: index + 1, count })}{src.type && src.type !== "assistant" && (src.type !== "taskuary" || src.card) ? ` · ${tokenOf(sourceKey(src, index + 1))}` : ""}
         </Typography>
-        <ContentCopyIcon onClick={onCopy} titleAccess="Duplicate — same connection, different query"
+        <ContentCopyIcon onClick={onCopy} titleAccess={t("Duplicate — same connection, different query")}
           sx={{ fontSize: 14, color: FAINT, cursor: "pointer", "&:hover": { color: "#55697a" } }} />
-        {removable && <CloseIcon onClick={onRemove} titleAccess="Remove this source"
+        {removable && <CloseIcon onClick={onRemove} titleAccess={t("Remove this source")}
           sx={{ fontSize: 15, color: FAINT, cursor: "pointer", "&:hover": { color: "#6b2733" } }} />}
       </Box>}
       <Select size="small" value={src.type || "mssql"} onChange={(e) => onRetype(e.target.value)}
@@ -2035,17 +2074,17 @@ export function SourceCard({ src, index, count, typeOptions, connectors, draggin
           const rest = [...have].filter((t) => !spoken.has(t));
           return [...grouped, ...(rest.length ? [["Other", rest]] : [])].flatMap(([g, ts]) => [
             <ListSubheader key={`h-${g}`} sx={{ fontSize: 10, lineHeight: 2.2, letterSpacing: 0.8,
-              textTransform: "uppercase", color: FAINT, bgcolor: "#fff" }}>{g}</ListSubheader>,
-            ...ts.map((t) => (
-              <MenuItem key={t} value={t} sx={{ fontSize: 12.5, pl: 2.5 }}>{TYPE_LABELS[t] || t}</MenuItem>
+              textTransform: "uppercase", color: FAINT, bgcolor: "#fff" }}>{t(g)}</ListSubheader>,
+            ...ts.map((type) => (
+              <MenuItem key={type} value={type} sx={{ fontSize: 12.5, pl: 2.5 }}>{TYPE_LABELS[type] ? t(TYPE_LABELS[type]) : type}</MenuItem>
             )),
           ]);
         })()}
       </Select>
       {src.type === "agent" && (
         <Typography variant="caption" sx={{ fontWeight: 600, color: writeEnabled ? "#8a3646" : "#47654a" }}>
-          {writeEnabled ? "Routine · write access — this agent may change data"
-            : "Report · read-only — this agent can retrieve data but cannot change it"}
+          {t(writeEnabled ? "Routine · write access — this agent may change data"
+            : "Report · read-only — this agent can retrieve data but cannot change it")}
         </Typography>
       )}
       {needsConn && (
@@ -2060,9 +2099,9 @@ export function SourceCard({ src, index, count, typeOptions, connectors, draggin
             </Select>
           )}
           {/* not connected: the way there, not a sentence about it - the reason is the hover ("buttons do the talking", 2026-10-22) */}
-          {connOk ? <Typography variant="caption" sx={{ fontWeight: 600, color: "#47654a" }}>✓ uses {conn.Name} from Connections</Typography>
+          {connOk ? <Typography variant="caption" sx={{ fontWeight: 600, color: "#47654a" }}>✓ {t("uses {name} from Connections", { name: conn.Name })}</Typography>
             : <Button size="small" variant="outlined" data-tq-open-card={cardType} onClick={() => openAppLink(`#connector=${cardType}`)}
-              title={`${conn?.Name || CARD_LABELS[cardType] || cardType} is not set up in Connections yet - this opens its card`}
+              title={t("{name} is not set up in Connections yet - this opens its card", { name: conn?.Name || CARD_LABELS[cardType] || cardType })}
               sx={{ alignSelf: "flex-start", fontSize: 11.5 }}>{btnLabel("fix", "card")}</Button>}
         </>
       )}
@@ -2070,8 +2109,8 @@ export function SourceCard({ src, index, count, typeOptions, connectors, draggin
         placeholder={PLACEHOLDER_FOR[src.type] || "the rows this card should return"}
         onSources={(list) => onFill(list[0])} />}
       {!bare && (count > 1 || removable) && (
-        <TextField size="small" label="label" value={src.label || ""} sx={{ bgcolor: "#fff" }}
-          placeholder="cash balances" onChange={(e) => onChange({ label: e.target.value })} />
+        <TextField size="small" label={t("label")} value={src.label || ""} sx={{ bgcolor: "#fff" }}
+          placeholder={t("cash balances")} onChange={(e) => onChange({ label: e.target.value })} />
       )}
       {/* "I just want log history" should not require knowing a boto3 operation name. The generic
           AWS call is the escape hatch for anything unusual; there is a purpose-built type for the
@@ -2079,9 +2118,9 @@ export function SourceCard({ src, index, count, typeOptions, connectors, draggin
       {src.type === "aws" && ["logs", "s3"].includes(src.service) && (
         <Alert severity="info" sx={{ fontSize: 11.5, py: 0, "& .MuiAlert-message": { py: 0.75 } }}
           action={<Button size="small" sx={{ fontSize: 11 }}
-            onClick={() => onRetype(src.service === "logs" ? "cloudwatch_logs" : "s3_object")}>switch</Button>}>
-          {src.service === "logs" ? "For log history there is a simpler source: pick a log group and hours back."
-            : "For reading or listing a bucket there is a simpler source: pick the bucket."}
+            onClick={() => onRetype(src.service === "logs" ? "cloudwatch_logs" : "s3_object")}>{t("switch")}</Button>}>
+          {t(src.service === "logs" ? "For log history there is a simpler source: pick a log group and hours back."
+            : "For reading or listing a bucket there is a simpler source: pick the bucket.")}
         </Alert>
       )}
       {fields.map(([label, key, kind, ph]) => {
@@ -2094,21 +2133,21 @@ export function SourceCard({ src, index, count, typeOptions, connectors, draggin
           return (
             <Box key={key} sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
               <Select size="small" displayEmpty value={src.card || ""} sx={{ fontSize: 12.5, bgcolor: "#fff" }}
-                inputProps={{ "aria-label": "which of Taskuary's tables" }}
+                inputProps={{ "aria-label": t("which of Taskuary's tables") }}
                 onChange={(e) => onChange({ card: e.target.value, label: src.label || cardLabel(e.target.value) })}>
-                <MenuItem value="" sx={{ fontSize: 12 }} disabled>choose what it reads…</MenuItem>
+                <MenuItem value="" sx={{ fontSize: 12 }} disabled>{t("choose what it reads…")}</MenuItem>
                 {TASKUARY_CARDS.map((c) => (
                   <MenuItem key={c.id} value={c.id} sx={{ fontSize: 12.5, display: "block", maxWidth: 420, whiteSpace: "normal" }}>
-                    <Typography sx={{ fontSize: 12.5, fontWeight: 600 }}>{c.label}</Typography>
-                    <Typography variant="caption" sx={{ color: DIM }}>{c.says}</Typography>
+                    <Typography sx={{ fontSize: 12.5, fontWeight: 600 }}>{t(c.label)}</Typography>
+                    <Typography variant="caption" sx={{ color: DIM }}>{t(c.says)}</Typography>
                   </MenuItem>
                 ))}
               </Select>
               {!!def?.knobs.length && (
                 <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
                   {def.knobs.map((n) => (
-                    <TextField key={n.name} size="small" type="number" label={n.label} value={src[n.name] ?? n.default}
-                      sx={{ width: 150, bgcolor: "#fff" }} inputProps={{ "aria-label": `Taskuary · ${def.label} — ${n.label}` }}
+                    <TextField key={n.name} size="small" type="number" label={t(n.label)} value={src[n.name] ?? n.default}
+                      sx={{ width: 150, bgcolor: "#fff" }} inputProps={{ "aria-label": `Taskuary · ${t(def.label)} — ${t(n.label)}` }}
                       onChange={(e) => onChange({ [n.name]: e.target.value })} />
                   ))}
                 </Box>
@@ -2120,13 +2159,13 @@ export function SourceCard({ src, index, count, typeOptions, connectors, draggin
           // which of the app's own tables, as rows: the same list the dashboard composer is handed (dashboards.DATASETS)
           return (
             <Select key={key} size="small" displayEmpty value={src.dataset || ""} sx={{ fontSize: 12.5, bgcolor: "#fff" }}
-              inputProps={{ "aria-label": "which of Taskuary's tables" }}
+              inputProps={{ "aria-label": t("which of Taskuary's tables") }}
               onChange={(e) => onChange({ dataset: e.target.value, label: src.label || DASH.datasets[e.target.value]?.[0] })}>
-              <MenuItem value="" sx={{ fontSize: 12 }} disabled>choose what it reads…</MenuItem>
+              <MenuItem value="" sx={{ fontSize: 12 }} disabled>{t("choose what it reads…")}</MenuItem>
               {Object.entries(DASH.datasets).map(([k, [name, says]]) => (
                 <MenuItem key={k} value={k} sx={{ fontSize: 12.5, display: "block", maxWidth: 420, whiteSpace: "normal" }}>
-                  <Typography sx={{ fontSize: 12.5, fontWeight: 600 }}>{name}</Typography>
-                  <Typography variant="caption" sx={{ color: DIM }}>{says}</Typography>
+                  <Typography sx={{ fontSize: 12.5, fontWeight: 600 }}>{t(name)}</Typography>
+                  <Typography variant="caption" sx={{ color: DIM }}>{t(says)}</Typography>
                 </MenuItem>
               ))}
             </Select>
@@ -2136,17 +2175,17 @@ export function SourceCard({ src, index, count, typeOptions, connectors, draggin
           return (
             <Select key={key} size="small" value={src.pick || "newest"} sx={{ fontSize: 12.5, bgcolor: "#fff" }}
               onChange={(e) => onChange({ pick: e.target.value })}>
-              <MenuItem value="newest" sx={{ fontSize: 12 }}>the one that changed most recently</MenuItem>
-              <MenuItem value="name" sx={{ fontSize: 12 }}>the highest name (sales-2026-08-25 beats -08-01)</MenuItem>
+              <MenuItem value="newest" sx={{ fontSize: 12 }}>{t("the one that changed most recently")}</MenuItem>
+              <MenuItem value="name" sx={{ fontSize: 12 }}>{t("the highest name (sales-2026-08-25 beats -08-01)")}</MenuItem>
             </Select>
           );
         }
         if (PICKS[kind]) {
-          return <AwsPicker key={key} label={label} which={kind} value={shown} placeholder={ph}
+          return <AwsPicker key={key} label={t(label)} which={kind} value={shown} placeholder={t(ph)}
             service={src.service}
             onChange={(x) => onChange({ [key]: x.value, ...(x.region !== undefined ? { region: x.region } : {}) })} />;
         }
-        return <TextField key={key} size="small" label={label} placeholder={ph} value={shown} sx={{ bgcolor: "#fff" }}
+        return <TextField key={key} size="small" label={t(label)} placeholder={t(ph)} value={shown} sx={{ bgcolor: "#fff" }}
           multiline={kind === "multiline" || kind === "filter_lines"}
           minRows={kind === "multiline" ? 3 : kind === "filter_lines" ? 2 : undefined}
           inputProps={["multiline", "filter_lines", "csv_list"].includes(kind)
@@ -2166,8 +2205,8 @@ export function SourceCard({ src, index, count, typeOptions, connectors, draggin
       {/* width:300 on a 300-wide card with padding on both sides: it hung out over the edge.
           Full width of whatever the card gives it, and a one-line hint instead of three. */}
       {extra}
-      {src.type !== "taskuary" && <TextField size="small" label="max rows" type="number" placeholder="200" value={src.max_rows ?? ""}
-        helperText="blank = 200, and only for list results"
+      {src.type !== "taskuary" && <TextField size="small" label={t("max rows")} type="number" placeholder="200" value={src.max_rows ?? ""}
+        helperText={t("blank = 200, and only for list results")}
         FormHelperTextProps={{ sx: { fontSize: 10.5, mx: 0 } }}
         sx={{ bgcolor: "#fff", width: "100%" }} onChange={(e) => onChange({ max_rows: e.target.value })} />}
       {test || <SourceTest src={src} />}
@@ -2179,6 +2218,7 @@ export function SourceCard({ src, index, count, typeOptions, connectors, draggin
    the only place its work shows: what it read (the exact text the model saw), what it reviewed and let
    go, its note to the next check, and what came out - or the error, when it failed. */
 function LastRun({ r, sid, embedded, flush, onFix, fixing, onChanged }) {
+  useLocale();
   // embedded: one run inside the History dialog - starts open, no "last run" header of its own
   // ...and a workflow's failed steps start open: which step failed, and Fix with AI, are the whole point of looking
   const [open, setOpen] = useState(!!embedded || !!(r.steps?.length && r.failed));
@@ -2186,27 +2226,28 @@ function LastRun({ r, sid, embedded, flush, onFix, fixing, onChanged }) {
   const [hist, setHist] = useState(false);
   const rv = r.reviewed || null;
   const outcome = r.steps?.length ? (r.failed || r.steps.some((x) => x.status === "waiting") ? runWords(r.steps, true) : r.summary || runWords(r.steps))
-    : r.failed ? `failed${r.error ? ` — ${r.error}` : ""}`
-    : r.type === "assistant" ? (r.said ? `posted ${plural(r.said, "line")}` : "nothing to say — no post")
-    : r.subject ? `filed: ${r.subject}` : "ran";
-  const read = rv?.scope === "sources" ? [`${plural(rv.systems ?? 0, "configured data source")} only`]
-    : rv ? [`${rv.recent ?? rv.today ?? 0} sender/subject lines from the last two days`, `${rv.week ?? 0} tasks closed this week`,
-      `${rv.open ?? 0} open`, `${rv.said ?? 0} already said`, Object.entries(rv.candidates || {}).map(([k, v]) => `${v} ${ideaCounted(k)}`).join(", ") || "no candidates"] : [];
+    : r.failed ? (r.error ? t("failed — {error}", { error: r.error }) : t("failed"))
+    : r.type === "assistant" ? (r.said ? t(r.said === 1 ? "posted {count} line" : "posted {count} lines", { count: r.said }) : t("nothing to say — no post"))
+    : r.subject ? t("filed: {subject}", { subject: r.subject }) : t("ran");
+  const systems = rv?.systems ?? 0;
+  const read = rv?.scope === "sources" ? [t(systems === 1 ? "{count} configured data source only" : "{count} configured data sources only", { count: systems })]
+    : rv ? [t("{count} sender/subject lines from the last two days", { count: rv.recent ?? rv.today ?? 0 }), t("{count} tasks closed this week", { count: rv.week ?? 0 }),
+      t("{count} open", { count: rv.open ?? 0 }), t("{count} already said", { count: rv.said ?? 0 }), Object.entries(rv.candidates || {}).map(([k, v]) => `${v} ${t(ideaCounted(k))}`).join(", ") || t("no candidates")] : [];
   return (
     <Box sx={{ pl: embedded || flush ? 0 : 5.5, pr: embedded ? 0 : 1, pb: embedded || flush ? 0 : 1.25, mt: embedded ? 0 : flush ? 0.5 : -0.5 }}>
       {!embedded && (
       <Typography variant="caption" sx={{ color: r.failed ? "#8a3646" : FAINT, display: "block", lineHeight: 1.5 }}>
-        <Box component="span" sx={{ fontWeight: 600, color: r.failed ? "#8a3646" : DIM }}>last run</Box>
+        <Box component="span" sx={{ fontWeight: 600, color: r.failed ? "#8a3646" : DIM }}>{t("last run")}</Box>
         {` · ${timeAgo(r.at)}${r.ms != null ? ` · ${(r.ms / 1000).toFixed(1)}s` : ""} · ${outcome}`}
-        {rv && ` · read ${read.slice(0, 2).join(", ")}`}
+        {rv && ` · ${t("read {details}", { details: read.slice(0, 2).join(", ") })}`}
         <Box component="span" onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
           sx={{ ml: 1, color: "#55697a", cursor: "pointer", fontWeight: 600, "&:hover": { textDecoration: "underline" } }}>
-          {open ? "hide ↑" : "details ↓"}
+          {t(open ? "hide ↑" : "details ↓")}
         </Box>
         {/* every run, not only the last: what each one read and why it said what it said (the owner, 2026-08-30) */}
         {sid != null && (
           <Box component="span" onClick={(e) => { e.stopPropagation(); setHist(true); }}
-            sx={{ ml: 1, color: "#55697a", cursor: "pointer", fontWeight: 600, "&:hover": { textDecoration: "underline" } }}>history ↗</Box>
+            sx={{ ml: 1, color: "#55697a", cursor: "pointer", fontWeight: 600, "&:hover": { textDecoration: "underline" } }}>{t("history ↗")}</Box>
         )}
       </Typography>
       )}
@@ -2219,14 +2260,14 @@ function LastRun({ r, sid, embedded, flush, onFix, fixing, onChanged }) {
       </Box>}
       {open && !!r.lines?.length && (
         <Box onClick={(e) => e.stopPropagation()} sx={{ mt: 0.5 }}>
-          <Typography variant="caption" sx={{ fontWeight: 600, color: ASSISTANT.ink }}>what it said, and why</Typography>
+          <Typography variant="caption" sx={{ fontWeight: 600, color: ASSISTANT.ink }}>{t("what it said, and why")}</Typography>
           {r.lines.map((l) => (
             <Box key={l.id ?? l.key} sx={{ mt: 0.35, px: 1, py: 0.5, borderRadius: 1, border: `1px solid ${ASSISTANT.bd}`, bgcolor: ASSISTANT.tint }}>
               <Typography variant="caption" sx={{ display: "block", color: INK, lineHeight: 1.45 }}>
-                <Box component="span" sx={{ fontWeight: 600, color: ASSISTANT.ink }}>{ideaWord(l.kind)} · </Box>{l.text}
+                <Box component="span" sx={{ fontWeight: 600, color: ASSISTANT.ink }}>{t(ideaWord(l.kind))} · </Box>{l.text}
               </Typography>
               {l.why && <Typography variant="caption" sx={{ display: "block", color: DIM, lineHeight: 1.4, whiteSpace: "pre-wrap" }}>
-                <Box component="span" sx={{ fontWeight: 600, color: ASSISTANT.ink }}>why · </Box>{l.why}</Typography>}
+                <Box component="span" sx={{ fontWeight: 600, color: ASSISTANT.ink }}>{t("why ·")} </Box>{l.why}</Typography>}
             </Box>
           ))}
         </Box>
@@ -2235,35 +2276,35 @@ function LastRun({ r, sid, embedded, flush, onFix, fixing, onChanged }) {
         <Box onClick={(e) => e.stopPropagation()} sx={{ mt: 0.5, p: 1.25, borderRadius: 1.5, border: `1px dashed ${BORDER}`, bgcolor: "#faf8f4" }}>
           {rv && (
             <Typography variant="caption" sx={{ color: DIM, display: "block", lineHeight: 1.5 }}>
-              <Box component="span" sx={{ fontWeight: 600, color: "#6b5f45" }}>what it reviewed · </Box>{read.join(" · ")}
-              {rv.model === false ? " · no model — the facts in the hub's own words" : ""}
+              <Box component="span" sx={{ fontWeight: 600, color: "#6b5f45" }}>{t("what it reviewed ·")} </Box>{read.join(" · ")}
+              {rv.model === false ? ` · ${t("no model — the facts in the hub's own words")}` : ""}
             </Typography>
           )}
           {rv?.notes && (
             <Typography variant="caption" sx={{ color: DIM, display: "block", lineHeight: 1.5, mt: 0.4 }}>
-              <Box component="span" sx={{ fontWeight: 600, color: "#6b5f45" }}>note to its next check · </Box>{rv.notes}
+              <Box component="span" sx={{ fontWeight: 600, color: "#6b5f45" }}>{t("note to its next check ·")} </Box>{rv.notes}
             </Typography>
           )}
           {!!rv?.skipped?.length && (
             <Box sx={{ mt: 0.4 }}>
-              <Typography variant="caption" sx={{ fontWeight: 600, color: "#6b5f45" }}>looked at and let go · {rv.skipped.length}</Typography>
+              <Typography variant="caption" sx={{ fontWeight: 600, color: "#6b5f45" }}>{t("looked at and let go · {count}", { count: rv.skipped.length })}</Typography>
               {rv.skipped.map((c) => (
                 <Typography key={c.key} variant="caption" sx={{ display: "block", color: FAINT, pl: 1, borderLeft: `2px solid ${BORDER}`, mt: 0.3, whiteSpace: "pre-wrap" }}>
-                  <Box component="span" sx={{ fontWeight: 600 }}>{ideaCounted(c.kind)} · </Box>{c.facts}
+                  <Box component="span" sx={{ fontWeight: 600 }}>{t(ideaCounted(c.kind))} · </Box>{c.facts}
                 </Typography>
               ))}
             </Box>
           )}
           {r.summary && r.type !== "assistant" && (
             <Typography variant="caption" sx={{ color: DIM, display: "block", whiteSpace: "pre-wrap", mt: 0.4, maxHeight: 220, overflowY: "auto" }}>
-              <Box component="span" sx={{ fontWeight: 600, color: "#6b5f45" }}>what it filed · </Box>{r.summary}
+              <Box component="span" sx={{ fontWeight: 600, color: "#6b5f45" }}>{t("what it filed ·")} </Box>{r.summary}
             </Typography>
           )}
           {r.inputs && (
             <Box sx={{ mt: 0.6 }}>
               <Typography variant="caption" onClick={() => setShowInputs((v) => !v)}
                 sx={{ color: "#55697a", fontWeight: 600, cursor: "pointer", "&:hover": { textDecoration: "underline" } }}>
-                {showInputs ? "hide" : "show"} exactly what it read — {r.inputs.length.toLocaleString()} chars {showInputs ? "↑" : "↓"}
+                {t(showInputs ? "hide exactly what it read — {count} chars ↑" : "show exactly what it read — {count} chars ↓", { count: r.inputs.length.toLocaleString(getLocale()) })}
               </Typography>
               {showInputs && (
                 <Box component="pre" sx={{ ...mono, fontSize: 11, lineHeight: 1.45, color: INK, whiteSpace: "pre-wrap", m: 0, mt: 0.5, p: 1,
@@ -2282,6 +2323,7 @@ function LastRun({ r, sid, embedded, flush, onFix, fixing, onChanged }) {
    let go, what it said and WHY. The assistant's quiet checks post nothing, so this is where "why did it
    bring that up / why did it stay quiet at 14:30" gets answered (the owner, 2026-08-30). */
 function RunHistory({ sid, title, onClose, onFix }) {
+  useLocale();
   const [runs, setRuns] = useState(null);
   const [pick, setPick] = useState(null);      // the run id chosen
   const [full, setFull] = useState({});        // run id -> the whole record, inputs and all
@@ -2298,28 +2340,28 @@ function RunHistory({ sid, title, onClose, onFix }) {
     if (pick == null || full[pick] || missed === pick) return;
     api.get(`/api/reports/runs/${pick}`).then(({ data }) => setFull((f) => ({ ...f, [pick]: data }))).catch(() => setMissed(pick));
   }, [pick, full, missed]);
-  const outcome = (r) => r.failed ? "failed" : r.type === "flow" ? "ran its steps" : r.type === "assistant" ? (r.said ? `posted ${plural(r.said, "line")}` : "quiet") : (r.subject ? "filed" : "ran");
+  const outcome = (r) => r.failed ? t("failed") : r.type === "flow" ? t("ran its steps") : r.type === "assistant" ? (r.said ? t(r.said === 1 ? "posted {count} line" : "posted {count} lines", { count: r.said }) : t("quiet")) : t(r.subject ? "filed" : "ran");
   const cur = pick != null ? (full[pick] || runs?.find((r) => r.runId === pick)) : null;
   return (
     <Dialog open onClose={onClose} maxWidth="lg" fullWidth onClick={(e) => e.stopPropagation()}>
       <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1, fontSize: 15 }}>
-        {title || "Report"} — run history
-        <Typography variant="caption" sx={{ color: FAINT }}>{runs ? `${plural(runs.length, "run")} kept` : lost ? "" : "loading…"}</Typography>
+        {t("{title} — run history", { title: title || t("Report") })}
+        <Typography variant="caption" sx={{ color: FAINT }}>{runs ? t(runs.length === 1 ? "{count} run kept" : "{count} runs kept", { count: runs.length }) : lost ? "" : t("loading…")}</Typography>
         <Box sx={{ flex: 1 }} />
-        <Button size="small" onClick={onClose} startIcon={<CloseIcon sx={{ fontSize: 14 }} />}>Close</Button>
+        <Button size="small" onClick={onClose} startIcon={<CloseIcon sx={{ fontSize: 14 }} />}>{t("Close")}</Button>
       </DialogTitle>
       <DialogContent sx={{ display: "flex", gap: 1.5, minHeight: 420 }}>
         <Box sx={{ width: 260, flexShrink: 0, borderRight: `1px solid ${BORDER}`, pr: 1, overflowY: "auto", maxHeight: "70vh" }}>
           {lost && <Alert severity="warning" sx={{ fontSize: 12 }} action={<Button color="inherit" size="small" onClick={() => setTries((n) => n + 1)}>{btnLabel("try_again")}</Button>}>
-            The run history could not be loaded.</Alert>}
-          {!lost && runs && !runs.length && <Empty>No runs kept yet — the history starts with the next run.</Empty>}
+            {t("The run history could not be loaded.")}</Alert>}
+          {!lost && runs && !runs.length && <Empty>{t("No runs kept yet — the history starts with the next run.")}</Empty>}
           {(runs || []).map((r) => (
             <Box key={r.runId} onClick={() => setPick(r.runId)}
               sx={{ px: 1, py: 0.6, mb: 0.4, borderRadius: 1, cursor: "pointer", bgcolor: pick === r.runId ? "#eef3ea" : "transparent",
                 border: `1px solid ${pick === r.runId ? "#cfd8c8" : "transparent"}`, "&:hover": { bgcolor: "#f4f3ef" } }}>
-              <Typography variant="caption" sx={{ display: "block", color: INK, fontWeight: 600, lineHeight: 1.4 }}>{(r.at || "").slice(0, 16)}</Typography>
+              <Typography variant="caption" sx={{ display: "block", color: INK, fontWeight: 600, lineHeight: 1.4 }}>{displayStamp(r.at, (r.at || "").slice(0, 16))}</Typography>
               <Typography variant="caption" sx={{ display: "block", color: r.failed ? "#8a3646" : DIM, lineHeight: 1.4 }}>
-                {outcome(r)}{r.ms != null ? ` · ${(r.ms / 1000).toFixed(1)}s` : ""}{r.inputChars ? ` · read ${r.inputChars.toLocaleString()} chars` : ""}
+                {outcome(r)}{r.ms != null ? ` · ${(r.ms / 1000).toFixed(1)}s` : ""}{r.inputChars ? ` · ${t("read {count} chars", { count: r.inputChars.toLocaleString(getLocale()) })}` : ""}
               </Typography>
             </Box>
           ))}
@@ -2328,14 +2370,14 @@ function RunHistory({ sid, title, onClose, onFix }) {
           {cur ? (
             <>
               <Typography variant="body2" sx={{ color: INK, fontWeight: 600, mb: 0.5 }}>
-                {cur.at} · {outcome(cur)}{cur.error ? ` — ${cur.error}` : ""}{cur.subject && cur.type !== "assistant" ? ` · ${cur.subject}` : ""}
+                {displayStamp(cur.at, cur.at, { seconds: true })} · {outcome(cur)}{cur.error ? ` — ${cur.error}` : ""}{cur.subject && cur.type !== "assistant" ? ` · ${cur.subject}` : ""}
               </Typography>
               {full[pick] ? <LastRun r={{ ...cur, inputs: cur.inputs || "" }} embedded onFix={onFix} />
-                : missed === pick ? <Typography variant="caption" sx={{ color: DIM }}>This run's details could not be loaded.{" "}
+                : missed === pick ? <Typography variant="caption" sx={{ color: DIM }}>{t("This run's details could not be loaded.")}{" "}
                   <Box component="button" type="button" onClick={() => setMissed(null)} sx={{ color: "#55697a", fontWeight: 600, cursor: "pointer", textDecoration: "underline", border: 0, bgcolor: "transparent", p: 0, font: "inherit" }}>{btnLabel("try_again")}</Box></Typography>
                   : <CircularProgress size={16} />}
             </>
-          ) : <Typography variant="caption" sx={{ color: FAINT }}>Pick a run on the left.</Typography>}
+          ) : <Typography variant="caption" sx={{ color: FAINT }}>{t("Pick a run on the left.")}</Typography>}
         </Box>
       </DialogContent>
     </Dialog>

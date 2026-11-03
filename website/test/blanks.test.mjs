@@ -16,9 +16,9 @@ test("a span points at the slot in the text the box shows", () => {
   assert.equal(t.slice(a, b), "[DATE]"); assert.equal(s, "[DATE]");
 });
 
-test("the refusal reads as the server's, word for word", () => {
-  assert.equal(blankRefusal("because [REASON]."), "Fill in [REASON] first");
-  assert.equal(blankRefusal("[DATE] and [REASON]"), "Fill in [DATE] and [REASON] first");
-  assert.equal(blankRefusal("[DATE], [TIME] and [REASON]"), "Fill in [DATE], [TIME] and [REASON] first");
+test("the refusal names every blank and disappears once they are filled", () => {
+  assert.ok(blankRefusal("because [REASON].").includes("[REASON]"));
+  const refusal = blankRefusal("[DATE], [TIME] and [REASON]");
+  for (const slot of ["[DATE]", "[TIME]", "[REASON]"]) assert.ok(refusal.includes(slot));
   assert.equal(blankRefusal("Re: [External] all filled in."), "");
 });

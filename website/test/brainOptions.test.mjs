@@ -15,9 +15,9 @@ test("old profile-shaped brain rows collapse to one choice per CLI", () => {
     copilot: { cli: "copilot", choices: ["auto", "gpt-5.4"] },
   };
   const got = normalizeBrainOptions(rows, models, ["cli:researcher"]);
-  assert.deepEqual(got.map((r) => r.label), ["claude (on this computer)", "auto", "copilot (on this computer)"]);
+  assert.deepEqual(got.filter((row) => row.value.startsWith("cli:")).map((row) => row.value), ["cli:researcher", "cli:copilot"]);
   assert.equal(got[0].value, "cli:researcher");
-  assert.deepEqual(got[2].models, ["auto", "gpt-5.4"]);
+  assert.deepEqual(got.find((row) => row.value === "cli:copilot").models, ["auto", "gpt-5.4"]);
 });
 
 test("API connector choices are not rewritten", () => {

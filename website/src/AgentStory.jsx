@@ -9,14 +9,23 @@ import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import { BORDER, DIM, FAINT, INK, PALETTE, mono } from "./theme.jsx";
 import { hhmm, storyAlarm } from "./agentStory.js";
 import { trustInBox } from "./strangerLine.js";
+import { t, translateDescriptor } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 const head = { fontSize: 11, fontWeight: 600, color: FAINT, letterSpacing: ".04em", textTransform: "uppercase", mb: 0.35 };
 const link = { fontSize: 11, minHeight: 0, p: 0, minWidth: 0 };
+const trustLabel = (label) => {
+  if (label === "Trust them" || label === "Trust their Slack workspace" || label === "Trust their organisation on Teams") return t(label);
+  if (label.startsWith("Trust everyone at ")) return t("Trust everyone at {name}", { name: label.slice("Trust everyone at ".length) });
+  if (label.startsWith("Trust ")) return t("Trust {name}", { name: label.slice("Trust ".length) });
+  return label;
+};
 
 export function StoryChip({ kind, text }) {
+  useLocale();
   const hot = storyAlarm(kind);
   return text ? <Box component="span" sx={{ fontSize: 11, fontWeight: 600, borderRadius: 99, px: 1, py: 0.2, whiteSpace: "nowrap",
-    color: hot ? PALETTE.oxblood : PALETTE.slate, bgcolor: hot ? "#f3e6e8" : "#e6ebef" }}>{text}</Box> : null;
+    color: hot ? PALETTE.oxblood : PALETTE.slate, bgcolor: hot ? "#f3e6e8" : "#e6ebef" }}>{t(text)}</Box> : null;
 }
 
 // the state in one sentence: what happened to the session and what you can do about it. The server's sentence is whole
@@ -24,54 +33,63 @@ export function StoryChip({ kind, text }) {
 // profile as the actor over a reason fragment (the owner, 2026-10-16), so nothing is added here
 // ...and `why`, the reason a run FAILED (funnel.agent_story), leads it on one line, whole on hover: under a restart's note, at the foot
 // of the transcript, "could not start: this tool has no built-in reviewer" was the last thing read (the owner, 2026-10-26)
-export const StoryLine = ({ kind, line, why = "" }) => (
-  <Box sx={{ display: "flex", gap: 1, alignItems: "flex-start" }}>
+export const StoryLine = ({ kind, line, why = "", line_i18n, why_i18n }) => {
+  useLocale();
+  const shownLine = line_i18n ? translateDescriptor(line_i18n) : line;
+  const shownWhy = why_i18n ? translateDescriptor(why_i18n) : why;
+  return <Box sx={{ display: "flex", gap: 1, alignItems: "flex-start" }}>
     <ErrorOutlineIcon sx={{ fontSize: 16, mt: 0.25, flex: "none", color: why || storyAlarm(kind) ? PALETTE.oxblood : PALETTE.slate }} />
     <Box sx={{ minWidth: 0, flex: 1 }}>
-      {why && <Typography data-tq-run-why="" title={why} noWrap sx={{ fontSize: 13.5, lineHeight: 1.45, color: INK, fontWeight: 600 }}>{why}</Typography>}
+      {why && <Typography data-tq-run-why="" title={shownWhy} noWrap sx={{ fontSize: 13.5, lineHeight: 1.45, color: INK, fontWeight: 600 }}>{shownWhy}</Typography>}
       <Typography sx={{ fontSize: why ? 12.5 : 13.5, lineHeight: 1.45, color: why ? DIM : INK }}>
-        {line}
+        {shownLine}
       </Typography>
     </Box>
-  </Box>);
+  </Box>;
+};
 
 // the moments of the run - started, asked, finished a turn, cut off
-export const Timeline = ({ steps }) => (
-  <Box sx={{ display: "grid", gridTemplateColumns: "52px minmax(0, 1fr)", rowGap: 0.6, columnGap: 1.25 }}>
+export const Timeline = ({ steps }) => {
+  useLocale();
+  return <Box sx={{ display: "grid", gridTemplateColumns: "52px minmax(0, 1fr)", rowGap: 0.6, columnGap: 1.25 }}>
     {steps.map((s, i) => <React.Fragment key={i}>
       <Typography sx={{ ...mono, fontSize: 11.5, color: s.cut ? PALETTE.oxblood : FAINT }}>{hhmm(s.at)}</Typography>
-      <Typography sx={{ fontSize: 12.5, color: s.cut ? PALETTE.oxblood : DIM, fontWeight: s.cut ? 500 : 400 }}>{s.text}</Typography>
+      <Typography sx={{ fontSize: 12.5, color: s.cut ? PALETTE.oxblood : DIM, fontWeight: s.cut ? 500 : 400 }}>{s.text_i18n ? translateDescriptor(s.text_i18n) : s.text}</Typography>
     </React.Fragment>)}
-  </Box>);
+  </Box>;
+};
 
 // A HELD STEP'S WAY OUT, in the box that says why nothing started (the owner, 2026-10-26: "we should have button on untrusted user to
 // either trust user or trust domain"): the person, and their organisation when there is one to name (senders.trust_offer). A press
 // only lifts the hold - the step's own Start is still the owner's to press
 // ...spinning while the trust is saved, both greyed so it is pressed once (TaskPage's `trusting`: "person" | "org" | null)
 const spin = (on) => (on ? <CircularProgress size={11} color="inherit" /> : null);
-export const TrustButtons = ({ trust, onTrust, trusting = null }) => (
-  <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75, mt: 0.9, pl: 3 }}>
-    <Button size="small" variant="outlined" data-tq-trust="" sx={{ fontSize: 12, py: 0.2 }} disabled={!!trusting} startIcon={spin(trusting === "person")} onClick={() => onTrust("")}>{trust.person}</Button>
-    {trust.org && <Button size="small" variant="outlined" data-tq-trust-org="" sx={{ fontSize: 12, py: 0.2 }} disabled={!!trusting} startIcon={spin(trusting === "org")} onClick={() => onTrust("org")}>{trust.org}</Button>}
-  </Box>);
+export const TrustButtons = ({ trust, onTrust, trusting = null }) => {
+  useLocale();
+  return <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75, mt: 0.9, pl: 3 }}>
+    <Button size="small" variant="outlined" data-tq-trust="" sx={{ fontSize: 12, py: 0.2 }} disabled={!!trusting} startIcon={spin(trusting === "person")} onClick={() => onTrust("")}>{trustLabel(trust.person)}</Button>
+    {trust.org && <Button size="small" variant="outlined" data-tq-trust-org="" sx={{ fontSize: 12, py: 0.2 }} disabled={!!trusting} startIcon={spin(trusting === "org")} onClick={() => onTrust("org")}>{trustLabel(trust.org)}</Button>}
+  </Box>;
+};
 
 // folded (`compact`) the step says its one sentence; open, the last thing it said leads and the timeline is behind More
 export default function AgentStory({ story, compact = false, onTrust, trusting = null }) {
+  useLocale();
   const [more, setMore] = useState(false);
   if (!story?.line) return null;
   const steps = compact ? [] : story.steps || [], said = !compact && story.said;
   return (
     <Box sx={{ mt: 1, pl: { xs: 0, sm: 4 } }}>
-      <StoryLine kind={story.kind} line={story.line} why={story.why} />
+      <StoryLine kind={story.kind} line={story.line} why={story.why} line_i18n={story.line_i18n} why_i18n={story.why_i18n} />
       {onTrust && trustInBox(story) && <TrustButtons trust={story.trust} onTrust={onTrust} trusting={trusting} />}
       {(said || steps.length > 0) && (
         <Box sx={{ mt: 1.1, pt: 1, borderTop: `1px solid ${BORDER}` }}>
           {said && <>
-            <Typography sx={head}>Its last message{story.said_at ? <Box component="span" sx={{ textTransform: "none", fontWeight: 400 }}> · {hhmm(story.said_at)}</Box> : ""}</Typography>
+            <Typography sx={head}>{t("Its last message")}{story.said_at ? <Box component="span" sx={{ textTransform: "none", fontWeight: 400 }}> · {hhmm(story.said_at)}</Box> : ""}</Typography>
             <Box sx={{ fontSize: 13, lineHeight: 1.5, color: INK, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{said}</Box>
           </>}
           {steps.length > 0 && <Box sx={{ mt: said ? 1 : 0 }}>
-            <Button size="small" sx={link} onClick={() => setMore(!more)}>More · the timeline {more ? "▾" : "▸"}</Button>
+            <Button size="small" sx={link} onClick={() => setMore(!more)}>{t("More · the timeline")} {more ? "▾" : "▸"}</Button>
             {more && <Box sx={{ mt: 0.8 }}><Timeline steps={steps} /></Box>}
           </Box>}
         </Box>

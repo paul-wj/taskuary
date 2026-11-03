@@ -6,6 +6,8 @@ import React from "react";
 import { Button } from "@mui/material";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import { openHelp } from "./pageView.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 export const NEW_HASH = { report: "report=new", dashboard: "report=new-dashboard", workflow: "report=new-agent" };
 const WHAT = { report: "a new report", dashboard: "a new dashboard", workflow: "a new routine" };
@@ -14,11 +16,12 @@ export const helpAsk = (kind, words = "") => `Help me set up ${WHAT[kind] || WHA
 // ...and out of the view the Assistant is sent (data-tq-view-skip, the owner, 2026-11-02): it opens the Assistant itself, so a press from the
 // chat would only ask the chat again
 export default function SetupWithAi({ kind = "report", onOpen, words = "", sx = {} }) {
+  useLocale();
   return (
     <Button size="small" variant="outlined" disableElevation data-tq-setup-ai={kind} data-tq-view-skip="" startIcon={<AutoAwesomeIcon sx={{ fontSize: 15 }} />}
-      title="Opens the chat - the Assistant sets it up with you in the builder; saving stays yours"
+      title={t("Opens the chat - the Assistant sets it up with you in the builder; saving stays yours")}
       onClick={() => { onOpen?.(); openHelp(helpAsk(kind, words), { wait: 700 }); }} sx={{ alignSelf: "flex-start", ...sx }}>
-      Set up with AI
+      {t("Set up with AI")}
     </Button>
   );
 }

@@ -3,6 +3,7 @@
 // and fourth (the cleanup round, 2026-10-18). WHO works it, then what it is (the owner, 2026-09-10: "tag tasks as reply/your
 // task/agent (maybe coding vs general)") - "your task" is the same phrase the work rail's own heading uses.
 import kinds from "../../taskuary/kinds.json" with { type: "json" };
+import { t } from "./i18n.js";
 
 export const KIND_OPTIONS = kinds.kinds;
 export const KINDS = KIND_OPTIONS.map((k) => k.key);
@@ -22,4 +23,4 @@ export const shownAgent = (run) => {
   const tool = ["chat", "assistant"].includes(String(run?.mode || "")) ? "" : String(run?.cli || "").trim();
   return tool && tool.toLowerCase() !== AGENT_SHOWN.toLowerCase() ? tool : AGENT_SHOWN;
 };
-export const instructionsHint = (profile) => profile ? `Instructions: ${profile}` : "";
+export const instructionsHint = (profile) => profile ? t("Instructions: {profile}", { profile }) : "";

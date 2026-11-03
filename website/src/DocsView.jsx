@@ -25,8 +25,11 @@ import { ACCENT2, FAINT, INK, PALETTE, ROLES, mono } from "./theme.jsx";
 import { meter } from "./docMeter.js";
 import { TaskuaryMark } from "./ui.jsx";
 import { UndoLine, removeNow } from "./Removed.jsx";
-import { plural } from "./timeWords.js";
 import { fmtDate } from "./dates.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
+const localMessage = (source, values) => ({ source, values });
+const displayMessage = (value) => typeof value === "string" ? value : t(value.source, value.values);
 
 const DOCS = {
   soul: { label: "SOUL.md", icon: <AutoStoriesIcon sx={{ fontSize: 19, color: "#55697a" }} />,
@@ -57,6 +60,7 @@ export const OPERATOR_DOCS = NAMES.map((n) => ({ name: n, label: DOCS[n].label, 
 // WHAT CHANGED IN LEARNED.md, newest first: every line it learned, strengthened, merged into another, or let fade for want of
 // evidence - the history the Visualize chart draws as dots, as a list you can read (the row-bot comparison, 2026-10-07)
 function LearnedChanges() {
+  const locale = useLocale();
   const [rows, setRows] = useState(null);
   const [busy, setBusy] = useState(""), [said, setSaid] = useState(null);
   const load = useCallback(() => api.get("/api/learned/changes").then(({ data }) => setRows(data.data || [])).catch(() => setRows([])), []);
@@ -65,26 +69,26 @@ function LearnedChanges() {
   const mark = async (key, how) => {
     setBusy(key); setSaid(null);
     try { await api.post("/api/learned/mark", { key, how }); await load(); }
-    catch (e) { setSaid({ key, msg: e?.response?.data?.detail || "That did not go through - nothing was changed." }); if (e?.response?.status === 404) await load(); }
+    catch (e) { setSaid({ key, msg: e?.response?.data?.detail || localMessage("That did not go through - nothing was changed.") }); if (e?.response?.status === 404) await load(); }
     finally { setBusy(""); }
   };
   if (rows === null) return <Box sx={{ display: "grid", placeItems: "center", py: 6 }}><CircularProgress size={20} /></Box>;
-  if (!rows.length) return <Typography sx={{ color: FAINT, fontSize: 13, py: 3 }}>Nothing changed in the last 30 days.</Typography>;
-  const day = (at) => fmtDate(new Date(String(at).replace(" ", "T")), undefined, { month: "short", day: "numeric" });
+  if (!rows.length) return <Typography sx={{ color: FAINT, fontSize: 13, py: 3 }}>{t("Nothing changed in the last 30 days.")}</Typography>;
+  const day = (at) => fmtDate(new Date(String(at).replace(" ", "T")), locale === "zh-CN" ? "zh-CN" : undefined, { month: "short", day: "numeric" });
   return (
     <Box sx={{ overflow: "auto", flex: 1, minHeight: 0 }} data-tq-learned-changes="">
-      <Typography sx={{ color: FAINT, fontSize: 12, mb: 1 }}>The last 30 days. Lines fade when nothing confirms them for a while; ones that say the same thing are merged.</Typography>
+      <Typography sx={{ color: FAINT, fontSize: 12, mb: 1 }}>{t("The last 30 days. Lines fade when nothing confirms them for a while; ones that say the same thing are merged.")}</Typography>
       {rows.map((r, i) => (
         <Box key={i} sx={{ display: "grid", gridTemplateColumns: "56px 1fr", gap: 1.25, py: 0.85, borderTop: i ? "1px solid #eee8e0" : "none" }}>
           <Typography sx={{ fontSize: 11.5, color: FAINT, pt: 0.2 }}>{day(r.at)}</Typography>
           <Box sx={{ minWidth: 0 }}>
             <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-              <Typography sx={{ fontSize: 11.5, fontWeight: 600, color: "#55697a", flex: 1 }}>{r.says}</Typography>
+              <Typography sx={{ fontSize: 11.5, fontWeight: 600, color: "#55697a", flex: 1 }}>{["born", "strengthened", "promoted", "demoted", "merged", "faded", "deleted", "back", "edited", "forgotten", "withdrawn", "watching", "moved", "retired", "closed", "kept", "wrong", "said", "replaced", "unsaid"].includes(r.action) ? t(r.says, {}, r.action === "back" ? "restoration" : undefined) : r.says}</Typography>
               {changeMarks(r).length > 0 && <MarkRow marks={changeMarks(r)} busy={busy === r.key} onMark={(how) => mark(r.key, how)} />}
             </Box>
             <Typography sx={{ fontSize: 13, color: INK, textDecoration: ["faded", "deleted", "forgotten", "wrong", "closed"].includes(r.action) ? "line-through" : "none",
               textDecorationColor: "#c9c1b6" }}>{r.text}</Typography>
-            {said?.key === r.key && r.newest && <Typography role="alert" sx={{ fontSize: 11.5, color: "#7a2f3c" }}>{said.msg}</Typography>}
+            {said?.key === r.key && r.newest && <Typography role="alert" sx={{ fontSize: 11.5, color: "#7a2f3c" }}>{displayMessage(said.msg)}</Typography>}
           </Box>
         </Box>
       ))}
@@ -97,17 +101,18 @@ function LearnedChanges() {
 // editing it would only make the description wrong (the owner, 2026-09-03: "add section in the /docs
 // about the new assistant and the gates each message goes through").
 function HowItWorks() {
+  useLocale();
   const [text, setText] = useState(null);
   useEffect(() => {
     let live = true;
     api.get("/api/how-it-works").then(({ data }) => live && setText(data.text || ""))
-      .catch((e) => live && setText(`Could not load the page: ${e?.response?.data?.detail || e.message}`));
+      .catch((e) => live && setText(localMessage("Could not load the page: {error}", { error: e?.response?.data?.detail || e.message })));
     return () => { live = false; };
   }, []);
   if (text === null) return <Box sx={{ display: "grid", placeItems: "center", py: 6 }}><CircularProgress size={20} /></Box>;
   return (
     <Box sx={{ bgcolor: "#fff", border: "1px solid #e1dcd5", borderRadius: 2, p: { xs: 2, md: 3 }, maxWidth: 900 }}>
-      <Md text={text} />
+      <Md text={displayMessage(text)} />
     </Box>
   );
 }
@@ -117,6 +122,7 @@ function HowItWorks() {
 // brass from 85%, oxblood past the limit with what really happens to the rest - the server's words (doclimits.py), not a guess.
 const TONE = { ok: ACCENT2, near: PALETTE.brass, over: PALETTE.oxblood };
 export function DocMeter({ text, limit }) {
+  useLocale();
   const m = meter(text, limit);
   if (!m) return null;
   const c = TONE[m.tone], num = { fontVariantNumeric: "tabular-nums" };
@@ -125,12 +131,12 @@ export function DocMeter({ text, limit }) {
       <Box sx={{ display: "flex", alignItems: "baseline", gap: 1, fontSize: 11.5, color: FAINT }}>
         <Typography component="span" sx={{ fontSize: "inherit", flex: 1, minWidth: 0 }}>
           <Box component="span" sx={{ ...num, color: m.tone === "ok" ? INK : c, fontWeight: 600 }}>{m.n.toLocaleString()}</Box>
-          <Box component="span" sx={num}> / {m.of.toLocaleString()}</Box> characters reach {limit.reader || "the agent"}
-          {m.over > 0 && <Box component="span" sx={{ color: c }}> · over by {m.over.toLocaleString()} - {limit.past || "the end is cut off"}</Box>}
+          <Box component="span" sx={num}> / {m.of.toLocaleString()}</Box> {t("characters reach {reader}", { reader: ["triage and drafts", "triage", "drafts", "the assistant", "every agent", "its readers", "the agent"].includes(limit.reader) ? t(limit.reader) : limit.reader || t("the agent") })}
+          {m.over > 0 && <Box component="span" sx={{ color: c }}> {t("· over by {count} - {effect}", { count: m.over.toLocaleString(), effect: ["the end is cut off", "still read whole, but long", "whole sections are left out"].includes(limit.past) ? t(limit.past) : limit.past || t("the end is cut off") })}</Box>}
         </Typography>
         <Typography component="span" sx={{ ...num, fontSize: "inherit", fontWeight: 600, color: m.tone === "ok" ? FAINT : c }}>{Math.round(m.pct)}%</Typography>
       </Box>
-      <Box role="meter" aria-label="Characters that reach the agent" aria-valuemin={0} aria-valuemax={m.of} aria-valuenow={m.n}
+      <Box role="meter" aria-label={t("Characters that reach the agent")} aria-valuemin={0} aria-valuemax={m.of} aria-valuenow={m.n}
         sx={{ mt: 0.5, height: 3, borderRadius: 99, bgcolor: "#eee8e0", overflow: "hidden" }}>
         <Box sx={{ height: "100%", width: `${Math.min(100, m.pct)}%`, bgcolor: c, borderRadius: 99, transition: "width .25s ease, background-color .25s ease" }} />
       </Box>
@@ -154,20 +160,21 @@ const isProf = (n) => n.startsWith("prof:");
 // WHAT AN AGENT READS, in order, on top of every profile: who the owner is, the rules every agent shares, then this profile.
 // AGENT.md is one document - hover to read it whole; it is edited under Operator documents, never copied in here.
 function SharedRulesChip() {
+  useLocale();
   const [text, setText] = useState("");
   useEffect(() => { let live = true; api.get("/api/doc/agent").then(({ data }) => live && setText(data.rendered || data.content || "")).catch(() => {}); return () => { live = false; }; }, []);
   const step = { fontSize: 11.5, color: FAINT };
   return (
     <Box data-tq-layers="" sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap", pt: 0.75 }}>
-      <Typography component="span" sx={step}>Every task reads: SOUL.md + JOB.md →</Typography>
+      <Typography component="span" sx={step}>{t("Every task reads: SOUL.md + JOB.md →")}</Typography>
       <Tooltip placement="bottom-start" enterDelay={150}
         componentsProps={{ tooltip: { sx: { maxWidth: 620, maxHeight: 440, overflow: "auto", bgcolor: "#fffdfb", color: INK,
           border: "1px solid #e1dcd5", boxShadow: "0 6px 24px rgba(30,40,30,.14)", p: 1.5 } } }}
-        title={<Box component="pre" sx={{ m: 0, whiteSpace: "pre-wrap", fontFamily: "inherit", fontSize: 12, lineHeight: 1.5 }}>{text || "AGENT.md is empty."}</Box>}>
-        <Chip size="small" label="AGENT.md · shared rules" data-tq-agent-rules=""
+        title={<Box component="pre" sx={{ m: 0, whiteSpace: "pre-wrap", fontFamily: "inherit", fontSize: 12, lineHeight: 1.5 }}>{text || t("AGENT.md is empty.")}</Box>}>
+        <Chip size="small" label={t("AGENT.md · shared rules")} data-tq-agent-rules=""
           sx={{ height: 22, fontSize: 11, fontWeight: 600, bgcolor: "#eef1ec", border: "1px solid #d9e0d6", cursor: "help" }} />
       </Tooltip>
-      <Typography component="span" sx={step}>→ this profile</Typography>
+      <Typography component="span" sx={step}>{t("→ this profile")}</Typography>
     </Box>
   );
 }
@@ -189,9 +196,9 @@ const PROF_BLURB = "Instructions for the workers listed under this profile, adde
 const NOT_ROUTED = { coding: "all coding tasks", off: "switched off",
                      not_offered: "not offered to triage", no_purpose: "no purpose set" };
 const rosterChip = (pr) => (pr.onRoster === 0
-  ? NOT_ROUTED[(pr.seen.find((m) => m.code) || {}).code] || "not routed"
-  : pr.onRoster === pr.members.length ? "on the roster"
-  : `on the roster (${pr.onRoster}/${pr.members.length})`);
+  ? t(NOT_ROUTED[(pr.seen.find((m) => m.code) || {}).code] || "not routed")
+  : pr.onRoster === pr.members.length ? t("on the roster")
+  : t("on the roster ({on}/{total})", { on: pr.onRoster, total: pr.members.length }));
 // a worker routed a different way is not a worker in trouble, so it does not wear the muted grey
 const isRouted = (pr) => pr.onRoster > 0 || pr.seen.some((m) => m.code === "coding");
 const pbSlug = (n) => n.slice(3);
@@ -210,6 +217,7 @@ const GEN = {
 // literally, changing it meant finding every one - so they carry {{owner}} tokens and this is
 // where the actual name lives. Saving also rewrites any literal name still in the docs.
 const OwnerCard = () => {
+  useLocale();
   const [who, setWho] = useState(null);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -233,26 +241,25 @@ const OwnerCard = () => {
     setMsg("");
     try {
       const { data } = await api.put("/api/owner", { name: name.trim(), email: email.trim() || null });
-      setMsg(`saved ✓${data.retokened?.length ? ` — ${data.retokened.join(", ")} rewritten to use it everywhere` : ""}`);
-    } catch (e) { setMsg(e?.response?.data?.detail || "could not save"); }
+      setMsg({ saved: true, docs: data.retokened || [] });
+    } catch (e) { setMsg(e?.response?.data?.detail || localMessage("could not save")); }
   };
   if (!who) return null;
   return (
     <Box ref={box} sx={{ mb: 2.5, p: 1.75, bgcolor: "#fff", border: "1px solid #e1dcd5", borderRadius: 2,
       display: "flex", gap: 1.25, alignItems: "center", flexWrap: "wrap" }}>
       <Box sx={{ minWidth: 260, flex: 1 }}>
-        <Typography variant="body2" sx={{ color: INK, fontWeight: 600 }}>Who the documents speak for</Typography>
+        <Typography variant="body2" sx={{ color: INK, fontWeight: 600 }}>{t("Who the documents speak for")}</Typography>
         <Typography variant="caption" sx={{ color: FAINT }}>
-          Set your identity once and Taskuary uses it everywhere it speaks for you — signatures,
-          escalation rules, and the coding agent's instructions. Saving also updates older documents that spell out your name.
+          {t("Set your identity once and Taskuary uses it everywhere it speaks for you — signatures, escalation rules, and the coding agent's instructions. Saving also updates older documents that spell out your name.")}
         </Typography>
       </Box>
-      <TextField size="small" label="Your name" value={name} onChange={(e) => setName(e.target.value)}
+      <TextField size="small" label={t("Your name")} value={name} onChange={(e) => setName(e.target.value)}
         sx={{ bgcolor: "#fff", flex: "1 1 200px", minWidth: 0 }} />
-      <TextField size="small" label="Email" value={email} onChange={(e) => setEmail(e.target.value)}
+      <TextField size="small" label={t("Email")} value={email} onChange={(e) => setEmail(e.target.value)}
         sx={{ bgcolor: "#fff", flex: "1 1 200px", minWidth: 0 }} />
-      <Button size="small" variant="contained" disableElevation disabled={!name.trim()} onClick={save}>Save</Button>
-      {msg && <Typography variant="caption" sx={{ color: msg.startsWith("saved") ? "#47654a" : "#6b2733" }}>{msg}</Typography>}
+      <Button size="small" variant="contained" disableElevation disabled={!name.trim()} onClick={save}>{t("Save")}</Button>
+      {msg && <Typography variant="caption" sx={{ color: msg.saved ? "#47654a" : "#6b2733" }}>{msg.saved ? t("saved ✓") + (msg.docs.length ? t(" — {docs} rewritten to use it everywhere", { docs: msg.docs.join(", ") }) : "") : displayMessage(msg)}</Typography>}
     </Box>
   );
 };
@@ -265,6 +272,7 @@ const OwnerCard = () => {
 // `onGone`: the page that opened ONE playbook (Reports -> Playbooks) is told when it is deleted or a new one discarded - it goes back
 // to its list instead of this page opening another playbook in its place
 export default function DocsView({ sel = null, onSel = null, onCatalog = null, catalogOnly = false, onGone = null }) {
+  useLocale();
   const rail = !!onSel;
   const [manageProfiles, setManageProfiles] = useState(false);
   const [createProfile, setCreateProfile] = useState(false);
@@ -296,7 +304,7 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
       const left = (await loadProfs()) || [];
       const next = left.find((p) => p.name !== name);
       if (next) await openProf(next.name); else { setSection("documents"); setDocName(NAMES[0]); }
-    } catch (e) { setErr(e?.response?.data?.detail || `${name} could not be removed`); }
+    } catch (e) { setErr(e?.response?.data?.detail || localMessage("{name} could not be removed", { name })); }
   };
   const [deleteBusy, setDeleteBusy] = useState(false);
   // the generation is inspectable, not a vibe: poll its status while it runs so the button
@@ -318,7 +326,7 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
       const d = Object.fromEntries(NAMES.map((n, i) => [n, res[i].data.content || ""]));
       setDocs((cur) => ({ ...cur, ...d })); setSaved((cur) => ({ ...cur, ...d })); setLoaded(true);
       setLimits((cur) => ({ ...cur, ...Object.fromEntries(NAMES.map((n, i) => [n, res[i].data.limit || null])) }));
-    } catch (e) { setErr(e?.response?.data?.detail || "Failed to load documents"); }
+    } catch (e) { setErr(e?.response?.data?.detail || localMessage("Failed to load documents")); }
   }, []);
   // ...not for the unseen catalogue (catalogOnly): it reports profiles, playbooks and people, never a document's words - and it read all
   // nine every time Settings > Docs or Profiles drew its list, twelve requests for three it uses (the overnight setup walk, 2026-10-26)
@@ -343,7 +351,7 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
     try {
       const { data } = await api.get(`/api/doc/${name}`);
       setDocs((d) => ({ ...d, [name]: data.content || "" })); setSaved((d) => ({ ...d, [name]: data.content || "" }));
-    } catch (e) { setErr(e?.response?.data?.detail || `could not open ${name}`); }
+    } catch (e) { setErr(e?.response?.data?.detail || localMessage("could not open {name}", { name })); }
   }, []);
 
   const loadProfs = useCallback(async () => {
@@ -380,7 +388,7 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
       const { data } = await api.get(`/api/doc/${name}`);
       setDocs((d) => ({ ...d, [key]: data.content || "" })); setSaved((d) => ({ ...d, [key]: data.content || "" }));
       setLimits((l) => ({ ...l, [key]: data.limit || null }));
-    } catch (e) { setErr(e?.response?.data?.detail || `could not open ${name}`); }
+    } catch (e) { setErr(e?.response?.data?.detail || localMessage("could not open {name}", { name })); }
   }, []);
 
   useEffect(() => {
@@ -407,7 +415,7 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
     try {
       const { data } = await api.get(`/api/playbooks/${slug}`);
       setDocs((d) => ({ ...d, [key]: data.content || "" })); setSaved((d) => ({ ...d, [key]: data.content || "" }));
-    } catch (e) { setErr(e?.response?.data?.detail || `could not open playbook ${slug}`); }
+    } catch (e) { setErr(e?.response?.data?.detail || localMessage("could not open playbook {slug}", { slug })); }
   }, [tpl]);
   // ...a new one opened before the shelf's template arrived (Settings opens the editor as the page mounts) starts from it when it lands
   useEffect(() => { if (tpl && docName === "pb:new" && !docs["pb:new"]) setDocs((d) => ({ ...d, "pb:new": tpl })); }, [tpl, docName]);   // eslint-disable-line react-hooks/exhaustive-deps
@@ -461,8 +469,8 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
         const key = `pb:${data.slug}`;
         setDocs((d) => ({ ...d, [key]: docs[docName] })); setSaved((d) => ({ ...d, [key]: docs[docName] }));
         setDocName(key); await loadBooks();
-        setPbMsg("saved ✓ — triage now matches new messages against its when line");
-      } catch (e) { setPbMsg(e?.response?.data?.detail || "could not save"); }
+        setPbMsg(localMessage("saved ✓ — triage now matches new messages against its when line"));
+      } catch (e) { setPbMsg(e?.response?.data?.detail || localMessage("could not save")); }
       return;
     }
     const target = isProf(docName) ? profName(docName) : docName;
@@ -494,9 +502,9 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
       await loadBooks();
       if (onGone) { onGone(); return; }
       await openPb(next?.slug || "new");
-      setPbMsg("deleted - Recently deleted on Reports → Playbooks keeps it 30 days, with Restore");
+      setPbMsg(localMessage("deleted - Recently deleted on Reports → Playbooks keeps it 30 days, with Restore"));
     } catch (e) {
-      setPbMsg(e?.response?.data?.detail || "Could not delete this playbook. Please try again.");
+      setPbMsg(e?.response?.data?.detail || localMessage("Could not delete this playbook. Please try again."));
     } finally { setDeleteBusy(false); }
   };
   const chooseSection = (next) => {
@@ -521,7 +529,7 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
   const meta = isProf(docName)
     ? { label: `${profName(docName).toUpperCase()}.md`, blurb: PROF_BLURB }
     : isPb(docName)
-    ? { label: docName === "pb:new" ? "New playbook" : `${pbSlug(docName)}.md`, blurb: PB_BLURB }
+    ? { label: docName === "pb:new" ? t("New playbook") : `${pbSlug(docName)}.md`, blurb: PB_BLURB }
     : isPerson(docName)
     ? { label: docName.slice(7), blurb: PERSON_BLURB }
     : DOCS[docName];
@@ -545,9 +553,9 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
         like every other settings page (the owner, 2026-09-22). */}
     {!rail && (
     <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, mb: 2.5, borderBottom: "1px solid #e1dcd5" }}>
-      {[["documents", "Operator documents"], ["profiles", `Profiles${profs.length ? ` (${profs.length})` : ""}`],
-        ["playbooks", `Playbooks${books.length ? ` (${books.length})` : ""}`],
-        ["how", "How it works"]].map(([key, label]) => (
+      {[["documents", t("Operator documents")], ["profiles", `${t("Profiles")}${profs.length ? ` (${profs.length})` : ""}`],
+        ["playbooks", `${t("Playbooks")}${books.length ? ` (${books.length})` : ""}`],
+        ["how", t("How it works")]].map(([key, label]) => (
         <Box key={key} component="button" onClick={() => chooseSection(key)}
           sx={{ appearance: "none", border: 0, borderBottom: `2px solid ${section === key ? "#55697a" : "transparent"}`,
             bgcolor: "transparent", color: section === key ? INK : FAINT, cursor: "pointer", px: 1.25, py: 0.9,
@@ -574,7 +582,7 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
                  maxHeight: { xs: "none", md: "100%" } }}>
         {section === "profiles" ? (
           <>
-            <Typography sx={{ color: INK, fontWeight: 600, fontSize: 16, mb: 0.5 }}>Profiles</Typography>
+            <Typography sx={{ color: INK, fontWeight: 600, fontSize: 16, mb: 0.5 }}>{t("Profiles")}</Typography>
             {/* ONE door. Three buttons, two of them bare text, wrapped mid-label into something that
                 read as a menu of unrelated things (the owner, 2026-09-17: "just have 2 clear buttons
                 .. make them look like buttons.. make it look normal"). Adding a worker - by hand or
@@ -582,17 +590,16 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
                 roads already live, so it is not a second entry point here. */}
             <Box sx={{ display: "flex", gap: 1, mb: 1, "& .MuiButton-root": { whiteSpace: "nowrap" } }}>
               <Button size="small" variant="contained" startIcon={<AddIcon />}
-                onClick={() => { setCreateProfile(true); setManageProfiles(true); }}>New profile</Button>
+                onClick={() => { setCreateProfile(true); setManageProfiles(true); }}>{t("New profile")}</Button>
               <Button size="small" variant="outlined"
-                onClick={() => { setCreateProfile(false); setManageProfiles(true); }}>Manage profiles</Button>
+                onClick={() => { setCreateProfile(false); setManageProfiles(true); }}>{t("Manage profiles")}</Button>
             </Box>
             <Typography sx={{ fontSize: 11.5, color: FAINT, mb: 1.5 }}>
-              The workers. Triage picks one per task and its session is seeded with that worker’s rules.
-              Edit its instructions here, or manage its name, provider and model above.
+              {t("The workers. Triage picks one per task and its session is seeded with that worker’s rules. Edit its instructions here, or manage its name, provider and model above.")}
             </Typography>
             <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", pr: 0.5, mr: -0.5 }}>
             <RoleStart onApplied={() => { loadProfs(); loadBooks(); }} />
-            {!profs.length && <Typography sx={{ fontSize: 12, color: FAINT }}>No profiles yet — use Manage profiles to add one.</Typography>}
+            {!profs.length && <Typography sx={{ fontSize: 12, color: FAINT }}>{t("No profiles yet — use Manage profiles to add one.")}</Typography>}
             {profs.map((pr) => (
               <Box key={pr.name} onClick={() => openProf(pr.name)}
                 sx={{ p: 1.4, mb: 0.75, borderRadius: 2, cursor: "pointer",
@@ -610,18 +617,18 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
                     sx={isRouted(pr) ? undefined : { color: ROLES.muted.ink, borderColor: ROLES.muted.bd }} />
                   {`prof:${pr.name}` === docName && (
                     <Box component="span" sx={{ px: 0.7, height: 17, display: "inline-flex", alignItems: "center",
-                      borderRadius: 1.25, bgcolor: "#55697a", color: "#fff", fontSize: 9.5, fontWeight: 600 }}>open</Box>
+                      borderRadius: 1.25, bgcolor: "#55697a", color: "#fff", fontSize: 9.5, fontWeight: 600 }}>{t("open")}</Box>
                   )}
                 </Box>
-                <Typography sx={{ fontSize: 11.5, color: FAINT, pt: 0.5 }}>{pr.purpose || "no purpose set — triage cannot tell when to pick it"}</Typography>
-                <Typography sx={{ fontSize: 11, color: FAINT, pt: 0.5 }}>Used by {pr.members.join(", ")}</Typography>
+                <Typography sx={{ fontSize: 11.5, color: FAINT, pt: 0.5 }}>{pr.purpose || t("no purpose set — triage cannot tell when to pick it")}</Typography>
+                <Typography sx={{ fontSize: 11, color: FAINT, pt: 0.5 }}>{t("Used by {members}", { members: pr.members.join(", ") })}</Typography>
               </Box>
             ))}
             </Box>
           </>
         ) : section === "documents" ? (
           <>
-            <Typography sx={{ color: INK, fontWeight: 600, fontSize: 16, mb: 1.5, flexShrink: 0 }}>Operator documents</Typography>
+            <Typography sx={{ color: INK, fontWeight: 600, fontSize: 16, mb: 1.5, flexShrink: 0 }}>{t("Operator documents")}</Typography>
             {/* the eight scroll; the identity card below them does not, so it is always on screen */}
             <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", pr: 0.5, mr: -0.5 }}>
             {NAMES.map((n) => (
@@ -636,10 +643,10 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
                   <Typography noWrap sx={{ ...mono, fontSize: 12, fontWeight: 600, color: INK, flex: 1, minWidth: 0 }}>{DOCS[n].label}</Typography>
                   {n === docName && (
                     <Box component="span" sx={{ px: 0.7, height: 17, display: "inline-flex", alignItems: "center",
-                      borderRadius: 1.25, bgcolor: "#55697a", color: "#fff", fontSize: 9.5, fontWeight: 600 }}>open</Box>
+                      borderRadius: 1.25, bgcolor: "#55697a", color: "#fff", fontSize: 9.5, fontWeight: 600 }}>{t("open")}</Box>
                   )}
                 </Box>
-                <Typography noWrap sx={{ fontSize: 11.5, color: FAINT, pt: 0.5 }}>{DOCS[n].blurb}</Typography>
+                <Typography noWrap sx={{ fontSize: 11.5, color: FAINT, pt: 0.5 }}>{t(DOCS[n].blurb)}</Typography>
               </Box>
             ))}
             </Box>
@@ -647,19 +654,19 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
           </>
         ) : (
           <>
-            <Typography sx={{ color: INK, fontWeight: 600, fontSize: 16, mb: 0.5 }}>Playbooks</Typography>
+            <Typography sx={{ color: INK, fontWeight: 600, fontSize: 16, mb: 0.5 }}>{t("Playbooks")}</Typography>
             <Typography sx={{ fontSize: 11.5, color: FAINT, mb: 1.25, lineHeight: 1.5 }}>
-              One per kind of job—how it is done here, and where the line is between “just do it” and “ask”.
+              {t("One per kind of job—how it is done here, and where the line is between “just do it” and “ask”.")}
             </Typography>
             <Box component="button" type="button" onClick={() => setNewPlaybook({ connectorType: "" })}
               sx={{ p: 1.1, mb: 1, borderRadius: 2, cursor: "pointer", display: "flex", alignItems: "center", gap: 1,
                 border: `1px dashed ${docName === "pb:new" ? "#d8cfbe" : "#e1dcd5"}`, bgcolor: docName === "pb:new" ? "#fff" : "transparent",
                 "&:hover": { bgcolor: "#f4f1ec" } }}>
               <AddIcon sx={{ fontSize: 17, color: "#55697a" }} />
-              <Typography component="span" sx={{ fontSize: 12, fontWeight: 600, color: "#55697a" }}>New playbook</Typography>
+              <Typography component="span" sx={{ fontSize: 12, fontWeight: 600, color: "#55697a" }}>{t("New playbook")}</Typography>
             </Box>
             {books.length > 0 && <TextField size="small" fullWidth value={pbFilter} onChange={(e) => setPbFilter(e.target.value)}
-              placeholder={`Search ${plural(books.length, "playbook")}`}
+              placeholder={t(books.length === 1 ? "Search {count} playbook" : "Search {count} playbooks", { count: books.length })}
               sx={{ mb: 1, bgcolor: "#fff", "& input": { fontSize: 12 } }} />}
             <Box sx={{ maxHeight: { xs: "min(52vh, 520px)", md: "calc(100vh - 260px)" }, overflowY: "auto", pr: { md: 0.5 } }}>
               {visibleBooks.map((b) => {
@@ -673,15 +680,15 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
                       <Box sx={{ display: "flex", opacity: on ? 1 : .65 }}><MenuBookIcon sx={{ fontSize: 19, color: "#55697a" }} /></Box>
                       <Typography sx={{ fontSize: 12.5, fontWeight: 600, color: INK, flex: 1 }} noWrap>{b.title}</Typography>
                       {on && <Box component="span" sx={{ px: 0.7, height: 17, display: "inline-flex", alignItems: "center",
-                        borderRadius: 1.25, bgcolor: "#55697a", color: "#fff", fontSize: 9.5, fontWeight: 600 }}>open</Box>}
+                        borderRadius: 1.25, bgcolor: "#55697a", color: "#fff", fontSize: 9.5, fontWeight: 600 }}>{t("open")}</Box>}
                     </Box>
-                    <Typography noWrap sx={{ fontSize: 11.5, color: FAINT, pt: 0.5 }}>when: {b.when}</Typography>
-                    {b.uses?.length > 0 && <Typography noWrap sx={{ ...mono, fontSize: 10.5, color: FAINT, pt: 0.25 }}>uses {b.uses.join(" · ")}</Typography>}
+                    <Typography noWrap sx={{ fontSize: 11.5, color: FAINT, pt: 0.5 }}>{t("when: {when}", { when: b.when })}</Typography>
+                    {b.uses?.length > 0 && <Typography noWrap sx={{ ...mono, fontSize: 10.5, color: FAINT, pt: 0.25 }}>{t("uses {uses}", { uses: b.uses.join(" · ") })}</Typography>}
                   </Box>
                 );
               })}
               {books.length > 0 && !visibleBooks.length && (
-                <Typography sx={{ fontSize: 12, color: FAINT, py: 2, textAlign: "center" }}>No playbooks match “{pbFilter}”.</Typography>
+                <Typography sx={{ fontSize: 12, color: FAINT, py: 2, textAlign: "center" }}>{t("No playbooks match “{filter}”.", { filter: pbFilter })}</Typography>
               )}
             </Box>
           </>
@@ -690,13 +697,13 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
       )}
 
       <Box sx={{ minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0 }}>
-        {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 1.5, flexShrink: 0 }}>{err}</Alert>}
+        {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 1.5, flexShrink: 0 }}>{displayMessage(err)}</Alert>}
         <UndoLine kinds={["profile"]} sx={{ flexShrink: 0 }} onRestored={async (r) => { await loadProfs(); await openProf(r.title); }} />
         <Box sx={{ display: "flex", alignItems: "flex-start", gap: 2, mb: 1.5, flexShrink: 0, flexWrap: { xs: "wrap", md: "nowrap" } }}>
           {/* on a phone the title takes its own line; beside four buttons it was 45px wide */}
           <Box sx={{ flex: 1, minWidth: 0, flexBasis: { xs: "100%", md: "auto" } }}>
             <Typography noWrap sx={{ ...mono, color: INK, fontWeight: 600, fontSize: 17 }}>{meta.label}</Typography>
-            <Typography variant="body2" sx={{ color: FAINT, pt: 0.75 }}>{meta.blurb}</Typography>
+            <Typography variant="body2" sx={{ color: FAINT, pt: 0.75 }}>{t(meta.blurb)}</Typography>
             {/* THE LAYERS, said on every profile (the owner, 2026-10-14: "agent.md is just the start of the profiles ... show [it]
                 that you can hover over to see full text on top of every profile"): SOUL/JOB, then AGENT.md, then this. One AGENT.md,
                 edited under Operator documents - the chip only shows it. */}
@@ -706,7 +713,7 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
                 document governs `coding, codex` has to travel with the document itself. */}
             {isProf(docName) && cur?.members?.length > 0 && (
               <Typography variant="caption" sx={{ color: FAINT, pt: 0.5, display: "block" }}>
-                Used by {cur.members.join(", ")} · {rosterChip(cur)}
+                {t("Used by {members}", { members: cur.members.join(", ") })} · {rosterChip(cur)}
               </Typography>
             )}
           </Box>
@@ -715,28 +722,28 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
           {docName === "soul" && (
             <Button size="small" variant="outlined" onClick={() => setInterview(true)}
               sx={{ fontSize: 11.5, textTransform: "none" }}
-              title="Seven adaptive questions; each one follows your previous answers, then the assistant writes SOUL.md">
-              Write it from a few questions
+              title={t("Seven adaptive questions; each one follows your previous answers, then the assistant writes SOUL.md")}>
+              {t("Write it from a few questions")}
             </Button>
           )}
           {GEN[docName] && (
-            <Button size="small" variant="outlined" disabled={genBusy} title={GEN[docName]}
+            <Button size="small" variant="outlined" disabled={genBusy} title={t(GEN[docName])}
               sx={{ fontSize: 11.5, textTransform: "none" }}
               startIcon={genBusy ? <CircularProgress size={12} /> : null}
               onClick={async () => {
-                setGenBusy(true); setGenMsg(""); setGenEv(null); setGenWhat("starting…");
+                setGenBusy(true); setGenMsg(""); setGenEv(null); setGenWhat(localMessage("starting…"));
                 try {
                   const { data } = await api.post(`/api/doc/${docName}/generate`);
                   setGenMsg(`✓ ${data.detail}`); await load();
                   try { setGenEv((await api.get("/api/doc/generate/status")).data.evidence || null); } catch { /* receipts optional */ }
-                } catch (e) { setGenMsg(e?.response?.data?.detail || "generation failed"); }
+                } catch (e) { setGenMsg(e?.response?.data?.detail || localMessage("generation failed")); }
                 setGenBusy(false); setGenWhat("");
-              }}>{genBusy ? (genWhat || "Reading what came in…") : "Generate from history"}</Button>
+              }}>{genBusy ? (genWhat ? displayMessage(genWhat) : t("Reading what came in…")) : t("Generate from history")}</Button>
           )}
           {docName === "learned" && (
             <Box sx={{ display: "flex", border: "1px solid #e1dcd5", borderRadius: 99, overflow: "hidden", fontSize: 11.5, fontWeight: 600, alignSelf: "center",
               flexShrink: 0, whiteSpace: "nowrap" }}>
-              {[["text", "Text"], ["changes", "What changed"], ["viz", "Visualize"]].map(([k, label]) => (
+              {[["text", t("Text")], ["changes", t("What changed")], ["viz", t("Visualize")]].map(([k, label]) => (
                 <Box key={k} component="button" type="button" aria-pressed={view === k} onClick={() => setView(k)} sx={{ px: 1.5, py: 0.55, cursor: "pointer",
                   color: view === k ? "#fff" : "#4d4a43", background: view === k ? "linear-gradient(90deg, #55697a, #7d9a7c)" : "#fffdfb", border: 0, font: "inherit" }}>{label}</Box>
               ))}
@@ -746,20 +753,20 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
             <Button size="small" variant="outlined" onClick={async () => {
               // consolidate now instead of waiting for the threshold; reload to show the rewrite
               try { await api.post("/api/learn/reflect"); await load(); } catch { /* no AI connected */ }
-            }}>Reflect now</Button>
+            }}>{t("Reflect now")}</Button>
           )}
           {isProf(docName) && ownProfile && (
             <Button size="small" variant="outlined" color="error" onClick={() => removeProf(cur.name)}
-              title="Remove this profile - triage stops offering it; Undo, or Restore under Recently deleted for 30 days, brings it back">Remove</Button>
+              title={t("Remove this profile - triage stops offering it; Undo, or Restore under Recently deleted for 30 days, brings it back")}>{t("Remove")}</Button>
           )}
           {isPb(docName) && (
             <Button size="small" variant="outlined" color="error" onClick={removePb} disabled={deleteBusy}
-              title={docName === "pb:new" ? "Discard this draft" : "Remove this playbook - triage stops matching it at once; Recently deleted on Reports → Playbooks keeps it 30 days"}>
-              {docName === "pb:new" ? "Discard" : "Remove"}
+              title={t(docName === "pb:new" ? "Discard this draft" : "Remove this playbook - triage stops matching it at once; Recently deleted on Reports → Playbooks keeps it 30 days")}>
+              {t(docName === "pb:new" ? "Discard" : "Remove")}
             </Button>
           )}
           <Button size="small" variant="contained" disableElevation disabled={docs[docName] === saved[docName]} onClick={save}>
-            {docs[docName] === saved[docName] ? "Saved" : "Save"}
+            {t(docs[docName] === saved[docName] ? "Saved" : "Save")}
           </Button>
         </Box>
         {/* the distinction the profiles rest on: the router reads ONE LINE per worker when it picks;
@@ -768,7 +775,7 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
         {cur && (
           <Box sx={{ mb: 1.5, p: 1.25, bgcolor: "#fff", border: "1px solid #e1dcd5", borderRadius: 2, flexShrink: 0 }}>
             <Typography variant="caption" sx={{ color: "#6f8a6e", fontWeight: 600, letterSpacing: 1, display: "block", mb: 0.5 }}>
-              WHAT TRIAGE SEES
+              {t("WHAT TRIAGE SEES")}
             </Typography>
             {cur.seen.filter((m) => m.line).map((m) => (
               <Typography key={m.name} sx={{ ...mono, fontSize: 11.5, color: INK, whiteSpace: "pre-wrap" }}>{m.line}</Typography>))}
@@ -779,27 +786,27 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
               <Typography key={why} sx={{ fontSize: 11.5, color: FAINT }}>
                 {cur.seen.filter((m) => !m.line && m.reason === why).map((m) => m.name).join(", ")}
                 {cur.seen.find((m) => m.reason === why)?.code === "coding"
-                  ? ": every coding task comes here — the router does not choose it, the kind does"
-                  : `: not on the roster — ${why}`}
+                  ? t(": every coding task comes here — the router does not choose it, the kind does")
+                  : t(": not on the roster — {reason}", { reason: why })}
               </Typography>))}
             <Typography variant="caption" sx={{ color: FAINT, display: "block", pt: 0.75 }}>
-              The router reads this one line per worker when it picks. The session it picks is given the whole document below.
+              {t("The router reads this one line per worker when it picks. The session it picks is given the whole document below.")}
             </Typography>
           </Box>
         )}
         {pbMsg && isPb(docName) && (
-          <Typography variant="caption" sx={{ display: "block", mb: 1, color: /^(saved|deleted)/.test(pbMsg) ? "#47654a" : "#6b2733" }}>{pbMsg}</Typography>
+          <Typography variant="caption" sx={{ display: "block", mb: 1, color: pbMsg.source?.startsWith("saved") || pbMsg.source?.startsWith("deleted") ? "#47654a" : "#6b2733" }}>{displayMessage(pbMsg)}</Typography>
         )}
         {genMsg && GEN[docName] && (
           <Typography variant="caption" sx={{ display: "block", mb: 1,
-            color: genMsg.startsWith("✓") ? "#47654a" : "#6b2733" }}>{genMsg}</Typography>
+            color: typeof genMsg === "string" && genMsg.startsWith("✓") ? "#47654a" : "#6b2733" }}>{displayMessage(genMsg)}</Typography>
         )}
         {/* the receipts: exactly what the model read and what each line voted for - so the
             block in the doc is traceable back to your own mail, not a vibe */}
         {genEv?.length > 0 && GEN[docName] && (
           <Box sx={{ mb: 1.5, p: 1.25, bgcolor: "#fff", border: "1px solid #e1dcd5", borderRadius: 2 }}>
             <Typography variant="caption" sx={{ color: "#6f8a6e", fontWeight: 600, letterSpacing: 1, display: "block", mb: 0.5 }}>
-              WHAT IT READ — AND WHAT EACH LINE DID
+              {t("WHAT IT READ — AND WHAT EACH LINE DID")}
             </Typography>
             <Box sx={{ maxHeight: 260, overflowY: "auto" }}>
               {genEv.map((l, i) => (
@@ -827,9 +834,9 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
         </>
         )}
         <Typography variant="caption" sx={{ color: FAINT, display: "block", pt: 1.25, lineHeight: 1.6, flexShrink: 0 }}>
-          {isPb(docName)
+          {t(isPb(docName)
             ? "Keep the six labelled lines - when is what triage matches, uses is which cards list it. Saved as a file under ~/.taskuary/playbooks, beside your database."
-            : "Editing this changes the funnel on the very next message. Nothing here is sent anywhere — these files live beside your database."}
+            : "Editing this changes the funnel on the very next message. Nothing here is sent anywhere — these files live beside your database.")}
         </Typography>
       </Box>
       <SoulInterview open={interview} onClose={() => setInterview(false)}

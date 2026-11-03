@@ -1,5 +1,6 @@
 // What the search box's answers look like (SearchEverything.jsx; the server's search.py): the pill each kind of hit wears,
 // the order the kinds are listed in, the filter strip's counts and the matched words picked out of a line.
+import { t } from "./i18n.js";
 
 // `tone` names the colour SearchEverything.jsx draws the pill in (TONES there)
 export const KINDS = {
@@ -78,12 +79,13 @@ export const channelsFor = (person, targets) => {
 };
 // ...and the link that opens New's Send something with it filled in (canvasLinks reads it back)
 export const messageLink = ({ channel, to, name }) => `#new-task&${new URLSearchParams({ kind: "send", channel, to, ...(name ? { name } : {}) })}`;
-export const nothingYet = (name) => `Nothing from or about ${name} yet - what they send, and the tasks they are on, come up here.`;
+export const nothingYet = (name) => t("Nothing from or about {name} yet - what they send, and the tasks they are on, come up here.", { name });
 
 // ONE WAY TO SAY NOTHING WAS FOUND, on every page with a box (the 2026-10-19 UI walk: each said it its own way, and none said where
 // else to look). A page's own box says what it searched, and that the box at the top searches everything
-export const nothingMatches = (q, where = "") =>
-  `Nothing matches “${String(q || "").trim()}”${where ? ` in ${where}. The search at the top looks through everything` : ""}.`;
+export const nothingMatches = (q, where = "") => where
+  ? t("Nothing matches “{query}” in {where}. The search at the top looks through everything.", { query: String(q || "").trim(), where })
+  : t("Nothing matches “{query}”.", { query: String(q || "").trim() });
 
 // The words typed, as the server reads them, for marking matches. A word is matched as a prefix of a word in the line,
 // the way the index matched it - "digic" marks the start of "DigiCert", not every "ic".

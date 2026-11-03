@@ -25,7 +25,7 @@ const emojiHeading = (line) => /^\s*\p{Extended_Pictographic}/u.test(line);
 const rawHeading = (line) => RAW_HEADINGS.find(([raw]) => line.trimStart().startsWith(raw));
 const cleanItem = (line) => line.trim().replace(/^[-*]\s+/, "").replace(/^\d+[.)]\s+/, "");
 
-export function digestSections(text) {
+export function digestSections(text, translateHeading = (heading) => heading) {
   const sections = [];
   let current = null;
   let meta = "";
@@ -40,13 +40,13 @@ export function digestSections(text) {
     if (wrap) { wrap = /:$/.test(line) ? 0 : wrap - 1; continue; }
     if (/^NOW:\s*/.test(line)) { meta = line.replace(/^NOW:\s*/, ""); continue; }
     const mapped = rawHeading(line);
-    if (mapped) { section(mapped[1]); wrap = /:$/.test(line) ? 0 : 3; continue; }
+    if (mapped) { section(translateHeading(mapped[1])); wrap = /:$/.test(line) ? 0 : 3; continue; }
     if (emojiHeading(line)) { section(line.trim().replace(/[:\s]+$/, "")); continue; }
     // This is the second line of one legacy internal heading, not a digest item.
     if (/^\s*and (?:the mail|what) they quote is already decided\):?$/i.test(line)) continue;
     const item = cleanItem(line);
     if (!item || /^\(none\)$/i.test(item)) continue;
-    if (!current) section("📊 At a glance");
+    if (!current) section(translateHeading("📊 At a glance"));
     // Indented quote/detail lines belong to the person or meeting immediately above them.
     if (/^\s{4,}/.test(raw) && current.items.length) current.items[current.items.length - 1] += `\n${item}`;
     else current.items.push(item);
@@ -54,13 +54,13 @@ export function digestSections(text) {
   return { meta, sections: sections.filter((s) => s.items.length) };
 }
 
-export function parseDigest(text) {
+export function parseDigest(text, translateHeading) {
   const body = String(text || "").replace(/\r/g, "").trim();
   const failed = /^\((?:AI summary failed|AI prompt set, but no active AI connector|the model returned an empty summary)/i.test(body);
   // what the model was GIVEN rides under its brief for the record and is never part of it: parsed as one, the evidence's
   // asks merged into the model's own "People want" and the blocks' explanations became numbered items (2026-10-13)
   const cut = body.indexOf("\n--- raw data ---");
-  if (!failed) return { error: "", plain: "", source: "", ...digestSections(cut >= 0 ? body.slice(0, cut) : body) };
+  if (!failed) return { error: "", plain: "", source: "", ...digestSections(cut >= 0 ? body.slice(0, cut) : body, translateHeading) };
   const lines = body.split("\n");
   const sourceAt = lines.findIndex((line) => /^NOW:\s*/.test(line));
   const errorLines = lines.slice(0, sourceAt < 0 ? lines.length : sourceAt).filter((line) => line.trim());
@@ -74,5 +74,5 @@ export function parseDigest(text) {
   const plain = /^No active AI connector/.test(error) ? "No AI is connected, so this morning's digest could not be written."
     : /^The model returned an empty summary/.test(error) ? "The AI answered with nothing, so this morning's digest could not be written."
       : "The AI did not answer, so this morning's digest could not be written.";
-  return { error: error.slice(0, 360), plain, source, ...digestSections(source) };
+  return { error: error.slice(0, 360), plain, source, ...digestSections(source, translateHeading) };
 }

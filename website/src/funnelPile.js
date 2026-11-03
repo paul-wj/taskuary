@@ -1,7 +1,8 @@
 import vocab from "../../taskuary/lanes.json" with { type: "json" };
-import { label } from "./buttons.js";
+import { label, VERBS } from "./buttons.js";
+import { getLocale, t, translateDescriptor } from "./i18n.js";
 import { says, subState } from "./laneSays.js";
-import { ago, band } from "./timeWords.js";
+import { ago, band, minsSince } from "./timeWords.js";
 import { fmtDateTime } from "./dates.js";
 import { LEVEL_META, LEVEL_ORDER, SECTION_WORDS, attentionBand, isUrgent, levelOf, notYet, onYou } from "./lanes.js";
 import { AGENT_SHOWN } from "./kinds.js";
@@ -158,12 +159,12 @@ export const chipsOf = (message) => {
 // ever" (the owner, 2026-10-06) - an Open TQ-x and a Report this bug stood under a failure in the chat (2026-10-17)
 // ...and a SEND'S receipt, which is where the item now stands (the owner, 2026-10-18: "sending and closing are two steps"): Mark
 // done while there is a task to close - never on an item with none - and Next. The server's own (concierge.sent_chips) match these.
-export const sentChips = (tid, ref = null) => ({ chips: [...(tid ? [{ verb: "close", tid, ref, label: label("close") }] : []), { verb: "next", label: label("next") }] });
+export const sentChips = (tid, ref = null) => ({ chips: [...(tid ? [{ verb: "close", tid, ref, label: VERBS.close.label }] : []), { verb: "next", label: VERBS.next.label }] });
 export const receiptChips = (m) => {
   const own = chipsOf(m);
   return [...own,
-    ...(m?.tid && !own.some((c) => c.verb === "open" || c.verb === "opentask") ? [{ verb: "opentask", tid: m.tid, label: `Open ${m.ref || "the task"}` }] : []),
-    ...(m?.status === "error" ? [{ verb: "bug", text: m.text, label: label("report_bug") }] : [])];
+    ...(m?.tid && !own.some((c) => c.verb === "open" || c.verb === "opentask") ? [{ verb: "opentask", tid: m.tid, label: m.ref ? t("Open {ref}", { ref: m.ref }) : t("Open the task") }] : []),
+    ...(m?.status === "error" ? [{ verb: "bug", text: m.text_i18n ? translateDescriptor(m.text_i18n) : m.uiSource ? t(m.uiSource, m.uiValues) : m.text, label: label("report_bug") }] : [])];
 };
 // A card whose verb was pressed is put down at once (`done`), not when the next card arrives: the
 // settle and the next pick take a second, and a card still standing there gets pressed twice (the
@@ -259,19 +260,19 @@ export const refreshCurrentPresentation = (current, fresh) =>
 export const assistantFocus = (item) => {
   if (!item) return { card: null, lead: "" };
   const who = item.agent || item.working || AGENT_SHOWN;   // the server's shown name (kinds.shown): Taskuary, never the profile
-  if (item.lane === "working" && item.tid) return { card: "agent", lead: `${who} is working on this — nothing for you here yet.` };
+  if (item.lane === "working" && item.tid) return { card: "agent", lead: t("{agent} is working on this — nothing for you here yet.", { agent: who }) };
   // ONE EVENT SEEN TWICE: an agent parked because it PROPOSED something is released by approving
   // that proposal, so the proposal is what you are shown - not a terminal at a prompt with the
   // thing that unblocks it out of reach. No rid means there is nothing proposed to show, and then
   // it is just a waving agent. taskLifecycle.focusStage carries the same exception, and the two
   // are asserted against each other so this file's "same precedence" promise is enforced.
   if (item.lane === "blocked" && subState(item) === "approval" && item.rid)
-    return { card: "reply", lead: "An agent proposed this. Read it, then it runs only if you say so." };
-  if (item.lane === "blocked") return { card: "agent", lead: `${item.why || says(subState(item), who)}.` };
+    return { card: "reply", lead: t("An agent proposed this. Read it, then it runs only if you say so.") };
+  if (item.lane === "blocked") return { card: "agent", lead: item.why || t("{line}.", { line: says(subState(item), who) }) };
   if (item.kind === "review" || item.kind === "action" || item.lane === "approve")
     return { card: "reply", lead: item.kind === "action"
-      ? "An agent proposed this. Read it, then it runs only if you say so."
-      : "A reply is drafted and waiting for your yes — read what they asked, then send it." };
+      ? t("An agent proposed this. Read it, then it runs only if you say so.")
+      : t("A reply is drafted and waiting for your yes — read what they asked, then send it.") };
   // "codex was handed it and has not started" - both halves wrong on the row that prompted it. A
   // session HAD run (08:10 to 10:56 on TQ-0515), so "has not started" was false, and naming the
   // worker made it read as a chosen specialist sitting idle rather than an app that went down under
@@ -279,7 +280,7 @@ export const assistantFocus = (item) => {
   // statement about NOW: nothing is on it. Who, and what happened, is why_idle's to say - it knows. It was computed and
   // never shown, and the lead said "this one is on you" over a start that was only waiting for a free slot (2026-10-16).
   if (item.lane === "queued" && item.tid)
-    return { card: "task", lead: item.why_idle || "No agent is on this right now." };
+    return { card: "task", lead: item.why_idle || t("No agent is on this right now.") };
   return { card: cardKind(item), lead: item.why || "" };
 };
 
@@ -308,18 +309,18 @@ export const cardFor = (item) => (item ? assistantFocus(item).card : null);
 // that it is simply new, and saying so is noise.
 export const waitedText = (item, now = Date.now()) => {
   if (!item || !onYou(item)) return "";
-  const a = band(item.since || item.when, now);
-  return !a || a.startsWith("<") || a.startsWith("in ") ? "" : `waiting ${a}`;
+  const at = item.since || item.when, minutes = minsSince(at, now);
+  return minutes == null || minutes < 60 ? "" : t("waiting {time}", { time: band(at, now) });
 };
 
 // the header's one line under "Taskuary" - its "on you" is the opener's and the greeting's (lanes.onYou). It counted only an
 // agent's question and a reply waiting for a yes, so the lane worded "on you" was left out of the header's own "on you".
 export const statusLine = (items, busy) => {
-  if (busy) return "thinking…";
+  if (busy) return t("thinking…");
   const n = (items || []).length;
-  if (!n) return "All caught up";
+  if (!n) return t("All caught up");
   const you = (items || []).filter((i) => onYou(i)).length;
-  return `${n} in the pipe${you ? ` · ${you} on you` : ""}`;
+  return you ? t("{count} in the pipe · {you} on you", { count: n, you }) : t("{count} in the pipe", { count: n });
 };
 
 // Unread is ranked by attention, not by the clock, so the dock names the LEVEL the rail is crossing (the owner, 2026-09-07: "the
@@ -382,9 +383,20 @@ export const backAt = (item) => item?.back_at || item?.defer_until || null;
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 export const dueWord = (iso) => {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ""));
-  return m ? `${MONTHS[Number(m[2]) - 1]} ${Number(m[3])}` : "";
+  return m ? (getLocale() === "zh-CN" ? `${Number(m[2])}月${Number(m[3])}日` : `${MONTHS[Number(m[2]) - 1]} ${Number(m[3])}`) : "";
 };
-export const levelLabel = (level) => LEVEL_META[level]?.word || "";
+export const levelLabel = (level) => t(LEVEL_META[level]?.word || "");
+export const levelHint = (level) => {
+  switch (level) {
+    case "task": return t("every open task, whether an agent is working on it or not - a spinning ring is an agent at work, a goal with news is here and its steps are rows of their own. Next goes to the row below and the task stays here, in its place");
+    case "watching": return t("not yours - kept open with {watch} while somebody else handles it, and still walked after Tasks; each goes back to Tasks when its thread moves, or after a quiet week", { watch: label("watch") });
+    case "later": return t("still yours - put away with Remind me, or a goal waiting for its next news; each comes back when its time says");
+    case "reports": return t("a report you set up landed - information, never a task");
+    case "ideas": return t("something the Advisor noticed - {mine}, {agent}, or {notOurs}", { mine: label("mine"), agent: label("regular_agent"), notOurs: label("not_ours") });
+    case "fyi": return t("people told you things - read them or don't");
+    default: return "";
+  }
+};
 // the levels actually present, in the order the rail draws them - the jump menu's entries
 export const levelsOf = (items) => LEVEL_ORDER.filter((level) => (items || []).some((i) => levelOf(i) === level));
 
@@ -439,7 +451,7 @@ export const placeOrder = (a, b) => {
 export const arrivedAt = (i) => i?.arrived_at || i?.since || i?.when;
 // ...and a reply never moves the row nor changes that age; the age's hover says both clocks (the owner, 2026-10-23). The "+N" it wore
 // beside the age for the replies since it was last opened is gone (2026-10-26): what came in since is read inside the task.
-export const ageHover = (i) => [arrivedAt(i) && `arrived ${fmtDateTime(arrivedAt(i))}`, i?.last_at && `last message ${ago(i.last_at)}`]
+export const ageHover = (i) => [arrivedAt(i) && t("arrived {time}", { time: fmtDateTime(arrivedAt(i)) }), i?.last_at && t("last message {time}", { time: ago(i.last_at) })]
   .filter(Boolean).join(" · ") || undefined;
 // ...and the line under its title is the newest message, who said it and what
 export const latestLine = (i) => (i?.latest?.text ? [i.latest.who, i.latest.text].filter(Boolean).join(": ") : "");

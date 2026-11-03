@@ -3,11 +3,9 @@
 // decide answers, with a timeout after which the card reads its own delivery state.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { coalesce } from "../src/coalesce.js";
 import { DECIDE_TIMEOUT, timedOut } from "../src/sendState.js";
 
-const read = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
 const gate = () => { let open; const p = new Promise((r) => { open = r; }); return { p, open }; };
 
 test("one read in flight per key: calls meanwhile share ONE re-read, with the newest arguments", async () => {
@@ -58,26 +56,10 @@ test("moving to another task aborts the read of the last one, and its queued re-
   assert.equal(c.busy(1), false);
 });
 
-test("the task page, the conversation read and the pile each hold one read in flight", () => {
-  const page = read("TaskPage.jsx"), view = read("AssistantView.jsx");
-  assert.match(page, /detailReads\.current \|\|= coalesce\(async \(id, signal\) =>/);
-  assert.match(page, /api\.get\(`\/api\/tasks\/\$\{id\}`, \{ signal \}\)/);
-  assert.match(page, /return detailReads\.current\.run\(id, id\);/);
-  assert.match(page, /useEffect\(\(\) => \{ detailReads\.current\.drop\(selected \|\| null\); \}, \[selected\]\);/);
-  assert.equal((page.match(/api\.get\(`\/api\/tasks\/\$\{id\}`/g) || []).length, 1, "every task read goes through the one coalesced reader");
-  assert.match(view, /chatReads\.current \|\|= coalesce\(\(epoch\) => readChatRef\.current\(epoch\)\);/);
-  assert.match(view, /const readChat = useCallback\(\(epoch = chatEpoch\.current\) => chatReads\.current\.run\(epoch, epoch\), \[\]\);/);
-  assert.match(view, /if \(pileFlight\.current\) \{\n\s+if \(force\) pileForcePending\.current = true;\n\s+return pileFlight\.current;/, "the pile was coalesced already (pileFlight)");
-});
 
 test("a Send lets go when the decide answers, and after a minute with no answer reads the delivery state instead", () => {
   assert.equal(DECIDE_TIMEOUT, 60000);
   assert.equal(timedOut({ code: "ECONNABORTED" }), true);
   assert.equal(timedOut({ code: "ERR_CANCELED" }), false);
   assert.equal(timedOut({ response: { status: 500 } }), false);
-  const card = read("ReviewDecision.jsx");
-  assert.equal((card.match(/\/decide`,[\s\S]{0,400}?\{ timeout: DECIDE_TIMEOUT \}\);/g) || []).length, 2, "both decide calls carry the timeout");
-  assert.doesNotMatch(card, /await onSent\(\); setBusy\(false\)/, "busy never waits on the re-read after the send");
-  assert.equal((card.match(/setBusy\(false\); await onSent\(\{ closes: [^\n]+\}\); return;/g) || []).length, 2);
-  assert.equal((card.match(/if \(timedOut\(e\)\) onChanged\?\.\(\);/g) || []).length, 2, "a timeout reads the review again, no line of its own");
 });

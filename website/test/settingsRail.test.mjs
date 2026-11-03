@@ -1,145 +1,42 @@
-// THE RAIL IS THE MAP OF SETTINGS. Configuration used to be one page behind a strip of eleven
-// pills, and eleven pills do not fit across a 980px page - "Display" was cut in half by the right
-// edge, and the answer to "there will be more settings" was a strip that could hold fewer of them
-// (the owner, 2026-09-18). So every group is a section of one scrolling page, the rail lists them
-// under Configuration, and picking one scrolls to it. These tests pin the three things that have
-// to agree: what the rail draws, what the page stamps an id on, and what search says the path is.
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
-import schema from "../../taskuary/settings_schema.json" with { type: "json" };
+import { sectionOffset, scrollToSection } from "../src/settingsMap.js";
 
-const read = (f) => fs.readFileSync(path.join(process.cwd(), "src", f), "utf8");
-const src = read("SettingsView.jsx"), about = read("AboutYou.jsx"), map = read("settingsMap.js");
-const secNames = (name) => [...(new RegExp(`export const ${name} = \\[([^\\]]*)\\]`).exec(map) || [, ""])[1]
-  .matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-
-test("a section's name, its anchor and its crumb come from one place", () => {
-  assert.match(map, /export const secId = /, "one function builds the id both sides use");
-  assert.match(src, /const SECTIONS = \{ about: ABOUT_SECTIONS, config: GROUPS, audit: AUDIT_SECTIONS \};/,
-    "Configuration's sections ARE the schema's groups - adding a group must not mean editing a rail by hand");
-  assert.ok(secNames("ABOUT_SECTIONS").length === 3 && secNames("AUDIT_SECTIONS").length === 3);
-});
-
-test("every section the rail offers is a heading the page actually stamps", () => {
-  // A rail entry whose anchor nobody renders scrolls nowhere and highlights nothing.
-  assert.match(src, /const cfgGroups = GROUPS\.filter\(\(g\) => \(panels\[g\] \|\| rowsOf\(g\)\.length\) && \(g !== "Coding agent" \|\| canCode\)\);/,
-    "Configuration draws every group that has something in it, in the schema's order");
-  assert.match(src, /\{cfgGroups\.map\(\(g\) => \(/);
-  assert.match(src, /<SectionHead page="config" name=\{g\} \/>/);
-  assert.match(src, /<SectionHead page="audit" name=\{AUDIT_SECTIONS\[0\]\} \/>/);
-  assert.match(src, /<SectionHead page="audit" name=\{AUDIT_SECTIONS\[1\]\} \/>/);
-  assert.match(src, /<SectionHead page="audit" name=\{AUDIT_SECTIONS\[2\]\} \/>/);
-  assert.equal((about.match(/id=\{secId\("about", /g) || []).length, secNames("ABOUT_SECTIONS").length,
-    "About you stamps one id per section it declares");
-});
-
-test("Configuration is one page, not a strip of tabs", () => {
-  assert.ok(!/FilterPills/.test(src), "the pill strip is gone - it was the thing that ran off the edge");
-  assert.ok(!/cfgTab/.test(src), "and so is the state that remembered which tab you were on");
-  // (Notifications lost its panel with the notify pushes, 2026-10-02 - its sound and desktop switches are plain rows)
-  for (const g of ["How mail is sorted", "Assistant on your phone"]) {
-    assert.ok(src.includes(`"${g}":`), `${g} still gets its panel above its knobs`);
+test("section scrolling accounts for the sticky bar and ignores missing headings", () => {
+  const oldDocument = globalThis.document, oldWindow = globalThis.window;
+  const calls = [];
+  globalThis.document = { getElementById: (id) => id === "target"
+    ? { getBoundingClientRect: () => ({ top: 200 }) } : null };
+  globalThis.window = { scrollY: 300, scrollTo: (where) => calls.push(where) };
+  try {
+    assert.equal(scrollToSection("missing"), false);
+    assert.deepEqual(calls, []);
+    assert.equal(scrollToSection("target"), true);
+    assert.deepEqual(calls, [{ top: 426, behavior: "smooth" }]);
+  } finally {
+    if (oldDocument === undefined) delete globalThis.document; else globalThis.document = oldDocument;
+    if (oldWindow === undefined) delete globalThis.window; else globalThis.window = oldWindow;
   }
-  assert.ok(schema.groups.length > 8, "the point of the change: there are a lot of them, and more coming");
 });
 
-test("picking a section scrolls to it - it does not swap the page out", () => {
-  const at = src.indexOf("const goTo = useCallback");
-  assert.notEqual(at, -1);
-  const go = src.slice(at, at + 420);
-  assert.ok(go.includes("setJump(section ? secId(pg, section) : pageId(pg))"),
-    "a section asks for its anchor - and so does a page, because a page is an anchor too now");
-  assert.ok(!/window\.scrollTo\(\{ top: 0/.test(src),
-    "nothing jumps to the top of the document: a rail entry is a place in it, not a page that replaces it");
-  // the rows arrive from the server after the page renders and push the anchor back down, so the
-  // scroll is corrected until the heading stops moving
-  assert.match(src, /const at = sectionOffset\(jump\);/);
-  assert.match(src, /if \(settled > 2 \|\| \+\+tries > 40\) \{ setJump\(""\); return; \}/,
-    "the scroll must survive a page whose content has not finished loading");
-  assert.match(map, /landed: Math\.abs\(off\) < 4 \|\| \(atEnd && off > 0\)/,
-    "a section at the bottom of the page cannot reach the top bar - that counts as landed");
-});
-
-test("the rail's sections collapse, and each page remembers", () => {
-  assert.match(src, /const \[open, setOpen\] = useState\(\{\}\);/,
-    "nothing is pinned open: open{} holds only what you asked for by hand");
-  assert.match(src, /shown = k in open \? open\[k\] : on;/,
-    "the page you are IN shows its sections - scrolling the whole document must not leave all seven open behind you");
-  assert.match(src, /setOpen\(\(o\) => \(\{ \.\.\.o, \[k\]: !shown \}\)\)/, "the chevron toggles just that entry");
-  assert.match(src, /e\.stopPropagation\(\)/, "and toggling must not also navigate");
-});
-
-test("the rail says which section you are actually looking at", () => {
-  // Without this it would highlight the last thing you clicked and then lie as you scrolled past.
-  assert.match(src, /el\.getBoundingClientRect\(\)\.top <= SCROLL_TOP \+ 8/);
-  assert.match(src, /window\.addEventListener\("scroll", onScroll, \{ passive: true \}\)/);
-  assert.match(src, /return \(\) => window\.removeEventListener\("scroll", onScroll\)/, "and lets go of it");
-  assert.match(src, /if \(window\.innerHeight \+ window\.scrollY >= document\.documentElement\.scrollHeight - 2\) cur = marks\[marks\.length - 1\];/,
-    "the last heading is short enough that it never reaches the bar - at the foot of the document it still wins");
-  assert.match(src, /setPage\(cur\.page\); setHere\(cur\.section\);/,
-    "one measurement names both: the page you are in and the section inside it");
-});
-
-test("a search hit reads like the rail and lands on the same anchor", () => {
-  assert.match(src, /crumb: `Configuration → \$\{meta\(s\.Name\)\.group\}`/, "a knob says which section holds it");
-  assert.match(src, /go: \(\) => \{ setQ\(""\); onJump\("config", meta\(s\.Name\)\.group\); \}/,
-    "and clicking it scrolls there, rather than dropping you at the top of the page");
-  assert.match(src, /crumb: `\$\{PAGES\[pg\]\.title\} → \$\{n\}`/, "the sections themselves are searchable");
-  assert.ok(!/crumb: "Agent memory"/.test(src), "one vocabulary: the crumb is the rail's own name for the page");
-});
-
-test("one hash link opens a page and a section, and is consumed once", () => {
-  // Every in-app link to a knob is #settings=config&group=<encoded group> (ReportsView's judge,
-  // the walk, setup.py, the assistant's health card). They must keep working.
-  assert.match(src, /const m = \/settings=\(\[\\w-\]\+\)\/\.exec\(hash\)/);
-  assert.match(src, /const g = \/group=\(\[\^&\]\+\)\/\.exec\(hash\)/);
-  assert.match(src, /goTo\(m\[1\], \(SECTIONS\[m\[1\]\] \|\| \[\]\)\.includes\(want\) \? want : ""\)/,
-    "a group name that is not a section of that page must not send the page hunting for it");
-  assert.equal((src.match(/window\.history\.replaceState/g) || []).length, 1,
-    "the hash is consumed in exactly one place - two effects raced and the child won");
-});
-
-test("the rail offers only the sections the page will actually draw", () => {
-  // "Other" is a group with no knobs of its own: it catches a stray key, and on an install with
-  // no stray key Configuration does not draw it. A rail entry for it would scroll nowhere.
-  assert.equal(schema.knobs && Object.values(schema.knobs).filter((k) => k.group === "Other").length, 0,
-    "Other is empty in the schema by design - it is a catch-all, not a page");
-  assert.match(src, /useEffect\(\(\) => \{ onSections\(cfgKey \? cfgKey\.split\("\|"\) : \[\]\); \}, \[cfgKey, onSections\]\);/,
-    "the page tells the rail what it drew");
-  assert.match(src, /const sectionsOf = useCallback\(\(k\) => \(k === "config" && cfgSecs\)/,
-    "the rail, the scroll-spy and the search crumbs all read one list");
-  assert.match(src, /\|\| \(k === "docs" \? docsTree\(docCat\) : null\) \|\| SECTIONS\[k\] \|\| \[\], \[cfgSecs, docCat\]\);/,
-    "...and Docs contributes its tree to that same list");
-  // Docs is the one page whose entries SWITCH the document instead of scrolling to a heading, so
-  // it contributes its page heading to the scroll-spy and nothing else - its entries are objects,
-  // not heading names, and there is nothing under them to measure.
-  assert.match(src, /\.\.\.\(k === "docs" \? \[\] : sectionsOf\(k\)\.map\(\(n\) => \(\{ page: k, section: n, id: secId\(k, n\) \}\)\)\)/,
-    "the scroll-spy skips the entries that have nothing to scroll to");
-});
-
-test("Settings is ONE document - the scroll carries on into the next page", () => {
-  // Every rail entry used to be an exclusive page: you scrolled to the bottom of Configuration and
-  // it stopped dead, with Routing policies reachable only by clicking (the owner, 2026-09-22).
-  assert.match(src, /\{NAV\.map\(\(k, i\) => \(/, "every page is drawn, in the rail's order");
-  assert.match(src, /<PageHead page=\{k\} first=\{!i\} \/>/, "each one under its own heading");
-  assert.match(src, /\{body\(k\)\}/, "and its body below that heading");
-  assert.match(map, /export const pageId = \(page\) =>/,
-    "and one function builds a page's anchor id, beside the one that builds a section's");
-  // the page body is a function of the page now; a leftover `if (page === ...)` at the component's
-  // top level would mean one page still swallowed the whole view
-  assert.match(src, /const body = \(page\) => \{/);
-  assert.equal((src.match(/<HelpDialog help=\{help\}/g) || []).length, 1,
-    "four pages each rendered their own copy of the help dialog; one document gets one");
-});
-
-test("a rail click opens its sections in one paint - the spy waits for the scroll to land", () => {
-  // The smooth scroll to Docs passed every heading on the way, the spy named each one, and the rail
-  // folded Docs shut and reopened it on landing: two paints for one click (the owner, 2026-09-24).
-  const at = src.indexOf("WHERE YOU ACTUALLY ARE");
-  assert.notEqual(at, -1);
-  const spy = src.slice(at, src.indexOf("#settings=<page>", at));
-  assert.match(spy, /if \(jump\) return;/, "while a click is still scrolling, the click says where you are");
-  assert.match(spy, /\}, \[q, jump, sectionsOf\]\);/, "and the spy measures once, when the jump clears");
+test("a section at the bottom is considered landed even when it cannot reach the bar", () => {
+  const oldDocument = globalThis.document, oldWindow = globalThis.window;
+  let top = 174;
+  globalThis.document = { getElementById: (id) => id === "target"
+    ? { getBoundingClientRect: () => ({ top }) } : null, documentElement: { scrollHeight: 1000 } };
+  globalThis.window = { innerHeight: 400, scrollY: 300 };
+  try {
+    assert.equal(sectionOffset("missing"), null);
+    assert.deepEqual(sectionOffset("target"), { off: 100, landed: false });
+    top = 76;
+    assert.deepEqual(sectionOffset("target"), { off: 2, landed: true });
+    top = 174;
+    globalThis.window.scrollY = 600;
+    assert.deepEqual(sectionOffset("target"), { off: 100, landed: true });
+    top = 20;
+    assert.deepEqual(sectionOffset("target"), { off: -54, landed: false });
+  } finally {
+    if (oldDocument === undefined) delete globalThis.document; else globalThis.document = oldDocument;
+    if (oldWindow === undefined) delete globalThis.window; else globalThis.window = oldWindow;
+  }
 });

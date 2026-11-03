@@ -2,6 +2,7 @@
 // `new Intl.DateTimeFormat` build a fresh ICU formatter on every call (~0.15 ms against ~0.003 ms cached); the rail ran
 // localDay over every pile row on every render, which on a large home was seconds per key press (owner 2026-10-19: "just
 // make it feel snappy ... not how it works"). So the words are the built-ins' to the character - only the formatter is kept.
+import { getLocale, t } from "./i18n.js";
 const cache = new Map();
 export const dtf = (loc, o) => {
   const k = JSON.stringify([loc, o]);
@@ -51,7 +52,7 @@ export const tzLabel = () => {
 const tzOpt = () => (TZ ? { timeZone: TZ } : {});   // format in the configured zone, so digits match the label
 export const fmtTime12 = (s) => {
   const d = s ? asUtc(s) : null;
-  return d && Number.isFinite(d.getTime()) ? fmtTime(d, "en-US", { hour: "numeric", minute: "2-digit", ...tzOpt() }) : "";
+  return d && Number.isFinite(d.getTime()) ? fmtTime(d, getLocale() === "zh-CN" ? "zh-CN" : "en-US", { hour: "numeric", minute: "2-digit", ...tzOpt() }) : "";
 };
 export const tsMs = (s) => {
   const n = s ? asUtc(s).getTime() : 0;
@@ -61,14 +62,14 @@ export const fmtDateTime = (s) => {
   if (!s) return "";
   const d = asUtc(s);
   if (!Number.isFinite(d.getTime())) return "";
-  const base = fmtStamp(d, "en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", ...tzOpt() });
+  const base = fmtStamp(d, getLocale() === "zh-CN" ? "zh-CN" : "en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", ...tzOpt() });
   const z = tzLabel();
   return z ? `${base} ${z}` : base;
 };
 // ...and its day alone, "Oct 31" - a close that has no hour worth saying (Close out's earlier rounds)
 export const fmtDay = (s) => {
   const d = s ? asUtc(s) : null;
-  return d && Number.isFinite(d.getTime()) ? fmtStamp(d, "en-US", { month: "short", day: "numeric", ...tzOpt() }) : "";
+  return d && Number.isFinite(d.getTime()) ? fmtStamp(d, getLocale() === "zh-CN" ? "zh-CN" : "en-US", { month: "short", day: "numeric", ...tzOpt() }) : "";
 };
 export const localDay = (s) => {
   const d = s ? asUtc(s) : null;
@@ -79,7 +80,7 @@ export const localDay = (s) => {
 export const dayLabel = (at, now = new Date()) => {
   const d = at ? asUtc(at) : null; if (!d || Number.isNaN(d.getTime())) return "";   // not tsMs: its 0 for no date would say Dec 31, 1969
   const today = new Date(now), yest = new Date(now); yest.setDate(today.getDate() - 1);
-  if (d.toDateString() === today.toDateString()) return "Today";
-  if (d.toDateString() === yest.toDateString()) return "Yesterday";
-  return fmtDate(d, undefined, { weekday: "short", month: "short", day: "numeric" });
+  if (d.toDateString() === today.toDateString()) return t("Today");
+  if (d.toDateString() === yest.toDateString()) return t("Yesterday");
+  return fmtDate(d, getLocale() === "zh-CN" ? "zh-CN" : "en-US", { weekday: "short", month: "short", day: "numeric" });
 };

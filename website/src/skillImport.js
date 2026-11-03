@@ -1,5 +1,6 @@
 // Pure logic behind the skill-import wizard (SkillImport.jsx), kept in its own module so it can be
 // exercised directly by a test instead of only grepped for in the markup.
+import { t } from "./i18n.js";
 
 // Mirrors taskuary/skillimport.py's save(): the server slugifies a name before writing it, and
 // returns THAT slug in /api/skills/import's response. Kept in exactly one place so the wizard's own
@@ -52,8 +53,8 @@ export const reconcileImport = (rows, data) => {
 
 // What a clash chip says, and what the Overwrite confirm must name: the thing that would be destroyed.
 export const clashText = (c) => (c?.doc
-  ? `would rewrite ${c.doc.toUpperCase()}.md - an operator document, not a profile`
-  : `clashes with an existing "${c?.kind}" profile`);
+  ? t("would rewrite {doc}.md - an operator document, not a profile", { doc: c.doc.toUpperCase() })
+  : t('clashes with an existing "{kind}" profile', { kind: c?.kind }));
 
 // Whether a body arrives whole. `flat` and `docChars` both come from the server (/api/skills/read):
 // the flattened length is the seed's own measure and DOC_CHARS its own cut, so this is not a second

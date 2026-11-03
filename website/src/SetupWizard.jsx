@@ -23,6 +23,8 @@ import OwnerForm from "./OwnerForm.jsx";
 import { BORDER, DIM, FAINT, INK, PANEL2, ROLES } from "./theme.jsx";
 import { firstSyncProgress, startFirstSync } from "./setupSync.js";
 import { openAppLink } from "./appLinks.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 const COUNT = ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
 const spell = (n) => COUNT[n] || String(n);
@@ -39,6 +41,7 @@ export const useSetup = (tick) => {
 /* Gone once the four are done; the optional walk remains available afterwards.
    Assistant header is always there and covers more than this ever did. */
 export const SetupChip = ({ state, onOpen }) => {
+  useLocale();
   // the first run's own next step and steps left (firstrun.py's `todo` and `left`, the one setup state) - the chip read "Set up · 2
   // steps" beside three questions (2026-10-15)
   if (!state) return null;
@@ -52,16 +55,16 @@ export const SetupChip = ({ state, onOpen }) => {
       <CircularProgress variant="determinate" value={pct} size={16} thickness={6} sx={{ color: ROLES.done.solid }} />
     </Box>);
   if (!state.left) return (
-    <Tooltip title="Setup - your AI, email, connections and what Taskuary knows about your work">
-      <Box onClick={onOpen} data-tq-setup-open="" role="button" aria-label="Setup" sx={{ cursor: "pointer", ml: { xs: 0, sm: 1 }, px: { xs: 0.6, sm: 1 },
+    <Tooltip title={t("Setup - your AI, email, connections and what Taskuary knows about your work")}>
+      <Box onClick={onOpen} data-tq-setup-open="" role="button" aria-label={t("Setup")} sx={{ cursor: "pointer", ml: { xs: 0, sm: 1 }, px: { xs: 0.6, sm: 1 },
         py: { xs: 0.5, sm: 0.35 }, display: { xs: "flex", sm: "block" }, borderRadius: 99, border: `1px solid ${BORDER}`, "&:hover": { bgcolor: "#eae4d8" } }}>
         <Box sx={{ display: { xs: "flex", sm: "none" } }}>{ring(100)}</Box>
-        <Typography variant="caption" sx={{ fontWeight: 600, color: DIM, display: { xs: "none", sm: "inline" } }}>Setup</Typography>
+        <Typography variant="caption" sx={{ fontWeight: 600, color: DIM, display: { xs: "none", sm: "inline" } }}>{t("Setup")}</Typography>
       </Box>
     </Tooltip>);
-  const pct = ((3 - state.left) / 3) * 100, words = state.todo ? `Setup: ${state.todo}` : "Set up";
+  const pct = ((3 - state.left) / 3) * 100, words = state.todo ? t("Setup: {todo}", { todo: t(state.todo) }) : t("Set up");
   return (
-    <Tooltip title={state.dismissed ? "Setting up — put away, click to reopen" : "Finish setting Taskuary up"}>
+    <Tooltip title={t(state.dismissed ? "Setting up — put away, click to reopen" : "Finish setting Taskuary up")}>
       <Box onClick={onOpen} role="button" aria-label={words} data-tq-setup-chip=""
         sx={{ display: "flex", alignItems: "center", gap: 0.75, cursor: "pointer", ml: { xs: 0, sm: 1 },
           px: { xs: 0.6, sm: 1 }, py: { xs: 0.5, sm: 0.35 }, borderRadius: 99, border: `1px solid ${state.dismissed ? BORDER : "#d8cfbe"}`,
@@ -83,6 +86,7 @@ export const SetupChip = ({ state, onOpen }) => {
 const FORMS = { owner: OwnerForm };
 
 export const FirstSync = ({ enabled, ready, firstItems = [], onSaved, onNavigate }) => {
+  useLocale();
   const [starting, setStarting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
@@ -99,7 +103,7 @@ export const FirstSync = ({ enabled, ready, firstItems = [], onSaved, onNavigate
         if (progress.phase === "reading") timer = setTimeout(read, 1500);
         else { setBusy(false); await saved.current?.(); }
       } catch (e) {
-        if (!cancelled) { setError(e?.response?.data?.detail || e.message || "Could not read progress. Try again."); setBusy(false); }
+        if (!cancelled) { setError(e?.response?.data?.detail || e.message || { key: "Could not read progress. Try again." }); setBusy(false); }
       }
     };
     timer = setTimeout(read, 1500);
@@ -108,29 +112,30 @@ export const FirstSync = ({ enabled, ready, firstItems = [], onSaved, onNavigate
   const start = async () => {
     setError(""); setResult(null); setStarting(true);
     try { await startFirstSync(api); setBusy(true); }
-    catch (e) { setError(e?.response?.data?.detail || e.message || "Couldn't start reading your mail - try again."); }
+    catch (e) { setError(e?.response?.data?.detail || (e.message === "Couldn't start reading your mail - try again." || !e.message ? { key: "Couldn't start reading your mail - try again." } : e.message)); }
     finally { setStarting(false); }
   };
   const items = (result?.state?.first_items || firstItems).slice(0, 5);
+  const resultMessage = result?.messages?.map((message) => message.source ? t(message.source, message.values) : message.text).join(" ") || "";
   const openItem = (item) => {
     openAppLink(item.TaskId ? `task=${item.TaskId}` : `msg=${item.MessageId}`);
     onNavigate?.("Assistant");
   };
   return <Box sx={{ mt: 1 }}>
     {!ready && !enabled && <Typography variant="caption" sx={{ color: DIM, display: "block", mb: 1 }}>
-      Add your name, one AI and your email first.
+      {t("Add your name, one AI and your email first.")}
     </Typography>}
     <Button size="small" variant="contained" disableElevation disabled={starting || busy || !enabled} onClick={start}
       startIcon={starting || busy ? <CircularProgress size={12} color="inherit" /> : null}>
-      {starting || busy ? "Reading…" : ready || result?.phase === "ready" ? "Read again" : "Read first items"}
+      {t(starting || busy ? "Reading…" : ready || result?.phase === "ready" ? "Read again" : "Read first items")}
     </Button>
     <Typography variant="caption" sx={{ color: DIM, display: "block", mt: 0.75 }} aria-live="polite">
-      {result?.message || (ready ? "Open one of your first items to see how it was sorted and any draft." : "Up to five of your newest items show here once your mail is read.")}
+      {resultMessage || t(ready ? "Open one of your first items to see how it was sorted and any draft." : "Up to five of your newest items show here once your mail is read.")}
     </Typography>
-    {(error || result?.phase === "failed") && <Alert severity="error" sx={{ mt: 1 }}>{error || result.message}</Alert>}
+    {(error || result?.phase === "failed") && <Alert severity="error" sx={{ mt: 1 }}>{error?.key ? t(error.key) : error || resultMessage}</Alert>}
     {items.length > 0 && <Box sx={{ display: "flex", flexDirection: "column", alignItems: "flex-start", mt: 1 }}>
       {items.map((item) => <Button key={item.MessageId} size="small" onClick={() => openItem(item)} sx={{ textAlign: "left", justifyContent: "flex-start" }}>
-        {item.Subject || "Open this item"}
+        {item.Subject || t("Open this item")}
       </Button>)}
     </Box>}
   </Box>;
@@ -140,6 +145,15 @@ export const FirstSync = ({ enabled, ready, firstItems = [], onSaved, onNavigate
    afterwards it is six lines of history pushing the thing you are actually working on below the
    fold. Only the open step carries its full text, and only one is ever open. */
 const Step = ({ s, n, open, onOpen, onGo, onDone, firstItems }) => {
+  useLocale();
+  const detail = s.detail || "";
+  const displayDetail = s.key === "owner" && detail.startsWith("signed as ") ? t("signed as {name}", { name: detail.slice(10) })
+    : s.key === "ai" && detail.startsWith("running on ") ? t("running on {name}", { name: detail.slice(11) })
+    : s.key === "inbound" && detail.startsWith("already connected: ") ? t("already connected: {names}", { names: detail.slice(19) })
+    : s.key === "sync" && detail === "your first items are ready to review" ? t(detail) : detail;
+  const gotoLabel = s.goto?.label || s.goto?.tab;
+  const destination = s.key === "ai" && gotoLabel?.startsWith("Open the ") && gotoLabel.endsWith(" card")
+    ? t("Open the {name} card", { name: gotoLabel.slice(9, -5) }) : gotoLabel ? t(gotoLabel) : gotoLabel;
   const Form = FORMS[s.key];
   const active = open && !s.done;
   return (
@@ -158,15 +172,15 @@ const Step = ({ s, n, open, onOpen, onGo, onDone, firstItems }) => {
         <Box sx={{ flex: "1 1 150px", minWidth: 0 }}>
           <Box sx={{ display: "flex", alignItems: "baseline", gap: 1, flexWrap: "wrap" }}>
             <Typography sx={{ fontWeight: s.done ? 600 : 700, fontSize: s.done ? 12.5 : 13.5,
-              color: s.done ? DIM : INK }}>{s.title}</Typography>
+              color: s.done ? DIM : INK }}>{t(s.title)}</Typography>
             {s.done && s.detail && (
-              <Typography variant="caption" sx={{ color: "#47654a", fontWeight: 600 }}>{s.detail}</Typography>
+              <Typography variant="caption" sx={{ color: "#47654a", fontWeight: 600 }}>{displayDetail}</Typography>
             )}
           </Box>
           {/* WHY before HOW, while it is still a decision */}
           {!s.done && (
             <Typography variant="caption" sx={{ color: DIM, display: "block", mt: 0.25, lineHeight: 1.55 }}>
-              {s.why}
+              {t(s.why)}
             </Typography>
           )}
           {active && Form && <Form onDone={onDone} />}
@@ -175,24 +189,24 @@ const Step = ({ s, n, open, onOpen, onGo, onDone, firstItems }) => {
         </Box>
         {!s.done && !open && Form && (
           <Button size="small" variant="outlined" onClick={onOpen}
-            sx={{ alignSelf: "center", whiteSpace: "nowrap", fontSize: 12 }}>Set up</Button>
+            sx={{ alignSelf: "center", whiteSpace: "nowrap", fontSize: 12 }}>{t("Set up")}</Button>
         )}
         {!s.done && !Form && s.action !== "sync" && (
           /* what it OPENS, not which tab it lives on: two rows both read "Connections" and went to
              the AI CLI agents page and the connector list (setup.state owns the words) */
           <Button size="small" endIcon={<OpenInNewIcon sx={{ fontSize: 13 }} />} onClick={() => onGo(s.goto)}
-            sx={{ alignSelf: "center", whiteSpace: "nowrap", fontSize: 12 }}>{s.goto?.label || s.goto?.tab}</Button>
+            sx={{ alignSelf: "center", whiteSpace: "nowrap", fontSize: 12 }}>{destination}</Button>
         )}
         {/* a second road where the step has one (an API key beside the CLI door) - setup.state owns its words too */}
         {!s.done && !Form && s.alt && (
           <Button size="small" endIcon={<OpenInNewIcon sx={{ fontSize: 13 }} />} onClick={() => onGo(s.alt)}
-            sx={{ alignSelf: "center", whiteSpace: "nowrap", fontSize: 12 }}>{s.alt.label}</Button>
+            sx={{ alignSelf: "center", whiteSpace: "nowrap", fontSize: 12 }}>{t(s.alt.label)}</Button>
         )}
         {s.done && s.action !== "sync" && (Form
           ? <Typography variant="caption" onClick={onOpen}
-              sx={{ color: FAINT, cursor: "pointer", whiteSpace: "nowrap", "&:hover": { color: "#55697a" } }}>change</Typography>
+              sx={{ color: FAINT, cursor: "pointer", whiteSpace: "nowrap", "&:hover": { color: "#55697a" } }}>{t("change")}</Typography>
           : <Typography variant="caption" onClick={() => onGo(s.goto)}
-              sx={{ color: FAINT, cursor: "pointer", whiteSpace: "nowrap", "&:hover": { color: "#55697a" } }}>change</Typography>)}
+              sx={{ color: FAINT, cursor: "pointer", whiteSpace: "nowrap", "&:hover": { color: "#55697a" } }}>{t("change")}</Typography>)}
       </Box>
       {/* A reopened DONE step puts its form UNDER the row, indented to the text column - inside the
           header row it overflowed its track and sat on the step's own title (owner, 2026-09-02). */}
@@ -204,6 +218,7 @@ const Step = ({ s, n, open, onOpen, onGo, onDone, firstItems }) => {
 };
 
 export const SetupPanel = ({ open, state, onClose, onGo, onDismiss, onRefresh }) => {
+  useLocale();
   const [openKey, setOpenKey] = useState(null);
   const steps = state?.steps || [];
   // the first thing left to do is already open: a list whose every step needs a click first is a
@@ -228,12 +243,12 @@ export const SetupPanel = ({ open, state, onClose, onGo, onDismiss, onRefresh })
         <Box sx={{ display: "flex", alignItems: "flex-start", gap: 1 }}>
           <Box sx={{ flex: 1 }}>
             <Typography sx={{ fontWeight: 600, fontSize: 17, color: INK }}>
-              {state.complete ? "Taskuary is yours" : `${spell(left)} ${left === 1 ? "thing" : "things"} left`}
+              {state.complete ? t("Taskuary is yours") : t(left === 1 ? "{count} thing left" : "{count} things left", { count: left === 0 ? t("No", {}, "count") : t(spell(left)) })}
             </Typography>
             <Typography variant="body2" sx={{ color: DIM, mt: 0.5 }}>
-              {state.complete
+              {t(state.complete
                 ? "Your first result is ready. Open an item below to review it; add more sources, agents or reports when you need them."
-                : "Start with your name, one AI and your email. Look at the first items before adding anything else - the rest can wait."}
+                : "Start with your name, one AI and your email. Look at the first items before adding anything else - the rest can wait.")}
             </Typography>
           </Box>
           <CloseIcon onClick={onClose} sx={{ fontSize: 18, color: FAINT, cursor: "pointer", mt: 0.5 }} />
@@ -247,22 +262,22 @@ export const SetupPanel = ({ open, state, onClose, onGo, onDismiss, onRefresh })
         </Box>
 
         <Button size="small" sx={{ mt: 1, color: DIM }} onClick={() => go({ tab: "Settings", hash: "settings=config&group=How%20mail%20is%20sorted" })}>
-          Optional: review models and agents
+          {t("Optional: review models and agents")}
         </Button>
 
         <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 2 }}>
           <Typography variant="caption" sx={{ color: FAINT, flex: 1 }}>
-            {state.dismissed ? "Put away — the quiet counter in the top bar brings it back."
+            {t(state.dismissed ? "Put away — the quiet counter in the top bar brings it back."
               : state.complete ? "Revisit any of these later from Connections, Docs or Settings."
-                : "Not now? Put it away; the counter in the top bar brings it back."}
+                : "Not now? Put it away; the counter in the top bar brings it back.")}
           </Typography>
           {!state.complete && (
             <Button size="small" sx={{ color: DIM, fontSize: 12 }} onClick={() => onDismiss(!state.dismissed)}>
-              {state.dismissed ? "Show it again" : "Put it away"}
+              {t(state.dismissed ? "Show it again" : "Put it away")}
             </Button>
           )}
           <Button size="small" variant="contained" disableElevation onClick={onClose} sx={{ fontSize: 12 }}>
-            {state.complete ? "Done" : "Close"}
+            {t(state.complete ? "Done" : "Close")}
           </Button>
         </Box>
       </DialogContent>

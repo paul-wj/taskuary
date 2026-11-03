@@ -3,6 +3,8 @@
 // Review has always read these out of the review's `Deliver` blob. The task page's Reply card now
 // shows the same three facts above the same draft, and two readings of one JSON column is how the
 // two surfaces start disagreeing about what a reply looks like - so they read it from here.
+import { t } from "./i18n.js";
+
 export const deliveryMeta = (review) => {
   try { return JSON.parse(review?.Deliver || "null") || {}; } catch { return {}; }
 };
@@ -14,12 +16,12 @@ const named = (a, review) => {
 };
 // ...and back to addresses for the To box and its save (ui.ToRow): "Erin Blake <erin@…>, gail@…" -> ["erin@…", "gail@…"]
 export const bareAddresses = (to) => String(to || "").replace(/[^,<]*<([^>]+)>/g, "$1").split(",").map((a) => a.trim()).filter(Boolean);
-export const deliveryTo = (review) => {
+export const deliveryTo = (review, { presentation = false } = {}) => {
   const raw = deliveryMeta(review).to;
   const to = (Array.isArray(raw) ? raw : [raw]).map((a) => named(a, review)).filter(Boolean).join(", ");
   if (to) return to;                                    // replies to inbound messages carry no Deliver
   if (review?.FromName && review?.FromEmail) return `${review.FromName} <${review.FromEmail}>`;
-  return review?.FromName || review?.FromEmail || review?.ConversationId || "this conversation";
+  return review?.FromName || review?.FromEmail || review?.ConversationId || (presentation ? t("this conversation") : "this conversation");
 };
 export const deliveryFiles = (review) => {
   const raw = deliveryMeta(review).attachments;
@@ -32,8 +34,10 @@ export const deliveryCc = (review) => {
 // A chat has members, not recipients: name the room so "TO Sarah" does not read as a DM when it
 // is a channel everyone can see.
 const ROOMS = ["whatsapp", "teams", "slack", "telegram", "discord", "imessage"];
-export const replyContext = (review) => {
+export const replyContext = (review, { presentation = false } = {}) => {
   const channel = String(review?.Channel || "").toLowerCase();
-  if (!ROOMS.includes(channel)) return deliveryTo(review);
-  return `${deliveryTo(review)} in ${review.SourceName || (channel === "whatsapp" ? "the chat" : channel)}`;
+  const recipient = deliveryTo(review, { presentation });
+  if (!ROOMS.includes(channel)) return recipient;
+  const room = review.SourceName || (channel === "whatsapp" ? (presentation ? t("the chat") : "the chat") : channel);
+  return presentation ? t("{recipient} in {room}", { recipient, room }) : `${recipient} in ${room}`;
 };

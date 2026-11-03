@@ -4,10 +4,13 @@ import ReviewDecision from "./ReviewDecision.jsx";
 import { ACCENT2, BORDER, FAINT, INK, label } from "./theme.jsx";
 import api from "./api";
 import { bulkSendable, slotReviews, slotState } from "./taskLifecycle.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 // The emails that close this task (slots.py, spec 2026-10-05): each one with its own draft, approved on its own; the task
 // closes when the last is sent or dropped. A name with no address yet wears a "?" - it is never guessed into one.
 export default function SlotList({ taskId, checklist = [], reviews = [], onChanged }) {
+  useLocale();
   const [busy, setBusy] = useState(false);
   const items = (checklist || []).filter((i) => i.out);
   if (!items.length) return null;
@@ -29,9 +32,9 @@ export default function SlotList({ taskId, checklist = [], reviews = [], onChang
     <Box sx={{ mt: 1.5, maxWidth: 900 }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.6 }}>
         <Typography sx={{ ...label }}>
-          {`Closes when sent · ${items.filter((i) => i.done).length} of ${items.length}`}
+          {t("Closes when sent · {done} of {total}", { done: items.filter((i) => i.done).length, total: items.length })}
         </Typography>
-        {waiting.length > 1 && <Button size="small" disabled={busy} onClick={approveAll}>{busy ? "Sending…" : `Approve all (${waiting.length})`}</Button>}
+        {waiting.length > 1 && <Button size="small" disabled={busy} onClick={approveAll} data-tq-view-btn="slots:approve-all" data-tq-send="">{busy ? t("Sending…") : t("Approve all ({count})", { count: waiting.length })}</Button>}
       </Box>
       {items.map((i) => {
         const rv = byRid[i.rid];
@@ -40,13 +43,13 @@ export default function SlotList({ taskId, checklist = [], reviews = [], onChang
           <Box key={i.id} sx={{ mb: 1 }}>
             {/* ...each wears its OWN To, drafted or not (the owner, 2026-11-02): the sender's To under it read as this email's */}
             <Box sx={{ display: "flex", alignItems: "baseline", gap: 0.8 }}>
-              <Typography sx={{ ...label, flexShrink: 0 }} data-tq-slot-to={i.id}>To</Typography>
+              <Typography sx={{ ...label, flexShrink: 0 }} data-tq-slot-to={i.id}>{t("To")}</Typography>
               <Typography variant="body2" sx={{ color: i.done ? FAINT : INK, fontWeight: 600 }}>{(i.out.kind || "email") === "email"
                 ? <>{i.out.name ? `${i.out.name} · ` : ""}{named}{named.includes("@") ? "" : " ?"}</>
                 : `${i.out.name || named} · ${i.out.kind}`}</Typography>
-              <Typography variant="caption" sx={{ color: FAINT }}>{slotState(i, rv)}{i.out.by === "agent" ? " · added by the agent" : ""}
-                {i.out.candidates?.length ? ` · could be ${i.out.candidates.slice(0, 3).join(" or ")}` : ""}</Typography>
-              {!i.done && rv?.Status !== "pending" && <Button size="small" disabled={busy} onClick={() => drop(i)}>Drop</Button>}
+              <Typography variant="caption" sx={{ color: FAINT }}>{t(slotState(i, rv))}{i.out.by === "agent" ? t(" · added by the agent") : ""}
+                {i.out.candidates?.length ? t(" · could be {candidates}", { candidates: i.out.candidates.slice(0, 3).join(t(" or ")) }) : ""}</Typography>
+              {!i.done && rv?.Status !== "pending" && <Button size="small" disabled={busy} onClick={() => drop(i)}>{t("Drop")}</Button>}
             </Box>
             {rv?.Status === "pending" && <ReviewDecision review={rv} onChanged={onChanged} onDrop={() => drop(i)} />}
           </Box>

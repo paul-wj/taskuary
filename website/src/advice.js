@@ -6,6 +6,8 @@
    (task:N / msg:N) while the table holds the rail's key (processing:... in a real install) - a card's aliases bridge
    the two. Returns the table's key, or null when the event is about something else. */
 import { sameTarget } from "./tableState.js";
+import { t } from "./i18n.js";
+import { VERBS } from "./buttons.js";
 export function adviceKeyFor(ev, cur) {
   // ...and an event for several reads (live._merged `items`: the table's and the two read ahead, in one window) is about each of them
   if (ev?.items?.length) return ev.items.map((x) => adviceKeyFor(x, cur)).find(Boolean) || null;
@@ -67,7 +69,12 @@ const SHOWN = new Set(["draft_ready", "duplicate", "asked_late", "waiting_late_u
 const SAID = new Set(["failed", "failed_cause", "report_failed", "invite_clash", "invite_free", "stranger", "working", "closed", "agent_asking", "waiting_overdue"]);
 // ...and with nothing to add, the menu's notes name the button in the owner's words: "Nothing to add - Copy is the lit button." read the
 // app's own word back to him (the owner, 2026-10-23, over "Lit Mark done": "what the heck is Lit"; the overnight walk, 2026-10-26)
-export const nothingToAdd = (advice) => (advice?.label && advice.verb !== "next" ? `Nothing to add - ${advice.label} is the next move.` : "Nothing to add on this one.");
+export const nothingToAdd = (advice) => {
+  if (!advice?.label || advice.verb === "next") return t("Nothing to add on this one.");
+  const verb = VERBS[advice.verb];
+  const known = verb && [verb.label, ...Object.values(verb.states || {})].includes(advice.label);
+  return t("Nothing to add - {label} is the next move.", { label: known ? t(advice.label) : advice.label });
+};
 export function taskNote(advice) {
   const line = String(advice?.line || "").trim();
   // ...a fix the row cannot light (a general agent's Continue) is the section's own button, so its line stands with no lit verb

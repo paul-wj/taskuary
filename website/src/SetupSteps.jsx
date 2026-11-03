@@ -6,8 +6,15 @@ import { Box, Typography } from "@mui/material";
 import { onFirstRun, readFirstRun } from "./firstRunState.js";
 import { DIM, FAINT, INK } from "./theme.jsx";
 import { stepsOf } from "./setupSteps.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
+const SUBS = new Set(["connected - nothing new yet", "connected - sorting what came in", "connected", "saved", "on",
+  "off - every job goes to a general agent", "optional - a coding agent runs without it", "optional",
+  "ready - Finish setup is below", "ready - Go to my day", "after AI, your main source and About your work",
+  "waits - pick an AI that works first", "waits - connect your main source first"]);
 
 export default function SetupSteps() {
+  useLocale();
   const [st, setSt] = useState(null), [shown, setShown] = useState(() => window.__tqSetupShown || "");
   useEffect(() => {
     const on = (e) => setShown(e.detail || "");
@@ -26,7 +33,7 @@ export default function SetupSteps() {
   return (
     <Box data-tq-setup-steps="" sx={{ pt: 1.5, px: 0.5 }}>
       <Typography sx={{ fontSize: 11, fontWeight: 700, letterSpacing: ".06em", color: FAINT, textTransform: "uppercase", mb: 1, px: 1 }}>
-        Setting up Taskuary</Typography>
+        {t("Setting up Taskuary")}</Typography>
       {stepsOf(st, shown).map((r, i) => (
         <Box key={r.key} component="button" type="button" onClick={() => go(r.key)} data-tq-setup-step={r.key} disabled={!!r.disabled}
           sx={{ display: "flex", alignItems: "flex-start", gap: 1.1, width: "100%", textAlign: "left", border: 0, cursor: r.disabled ? "default" : "pointer",
@@ -36,8 +43,8 @@ export default function SetupSteps() {
             color: r.done ? "#fff" : r.current ? INK : FAINT, bgcolor: r.done ? "#47654a" : "transparent",
             border: r.done ? "none" : `1.5px solid ${r.current ? INK : "#cfc9bf"}` }}>{r.done ? "✓" : i + 1}</Box>
           <Box sx={{ minWidth: 0 }}>
-            <Typography sx={{ fontSize: 13, fontWeight: r.current ? 700 : 600, color: r.done || r.current ? INK : DIM }}>{r.label}</Typography>
-            {r.sub && <Typography sx={{ fontSize: 11.5, color: FAINT }}>{r.sub}</Typography>}
+            <Typography sx={{ fontSize: 13, fontWeight: r.current ? 700 : 600, color: r.done || r.current ? INK : DIM }}>{t(r.label)}</Typography>
+            {r.sub && <Typography sx={{ fontSize: 11.5, color: FAINT }}>{r.key === "ai" ? r.sub : SUBS.has(r.sub) ? t(r.sub) : r.key === "other" && /^\d+ connected$/.test(r.sub) ? t("{count} connected", { count: r.sub.split(" ")[0] }) : r.sub}</Typography>}
           </Box>
         </Box>
       ))}

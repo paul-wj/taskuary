@@ -2045,6 +2045,40 @@ def route_words(cfg: dict) -> str:
                      if (l != 'send' or (cfg.get('deliver') or {}).get('to')) and (l != 'triage' or route_of(cfg, l)[0] != 'never'))
 
 
+def route_words_i18n(cfg: dict) -> dict:
+    """A presentation descriptor for the same route, retaining authored conditions as data."""
+    def message(source, **values):
+        return {'source': source, 'values': values}
+
+    def rule_description(r, fallback):
+        rule = str(r.get('rule') or '').lower()
+        n, text = r.get('count') or 0, str(r.get('text') or '').strip()
+        if rule == 'something_came_back': return message('anything came back')
+        if rule == 'nothing_came_back': return message('nothing came back')
+        if rule == 'fewer_than': return message('fewer than {count} came back', count=n)
+        if rule == 'more_than': return message('more than {count} came back', count=n)
+        if rule == 'contains': return message('it mentions "{text}"', text=text)
+        if rule == 'missing': return message('it never mentions "{text}"', text=text)
+        return fallback
+
+    lines = []
+    for line in LINES:
+        how, when = route_of(cfg, line)
+        if line == 'send' and not (cfg.get('deliver') or {}).get('to'): continue
+        if line == 'triage' and how == 'never': continue
+        if how == 'always': route = message('every run')
+        elif how == 'never': route = message('never')
+        elif how == 'ai': route = message('the AI decides - {condition}', condition=when)
+        else:
+            raw = (cfg.get('route') or {}).get(line) or default_route(cfg)[line]
+            route = message('when {condition}', condition=rule_description(raw, when))
+        lines.append(message('{name}: {route}', name=message(LINE_NAMES[line]), route=route))
+    result = lines[0]
+    for line in lines[1:]:
+        result = message('{left}; {right}', left=result, right=line)
+    return result
+
+
 def run_lands(cfg: dict) -> str:
     """Where a run started by hand will show, said before it runs. "It comes back here" was a promise that a run routed
     off the Timeline, or one that failed, never kept - a failure is the bell's alone (decide)."""

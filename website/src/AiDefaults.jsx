@@ -12,12 +12,46 @@ import { Alert, AlertTitle, Autocomplete, Box, Checkbox, CircularProgress, FormC
 import api from "./api";
 import { ACCENT2, BORDER, DIM, FAINT, INK, card, mono } from "./theme.jsx";
 import { RecentRoutes, RouteRules } from "./RouteRules.jsx";
+import { t, translateDescriptor } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
+
+const optionLabel = (option) => option.kind === "auto" && option.label === "the report's own brain" ? t("the report's own brain")
+  : option.kind === "decision" && option.label.endsWith(" — decisions only, no text")
+    ? t("{name} — decisions only, no text", { name: option.label.slice(0, -" — decisions only, no text".length) }) : option.label;
+const ownerLabel = (owner) => {
+  if (owner === "this page") return t("this page");
+  const match = /^the (.+) (connection \(light model\)|connection|card)$/.exec(owner);
+  return match ? t(match[2] === "card" ? "the {name} card" : match[2] === "connection" ? "the {name} connection" : "the {name} connection (light model)", { name: match[1] }) : owner;
+};
+const modelHint = (hint) => ["(required - name the model you pulled)", "(the deployment name on the card)", "(the first model your plan lists)"].includes(hint) ? t(hint) : hint;
+const defaultHint = (hint) => {
+  const match = /^(.*) - the (Assistant|light) default$/.exec(hint || "");
+  if (!match) return modelHint(hint);
+  const cliDefault = /^the (.+) default$/.exec(match[1]);
+  const model = cliDefault ? t("the {name} default", { name: cliDefault[1] }) : match[1];
+  return t(match[2] === "Assistant" ? "{model} - the Assistant default" : "{model} - the light default", { model });
+};
+const slotNote = (note) => {
+  if (!note) return "";
+  const combined = /^(auto — currently .+); (blank = .+)$/.exec(note);
+  if (combined) return `${slotNote(combined[1])}; ${slotNote(combined[2])}`;
+  const installed = /^'(.+)' is not installed on this machine$/.exec(note);
+  const light = /^no light model set - this runs on the (.+) coding model, which is the expensive gear$/.exec(note);
+  const auto = /^auto — currently (.+)$/.exec(note);
+  const blank = /^blank = (.+)$/.exec(note);
+  if (installed) return t("'{name}' is not installed on this machine", { name: installed[1] });
+  if (light) return t("no light model set - this runs on the {name} coding model, which is the expensive gear", { name: light[1] });
+  if (auto) return t("auto — currently {name}", { name: auto[1] });
+  if (blank) return t("blank = {model}", { model: modelHint(blank[1]) });
+  return t(note);
+};
 
 // A model box left blank is not "unconfigured" — it means the provider's own default, and the
 // server says which. Shown as the placeholder so an empty field never reads as broken.
 // `field` is which gear the box sets: the card's own model, or the brain's STRONG model - what hard work steps up to (the
 // router, 2026-10-25). The strong box is blank by default, and blank means this brain does not step up: nothing is guessed.
 const Model = ({ slot, onSave, field = "model", label = "model", hint, locked }) => {
+  useLocale();
   const [v, setV] = useState(slot[field] || "");
   // the provider's own list of what this key can call, on top of the static suggestions; a failed read leaves the typed box working
   const [live, setLive] = useState([]);
@@ -37,7 +71,7 @@ const Model = ({ slot, onSave, field = "model", label = "model", hint, locked })
       onChange={(_e, next) => { setV(next || ""); commit(next || ""); }}
       onBlur={() => commit(v)}
       sx={{ minWidth: 260 }}
-      renderInput={(p) => <TextField {...p} label={label} placeholder={hint ?? (slot.default_hint || "provider default")}
+      renderInput={(p) => <TextField {...p} label={t(label)} placeholder={hint ?? (defaultHint(slot.default_hint) || t("provider default"))}
         sx={{ bgcolor: "#fff" }} />} />
   );
 };
@@ -46,6 +80,7 @@ const Model = ({ slot, onSave, field = "model", label = "model", hint, locked })
 // typographic, and the line that matters most, "what will actually run", is the loudest thing
 // in the card rather than a caption under two dropdowns.
 const Slot = ({ slot, brains, agents, judgeOptions, onSave, onGo }) => {
+  useLocale();
   const isAgent = slot.key === "default_brain";     // the coding CLI: a tool, chosen from the connected CLIs
   // The judge is the one slot that may be pointed at a model which cannot write, so it is the one
   // picker that shows them. Its own blank row already means "auto" (the report's own brain), so
@@ -56,21 +91,21 @@ const Slot = ({ slot, brains, agents, judgeOptions, onSave, onGo }) => {
     : a) : isJudge ? [...(judgeOptions || []), ...(brains || []).filter((o) => o.value)] : brains;
   const picked = options.find((o) => o.value === slot.value);
   // the judge names no model of its own, so RUNS is the thing itself rather than "· the provider default"
-  const runs = isJudge ? (slot.default_hint || "") : (slot.model || slot.default_hint || "the provider default");
+  const runs = isJudge ? (defaultHint(slot.default_hint) || "") : (slot.model || defaultHint(slot.default_hint) || t("the provider default"));
   return (
     // ...the place a link to its settings lands (SettingsView's knob, by the same word list: `~=` matches any one of them)
     <Box data-tq-knob={(slot.settings || [slot.key]).join(" ")} sx={{ ...card, p: 2, mb: 1.5, bgcolor: "#fff" }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.25 }}>
         <Box sx={{ width: 7, height: 7, borderRadius: "50%", bgcolor: ACCENT2, flexShrink: 0 }} />
-        <Typography sx={{ color: INK, fontWeight: 600, fontSize: 14 }}>{slot.label}</Typography>
+        <Typography sx={{ color: INK, fontWeight: 600, fontSize: 14 }}>{t(slot.label)}</Typography>
       </Box>
-      <Typography variant="body2" sx={{ color: DIM, mb: 0.25 }}>{slot.desc}</Typography>
-      <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 1.5 }}>{slot.why}</Typography>
+      <Typography variant="body2" sx={{ color: DIM, mb: 0.25 }}>{t(slot.desc)}</Typography>
+      <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 1.5 }}>{t(slot.why)}</Typography>
 
       <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap", alignItems: "flex-start" }}>
         <Box>
           <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 0.4, fontWeight: 600 }}>
-            {isAgent ? "which CLI" : isJudge ? "what decides" : "which brain"}
+            {t(isAgent ? "which CLI" : isJudge ? "what decides" : "which brain")}
           </Typography>
           <Select size="small" displayEmpty value={picked ? slot.value : ""}
             onChange={(e) => onSave({ value: e.target.value })}
@@ -78,26 +113,26 @@ const Slot = ({ slot, brains, agents, judgeOptions, onSave, onGo }) => {
             sx={{ minWidth: 250, fontSize: 12.5, bgcolor: "#fff" }}>
             {options.map((o) => (
               <MenuItem key={o.value} value={o.value} disabled={o.ready === false} sx={{ fontSize: 12.5 }}>
-                {o.label}{o.ready === false ? " — no key saved" : ""}
+                {optionLabel(o)}{o.ready === false ? t(" — no key saved") : ""}
               </MenuItem>
             ))}
-            {!options.length && <MenuItem value="" disabled sx={{ fontSize: 12.5 }}>nothing configured yet</MenuItem>}
+            {!options.length && <MenuItem value="" disabled sx={{ fontSize: 12.5 }}>{t("nothing configured yet")}</MenuItem>}
           </Select>
         </Box>
         {/* four yes/nos do not get better on a bigger model, and this slot owns no model setting
             to write one to - a box that saved nowhere would be worse than no box */}
         {!isJudge && (
           <Box>
-            <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 0.4, fontWeight: 600 }}>model</Typography>
+            <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 0.4, fontWeight: 600 }}>{t("model")}</Typography>
             {/* Drafting's model is shut until a drafting brain is chosen: blank is the triage brain on its own model (2026-10-25) */}
             <Model slot={slot} onSave={onSave} locked={slot.key === "draft_ai" && slot.default}
-              hint={slot.key === "draft_ai" && slot.default ? "choose a drafting brain first" : undefined} />
+              hint={slot.key === "draft_ai" && slot.default ? t("choose a drafting brain first") : undefined} />
           </Box>
         )}
         {!isJudge && slot.strong_model !== undefined && (
           <Box>
-            <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 0.4, fontWeight: 600 }}>strong model</Typography>
-            <Model slot={slot} onSave={onSave} field="strong_model" label="strong model" hint="none, this brain doesn't step up" />
+            <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 0.4, fontWeight: 600 }}>{t("strong model")}</Typography>
+            <Model slot={slot} onSave={onSave} field="strong_model" label="strong model" hint={t("none, this brain doesn't step up")} />
           </Box>
         )}
         {/* the owner's own mark, off by default and never set by code: once the data rule is on, sensitive work reaches only a
@@ -105,16 +140,16 @@ const Slot = ({ slot, brains, agents, judgeOptions, onSave, onGo }) => {
         {!isJudge && slot.sensitive_ok !== undefined && (
           <FormControlLabel sx={{ ml: 0, mt: 2.25 }} control={<Checkbox size="small" checked={!!slot.sensitive_ok} data-tq-sensitive-ok=""
             onChange={(e) => onSave({ sensitive_ok: e.target.checked })} />}
-            label={<Typography sx={{ fontSize: 12.5, color: DIM }}>may read sensitive data</Typography>} />
+            label={<Typography sx={{ fontSize: 12.5, color: DIM }}>{t("may read sensitive data")}</Typography>} />
         )}
         {/* effort only where the CLI can actually be told one - climodels leaves it empty for
             the CLIs whose flag we cannot spell, and a dead dropdown would imply otherwise */}
         {!!(slot.efforts || []).length && (
           <Box>
-            <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 0.4, fontWeight: 600 }}>effort</Typography>
+            <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 0.4, fontWeight: 600 }}>{t("effort")}</Typography>
             <Select size="small" displayEmpty value={slot.effort || ""} onChange={(e) => onSave({ effort: e.target.value })}
               sx={{ minWidth: 150, fontSize: 12.5, bgcolor: "#fff" }}>
-              <MenuItem value="" sx={{ fontSize: 12.5 }}>default</MenuItem>
+              <MenuItem value="" sx={{ fontSize: 12.5 }}>{t("default")}</MenuItem>
               {slot.efforts.map((eff) => <MenuItem key={eff} value={eff} sx={{ fontSize: 12.5 }}>{eff}</MenuItem>)}
             </Select>
           </Box>
@@ -123,23 +158,23 @@ const Slot = ({ slot, brains, agents, judgeOptions, onSave, onGo }) => {
 
       <Box sx={{ mt: 1.5, pt: 1.25, borderTop: `1px solid ${BORDER}`, display: "flex", gap: 1,
         alignItems: "baseline", flexWrap: "wrap" }}>
-        <Typography variant="caption" sx={{ color: FAINT, fontWeight: 600 }}>RUNS</Typography>
+        <Typography variant="caption" sx={{ color: FAINT, fontWeight: 600 }}>{t("RUNS")}</Typography>
         <Typography sx={{ ...mono, fontSize: 12.5, color: INK, fontWeight: 600 }}>
-          {picked ? picked.label : "—"}{slot.ready && runs ? ` · ${runs}` : ""}{slot.ready && slot.resolved ? ` → ${slot.resolved}` : ""}{slot.effort ? ` · ${slot.effort}` : ""}
+          {picked ? optionLabel(picked) : "—"}{slot.ready && runs ? ` · ${runs}` : ""}{slot.ready && slot.resolved ? ` → ${slot.resolved}` : ""}{slot.effort ? ` · ${slot.effort}` : ""}
         </Typography>
         {slot.owner && (
           <Typography variant="caption" sx={{ color: FAINT }}>
-            saved on {slot.owner}
+            {t("saved on {owner}", { owner: ownerLabel(slot.owner) })}
             {slot.owner_link && (
               <Typography component="button" type="button" variant="caption" onClick={() => onGo(slot.owner_link)}
                 sx={{ border: 0, background: "none", p: 0, font: "inherit", textAlign: "inherit", color: "#55697a", cursor: "pointer", ml: 0.5, "&:hover": { textDecoration: "underline" } }}>
-                open →
+                {t("open →")}
               </Typography>
             )}
           </Typography>
         )}
       </Box>
-      {slot.note && <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.5 }}>{slot.note}</Typography>}
+      {slot.note && <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.5 }}>{slotNote(slot.note)}</Typography>}
       {/* What it is actually asked. This slot is not a taste setting - it is four yes/nos, and
           whichever thing answers them answers exactly these (the owner, 2026-09-17: "show the
           wording for jev ... what are the decision choices it's going for"). The criterion in each
@@ -147,15 +182,15 @@ const Slot = ({ slot, brains, agents, judgeOptions, onSave, onGo }) => {
       {isJudge && !!(slot.decides || []).length && (
         <Box sx={{ mt: 1.25, pt: 1, borderTop: `1px solid ${BORDER}` }}>
           <Typography variant="caption" sx={{ color: FAINT, fontWeight: 600, display: "block", mb: 0.5 }}>
-            ASKED OF IT, ONCE PER RUN
+            {t("ASKED OF IT, ONCE PER RUN")}
           </Typography>
           {slot.decides.map((d) => (
             <Typography key={d.line} sx={{ ...mono, fontSize: 11.5, color: INK, whiteSpace: "pre-wrap" }}>
-              {d.line.toUpperCase()}: {d.says} <Typography component="span" sx={{ ...mono, fontSize: 11.5, color: FAINT }}>
-                but only if: the sentence you wrote on that report&rsquo;s card</Typography>
+              {t(d.line.toUpperCase())}: {t(d.says)} <Typography component="span" sx={{ ...mono, fontSize: 11.5, color: FAINT }}>
+                {t("but only if: the sentence you wrote on that report’s card")}</Typography>
             </Typography>
           ))}
-          {slot.evidence && <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.5 }}>{slot.evidence}</Typography>}
+          {slot.evidence && <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.5 }}>{t(slot.evidence)}</Typography>}
         </Box>
       )}
     </Box>
@@ -163,6 +198,7 @@ const Slot = ({ slot, brains, agents, judgeOptions, onSave, onGo }) => {
 };
 
 export default function AiDefaults({ brains, agents, onGo, onLoaded }) {
+  useLocale();
   const [state, setState] = useState(null);
   const [err, setErr] = useState("");
   const load = useCallback(async () => {
@@ -176,8 +212,8 @@ export default function AiDefaults({ brains, agents, onGo, onLoaded }) {
       // down: the panel span the whole error away. 404 here means one specific thing - the
       // server predates this endpoint - so say that rather than "something went wrong".
       setErr(e?.response?.status === 404
-        ? "this Taskuary server is older than this page — restart Taskuary to pick up the new backend"
-        : (e?.response?.data?.detail || e?.message || "could not read the AI defaults"));
+        ? { source: "this Taskuary server is older than this page — restart Taskuary to pick up the new backend", values: {}, stale: true }
+        : (e?.response?.data?.detail || e?.message || { source: "could not read the AI defaults", values: {} }));
       setState({ slots: [], agents: [] });
     }
   }, []);
@@ -190,24 +226,24 @@ export default function AiDefaults({ brains, agents, onGo, onLoaded }) {
 
   const save = async (slot, patch) => {
     try { setErr(""); await api.post("/api/ai/defaults", { slot: slot.key, ...patch }); load(); }
-    catch (e) { setErr(e?.response?.data?.detail || "could not save that"); }
+    catch (e) { setErr(e?.response?.data?.detail || { source: "could not save that", values: {} }); }
   };
 
-  const stale = /restart Taskuary/.test(err);
+  const stale = typeof err === "object" ? !!err?.stale : /restart Taskuary/.test(err);
   if (!state) return <CircularProgress size={20} sx={{ m: 2 }} />;
   return (
     <Box sx={{ mb: 1 }}>
       <Typography variant="body2" sx={{ color: DIM, mb: 1.5 }}>
-        Which AI does what, and on which model. Adding or signing into a CLI or an API key is
-        still <Typography component="button" type="button" variant="body2" onClick={() => onGo("connections")}
-          sx={{ border: 0, background: "none", p: 0, font: "inherit", textAlign: "inherit", color: "#55697a", cursor: "pointer", "&:hover": { textDecoration: "underline" } }}>Connections</Typography>;
-        this page only chooses between what you have connected.
+        {t("Which AI does what, and on which model. Adding or signing into a CLI or an API key is still")}{" "}
+        <Typography component="button" type="button" variant="body2" onClick={() => onGo("connections")}
+          sx={{ border: 0, background: "none", p: 0, font: "inherit", textAlign: "inherit", color: "#55697a", cursor: "pointer", "&:hover": { textDecoration: "underline" } }}>{t("Connections")}</Typography>
+        {t("; this page only chooses between what you have connected.")}
       </Typography>
       {err && (
         <Alert severity={stale ? "error" : "warning"} sx={{ mb: 1.5, fontSize: 12.5 }}>
-          {stale && <AlertTitle sx={{ fontSize: 13, fontWeight: 600 }}>Restart Taskuary to finish this update</AlertTitle>}
-          {err}
-          {stale && " — until then the rows below are the older, plainer controls, and the model and effort pickers are not available."}
+          {stale && <AlertTitle sx={{ fontSize: 13, fontWeight: 600 }}>{t("Restart Taskuary to finish this update")}</AlertTitle>}
+          {translateDescriptor(err)}
+          {stale && t(" — until then the rows below are the older, plainer controls, and the model and effort pickers are not available.")}
         </Alert>
       )}
       {/* a payload without slots is a payload, not a crash: the public demo serves one and the

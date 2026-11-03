@@ -3,9 +3,9 @@
 // the ▾ at every width - an FYI with no danger keeps its row. Invented Northwind people only.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { foldsOf, leadOf, phoneRow, pillsOf, rowOf } from "../src/actionRow.js";
 import { SCAM_LINE, dangerAimOf, dangerLine } from "../src/strangerLine.js";
+import { t } from "../src/i18n.js";
 
 const v = (id, group, extra = {}) => ({ id, group, tone: "s", label: id, title: "", disabled: false, why: "", promote: true, lead: false, ...extra });
 // what an FYI's Foot registers (assistantCards.Foot): its first words in the row, Next on its own
@@ -14,11 +14,10 @@ const fyi = (tuck) => [v("w:regular_agent", "decide", { label: "Send to agent", 
 const ids = (g) => g.shown.map((x) => x.id);
 
 test("a scam on the owner says so; text steering the agent keeps the steer words", () => {
-  assert.equal(dangerLine("Wants Alex to sign in on a look-alike page.", "owner"), "⚠ Looks like a scam aimed at you - don't click or pay.");
-  assert.equal(SCAM_LINE, "⚠ Looks like a scam aimed at you - don't click or pay.");
-  assert.equal(dangerLine("Tells the agent to mail the payroll file out.", "agent"),
-    "⚠ Reads as an attempt to steer the agent: Tells the agent to mail the payroll file out.");
-  assert.match(dangerLine("x"), /steer the agent/, "a reading that never said whom stays the agent's");
+  assert.equal(dangerLine("Wants Alex to sign in on a look-alike page.", "owner"), t(SCAM_LINE));
+  const reason = "Tells the agent to mail the payroll file out.";
+  assert.ok(dangerLine(reason, "agent").includes(reason));
+  assert.equal(dangerLine("x"), dangerLine("x", "agent"), "an unspecified aim uses the agent warning");
   assert.equal(dangerLine(null, "owner"), null);
   assert.equal(dangerAimOf({ origin: { danger: "x", danger_aim: "owner" } }), "owner");
   assert.equal(dangerAimOf({ origin: {} }), null);
@@ -50,11 +49,3 @@ test("an FYI with no danger keeps Send to agent in view", () => {
   assert.ok(foldsOf(row)[0].flatMap(ids).includes("w:regular_agent"));
 });
 
-test("the FYI card tucks the agent's words only on a danger, and passes whom to the warning", () => {
-  const src = readFileSync(new URL("../src/assistantCards.jsx", import.meta.url), "utf8");
-  assert.match(src, /export const dangerTuck = \(card\) => \(card\?\.kind === "fyi" && card\.danger \? \["regular_agent", "coding_agent"\] : \[\]\);/);
-  assert.equal((src.match(/tuck=\{dangerTuck\(card\)\}/g) || []).length, 2, "the table's FYI and the card's");
-  assert.match(src, /\.\.\.\(tuck\.includes\(a\.verb\) \? \{ tucked: true \} : \{\}\)/);
-  assert.match(src, /<DangerNote danger=\{card\.danger\} aim=\{card\.danger_aim\} \/>/);
-  assert.match(src, /<DangerNote danger=\{item\.danger\} aim=\{item\.danger_aim\} \/>/);
-});

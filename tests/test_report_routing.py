@@ -464,3 +464,53 @@ def test_the_route_is_named_for_where_runs_show_now():
     cfg = {'type': 'mssql', 'route': {'timeline': {'how': 'never'}}}
     words = reports.route_words(cfg) + reports.run_lands(cfg) + reports.LINE_SAYS['timeline'] + reports.ASSISTANT_WHEN
     assert 'Reports: never' in reports.route_words(cfg) and 'timeline' not in words.lower()
+
+
+def test_route_presentation_keeps_owner_conditions_out_of_translation_templates():
+    condition = 'every run {name} and anything came back'
+    cfg = {'route': {'timeline': {'how': 'ai', 'when': condition},
+                     'alert': {'how': 'rule', 'rule': 'contains', 'text': condition}}}
+    descriptor = reports.route_words_i18n(cfg)
+    assert descriptor == {
+        'source': '{left}; {right}',
+        'values': {
+            'left': {'source': '{name}: {route}', 'values': {
+                'name': {'source': 'Reports', 'values': {}},
+                'route': {'source': 'the AI decides - {condition}', 'values': {'condition': condition}}}},
+            'right': {'source': '{name}: {route}', 'values': {
+                'name': {'source': 'alert', 'values': {}},
+                'route': {'source': 'when {condition}', 'values': {
+                    'condition': {'source': 'it mentions "{text}"', 'values': {'text': condition}}}}}},
+        },
+    }
+
+
+@pytest.mark.parametrize(('rule', 'extra', 'source', 'values'), [
+    ('something_came_back', {}, 'anything came back', {}),
+    ('nothing_came_back', {}, 'nothing came back', {}),
+    ('fewer_than', {'count': 3}, 'fewer than {count} came back', {'count': 3}),
+    ('more_than', {'count': 5}, 'more than {count} came back', {'count': 5}),
+    ('contains', {'text': 'example {count}'}, 'it mentions "{text}"', {'text': 'example {count}'}),
+    ('missing', {'text': 'example {count}'}, 'it never mentions "{text}"', {'text': 'example {count}'}),
+])
+def test_route_presentation_describes_each_rule_without_translating_its_values(rule, extra, source, values):
+    cfg = {'route': {'timeline': {'how': 'rule', 'rule': rule, **extra}}}
+    route = reports.route_words_i18n(cfg)['values']['left']['values']['route']
+    assert route == {'source': 'when {condition}', 'values': {'condition': {'source': source, 'values': values}}}
+
+
+def test_report_sources_include_route_presentation_without_changing_original_words():
+    config = {'type': 'mssql', 'title': 'Example', 'route': {'timeline': {'how': 'never'}}}
+    sid = server.store.save_source({'Channel': 'report', 'Address': 'Example', 'Active': 1, 'Owner': 'test',
+                                    'ConfigJson': json.dumps(config)}, 'test')
+    source = next(row for row in c.get('/api/sources').json()['data'] if row['SourceId'] == sid)
+    assert source['RouteWords'] == 'Reports: never; alert: never'
+    assert source['RouteWords_i18n'] == {
+        'source': '{left}; {right}',
+        'values': {
+            'left': {'source': '{name}: {route}', 'values': {
+                'name': {'source': 'Reports', 'values': {}}, 'route': {'source': 'never', 'values': {}}}},
+            'right': {'source': '{name}: {route}', 'values': {
+                'name': {'source': 'alert', 'values': {}}, 'route': {'source': 'never', 'values': {}}}},
+        },
+    }

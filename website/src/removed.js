@@ -3,11 +3,18 @@
 // (recentlydeleted.py) and answers with its id. The page then says "Removed <it> - Undo" where the thing was. The press and the
 // line are often on two screens (an editor removes, its list shows the line), so the line is announced here and drawn by whichever
 // list is showing that kind.
+import { t, translateDescriptor } from "./i18n.js";
 const subs = new Set();
 let last = null;
 
 // `kind`: which lists draw it ("report", "workflow", "rule", "profile", "source", "connection", "signout"); `did`: the server's id
-export const removedLine = (title, verb = "Removed") => `${verb} ${title || "it"}`;
+export const removedLine = (title, verb = "Removed") => {
+  const item = title ? translateDescriptor(title) : t("it");
+  if (verb === "Removed") return t("Removed {title}", { title: item });
+  if (verb === "Disconnected") return t("Disconnected {title}", { title: item });
+  if (verb === "Signed out of") return t("Signed out of {title}", { title: item });
+  return `${verb} ${item}`;
+};
 export function announceRemoved({ did, title, kind, verb = "Removed" }) {
   last = did ? { did, title, kind, verb, at: Date.now() } : null;
   subs.forEach((f) => f(last));

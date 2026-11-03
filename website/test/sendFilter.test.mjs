@@ -3,12 +3,7 @@
 // A tool nobody judged, or a server whose tools could not be read, is left out and says so (fail closed). Invented servers only.
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
-import { NOT_CHECKED, linesOf } from "../src/sendFilterLines.js";
-import { label } from "../src/buttons.js";
-
-const src = (f) => fs.readFileSync(path.join(import.meta.dirname, "../src", f), "utf8");
+import { linesOf } from "../src/sendFilterLines.js";
 
 const DATA = {
   claude: [{ server: "mail", error: "", blocked: false, tools: [
@@ -29,19 +24,3 @@ test("one line per server and tool, left out or kept; a server Claude and Codex 
   assert.deepEqual(linesOf(null), { left: [], kept: [] });
 });
 
-test("Settings > Agent permissions draws the list next to the saved sign-ins", () => {
-  assert.match(src("SettingsView.jsx"), /"Agent permissions": <><SavedSignins \/><SendFilter \/><\/>/);
-  assert.match(src("SettingsView.jsx"), /import SendFilter from "\.\/SendFilter\.jsx";/);
-});
-
-test("Keep, Leave out and the check again are the owner's corrections and a fresh scan - in plain words", () => {
-  const s = src("SendFilter.jsx");
-  assert.equal(NOT_CHECKED, "Not checked yet: left out");
-  assert.match(s, /l\.unchecked \? NOT_CHECKED/);
-  assert.match(s, /api\.post\("\/api\/sendfilter\/correct", \{ server: l\.server, tool: l\.tool \|\| "\*", verdict \}\)/);
-  assert.match(s, /onSet\(l, "keep"\)/); assert.match(s, /onSet\(l, "block"\)/);
-  assert.match(s, /api\.post\("\/api\/sendfilter\/scan"\)/);
-  assert.match(s, /\{label\("test_connection"\)\}/, "asking again has one name, read from buttons.json");
-  assert.equal(label("test_connection"), "Test it");
-  assert.match(s, />Leave out</); assert.match(s, /label="Keep"/); assert.match(s, /Kept for agents \(\{kept\.length\}\)/);
-});

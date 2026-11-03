@@ -7,6 +7,8 @@ import { Box, Typography } from "@mui/material";
 import api from "./api.js";
 import { label } from "./buttons.js";
 import { BORDER, CATPPUCCIN, FAINT, PANEL, mono } from "./theme.jsx";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 import { fitFrame, keyMessage, mayShape, mouseMessage, parseMessage, shortUrl, viewportFor, viewportMoved,
   wheelMessage } from "./browserSplit.js";
 
@@ -28,6 +30,7 @@ const btn = { ...mono, fontSize: 10.5, lineHeight: 1, px: 0.9, py: 0.45, borderR
 // the pane stays on its last frame (GeneralWorkspace's view outlives the browser), said as such.
 export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, onFold, overlay = false, yourTurn = false, clearRight = false,
   filling = false, waiting = [], turn = null, onHandBack, onDecided, ended = false }) {
+  useLocale();
   const box = useRef(null), canvas = useRef(null), sendRef = useRef(null), img = useRef(null), fit = useRef(null);
   const [live, setLive] = useState(false);
   const [url, setUrl] = useState(url0);
@@ -164,7 +167,7 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
   // owner was watching could not be finished from the screen he was watching it on (2026-09-16).
   const [typed, setTyped] = useState("");
   const [going, setGoing] = useState(false);
-  const say = (t, bad = false, ms = 3000) => { setNote({ t, bad }); setTimeout(() => setNote(null), ms); };
+  const say = (text, bad = false, ms = 3000, local = false, values = {}) => { setNote({ text, bad, local, values }); setTimeout(() => setNote(null), ms); };
   const go = async () => {
     const want = typed.trim();
     if (!want || going) return;
@@ -172,7 +175,7 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
     try {
       const r = await api.post(`/api/terminals/${sid}/browser/open`, { url: want });
       setUrl(r.data.url); setTyped("");
-    } catch (e) { say(e?.response?.data?.detail || "could not open that page", true, 6000); }
+    } catch (e) { const detail = e?.response?.data?.detail; say(detail || "could not open that page", true, 6000, !detail); }
     setGoing(false);
   };
   const onMouse = (e) => {
@@ -189,8 +192,8 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
   const snapshot = async () => {
     try {
       const r = await api.post(`/api/terminals/${sid}/browser/snapshot`, { task_id: taskId || null });
-      say(`saved ${r.data.name} on the task`);
-    } catch (e) { say(e?.response?.data?.detail || "could not save the snapshot", true); }
+      say("saved {name} on the task", false, 3000, true, { name: r.data.name });
+    } catch (e) { const detail = e?.response?.data?.detail; say(detail || "could not save the snapshot", true, 3000, !detail); }
   };
 
   return (
@@ -201,38 +204,37 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
       {/* clearRight: the session's full-screen button floats over this corner, and it sat on the fold arrow - the one way
           to put the browser away was under it (2026-10-09) */}
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, px: 1, pr: clearRight ? 5 : 1, py: 0.5, bgcolor: PANEL, borderBottom: `1px solid ${BORDER}`, flexShrink: 0 }}>
-        <Box title={live ? "live - frames are flowing" : "connecting…"}
+        <Box title={live ? t("live - frames are flowing") : t("connecting…")}
           sx={{ width: 8, height: 8, borderRadius: 99, flexShrink: 0, bgcolor: live ? CATPPUCCIN.green : "#5a554d",
             boxShadow: live ? `0 0 0 3px ${CATPPUCCIN.green}33` : "none", transition: "background .3s" }} />
-        <Typography title="The agent opened this page itself - this pane is its browser, watched live.
-Take over to drive it yourself; close the session to close it."
+        <Typography title={t("The agent opened this page itself - this pane is its browser, watched live.\nTake over to drive it yourself; close the session to close it.")}
           sx={{ ...mono, fontSize: 10.5, color: live ? "#c9c3b9" : FAINT, letterSpacing: 0.3, flexShrink: 0 }}>
-          {live ? "LIVE" : "…"}
+          {live ? t("LIVE") : "…"}
         </Typography>
         {/* the URL is a FIELD, not a label: click it and type somewhere else. Blank shows where
             the browser is, so it still reads as the address line when nobody is typing. */}
         <Box component="input" value={typed} disabled={going}
           onChange={(e) => setTyped(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") go(); if (e.key === "Escape") setTyped(""); e.stopPropagation(); }}
-          placeholder={shortUrl(url) || "type an address to open a page"}
-          title={url ? `${/^file:/i.test(url) ? shortUrl(url, 200) : url}\n\ntype an address and press Enter to go somewhere else` : "type an address and press Enter to open a page"}
+          placeholder={shortUrl(url) || t("type an address to open a page")}
+          title={url ? `${/^file:/i.test(url) ? shortUrl(url, 200) : url}\n\n${t("type an address and press Enter to go somewhere else")}` : t("type an address and press Enter to open a page")}
           sx={{ ...mono, fontSize: 11, color: "#c9c3b9", flex: 1, minWidth: 0, bgcolor: "transparent",
             border: "1px solid transparent", borderRadius: 1, px: 0.75, py: 0.25, outline: "none",
             "&::placeholder": { color: "#a8a196", opacity: 1 },
             "&:hover": { borderColor: BORDER }, "&:focus": { borderColor: CATPPUCCIN.yellow, bgcolor: "#1a1a1a" } }} />
         {!!typed.trim() && (
-          <Box component="button" onClick={go} disabled={going} sx={{ ...btn, flexShrink: 0 }}>{going ? "opening…" : "Go"}</Box>
+          <Box component="button" onClick={go} disabled={going} sx={{ ...btn, flexShrink: 0 }}>{going ? t("opening…") : t("Go")}</Box>
         )}
-        {note && <Typography title={note.t} sx={{ ...mono, fontSize: 10, flexShrink: 1, minWidth: 0, maxWidth: "45%",
+        {note && <Typography title={note.local ? t(note.text, note.values) : note.text} sx={{ ...mono, fontSize: 10, flexShrink: 1, minWidth: 0, maxWidth: "45%",
           overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-          color: note.bad ? CATPPUCCIN.red : CATPPUCCIN.green }}>{note.t}</Typography>}
+          color: note.bad ? CATPPUCCIN.red : CATPPUCCIN.green }}>{note.local ? t(note.text, note.values) : note.text}</Typography>}
         <Box component="button" onClick={() => (driving ? setDriving(false) : takeOver())}
-          title={driving ? "give the page back to the agent" : "drive the page yourself - for a password or a code the agent must not type"}
+          title={driving ? t("give the page back to the agent") : t("drive the page yourself - for a password or a code the agent must not type")}
           sx={{ ...btn, ...(driving ? { color: CATPPUCCIN.yellow, borderColor: CATPPUCCIN.yellow } : {}) }}>
-          {driving ? "Hand back" : "Take over"}
+          {driving ? t("Hand back") : t("Take over")}
         </Box>
-        <Box component="button" onClick={snapshot} title="keep this frame on the task as an attachment" sx={btn}>Snapshot</Box>
-        {onFold && <Box component="button" onClick={onFold} title={overlay ? "back to the terminal" : "fold the browser away - the browser chip above the terminal brings it back"} sx={btn}>{overlay ? "✕" : "›"}</Box>}
+        <Box component="button" onClick={snapshot} title={t("keep this frame on the task as an attachment")} sx={btn}>{t("Snapshot")}</Box>
+        {onFold && <Box component="button" onClick={onFold} title={overlay ? t("back to the terminal") : t("fold the browser away - the browser chip above the terminal brings it back")} sx={btn}>{overlay ? "✕" : "›"}</Box>}
       </Box>
       {/* the page. tabIndex so keystrokes land here while driving; the canvas swallows the wheel
           the same way the terminal does, so scrolling the page never scrolls the app */}
@@ -246,7 +248,7 @@ Take over to drive it yourself; close the session to close it."
         {attached === null && !live && (
           <Box data-tq-browser-starting="" sx={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
             pointerEvents: "none" }}>
-            <Typography sx={{ ...mono, fontSize: 11.5, color: "#a8a196" }}>starting the browser…</Typography>
+            <Typography sx={{ ...mono, fontSize: 11.5, color: "#a8a196" }}>{t("starting the browser…")}</Typography>
           </Box>
         )}
         {/* Only before the first frame: once a page has painted, a momentary "not connected"
@@ -254,10 +256,9 @@ Take over to drive it yourself; close the session to close it."
         {attached === false && !live && (
           <Box sx={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column",
             alignItems: "center", justifyContent: "center", gap: 0.75, px: 3, textAlign: "center" }}>
-            <Typography sx={{ ...mono, fontSize: 11.5, color: "#c9c3b9" }}>the browser is running, with no page open</Typography>
+            <Typography sx={{ ...mono, fontSize: 11.5, color: "#c9c3b9" }}>{t("the browser is running, with no page open")}</Typography>
             <Typography sx={{ ...mono, fontSize: 10.5, color: FAINT, lineHeight: 1.6 }}>
-              Nothing has been navigated to yet, so there is nothing to show. Type an address up
-              there to open one — then take over to drive it yourself.
+              {t("Nothing has been navigated to yet, so there is nothing to show. Type an address up there to open one — then take over to drive it yourself.")}
             </Typography>
           </Box>
         )}
@@ -269,9 +270,9 @@ Take over to drive it yourself; close the session to close it."
         {live && (!url || url === "about:blank") && (
           <Box sx={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", pointerEvents: "none",
             alignItems: "center", justifyContent: "center", gap: 0.75, px: 3, textAlign: "center" }}>
-            <Typography sx={{ ...mono, fontSize: 11.5, color: "#867f74" }}>an empty tab, live</Typography>
+            <Typography sx={{ ...mono, fontSize: 11.5, color: "#867f74" }}>{t("an empty tab, live")}</Typography>
             <Typography sx={{ ...mono, fontSize: 10.5, color: "#a8a196", lineHeight: 1.6 }}>
-              The agent opens its pages here. Or type an address above to open one yourself.
+              {t("The agent opens its pages here. Or type an address above to open one yourself.")}
             </Typography>
           </Box>
         )}
@@ -280,29 +281,29 @@ Take over to drive it yourself; close the session to close it."
         {filling && (
           <Typography data-tq-browser-filling="" sx={{ ...mono, position: "absolute", left: 8, bottom: 6, fontSize: 10, color: "#e1dcd5",
             bgcolor: "#000000cc", px: 0.75, py: 0.25, borderRadius: 1, pointerEvents: "none" }}>
-            {`Taskuary is signing in${hostOf(url) ? ` to ${hostOf(url)}` : ""} — the picture resumes in a moment`}
+            {hostOf(url) ? t("Taskuary is signing in to {host} — the picture resumes in a moment", { host: hostOf(url) }) : t("Taskuary is signing in — the picture resumes in a moment")}
           </Typography>
         )}
         {ended && (
           <Typography data-tq-browser-ended="" sx={{ ...mono, position: "absolute", left: 8, top: 6, fontSize: 10, color: "#e1dcd5",
             bgcolor: "#000000cc", px: 0.75, py: 0.25, borderRadius: 1, pointerEvents: "none" }}>
-            the browser closed — this is where it last was; it reopens when the agent next needs it
+            {t("the browser closed — this is where it last was; it reopens when the agent next needs it")}
           </Typography>
         )}
         {driving && !filling && !turn && (
           <Typography sx={{ ...mono, position: "absolute", left: 8, bottom: 6, fontSize: 10, color: CATPPUCCIN.yellow,
             bgcolor: "#000000aa", px: 0.75, py: 0.25, borderRadius: 1, pointerEvents: "none" }}>
-            {handed.current ? "your turn — the agent is waiting on you; click the page and type" : "you are driving — the agent's next command still runs; hand back when done"}
+            {handed.current ? t("your turn — the agent is waiting on you; click the page and type") : t("you are driving — the agent's next command still runs; hand back when done")}
           </Typography>
         )}
         {asked && !driving && (
           <Box sx={{ position: "absolute", left: 8, right: 8, bottom: 6, display: "flex", alignItems: "center", gap: 1,
             bgcolor: "#000000cc", border: `1px solid ${CATPPUCCIN.yellow}66`, px: 1, py: 0.5, borderRadius: 1 }}>
             <Typography sx={{ ...mono, fontSize: 10, color: "#e1dcd5", flex: 1 }}>
-              You are watching the agent's page — Take over to type on it.
+              {t("You are watching the agent's page — Take over to type on it.")}
             </Typography>
             <Box component="button" onClick={takeOver}
-              sx={{ ...btn, color: CATPPUCCIN.yellow, borderColor: CATPPUCCIN.yellow }}>Take over</Box>
+              sx={{ ...btn, color: CATPPUCCIN.yellow, borderColor: CATPPUCCIN.yellow }}>{t("Take over")}</Box>
           </Box>
         )}
       </Box>
@@ -321,11 +322,15 @@ const barText = { fontSize: 12.5, color: "#e1dcd5", flex: "1 1 220px", minWidth:
 const press = { ...btn, fontSize: 11.5, px: 1.25, py: 0.6 };
 const primary = { ...press, color: "#101010", bgcolor: CATPPUCCIN.yellow, borderColor: CATPPUCCIN.yellow,
   "&:hover": { bgcolor: "#f3d98f", borderColor: "#f3d98f", color: "#101010" } };
-const failed = (e, data) => data?.send_error || e?.response?.data?.detail || (e ? "That did not go through - nothing was done. Try again." : "");
+const failed = (e, data) => {
+  const detail = data?.send_error || e?.response?.data?.detail;
+  return detail ? { text: detail, local: false } : e ? { text: "That did not go through - nothing was done. Try again.", local: true } : null;
+};
 
 // A HELD ACT (browsergate.check): Approve runs that exact command in this browser and the agent is told what happened - it goes on
 // in the same conversation by itself; Dismiss tells it the step was not done. The existing decide road, the same as the card's.
 function HeldBar({ held: h, onDecided }) {
+  useLocale();
   const [busy, setBusy] = useState(""), [err, setErr] = useState("");
   const decide = async (verb) => {
     if (busy) return;
@@ -339,14 +344,14 @@ function HeldBar({ held: h, onDecided }) {
   return (
     <Box data-tq-browser-held={h.id} sx={bar}>
       <Typography sx={barText} title={[h.url, h.why].filter(Boolean).join("\n")}>
-        <Box component="span" sx={{ color: CATPPUCCIN.yellow, fontWeight: 600 }}>Approve: </Box>{h.what}
-        {h.why && <Box component="span" sx={{ color: "#a8a196" }}>{` — held because ${h.why}`}</Box>}
+        <Box component="span" sx={{ color: CATPPUCCIN.yellow, fontWeight: 600 }}>{t("Approve: ")}</Box>{h.whatIsFallback ? t("the step the agent held") : h.what}
+        {h.why && <Box component="span" sx={{ color: "#a8a196" }}>{t(" — held because {reason}", { reason: h.why })}</Box>}
       </Typography>
       <Box component="button" onClick={() => decide("approve")} disabled={!!busy} sx={primary}
-        title="Taskuary runs exactly this in the agent's browser, and the agent carries on from there">{busy === "approve" ? "running…" : label("approve", "action")}</Box>
+        title={t("Taskuary runs exactly this in the agent's browser, and the agent carries on from there")}>{busy === "approve" ? t("running…") : label("approve", "action")}</Box>
       <Box component="button" onClick={() => decide("reject")} disabled={!!busy} sx={press}
-        title="Not done - the agent is told, and carries on without it or asks you">{busy === "reject" ? "…" : "Dismiss"}</Box>
-      {err && <Typography role="alert" sx={{ ...mono, fontSize: 10.5, color: CATPPUCCIN.red, flexBasis: "100%" }}>{err}</Typography>}
+        title={t("Not done - the agent is told, and carries on without it or asks you")}>{busy === "reject" ? "…" : t("Dismiss")}</Box>
+      {err && <Typography role="alert" sx={{ ...mono, fontSize: 10.5, color: CATPPUCCIN.red, flexBasis: "100%" }}>{err.local ? t(err.text) : err.text}</Typography>}
     </Box>
   );
 }
@@ -354,6 +359,7 @@ function HeldBar({ held: h, onDecided }) {
 // THE OWNER'S TURN (browserview.your_turn): the page is theirs to click and type on (yourTurn hands it over), and Done hands it back -
 // the agent's next message, so it looks at the page and goes on.
 function TurnBar({ turn, onHandBack }) {
+  useLocale();
   const [busy, setBusy] = useState(false), [err, setErr] = useState("");
   const back = async () => {
     if (busy) return;
@@ -364,12 +370,12 @@ function TurnBar({ turn, onHandBack }) {
   return (
     <Box data-tq-browser-turn={turn.request_id} sx={bar}>
       <Typography sx={barText}>
-        <Box component="span" sx={{ color: CATPPUCCIN.yellow, fontWeight: 600 }}>{turn.text || "Your turn in the browser"}</Box>
-        <Box component="span" sx={{ color: "#a8a196" }}> · click the page and do it, then hand it back</Box>
+        <Box component="span" sx={{ color: CATPPUCCIN.yellow, fontWeight: 600 }}>{turn.text || t("Your turn in the browser")}</Box>
+        <Box component="span" sx={{ color: "#a8a196" }}>{t(" · click the page and do it, then hand it back")}</Box>
       </Typography>
       <Box component="button" onClick={back} disabled={busy} sx={primary}
-        title="The agent looks at the page as you left it and carries on">{busy ? "handing back…" : "Done — hand back to the agent"}</Box>
-      {err && <Typography role="alert" sx={{ ...mono, fontSize: 10.5, color: CATPPUCCIN.red, flexBasis: "100%" }}>{err}</Typography>}
+        title={t("The agent looks at the page as you left it and carries on")}>{busy ? t("handing back…") : t("Done — hand back to the agent")}</Box>
+      {err && <Typography role="alert" sx={{ ...mono, fontSize: 10.5, color: CATPPUCCIN.red, flexBasis: "100%" }}>{err.local ? t(err.text) : err.text}</Typography>}
     </Box>
   );
 }
@@ -379,6 +385,7 @@ function TurnBar({ turn, onHandBack }) {
 // conversation until its browser opens (SessionPane), and on the ended agent's Result (TaskPage).
 const lastFoldKey = (tid) => `tq-browser-last-folded.${tid}`;
 export function LastView({ taskId, sid = "", narrow = false }) {
+  useLocale();
   const [last, setLast] = useState(null);
   const [open, setOpen] = useState(() => { try { const v = localStorage.getItem(lastFoldKey(taskId)); return v === null ? null : v !== "1"; } catch { return null; } });
   useEffect(() => {
@@ -396,10 +403,10 @@ export function LastView({ taskId, sid = "", narrow = false }) {
           border: 0, bgcolor: "#1a1a1a", color: "#c9c3b9", textAlign: "left", "&:hover": { color: "#e1dcd5" } }}>
         <Box sx={{ width: 7, height: 7, borderRadius: 99, bgcolor: "#5a554d", flexShrink: 0 }} />
         <Box component="span" sx={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {`browser · where the agent last was${last.url ? ` · ${shortUrl(last.url, 48)}` : ""}`}</Box>
-        <Box component="span" sx={{ flexShrink: 0 }}>{shown ? "Hide" : "Show"}</Box>
+          {last.url ? t("browser · where the agent last was · {url}", { url: shortUrl(last.url, 48) }) : t("browser · where the agent last was")}</Box>
+        <Box component="span" sx={{ flexShrink: 0 }}>{shown ? t("Hide") : t("Show")}</Box>
       </Box>
-      {shown && <Box component="img" src={last.src} alt={`The agent's browser, last on ${shortUrl(last.url, 200) || "a page"}`}
+      {shown && <Box component="img" src={last.src} alt={t("The agent's browser, last on {page}", { page: shortUrl(last.url, 200) || t("a page") })}
         sx={{ display: "block", width: "100%", maxHeight: "min(46vh, 480px)", objectFit: "contain", bgcolor: "#101010" }} />}
     </Box>
   );

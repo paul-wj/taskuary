@@ -23,6 +23,8 @@ import api from "./api.js";
 import BrowserPane, { LastView } from "./BrowserPane.jsx";
 import { layoutFor, ratioFromPointer, rememberFold, rememberRatio, savedFold, savedRatio, shortUrl, showsBrowser, isLocalPage,
   splitRatio, viewOnScreen, PHONE_BELOW } from "./browserSplit.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 // Programming fonts first: agent TUIs draw boxes and progress bars out of block glyphs,
 // which only line up in a font with real box-drawing coverage.
@@ -440,6 +442,7 @@ function liveSession(sid, readOnly) {
 // polls, and taking a fresh callback identity as a dependency tore the terminal down and
 // rebuilt it on every one of those renders - which is what "it just flashes" was.
 const TermOnly = ({ sid, height = "70vh", onExit, readOnly = false, autoFocus = true }) => {
+  useLocale();
   const host = useRef(null);
   const exit = useRef(onExit);
   exit.current = onExit;
@@ -556,13 +559,13 @@ const TermOnly = ({ sid, height = "70vh", onExit, readOnly = false, autoFocus = 
         {state !== "live" && (
           <Typography variant="caption" sx={{ ...mono, fontSize: 10, mr: 0.5,
             color: state === "exited" ? CATPPUCCIN.green : CATPPUCCIN.yellow }}>
-            {state}
+            {t(state)}
           </Typography>
         )}
         {/* one step smaller is a couple more rows of the run without touching the layout -
             far cheaper than scrolling back for what just went past */}
         <Box component="button" onClick={() => setSize((n) => SIZES[Math.max(0, SIZES.indexOf(n) - 1)])}
-          disabled={size === SIZES[0]} title="smaller text — more of the run on screen"
+          disabled={size === SIZES[0]} title={t("smaller text — more of the run on screen")}
           sx={{ ...mono, fontSize: 11, lineHeight: 1, px: 0.5, py: 0.25, bgcolor: "transparent", color: "#867f74",
             border: "none", cursor: "pointer", "&:disabled": { opacity: 0.3, cursor: "default" },
             "&:hover:not(:disabled)": { color: "#e1dcd5" } }}>A−</Box>
@@ -571,7 +574,7 @@ const TermOnly = ({ sid, height = "70vh", onExit, readOnly = false, autoFocus = 
         <Typography sx={{ ...mono, fontSize: 9.5, color: "#867f74", minWidth: 16, textAlign: "center",
           fontVariantNumeric: "tabular-nums" }}>{size}</Typography>
         <Box component="button" onClick={() => setSize((n) => SIZES[Math.min(SIZES.length - 1, SIZES.indexOf(n) + 1)])}
-          disabled={size === SIZES[SIZES.length - 1]} title="bigger text"
+          disabled={size === SIZES[SIZES.length - 1]} title={t("bigger text")}
           sx={{ ...mono, fontSize: 13, lineHeight: 1, px: 0.5, py: 0.25, bgcolor: "transparent", color: "#867f74",
             border: "none", cursor: "pointer", "&:disabled": { opacity: 0.3, cursor: "default" },
             "&:hover:not(:disabled)": { color: "#e1dcd5" } }}>A+</Box>
@@ -580,11 +583,11 @@ const TermOnly = ({ sid, height = "70vh", onExit, readOnly = false, autoFocus = 
         <MicButton size={15} sx={{ color: "#867f74", p: 0.25, "&:hover": { color: "#e1dcd5" } }}
           onText={(t) => { sendRef.current?.({ type: "in", data: t }); termRef.current?.focus(); }} />
         <Box component="select" value={themeName} onChange={(e) => setThemeName(e.target.value)}
-          title="terminal palette"
+          title={t("terminal palette")}
           sx={{ ...mono, fontSize: 10, bgcolor: "transparent", color: "#867f74", border: "none",
             outline: "none", cursor: "pointer" }}>
           {[["Light", true], ["Dark", false]].map(([g, light]) => (
-            <optgroup key={g} label={g}>{Object.keys(THEMES).filter((n) => isLightTheme(n) === light).map((n) => <option key={n} value={n} style={{ color: "#111" }}>{n}</option>)}</optgroup>))}
+            <optgroup key={g} label={t(g)}>{Object.keys(THEMES).filter((n) => isLightTheme(n) === light).map((n) => <option key={n} value={n} style={{ color: "#111" }}>{n}</option>)}</optgroup>))}
         </Box>
       </Box>}
       {/* A scrollbar on the session itself, the way a console has one.
@@ -623,7 +626,7 @@ const TermOnly = ({ sid, height = "70vh", onExit, readOnly = false, autoFocus = 
           justifyContent: "center", gap: 1, bgcolor: THEMES[themeName].background, pointerEvents: "none" }}>
           <CircularProgress size={13} sx={{ color: CATPPUCCIN.yellow }} />
           <Typography variant="caption" sx={{ ...mono, fontSize: 10.5, color: CATPPUCCIN.yellow }}>
-            restoring the session…
+            {t("restoring the session…")}
           </Typography>
         </Box>
       )}
@@ -633,14 +636,14 @@ const TermOnly = ({ sid, height = "70vh", onExit, readOnly = false, autoFocus = 
           bgcolor: "rgba(24,24,37,.92)", border: `1px solid ${CATPPUCCIN.surface}`, pointerEvents: "none" }}>
           <CircularProgress size={10} sx={{ color: CATPPUCCIN.yellow }} />
           <Typography noWrap variant="caption" sx={{ ...mono, fontSize: 10, color: CATPPUCCIN.yellow }}>
-            Task sent to {promptState.cli === "devin" ? "Devin" : promptState.cli} · waiting for first response…
+            {t("Task sent to {cli} · waiting for first response…", { cli: promptState.cli === "devin" ? "Devin" : promptState.cli })}
           </Typography>
         </Box>
       )}
       {readOnly && state !== "live" && (
         <Typography variant="caption" sx={{ ...mono, position: "absolute", top: 6, right: 10, fontSize: 10,
           color: state === "exited" ? CATPPUCCIN.green : CATPPUCCIN.yellow }}>
-          {state}
+          {t(state)}
         </Typography>
       )}
     </Box>
@@ -650,6 +653,7 @@ const TermOnly = ({ sid, height = "70vh", onExit, readOnly = false, autoFocus = 
 // The Timeline's agent step is the real terminal, not a lossy text tail. This attaches as a
 // viewer only: clicking opens the task, while the websocket can neither type nor resize the PTY.
 export const TerminalPreview = ({ sid, height = 280, onOpen }) => {
+  useLocale();
   const [shot, setShot] = useState(null);
   useEffect(() => {
     let alive = true;
@@ -663,19 +667,19 @@ export const TerminalPreview = ({ sid, height = 280, onOpen }) => {
   return (
     <Box onClick={onOpen} role={onOpen ? "button" : undefined} tabIndex={onOpen ? 0 : undefined}
       onKeyDown={(e) => { if (onOpen && (e.key === "Enter" || e.key === " ")) onOpen(); }}
-      title="Open the live session"
+      title={t("Open the live session")}
       sx={{ height, boxSizing: "border-box", bgcolor: CATPPUCCIN.bg,
         border: `1px solid ${CATPPUCCIN.surface}`, borderRadius: 1.5, overflow: "hidden",
         cursor: onOpen ? "pointer" : "default", position: "relative",
         "&:hover": onOpen ? { borderColor: CATPPUCCIN.overlay } : {} }}>
       <Box sx={{ position: "absolute", top: 7, right: 10, display: "flex", alignItems: "center", gap: 0.55, zIndex: 1 }}>
         <Box sx={{ width: 6, height: 6, borderRadius: "50%", bgcolor: shot?.alive === false ? CATPPUCCIN.dim : CATPPUCCIN.green }} />
-        <Typography sx={{ ...mono, fontSize: 9, color: CATPPUCCIN.faint }}>{shot?.promptPending ? "prompt sent · waiting for response…" : shot ? "live terminal · open ↗" : "reading terminal…"}</Typography>
+        <Typography sx={{ ...mono, fontSize: 9, color: CATPPUCCIN.faint }}>{shot?.promptPending ? t("prompt sent · waiting for response…") : shot ? t("live terminal · open ↗") : t("reading terminal…")}</Typography>
       </Box>
-      <Box component="pre" aria-label="Live terminal screen" sx={{ m: 0, p: "22px 10px 10px", height: "100%",
+      <Box component="pre" aria-label={t("Live terminal screen")} sx={{ m: 0, p: "22px 10px 10px", height: "100%",
         boxSizing: "border-box", overflow: "hidden", whiteSpace: "pre", color: CATPPUCCIN.fg,
         fontFamily: TERM_FONT, fontSize: 8.5, lineHeight: 1.15, letterSpacing: 0 }}>
-        {(shot?.lines || ["Reading the live terminal…"]).join("\n")}
+        {shot?.lines ? shot.lines.join("\n") : t("Reading the live terminal…")}
       </Box>
     </Box>
   );
@@ -694,6 +698,7 @@ export const TerminalPreview = ({ sid, height = 280, onOpen }) => {
 export const SessionPane = ({ sid, height = "70vh", onExit, children, autoFocus = true, expectBrowser = false,
                              canFull = false, yourTurn = false, idle = false, stack = false, taskId = null, held = [], turn = null,
                              onHandBack, onDecided, onView }) => {
+  useLocale();
   const slot = useRef(null);
   const [browser, setBrowser] = useState({ open: false, url: "" });
   const [width, setWidth] = useState(0);
@@ -766,8 +771,8 @@ export const SessionPane = ({ sid, height = "70vh", onExit, children, autoFocus 
     // worth reading - and there is no scrolling out from under it (the owner, 2026-08-31).
     <Box component="button" onClick={() => (layout === "chip" ? setPeek(true) : fold(false))}
       title={layout === "chip"
-        ? (browser.open ? "the agent has a browser open - show it" : "the agent's browser is starting - show it")
-        : "unfold the browser"}
+        ? (browser.open ? t("the agent has a browser open - show it") : t("the agent's browser is starting - show it"))
+        : t("unfold the browser")}
       sx={{ ...mono, flex: "0 0 auto", alignSelf: "flex-start", m: "5px 0 0 10px", display: "flex",
         alignItems: "center", gap: 0.6,
         fontSize: 10.5, px: 0.9, py: 0.35, borderRadius: 99, cursor: "pointer", border: `1px solid ${BORDER}`,
@@ -776,15 +781,15 @@ export const SessionPane = ({ sid, height = "70vh", onExit, children, autoFocus 
         bgcolor: browser.open ? CATPPUCCIN.green : CATPPUCCIN.yellow }} />
       {/* ...and when the agent waits on the owner, the chip says so: at 1024px the agent's "open in the browser beside you" pointed at a
           chip that named only an address (2026-10-25) */}
-      {ended ? `browser · closed${lastPage.current ? ` · last on ${shortUrl(lastPage.current, 28)}` : ""}` : !browser.open ? "browser · starting…"
-        : held.length ? "browser · waits for your Approve - open it" : yourTurn ? "browser · your turn - open it" : `browser · ${shortUrl(browser.url, 36) || "open"}`}
+      {ended ? (lastPage.current ? t("browser · closed · last on {url}", { url: shortUrl(lastPage.current, 28) }) : t("browser · closed")) : !browser.open ? t("browser · starting…")
+        : held.length ? t("browser · waits for your Approve - open it") : yourTurn ? t("browser · your turn - open it") : t("browser · {url}", { url: shortUrl(browser.url, 36) || t("open") })}
     </Box>
   );
   /* A BROWSER THAT WAS OPEN AND CLOSED says so, where its chip or half sat: the pane just vanished, so a crash, a close and a glitch
      looked the same (2026-10-25). Words only - it comes back by itself when the agent opens a page again. */
   const closedLine = !!sid && seen && !browser.open && !ended && (
     <Typography data-tq-browser-closed="" sx={{ ...mono, flex: "0 0 auto", fontSize: 10.5, color: "#a8a196", m: "5px 0 0 10px" }}>
-      {`The browser closed${lastPage.current ? ` (last on ${shortUrl(lastPage.current, 36)})` : ""}. It reopens when the agent next needs it.`}
+      {lastPage.current ? t("The browser closed (last on {url}). It reopens when the agent next needs it.", { url: shortUrl(lastPage.current, 36) }) : t("The browser closed. It reopens when the agent next needs it.")}
     </Typography>
   );
   return (
@@ -792,8 +797,8 @@ export const SessionPane = ({ sid, height = "70vh", onExit, children, autoFocus 
       ...(fixed ? { height } : { flex: 1 }),
       ...(full ? { ...FULL_SX, bgcolor: "#101010", flex: "unset" } : null) }}>
       {canFull && (
-        <Tooltip title={full ? "Back to the page (Esc)" : "Give this session the whole window"}>
-          <IconButton size="small" onClick={toggleFull} aria-label={full ? "Exit full screen" : "Full screen"}
+        <Tooltip title={full ? t("Back to the page (Esc)") : t("Give this session the whole window")}>
+          <IconButton size="small" onClick={toggleFull} aria-label={full ? t("Exit full screen") : t("Full screen")}
             sx={{ position: "absolute", top: 4, right: 6, zIndex: 4, p: 0.4, color: "#b9b2a8",
               bgcolor: "#1a1a1acc", border: `1px solid ${BORDER}`, "&:hover": { color: "#e1dcd5", bgcolor: "#1a1a1a" } }}>
             {full ? <CloseFullscreenIcon sx={{ fontSize: 14 }} /> : <OpenInFullIcon sx={{ fontSize: 14 }} />}
@@ -818,7 +823,7 @@ export const SessionPane = ({ sid, height = "70vh", onExit, children, autoFocus 
       </Box>
       {layout === "split" && (
         <>
-          <Box onMouseDown={startDrag} title="drag to resize"
+          <Box onMouseDown={startDrag} title={t("drag to resize")}
             sx={{ flex: "0 0 8px", cursor: "col-resize", display: "flex", alignItems: "center", justifyContent: "center",
               "&:hover > *": { bgcolor: "#6b655c" } }}>
             <Box sx={{ width: 2, height: 36, borderRadius: 99, bgcolor: BORDER, transition: "background .15s" }} />
@@ -857,17 +862,12 @@ TerminalPane.displayName = "TerminalPane";
 // The knobs it describes sit at 0.62 opacity until hovered, which is the whole reason this
 // exists: nobody finds a discreet control they were never told about. `cli` narrows it to one
 // row - Claude's line is noise under a codex pane, which paints with the terminal's palette.
-export const ThemeHint = ({ cli = "" }) => (
-  <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 1.5 }}>
-    The session's top-right corner holds both knobs: A− / A+ set the text size, 7px to 14px with
-    the current one shown between them (7 fits roughly twice the run on screen — the leading
-    tightens with it, so the rows are gained rather than spent on whitespace), and the picker switches the terminal
-    palette — light ones first (GitHub Light is the default; Catppuccin Latte, Solarized Light, One Light), then the
-    dark ones (Catppuccin Mocha, Dracula, Tokyo Night, Gruvbox, One Dark). That restyles codex and any other CLI,
-    since a TUI paints with the terminal's colors.
-    {cli === "claude" && <>
-      {" "}Claude Code paints its own colours, so the next Claude session you start opens in its light or dark theme to
-      match — one already running keeps the theme it opened with. A custom theme you chose with /theme is left alone.
-    </>}
-  </Typography>
-);
+export const ThemeHint = ({ cli = "" }) => {
+  useLocale();
+  return (
+    <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 1.5 }}>
+      {t("The session's top-right corner holds both knobs: A− / A+ set the text size, 7px to 14px with the current one shown between them (7 fits roughly twice the run on screen — the leading tightens with it, so the rows are gained rather than spent on whitespace), and the picker switches the terminal palette — light ones first (GitHub Light is the default; Catppuccin Latte, Solarized Light, One Light), then the dark ones (Catppuccin Mocha, Dracula, Tokyo Night, Gruvbox, One Dark). That restyles codex and any other CLI, since a TUI paints with the terminal's colors.")}
+      {cli === "claude" && <>{" "}{t("Claude Code paints its own colours, so the next Claude session you start opens in its light or dark theme to match — one already running keeps the theme it opened with. A custom theme you chose with /theme is left alone.")}</>}
+    </Typography>
+  );
+};

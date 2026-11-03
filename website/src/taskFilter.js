@@ -1,4 +1,5 @@
 import { fmtDate } from "./dates.js";
+import { getLocale, t } from "./i18n.js";
 // Keep the master list and detail pane telling the same story. A task can finish while its
 // detail is open; leaving the selected pill on "in progress" makes the accurate Done header
 // look like a second, conflicting status. Search views remain untouched.
@@ -29,9 +30,9 @@ export const remindDay = (at) => {
   // a reminder for later today says its time (remind.when): "Thu 9 Oct" for today read as a day away
   if (String(at).slice(0, 10) === localStamp().slice(0, 10)) {
     const [hh, mm] = String(at).slice(11, 16).split(":").map(Number);
-    return Number.isFinite(mm) ? `today at ${hh % 12 || 12}:${String(mm).padStart(2, "0")}` : "today";
+    return Number.isFinite(mm) ? t("today at {time}", { time: `${hh % 12 || 12}:${String(mm).padStart(2, "0")}` }) : t("today");
   }
-  return fmtDate(new Date(y, m - 1, d), undefined, { weekday: "short", day: "numeric", month: "short" });
+  return fmtDate(new Date(y, m - 1, d), getLocale(), { weekday: "short", day: "numeric", month: "short" });
 };
 
 // Closing the detail on the right advances through the work list on the left. Keep this tiny and
@@ -61,11 +62,13 @@ export const cutAway = (stateKey, touchedToday, older) =>
 // THE LEARNED DAY, PRE-CHOSEN (the owner's ruling 7, 2026-10-23: "Remind me opens with the learned day pre-chosen"): the weekday the
 // owner puts this sender's mail off to, counted by the server from their own put-offs (GET .../remind/usual, usual.remind_day) - shown
 // first and filled, with whose habit it is; nothing is set until it is pressed. A day nobody's habit holds shows nothing.
-export const usualLabel = (u) => (u?.on && u?.day ? `${u.day} ${Number(u.on.slice(8, 10))}` : "");
-export const usualWhy = (u) => (u?.by ? `your usual for ${u.by}` : "");
+const WEEKDAYS = new Set(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]);
+export const usualLabel = (u) => (u?.on && u?.day
+  ? t("{day} {date}", { day: WEEKDAYS.has(u.day) ? t(u.day) : u.day, date: Number(u.on.slice(8, 10)) }) : "");
+export const usualWhy = (u) => (u?.by ? t("your usual for {name}", { name: u.by }) : "");
 // ...and the day's own line, as LEARNED.md says it now (the owner, 2026-10-25): reworded there, the day here follows
-export const usualLine = (u) => (u?.line ? `How you work: ${u.line}` : "");
+export const usualLine = (u) => (u?.line ? t("How you work: {line}", { line: u.line }) : "");
 
 // THE USUAL RECIPIENT (the owner, 2026-10-25: "Hand it to a person pre-fills the usual recipient"): whose asks went to them, said under
 // the filled To, so a name the owner did not type is never a mystery. Chosen, not sent.
-export const usualHandWhy = (u) => (u?.to && u?.from ? `your usual for ${u.from}` : "");
+export const usualHandWhy = (u) => (u?.to && u?.from ? t("your usual for {name}", { name: u.from }) : "");

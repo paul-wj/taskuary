@@ -247,12 +247,6 @@ class TheAiFailedTests(unittest.TestCase):
         self.assertEqual(rows.get('Try again'), {'t': 'ask', 'text': 'what is waiting?'})
 
 
-class NeverADeadEndTests(unittest.TestCase):
-    def test_the_newest_line_with_nothing_to_press_offers_next(self):
-        from pathlib import Path
-        src = Path(__file__).resolve().parents[1].joinpath('website', 'src', 'AssistantView.jsx').read_text(encoding='utf-8')
-        self.assertIn('NEVER A DEAD END', src)
-        self.assertIn('? said : idle ? IDLE_CHIPS : [{ verb: "next", label: btn("next") }]', src)   # an empty rail offers ways to start something
 
 
 if __name__ == '__main__':

@@ -3,6 +3,7 @@
 // had lit and which other buttons were live - the server keeps it (presses.py; the phone records there itself). Nothing on screen changes.
 import { rowOf } from "./actionRow.js";
 import { VERBS, verbOfRow } from "./buttons.js";
+import { getLocale, t } from "./i18n.js";
 
 // a row id or a verb -> the verb: `done` is close, `12:approve` is approve, `advice:chase` is chase
 export const verbOf = (id) => verbOfRow(id) || String(id || "").split(":").pop() || "";
@@ -24,7 +25,15 @@ export function deskPress(snap, pick, id) {
 // owner, 2026-10-17), and what is lit is what is filled on the page
 const BY_LABEL = Object.fromEntries(Object.entries(VERBS).filter(([k]) => !k.startsWith("_"))
   .flatMap(([k, v]) => [v.label, ...Object.values(v.states || {})].map((l) => [l.toLowerCase(), k])));
-export const verbOfLabel = (text) => BY_LABEL[String(text || "").replace(/\s+/g, " ").trim().toLowerCase()] || "";
+let translatedLabels = null;
+export const verbOfLabel = (text) => {
+  const key = String(text || "").replace(/\s+/g, " ").trim().toLowerCase();
+  if (BY_LABEL[key]) return BY_LABEL[key];
+  if (getLocale() !== "zh-CN") return "";
+  if (!translatedLabels) translatedLabels = Object.fromEntries(Object.entries(VERBS).filter(([k]) => !k.startsWith("_"))
+    .flatMap(([k, v]) => [v.label, ...Object.values(v.states || {})].map((s) => [t(s).toLowerCase(), k])));
+  return translatedLabels[key] || "";
+};
 const filled = (b) => /\bMuiButton-contained\b/.test(String(b?.className || ""));
 export function pagePress(root, btn) {
   const pressed = verbOfLabel(btn?.textContent);

@@ -1,4 +1,6 @@
 // NEW → MEETING's words and asks, kept out of the component so they are tested on their own (NewMeeting.jsx, calwrite.suggest / draft_new).
+import { t } from "./i18n.js";
+
 export const LENGTHS = [15, 30, 45, 60];
 export const WITHIN = [
   { key: "", label: "Soon" },
@@ -40,8 +42,14 @@ export function typedSlot(day, time, minutes) {
 export function seenLine(got) {
   const read = got?.read || [], unread = got?.unread || [];
   if (!read.length && !unread.length) return "";
-  if (!unread.length) return `Free on your calendar and on ${read.length === 1 ? read[0] + "'s" : "everyone's"}.`;
-  const who = unread.join(", ");
-  return read.length ? `Free on yours and ${read.join(", ")}'s - ${who} ${unread.length === 1 ? "does" : "do"} not share a calendar with you, so check with them.`
-    : `Free on your calendar - ${who} ${unread.length === 1 ? "does" : "do"} not share a calendar with you, so check with them.`;
+  if (!unread.length) return read.length === 1
+    ? t("Free on your calendar and on {person}'s.", { person: read[0] })
+    : t("Free on your calendar and on everyone's.");
+  const people = unread.join(", ");
+  if (read.length) return t(unread.length === 1
+    ? "Free on yours and {read}'s - {people} does not share a calendar with you, so check with them."
+    : "Free on yours and {read}'s - {people} do not share a calendar with you, so check with them.", { read: read.join(", "), people });
+  return t(unread.length === 1
+    ? "Free on your calendar - {people} does not share a calendar with you, so check with them."
+    : "Free on your calendar - {people} do not share a calendar with you, so check with them.", { people });
 }

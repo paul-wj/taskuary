@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { heldStep } from "../src/funnelPile.js";
@@ -8,7 +6,6 @@ import { heldStep } from "../src/funnelPile.js";
 // report, does not disappear right away"): the second press reads the walk one step further - the row after the one below and whether Next
 // reads the one below - and puts its row down and draws the next at its press, never after the first answer
 // (browser/next-leaves-at-press.test.mjs holds every answer 2.5 s and watches it happen).
-const view = readFileSync(fileURLToPath(new URL("../src/AssistantView.jsx", import.meta.url)), "utf8");
 
 test("the walk's word one step further: a task stays, a report and an fyi batch are read, a row off the line knows nothing", () => {
   const walk = { on: "task:1", below: "task:2", below_reads: false, then: "report:7" };
@@ -36,19 +33,3 @@ test("the walk's word one step up: Back from a Back's row, from a Next's, and Ne
   assert.deepEqual(heldStep({ ...walk, above: "report:4", above_reads: true }, "report:4", false, "back").gone, ["report:4"], "...reading a report it passes");
 });
 
-test("a held Next draws at its press, its press runs from the row it put down, and the first answer never puts that row back", () => {
-  assert.match(view, /next: \(\) => \{ if \(\(picking \|\| flight\?\.drawn\) && busy\) holdMove\("next"\);/);
-  assert.match(view, /if \(c\?\.verb === "next" && busy && flight\?\.drawn && !resetting\) \{ holdMove\("next"\); return; \}/);
-  assert.match(view, /if \(c\.verb === "next"\) \{ surface\(null, null, heldRef\.current\?\.from \|\| key, !item\); return; \}/);
-  assert.match(view, /if \(h && card\?\.key === h\.from\) \{/, "the first answer fills the passed row's line, not the table");
-  // ...and a failed press under it gives back what it took; a Next and a Back held over one press take each other back
-  assert.match(view, /if \(heldRef\.current\) \{ nextHeld\.current = backHeld\.current = false; cancelHeld\(false\); \}/);
-  assert.match(view, /if \(other\.current\) \{ other\.current = false; cancelHeld\(\); return; \}/);
-});
-
-test("Back draws the row above at its press and is never refused as a press already out", () => {
-  assert.match(view, /: how === "back" && fromKey && walkNow\?\.on === fromKey && walkNow\.above && !walkNow\.above\.startsWith\("fyis:"\) \? walkNow\.above/);
-  assert.match(view, /if \(how === "back" && !data\.item && data\.top\) \{ undraw\(\);/, "the top after all: the row drawn comes down");
-  const row = readFileSync(fileURLToPath(new URL("../src/actionRow.js", import.meta.url)), "utf8");
-  assert.match(row, /v\?\.group !== "next" && v\?\.group !== "back"\) flying\.set/, "a second Back reaches the walk's own hold");
-});

@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 import { createPortal } from "react-dom";
 import { says, subState } from "./laneSays.js";
 import {
@@ -49,7 +51,14 @@ import { withoutAsked } from "./askOnce.js";
 import ReviewDecision from "./ReviewDecision.jsx";
 import BriefLine from "./BriefLine.jsx";
 
-const errText = (e) => e?.response?.data?.detail || e?.message || "The assistant could not respond.";
+const errText = (e) => e?.response?.data?.detail || e?.message || { source: "The assistant could not respond." };
+const shownErr = (err) => err?.source ? t(err.source, err.values) : err;
+const RESUME_NOTICES = new Set([
+  "Continuing from the saved conversation.",
+  "Continuing from the saved conversation with the selected provider.",
+  "The original session could not be resumed. Restored from the saved conversation.",
+  "Continuing from the saved conversation with the backup provider.",
+]);
 const textOf = (message) => (message?.content || []).filter((p) => p.type === "text").map((p) => p.text).join("\n").trim();
 // the brief an agent was started on is Taskuary's, not the owner's (general.BRIEF_ACTOR): carried to UserMessage on the message's metadata
 const initial = (messages) => (messages || []).map((m) => ({
@@ -61,7 +70,7 @@ const initial = (messages) => (messages || []).map((m) => ({
 // ONE PART carries the turn's working: the steps every backend maps into (agentSteps.js), drawn in the order they happened - its own
 // words, then a plain line per thing it did - above the answer. It was a row per raw tool call and then an "Agent progress" box saying
 // the same commands again (the owner, 2026-10-21: "make the output on the general agent canvas more readable, not some greps and gets").
-const stepsPart = (trace, opts) => { const steps = stepsOf(trace, opts); return steps.length ? [{ type: "data", name: "agent_steps", data: { steps } }] : []; };
+const stepsPart = (trace, opts) => { const steps = stepsOf(trace, opts); return steps.length ? [{ type: "data", name: "agent_steps", data: { steps, trace: [...trace], opts } }] : []; };
 
 // assistant-ui owns the response being streamed in the currently mounted pane. The task's
 // session owns it when this pane is not mounted. Rehydrate that same tool/progress trace when a
@@ -90,12 +99,13 @@ export const messagesWithTrace = (messages, session, keepStart = true) => {
 // progress card reading "Started Azure OpenAI (API)" and then sitting still looks frozen (owner,
 // 2026-09-07). The same dots whichever backend answers - an API connector or a CLI agent - and
 // they show for a turn this pane is streaming as well as one that is running without it.
-const Thinking = ({ provider }) => (
-  <div className="tq-aui-thinking" role="status" aria-live="polite">
+const Thinking = ({ provider }) => {
+  useLocale();
+  return <div className="tq-aui-thinking" role="status" aria-live="polite">
     <i /><i /><i />
-    <span>{provider ? `${provider} is working…` : "Working on it…"}</span>
-  </div>
-);
+    <span>{provider ? t("{provider} is working…", { provider }) : t("Working on it…")}</span>
+  </div>;
+};
 
 // AN AGENT AT WORK, in one band. The machinery was all there - a CLI brain really does emit its
 // tool calls, and the window really did draw them - but it drew eight identical grey rows each
@@ -107,6 +117,7 @@ const Thinking = ({ provider }) => (
 // Four facts, said once, above the trail. Nothing here is new information - the trace and the task
 // already carried all of it (agentWork.js).
 const AgentBand = ({ name, provider, work, since, starting = "" }) => {
+  useLocale();
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
   const doing = doingNow(work), trail = trailText(work);
@@ -124,12 +135,12 @@ const AgentBand = ({ name, provider, work, since, starting = "" }) => {
     <div className="tq-aui-band" role="status" aria-live="polite">
       <div className="tq-aui-band-head">
         <span className="tq-aui-band-dot" />
-        <b>{name}</b><span>is working</span>
+        <b>{name}</b><span>{t("is working")}</span>
         <em>{since ? elapsedText(now - since) : provider || ""}</em>
       </div>
       <div className="tq-aui-band-now">
-        {doing || (provider ? `${provider} is thinking…` : "Thinking…")}
-        {work.steps.length > 1 && <span className="tq-aui-band-step"> — step {work.steps.length}</span>}
+        {doing || (provider ? t("{provider} is thinking…", { provider }) : t("Thinking…"))}
+        {work.steps.length > 1 && <span className="tq-aui-band-step">{t(" — step {count}", { count: work.steps.length })}</span>}
       </div>
       {/* one segment per step it has actually taken. No total: the agent never declares a plan, and
           a made-up denominator is a confident number that is wrong. */}
@@ -143,7 +154,7 @@ const AgentBand = ({ name, provider, work, since, starting = "" }) => {
           but that it is holding real sources on the right subject, before it has finished. */}
       {!!work.sources.length && (
         <div className="tq-aui-band-so">
-          <span>what it has so far</span>
+          <span>{t("what it has so far")}</span>
           <div>{plural(work.sources.length, "source")} —{" "}
             {work.sources.map((src) => <em key={src}>{src}</em>)}</div>
         </div>
@@ -169,16 +180,23 @@ const AssistantText = ({ text }) => {
     {files.map((f) => <PublishedPages key={f} pages={[outputRow(at.tid, f, at.listed)]} open={isShown(f)} />)}
   </>;
 };
-const UserMessage = () => useAuiState((s) => !!s.message.metadata?.custom?.brief) ? (
+const InterfaceError = ({ data }) => {
+  useLocale();
+  return <div role="alert">⚠ {t(data.source, data.values)}</div>;
+};
+const UserMessage = () => {
+  useLocale();
+  return useAuiState((s) => !!s.message.metadata?.custom?.brief) ? (
   <MessagePrimitive.Root className="tq-aui-message tq-aui-brief">
     <BriefLine><MessagePrimitive.Parts /></BriefLine>
   </MessagePrimitive.Root>
 ) : (
   <MessagePrimitive.Root className="tq-aui-message tq-aui-user">
-    <div className="tq-aui-role">you</div>
+    <div className="tq-aui-role">{t("you")}</div>
     <div className="tq-aui-user-bubble"><MessagePrimitive.Parts /></div>
   </MessagePrimitive.Root>
 );
+};
 // what each answer published or showed, by the answer's id (the server's `after`): drawn under it, open - the agent chose it
 const ShownCtx = React.createContext({});
 const AssistantMessage = () => {
@@ -189,7 +207,7 @@ const AssistantMessage = () => {
     <MessagePrimitive.Root className="tq-aui-message tq-aui-agent">
       <div className="tq-aui-role">{React.useContext(AgentNameCtx)}</div>
       <div className="tq-aui-agent-body">
-        <MessagePrimitive.Parts components={{ Text: AssistantText, data: { by_name: { agent_steps: AgentSteps } } }} />
+        <MessagePrimitive.Parts components={{ Text: AssistantText, data: { by_name: { agent_steps: AgentSteps, interface_error: InterfaceError } } }} />
         {!!rest.length && <PublishedPages pages={rest} open />}
       </div>
     </MessagePrimitive.Root>
@@ -204,7 +222,7 @@ const mentioned = (messages, kind) => {
 };
 
 const reviewTarget = (r) => r.FromName && r.FromEmail ? `${r.FromName} <${r.FromEmail}>`
-  : r.FromName || r.FromEmail || r.ConversationId || "this conversation";
+  : r.FromName || r.FromEmail || r.ConversationId || t("this conversation");
 const reviewDraft = (r) => {
   if (r.Kind === "action") {
     try {
@@ -216,6 +234,7 @@ const reviewDraft = (r) => {
 };
 
 export function DockActions({ messages, expanded = false, onNavigate, onChanged }) {
+  useLocale();
   const [reviews, setReviews] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [edits, setEdits] = useState({});
@@ -266,9 +285,7 @@ export function DockActions({ messages, expanded = false, onNavigate, onChanged 
         verb, final_text: verb === "approve" ? finalText : null, note: null,
       });
       if (data.send_error) throw new Error(data.send_error);
-      const message = verb === "approve"
-        ? (r.Kind === "action" ? "Action completed." : `Sent to ${reviewTarget(r)}.`) + (r.TaskId ? ` The task stays open until you ${btn("close")}.` : "")
-        : verb === "reject" ? "Action dismissed; nothing was run." : "Marked done; no reply was sent.";
+      const message = { kind: "decision", verb, review: r };
       setEdits((old) => { const next = { ...old }; delete next[r.ReviewId]; return next; });
       await refresh(message);
     } catch (e) { setError(errText(e)); }
@@ -280,79 +297,84 @@ export function DockActions({ messages, expanded = false, onNavigate, onChanged 
       const { data } = await api.post(`/api/reviews/${r.ReviewId}/draft`);
       setReviews((old) => old.map((x) => x.ReviewId === r.ReviewId ? { ...x, DraftText: data.draft, DraftNeeds: data.needs || null } : x));
       setEdits((old) => { const next = { ...old }; delete next[r.ReviewId]; return next; });
-      setReceipt(data.needs ? draftState({ DraftNeeds: data.needs }).line : "Draft refreshed. Review the text, then use the action button when it is right.");
+      setReceipt(data.needs ? { kind: "needs", needs: data.needs } : { kind: "redraft" });
     } catch (e) { setError(errText(e)); }
     finally { setBusy(""); }
   };
-  const settleTask = async (t, status) => {
-    const key = `task-${t.TaskId}-${status}`; setBusy(key); setError(""); setReceipt("");
+  const settleTask = async (task, status) => {
+    const key = `task-${task.TaskId}-${status}`; setBusy(key); setError(""); setReceipt("");
     try {
-      await api.patch(`/api/tasks/${t.TaskId}`, { Status: status });
-      await refresh(status === "done" ? `${t.ref || `TQ-${String(t.TaskId).padStart(4, "0")}`} completed.`
-        : `${t.ref || `TQ-${String(t.TaskId).padStart(4, "0")}`} dismissed.`);
+      await api.patch(`/api/tasks/${task.TaskId}`, { Status: status });
+      await refresh({ kind: "task", status, ref: task.ref || `TQ-${String(task.TaskId).padStart(4, "0")}` });
     } catch (e) { setError(errText(e)); }
     finally { setBusy(""); }
   };
+  const receiptText = !receipt ? "" : receipt.kind === "decision" ? (receipt.verb === "approve"
+    ? (receipt.review.Kind === "action" ? t("Action completed.") : t("Sent to {target}.", { target: reviewTarget(receipt.review) })) + (receipt.review.TaskId ? t(" The task stays open until you {close}.", { close: btn("close") }) : "")
+    : receipt.verb === "reject" ? t("Action dismissed; nothing was run.") : t("Marked done; no reply was sent."))
+    : receipt.kind === "needs" ? draftState({ DraftNeeds: receipt.needs }).line
+    : receipt.kind === "redraft" ? t("Draft refreshed. Review the text, then use the action button when it is right.")
+    : t(receipt.status === "done" ? "{ref} completed." : "{ref} dismissed.", { ref: receipt.ref });
 
   if (!review && !focusedTask && !receipt && !error) return null;
   return (
     <div className={`tq-dock-actions${expanded ? " tq-dock-actions-expanded" : ""}`}>
       <div className="tq-dock-action-kicker">
-        <span>Action</span>
-        {!!ordered.length && !focusedTask && <em>{cursor + 1} of {ordered.length}</em>}
+        <span>{t("Action")}</span>
+        {!!ordered.length && !focusedTask && <em>{t("{current} of {total}", { current: cursor + 1, total: ordered.length })}</em>}
         <div className="tq-dock-action-nav">
           {ordered.length > 1 && !focusedTask && <>
-            <IconButton size="small" aria-label="Previous action" onClick={() => setCursor((n) => (n - 1 + ordered.length) % ordered.length)}><ChevronLeftIcon /></IconButton>
-            <IconButton size="small" aria-label="Next action" onClick={() => setCursor((n) => (n + 1) % ordered.length)}><ChevronRightIcon /></IconButton>
+            <IconButton size="small" aria-label={t("Previous action")} onClick={() => setCursor((n) => (n - 1 + ordered.length) % ordered.length)}><ChevronLeftIcon /></IconButton>
+            <IconButton size="small" aria-label={t("Next action")} onClick={() => setCursor((n) => (n + 1) % ordered.length)}><ChevronRightIcon /></IconButton>
           </>}
         </div>
       </div>
-      {error && <Alert severity="error" onClose={() => setError("")} sx={{ mb: 0.75, py: 0 }}>{error}</Alert>}
-      {receipt && <Alert severity="success" onClose={() => setReceipt("")} sx={{ mb: review || focusedTask ? 0.75 : 0, py: 0 }}>{receipt}</Alert>}
+      {error && <Alert severity="error" onClose={() => setError("")} sx={{ mb: 0.75, py: 0 }}>{shownErr(error)}</Alert>}
+      {receipt && <Alert severity="success" onClose={() => setReceipt("")} sx={{ mb: review || focusedTask ? 0.75 : 0, py: 0 }}>{receiptText}</Alert>}
       {review && <>
         <div className="tq-dock-action-head">
           <div>
-            <b>{review.Subject || review.Title || (review.Kind === "action" ? "Proposed action" : "Reply ready")}</b>
-            <span>{review.Kind === "action" ? "Review what will run" : `To ${reviewTarget(review)}`}</span>
+            <b>{review.Subject || review.Title || (review.Kind === "action" ? t("Proposed action") : t("Reply ready"))}</b>
+            <span>{review.Kind === "action" ? t("Review what will run") : t("To {target}", { target: reviewTarget(review) })}</span>
           </div>
-          {review.TaskId && <Button size="small" onClick={() => openTask(review.TaskId)}>Open task</Button>}
+          {review.TaskId && <Button size="small" onClick={() => openTask(review.TaskId)}>{t("Open task")}</Button>}
         </div>
         <TextField fullWidth multiline minRows={expanded ? 3 : 2} maxRows={expanded ? 10 : 5}
           value={edits[review.ReviewId] ?? reviewDraft(review)}
           onChange={(e) => setEdits((old) => ({ ...old, [review.ReviewId]: e.target.value }))}
-          placeholder="No draft yet — choose Draft with AI"
+          placeholder={t("No draft yet — choose Draft with AI")}
           sx={{ mt: 0.75, "& textarea": { fontSize: 12.5, lineHeight: 1.48 } }} />
         <div className="tq-dock-action-buttons">
           {review.Kind === "action" ? <>
             <Button size="small" variant="contained" disabled={!!busy} startIcon={<DoneRoundedIcon />}
-              onClick={() => decide(review, "approve")}>{busy ? "Working…" : btn("approve", "action")}</Button>
-            <Button size="small" variant="outlined" color="error" disabled={!!busy} onClick={() => decide(review, "reject")}>Dismiss</Button>
+              onClick={() => decide(review, "approve")}>{busy ? t("Working…") : btn("approve", "action")}</Button>
+            <Button size="small" variant="outlined" color="error" disabled={!!busy} onClick={() => decide(review, "reject")}>{t("Dismiss")}</Button>
           </> : <>
             {!draftCanSend(caps, review) ? null : (
               <Button size="small" variant="contained" disabled={!!busy || !(edits[review.ReviewId] ?? reviewDraft(review)).trim()}
                 startIcon={<SendRoundedIcon />} onClick={() => decide(review, "approve")}>
-                {busy.includes("approve") ? "Sending…" : btn("approve")}
+                {busy.includes("approve") ? t("Sending…") : btn("approve")}
               </Button>
             )}
             <Button size="small" variant="outlined" disabled={!!busy} startIcon={<RefreshRoundedIcon />}
-              onClick={() => redraft(review)}>{busy.includes("redraft") ? "Drafting…" : review.DraftText ? btn("redraft") : btn("redraft", "none")}</Button>
-            <Button size="small" variant="outlined" disabled={!!busy} sx={{ color: "#867f74", borderColor: "#d6cec1" }} title={`${btnHint("close")} - this draft is not sent`} onClick={() => decide(review, "no_reply")}>{btn("close")}</Button>
+              onClick={() => redraft(review)}>{busy.includes("redraft") ? t("Drafting…") : review.DraftText ? btn("redraft") : btn("redraft", "none")}</Button>
+            <Button size="small" variant="outlined" disabled={!!busy} sx={{ color: "#867f74", borderColor: "#d6cec1" }} title={t("{hint} - this draft is not sent", { hint: btnHint("close") })} onClick={() => decide(review, "no_reply")}>{btn("close")}</Button>
           </>}
           <Box sx={{ flex: 1 }} />
-          <Button size="small" onClick={() => onNavigate?.("Assistant")}>All that needs you</Button>
+          <Button size="small" onClick={() => onNavigate?.("Assistant")}>{t("All that needs you")}</Button>
         </div>
       </>}
       {focusedTask && <>
         <div className="tq-dock-action-head">
           <div><b>{focusedTask.ref || `TQ-${String(focusedTask.TaskId).padStart(4, "0")}`} · {focusedTask.Title}</b>
-            <span>{focusedTask.Status} · {level(focusedTask.Priority)} priority</span></div>
+            <span>{focusedTask.Status} · {t("{level} priority", { level: level(focusedTask.Priority) })}</span></div>
         </div>
         <div className="tq-dock-action-buttons">
-          <Button size="small" variant="contained" onClick={() => openTask(focusedTask.TaskId)}>Open task</Button>
+          <Button size="small" variant="contained" onClick={() => openTask(focusedTask.TaskId)}>{t("Open task")}</Button>
           <Button size="small" variant="outlined" disabled={!!busy} startIcon={<DoneRoundedIcon />}
-            title={btnHint("close")} onClick={() => settleTask(focusedTask, "done")}>{busy.includes("done") ? "Marking done…" : btn("close")}</Button>
+            title={btnHint("close")} onClick={() => settleTask(focusedTask, "done")}>{busy.includes("done") ? t("Marking done…") : btn("close")}</Button>
           <Button size="small" variant="outlined" disabled={!!busy} sx={{ color: "#867f74", borderColor: "#d6cec1" }}
-            onClick={() => settleTask(focusedTask, "dropped")}>Dismiss</Button>
+            onClick={() => settleTask(focusedTask, "dropped")}>{t("Dismiss")}</Button>
         </div>
       </>}
     </div>
@@ -365,6 +387,7 @@ export function DockActions({ messages, expanded = false, onNavigate, onChanged 
 // A SIGN-IN it waits on (request id `signin:<site>`, signin.py) also offers the one-time fill page: Taskuary types it into the browser,
 // the agent never sees it. Taking over the browser beside it and pressing Signed in is the other way, as before.
 export function AgentAsks({ asking, name, onAnswer, taskId }) {
+  useLocale();
   const [text, setText] = useState(""), [going, setGoing] = useState(false), [err, setErr] = useState("");
   const site = String(asking.request_id || "").startsWith("signin:") ? asking.request_id.slice(7) : "";
   // ...and its Signed in is a press on EVERY agent's ask (2026-10-25): a terminal CLI's had only the box and a line saying to type it.
@@ -392,19 +415,19 @@ export function AgentAsks({ asking, name, onAnswer, taskId }) {
       {/* WHAT EACH WAY DOES, said on the card (2026-10-25): "Sign in to X ... Type your answer" read as "type the password here", and
           the agent-never-sees-it line lived only in a hover. Words only - the presses are the ones it had. */}
       {site && <span className="tq-aui-asking-hint" data-tq-signin-hint="">
-        {taskId ? "Sign in here opens a page Taskuary types from - the agent never sees it. " : ""}
-        Or sign in yourself in the browser, then press Signed in.</span>}
+        {taskId ? t("Sign in here opens a page Taskuary types from - the agent never sees it. ") : ""}
+        {t("Or sign in yourself in the browser, then press Signed in.")}</span>}
       {(!!choices.length || (site && taskId)) && <div className="tq-aui-asking-choices">
         {site && taskId && <Button size="small" variant="outlined" onClick={fillPage}
-          title={`A one-time page to type the ${site} sign-in - Taskuary fills it into the browser and the agent never sees it`}>Sign in here</Button>}
-        {choices.map((c) => <Button key={c} size="small" variant="outlined" disabled={going} onClick={() => send(c)}>{c}</Button>)}
+          title={t("A one-time page to type the {site} sign-in - Taskuary fills it into the browser and the agent never sees it", { site })}>{t("Sign in here")}</Button>}
+        {choices.map((c) => <Button key={c} size="small" variant="outlined" disabled={going} onClick={() => send(c)}>{site && c === "Signed in" ? t("Signed in") : c}</Button>)}
       </div>}
       <form className="tq-aui-asking-box" onSubmit={(e) => { e.preventDefault(); send(text); }}>
         <TextField size="small" fullWidth value={text} disabled={going} onChange={(e) => setText(e.target.value)}
-          placeholder={site ? "Message the agent - never your password" : "Type your answer"} inputProps={{ "aria-label": `Your answer to ${name}` }} />
-        <Button type="submit" size="small" variant="contained" disableElevation disabled={going || !text.trim()}>{going ? "Sending…" : "Answer"}</Button>
+          placeholder={site ? t("Message the agent - never your password") : t("Type your answer")} inputProps={{ "aria-label": t("Your answer to {name}", { name }) }} />
+        <Button type="submit" size="small" variant="contained" disableElevation disabled={going || !text.trim()}>{going ? t("Sending…") : t("Answer")}</Button>
       </form>
-      {err && <span className="tq-aui-asking-err" role="alert">{err}</span>}
+      {err && <span className="tq-aui-asking-err" role="alert">{shownErr(err)}</span>}
     </div>
   );
 }
@@ -413,6 +436,7 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
   dock = false, dockExpanded = false, prompt, onPromptUsed, onBusyChange, onDockNavigate, onDockChanged,
   serverBusy = false, provider, name = "Taskuary", work, since, revision = 0, asking, onAnswer, drafts = [], acts = [], onDraftDecided, starting = "", noComposer = false,
   onEnded, approve = null }) {
+  useLocale();
   // "working" is only ever true on a WORK window. In the dock nothing below changes at all: the
   // dock is the assistant that helps you run Taskuary, not an agent doing a job (the owner,
   // 2026-09-08: "make sure the ux doesnt change or the general assistants").
@@ -450,7 +474,7 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
           // ...and the page is told the turn is over: the session the stream's `start` handed it stayed "Agent is working", with Stop
           // and save, over a CLI that had died mid-turn - and nothing polls a session the server no longer has (the agents walk, 2026-10-26)
           onEnded?.();
-          yield { content: content(`⚠ ${event.error || "The agent stopped without an answer."}`) };
+          yield { content: event.error ? content(`⚠ ${event.error}`) : [...content(), { type: "data", name: "interface_error", data: { source: "The agent stopped without an answer." } }] };
           return;
         } else if (event.type === "done") {
           onClearAttachments(); onSent(event.payload);
@@ -460,7 +484,7 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
       } catch (e) {
         if (abortSignal?.aborted) return;              // the owner pressed stop; that is not an error
         onEnded?.();
-        yield { content: content(`⚠ ${e?.message || "The assistant could not answer."}`) };
+        yield { content: e?.presentation ? [...content(), { type: "data", name: "interface_error", data: e.presentation }] : e?.message ? content(`⚠ ${e.message}`) : [...content(), { type: "data", name: "interface_error", data: { source: "The assistant could not answer." } }] };
       } finally {
         onBusyChange?.(false);
       }
@@ -540,10 +564,10 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
             <div className="tq-aui-welcome">
               <TaskuaryMark size={22} />
               <div>
-                <div className="tq-aui-welcome-title">{dock ? "What should we look at?" : "Work on this with your assistant"}</div>
+                <div className="tq-aui-welcome-title">{dock ? t("What should we look at?") : t("Work on this with your assistant")}</div>
                 <div className="tq-aui-welcome-copy">{dock
-                  ? "I can walk you through what arrived, what needs you, and what your agents finished."
-                  : "Research, plan, write, analyze, or coordinate. This conversation stays on the task."}</div>
+                  ? t("I can walk you through what arrived, what needs you, and what your agents finished.")
+                  : t("Research, plan, write, analyze, or coordinate. This conversation stays on the task.")}</div>
               </div>
             </div>
           )}
@@ -572,7 +596,7 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
           {!dock && !!drafts?.length && (
             <Box data-tq-playbook-drafts="" sx={{ mt: 1.5, mx: { xs: 1, sm: 2 }, p: 1.5, border: `1px solid ${BORDER}`, borderRadius: 1.5, bgcolor: "#fff" }}>
               <Typography variant="caption" sx={{ display: "block", color: DIM, mb: 0.75 }}>
-                Approve saves this playbook to Reports → Playbooks, and triage starts matching new mail against its when line. Nothing is sent to anyone.</Typography>
+                {t("Approve saves this playbook to Reports → Playbooks, and triage starts matching new mail against its when line. Nothing is sent to anyone.")}</Typography>
               {drafts.map((r) => <ReviewDecision key={r.ReviewId} review={r} onChanged={onDraftDecided} />)}
             </Box>
           )}
@@ -581,7 +605,7 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
           {!dock && !!acts?.length && (
             <Box data-tq-browser-acts="" sx={{ mt: 1.5, mx: { xs: 1, sm: 2 }, p: 1.5, border: `1px solid ${BORDER}`, borderRadius: 1.5, bgcolor: "#fff" }}>
               <Typography variant="caption" sx={{ display: "block", color: DIM, mb: 0.75 }}>
-                The agent's browser waits for your yes. Approve runs exactly this in its browser; Dismiss tells the agent it was not done.</Typography>
+                {t("The agent's browser waits for your yes. Approve runs exactly this in its browser; Dismiss tells the agent it was not done.")}</Typography>
               {acts.map((r) => <ReviewDecision key={r.ReviewId} review={r} onChanged={onDraftDecided} />)}
             </Box>
           )}
@@ -594,7 +618,7 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
             {!!attachmentsRef.current.length && (
               <div className="tq-aui-attachments">
                 {attachmentsRef.current.map((a) => (
-                  <Chip key={a.path} size="small" icon={<AttachFileIcon />} label={a.name}
+                  <Chip key={a.path} size="small" icon={<AttachFileIcon />} label={a.fallbackName ? t("pasted image") : a.name}
                     onDelete={() => onClearAttachments(a.path)} />
                 ))}
               </div>
@@ -605,15 +629,15 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
                 run has ENDED the bar offers Continue - and a box beside it read as a second way in (the owner, 2026-10-26: "before I hit
                 continue it has a space to type into the agent? coding agents don't have that"). `noComposer` is that Continue (TaskPage). */}
             {closedChat ? <div className="tq-aui-hint" role="status" style={{ padding: "10px 4px" }}>
-              This task is closed. Press {btn("reopen")}, then {btn("continue")}, to pick the conversation back up.</div> : noComposer ? null : <>
+              {t("This task is closed. Press {reopen}, then {continue}, to pick the conversation back up.", { reopen: btn("reopen"), continue: btn("continue") })}</div> : noComposer ? null : <>
             <ComposerPrimitive.Root className="tq-aui-composer">
-              <IconButton size="small" onClick={onAttach} title="Attach an image" className="tq-aui-attach">
+              <IconButton size="small" onClick={onAttach} title={t("Attach an image")} className="tq-aui-attach">
                 <AttachFileIcon sx={{ fontSize: 18 }} />
               </IconButton>
               <ComposerPrimitive.Input
                 className="tq-aui-input"
                 /* ...by the name the pane shows (kinds.json `shown`): an analyst's box said "the assistant" (the email walk, 2026-10-29) */
-                placeholder={working ? "Add something for it to pick up…" : `Tell ${dock ? "Taskuary" : name} what to do next…`}
+                placeholder={working ? t("Add something for it to pick up…") : t("Tell {name} what to do next…", { name: dock ? "Taskuary" : name })}
               />
               {/* the one mic, dictating into the box - every other composer had it and this one did not (the owner,
                   2026-09-29: "where is mic to ask it question?") */}
@@ -623,11 +647,11 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
               }} />
               {/* stopping is an ACT: closing this page is not one. The button tells the server
                   to stop the run; abandoning the tab just detaches from it (server.py). */}
-              <ComposerPrimitive.Cancel className="tq-aui-cancel" aria-label="Stop response"
+              <ComposerPrimitive.Cancel className="tq-aui-cancel" aria-label={t("Stop response")}
                 onClick={onStop}><CloseIcon fontSize="small" /></ComposerPrimitive.Cancel>
-              <ComposerPrimitive.Send className="tq-aui-send" aria-label="Send"><SendIcon fontSize="small" /></ComposerPrimitive.Send>
+              <ComposerPrimitive.Send className="tq-aui-send" aria-label={t("Send")}><SendIcon fontSize="small" /></ComposerPrimitive.Send>
             </ComposerPrimitive.Root>
-            <div className="tq-aui-hint">Enter sends · Shift+Enter adds a line · paste or attach an image</div></>}
+            <div className="tq-aui-hint">{t("Enter sends · Shift+Enter adds a line · paste or attach an image")}</div></>}
           </div>
       </ThreadPrimitive.Root>
     </AssistantRuntimeProvider>
@@ -637,6 +661,7 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
 export function GeneralWorkspace({ task, onSession, onAnswered, compact = false, dock = false, toolsAt = null,
   dockExpanded = false, prompt, onPromptUsed, onBusyChange, onDockNavigate, onDockChanged,
   onDockNewChat, noAiSaid = false, noTools = false, noComposer = false, liveSid = "", reread = 0, approve = null }) {
+  useLocale();
   const [data, setData] = useState(null);
   const [connectorId, setConnectorId] = useState("");
   const [model, setModel] = useState("");
@@ -707,7 +732,7 @@ export function GeneralWorkspace({ task, onSession, onAnswered, compact = false,
       const added = [];
       for (const file of images) {
         const r = await api.post(`/api/tasks/${task.TaskId}/waitroom/image`, file, { headers: { "Content-Type": file.type } });
-        added.push({ name: file.name || "pasted image", path: r.data.path });
+        added.push({ name: file.name || "pasted image", fallbackName: !file.name, path: r.data.path });
       }
       setAttachments((old) => [...old, ...added]);
     } catch (e) { setError(errText(e)); }
@@ -855,15 +880,15 @@ export function GeneralWorkspace({ task, onSession, onAnswered, compact = false,
       updateProvider(e.target.value, provider?.model || "");
     }}
       sx={{ height: 27, fontSize: 11.5, minWidth: 96, maxWidth: 220, bgcolor: PANEL2, flexShrink: 1 }}>
-      {!data?.providers?.length && <MenuItem value="">No agent connected</MenuItem>}
+      {!data?.providers?.length && <MenuItem value="">{t("No agent connected")}</MenuItem>}
       {(data?.providers || []).map((p) => <MenuItem key={p.id} value={String(p.id)}>{p.label}</MenuItem>)}
     </Select>
-    <TextField size="small" value={model} placeholder="provider default" onChange={(e) => setModel(e.target.value)}
+    <TextField size="small" value={model} placeholder={t("provider default")} onChange={(e) => setModel(e.target.value)}
       onBlur={() => connectorId && updateProvider(connectorId, model)} sx={{ width: 150, flexShrink: 0, "& input": { py: 0.55, fontSize: 11.5 } }} />
     <Button size="small" onClick={toggleFull} sx={{ minWidth: 0, fontSize: 11, flexShrink: 0 }}
-      title={full ? "Back to the page (Esc)" : "Give this conversation and its browser the whole window"}
+      title={full ? t("Back to the page (Esc)") : t("Give this conversation and its browser the whole window")}
       startIcon={full ? <CloseFullscreenIcon sx={{ fontSize: 13 }} /> : <OpenInFullIcon sx={{ fontSize: 13 }} />}>
-      {full ? "Exit full screen" : "Full screen"}
+      {full ? t("Exit full screen") : t("Full screen")}
     </Button>
   </>);
   return (
@@ -895,46 +920,46 @@ export function GeneralWorkspace({ task, onSession, onAnswered, compact = false,
           updateProvider(e.target.value, provider?.model || "");
         }} MenuProps={{ sx: { zIndex: 1600 } }}
           sx={{ height: 26, minWidth: 155, maxWidth: 225, flex: 1, fontSize: 10.5, bgcolor: PANEL2 }}>
-          {!data?.providers?.length && <MenuItem value="">No AI connected</MenuItem>}
+          {!data?.providers?.length && <MenuItem value="">{t("No AI connected")}</MenuItem>}
           {(data?.providers || []).map((p) => <MenuItem key={p.id} value={String(p.id)}>
-            {p.label}{p.type === "cli" ? " · tool-capable" : " · fast"}
+            {p.label}{p.type === "cli" ? t(" · tool-capable") : t(" · fast")}
           </MenuItem>)}
         </Select>
         {/* the CLI's own model list, the same one every other picker reads now - typing the name
             of a model that no longer exists was the only way to choose one here (2026-09-18) */}
-        <ModelSelect model={model} size={26} empty="default model" menuProps={{ sx: { zIndex: 1600 } }}
+        <ModelSelect model={model} size={26} empty={t("default model")} menuProps={{ sx: { zIndex: 1600 } }}
           info={{ models: (data?.providers || []).find((p) => String(p.id) === String(connectorId))?.models }}
           onModel={(m) => { setModel(m); if (connectorId) updateProvider(connectorId, m); }}
           sx={{ minWidth: 118, maxWidth: 190, fontSize: 10.5, bgcolor: PANEL2 }} />
         <Button size="small" variant="outlined" startIcon={<AddCommentOutlinedIcon sx={{ fontSize: 14 }} />}
           disabled={busy || newChatBusy || !shownMessages.length} onClick={() => setConfirmNewChat(true)}
-          title="Archive this conversation and start a fresh Taskuary chat"
+          title={t("Archive this conversation and start a fresh Taskuary chat")}
           sx={{ minWidth: 0, px: 0.8, whiteSpace: "nowrap", textTransform: "none", fontSize: 10.5 }}>
-          {newChatBusy ? "Starting…" : "New chat"}
+          {newChatBusy ? t("Starting…") : t("New chat")}
         </Button>
       </Box>}
       {dock && confirmNewChat && (
-        <Box role="group" aria-label="Confirm new chat" sx={{ display: "flex", alignItems: "center", gap: 0.75,
+        <Box role="group" aria-label={t("Confirm new chat")} sx={{ display: "flex", alignItems: "center", gap: 0.75,
           px: 1.15, py: 0.8, flexWrap: "wrap", bgcolor: "#f8f5ee", borderBottom: `1px solid ${BORDER}` }}>
           <Box sx={{ flex: 1, minWidth: 210 }}>
-            <Typography sx={{ color: INK, fontSize: 11.5, fontWeight: 600 }}>Start a new chat?</Typography>
+            <Typography sx={{ color: INK, fontSize: 11.5, fontWeight: 600 }}>{t("Start a new chat?")}</Typography>
             <Typography sx={{ color: DIM, fontSize: 10.5 }}>
-              This conversation is archived. Tasks, reviews, and action cards stay.
+              {t("This conversation is archived. Tasks, reviews, and action cards stay.")}
             </Typography>
           </Box>
           <Button size="small" onClick={() => setConfirmNewChat(false)}
-            sx={{ textTransform: "none", fontSize: 10.5 }}>Keep this chat</Button>
+            sx={{ textTransform: "none", fontSize: 10.5 }}>{t("Keep this chat")}</Button>
           <Button size="small" variant="contained" disableElevation onClick={startNewChat}
-            sx={{ textTransform: "none", fontSize: 10.5 }}>Start new chat</Button>
+            sx={{ textTransform: "none", fontSize: 10.5 }}>{t("Start new chat")}</Button>
         </Box>
       )}
-      {error && <Alert severity="error" sx={{ borderRadius: 0, py: 0 }}>{error}</Alert>}
+      {error && <Alert severity="error" sx={{ borderRadius: 0, py: 0 }}>{shownErr(error)}</Alert>}
       {dock && busy && (
         <Box sx={{ display: "flex", alignItems: "center", gap: 1, px: 1.25, py: 0.5, bgcolor: PANEL2,
           borderBottom: `1px solid ${BORDER}` }}>
           <CircularProgress size={11} />
           <Typography variant="caption" sx={{ color: DIM }}>
-            still working on your last message — it keeps going whether or not this is open
+            {t("still working on your last message — it keeps going whether or not this is open")}
           </Typography>
         </Box>
       )}
@@ -944,22 +969,22 @@ export function GeneralWorkspace({ task, onSession, onAnswered, compact = false,
       {/* ...but not where it is already said or no longer matters (`noAiSaid`, the owner 2026-10-25): a closed task, or a failure whose own
           line is that no AI is connected - the banner was the same fact a third time under it */}
       {!data?.providers?.length && !noAiSaid && <Alert severity="info" data-tq-no-ai="" sx={{ borderRadius: 0, py: 0, alignItems: "center" }}
-        action={<ConnectAi variant="outlined" />}>No AI is connected, so this work cannot run yet - connect one under {placeName("ai")}.</Alert>}
-      {session?.resume_notice && <Typography sx={{ px: 1.5, py: 0.5, fontSize: 12, color: FAINT }}>{session.resume_notice}</Typography>}
+        action={<ConnectAi variant="outlined" />}>{t("No AI is connected, so this work cannot run yet - connect one under {place}.", { place: placeName("ai") })}</Alert>}
+      {session?.resume_notice && <Typography sx={{ px: 1.5, py: 0.5, fontSize: 12, color: FAINT }}>{RESUME_NOTICES.has(session.resume_notice) ? t(session.resume_notice) : session.resume_notice}</Typography>}
       {/* A SECOND AGENT'S CONVERSATION IS ITS OWN (Run another agent, general.new_run): the earlier agent's stays on the task, folded
           above it and read only - the thread below is the new one's, never the old one picked back up */}
       {!dock && !!data?.earlier?.length && <Box component="details" data-tq-earlier-run="" sx={{ px: 1.5, py: 0.4, borderBottom: `1px solid ${BORDER}`, flexShrink: 0 }}>
         <Box component="summary" sx={{ cursor: "pointer", color: FAINT, fontSize: 12, fontWeight: 600, "&:hover": { color: INK } }}>
-          The earlier agent's conversation · {plural(data.earlier.length, "message")}</Box>
+          {t("The earlier agent's conversation · {count}", { count: plural(data.earlier.length, "message") })}</Box>
         <Box sx={{ maxHeight: 260, overflow: "auto", py: 0.5, fontSize: 12.5, color: INK }}>
           {data.earlier.map((m) => <Box key={m.id} sx={{ py: 0.4 }}>
             {m.brief ? <BriefLine text={textOf(m)} /> : <>
-              <Box component="span" sx={{ color: FAINT, fontWeight: 600, fontSize: 11 }}>{m.role === "user" ? "You" : name}</Box>
+              <Box component="span" sx={{ color: FAINT, fontWeight: 600, fontSize: 11 }}>{m.role === "user" ? t("You") : name}</Box>
               <Md text={textOf(m)} /></>}</Box>)}
         </Box>
       </Box>}
       <input ref={fileRef} hidden type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple onChange={(e) => upload(e.target.files)} />
-      {uploading && <Box sx={{ px: 1, py: 0.5, color: FAINT, fontSize: 11 }}>Attaching image…</Box>}
+      {uploading && <Box sx={{ px: 1, py: 0.5, color: FAINT, fontSize: 11 }}>{t("Attaching image…")}</Box>}
       <Box sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
         {/* ALWAYS inside the pane, session or not: a session that arrives mid-turn (`started`) must not
             change the tree around the thread, or the answer streaming into it is remounted away

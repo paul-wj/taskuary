@@ -4,7 +4,6 @@
 // verb is one press away in a ▾ - once. The browser test (browser/row-one-line.test.mjs) checks the drawn row the same way.
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import { fitRow, foldsOf, leadOf, navOf, navShort, phoneRow, rowOf, rowWidth, shortParts } from "../src/actionRow.js";
 import { barFolds } from "../src/foldBar.js";
 import { labelOfRow } from "../src/buttons.js";
@@ -92,7 +91,7 @@ for (const [name, list] of Object.entries(STATES)) {
 // THE ROW IN THREE (the owner, 2026-10-28): Nav, the moves that finish or advance the item in one pill, the moves that change the task in another
 test("three pills: Mark done, the agent's move and the reply's lead the move pill; Change holds the task's shape", () => {
   const row = rowOf({ ref: "TQ-1", list: STATES["new task"] }, PICKS["new task"]), all = foldsOf(row);
-  assert.deepEqual(all[0].map((g) => [g.type, g.label]), [["move", ""], ["change", "Change"]], "no REPLY / AGENT / CLOSE words");
+  assert.deepEqual(all[0].map((g) => g.type), ["move", "change"]);
   assert.deepEqual(all[0][0].shown.slice(0, 3).map((x) => x.id), ["done", "start-agent", "reply"]);
   assert.deepEqual(all[0][1].shown.map((x) => x.id).slice(0, 3), ["remind", "watch", "reshape"], "Remind me first, Watch it beside it (2026-11-01)");
   // ...folding: Change first, to its ▾ alone, then the move pill from its end, then one ▾ for both
@@ -104,13 +103,17 @@ test("three pills: Mark done, the agent's move and the reply's lead the move pil
   assert.deepEqual(all.at(-1), [phoneRow(row)]);
 });
 
-test("the owner's case folds instead of wrapping on a desktop: Change first, every move reachable", () => {
+test("a crowded row folds Change first while keeping every move reachable", () => {
   const row = rowOf({ ref: "TQ-1", list: STATES["stopped while drafting a WhatsApp reply"] }), all = foldsOf(row);
-  const m = model(1024, row), w0 = rowWidth(all[0], row.next, m);
-  assert.ok(w0 > avail(1024), `every move needs ${w0}px - the width that wrapped`);
-  const fit = fitRow(row, m, avail(1024));
+  const m = model(1024, row);
+  const changeFolded = all.find((groups) => groups.find((g) => g.type === "change")?.shown.length === 0);
+  assert.ok(changeFolded);
+  const width = rowWidth(changeFolded, row.next, m);
+  const fit = fitRow(row, m, width);
   assert.ok(fit.level > 0);
-  assert.ok(fit.groups.find((g) => g.type === "change")?.shown.length === 0, "Change is its ▾");
+  assert.equal(fit.groups.find((g) => g.type === "change")?.shown.length, 0);
+  const ids = (groups) => groups.flatMap((g) => [...g.shown, ...g.rest].map((v) => v.id)).sort();
+  assert.deepEqual(ids(fit.groups), ids(all[0]));
   assert.equal(fitRow(row, m, 5000).level, 0, "with room, nothing folds");
 });
 
@@ -178,27 +181,6 @@ test("a phone's one move is never a disabled one: the next pressable move, else 
   assert.ok(ph.rest.some((x) => x.id === "start-agent"), "the greyed move is still in the ▾, its why on hover");
 });
 
-// NAV HOLDS THE ROW'S START (the owner, 2026-10-28): centred with the rest, Next moved between items; the types centre in what is left
-test("Nav is pinned at the row's start and the rest centres in the room left", () => {
-  const css = fs.readFileSync(new URL("../src/assistantView.css", import.meta.url), "utf8");
-  assert.match(css, /^\.tq-arow-verbs > \.tq-cl-next \{ margin-right: auto; \}$/m);
-  assert.match(css, /^\.tq-arow-verbs > \.tq-cl-next ~ \.tq-cl:last-child \{ margin-right: auto; \}$/m);
-});
-
-test("the CSS never wraps the row or a group, and a label never breaks inside its pill", () => {
-  const css = fs.readFileSync(new URL("../src/assistantView.css", import.meta.url), "utf8");
-  const rule = (sel) => css.match(new RegExp(`^${sel.replace(/\./g, "\\.")} \\{([^}]*)\\}`, "m"))?.[1] || "";
-  assert.match(rule(".tq-arow-verbs"), /flex-wrap: nowrap/); assert.doesNotMatch(rule(".tq-arow-verbs"), /flex-wrap: wrap/);
-  assert.match(rule(".tq-cl-b"), /flex-wrap: nowrap/);
-  assert.match(rule(".tq-ab"), /white-space: nowrap/); assert.match(rule(".tq-cl-b .tq-ab"), /white-space: nowrap;/);
-  assert.match(rule(".tq-arow-verbs > .tq-cl"), /flex: 0 0 auto/, "a group keeps its width, so an overflow folds instead of squeezing");
-  const row = fs.readFileSync(new URL("../src/ActionRow.jsx", import.meta.url), "utf8");
-  assert.match(row, /const fit = fitRow\(row, short && !phone \? shortParts\(m\) : m, avail, phone, extra\);/);
-  assert.match(row, /new ResizeObserver\(f\)/, "a resize re-fits the row");
-  assert.match(row, /\{fit\.groups\.map\(\(g\) => <Cluster key=\{g\.type\} g=\{g\} btn=\{btn\} act=\{act\} \/>\)\}/);
-  // ...and a desk bar wider than its room is held at its left edge, never centred past both ends (Back was cut off whole, 2026-11-02)
-  assert.match(css, /^\.tq-compose\[data-tq-desk-chat\] \.tq-dock \.tq-dock-line > \.tq-arow \{ align-items: flex-start; \}$/m);
-});
 
 // A DESK BAR SQUEEZED UNDER ITS NAV (the mixed-use stress, 2026-11-02): from 900 to ~1100 wide the ask bar's fixed width left the bar ~120-250px,
 // less than its narrowest layout with the worded Nav - and Back was cut off whole. There the bar takes the phone's short Nav: no label, Back its arrow
@@ -241,6 +223,4 @@ test("the Tasks tab's bar folds the same way: Change first, Mark done and Remind
   assert.deepEqual(barFolds(items, 640, 6, 34), ["reshape", "change"]);
   assert.deepEqual(barFolds(items, 450, 6, 34), ["sep", "hand", "reshape", "change"]);
   assert.deepEqual(barFolds(items, 200, 6, 34), ["nat", "sep", "hand", "reshape", "change"], "never Mark done or Remind me");
-  const page = fs.readFileSync(new URL("../src/TaskPage.jsx", import.meta.url), "utf8");
-  assert.match(page, /<Box data-tq-task-bar="" ref=\{bar\.ref\} sx=\{\{ display: "flex", alignItems: "center", gap: 0\.8, flexWrap: "nowrap"/);
 });

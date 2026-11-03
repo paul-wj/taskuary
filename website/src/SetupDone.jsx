@@ -4,6 +4,8 @@
 import React, { useEffect, useRef } from "react";
 import { Box, Button, Typography } from "@mui/material";
 import { DIM } from "./theme.jsx";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 const COLORS = ["#4f6d5a", "#c08a3e", "#8a5a83", "#4a6a8a", "#b5523b", "#d8b45a"];
 
@@ -41,26 +43,27 @@ function Confetti() {
 // `aiError`: the AI failing on the real mail. Then it is not complete: "reading and sorting your mail" with a big Go to my day stood over
 // a line saying the AI was not sorting anything (the non-coder audit, 2026-10-17) - the problem, and Change AI as the one big button
 export default function SetupDone({ onDay, onMore, aiError = "", onChangeAi }) {
+  useLocale();
   if (aiError) return (
     <Box data-tq-setup-done="ai-error" sx={{ minHeight: "56vh", display: "flex", flexDirection: "column", alignItems: "center",
       justifyContent: "center", gap: 2, textAlign: "center", px: 2 }}>
-      <Typography component="h2" sx={{ fontSize: 30, fontWeight: 700, letterSpacing: -0.5 }}>One thing left: your AI</Typography>
-      <Typography sx={{ color: DIM, fontSize: 15.5, maxWidth: 560 }}>{aiError} Pick another one - it is checked on a test email first.</Typography>
+      <Typography component="h2" sx={{ fontSize: 30, fontWeight: 700, letterSpacing: -0.5 }}>{t("One thing left: your AI")}</Typography>
+      <Typography sx={{ color: DIM, fontSize: 15.5, maxWidth: 560 }}>{aiError} {t("Pick another one - it is checked on a test email first.")}</Typography>
       <Button variant="contained" disableElevation size="large" onClick={onChangeAi}
-        sx={{ fontSize: 18, px: 5, py: 1.5, borderRadius: 2.5, mt: 1 }}>Change AI</Button>
-      <Button size="small" onClick={onDay} sx={{ color: DIM }}>Go to my day anyway</Button>
+        sx={{ fontSize: 18, px: 5, py: 1.5, borderRadius: 2.5, mt: 1 }}>{t("Change AI")}</Button>
+      <Button size="small" onClick={onDay} sx={{ color: DIM }}>{t("Go to my day anyway")}</Button>
     </Box>
   );
   return (
     <Box data-tq-setup-done="" sx={{ position: "relative", minHeight: "56vh", display: "flex", flexDirection: "column", alignItems: "center",
       justifyContent: "center", gap: 2, textAlign: "center", px: 2 }}>
       <Confetti />
-      <Typography component="h2" sx={{ fontSize: 34, fontWeight: 700, letterSpacing: -0.5, position: "relative", zIndex: 1 }}>Setup complete</Typography>
+      <Typography component="h2" sx={{ fontSize: 34, fontWeight: 700, letterSpacing: -0.5, position: "relative", zIndex: 1 }}>{t("Setup complete")}</Typography>
       <Typography sx={{ color: DIM, fontSize: 15.5, maxWidth: 520, position: "relative", zIndex: 1 }}>
-        Taskuary is reading and sorting what came in. Your day is ready - everything waiting, most important first.</Typography>
+        {t("Taskuary is reading and sorting what came in. Your day is ready - everything waiting, most important first.")}</Typography>
       <Button variant="contained" disableElevation size="large" onClick={onDay}
-        sx={{ fontSize: 18, px: 5, py: 1.5, borderRadius: 2.5, mt: 1, position: "relative", zIndex: 1 }}>Go to my day</Button>
-      <Button size="small" onClick={onMore} sx={{ color: DIM, position: "relative", zIndex: 1 }}>Connect more apps first</Button>
+        sx={{ fontSize: 18, px: 5, py: 1.5, borderRadius: 2.5, mt: 1, position: "relative", zIndex: 1 }}>{t("Go to my day")}</Button>
+      <Button size="small" onClick={onMore} sx={{ color: DIM, position: "relative", zIndex: 1 }}>{t("Connect more apps first")}</Button>
     </Box>
   );
 }

@@ -22,6 +22,8 @@ import { agentName } from "./agentWork.js";
 import { cliName } from "./BoardView.jsx";
 import { shownAgent } from "./kinds.js";
 import { defaultPaneHeight, holdWrappingSessions, movePane, resizedPaneHeight, wallPaneAtPoint, withoutWallSession } from "./wallLayout.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 const COLS = [1, 2, 3, 4];
 // two columns by default - except on a phone, where two panes side by side leave each too narrow
@@ -40,6 +42,7 @@ const savedH = (c) => { try { return Number(localStorage.getItem(hKey(c))) || 0;
 const storeH = (c, h) => { try { h ? localStorage.setItem(hKey(c), String(h)) : localStorage.removeItem(hKey(c)); } catch { /* private */ } };
 
 export default function WallView({ onOpenTask, refresh = 0, active = true }) {
+  useLocale();
   const [sessions, setSessions] = useState(null);   // alive pty sessions with a task
   const [tasks, setTasks] = useState({});           // TaskId -> task row (title, ref)
   const [live, setLive] = useState({});             // TaskId -> {work, StartedAt, ...} from runs/live
@@ -142,14 +145,14 @@ export default function WallView({ onOpenTask, refresh = 0, active = true }) {
       setSessions((ss) => (ss || []).filter((x) => x.sid !== s.sid));
       setOrder((o) => o.filter((sid) => sid !== s.sid));
     } catch (e) {
-      setWrapErrors((w) => ({ ...w, [s.sid]: e?.response?.data?.detail || e?.message || "the task did not close" }));
+      setWrapErrors((w) => ({ ...w, [s.sid]: e?.response?.data?.detail || e?.message || { fallback: "the task did not close" } }));
     } finally { mark(false); load(); }
   };
   // ...a refused close says so on the pane's own status line, the x its retry - it threw and the pane just stayed (the UI audit, 2026-10-21)
   const closeSession = async (c) => {
     setWrapErrors((e) => { const n = { ...e }; delete n[c.sid]; return n; });
     try { await api.delete(`/api/terminals/${c.sid}`); }
-    catch (e) { setWrapErrors((w) => ({ ...w, [c.sid]: e?.response?.data?.detail || e?.message || "the session did not close" })); return; }
+    catch (e) { setWrapErrors((w) => ({ ...w, [c.sid]: e?.response?.data?.detail || e?.message || { fallback: "the session did not close" } })); return; }
     setSessions((ss) => (ss || []).filter((s) => s.sid !== c.sid));
     setOrder((o) => o.filter((sid) => sid !== c.sid));
   };
@@ -176,22 +179,22 @@ export default function WallView({ onOpenTask, refresh = 0, active = true }) {
     <Box>
       {wrapNotice && <Alert severity="error" onClose={() => setWrapNotice("")} sx={{ mb: 1 }}>{wrapNotice}</Alert>}
       {wrapDone && <Alert severity="success" onClose={() => setWrapDone(null)} sx={{ mb: 1 }}
-        action={<Button color="inherit" size="small" onClick={() => onOpenTask?.(wrapDone.tid)}>Open {wrapDone.ref}</Button>}>
+        action={<Button color="inherit" size="small" onClick={() => onOpenTask?.(wrapDone.tid)}>{t("Open {ref}", { ref: wrapDone.ref })}</Button>}>
         {/* the write-up runs on the server and closes the task after it (writeup.py): until the close lands - the task leaves the
             active list, which a task-changed event reloads - the notice says what is true now, in the closing card's own words */}
         {wrapDone.writing && tasks[wrapDone.tid] && !["done", "dropped"].includes(tasks[wrapDone.tid].Status)
-          ? <>Writing up {wrapDone.ref}. The task closes when that is filed.</>
-          : <>Wrapped up {wrapDone.ref}{wrapDone.line ? ` — ${wrapDone.line}` : ""}. {wrapDone.drafting ? "A reply is drafted for your approval on the task; the task closes when you send or dismiss it." : "The task is closed."}</>}
+          ? <>{t("Writing up {ref}. The task closes when that is filed.", { ref: wrapDone.ref })}</>
+          : <>{t("Wrapped up {ref}", { ref: wrapDone.ref })}{wrapDone.line ? ` — ${wrapDone.line}` : ""}. {t(wrapDone.drafting ? "A reply is drafted for your approval on the task; the task closes when you send or dismiss it." : "The task is closed.")}</>}
       </Alert>}
       <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, mb: 1.25 }}>
-        <Typography sx={{ color: INK, fontWeight: 600, fontSize: 15 }}>The wall</Typography>
+        <Typography sx={{ color: INK, fontWeight: 600, fontSize: 15 }}>{t("The wall")}</Typography>
         <Typography variant="caption" sx={{ color: FAINT, fontSize: 10.5, flex: 1 }}>
-          Every live session, side by side — code several agents at once. Drag a pane by its handle to rearrange; drag the bar under it to resize.
+          {t("Every live session, side by side — code several agents at once. Drag a pane by its handle to rearrange; drag the bar under it to resize.")}
         </Typography>
         {!!panes.length && (
           <Box sx={{ display: "flex", gap: 0.25, bgcolor: "#e7eae2", borderRadius: 2, p: "3px" }}>
             {COLS.map((n) => (
-              <Box key={n} component="button" type="button" aria-pressed={cols === n} onClick={() => setColsP(n)} title={n === 1 ? "one at a time" : n === 2 ? "two across (2×2)" : `${n} across`}
+              <Box key={n} component="button" type="button" aria-pressed={cols === n} onClick={() => setColsP(n)} title={n === 1 ? t("one at a time") : n === 2 ? t("two across (2×2)") : t("{count} across", { count: n })}
                 sx={{ minWidth: 30, textAlign: "center", height: 24, lineHeight: "24px", px: 1, borderRadius: 1.5, cursor: "pointer", border: 0, font: "inherit", appearance: "none",
                   ...mono, fontSize: 12, fontWeight: cols === n ? 700 : 500, color: cols === n ? INK : DIM,
                   bgcolor: cols === n ? PANEL : "transparent", boxShadow: cols === n ? "0 1px 2px rgba(30,50,38,.10)" : "none", }}>
@@ -204,22 +207,22 @@ export default function WallView({ onOpenTask, refresh = 0, active = true }) {
 
       {!panes.length ? (
         <Box sx={{ ...pane0, p: 4, textAlign: "center" }}>
-          <Typography variant="body2" sx={{ color: DIM }}>No agent is in a live session right now.</Typography>
+          <Typography variant="body2" sx={{ color: DIM }}>{t("No agent is in a live session right now.")}</Typography>
           <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.5 }}>
-            Start one from a task (Send to a coding agent), and it appears here as a terminal you can work in.
+            {t("Start one from a task (Send to a coding agent), and it appears here as a terminal you can work in.")}
           </Typography>
         </Box>
       ) : (
         <Box sx={{ display: "grid", gridTemplateColumns: `repeat(${cols}, minmax(${cols > 2 ? "260px" : "0px"}, 1fr))`,
           gap: 1.5, alignItems: "start", overflowX: "auto", pb: 0.5 }}>
           {panes.map((s) => {
-            const t = tasks[s.taskId] || {}, l = live[s.taskId];
+            const task = tasks[s.taskId] || {}, l = live[s.taskId];
             const wallRun = l || s, statusWork = l?.work || s.work;
             const waiting = isWaiting(wallRun);
-            const wrapBusy = !!wrapping[s.sid], wrapError = wrapErrors[s.sid];
+            const wrapBusy = !!wrapping[s.sid], error = wrapErrors[s.sid], wrapError = error?.fallback ? t(error.fallback) : error;
             // a chat session reports its agent as the literal string "assistant" - the name of the
             // thing that helps you run Taskuary, not of the agent doing this task's work
-            const who = s.mode === "assistant" ? agentName(t) : shownAgent({ mode: s.mode, cli: s.cli && cliName(s.cli) });   // never the profile (kinds.js)
+            const who = s.mode === "assistant" ? agentName(task) : shownAgent({ mode: s.mode, cli: s.cli && cliName(s.cli) });   // never the profile (kinds.js)
             return (
               <Box key={s.sid} data-wall-pane={s.sid}
                 sx={{ ...pane0, position: "relative", display: "flex", flexDirection: "column", height: paneH, minHeight: MIN_H,
@@ -233,21 +236,21 @@ export default function WallView({ onOpenTask, refresh = 0, active = true }) {
                 <Box sx={{ borderBottom: `1px solid ${BORDER}`, bgcolor: wrapBusy ? ROLES.working.tint : waiting ? ROLES.you.tint : "#faf8f5", flexShrink: 0 }}>
                   <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, px: 0.75, py: 0.35 }}>
                     <Box onPointerDown={(e) => startDrag(e, s.sid)}
-                      role="button" aria-label={`Drag ${t.ref || `TQ-${String(s.taskId).padStart(4, "0")}`} to reorder`} tabIndex={0}
-                      title="Drag to reorder this pane"
+                      role="button" aria-label={t("Drag {ref} to reorder", { ref: task.ref || `TQ-${String(s.taskId).padStart(4, "0")}` })} tabIndex={0}
+                      title={t("Drag to reorder this pane")}
                       sx={{ width: 24, height: 26, display: "flex", alignItems: "center", justifyContent: "center",
                         flexShrink: 0, borderRadius: 1, cursor: "grab", touchAction: "none", userSelect: "none",
                         "&:hover": { bgcolor: "#e7eae2" }, "&:active": { cursor: "grabbing" } }}>
                       <DragIndicatorIcon sx={{ fontSize: 16, color: FAINT }} />
                     </Box>
-                    <Typography sx={{ ...mono, fontSize: 11, fontWeight: 600, color: ACCENT, flexShrink: 0 }}>{t.ref || `TQ-${String(s.taskId).padStart(4, "0")}`}</Typography>
-                    <Typography noWrap title={t.Title || s.cwd}
-                      sx={{ fontSize: 12, fontWeight: 600, color: INK, minWidth: 0, flex: 1 }}>{t.Title || s.cwd}</Typography>
+                    <Typography sx={{ ...mono, fontSize: 11, fontWeight: 600, color: ACCENT, flexShrink: 0 }}>{task.ref || `TQ-${String(s.taskId).padStart(4, "0")}`}</Typography>
+                    <Typography noWrap title={task.Title || s.cwd}
+                      sx={{ fontSize: 12, fontWeight: 600, color: INK, minWidth: 0, flex: 1 }}>{task.Title || s.cwd}</Typography>
                     <Button size="small" variant="outlined" disabled={wrapBusy} onClick={() => closeAgent(s)}
-                      startIcon={<DoneAllIcon sx={{ fontSize: 14 }} />} title="Stops the agent, saves what it did with the task, then closes the task - the task page's Mark done"
-                      sx={{ height: 24, fontSize: 11.5, px: 1, flexShrink: 0, whiteSpace: "nowrap" }}>Close agent</Button>
-                    <Tooltip title="Open the full task page"><IconButton aria-label="Open full task" size="small" onClick={() => onOpenTask?.(s.taskId)}><OpenInFullIcon sx={{ fontSize: 14, color: DIM }} /></IconButton></Tooltip>
-                    <Tooltip title="Close session — stop the agent; keep the task and transcript"><span><IconButton aria-label="Close session" size="small" disabled={wrapBusy} onClick={() => closeSession(s)}><CloseIcon sx={{ fontSize: 16, color: DIM }} /></IconButton></span></Tooltip>
+                      startIcon={<DoneAllIcon sx={{ fontSize: 14 }} />} title={t("Stops the agent, saves what it did with the task, then closes the task - the task page's Mark done")}
+                      sx={{ height: 24, fontSize: 11.5, px: 1, flexShrink: 0, whiteSpace: "nowrap" }}>{t("Close agent")}</Button>
+                    <Tooltip title={t("Open the full task page")}><IconButton aria-label={t("Open full task")} size="small" onClick={() => onOpenTask?.(s.taskId)}><OpenInFullIcon sx={{ fontSize: 14, color: DIM }} /></IconButton></Tooltip>
+                    <Tooltip title={t("Close session — stop the agent; keep the task and transcript")}><span><IconButton aria-label={t("Close session")} size="small" disabled={wrapBusy} onClick={() => closeSession(s)}><CloseIcon sx={{ fontSize: 16, color: DIM }} /></IconButton></span></Tooltip>
                   </Box>
                   {/* Always reserve the status row. A tool starting/stopping used to add/remove
                       this row, resize xterm, and make full-screen CLIs repaint in a visible jump. */}
@@ -257,19 +260,19 @@ export default function WallView({ onOpenTask, refresh = 0, active = true }) {
                       <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, minWidth: 0 }}>
                         <CircularProgress size={10} />
                         <Typography noWrap sx={{ ...mono, fontSize: 10, color: ROLES.working.ink }}>
-                          closing session · writing report and reply draft…
+                          {t("closing session · writing report and reply draft…")}
                         </Typography>
                       </Box>
                     ) : wrapError ? (
                       <Tooltip title={wrapError}><Typography noWrap sx={{ ...mono, fontSize: 10, color: ROLES.bad.ink }}>
-                        could not close · {wrapError}
+                        {t("could not close")} · {wrapError}
                       </Typography></Tooltip>
                     ) : (statusWork || waiting || l?.promptPending || s.promptPending) ? (
                       <WorkLine work={statusWork} who={who} waiting={waiting}
                         asking={l?.asking ?? s.asking} startedAt={l?.StartedAt || s.started}
                         promptPending={l?.promptPending ?? s.promptPending} />
                     ) : (
-                      <Typography noWrap sx={{ ...mono, fontSize: 10, color: FAINT }}>● {who} session</Typography>
+                      <Typography noWrap sx={{ ...mono, fontSize: 10, color: FAINT }}>● {t("{who} session", { who })}</Typography>
                     )}
                   </Box>
                 </Box>
@@ -279,16 +282,16 @@ export default function WallView({ onOpenTask, refresh = 0, active = true }) {
                 <Box sx={{ flex: 1, minHeight: 0, p: 0.75, display: "flex", flexDirection: "column", "& > *": { flex: 1, minHeight: 0 } }}>
                   {s.mode === "assistant"
                     ? <React.Suspense fallback={<CircularProgress size={18} sx={{ m: "auto" }} />}>
-                        <GeneralWorkspace task={{ ...t, TaskId: s.taskId }} onSession={load} compact />
+                        <GeneralWorkspace task={{ ...task, TaskId: s.taskId }} onSession={load} compact />
                       </React.Suspense>
                     : <TerminalPane sid={s.sid} height="100%" onExit={load} />}
                 </Box>
                 {/* the queue, at the bottom of its own pane */}
                 <Box sx={{ px: 0.75, pb: 0.25, flexShrink: 0 }}>
-                  <TellAgent taskId={s.taskId} taskRef={t.ref} compact onQueued={load} />
+                  <TellAgent taskId={s.taskId} taskRef={task.ref} compact onQueued={load} />
                 </Box>
                 {/* the grab bar: taller or shorter panes, all of them at once; double-click resets */}
-                <Box onPointerDown={onGrab} onDoubleClick={resetH} title="Drag to resize the panes — double-click for the default height"
+                <Box onPointerDown={onGrab} onDoubleClick={resetH} title={t("Drag to resize the panes — double-click for the default height")}
                   sx={{ height: 10, flexShrink: 0, cursor: "ns-resize", touchAction: "none", display: "flex", alignItems: "center", justifyContent: "center",
                     "&:hover > span, &:active > span": { bgcolor: DIM, width: 56 } }}>
                   <Box component="span" sx={{ width: 36, height: 3, borderRadius: 99, bgcolor: BORDER, transition: "all .15s" }} />

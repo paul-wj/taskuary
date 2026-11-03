@@ -7,6 +7,8 @@ import { Box, IconButton, Tooltip } from "@mui/material";
 import AttachFileIcon from "@mui/icons-material/AttachFile";
 import CloseIcon from "@mui/icons-material/Close";
 import api from "./api";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 export const IMAGE_TYPES = /^image\/(png|jpeg|gif|webp)$/;
 export const MAX_IMAGES = 8;
@@ -22,9 +24,9 @@ export function usePromptImages() {
     try {
       for (const f of list.slice(0, MAX_IMAGES)) {
         const { data } = await api.post("/api/prompt-image", f, { headers: { "Content-Type": f.type } });
-        setImgs((cur) => (cur.length >= MAX_IMAGES ? cur : [...cur, { path: data.path, url: URL.createObjectURL(f), name: f.name || "pasted image" }]));
+        setImgs((cur) => (cur.length >= MAX_IMAGES ? cur : [...cur, { path: data.path, url: URL.createObjectURL(f), name: f.name || "" }]));
       }
-    } catch (e) { setErr(e?.response?.data?.detail || "the image did not upload"); }
+    } catch (e) { setErr(e?.response?.data?.detail || true); }
     finally { setBusy(false); }
     return true;
   }, []);
@@ -45,11 +47,12 @@ export function usePromptImages() {
 
 // the paperclip: opens the file picker, images only
 export function AttachImage({ pics, size = 18, sx }) {
+  useLocale();
   const input = useRef(null);
   return (
     <>
-      <Tooltip title={pics.busy ? "Uploading…" : "Attach an image - or paste or drop one here"}>
-        <span><IconButton size="small" aria-label="Attach an image" disabled={pics.busy} onClick={() => input.current?.click()}
+      <Tooltip title={pics.busy ? t("Uploading…") : t("Attach an image - or paste or drop one here")}>
+        <span><IconButton size="small" aria-label={t("Attach an image")} disabled={pics.busy} onClick={() => input.current?.click()}
           sx={{ width: 34, height: 34, p: 0, color: "#6e685f", ...sx }}><AttachFileIcon sx={{ fontSize: size }} /></IconButton></span>
       </Tooltip>
       <input ref={input} hidden type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple
@@ -60,20 +63,22 @@ export function AttachImage({ pics, size = 18, sx }) {
 
 // the pictures waiting to go, as thumbnails with an x each
 export function ImageTray({ pics, sx }) {
+  useLocale();
   if (!pics.imgs.length && !pics.err && !pics.busy) return null;
   return (
     <Box data-tq-image-tray sx={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 0.75, ...sx }}>
-      {pics.imgs.map((i) => (
-        <Box key={i.path} title={i.name} sx={{ position: "relative", width: 52, height: 52, borderRadius: "7px", overflow: "hidden",
+      {pics.imgs.map((i) => {
+        const name = i.name || t("pasted image");
+        return <Box key={i.path} title={name} sx={{ position: "relative", width: 52, height: 52, borderRadius: "7px", overflow: "hidden",
           border: "1px solid #ddd6cb", bgcolor: "#f6f4f1", flexShrink: 0 }}>
-          <Box component="img" src={i.url} alt={i.name} sx={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-          <IconButton size="small" aria-label={`Remove ${i.name}`} onClick={() => pics.remove(i.path)}
+          <Box component="img" src={i.url} alt={name} sx={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+          <IconButton size="small" aria-label={t("Remove {name}", { name })} onClick={() => pics.remove(i.path)}
             sx={{ position: "absolute", top: 1, right: 1, width: 17, height: 17, p: 0, bgcolor: "rgba(38,37,33,.7)", color: "#fff",
               "&:hover": { bgcolor: "rgba(38,37,33,.9)" } }}><CloseIcon sx={{ fontSize: 12 }} /></IconButton>
-        </Box>
-      ))}
-      {pics.busy && <Box sx={{ fontSize: 11, color: "#a09889" }}>uploading…</Box>}
-      {!!pics.err && <Box sx={{ fontSize: 11, color: "#7a2f3c" }}>{pics.err}</Box>}
+        </Box>;
+      })}
+      {pics.busy && <Box sx={{ fontSize: 11, color: "#a09889" }}>{t("uploading…")}</Box>}
+      {!!pics.err && <Box sx={{ fontSize: 11, color: "#7a2f3c" }}>{pics.err === true ? t("the image did not upload") : pics.err}</Box>}
     </Box>
   );
 }

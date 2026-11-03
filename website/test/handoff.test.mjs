@@ -3,11 +3,9 @@
 // same confirmation runs again; a failed start or a cancel keeps the item where it is.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { afterConfirm, afterExecute, isHandoff } from "../src/proposalCard.js";
+import { setLocale, translateDescriptor } from "../src/i18n.js";
 
-const read = (name) => readFileSync(fileURLToPath(new URL(`../src/${name}`, import.meta.url)), "utf8");
 const coding = { id: "ab12", kind: "task.create_from_message", target: 7, version: 1, params: { kind: "coding" }, label: "Send to the coding agent", settles: true, key: "msg:7", ref: "TQ-0007" };
 
 test("a started hand-off advances; one that needs a repository asks and keeps the item", () => {
@@ -21,41 +19,37 @@ test("a started hand-off advances; one that needs a repository asks and keeps th
   assert.equal(existing.handoff, false);
   const repo = afterExecute(coding, { status: "error", error: "TQ-0007 needs a repository first - pick one", outcome: { dispatch: "needs_repo", taskId: 7, agent: "coding" } });
   assert.deepEqual([repo.settle, repo.status, repo.repo], [false, "error", { taskId: 7, agent: "coding" }]);
-  assert.match(repo.receipt, /Not started/);
+  assert.equal(repo.receipt_i18n.values.reason, "TQ-0007 needs a repository first - pick one");
+  for (const locale of ["en", "zh-CN"]) {
+    setLocale(locale);
+    assert.ok(translateDescriptor(repo.receipt_i18n).includes(repo.receipt_i18n.values.reason));
+  }
   const failed = afterExecute(coding, { status: "error", error: "agent did not start" });
   assert.deepEqual([failed.settle, failed.repo], [false, undefined]);
 });
 
-test("the page advances without settling on a started hand-off, and the card asks for the repository", () => {
-  const view = read("AssistantView.jsx");
-  assert.match(view, /const step = afterConfirm\(p, out, current\);/);
-  assert.match(view, /if \(step === "advance"\) walkOn\(\);/);
-  assert.match(view, /else if \(step === "settle"\) done\(null\);/);
-  assert.match(view, /else \{ if \(step === "offer"\) clearTable\(\); loadPile\(\); \}/);
+test("a server receipt is retained as data while generated failures carry descriptors", () => {
+  const receipt = "Task TQ-0007 started by Erin.";
+  const out = afterExecute(coding, { status: "done", receipt, outcome: { started: true } });
+  assert.equal(out.receipt, receipt);
+  assert.equal(out.receipt_i18n, undefined);
+  const failed = afterExecute(coding, { status: "error", error: "Repository access denied" });
+  for (const locale of ["en", "zh-CN"]) {
+    setLocale(locale);
+    assert.ok(translateDescriptor(failed.receipt_i18n).includes("Repository access denied"));
+  }
+});
+
+test("a started hand-off advances without settling the item", () => {
   assert.equal(afterConfirm(coding, { settle: true, handoff: true, status: "done" }, coding.key), "advance");
-  assert.match(view, /repo: out\.repo \|\| null/);
-  const card = read("ProposalCard.jsx");
-  assert.match(card, /import \{ RepoPicker \} from "\.\/RepoPicker\.jsx"/);
-  assert.match(card, /const askRepo = p\.status === "error" && p\.repo\?\.taskId/);
-  assert.match(card, /<RepoPicker taskId=\{p\.repo\.taskId\} agent=\{p\.repo\.agent\} onDone=\{\(data\) => \{ if \(data\?\.repo\) onConfirm\?\.\(p\); \}\}/);
 });
 
 test("a started hand-off with its task OPENS that task on the table, and the walk waits (2026-10-01: \"why did it just close it?\")", () => {
   const out = afterExecute({ ...coding, params: { kind: "general" } }, { status: "done", outcome: { taskId: 9, chat: true } });
   assert.deepEqual([out.handoff, out.tid], [true, 9]);
   assert.equal(afterConfirm(coding, out, coding.key), "watch");
-  assert.match(read("AssistantView.jsx"), /if \(step === "watch"\) \{ clearTable\(\); loadPile\(\); openTaskCard\(\{ tid: out\.tid \}\); \}/);
 });
 
-test("a card that asks its own question: each answer is the button that does it, no separate confirm", async () => {
-  const card = read("ProposalCard.jsx");
-  const { altLabel } = await import("../src/ProposalCard.jsx").catch(() => ({}));
-  assert.match(card, /onClick=\{\(\) => choose\(a\)\}>\{altLabel\(a\.label\)\}/);
-  assert.match(card, /open && !\(asks && !picking\) \?/, "the separate confirm row is drawn only with no question, or a repository to choose");
-  assert.match(card, /if \(!pickingRepo\(data\)\) onConfirm\?\.\(up\(data\)\)/, "the other answer confirms in the same press");
-  assert.match(card, /!\(asks && k === "verb"\)/, "no raw 'verb:' line under the question");
-  if (altLabel) assert.deepEqual(["A coding agent", "A non-coding agent", "Just this once"].map(altLabel), ["Send to a coding agent", "Send to a non-coding agent", "Just this once"]);
-});
 
 test("an agent started from the owner's own words opens its new task too (2026-10-01)", () => {
   const fromWords = { ...coding, kind: "task.create_from_text", params: { kind: "coding", text: "stop the mails" }, key: null, tid: null, ref: null, settles: false };

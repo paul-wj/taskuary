@@ -4,10 +4,13 @@
 // Readable without colour or motion: the state's words are the icon's label, and with reduced motion the ring holds still and no badge moves.
 import React from "react";
 import { statusLabel } from "./railStatus.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 import "./statusMark.css";
 
 // the logo with its state: `status` from railStatus/taskStatus, `children` the source's logo
 export function StatusLogo({ status, agent = "", className = "", children }) {
+  useLocale();
   const st = status, spins = !!st?.spins, badge = !spins && st?.badge || "";
   return (
     <span className={["tq-mark", className, spins ? "spins" : ""].filter(Boolean).join(" ")} data-tq-working={spins ? "" : undefined}
@@ -21,17 +24,18 @@ export function StatusLogo({ status, agent = "", className = "", children }) {
 
 // THE TASK HEADER'S STATUS, top right: exactly the rail's mark and word for this task - its logo ringed while an agent works
 export function StatusPill({ status, logo = null, agent = "", note = "" }) {
+  useLocale();
   if (!status) return null;
-  const title = [status.hint, note].filter(Boolean).join(" "), mark = status.mark !== "spinner" ? status.mark : "";
+  const title = [status.hint ? t(status.hint) : "", note].filter(Boolean).join(" "), mark = status.mark !== "spinner" ? status.mark : "";
   // ...ON A PHONE THE MARK ALONE (the owner, 2026-10-27): "waiting on them" cut the title to a stub - the word is still in the pill for a
   // screen reader (statusMark.css hides it only from sight), and the hover says it. A state with no mark keeps its word
   return (
     <span className={`tq-status-pill role-${status.role || "none"}${status.spins || mark ? " marked" : ""}`} data-tq-status-pill={status.key}
-      title={title || status.word || undefined}>
+      title={title || (status.word ? t(status.word) : undefined)}>
       {status.spins
         ? <StatusLogo status={status} agent={agent}>{logo}</StatusLogo>
         : <i className="mark" aria-hidden="true">{mark}</i>}
-      <span className="word">{status.word}</span>
+      <span className="word">{t(status.word)}</span>
     </span>
   );
 }

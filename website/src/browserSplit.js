@@ -2,6 +2,7 @@
 // box, how a pointer on the canvas maps back to a page coordinate, and how the split between
 // terminal and browser is remembered. The design (2026-08-30): terminal narrower, browser the
 // larger share, a drag handle between, pane appears when the agent opens a page.
+import { t } from "./i18n.js";
 
 export const DEFAULT_RATIO = 0.58;          // the browser's share of the width
 export const MIN_RATIO = 0.3, MAX_RATIO = 0.8;
@@ -120,7 +121,7 @@ export const shortUrl = (u, max = 64) => {
   if (/^file:/i.test(String(u).trim())) {
     const p = String(u).trim().replace(/[?#].*$/, "").split(/[\\/]+/).filter(Boolean).pop() || "";
     let n = p; try { n = decodeURIComponent(p); } catch { /* the name as it was */ }
-    return `file · ${n.length <= max ? n : `${n.slice(0, Math.ceil(max * 0.6))}…${n.slice(-Math.floor(max * 0.35))}`}`;
+    return t("file · {name}", { name: n.length <= max ? n : `${n.slice(0, Math.ceil(max * 0.6))}…${n.slice(-Math.floor(max * 0.35))}` });
   }
   const s = String(u).replace(/^https?:\/\//, "").replace(/\/$/, "");
   return s.length <= max ? s : `${s.slice(0, Math.ceil(max * 0.6))}…${s.slice(-Math.floor(max * 0.35))}`;
@@ -166,5 +167,7 @@ export const heldOn = (review, sid) => {
   let p;
   try { p = JSON.parse(review?.DraftText || ""); } catch { return null; }
   if (p?.action !== "browser_act" || !sid || String(p.sid) !== String(sid)) return null;
-  return { id: review.ReviewId, what: p.what || p.command || "the step the agent held", site: p.site || "", url: p.url || "", why: p.why || "" };
+  const what = p.what || p.command;
+  return { id: review.ReviewId, what: what || "the step the agent held", ...(!what ? { whatIsFallback: true } : {}),
+    site: p.site || "", url: p.url || "", why: p.why || "" };
 };

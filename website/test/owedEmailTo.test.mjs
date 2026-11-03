@@ -3,11 +3,10 @@
 // To is its own address, drafted or not; a reply back to the sender keeps its own line, said as the reply's ("Reply to ...").
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { owedEmails } from "../src/taskLifecycle.js";
 import { closeStatus } from "../src/taskLayout.js";
+import { getLocale, setLocale } from "../src/i18n.js";
 
-const src = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
 const owed = { id: "s1", text: "Email Paula Vance - the 2:30 meeting", out: { kind: "email", to: "paula@vendor.example", name: "Paula Vance" }, done: false };
 
 test("the emails a task owes, each with its own address and where it stands", () => {
@@ -17,18 +16,27 @@ test("the emails a task owes, each with its own address and where it stands", ()
   assert.deepEqual(owedEmails([{ ...owed, done: true }], []), [], "a sent or dropped one is owed no more");
 });
 
-test("Close out's tab leads with the email owed and its To; the reply to the sender is its own line after it", () => {
-  const owes = owedEmails([owed], []);
-  assert.deepEqual(closeStatus({ to: "Gail Moreno", where: "WhatsApp", owed: true, owes }).lines,
-    ["Email to paula@vendor.example · to draft", "Reply to Gail Moreno in WhatsApp", "Not drafted yet"]);
-  // ...a drafted one says it waits, once - not again as a count
-  assert.deepEqual(closeStatus({ emails: 1, owes: owedEmails([{ ...owed, rid: 9 }], [{ ReviewId: 9, Kind: "slot", Status: "pending" }]) }).lines,
-    ["Email to paula@vendor.example · waits for your yes"]);
-});
-
-test("in Close out the owed email wears its own To, and the sender's line is the reply's", () => {
-  assert.match(src("SlotList.jsx"), /data-tq-slot-to=\{i\.id\}[^>]*>To</);
-  const page = src("TaskPage.jsx");
-  assert.match(page, /<Typography sx=\{\{ \.\.\.label, flexShrink: 0 \}\} data-tq-reply-to="">\{owesEmails \? "Reply to" : "To"\}<\/Typography>/);
-  assert.match(page, /owes: owedEmails\(detail\?\.checklist, detail\?\.reviews\)/);
+test("Close out keeps the owed address and the reply recipient separate in both locales", () => {
+  const previous = getLocale();
+  try {
+    for (const locale of ["en", "zh-CN"]) {
+      setLocale(locale);
+      const owes = owedEmails([owed], []);
+      const lines = closeStatus({ to: "Gail Moreno", where: "WhatsApp", owed: true, owes }).lines;
+      assert.equal(lines.length, 3);
+      assert.ok(lines[0].includes("paula@vendor.example"));
+      assert.ok(!lines[0].includes("Gail Moreno"));
+      assert.ok(lines[1].includes("Gail Moreno"));
+      assert.ok(lines[1].includes("WhatsApp"));
+      assert.ok(!lines[1].includes("paula@vendor.example"));
+      const waiting = closeStatus({ emails: 1, owes: owedEmails([{ ...owed, rid: 9 }], [{ ReviewId: 9, Kind: "slot", Status: "pending" }]) }).lines;
+      assert.equal(waiting.length, 1, "the drafted email is not repeated as a count");
+      assert.ok(waiting[0].includes("paula@vendor.example"));
+      assert.notEqual(waiting[0], lines[0], "drafted and undrafted email states differ");
+      const closed = closeStatus({ closed: true, owes }).lines;
+      assert.ok(closed.every((line) => !line.includes("paula@vendor.example")));
+    }
+  } finally {
+    setLocale(previous);
+  }
 });

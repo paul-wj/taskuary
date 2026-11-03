@@ -2,6 +2,7 @@
 //
 // `setup` is the server's word: the recipe name for a CLI whose own first run Taskuary knows how
 // to open, or "". Same rule as `installable` - never draw a button over a road that does not exist.
+import { t } from "./i18n.js";
 export const canSetup = (cli) => !!(cli && cli.installed && cli.setup);
 export const setupTitle = (cli) =>
-  `Set up ${cli?.label || cli?.setup || "this CLI"} here — it opens in a live pane and asks you for its settings and sign-in, as a task on the Board`;
+  t("Set up {name} here — it opens in a live pane and asks you for its settings and sign-in, as a task on the Board", { name: cli?.label || cli?.setup || t("this CLI") });

@@ -10,36 +10,39 @@ import api from "./api.js";
 import DocsView from "./DocsView.jsx";
 import NewPlaybookDialog from "./NewPlaybookDialog.jsx";
 import { BORDER, DIM, FAINT, INK, PANEL, mono } from "./theme.jsx";
-import { plural } from "./timeWords.js";
 import { takePlaybookAsk } from "./playbookOpen.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 export { PB_OPEN, pbOpen } from "./playbookOpen.js";
 
 export function usePlaybooks() {
+  useLocale();
   const [books, setBooks] = useState(null);              // null until read (collectionsStartNull): "none yet" is not "not read"
   const [deleted, setDeleted] = useState(null);          // Recently deleted: kept 30 days, Restore puts one back as it was
   const [err, setErr] = useState("");
   const load = useCallback(async () => {
     try { const { data } = await api.get("/api/playbooks"); setBooks(data.data || []); setDeleted(data.deleted || []); setErr(""); }
-    catch (e) { setErr(e?.response?.data?.detail || "The playbooks could not be read."); }
+    catch (e) { setErr(e?.response?.data?.detail || { source: "The playbooks could not be read." }); }
   }, []);
   useEffect(() => { load(); }, [load]);
   // ...switched off is kept for later and never matched by triage (PUT /api/playbooks/<slug>/enabled)
   const setOn = useCallback(async (slug, on) => {
     setBooks((bs) => (bs || []).map((b) => (b.slug === slug ? { ...b, enabled: on } : b)));
     try { await api.put(`/api/playbooks/${slug}/enabled`, { on }); }
-    catch (e) { setErr(e?.response?.data?.detail || "It could not be switched."); }
+    catch (e) { setErr(e?.response?.data?.detail || { source: "It could not be switched." }); }
     load();
   }, [load]);
   const restore = useCallback(async (slug) => {
     try { await api.post(`/api/playbooks/${slug}/restore`); }
-    catch (e) { setErr(e?.response?.data?.detail || "It could not be restored."); }
+    catch (e) { setErr(e?.response?.data?.detail || { source: "It could not be restored." }); }
     load();
   }, [load]);
-  return { books: books || [], deleted: deleted || [], loaded: books !== null, err, load, setOn, restore };
+  return { books: books || [], deleted: deleted || [], loaded: books !== null, err: typeof err === "string" ? err : t(err.source), load, setOn, restore };
 }
 
 export function PlaybookRow({ b, onOpen, onToggle }) {
+  useLocale();
   const on = b.enabled !== false;
   return (
     <Box data-tq-playbook={b.slug} onClick={onOpen}
@@ -48,11 +51,11 @@ export function PlaybookRow({ b, onOpen, onToggle }) {
       <MenuBookIcon sx={{ fontSize: 18, color: "#55697a", flexShrink: 0 }} />
       <Box sx={{ flex: 1, minWidth: 0 }}>
         <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13.5 }} noWrap>{b.title}</Typography>
-        <Typography variant="caption" sx={{ color: DIM, display: "block" }} noWrap>when: {b.when || "—"}</Typography>
-        {!!b.uses?.length && <Typography variant="caption" sx={{ ...mono, color: FAINT, display: "block" }} noWrap>uses {b.uses.join(" · ")}</Typography>}
+        <Typography variant="caption" sx={{ color: DIM, display: "block" }} noWrap>{t("when: {when}", { when: b.when || "—" })}</Typography>
+        {!!b.uses?.length && <Typography variant="caption" sx={{ ...mono, color: FAINT, display: "block" }} noWrap>{t("uses {uses}", { uses: b.uses.join(" · ") })}</Typography>}
       </Box>
-      <Typography variant="caption" sx={{ color: on ? DIM : FAINT, flexShrink: 0 }}>{on ? "triage matches it" : "off - kept, not matched"}</Typography>
-      <Switch size="small" checked={on} inputProps={{ "aria-label": `${b.title}: ${on ? "on" : "off"}` }}
+      <Typography variant="caption" sx={{ color: on ? DIM : FAINT, flexShrink: 0 }}>{on ? t("triage matches it") : t("off - kept, not matched")}</Typography>
+      <Switch size="small" checked={on} inputProps={{ "aria-label": t("{title}: {state}", { title: b.title, state: t(on ? "on" : "off") }) }}
         onClick={(e) => e.stopPropagation()} onChange={() => onToggle(!on)} />
     </Box>
   );
@@ -61,10 +64,11 @@ export function PlaybookRow({ b, onOpen, onToggle }) {
 // RECENTLY DELETED, under the shelf: Delete is at once (no "are you sure" - the owner, 2026-10-21), so this is its undo.
 // Restore brings one back exactly - its words, its on/off switch, its place; after 30 days it is gone for good.
 export function RecentlyDeleted({ items, onRestore }) {
+  useLocale();
   if (!items?.length) return null;
   return (
     <Box data-tq-playbooks-deleted="" sx={{ mt: 2 }}>
-      <Typography sx={{ fontSize: 12, fontWeight: 600, color: DIM, px: 0.5, mb: 0.5 }}>Recently deleted</Typography>
+      <Typography sx={{ fontSize: 12, fontWeight: 600, color: DIM, px: 0.5, mb: 0.5 }}>{t("Recently deleted")}</Typography>
       {items.map((d) => (
         <Box key={d.slug} data-tq-playbook-deleted={d.slug}
           sx={{ display: "flex", alignItems: "center", gap: 1.5, py: 1, px: 0.5, borderBottom: `1px solid ${BORDER}` }}>
@@ -72,10 +76,10 @@ export function RecentlyDeleted({ items, onRestore }) {
           <Box sx={{ flex: 1, minWidth: 0 }}>
             <Typography sx={{ color: DIM, fontWeight: 600, fontSize: 13.5 }} noWrap>{d.title}</Typography>
             <Typography variant="caption" sx={{ color: FAINT, display: "block" }} noWrap>
-              not matched · gone for good {d.days_left > 0 ? `in ${plural(d.days_left, "day")}` : "today"}
+              {d.days_left > 0 ? t(d.days_left === 1 ? "not matched · gone for good in {days} day" : "not matched · gone for good in {days} days", { days: d.days_left }) : t("not matched · gone for good today")}
             </Typography>
           </Box>
-          <Button size="small" variant="outlined" onClick={() => onRestore(d.slug)}>Restore</Button>
+          <Button size="small" variant="outlined" onClick={() => onRestore(d.slug)}>{t("Restore")}</Button>
         </Box>
       ))}
     </Box>
@@ -87,12 +91,13 @@ export function RecentlyDeleted({ items, onRestore }) {
 // ...and `asked` (+ New playbook, New's Playbook tab): open at once, with the words New handed over (playbookOpen.askPlaybook) - taken
 // once, so this button pressed again later opens a blank one
 export function NewPlaybook({ onManual, onDone, connectorType = "", asked = false }) {
+  useLocale();
   const [ask, setAsk] = useState(() => (asked ? takePlaybookAsk() || { text: "", start: false } : null));
   const [open, setOpen] = useState(!!connectorType || !!ask);
   const shut = () => { setOpen(false); setAsk(null); };
   return <>
     <Button size="small" variant="outlined" disableElevation startIcon={<AddIcon sx={{ fontSize: 15 }} />} onClick={() => setOpen(true)}
-      sx={{ mt: 1.5, alignSelf: "flex-start" }}>New playbook</Button>
+      sx={{ mt: 1.5, alignSelf: "flex-start" }}>{t("New playbook")}</Button>
     {open && <NewPlaybookDialog connectorType={connectorType} initialText={ask?.text || ""} autoStart={!!ask?.start}
       onClose={() => { shut(); onDone?.(); }} onManual={() => { shut(); onManual(); }} />}
   </>;

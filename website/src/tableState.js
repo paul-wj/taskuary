@@ -2,6 +2,7 @@
 // over it, and whether the Advisor may speak for it. The strip, the rail ring, the box's words and the Advisor each worked it out on
 // their own, so a folded task kept its Advisor strip and its dark button acting on what nobody could see (re-audit item 4).
 import { foldsAs } from "./funnelPile.js";
+import { t } from "./i18n.js";
 
 // ...SETUP IS QUIET ONLY WHILE IT IS IN VIEW: a task opened over it by its link or by Search (`over`, AssistantView's setupCard) is the
 // item in front of the owner, and it drew its row with nothing lit and no line while the same task in the walk had both (the memory
@@ -17,13 +18,12 @@ export function tableOf({ current = null, cardKey = null, foldedKey = null, brow
 // it was while Connections covered it
 export function tableWords(table, ref = "") {
   const has = !!table?.key, under = has && !!table.place;
-  return { tag: under ? "under this page" : "on the table",
-    box: !has ? "Ask Taskuary anything — a name or a subject pulls it in…"
-      : under ? `Ask about this page or ${ref || "the one under it"}, or name something else…` : "Ask about this one, tell me what to do with it, or name something else…",
-    phone: !has ? "Ask Taskuary anything…" : under ? "Ask about this page…" : "Talk to Taskuary…",
-    // ...and the one-row bar's pill, whose words ("Ask…") name no task: its name for a reader and the walk says which
-    // one the chat will talk about, with no visible change (the dead-end walk's RING, 2026-10-27)
-    name: !has ? "Ask Taskuary anything" : under ? `Ask Taskuary about this page${ref ? ` or ${ref}` : ""}` : `Tell Taskuary what to do with ${ref || "this one"}` };
+  return { tag: t(under ? "under this page" : "on the table"),
+    box: !has ? t("Ask Taskuary anything — a name or a subject pulls it in…")
+      : under ? t("Ask about this page or {item}, or name something else…", { item: ref || t("the one under it") }) : t("Ask about this one, tell me what to do with it, or name something else…"),
+    phone: !has ? t("Ask Taskuary anything…") : under ? t("Ask about this page…") : t("Talk to Taskuary…"),
+    // The accessible name identifies the item without altering its reference.
+    name: !has ? t("Ask Taskuary anything") : under ? (ref ? t("Ask Taskuary about this page or {ref}", { ref }) : t("Ask Taskuary about this page")) : t("Tell Taskuary what to do with {item}", { item: ref || t("this one") }) };
 }
 
 // What an /api/advice answer (advisor.status) means for the strip: the Advisor's ONE decision - a lit verb, its line '' when the move is

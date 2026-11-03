@@ -2,18 +2,18 @@
 // and where the task came from, as conversations - pure, so node --test reads them without React or MUI.
 import { assignedAgent } from "./agentIdentity.js";
 import { routeIntent, routeWhy } from "./triageVerdict.js";
-import { plural } from "./timeWords.js";
 import { level } from "./priority.js";
+import { t } from "./i18n.js";
 
 const CHANNEL_NAMES = { email: "Email", whatsapp: "WhatsApp", telegram: "Telegram", slack: "Slack", teams: "Teams", github: "GitHub",
   monday: "Monday", jira: "Jira", linear: "Linear", imessage: "iMessage", discord: "Discord", report: "Report", assistant: "Assistant",
   google_chat: "Google Chat", sms: "SMS", calendar: "Calendar" };
-export const channelName = (ch) => CHANNEL_NAMES[ch] || (ch ? ch[0].toUpperCase() + ch.slice(1).replace(/_/g, " ") : "Message");
+export const channelName = (ch) => CHANNEL_NAMES[ch] ? t(CHANNEL_NAMES[ch]) : (ch ? ch[0].toUpperCase() + ch.slice(1).replace(/_/g, " ") : t("Message"));
 const CHATS = new Set(["whatsapp", "teams", "slack", "telegram", "imessage", "discord", "mattermost", "rocketchat", "matrix", "google_chat", "sms"]);
 export const isChat = (ch) => CHATS.has(ch);
 
 export const isMine = (m) => m?.Status === "context" || m?.Direction === "out" || !!m?.mine;
-export const senderOf = (m) => (isMine(m) ? "You" : m?.FromName || m?.FromEmail || channelName(m?.Channel));
+export const senderOf = (m) => (isMine(m) ? t("You") : m?.FromName || m?.FromEmail || channelName(m?.Channel));
 const oneLine = (s) => String(s || "").replace(/\s+/g, " ").trim();
 // ...cut on a word, never mid-word ("qualifying donor" stood as the end of a sentence, 2026-10-28)
 const clip = (s, n) => s.length <= n ? s : `${s.slice(0, n).replace(/\s+\S*$/, "")}…`;
@@ -55,7 +55,7 @@ export const namesOf = (msgs, max = 3) => {
   const n = new Map();
   msgs.forEach((m) => n.set(m.who, (n.get(m.who) || 0) + 1));
   const names = [...n.entries()].sort((a, b) => b[1] - a[1]).map(([w]) => w);
-  return names.length > max ? `${names.slice(0, max).join(", ")} and ${names.length - max} more` : names.join(", ");
+  return names.length > max ? t("{names} and {count} more", { names: names.slice(0, max).join(", "), count: names.length - max }) : names.join(", ");
 };
 // A LONG CONVERSATION SHOWS ITS ENDS: the latest `keep` on top, how many are between and who wrote them, then the message that started it
 export function previewRows(group, keep = 2, all = false) {
@@ -107,8 +107,8 @@ export function rowText(m = {}, files = []) {
   const words = String(m.excerpt || "").replace(VOICE_MARK, "").trim();
   if (words && !NO_TEXT.test(words)) return words;
   if (m.Subject) return m.Subject;
-  if (files.some(isAudioFile) || VOICE_MARK.test(m.excerpt || "")) return "Voice note";
-  return files.length ? plural(files.length, "attachment") : "(no text)";
+  if (files.some(isAudioFile) || VOICE_MARK.test(m.excerpt || "")) return t("Voice note");
+  return files.length ? t(files.length === 1 ? "{count} attachment" : "{count} attachments", { count: files.length }) : t("(no text)");
 }
 // how many messages the previews leave out - none means there is nothing for "Show all" to add
 export const hidden = (groups, keep = 2) => groups.reduce((n, g) => n + (g.count > keep + 2 ? g.count - keep - 1 : 0), 0);
@@ -127,13 +127,15 @@ export const expands = (groups, keep = 2) => hidden(groups, keep) > 0 || groups.
 // ...and From's: an older message folded away (fromRows), or a chat's back-and-forth
 export const fromExpands = (groups, keep = 3) => groups.some((g) => g.count > keep + 1 || (isChat(g.channel) && g.count > 1));
 
-export function cameFromLabel(groups) {
+export function cameFromLabel(groups, { prefix = true, compact = false } = {}) {
   const n = groups.reduce((s, g) => s + g.count, 0);
   if (!n) return "";
-  return `Came from · ${plural(n, "message")}${groups.length > 1 ? ` in ${groups.length} conversations` : ""}`;
+  const messages = t(n === 1 ? "{count} message" : "{count} messages", { count: n });
+  const summary = groups.length > 1 ? t(compact ? "{messages} · {count} conversations" : "{messages} in {count} conversations", { messages, count: groups.length }) : messages;
+  return prefix ? t("Came from · {line}", { line: summary }) : summary;
 }
-export const groupMeta = (g) => [channelName(g.channel), plural(g.count, "message"),
-  g.people > 1 ? `${g.people} people` : ""].filter(Boolean).join(" · ");
+export const groupMeta = (g) => [channelName(g.channel), t(g.count === 1 ? "{count} message" : "{count} messages", { count: g.count }),
+  g.people > 1 ? t("{count} people", { count: g.people }) : ""].filter(Boolean).join(" · ");
 
 // THE ASK IN ONE LINE: its first sentence, the whole text kept for the tooltip when that cut anything
 export function askLine(text, max = 220) {
@@ -159,14 +161,14 @@ const STARTED_BY = { schedule: "its schedule", manual: "you (Run now)", assistan
 const SORTERS = new Set(["triage", "router", "routing", "classifier"]), OWNER = new Set(["owner", "manual", "you", "user"]);
 export function madeLine(task = {}, ago = "") {
   const by = String(task?.CreatedBy || "").trim().toLowerCase(), src = String(task?.Source || "").trim();
-  const how = SORTERS.has(by) ? `sorted ${ago}` : OWNER.has(by) || !src || src === "manual" ? `made by you ${ago}` : `made ${ago}`;
-  return [src && src !== "manual" ? `from ${src}` : "", how.trim()].filter(Boolean).join(" · ");
+  const how = SORTERS.has(by) ? t("sorted {time}", { time: ago }) : OWNER.has(by) || !src || src === "manual" ? t("made by you {time}", { time: ago }) : t("made {time}", { time: ago });
+  return [src && src !== "manual" ? t("from {source}", { source: src }) : "", how.trim()].filter(Boolean).join(" · ");
 }
 export const isWorkflowRun = (task) => task?.Source === "workflow";
 export function startedBy(task = {}, wf = null) {
-  const t = wf?.trigger || repoTag(task?.Tags, "workflow-trigger");
-  const by = wf?.started_by || STARTED_BY[t] || "";
-  return by && t === "schedule" && wf?.schedule ? `${by} (${wf.schedule})` : by;
+  const trigger = wf?.trigger || repoTag(task?.Tags, "workflow-trigger");
+  const by = wf?.started_by || (STARTED_BY[trigger] ? t(STARTED_BY[trigger]) : "");
+  return by && trigger === "schedule" && wf?.schedule ? `${by} (${wf.schedule})` : by;
 }
 // the run's own title is "<workflow> - 2026-10-16 08:00": with the workflow gone, that is still its name
 export const workflowTitle = (task = {}, wf = null) => wf?.title || String(task?.Title || "").replace(/ - \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, "");
@@ -175,7 +177,7 @@ export function workflowOrigin(task = {}, wf = null) {
   if (!isWorkflowRun(task)) return null;
   const by = startedBy(task, wf);
   // ...and, when it ran as steps (flow.py), what each step did - the run's own record, not the agent's account of it
-  return { title: workflowTitle(task, wf), by, line: by ? `Started by ${by}` : "A routine run",
+  return { title: workflowTitle(task, wf), by, line: by ? t("Started by {who}", { who: by }) : t("A routine run"),
     link: wf?.source_id != null ? `#report=${wf.source_id}` : "", ...(wf?.by_code ? { byCode: true } : {}), ...(Array.isArray(wf?.steps) && wf.steps.length ? { steps: wf.steps, repairs: wf.repairs || [], sourceId: wf.source_id, runId: wf.run_id } : {}) };
 }
 export function headerFacts({ verdict = null, route = null, task = {}, workflow = null } = {}) {
@@ -216,10 +218,11 @@ const factOf = (facts, k) => facts.pills.find((p) => p.key === k && p.tone !== "
 const whatOf = (facts, kind) => { const intent = factOf(facts, "intent");
   return intent === "reply" || kind === "reply" ? "a reply to send" : intent === "fyi" ? "for your information"
     : `a task ${{ general: "for an assistant", coding: "for your coding tool" }[kind] || "for you"}`; };
-export const sortedLine = (facts, kind) => {
-  const what = whatOf(facts, kind), repo = factOf(facts, "repo");
-  const head = facts.triaged ? `Sorted as: ${what}` : what.charAt(0).toUpperCase() + what.slice(1);
-  return [head, repo && `in ${repo}`, `${facts.pills.find((p) => p.key === "priority")?.value || "regular"} priority`].filter(Boolean).join(" · ");
+export const sortedLine = (facts, kind, { prefix = true, short = false } = {}) => {
+  const what = t(whatOf(facts, kind)), repo = factOf(facts, "repo");
+  const head = facts.triaged ? (prefix ? t(short ? "Sorted: {what}" : "Sorted as: {what}", { what }) : what) : what.charAt(0).toUpperCase() + what.slice(1);
+  const priority = facts.pills.find((p) => p.key === "priority")?.value || "regular";
+  return [head, repo && t("in {repo}", { repo }), t("{priority} priority", { priority: t(priority) })].filter(Boolean).join(" · ");
 };
 // ...AT THE FOOT OF FROM (the redesign, owner-approved 2026-10-21): "Sorted as: <what> · <priority> · <why>" - the why is the one
 // triage recorded (triageLine), never written here

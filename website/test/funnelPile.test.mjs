@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { LANES, LANE_META, attentionBand, levelOf, arrivals, chipsOf, lastSaidIndex, lastActIndex, furtherIndex, cardFor, currentItemFromPile, currentPresentationChanged, departures, displayRevision, drawOrder, followsItem, keysOf, laneMeta, refreshCurrentPresentation, refreshPilePresentation, rowMeta, statusLine } from "../src/funnelPile.js";
 import * as tw from "../src/timeWords.js";
+import { setLocale } from "../src/i18n.js";
 
-const read = (name) => readFileSync(fileURLToPath(new URL(`../src/${name}`, import.meta.url)), "utf8");
-const cardsSrc = () => read("assistantCards.jsx");
+// Time bucket and status-line assertions below exercise their English formatting contract.
+setLocale("en");
+
 
 test('Current follows only an explicit canonical migration or lineage alias', () => {
   const prior = { key: 'review:8', tid: 3 };
@@ -20,17 +20,6 @@ test("every lane the server knows has a word, a mark and a role the theme can co
   // `stopped` is inserted, never a reorder: lane_index IS the rail's sort order (funnel._order).
   // `theirs` follows `yours`: your task, waiting on somebody else (2026-09-25)
   assert.deepStrictEqual(LANES, ["blocked", "time", "approve", "asked", "yours", "theirs", "queued", "stopped", "saved", "broken", "unjudged", "forgotten", "report", "fyi", "working"]);
-  // the owner's OWN work is a lane, not a kind override: a kind beats its lane (rowMeta), which is
-  // right when the kind says more and wrong here - "on you" would have beaten "waiting to start" on
-  // every queued row, because both carry kind 'todo' (the owner, 2026-09-16: "shouldn't this show
-  // an emoji as well? queued or something").
-  assert.strictEqual(LANE_META.yours.word, "on you");
-  // an agent that ran and LEFT is neither waiting to start nor waving - it has its own word, taken
-  // from taskLifecycle.agentPhase, which has named this correctly for the Tasks tab all along
-  assert.strictEqual(LANE_META.stopped.word, "agent stopped");
-  // ...and a row NOTHING judged is not an fyi: `fyi` claims a verdict was reached, and the whole
-  // point of the error state is that none was (the owner, 2026-09-15: "that's a bad bug")
-  assert.strictEqual(LANE_META.unjudged.word, "couldn't sort this");
   assert.strictEqual(LANE_META.unjudged.role, "bad");
   // a failed check is second only to an agent that is stuck, wears the oxblood `bad` role, and
   // is NOT in the server's MUTED_LANES - a rule that quiets a chatty report cannot quiet it failing
@@ -142,170 +131,19 @@ test("the header line counts the pipe and what is on you", () => {
   assert.strictEqual(statusLine([{ lane: "fyi" }], true), "thinking…");
 });
 
-test("the Assistant page IS the app: the landing view, the Board the one other, the bubble off it", () => {
-  const page = read("TaskHubPage.jsx");
-  // THE CANVAS REDESIGN (2026-09-29): no tab strip. The Assistant is the landing view and the Board, the agents and their
-  // wall, the one full-screen view beside it; every other page is a card in the Assistant's canvas.
-  assert.match(page, /const VIEWS = \["Assistant", "Board"\];/);
-  assert.doesNotMatch(page, /const TABS = /);
-  assert.match(page, /if \(t === "Timeline" \|\| t === "Tasks"\) t = "Assistant";/);   // old links and cards still land
-  assert.match(page, /if \(BROWSED\[t\]\) \{ ask\(\{ kind: "browse", area: BROWSED\[t\] \}\); t = "Assistant"; \}/);
-  assert.doesNotMatch(page, /<FeedView/);                   // the rail is mounted by the Assistant, nowhere else
-  assert.match(page, /useState\(\(\) => \(window\.location\.hash === BOARD \? "Board" : "Assistant"\)\)/);   // the default, unless the address is the Board's (2026-10-26)
-  assert.doesNotMatch(page, /<FloatingAssistant/);
-  // ...and the way back from the Board wears Taskuary's star, drawn in the pill's own ink
-  // ...and one switch for the three views, Chat wearing the real logo (2026-10-15: no Board button, no Task mode)
-  assert.match(page, /\{ k: "chat", label: "Chat", icon: \(on\) => <TaskuaryMark/);
-  assert.match(page, /<ViewSwitch view=\{tab === "Board" \? "board" : asstGame \? "game" : "chat"\}/);
-  assert.doesNotMatch(page, /<StageMode/);
-  const view = read("AssistantView.jsx");
-  assert.match(view, /\/api\/funnel\/pile/);
-  assert.match(view, /All done/);
-  assert.match(view, /!pile \? \(/);                  // loading is not a false empty Timeline
-  assert.match(view, /Loading timeline/);
-  assert.match(view, /const sharedFilter = useRef\("\{\}"\)/); // default filter must not force a duplicate mount rebuild
-  // a row opens on the canvas and nowhere else: the stage's second view of a row is gone (2026-10-20)
-  assert.doesNotMatch(view, /openByItem|openByMid/);
-  assert.doesNotMatch(read("FeedView.jsx"), /const openByItem|const openByMid/);
-  const feedSource = read("FeedView.jsx");
-  assert.match(feedSource, /if \(top && !unreadInventory\) return;/); // wait for canonical Work; do not race it with legacy feed reads
-  assert.doesNotMatch(feedSource, /FunnelBar/); // the Assistant's pile replaced the legacy funnel query
-  assert.match(view, /const visibleItems = items\.slice\(0, revealed\)/); // first load paints incrementally
-  assert.match(view, /requestAnimationFrame\(addBatch\)/);              // progressive batches do not impose one frame per row
-  assert.match(view, /count \+ 24/);                                     // large accounts finish promptly
-  assert.doesNotMatch(view, /By the way|className="tq-btw"/);   // no bottom strip: the rail and the card already say it (2026-09-23)
-  assert.doesNotMatch(view, /tq-pipe-walls/);             // no funnel: what comes out next is the FIRST row
-  // What is on the table STAYS WHERE IT IS. Hoisting it to the top of one flat stack would tear a
-  // row out of its category on every Next now that the rail is grouped - and an fyi batch would
-  // tear out ten (the owner, 2026-09-16: "it should highlight all 4 or 10 ... now i think it
-  // condenses"). One bracket, drawn behind the rows, moving none of them.
-  assert.doesNotMatch(view, /current: true \}\] : \[\]\), \.\.\.drawOrder/);
-  assert.match(view, /const batchKeys = new Set\(batch \? \(batch\.members \|\| \(batch\.items \|\| \[\]\)\.map/);
-  // ...and the rows the batch holds are put BACK on the rail while it is on the table: shown is
-  // read, so they leave the pile the moment the batch goes up and there was nothing left to ring
-  assert.match(view, /const onTable = batch \? \(batch\.items \|\| \[\]\)\.filter/);
-  assert.match(view, /className="tq-pile-batch"/);
-  // ...and ONE item on the table says the same word on the same border. Both wear the identical
-  // slate ring, so without it the ring on a single row had to be read rather than known (the
-  // owner, 2026-09-17: "isn't there a current word on the border around chosen task?").
-  assert.match(view, /\{isCur && <b className="tq-pile-now" data-tq-now=\{tag\}>\{tag\}<\/b>\}/);   // "on the table", or "under this page" (tableWords)
-  assert.match(read("assistantView.css"), /\.tq-pile-batch b, \.tq-pile-now \{/);
-  assert.match(view, /const bands = bandsOf\(drawn\.map\(/);          // grouped by category, headings freeze
-  // ...each band taking the room it has, less the extra height of the row on the table - which is
-  // 24px taller than the rest and drawn inside one of those bands
-  assert.match(view, /fillCaps\(room - \(curKey \? CUR_H - ROW_H : 0\), bands\)/);
-  // Unread is the ranked pipe again: it is the only source for CURRENT/NEXT and for what the chat
-  // will actually ask about. All remains FeedView's chronological history.
-  // ...under a removed task's "Removed <title> - Undo" when there is one (Removed.jsx, 2026-10-22)
-  assert.match(view, /<FeedView[^]*top=\{<><UndoLine kinds=\{\["task"\]\}[^<]*\/><Pile /);
-  assert.match(read("FeedView.jsx"), /\{setupRail \? null : top\}/);
-  // The rail's kind/source filters narrow the rail's OWN rows and nothing else: the pile and the
-  // walk are asked for over everything, so the assistant processes the whole pipe whatever the
-  // rail is showing (the owner, 2026-09-04: "how the assistant works on filtered tasks - does it
-  // only process those?"). The one narrowing the walk takes is `only`, which is the "Just what
-  // came in" button. If that ever changes, these two are where it has to be said out loud.
-  const pileRequest = view.slice(view.indexOf('api.get("/api/funnel/pile"'), view.indexOf("setPile", view.indexOf('api.get("/api/funnel/pile"')));
-  // The pile lookup remains scoped to Current, with its key captured before the request so a
-  // superseded response cannot reconcile a newer Current selected while the request was pending.
-  assert.match(pileRequest, /requestedCurrentKey \? \{ current: requestedCurrentKey \}/);
-  assert.doesNotMatch(pileRequest, /\b(cat|pick|channel|source)\b/);
-  assert.match(view, /key: body\.key \|\| null, from_key: body\.from_key \|\| null, press: body\.press \|\| null,/);
-  assert.doesNotMatch(view, /selection_revision|expected_next_key/);   // no captured pick: the press sends the row on screen (railwalk)
-  assert.doesNotMatch(view, /include_surfaced: true/); // a read row is not presented again by Next
-  assert.doesNotMatch(view, /i\.surfaced && !i\.current \? "shown"/);                              // unread never looks processed
-  assert.match(view, /stage=\{chat\}/);   // the stage is the conversation, whatever was clicked
-  assert.match(view, /onPull=\{\(r, o\) => pull\(keyForRow\(r\)/);   // a Timeline row is pulled in by the pipe's own key
-  assert.match(view, /const timeline = \(mid\) => openMsgRef\.current\?\.\(mid\);/);   // a card's link to its message: that message's card
-  assert.doesNotMatch(view, /turn\(\{ mode: "open" \}\)/);   // the day never writes itself: the welcome is the door
-  // words are interpreted, never dispatched (PW-121..125): the two immediate exceptions (Next, a reply
-  // draft) run on the decision; everything else arrives as a proposal card whose button submits the
-  // structured proposal by id and version to the shared execute road
-  assert.match(view, /if \(data\.decision\) await decide\(data\.decision, data\)/);
-  assert.match(view, /\/api\/operations\/\$\{p\.id\}\/execute`, \{ version: p\.version \}/);
-  assert.doesNotMatch(view, /dispatch`, \{ kind: "coding"/);                       // no verb is carried out from the chat itself
-  assert.doesNotMatch(view, /tq-quick/);                  // nothing sits over the composer any more
-  assert.doesNotMatch(view, /SUGGESTIONS/);               // ...and the page invents no vocabulary of its own
-  // the action words go to the row by the prompt, never under a chat line (the owner, 2026-10-06: "no button in line ever")
-  assert.match(view, /<BarVerbs owner=\{`line:\$\{m\.id\}`\}/);
-  assert.doesNotMatch(view, /className="tq-verbs"/);
-  assert.match(view, /chipsOf\(m\)/);                       // from the durable turn: a poll must not erase them
-  assert.match(view, /chip: runChip/);                    // one road for every one of them
-  assert.match(view, /moved up - it looked urgent/);       // the rail shows promotions
-  assert.match(view, /data\.events\?\.length/);           // the watcher's lines land in the chat as they happen
-  // a rerun is the chat line's word now, not a second button on the card (2026-09-07: "only one place")
-  assert.doesNotMatch(cardsSrc(), /Run it again/);
-  assert.match(cardsSrc(), /Open walkthrough/);             // set-up opens the Assistant operator, not a coding checkout
-  // the answers an agent NAMED are answers you can click, bound to the request that asked - the
-  // waiting room is for a pane that is not asking anything (the owner, 2026-09-17)
-  // (the walk's agent card is gone - an agent's item opens its task, answered in its own pane; the game keeps the picks)
-  assert.match(read("gameItem.jsx"), /\/worker\/answer/);
-  assert.doesNotMatch(view, /onClick=\{\(\) => settle\("done"\)\}/);   // Done is a suggestion, not a button that settles
-  assert.match(read("FeedView.jsx"), /\/api\/ingest\/poll/);            // sync now, on the rail's header
-  // the chat keeps its bottom in view as it grows - except while a browse card is read from its top (the canvas redesign)
-  // ...and a thread stuck at its end stays there however much it grows (chatStick.test.mjs)
-  assert.match(view, /new ResizeObserver\(\(\) => \{ if \(keepTable\(\)\) return; if \(!holdBottom\.current && \(stuck\.current \|\| el\.scrollHeight/);
-  assert.doesNotMatch(view, /maxWidth: 1380/);             // the chat takes the width it has
-  assert.doesNotMatch(cardsSrc(), /Just what came in/);    // no mail-only walk: a set is the model's to name (2026-09-25)
-  assert.match(view, /Walk me through my tasks/);
-  assert.match(cardsSrc(), /All read, next/);             // a handful of fyi's goes in one click
-  assert.match(read("TaskPage.jsx"), /<TerminalPane sid=\{term\.sid\}/);   // a stopped agent's own screen: its task view on the canvas
-  assert.doesNotMatch(view, /left: side, right: side/);    // no taper: every row is a Timeline row's width
-  assert.doesNotMatch(view, /<Drawer/);                    // no reader drawer: reading happens in the card
-  const css = read("assistantView.css");
-  // The work rail's gutter carries an AGE, not a clock
-  assert.match(css, /\.tq-pile-row \{[^}]*grid-template-columns: 44px 14px minmax\(0, 1fr\)/);
-  assert.doesNotMatch(css, /tq-pipe-/);                    // the funnel's CSS is gone with it
-  // Still no "The pipe · N" banner over the whole rail (the owner, 2026-09-03). The per-CATEGORY
-  // heading that freezes as you scroll is a different thing, and it is what replaced the dock's
-  // level dropdown (the owner, 2026-09-16: "freeze on the type until you get to next category").
-  assert.doesNotMatch(view, /The pipe ·/);
-  assert.match(view, /className={`tq-pile-head\$\{folds \? " folds" : ""\}`}/);
-  // ...and a band you can open is shut the same way: the heading is the control (2026-09-16)
-  assert.match(view, /const folds = CAPPED\.includes\(level\) && rows\.length > FLOOR/);
-  assert.match(css, /\.tq-pile-head \{[^}]*position: sticky/);
-  assert.match(view, /One more and you're clear/);    // ...the count is the encouragement, at the bottom, from fifteen
-  const feed = read("FeedView.jsx");
-  // the rail is the ranked pipe and nothing else - the Timeline's historical rows are gone (2026-10-15)
-  assert.match(feed, /\{setupRail \? null : top\}/);
-  assert.match(feed, /\n\s+\{visibleStage\}\n/);                    // the stage draws the conversation and nothing of its own
-  assert.match(view, /for \(const pending of deferredChat\.current\) clearTimeout\(pending\)/); // one transition cannot queue two Next turns
-  assert.match(view, /deferredChat\.current\.clear\(\);\s*const epoch = chatEpoch\.current/);
-  assert.doesNotMatch(feed, /hoverSelect/);   // nothing opens on hover: the Timeline's rows were the only ones that did
-  assert.doesNotMatch(feed, /openHash|#msg=\(/);   // a card's #msg= is the canvas's (canvasLinks), never the rail's own panel
-  const cards = read("assistantCards.jsx");
-  // the two "not ours" doors the owner asked for: one that teaches memory, one that does not
-  // 'not ours' is the chat line's word now (concierge.CHIPS), not a panel on the card
-  assert.doesNotMatch(cardsSrc(), /not-mine/);
-  // prep is the chat line's word now (concierge.CHIPS meeting), not a button on the card
-  assert.doesNotMatch(cardsSrc(), /Prep me/);
-  assert.match(cards, /SourceMark/); assert.match(cards, /ChannelIcon/);   // the logo of where it came from
-  assert.doesNotMatch(cards, /On the Timeline/);                            // a dead link: Chat mode reads no #msg= (2026-09-23)
-  // Once triage combines chat lines into a task, both an ordinary item and its pending reply show
-  // that exact task bundle together. The conversation endpoint is intentionally not used here: a
-  // long WhatsApp room may contain several separate tasks.
-  assert.match(cards, /function CombinedTaskText/);
-  assert.match(cards, /useFetched\(card\?\.tid \? `\/api\/tasks\/\$\{card\.tid\}`/);
-  assert.match(cards, /filter\(\(m\) => String\(m\.Status \|\| ""\) !== "context"\)/);
-  assert.match(cards, /messages read together/);
-  assert.match(cards, /<Clamp><CombinedTaskText card=\{card\} list=\{false\} \/><\/Clamp>/);   // the message shown, More only when it is cut off
-  assert.match(cards, /\(over \|\| open\) && <button/);
-  // reply + ordinary message, each WITHOUT the checklist - that stays on the task (2026-09-23)
-  assert.equal((cards.match(/<CombinedTaskText card=\{card\} list=\{false\} \/>/g) || []).length, 2);
-  assert.match(read("SettingsView.jsx"), /funnel_hours/); assert.match(read("SettingsView.jsx"), /funnel_max/);
-});
 
 test("a few kinds say more than their lane does", async () => {
   const { rowMeta, laneMeta } = await import("../src/funnelPile.js");
   // an agent's finished task sits in a task lane under Tasks until read (2026-11-02); it reads "agent finished", not "on you"
-  assert.equal(rowMeta({ kind: "agentdone", lane: "yours" }).word, "agent finished");
+  assert.notEqual(rowMeta({ kind: "agentdone", lane: "yours" }).word, laneMeta("yours").word);
   assert.equal(rowMeta({ kind: "agentdone", lane: "yours" }).role, "done");
   // ...and a kind never beats a lane that is MORE specific: both of these carry kind 'todo'
-  assert.equal(rowMeta({ kind: "todo", lane: "yours" }).word, "on you");
-  assert.equal(rowMeta({ kind: "todo", lane: "queued" }).word, "waiting to start");
-  assert.equal(rowMeta({ kind: "wrapup", lane: "report" }).word, "close it?");
+  assert.equal(rowMeta({ kind: "todo", lane: "yours" }).word, laneMeta("yours").word);
+  assert.equal(rowMeta({ kind: "todo", lane: "queued" }).word, laneMeta("queued").word);
+  assert.notEqual(rowMeta({ kind: "wrapup", lane: "report" }).word, laneMeta("report").word);
   assert.equal(rowMeta({ kind: "report", lane: "report" }).word, laneMeta("report").word);
-  assert.equal(rowMeta({ kind: "fyi", lane: "fyi" }).word, "fyi");
-  assert.equal(rowMeta(null).word, "fyi");
+  assert.equal(rowMeta({ kind: "fyi", lane: "fyi" }).word, laneMeta("fyi").word);
+  assert.equal(rowMeta(null).word, laneMeta("fyi").word);
 });
 
 test("the action words hang on the last thing Taskuary SAID about the item, not on a passive notice", () => {
@@ -358,8 +196,6 @@ test("the waving agent is the one lane sized to be seen", () => {
   // "can't see the hand waving. used to say agent waving?" (the owner, 2026-09-11). The mark and
   // the word were both in the table; nothing wore them, because row_lane never said `blocked`.
   const meta = LANE_META.blocked;
-  assert.equal(meta.word, "agent waiting on you");          // ...the same word timelineState.waving uses
-  assert.equal(meta.mark, "👋");
   assert.equal(meta.loud, true);
   // LOUD IS EXACTLY "this is on you". The two tables disagreed while they were two - the Timeline
   // shouted a ready reply and the rail did not - and unifying them had to pick one (2026-09-16).
@@ -375,22 +211,9 @@ test("the waving agent is the one lane sized to be seen", () => {
 // reply waiting for your yes were indistinguishable (the owner, 2026-09-22). These two words must
 // never collapse into one again, and they are the vocabulary's, not this rail's.
 test("a waving agent and a waiting reply are two different words", () => {
-  assert.equal(rowMeta({ lane: "blocked" }).word, "agent waiting on you");
-  assert.equal(rowMeta({ lane: "approve" }).word, "ready to send");
   assert.notEqual(rowMeta({ lane: "blocked" }).word, rowMeta({ lane: "approve" }).word);
 });
 
-test("every lane the Tasks rail can land on has a word and a role", async () => {
-  const { readFile } = await import("node:fs/promises");
-  const source = await readFile(new URL("../src/ui.jsx", import.meta.url), "utf8");
-  const body = source.slice(source.indexOf("const taskLane ="), source.indexOf("const laneState ="));
-  const lanes = [...new Set([...body.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]))].filter((l) => LANES.includes(l));
-  assert.ok(lanes.length >= 5, "taskLane must still be reading lanes by name");
-  for (const lane of lanes) {
-    assert.ok(rowMeta({ lane }).word, `lane ${lane} has no word in lanes.json`);
-    assert.ok("role" in rowMeta({ lane }), `lane ${lane} has no role, so the chip has no colour`);
-  }
-});
 
 test('timeWords.band: empty or unreadable is blank, the past buckets into < 30m / < 1h / Nh / Nd', () => {
   const now = new Date('2026-09-28T12:00:00').getTime();

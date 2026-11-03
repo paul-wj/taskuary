@@ -8,6 +8,8 @@ import DownloadIcon from "@mui/icons-material/Download";
 import GraphicEqIcon from "@mui/icons-material/GraphicEq";
 import api from "./api";
 import { PANEL, PANEL2, BORDER, DIM, FAINT, INK, mono } from "./theme.jsx";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 // An <img src> carries no headers, so the token rides in the query string (see token_gate).
 export const attUrl = (a, download) => {
@@ -30,12 +32,14 @@ export const fileError = async (e, fallback) => {
 // ...and in the desktop window it lands in the computer's Downloads folder, said in words (desktop.save_download): WebView2's own
 // download opened a Save As box wherever it liked (the owner, 2026-11-02: "the download should go to the local computer download").
 // Resolves to the line to show once saved there, or "" when the browser's own download took it.
-export const savedLine = (r) => r?.name ? `Saved to ${r.folder || "Downloads"} as ${r.name}` : "";
-export const saveFile = async (a, w = typeof window === "undefined" ? null : window) => {
+export const savedLine = (r) => r?.name ? t("Saved to {folder} as {name}", { folder: r.folder || t("Downloads"), name: r.name }) : "";
+const localFileError = (key) => Object.assign(new Error(t(key)), { translationKey: key });
+export const saveFile = async (a, w = typeof window === "undefined" ? null : window, onSaved = null) => {
   const href = attUrl(a, true), bridge = w?.pywebview?.api;
   if (typeof bridge?.save_download === "function" && !href.startsWith("data:")) {
     const r = await bridge.save_download(new URL(href, w.location.href).href);
-    if (!r?.name) throw new Error(r?.error || "This file could not be saved - try again.");
+    if (!r?.name) throw r?.error ? new Error(r.error) : localFileError("This file could not be saved - try again.");
+    onSaved?.(r);
     return savedLine(r);
   }
   if (!href.startsWith("data:") && typeof api.head === "function") {
@@ -46,7 +50,7 @@ export const saveFile = async (a, w = typeof window === "undefined" ? null : win
       let why = "";
       try { await api.get(a.url, { params: { download: true }, responseType: "blob", headers: { "Cache-Control": "no-cache" } }); }
       catch (e2) { why = await fileError(e2, ""); }
-      throw new Error(why || (e?.response?.status === 404 ? "This file was moved or deleted." : "This file could not be saved - try again."));
+      throw why ? new Error(why) : localFileError(e?.response?.status === 404 ? "This file was moved or deleted." : "This file could not be saved - try again.");
     }
   }
   const el = document.createElement("a");
@@ -59,8 +63,9 @@ export const saveFile = async (a, w = typeof window === "undefined" ? null : win
 // [error, save, saved]: a Download's press, the line it leaves when the file is not there, and where the desktop put it (both cleared
 // by the next press)
 export const useSave = () => {
-  const [err, setErr] = useState(""), [saved, setSaved] = useState("");
-  return [err, (a) => { setErr(""); setSaved(""); saveFile(a).then(setSaved, (e) => setErr(e.message)); }, saved];
+  useLocale();
+  const [err, setErr] = useState(null), [saved, setSaved] = useState(null);
+  return [err ? (err.translationKey ? t(err.translationKey) : err.message) : "", (a) => { setErr(null); setSaved(null); saveFile(a, undefined, setSaved).catch(setErr); }, savedLine(saved)];
 };
 
 const LOGO = 48 * 1024;   // a company logo in a signature runs 20-40 KB (24 KB let a 24.4 KB one draw as a picture)
@@ -81,13 +86,13 @@ const playable = (a) => !!a.url && (a.is_audio || AUDIO_EXT.test(a.name || ""));
 // ...and it is CALLED a voice note: the bridge names the file after the message's id ("3EB0C4...ogg"), which says nothing. A
 // file someone named keeps its name; the stored name stays on hover and on the save.
 const HASHED = /^[0-9a-f]{12,}\.[a-z0-9]{2,5}$/i;
-export const clipName = (a) => (HASHED.test(a?.name || "") || !a?.name ? "Voice note" : a.name);
+export const clipName = (a) => (HASHED.test(a?.name || "") || !a?.name ? t("Voice note") : a.name);
 const kb = (n) => (!n ? "" : n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 const KIND = { pdf: "PDF", sheet: "XLSX", excel: "XLSX", csv: "CSV", zip: "ZIP", word: "DOCX", document: "DOCX" };
 // a LINKED document (linkdocs.py) says what it is by its kind - "Google Sheet" is SHEET, "GitHub issue" ISSUE
 const LINK_KIND = [["sheet", "SHEET"], ["spreadsheet", "SHEET"], ["slides", "SLIDES"], ["presentation", "SLIDES"], ["pdf", "PDF"],
   ["issue", "ISSUE"], ["pull request", "PR"], ["folder", "FOLDER"], ["page", "PAGE"], ["doc", "DOC"]];
-const kindOf = (a) => a.link ? (LINK_KIND.find(([k]) => String(a.kind || "").toLowerCase().includes(k))?.[1] || "LINK")
+const kindOf = (a) => a.link ? t(LINK_KIND.find(([k]) => String(a.kind || "").toLowerCase().includes(k))?.[1] || "LINK")
   : Object.entries(KIND).find(([k]) => (a.content_type + " " + a.name).toLowerCase().includes(k))?.[1]
   || (a.name.split(".").pop() || "file").slice(0, 5).toUpperCase();
 // where a chip opens: a file's own bytes here (with the token), a linked document at its own address (never with it) - and a file
@@ -95,15 +100,16 @@ const kindOf = (a) => a.link ? (LINK_KIND.find(([k]) => String(a.kind || "").toL
 // (TQ-1197: "can't click the link to open" - the chip was a greyed div pointing at an original nothing linked to)
 const SAVE_MAX = 12 * 1024 * 1024;   // channels.ATT_BYTES
 const hrefOf = (a, original) => a.link ? a.external_url : a.url ? attUrl(a, true) : original || undefined;
-const unsaved = (a) => (a.size > SAVE_MAX ? `over ${kb(SAVE_MAX)}, so not saved here` : "no copy came with the mail - a cloud file's link, or a forwarded mail");
-const titleOf = (a, original) => a.link ? `${a.kind} — ${a.note ? `not read: ${a.note}` : a.read ? (a.rows != null ? `read, ${a.rows} rows` : "read") : "opens where it lives"}`
-  : a.url ? "open it" : `${unsaved(a)} — ${original ? "opens in the original message" : "open it from the mail in your mailbox"}`;
+const unsaved = (a) => (a.size > SAVE_MAX ? t("over {size}, so not saved here", { size: kb(SAVE_MAX) }) : t("no copy came with the mail - a cloud file's link, or a forwarded mail"));
+const titleOf = (a, original) => a.link ? t("{kind} — {status}", { kind: a.kind, status: a.note ? t("not read: {note}", { note: a.note }) : a.read ? (a.rows != null ? t("read, {rows} rows", { rows: a.rows }) : t("read")) : t("opens where it lives") })
+  : a.url ? t("open this attachment") : t("{reason} — {location}", { reason: unsaved(a), location: original ? t("opens in the original message") : t("open it from the mail in your mailbox") });
 
 // a mail whose body points at a picture it does not carry ([image: ...], cid:) - worth a "look for attachments" offer
 export const mentionsPicture = (body) => /\[(image|cid|inline image)|cid:/i.test(String(body || ""));
 
 // `asFiles`: the images the page already draws itself (a report's chart, drawn live from its rows - ReportRows) are chips, not pictures
 export const Attachments = ({ messageId, canFetch, dense, original, asFiles = null }) => {
+  useLocale();
   const [items, setItems] = useState(null);
   const [big, setBig] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -118,8 +124,8 @@ export const Attachments = ({ messageId, canFetch, dense, original, asFiles = nu
     try {
       const { data } = await api.post(`/api/messages/${messageId}/attachments/fetch`, {});
       setItems(data.data || []);
-      if (!data.fetched && !(data.data || []).length) setErr("nothing was attached to this one");
-    } catch (e) { setErr(e?.response?.data?.detail || "could not fetch them"); }
+      if (!data.fetched && !(data.data || []).length) setErr({ key: "nothing was attached to this one" });
+    } catch (e) { setErr(e?.response?.data?.detail ? { detail: e.response.data.detail } : { key: "could not fetch them" }); }
     setBusy(false);
   };
   if (items === null) return null;
@@ -132,7 +138,7 @@ export const Attachments = ({ messageId, canFetch, dense, original, asFiles = nu
         alignItems: "center", gap: 0.4, mt: 0.2, fontSize: 11.5, textDecoration: "underline", textDecorationColor: "#c7d2dc",
         textUnderlineOffset: "3px", "&:hover": { color: err ? FAINT : "#2f3d48", textDecorationColor: "currentColor" } }}>
       {busy ? <CircularProgress size={10} /> : <AttachFileIcon sx={{ fontSize: 12 }} />}
-      {err || "look for attachments on this mail"}
+      {err ? err.detail || t(err.key) : t("look for attachments on this mail")}
     </Typography>
   ) : null;
   const drawn = (a) => drawable(a) && !asFiles?.(a);
@@ -148,7 +154,7 @@ export const Attachments = ({ messageId, canFetch, dense, original, asFiles = nu
         <Box sx={{ display: "flex", flexDirection: "column", gap: 0.75 }}>
           {imgs.map((a) => (
             <Box key={a.id} component="button" type="button" onClick={() => setBig(a)}
-              title={`${a.name} · ${kb(a.size)} — click to enlarge`}
+              title={t("{name} · {size} — click to enlarge", { name: a.name, size: kb(a.size) })}
               sx={{ appearance: "none", p: 0, border: `1px solid ${BORDER}`, borderRadius: 1.5, overflow: "hidden", cursor: "zoom-in",
                 bgcolor: "#fff", alignSelf: "flex-start", maxWidth: "100%",
                 "&:hover": { borderColor: "#d8cfbe" } }}>
@@ -169,7 +175,7 @@ export const Attachments = ({ messageId, canFetch, dense, original, asFiles = nu
                 <GraphicEqIcon sx={{ fontSize: 13, color: "#6f8a6e" }} />
                 <Typography variant="caption" sx={{ color: INK, flex: 1, minWidth: 0 }} noWrap title={a.name}>{clipName(a)}</Typography>
                 <Typography variant="caption" sx={{ color: FAINT, fontSize: 9.5 }}>{kb(a.size)}</Typography>
-                <Box component="a" href={attUrl(a, true)} title="save the audio"
+                <Box component="a" href={attUrl(a, true)} title={t("save the audio")}
                   sx={{ display: "inline-flex", color: FAINT, "&:hover": { color: INK } }}>
                   <DownloadIcon sx={{ fontSize: 14 }} />
                 </Box>
@@ -184,7 +190,7 @@ export const Attachments = ({ messageId, canFetch, dense, original, asFiles = nu
       {files.length > 0 && (
         <Box sx={{ mt: imgs.length || clips.length ? 0.75 : 0, pt: 0.75, borderTop: `1px dashed ${BORDER}` }}>
           <Typography variant="caption" sx={{ color: DIM, fontWeight: 600, display: "flex", alignItems: "center", gap: 0.3 }}>
-            <AttachFileIcon sx={{ fontSize: 12 }} /> Attached · {files.length}
+            <AttachFileIcon sx={{ fontSize: 12 }} /> {t("Attached · {count}", { count: files.length })}
           </Typography>
         <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap", mt: 0.5 }}>
           {files.map((a) => (
@@ -200,7 +206,7 @@ export const Attachments = ({ messageId, canFetch, dense, original, asFiles = nu
               <Typography variant="caption" sx={{ color: INK, flex: 1, minWidth: 0 }} noWrap>{a.name}</Typography>
               {/* ...and a file it could not keep says so on the chip, not only on hover */}
               <Typography variant="caption" sx={{ color: FAINT, fontSize: 9.5, whiteSpace: "nowrap" }}>
-                {a.link ? (a.note ? "not read" : "") : a.url ? kb(a.size) : original ? "in the original" : "not saved"}</Typography>
+                {a.link ? (a.note ? t("not read") : "") : a.url ? kb(a.size) : original ? t("in the original") : t("not saved")}</Typography>
             </Box>
           ))}
         </Box>
@@ -217,7 +223,7 @@ export const Attachments = ({ messageId, canFetch, dense, original, asFiles = nu
               <Typography variant="caption" sx={{ color: INK, fontWeight: 600, flex: 1 }}>{big.name}</Typography>
               <Typography variant="caption" sx={{ color: FAINT }}>{kb(big.size)}</Typography>
               <Button size="small" startIcon={<DownloadIcon sx={{ fontSize: 15 }} />} href={attUrl(big, true)}
-                onClick={(e) => { e.preventDefault(); save(big); }}>Save</Button>
+                onClick={(e) => { e.preventDefault(); save(big); }}>{t("Save")}</Button>
             </Box>
             <Box component="img" src={attUrl(big)} alt={big.name}
               sx={{ display: "block", maxWidth: "88vw", maxHeight: "82vh", objectFit: "contain" }} />

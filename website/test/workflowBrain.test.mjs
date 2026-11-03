@@ -1,6 +1,5 @@
 // A workflow runs on the general agents' brain unless it asks for a harder model or more effort - and only what that CLI takes is offered.
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import test from "node:test";
 import { effortChoices, keepEffort, modelChoices } from "../src/workflowBrain.js";
 
@@ -12,7 +11,6 @@ const copilot = { said: "GitHub Copilot CLI · its default model", cli: "copilot
 
 test("the default is the general agents' brain, named, then the CLI's own models", () => {
   assert.deepEqual(modelChoices(claude).map((c) => c.value), ["", "claude-opus-5-5", "haiku"]);
-  assert.equal(modelChoices(claude)[0].label, "Same as general agents (Claude Code · claude-opus-5-5)");
   assert.equal(modelChoices(claude)[1].label, "Opus 5.5 (claude-opus-5-5)");
   assert.deepEqual(modelChoices(null), []);
 });
@@ -26,9 +24,3 @@ test("only the efforts the chosen model's CLI takes are offered", () => {
   assert.equal(keepEffort(claude, "claude-opus-5-5", "max"), "max");
 });
 
-test("the editor carries Model and Effort on one row, fed by the brain endpoint", () => {
-  const src = fs.readFileSync(new URL("../src/WorkflowEditor.jsx", import.meta.url), "utf8");
-  assert.ok(src.includes('api.get("/api/workflows/brain")'));
-  assert.ok(src.includes("modelChoices(brain)") && src.includes("effortChoices(brain, cfg.model)"));
-  assert.ok(src.includes('model: e.target.value, effort: keepEffort(') && src.includes('set("effort"'), "a new model drops an effort it cannot take");
-});

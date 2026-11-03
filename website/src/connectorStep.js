@@ -20,6 +20,20 @@ export function pickStep(cs) {
 export const stepWords = (s) => (!s?.text ? "" : s.kind === "button" ? `press ${s.text}` : `fill in ${s.text} first`);
 export const finishLine = (text, s) => (stepWords(s) && String(text || "").includes(STEP_SAID) ? text.replace(STEP_SAID, stepWords(s)) : text);
 
+// Keep the surrounding assistant text as data; only the instruction is product-authored.
+export const finishLineDescriptor = (text, s) => {
+  const step = stepWords(s), value = String(text || ""), at = value.indexOf(STEP_SAID);
+  if (!step || at < 0) return null;
+  return {
+    source: "{before}{step}{after}",
+    values: {
+      before: value.slice(0, at),
+      step: { source: s.kind === "button" ? "press {label}" : "fill in {label} first", values: { label: s.text } },
+      after: value.slice(at + STEP_SAID.length),
+    },
+  };
+};
+
 const shown = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
 const fieldText = (e) => (e.closest(".MuiFormControl-root")?.querySelector("label")?.innerText || e.getAttribute("aria-label") || e.placeholder || "")
   .replace(/\s*\*\s*$/, "").trim();

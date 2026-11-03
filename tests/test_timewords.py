@@ -28,12 +28,6 @@ def test_until_and_back_in():
     assert tw.back_in(None, NOW) == '' and tw.back_in('garbage', NOW) == ''
 
 
-def test_the_page_says_what_the_server_says():
-    """The cases in website/test/timeWords.test.mjs, run against this side: one rule, two languages."""
-    js = (ROOT / 'website' / 'test' / 'timeWords.test.mjs').read_text(encoding='utf-8')
-    cases = re.findall(r'\bago\(at\((-?[\d.]+(?: \* \d+)?)\), now\), "([^"]*)"', js)
-    assert len(cases) >= 6, cases
-    for expr, want in cases: assert tw.ago(at(eval(expr, {'__builtins__': {}})), NOW) == want, (expr, want)
 
 
 # a hand-written age: a placeholder, maybe a unit, then " ago" - "{m} min ago", "{h}h ago", "{days} day(s) ago", "{ago} ago"

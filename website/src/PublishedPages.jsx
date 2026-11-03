@@ -12,6 +12,8 @@ import { attUrl, fileError, useSave } from "./Attachments.jsx";
 import { Md } from "./md.jsx";
 import { csvRows, fitSvg, lockDown } from "./shownPages.js";
 import { deliverables } from "./taskOutputs.js";
+import { t, translateDescriptor } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 import "./publishedPages.css";
 
 // sandboxed WITHOUT allow-same-origin: the page's scripts run (charts, tabs) but in an opaque origin -
@@ -34,19 +36,20 @@ const label = (p) => isImage(p) && (isOutput(p) || p.kind === "shown") ? "pictur
 
 // a workbook's sheet as the server read it (outputs.sheet): capped rows and columns, a tab per sheet
 function SheetPreview({ page }) {
+  useLocale();
   const [sheet, setSheet] = useState(""), [got, setGot] = useState(null), [err, setErr] = useState("");
   React.useEffect(() => {
     let live = true;
     setErr("");
     api.get(page.url, { params: { preview: true, ...(sheet ? { sheet } : {}) } })
       .then((r) => live && setGot(r.data))
-      .catch(async (e) => { const why = await fileError(e, "This workbook could not be previewed - Download it to open it."); if (live) setErr(why); });
+      .catch(async (e) => { const why = await fileError(e, { source: "This workbook could not be previewed - Download it to open it.", values: {} }); if (live) setErr(why); });
     return () => { live = false; };
   }, [page.url, sheet]);
-  if (err) return <div className="tq-published-note">{err}</div>;
+  if (err) return <div className="tq-published-note">{translateDescriptor(err)}</div>;
   if (!got) return <div className="tq-published-note"><CircularProgress size={12} /></div>;
   const [head, ...rows] = got.rows || [];
-  const cut = [got.more_rows && `${got.max_rows} rows`, got.more_cols && `${got.max_cols} columns`].filter(Boolean).join(" and ");
+  const cut = [got.more_rows && t("{count} rows", { count: got.max_rows }), got.more_cols && t("{count} columns", { count: got.max_cols })].filter(Boolean).join(t(" and "));
   return (
     <div data-tq-sheet-preview="">
       {got.sheets?.length > 1 && (
@@ -60,25 +63,26 @@ function SheetPreview({ page }) {
           <thead><tr>{head.map((h, i) => <th key={i}>{h}</th>)}</tr></thead>
           <tbody>{rows.map((r, i) => <tr key={i}>{r.map((c, j) => <td key={j}>{c}</td>)}</tr>)}</tbody>
         </table></div>
-      ) : <div className="tq-published-note">This sheet is empty.</div>}
-      {cut && <div className="tq-published-note">The first {cut} are shown - Download it for the whole sheet.</div>}
+      ) : <div className="tq-published-note">{t("This sheet is empty.")}</div>}
+      {cut && <div className="tq-published-note">{t("The first {cut} are shown - Download it for the whole sheet.", { cut })}</div>}
     </div>
   );
 }
 
 // a Word document as the server read it (outputs.document): its paragraphs, headings and tables in order - the words, not the layout
 function DocPreview({ page }) {
+  useLocale();
   const [got, setGot] = useState(null), [err, setErr] = useState("");
   React.useEffect(() => {
     let live = true;
     setErr("");
     api.get(page.url, { params: { preview: true } }).then((r) => live && setGot(r.data))
-      .catch(async (e) => { const why = await fileError(e, "This document could not be previewed - Download it to open it."); if (live) setErr(why); });
+      .catch(async (e) => { const why = await fileError(e, { source: "This document could not be previewed - Download it to open it.", values: {} }); if (live) setErr(why); });
     return () => { live = false; };
   }, [page.url]);
-  if (err) return <div className="tq-published-note">{err}</div>;
+  if (err) return <div className="tq-published-note">{translateDescriptor(err)}</div>;
   if (!got) return <div className="tq-published-note"><CircularProgress size={12} /></div>;
-  if (!got.blocks?.length) return <div className="tq-published-note">This document is empty.</div>;
+  if (!got.blocks?.length) return <div className="tq-published-note">{t("This document is empty.")}</div>;
   return (
     <div className="tq-published-md" data-tq-doc-preview="">
       {got.blocks.map((b, i) => b.rows ? (
@@ -86,12 +90,13 @@ function DocPreview({ page }) {
           {b.rows.map((r, j) => <tr key={j}>{r.map((c, k) => <td key={k}>{c}</td>)}</tr>)}
         </tbody></table></div>
       ) : b.heading ? <h3 key={i}>{b.text}</h3> : <p key={i}>{b.text}</p>)}
-      {got.more && <div className="tq-published-note">The first {got.max_blocks} parts are shown - Download it for the whole document.</div>}
+      {got.more && <div className="tq-published-note">{t("The first {count} parts are shown - Download it for the whole document.", { count: got.max_blocks })}</div>}
     </div>
   );
 }
 
 function Preview({ page }) {
+  useLocale();
   const [body, setBody] = useState(null), [err, setErr] = useState("");
   const sheet = isOutput(page) && page.preview === "sheet", pdf = isOutput(page) && page.preview === "pdf", doc = isOutput(page) && page.preview === "document";
   const picture = isPicture(page) || pdf, text = isOutput(page) && page.preview === "text" && !/markdown/.test(type(page));
@@ -106,14 +111,14 @@ function Preview({ page }) {
       })
       // ...and why, in the server's words: a file moved or deleted says so, never only "could not be read"
       .catch(async (e) => {
-        const why = await fileError(e, page.external_url ? "The saved copy could not be read - open it on claude.ai." : "The saved copy could not be read.");
+        const why = await fileError(e, { source: page.external_url ? "The saved copy could not be read - open it on claude.ai." : "The saved copy could not be read.", values: {} });
         if (live) setErr(why);
       });
     return () => { live = false; if (url) URL.revokeObjectURL(url); };
   }, [page.url, page.version, picture, pdf, sheet, doc]);
   if (sheet) return <SheetPreview page={page} />;
   if (doc) return <DocPreview page={page} />;
-  if (err) return <div className="tq-published-note">{err}</div>;
+  if (err) return <div className="tq-published-note">{translateDescriptor(err)}</div>;
   if (body == null) return <div className="tq-published-note"><CircularProgress size={12} /></div>;
   if (pdf) return <iframe className="tq-published-frame" title={page.name} src={body} />;
   if (picture) return <div className="tq-published-picture"><img src={body} alt={page.name} /></div>;
@@ -135,18 +140,19 @@ function Preview({ page }) {
 // a file the agent made: its name and kind, Preview where it has one, and Download - or, gone from the folder, says so
 const sizeOf = (n) => n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`;
 function OutputFile({ file: p, open, onToggle, verb = "" }) {
+  useLocale();
   const can = !!p.preview && !p.missing, [err, save, saved] = useSave();
   return (
     <div className="tq-published-page" data-tq-output={p.path}>
       <div className="tq-published-row">
         <div className="tq-published-name tq-published-file">
           <b>{p.name}</b>
-          <span>{p.missing ? "not in this task's files any more" : `${label(p)}${p.size ? ` · ${sizeOf(p.size)}` : ""}`}</span>
+          <span>{p.missing ? t("not in this task's files any more") : `${t(label(p))}${p.size ? ` · ${sizeOf(p.size)}` : ""}`}</span>
         </div>
         {can && <Button size="small" variant={open ? "contained" : "outlined"} disableElevation onClick={onToggle}
-          title={open ? "Hide the preview" : "Show it here"} data-tq-open={verb ? "" : undefined}>{open ? (verb ? "Hide" : "Hide preview") : verb || "Preview"}</Button>}
-        {!p.missing && <Button size="small" href={attUrl(p, true)} title="Save a copy" data-tq-download=""
-          onClick={(e) => { e.preventDefault(); save(p); }}>Download</Button>}
+          title={t(open ? "Hide the preview" : "Show it here")} data-tq-open={verb ? "" : undefined}>{t(open ? (verb ? "Hide" : "Hide preview") : verb || "Preview")}</Button>}
+        {!p.missing && <Button size="small" href={attUrl(p, true)} title={t("Save a copy")} data-tq-download=""
+          onClick={(e) => { e.preventDefault(); save(p); }}>{t("Download")}</Button>}
       </div>
       {p.note && !p.missing && <div className="tq-published-note">{p.note}</div>}
       {err && <div className="tq-published-note" data-tq-file-error="">{err}</div>}
@@ -171,8 +177,8 @@ function Fold({ label, tag, children }) {
 // `deliver`: an agent's files, each thing it made ONCE (taskOutputs.deliverables) - its newest version with "N earlier versions" under it,
 // the agent's working files under one line, and past FOLD the rest behind "Show N more"
 export const FOLD = 5;
-const many = (n, one) => `${n} ${one}${n === 1 ? "" : "s"}`;
 export default function PublishedPages({ pages, open: openAll = false, verb = "", deliver = false }) {
+  useLocale();
   const [shut, setShut] = useState(() => new Set()), [opened, setOpened] = useState(() => new Set());
   if (!pages?.length) return null;
   const isOpen = (p) => (openAll ? !shut.has(p.id) : opened.has(p.id));
@@ -184,12 +190,12 @@ export default function PublishedPages({ pages, open: openAll = false, verb = ""
     const { made, working } = deliverables(pages);
     const one = (p) => <PublishedPages key={p.id} pages={[p]} open={openAll} verb={verb} />;
     const item = (p) => <React.Fragment key={p.id}>{one(p)}
-      {!!p.earlier?.length && <Fold tag="earlier" label={many(p.earlier.length, "earlier version")}>{p.earlier.map(one)}</Fold>}</React.Fragment>;
+      {!!p.earlier?.length && <Fold tag="earlier" label={t(p.earlier.length === 1 ? "{count} earlier version" : "{count} earlier versions", { count: p.earlier.length })}>{p.earlier.map(one)}</Fold>}</React.Fragment>;
     return (
       <div className="tq-published" data-tq-made-list="">
         {made.slice(0, FOLD).map(item)}
-        {made.length > FOLD && <Fold tag="more" label={`Show ${made.length - FOLD} more`}>{made.slice(FOLD).map(item)}</Fold>}
-        {!!working.length && <Fold tag="working" label={`${many(working.length, "working file")} it used`}>{working.map(one)}</Fold>}
+        {made.length > FOLD && <Fold tag="more" label={t("Show {count} more", { count: made.length - FOLD })}>{made.slice(FOLD).map(item)}</Fold>}
+        {!!working.length && <Fold tag="working" label={t(working.length === 1 ? "{count} working file it used" : "{count} working files it used", { count: working.length })}>{working.map(one)}</Fold>}
       </div>
     );
   }
@@ -203,23 +209,24 @@ export default function PublishedPages({ pages, open: openAll = false, verb = ""
 
 // a page the agent published or showed: its name, its Open where a copy was kept, Download, and its claude.ai link
 function PageRow({ p, open, onToggle, verb }) {
+  useLocale();
   const [err, save, saved] = useSave();
   return (
     <div className="tq-published-page">
       <div className="tq-published-row">
         <button type="button" className="tq-published-name" disabled={!p.url} onClick={onToggle}
-          title={p.url ? (open ? "Hide it" : "Show it here") : "No copy was kept - open it on claude.ai"}>
-          <b>{p.name}</b><span>{label(p)}{p.url && !verb ? (open ? " · hide" : " · show here") : ""}</span>
+          title={t(p.url ? (open ? "Hide it" : "Show it here") : "No copy was kept - open it on claude.ai")}>
+          <b>{p.name}</b><span>{t(label(p))}{p.url && !verb ? t(open ? " · hide" : " · show here") : ""}</span>
         </button>
         {p.url && verb && <Button size="small" variant={open ? "contained" : "outlined"} disableElevation data-tq-open=""
-          onClick={onToggle} title={open ? "Hide it" : "Show it here"}>{open ? "Hide" : verb}</Button>}
+          onClick={onToggle} title={t(open ? "Hide it" : "Show it here")}>{t(open ? "Hide" : verb)}</Button>}
         {p.url && (
-          <Button size="small" href={attUrl(p, true)} title="Save a copy" data-tq-download=""
-            onClick={(e) => { e.preventDefault(); save(p); }}>Download</Button>
+          <Button size="small" href={attUrl(p, true)} title={t("Save a copy")} data-tq-download=""
+            onClick={(e) => { e.preventDefault(); save(p); }}>{t("Download")}</Button>
         )}
         {p.external_url && (
           <Button size="small" variant="outlined" href={p.external_url} target="_blank" rel="noopener noreferrer"
-            endIcon={<OpenInNewIcon sx={{ fontSize: 13 }} />}>Open on claude.ai</Button>
+            endIcon={<OpenInNewIcon sx={{ fontSize: 13 }} />}>{t("Open on claude.ai")}</Button>
         )}
       </div>
       {err && <div className="tq-published-note" data-tq-file-error="">{err}</div>}

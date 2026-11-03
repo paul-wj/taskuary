@@ -1,10 +1,10 @@
 // THE TASK PAGE'S LAYOUT (the redesign, owner-approved 2026-10-21): two always-open columns - what it came FROM on the left, the
 // WORK or the reply on the right - in place of the Task / Agent work / Close out accordion. Pure, so node --test reads it.
 import { channelName } from "./taskSources.js";
-import { plural } from "./timeWords.js";
 import { fmtDate } from "./dates.js";
 import { drawerLit, mainView, sectionOf as sectionOfStage, stageOf } from "./stages.js";
 import { waitingEmails } from "./taskLifecycle.js";
+import { getLocale, t } from "./i18n.js";
 
 // WHILE AN AGENT WORKS THE WORK TAKES THE WHOLE WIDTH: a live session - coding or general, working or waiting on you (the rail's
 // spinning ring, or its hand) - and From folds to one line over it; the terminal is never covered or squeezed. `sessionView` is the
@@ -83,8 +83,8 @@ export const closeHolds = ({ pending = false, sent = false, proposals = 0, check
 // THE ONE LINE From folds to: who it came from and how many messages ("Gail Moreno · 3 messages"), a workflow's name, or - with
 // no message at all - where it was made
 export const fromLine = ({ sender = null, count = 0, workflow = null, made = "" } = {}) => {
-  if (count && sender) return [sender.FromName || sender.FromEmail || channelName(sender.Channel), plural(count, "message")].join(" · ");
-  if (workflow) return `Routine · ${workflow.title}`;
+  if (count && sender) return [sender.FromName || sender.FromEmail || channelName(sender.Channel), t(count === 1 ? "{count} message" : "{count} messages", { count })].join(" · ");
+  if (workflow) return t("Routine · {title}", { title: workflow.title });
   return made || "";
 };
 
@@ -105,7 +105,7 @@ const q = (s) => (s ? `“${String(s).replace(/\s+/g, " ").trim()}”` : "");
 // a second of the click that opened it (the owner, 2026-11-01: "this still happens")
 export const TAB_MOST = 40;
 export const fromStatus = ({ channel = "", count = 0, msgs = [], workflow = null, made = "", sorted = "" } = {}) => ({
-  lines: [count ? [channel, plural(count, "message")].filter(Boolean).join(" · ") : workflow ? `Routine · ${workflow.title}` : made,
+  lines: [count ? [channel, count === 1 ? t("{count} message", { count }) : t("{count} messages", { count })].filter(Boolean).join(" · ") : workflow ? t("Routine · {title}", { title: workflow.title }) : made,
     ...msgs.slice(0, TAB_MOST).map((m) => `${m.who}: ${q(m.words)}`)].filter(Boolean),
   foot: sorted ? `✓ ${sorted}` : "" });
 // ...the Agent: its profile and where it stands, what it did in a line, what it made - and at its foot its state and the Advisor's next move
@@ -122,8 +122,8 @@ export const reportLine = (body) => {
   return line.endsWith(":") && ls[i + 1] ? `${line} ${ls[i + 1]}` : line;
 };
 export const agentStatus = ({ profile = "", word = "not started", said = "", made = "", advisor = "" } = {}) => ({
-  lines: [[profile, word].filter(Boolean).join(" · "), said, made ? `Made: ${made}` : ""].filter(Boolean),
-  foot: [word === "finished" ? "✓ Done" : "", advisor ? `Advisor: ${advisor} is next` : ""].filter(Boolean).join(" · ") });
+  lines: [[profile, t(word)].filter(Boolean).join(" · "), said, made ? t("Made: {made}", { made }) : ""].filter(Boolean),
+  foot: [word === "finished" ? t("✓ Done") : "", advisor ? t("Advisor: {advisor} is next", { advisor }) : ""].filter(Boolean).join(" · ") });
 // ...Close out: who it answers and where, the draft's first words, and whether it went - "Drafted · waiting for Send", "Sent", "Nothing owed"
 // ...and what is in it: the draft's first words, or what was sent and when, the emails owed, the close and its note
 // ...and at its foot the Advisor's next move when that move is Close out's (advisorAt): "Mark done is next" stood under an Agent nobody started
@@ -131,10 +131,10 @@ export const agentStatus = ({ profile = "", word = "not started", said = "", mad
 // to somebody else and the tab said only "Reply to <the chat's sender>"; each owed email says where it goes and where it stands, and
 // the count of drafted ones is not said again under them
 export const closeStatus = ({ closed = false, note = "", to = "", where = "", draft = "", waiting = false, emails = 0, sent = false, sentWhen = "", owed = false, advisor = "", owes = [] } = {}) => ({
-  lines: [...(closed ? [] : owes.map((o) => `Email to ${o.to || o.name} · ${o.state}`)), to ? `Reply to ${to}${where ? ` in ${where}` : ""}` : "", q(draft),
-    closed ? ["Closed", note].filter(Boolean).join(" · ") : waiting ? "Drafted · waiting for Send" : sent ? (sentWhen ? `Sent ${sentWhen}` : "Sent") : owed ? "Not drafted yet" : emails || owes.length ? "" : "Nothing owed",
-    emails && !owes.length ? `${plural(emails, "email")} waiting for Send` : ""].filter(Boolean),
-  foot: advisor ? `Advisor: ${advisor} is next` : "" });
+  lines: [...(closed ? [] : owes.map((o) => t("Email to {to} · {state}", { to: o.to || o.name, state: t(o.state) }))), to ? (where ? t("Reply to {to} in {where}", { to, where }) : t("Reply to {to}", { to })) : "", q(draft),
+    closed ? [t("Closed"), note].filter(Boolean).join(" · ") : waiting ? t("Drafted · waiting for Send") : sent ? (sentWhen ? t("Sent {when}", { when: sentWhen }) : t("Sent")) : owed ? t("Not drafted yet") : emails || owes.length ? "" : t("Nothing owed", {}, "task-closeout"),
+    emails && !owes.length ? t(emails === 1 ? "{count} email waiting for Send" : "{count} emails waiting for Send", { count: emails }) : ""].filter(Boolean),
+  foot: advisor ? t("Advisor: {advisor} is next", { advisor }) : "" });
 
 // THE SECTION THE TASK OPENS ON, AND WHERE THE ADVISOR'S LINE STANDS (the owner, 2026-10-29: answered in Teams, the page opened on Came from
 // with "Mark done is next" under an Agent nobody started): the Advisor's decision names the section its move is in (rulebook.SEC, the
@@ -157,7 +157,8 @@ export const answeredOutside = ({ messages = [], outside = [], pending = false }
 };
 // ...said plainly in Close out: who was answered, where and when, and that what is left is closing it
 export const outsideLine = ({ who = "", where = "", when = "" } = {}) =>
-  `You answered ${who || "them"} yourself${where ? ` in ${where}` : ""}${when ? `, ${when}` : ""} - outside Taskuary. Nothing has come in since, so the task can be closed: Mark done.`;
+  t("You answered {who} yourself{where}{when} - outside Taskuary. Nothing has come in since, so the task can be closed: Mark done.", {
+    who: who || t("them"), where: where ? t(" in {where}", { where }) : "", when: when ? `, ${when}` : "" });
 
 // THE ASK IS THE MESSAGE'S OWN WORDS when triage left no summary of its own (the task-view cleanup, owner-approved 2026-10-25): said
 // once, under the title, and From does not open the same words again as the message under it. Spacing and line breaks aside.
@@ -184,6 +185,7 @@ export const waitingOn = ({ task = {}, messages = [], now = new Date() } = {}) =
   const due = /^\d{4}-\d{2}-\d{2}/.test(String(task.DueAt || "")) ? new Date(`${String(task.DueAt).slice(0, 10)}T00:00:00`) : null;
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const late = due ? Math.round((today - due) / 86400000) : 0;
-  const when = !due ? "" : ` Due ${fmtDate(due, [], { month: "short", day: "numeric" })}${late > 0 ? `, ${plural(late, "day")} late` : late === 0 ? ", today" : ""}.`;
-  return { name, line: `Waiting on ${name}.${when}` };
+  const date = due ? fmtDate(due, getLocale(), { month: "short", day: "numeric" }) : "";
+  const when = !due ? "" : late > 0 ? t(late === 1 ? " Due {date}, {count} day late." : " Due {date}, {count} days late.", { date, count: late }) : late === 0 ? t(" Due {date}, today.", { date }) : t(" Due {date}.", { date });
+  return { name, line: t("Waiting on {name}.{when}", { name, when }) };
 };

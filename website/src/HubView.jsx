@@ -23,11 +23,11 @@ import CloseIcon from "@mui/icons-material/Close";
 import SearchIcon from "@mui/icons-material/Search";
 import api from "./api";
 import { nothingMatches } from "./searchHits.js";
-import { ago, plural } from "./timeWords.js";
+import { ago } from "./timeWords.js";
 import { Md } from "./md.jsx";
 import { looksMd } from "./mdText.js";
 import { pollWhileVisible } from "./visible.js";
-import { plainError } from "./apiError.js";
+import { errorPresentation, errorText } from "./apiError.js";
 import { useSaveNote } from "./SaveNote.jsx";
 import { TaskuaryMark } from "./ui.jsx";
 import { label as btnLabel } from "./buttons.js";
@@ -35,6 +35,8 @@ import { RecentlyDeleted } from "./Removed.jsx";
 import {
   ACCENT, ACCENT2, ALERT_INK, BORDER, DIM, FAINT, GRADIENT, INK, PANEL, PANEL2, ROLES, mono,
 } from "./theme.jsx";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 // what KIND of thing an entry is. Not decoration: "a trap" and "a decision" are read
 // differently, and an agent scanning a topic wants to know which it is before the title.
@@ -48,6 +50,12 @@ const KINDS = {
   people:   { mark: "👤", label: "who to ask",   role: "muted" },
 };
 const kindOf = (k) => KINDS[k] || KINDS.howto;
+const errorInfo = (e, fallback) => errorPresentation(e, fallback);
+const errorReason = (info) => errorText(info);
+const RemovedNotice = ({ title }) => {
+  useLocale();
+  return t("Removed “{title}” — kept under Removed and Recently deleted", { title });
+};
 
 const Label = ({ children }) => (
   <Typography sx={{ ...mono, fontSize: 9.5, fontWeight: 600, letterSpacing: ".11em",
@@ -58,6 +66,7 @@ const Label = ({ children }) => (
 const byOwner = (author) => /^(owner|you|dana whitfield)$/i.test(String(author || "").trim());
 // onOpen (the assistant canvas): its thread opens as the one card on the canvas instead of inline; defaultOpen draws it open
 const Post = ({ p, onChanged, onOpenTask, onRemoved, onOpen = null, defaultOpen = false }) => {
+  useLocale();
   const [open, setOpen] = useState(defaultOpen);
   // a press that did not land says so on the post it was pressed on - they all used to fail in silence
   const [err, setErr] = useState("");
@@ -74,7 +83,7 @@ const Post = ({ p, onChanged, onOpenTask, onRemoved, onOpen = null, defaultOpen 
     setBusy(true); setErr("");
     try { const { data } = await api.post(`/api/hub/${p.LoreId}/comment`, { body: text });
       setFull((f) => ({ ...(f || p), comments: data.comments })); setDraft(""); onChanged?.(); }
-    catch (e) { setErr(`Your comment didn't post — ${plainError(e, "try again.")} It is still in the box.`); }
+    catch (e) { setErr({ kind: "comment", ...errorInfo(e, "try again.") }); }
     setBusy(false);
   };
   // one vote per voter, forum rules: pressing the arrow you already pressed changes nothing, the
@@ -82,7 +91,7 @@ const Post = ({ p, onChanged, onOpenTask, onRemoved, onOpen = null, defaultOpen 
   const act = async (path, failed, then) => {
     setErr("");
     try { await api.post(`/api/hub/${p.LoreId}/${path}`); then?.(); onChanged?.(); }
-    catch (e) { setErr(`${failed} — ${plainError(e, "try again.")}`); }
+    catch (e) { setErr({ kind: "action", failed, ...errorInfo(e, "try again.") }); }
   };
   const vote = (up) => act(`vote?up=${up}`, "Your vote didn't count");
   // removing takes the post out of this list at once, so the notice lives on the page
@@ -94,7 +103,7 @@ const Post = ({ p, onChanged, onOpenTask, onRemoved, onOpen = null, defaultOpen 
   const commentCount = p.Comments || 0;
   const voteLabel = score === 1 ? "upvote" : score >= 0 ? "upvotes" : "score";
   // each post's buttons named by the post (the owner, 2026-11-02): to the Assistant ten "remove"s were one, told apart only by a #2
-  const named = `“${String(p.Title || "this post").slice(0, 48)}${String(p.Title || "").length > 48 ? "…" : ""}”`;
+  const named = `“${String(p.Title || t("this post")).slice(0, 48)}${String(p.Title || "").length > 48 ? "…" : ""}”`;
   return (
     <Box sx={{ border: `1px solid ${BORDER}`, borderLeft: `2px solid ${removed ? BORDER : ROLES[k.role].solid}`,
       borderRadius: 2, bgcolor: PANEL, mb: 1.25, overflow: "hidden", opacity: removed ? 0.8 : 1 }}>
@@ -102,16 +111,16 @@ const Post = ({ p, onChanged, onOpenTask, onRemoved, onOpen = null, defaultOpen 
         {/* the score column, forum-style: what the room found useful is what the next agent is
             handed first (the Hub ranks by it), and what it voted down is gone */}
         <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 0, flexShrink: 0 }}>
-          <IconButton size="small" onClick={() => vote(true)} title="holds up — agents are handed this sooner" aria-label={`Vote up ${named}`}
+          <IconButton size="small" onClick={() => vote(true)} title={t("holds up — agents are handed this sooner")} aria-label={t("Vote up {name}", { name: named })}
             sx={{ p: { xs: 0.9, md: 0.25 }, color: mine > 0 ? ACCENT : FAINT, "&:hover": { color: ACCENT } }}>
             <ArrowUpwardIcon sx={{ fontSize: { xs: 20, md: 16 } }} />
           </IconButton>
           <Typography sx={{ ...mono, fontSize: 11.5, fontWeight: 600, lineHeight: 1,
             color: score > 0 ? ACCENT : score < 0 ? ALERT_INK : FAINT }}>{score}</Typography>
           <Typography sx={{ ...mono, fontSize: 7.5, lineHeight: 1.2, color: FAINT, mt: 0.3 }}>
-            {voteLabel}
+            {t(voteLabel)}
           </Typography>
-          <IconButton size="small" onClick={() => vote(false)} title="wrong or stale — below zero it is removed" aria-label={`Vote down ${named}`}
+          <IconButton size="small" onClick={() => vote(false)} title={t("wrong or stale — below zero it is removed")} aria-label={t("Vote down {name}", { name: named })}
             sx={{ p: { xs: 0.9, md: 0.25 }, color: mine < 0 ? ALERT_INK : FAINT, "&:hover": { color: ALERT_INK } }}>
             <ArrowDownwardIcon sx={{ fontSize: { xs: 20, md: 16 } }} />
           </IconButton>
@@ -122,7 +131,7 @@ const Post = ({ p, onChanged, onOpenTask, onRemoved, onOpen = null, defaultOpen 
             <Typography sx={{ fontSize: 14, fontWeight: 600, color: INK, letterSpacing: "-.15px", flex: 1, minWidth: 140 }}>
               {p.Title}
             </Typography>
-            <Chip size="small" label={k.label} sx={{ height: 18, fontSize: 10,
+            <Chip size="small" label={t(k.label)} sx={{ height: 18, fontSize: 10,
               bgcolor: ROLES[k.role].soft, color: ROLES[k.role].solid }} />
             <Chip size="small" label={p.Topic} sx={{ height: 18, fontSize: 10, bgcolor: PANEL2, color: DIM }} />
           </Box>
@@ -131,7 +140,7 @@ const Post = ({ p, onChanged, onOpenTask, onRemoved, onOpen = null, defaultOpen 
           {/* ...every entry, an agent's too; in the list a long one shows its start and a click opens the whole of it, with its
               thread - the same press as the comments button (the owner, 2026-10-16: "if you click on it you can see the full thing") */}
           {p.Body && (
-            <Box data-tq-post-body="" onClick={() => (onOpen ? onOpen() : !open && setOpen(true))} title={open ? undefined : "Open the whole entry"}
+            <Box data-tq-post-body="" onClick={() => (onOpen ? onOpen() : !open && setOpen(true))} title={open ? undefined : t("Open the whole entry")}
               sx={{ maxWidth: "72ch", fontSize: 13, color: DIM, cursor: open ? "auto" : "pointer", position: "relative",
                 ...(open ? {} : { maxHeight: "9.5em", overflow: "hidden",
                   maskImage: "linear-gradient(to bottom, #000 70%, transparent)", WebkitMaskImage: "linear-gradient(to bottom, #000 70%, transparent)" }) }}>
@@ -141,38 +150,38 @@ const Post = ({ p, onChanged, onOpenTask, onRemoved, onOpen = null, defaultOpen 
           <Box sx={{ display: "flex", alignItems: "center", gap: 1.25, mt: 0.85, flexWrap: "wrap" }}>
             <Typography variant="caption" sx={{ color: FAINT, display: "flex", alignItems: "center", gap: 0.55 }}>
               <TaskuaryMark size={13} />
-              {byOwner(p.Author) ? "written by you" : `agent ${p.Author || "unknown"}`} · {ago(p.UpdatedAt)}
+              {byOwner(p.Author) ? t("written by you") : t("agent {author}", { author: p.Author || t("unknown") })} · {ago(p.UpdatedAt)}
             </Typography>
             {p.TaskId ? (
               <Button size="small" variant="outlined" onClick={() => onOpenTask?.(p.TaskId)}
                 sx={{ height: 23, px: 0.9, minWidth: 0, fontSize: 10.5, textTransform: "none",
                   color: "#55697a", borderColor: BORDER }}>
-                from TQ-{String(p.TaskId).padStart(4, "0")}
+                {t("from TQ-{id}", { id: String(p.TaskId).padStart(4, "0") })}
               </Button>
             ) : (
-              <Typography variant="caption" sx={{ color: FAINT }}>posted by hand</Typography>
+              <Typography variant="caption" sx={{ color: FAINT }}>{t("posted by hand")}</Typography>
             )}
-            <Button size="small" data-tq-post-open="" aria-label={`${plural(commentCount, "comment")} on ${named}`} onClick={() => (onOpen ? onOpen() : setOpen((v) => !v))}
+            <Button size="small" data-tq-post-open="" aria-label={t("{comments} on {name}", { comments: t(commentCount === 1 ? "{count} comment" : "{count} comments", { count: commentCount }), name: named })} onClick={() => (onOpen ? onOpen() : setOpen((v) => !v))}
               startIcon={<ChatBubbleOutlineIcon sx={{ fontSize: 14 }} />}
               sx={{ fontSize: 11.5, color: commentCount ? ACCENT2 : DIM, minWidth: 0,
                 fontWeight: commentCount ? 700 : 400 }}>
-              {plural(commentCount, "comment")}
+              {t(commentCount === 1 ? "{count} comment" : "{count} comments", { count: commentCount })}
             </Button>
             <Box sx={{ flex: 1 }} />
             {removed ? (
-              <Button size="small" onClick={restore} aria-label={`Restore ${named}`} startIcon={<RestoreIcon sx={{ fontSize: 14 }} />}
+              <Button size="small" onClick={restore} aria-label={t("Restore {name}", { name: named })} startIcon={<RestoreIcon sx={{ fontSize: 14 }} />}
                 sx={{ fontSize: 11, color: DIM, minWidth: 0 }}
-                title={p.Status === "downvoted" ? "the vote took it off; put it back on the Hub" : "put it back on the Hub"}>
-                {p.Status === "downvoted" ? "voted off — restore" : "removed — restore"}
+                title={t(p.Status === "downvoted" ? "the vote took it off; put it back on the Hub" : "put it back on the Hub")}>
+                {t(p.Status === "downvoted" ? "voted off — restore" : "removed — restore")}
               </Button>
             ) : (
-              <Button size="small" onClick={retire} aria-label={`Remove ${named}`} sx={{ fontSize: 11, color: FAINT, minWidth: 0 }}
-                title="take it off the Hub now — kept under Removed and Recently deleted, never deleted">
-                remove
+              <Button size="small" onClick={retire} aria-label={t("Remove {name}", { name: named })} sx={{ fontSize: 11, color: FAINT, minWidth: 0 }}
+                title={t("take it off the Hub now — kept under Removed and Recently deleted, never deleted")}>
+                {t("remove")}
               </Button>
             )}
           </Box>
-          {err && <Typography variant="caption" sx={{ color: ALERT_INK, display: "block", mt: 0.5 }}>{err}</Typography>}
+          {err && <Typography variant="caption" sx={{ color: ALERT_INK, display: "block", mt: 0.5 }}>{err.kind === "comment" ? t("Your comment didn't post — {error} It is still in the box.", { error: errorReason(err) }) : t("{failure} — {error}", { failure: t(err.failed), error: errorReason(err) })}</Typography>}
         </Box>
       </Box>
       {open && (
@@ -187,11 +196,11 @@ const Post = ({ p, onChanged, onOpenTask, onRemoved, onOpen = null, defaultOpen 
           ))}
           {!comments.length && !full && <CircularProgress size={14} />}
           <Box sx={{ display: "flex", gap: 1, mt: comments.length ? 1 : 0 }}>
-            <TextField fullWidth size="small" multiline maxRows={4} value={draft} placeholder="correct it, add to it, or say where it bit you"
+            <TextField fullWidth size="small" multiline maxRows={4} value={draft} placeholder={t("correct it, add to it, or say where it bit you")}
               onChange={(e) => setDraft(e.target.value)}
               sx={{ "& .MuiInputBase-root": { fontSize: 12.5, bgcolor: PANEL } }} />
             <Button size="small" variant="contained" disableElevation disabled={busy || !draft.trim()} onClick={comment}
-              sx={{ fontSize: 12, background: GRADIENT, alignSelf: "flex-end" }}>Post</Button>
+              sx={{ fontSize: 12, background: GRADIENT, alignSelf: "flex-end" }}>{t("Post")}</Button>
           </Box>
         </Box>
       )}
@@ -201,6 +210,7 @@ const Post = ({ p, onChanged, onOpenTask, onRemoved, onOpen = null, defaultOpen 
 
 /* ── write one yourself ─────────────────────────────────────────────────────── */
 const NewEntry = ({ open, onClose, onDone, topics }) => {
+  useLocale();
   const [title, setTitle] = useState(""); const [body, setBody] = useState("");
   const [topic, setTopic] = useState(""); const [kind, setKind] = useState("new_idea");
   const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
@@ -208,7 +218,7 @@ const NewEntry = ({ open, onClose, onDone, topics }) => {
     setBusy(true); setErr("");
     try { await api.post("/api/hub", { title: title.trim(), body: body.trim(), topic: topic.trim(), kind });
       setTitle(""); setBody(""); onDone?.(); onClose?.(); }
-    catch (e) { setErr(e?.response?.data?.detail || "That did not save"); }
+    catch (e) { setErr(e?.response?.data?.detail || { fallback: true }); }
     setBusy(false);
   };
   return (
@@ -216,50 +226,49 @@ const NewEntry = ({ open, onClose, onDone, topics }) => {
     // others read the Hub, so Post it is the owner's press - lit, never pressed (data-tq-send, as concierge's hub.publish says)
     <Dialog open={!!open} onClose={onClose} fullWidth maxWidth="sm" data-tq-view="hub_write" data-tq-view-label="Write one - a new Hub post">
       <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1, pb: 0.5 }}>
-        <Box sx={{ flex: 1 }}>Write it down</Box>
-        <IconButton aria-label="Close Hub entry" size="small" onClick={onClose}><CloseIcon sx={{ fontSize: 17 }} /></IconButton>
+        <Box sx={{ flex: 1 }}>{t("Write it down")}</Box>
+        <IconButton aria-label={t("Close Hub entry")} size="small" onClick={onClose}><CloseIcon sx={{ fontSize: 17 }} /></IconButton>
       </DialogTitle>
       <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2, pt: 2 }}>
         <Box>
-          <Label>What is true</Label>
-          <TextField fullWidth size="small" value={title} autoFocus onChange={(e) => setTitle(e.target.value)} inputProps={{ "data-tq-field": "title", "aria-label": "Title - what is true" }}
-            placeholder="Adjustment rows take the first line's date, not the batch date"
+          <Label>{t("What is true")}</Label>
+          <TextField fullWidth size="small" value={title} autoFocus onChange={(e) => setTitle(e.target.value)} inputProps={{ "data-tq-field": "title", "aria-label": t("Title - what is true") }}
+            placeholder={t("Adjustment rows take the first line's date, not the batch date")}
             error={title.length > 140} helperText={title.length > 100 ? `${title.length}/140` : " "}
             sx={{ "& .MuiInputBase-root": { fontSize: 13.5 }, "& .MuiFormHelperText-root": { textAlign: "right", m: 0, mt: 0.25 } }} />
           <Typography variant="caption" sx={{ color: FAINT, display: "block", lineHeight: 1.6 }}>
-            One line, the fact, not what you did about it. “I fixed the import” belongs on the task;
-            “the import reads the first line's date” belongs here, and is still true next year.
+            {t("One line, the fact, not what you did about it. “I fixed the import” belongs on the task; “the import reads the first line's date” belongs here, and is still true next year.")}
           </Typography>
         </Box>
         <Box sx={{ display: "flex", gap: 1.25 }}>
           <Box sx={{ flex: 1 }}>
-            <Label>Topic</Label>
-            <TextField fullWidth size="small" value={topic} onChange={(e) => setTopic(e.target.value)} inputProps={{ "data-tq-field": "topic", "aria-label": "Topic" }}
-              placeholder={topics[0]?.Topic || "payroll"} sx={{ "& .MuiInputBase-root": { fontSize: 13 } }} />
+            <Label>{t("Topic")}</Label>
+            <TextField fullWidth size="small" value={topic} onChange={(e) => setTopic(e.target.value)} inputProps={{ "data-tq-field": "topic", "aria-label": t("Topic") }}
+              placeholder={topics[0]?.Topic || t("payroll")} sx={{ "& .MuiInputBase-root": { fontSize: 13 } }} />
           </Box>
           <Box sx={{ width: 180 }}>
-            <Label>Kind</Label>
-            <Select size="small" fullWidth value={kind} onChange={(e) => setKind(e.target.value)} SelectDisplayProps={{ "aria-label": "Kind", "data-tq-field": "kind" }} sx={{ fontSize: 13 }}>
+            <Label>{t("Kind")}</Label>
+            <Select size="small" fullWidth value={kind} onChange={(e) => setKind(e.target.value)} SelectDisplayProps={{ "aria-label": t("Kind"), "data-tq-field": "kind" }} sx={{ fontSize: 13 }}>
               {Object.entries(KINDS).map(([k, v]) => (
-                <MenuItem key={k} value={k} sx={{ fontSize: 12.5 }}>{v.mark} {v.label}</MenuItem>
+                <MenuItem key={k} value={k} sx={{ fontSize: 12.5 }}>{v.mark} {t(v.label)}</MenuItem>
               ))}
             </Select>
           </Box>
         </Box>
         <Box>
-          <Label>Why, and what to do about it</Label>
-          <TextField fullWidth multiline minRows={3} value={body} onChange={(e) => setBody(e.target.value)} inputProps={{ "data-tq-field": "body", "aria-label": "Body - why, and what to do about it" }}
-            placeholder="Two or three sentences. Name the file, the system, the id, the person."
+          <Label>{t("Why, and what to do about it")}</Label>
+          <TextField fullWidth multiline minRows={3} value={body} onChange={(e) => setBody(e.target.value)} inputProps={{ "data-tq-field": "body", "aria-label": t("Body - why, and what to do about it") }}
+            placeholder={t("Two or three sentences. Name the file, the system, the id, the person.")}
             error={body.length > 700} helperText={body.length > 500 ? `${body.length}/700` : " "}
             sx={{ "& .MuiInputBase-root": { fontSize: 13 }, "& .MuiFormHelperText-root": { textAlign: "right", m: 0, mt: 0.25 } }} />
         </Box>
-        {err && <Alert severity="error" sx={{ py: 0.25, fontSize: 12.5 }}>{err}</Alert>}
+        {err && <Alert severity="error" sx={{ py: 0.25, fontSize: 12.5 }}>{typeof err === "string" ? err : t("That did not save")}</Alert>}
       </DialogContent>
       <Box sx={{ display: "flex", gap: 1, justifyContent: "flex-end", px: 3, py: 1.75,
         borderTop: `1px solid ${BORDER}`, bgcolor: PANEL2 }}>
-        <Button size="small" onClick={onClose} sx={{ color: DIM }}>Cancel</Button>
+        <Button size="small" onClick={onClose} sx={{ color: DIM }}>{t("Cancel")}</Button>
         <Button size="small" variant="contained" disableElevation data-tq-send="" disabled={busy || !title.trim() || title.length > 140 || body.length > 700} onClick={save}
-          sx={{ background: GRADIENT }}>Post it</Button>
+          sx={{ background: GRADIENT }}>{t("Post it")}</Button>
       </Box>
     </Dialog>
   );
@@ -269,6 +278,7 @@ const NewEntry = ({ open, onClose, onDone, topics }) => {
 // `browse` (the assistant canvas, CanvasBrowse.jsx): topics are the sections, each post its own card, one post open with
 // its thread - drawn through the canvas's frame instead of this tab's topic rail.
 export default function HubView({ onOpenTask, browse = null, browseState = {}, onBrowseState = null }) {
+  useLocale();
   const [d, setD] = useState(null);
   const [topic, setTopic] = useState("");
   const [kind, setKind] = useState("");
@@ -286,18 +296,18 @@ export default function HubView({ onOpenTask, browse = null, browseState = {}, o
       const { data } = await api.get("/api/hub", { params: { topic: topic || undefined, q: q || undefined,
         kind: kind || undefined, sort, status: removed ? "removed" : "live" } });
       setD(data); setLoadErr("");
-    } catch (e) { setLoadErr(plainError(e, "The Hub didn't load just now.")); }
+    } catch (e) { setLoadErr(errorInfo(e, "The Hub didn't load just now.")); }
   }, [topic, q, kind, sort, removed]);
   const { say, note } = useSaveNote();
   // a receipt, never an Undo (the owner, 2026-10-19: "no take it back button"): Removed keeps it, and its own button puts it back
   // ...and under Recently deleted (the owner, 2026-11-02), whose list is read again after any press on a post (`bin`)
-  const onRemoved = (p) => say(`Removed “${p.Title}” — kept under Removed and Recently deleted`);
+  const onRemoved = (p) => say(<RemovedNotice title={p.Title} />);
   const [bin, setBin] = useState(0);
   const changed = () => { load(); setBin((n) => n + 1); };
   const shelf = <RecentlyDeleted key={bin} kinds={["hub post"]} onRestored={load} />;
   const failed = loadErr && (
     <Alert severity="error" sx={{ mb: 1.5, fontSize: 12.5 }}
-      action={<Button size="small" color="inherit" onClick={load}>{btnLabel("try_again")}</Button>}>{loadErr}</Alert>
+      action={<Button size="small" color="inherit" onClick={load}>{btnLabel("try_again")}</Button>}>{errorReason(loadErr)}</Alert>
   );
   useEffect(() => { load(); return pollWhileVisible(load, 30000); }, [load]);
   useEffect(() => { const t = setTimeout(() => setQ(typed.trim()), 300); return () => clearTimeout(t); }, [typed]);
@@ -309,14 +319,14 @@ export default function HubView({ onOpenTask, browse = null, browseState = {}, o
   if (browse) {
     const one = posts.find((x) => x.LoreId === browseState.open);
     return browse({
-      title: "Hub", wide: true,
-      summary: !d ? (loadErr ? "couldn't load" : "loading…") : `${d.count.posts} posts · ${d.count.topics} topics · ${d.count.comments} comments`,
-      sections: [{ key: "", label: "everything", n: d?.count?.posts || 0 }, ...topics.map((t) => ({ key: t.Topic, label: t.Topic, n: t.n }))],
+      title: t("Hub"), wide: true,
+      summary: !d ? (loadErr ? t("couldn't load") : t("loading…")) : t("{posts} posts · {topics} topics · {comments} comments", { posts: d.count.posts, topics: d.count.topics, comments: d.count.comments }),
+      sections: [{ key: "", label: t("everything"), n: d?.count?.posts || 0 }, ...topics.map((t) => ({ key: t.Topic, label: t.Topic, n: t.n }))],
       section: browseState.section ?? "",
       onSection: (key) => onBrowseState?.({ section: key, open: null }),
       search: (
-        <TextField size="small" fullWidth value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="search Hub…"
-          inputProps={{ "aria-label": "Search Hub", "data-tq-browse-search": "" }}
+        <TextField size="small" fullWidth value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={t("search Hub…")}
+          inputProps={{ "aria-label": t("Search Hub"), "data-tq-browse-search": "" }}
           InputProps={{ startAdornment: <SearchIcon sx={{ fontSize: 16, color: FAINT, mr: 0.75 }} /> }}
           sx={{ mt: 1.5, "& .MuiInputBase-root": { fontSize: 12.5, bgcolor: "#fff" } }} />
       ),
@@ -324,8 +334,8 @@ export default function HubView({ onOpenTask, browse = null, browseState = {}, o
         onOpen={() => onBrowseState?.({ ...browseState, open: x.LoreId })} /> })), ...(posts.length ? [{ key: "recently-deleted", node: shelf }] : [])],
       detail: one ? <Post key={`open-${one.LoreId}`} p={one} onChanged={changed} onOpenTask={onOpenTask} onRemoved={onRemoved} defaultOpen /> : null,
       onBack: () => onBrowseState?.({ ...browseState, open: null }),
-      openLabel: one ? `the Hub post "${one.Title}" (${one.Topic || "Hub"})` : "",
-      query: q, searched: "the Hub", empty: removed ? "Nothing has been voted off." : "Nothing posted yet.",
+      openLabel: one ? t('the Hub post "{title}" ({topic})', { title: one.Title, topic: one.Topic || t("Hub") }) : "",
+      query: q, searched: t("the Hub"), empty: t(removed ? "Nothing has been voted off." : "Nothing posted yet."),
       // the tab's own controls: which order, which tag, the shelf the vote took things off, and writing one
       // ...each menu NAMED (the assistant audit, 2026-11-02): an unnamed menu is no field to pageView.js, so "sort by newest" asked
       // with the Hub up had nothing on the page to set
@@ -334,19 +344,19 @@ export default function HubView({ onOpenTask, browse = null, browseState = {}, o
           {note}
           {failed && <Box sx={{ flexBasis: "100%" }}>{failed}</Box>}
           {!posts.length && <Box sx={{ flexBasis: "100%" }}>{shelf}</Box>}
-          <Select size="small" value={sort} onChange={(e) => setSort(e.target.value)} SelectDisplayProps={{ "aria-label": "Order" }} sx={{ fontSize: 12, bgcolor: PANEL, height: 32 }}>
-            <MenuItem value="top" sx={{ fontSize: 12.5 }}>most valuable</MenuItem>
-            <MenuItem value="new" sx={{ fontSize: 12.5 }}>newest</MenuItem>
+          <Select size="small" value={sort} onChange={(e) => setSort(e.target.value)} SelectDisplayProps={{ "aria-label": t("Order") }} sx={{ fontSize: 12, bgcolor: PANEL, height: 32 }}>
+            <MenuItem value="top" sx={{ fontSize: 12.5 }}>{t("most valuable")}</MenuItem>
+            <MenuItem value="new" sx={{ fontSize: 12.5 }}>{t("newest")}</MenuItem>
           </Select>
-          <Select size="small" value={kind} onChange={(e) => setKind(e.target.value)} displayEmpty SelectDisplayProps={{ "aria-label": "Tag" }} sx={{ fontSize: 12, bgcolor: PANEL, height: 32, minWidth: 120 }}>
-            <MenuItem value="" sx={{ fontSize: 12.5 }}>all tags</MenuItem>
-            {Object.entries(KINDS).map(([key, value]) => <MenuItem key={key} value={key} sx={{ fontSize: 12.5 }}>{value.mark} {value.label}</MenuItem>)}
+          <Select size="small" value={kind} onChange={(e) => setKind(e.target.value)} displayEmpty SelectDisplayProps={{ "aria-label": t("Tag") }} sx={{ fontSize: 12, bgcolor: PANEL, height: 32, minWidth: 120 }}>
+            <MenuItem value="" sx={{ fontSize: 12.5 }}>{t("all tags")}</MenuItem>
+            {Object.entries(KINDS).map(([key, value]) => <MenuItem key={key} value={key} sx={{ fontSize: 12.5 }}>{value.mark} {t(value.label)}</MenuItem>)}
           </Select>
           <Button size="small" onClick={() => setRemoved((v) => !v)} sx={{ fontSize: 11.5, color: removed ? INK : FAINT, minWidth: 0 }}
-            title="what the vote took off, or you did - never deleted">{removed ? "back to Hub" : "removed"}</Button>
+            title={t("what the vote took off, or you did - never deleted")}>{t(removed ? "back to Hub" : "removed")}</Button>
           <Box sx={{ flex: 1 }} />
           <Button size="small" variant="contained" disableElevation startIcon={<AddIcon sx={{ fontSize: 16 }} />}
-            onClick={() => setNewOpen(true)} sx={{ background: GRADIENT, fontSize: 12.5 }}>Write one</Button>
+            onClick={() => setNewOpen(true)} sx={{ background: GRADIENT, fontSize: 12.5 }}>{t("Write one")}</Button>
           <NewEntry open={newOpen} onClose={() => setNewOpen(false)} onDone={load} topics={topics} />
         </Box>
       ),
@@ -358,26 +368,26 @@ export default function HubView({ onOpenTask, browse = null, browseState = {}, o
 
       {/* topics down the side - the shelves, and how full each one is */}
       <Box sx={{ position: { md: "sticky" }, top: { md: 70 } }}>
-        <Label>Topics</Label>
+        <Label>{t("Topics")}</Label>
         <Box sx={{ border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: PANEL, overflow: "hidden" }}>
-          {[{ Topic: "", n: d?.count?.posts || 0 }, ...topics].map((t, i) => (
-            <Box key={t.Topic || "all"}
-            component="button" type="button" aria-current={topic === t.Topic ? "true" : undefined} onClick={() => setTopic(t.Topic)}
+          {[{ Topic: "", n: d?.count?.posts || 0 }, ...topics].map((item, i) => (
+            <Box key={item.Topic || "all"}
+            component="button" type="button" aria-current={topic === item.Topic ? "true" : undefined} onClick={() => setTopic(item.Topic)}
               sx={{ display: "flex", alignItems: "center", gap: 1, px: 1.25, py: 0.85, cursor: "pointer",
                 width: "100%", border: 0, font: "inherit",
                 borderTop: i ? `1px solid ${BORDER}` : "none",
-                bgcolor: topic === t.Topic ? PANEL2 : "transparent",
-                "&:hover": { bgcolor: topic === t.Topic ? PANEL2 : "#fcfaf7" } }}>
-              <Typography sx={{ fontSize: 12.5, fontWeight: topic === t.Topic ? 600 : 400,
-                color: topic === t.Topic ? INK : DIM, flex: 1, minWidth: 0 }} noWrap>
-                {t.Topic || "everything"}
+                bgcolor: topic === item.Topic ? PANEL2 : "transparent",
+                "&:hover": { bgcolor: topic === item.Topic ? PANEL2 : "#fcfaf7" } }}>
+              <Typography sx={{ fontSize: 12.5, fontWeight: topic === item.Topic ? 600 : 400,
+                color: topic === item.Topic ? INK : DIM, flex: 1, minWidth: 0 }} noWrap>
+                {item.Topic || t("everything")}
               </Typography>
-              <Typography sx={{ ...mono, fontSize: 10.5, color: FAINT }}>{t.n}</Typography>
+              <Typography sx={{ ...mono, fontSize: 10.5, color: FAINT }}>{item.n}</Typography>
             </Box>
           ))}
           {!topics.length && (
             <Typography variant="caption" sx={{ color: FAINT, display: "block", px: 1.25, py: 1.25, lineHeight: 1.6 }}>
-              No topics yet. They appear as the agents file things.
+              {t("No topics yet. They appear as the agents file things.")}
             </Typography>
           )}
         </Box>
@@ -387,34 +397,34 @@ export default function HubView({ onOpenTask, browse = null, browseState = {}, o
         <Box sx={{ display: "flex", alignItems: "center", gap: 1.25, mb: 1.5, flexWrap: "wrap" }}>
           <Box sx={{ minWidth: 0 }}>
             <Typography sx={{ fontSize: 15, fontWeight: 600, color: INK }}>
-              {removed ? "Removed from Hub" : "Hub"}
+              {t(removed ? "Removed from Hub" : "Hub")}
             </Typography>
             <Typography variant="caption" sx={{ color: FAINT }}>
-              {!d ? "loading…" : removed ? "voted below zero, or taken off by you — kept here, restorable"
-                : `${d.count.posts} posts · ${d.count.topics} topics · ${d.count.comments} comments — hard-earned discoveries and developed ideas, discussed by people and agents`}
+              {!d ? t("loading…") : removed ? t("voted below zero, or taken off by you — kept here, restorable")
+                : t("{posts} posts · {topics} topics · {comments} comments — hard-earned discoveries and developed ideas, discussed by people and agents", { posts: d.count.posts, topics: d.count.topics, comments: d.count.comments })}
             </Typography>
           </Box>
           <Box sx={{ flex: 1 }} />
           <TextField size="small" value={typed} onChange={(e) => setTyped(e.target.value)}
-            placeholder="search Hub…"
+            placeholder={t("search Hub…")}
             InputProps={{ startAdornment: <SearchIcon sx={{ fontSize: 16, color: FAINT, mr: 0.75 }} /> }}
             sx={{ width: { xs: "100%", sm: 260 }, "& .MuiInputBase-root": { fontSize: 12.5, bgcolor: PANEL } }} />
-          <Select size="small" value={sort} onChange={(e) => setSort(e.target.value)} SelectDisplayProps={{ "aria-label": "Order" }}
+          <Select size="small" value={sort} onChange={(e) => setSort(e.target.value)} SelectDisplayProps={{ "aria-label": t("Order") }}
             sx={{ fontSize: 12, bgcolor: PANEL, height: 34 }}>
-            <MenuItem value="top" sx={{ fontSize: 12.5 }}>most valuable</MenuItem>
-            <MenuItem value="new" sx={{ fontSize: 12.5 }}>newest</MenuItem>
+            <MenuItem value="top" sx={{ fontSize: 12.5 }}>{t("most valuable")}</MenuItem>
+            <MenuItem value="new" sx={{ fontSize: 12.5 }}>{t("newest")}</MenuItem>
           </Select>
-          <Select size="small" value={kind} onChange={(e) => setKind(e.target.value)} displayEmpty SelectDisplayProps={{ "aria-label": "Tag" }}
+          <Select size="small" value={kind} onChange={(e) => setKind(e.target.value)} displayEmpty SelectDisplayProps={{ "aria-label": t("Tag") }}
             sx={{ fontSize: 12, bgcolor: PANEL, height: 34, minWidth: 128 }}>
-            <MenuItem value="" sx={{ fontSize: 12.5 }}>all tags</MenuItem>
+            <MenuItem value="" sx={{ fontSize: 12.5 }}>{t("all tags")}</MenuItem>
             {Object.entries(KINDS).map(([key, value]) => (
-              <MenuItem key={key} value={key} sx={{ fontSize: 12.5 }}>{value.mark} {value.label}</MenuItem>
+              <MenuItem key={key} value={key} sx={{ fontSize: 12.5 }}>{value.mark} {t(value.label)}</MenuItem>
             ))}
           </Select>
           <Button size="small" onClick={() => setRemoved((v) => !v)} sx={{ fontSize: 11.5, color: removed ? INK : FAINT, minWidth: 0 }}
-            title="what the vote took off, or you did - never deleted">{removed ? "back to Hub" : "removed"}</Button>
+            title={t("what the vote took off, or you did - never deleted")}>{t(removed ? "back to Hub" : "removed")}</Button>
           <Button size="small" variant="contained" disableElevation startIcon={<AddIcon sx={{ fontSize: 16 }} />}
-            onClick={() => setNewOpen(true)} sx={{ background: GRADIENT, fontSize: 12.5 }}>Write one</Button>
+            onClick={() => setNewOpen(true)} sx={{ background: GRADIENT, fontSize: 12.5 }}>{t("Write one")}</Button>
         </Box>
 
         {failed}
@@ -423,12 +433,12 @@ export default function HubView({ onOpenTask, browse = null, browseState = {}, o
           : (
             <Box sx={{ border: `1px dashed ${BORDER}`, borderRadius: 2, p: 4, textAlign: "center" }}>
               <Typography sx={{ fontSize: 13.5, fontWeight: 600, color: DIM, mb: 0.75 }}>
-                {removed ? "Nothing has been voted off" : q ? nothingMatches(q, "the Hub") : topic ? "Nothing in this topic yet" : "Nothing posted yet"}
+                {removed ? t("Nothing has been voted off") : q ? nothingMatches(q, t("the Hub")) : t(topic ? "Nothing in this topic yet" : "Nothing posted yet")}
               </Typography>
               <Typography variant="caption" sx={{ color: FAINT, lineHeight: 1.7, display: "block", maxWidth: 460, mx: "auto" }}>
-                {removed ? "A post whose score falls below zero lands here, and so does anything you remove. Restore puts it back."
-                  : topic ? "Clear the topic to see every post." : q ? null
-                  : "People and agents post only hard-earned discoveries or developed company ideas—not routine task output or raw brainstorming. Anyone can comment, upvote what held up, and downvote what did not. Every agent starts with the best-matching, top-voted Hub posts."}
+                {removed ? t("A post whose score falls below zero lands here, and so does anything you remove. Restore puts it back.")
+                  : topic ? t("Clear the topic to see every post.") : q ? null
+                  : t("People and agents post only hard-earned discoveries or developed company ideas—not routine task output or raw brainstorming. Anyone can comment, upvote what held up, and downvote what did not. Every agent starts with the best-matching, top-voted Hub posts.")}
               </Typography>
             </Box>
           )}

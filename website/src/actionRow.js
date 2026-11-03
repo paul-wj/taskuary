@@ -3,7 +3,8 @@
 // unchanged: the row calls the LATEST one, so a press costs what the old button cost and nothing in the card re-renders for it.
 // Only a change in what the row SHOWS (a label, a disabled flag, a verb arriving or going) wakes the row; a fresh closure does not.
 import React, { createContext, useContext, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
-import { label, liveVerb, verbOfRow } from "./buttons.js";
+import { CHOICES, VERBS, label, liveVerb, verbOfRow } from "./buttons.js";
+import { t } from "./i18n.js";
 
 // verb: { id, label, group: "decide" | "agent" | "more" | "next" | "back", tone: "p" | "s" | "q", title, disabled, why, run(event, anchorEl) }
 //   `why`: what a DISABLED verb is waiting for, said in the row itself ("write the reply first") - a greyed button that does not say why is a dead end
@@ -12,7 +13,7 @@ const live = new Map();          // id -> the latest verb (its run closes over t
 const ofs = new Map();           // id -> the card that registered it: the item a button drawn from it was drawn for (press)
 const owners = new Map();        // owner -> { verbs, ref, at }
 const subs = new Set();
-const view = (v) => ({ id: v.id, label: v.label, group: v.group, tone: v.tone || "s", title: v.title || "", disabled: !!v.disabled, why: v.why || "", ...(v.blank ? { blank: v.blank } : {}), promote: v.promote !== false, lead: !!v.lead, ...(v.closes ? { closes: true } : {}), ...(v.fill ? { fill: true } : {}), ...(v.beside ? { beside: true } : {}), ...(v.onCard ? { onCard: true } : {}), ...(v.card ? { card: true } : {}), ...(v.steady ? { steady: true } : {}), ...(v.tucked ? { tucked: true } : {}), ...(v.spine ? { spine: v.spine } : {}), ...(v.stage ? { stage: v.stage } : {}), ...(v.laid ? { laid: v.laid } : {}) });
+const view = (v) => ({ id: v.id, label: v.label, group: v.group, tone: v.tone || "s", title: v.title || "", disabled: !!v.disabled, why: v.why || "", ...(v.blank ? { blank: v.blank } : {}), promote: v.promote !== false, lead: !!v.lead, ...(v.send ? { send: true } : {}), ...(v.closes ? { closes: true } : {}), ...(v.fill ? { fill: true } : {}), ...(v.beside ? { beside: true } : {}), ...(v.onCard ? { onCard: true } : {}), ...(v.card ? { card: true } : {}), ...(v.steady ? { steady: true } : {}), ...(v.tucked ? { tucked: true } : {}), ...(v.spine ? { spine: v.spine } : {}), ...(v.stage ? { stage: v.stage } : {}), ...(v.laid ? { laid: v.laid } : {}) });
 let snap = { list: [], ref: "" }, sig = "";
 // THE WALK'S TWO WAYS, ONE PILL (the owner, 2026-10-27: "We have a Next button - let's have a Back button that goes up the line as well ...
 // on the first one no Back, like no Next on the last one. Combine Next/Back into one big pill called Nav"): Back is the walk's step up the
@@ -179,8 +180,10 @@ export function movesOf(node, group = "decide", prefix = "m") {
     if (!React.isValidElement(c)) return;
     if (c.type === React.Fragment) return walk(c.props.children);
     const p = c.props, label = textOf(p.children).trim();
-    if (!label || !(p.onClick || p.href)) return;
-    out.push({ id: `${prefix}:${label}`, group, tone: p.variant === "contained" ? "p" : "s", label, title: p.title, disabled: !!p.disabled, why: p.disabled && p.title ? p.title : "",
+    const verb = p["data-tq-verb"] || p.id;
+    if (!label || !verb || !(p.onClick || p.href)) return;
+    out.push({ id: `${prefix}:${verb}`, group, tone: p.variant === "contained" ? "p" : "s", label, title: p.title, disabled: !!p.disabled, why: p.disabled && p.title ? p.title : "",
+      ...(p["data-tq-send"] != null && p["data-tq-send"] !== false ? { send: true } : {}),
       run: (e, anchor) => (p.onClick ? p.onClick({ currentTarget: anchor || e?.currentTarget }) : window.open(p.href, "_blank", "noopener")) });
   });
   walk(node);
@@ -198,14 +201,22 @@ const isDone = (v) => v.id === "done" || /:done$/.test(String(v.id));
 // chip's own words, or the task's own id for the same act read off buttons.json's `row` lists - the Advisor's `close` is the row's
 // `done`, `defer` its `remind`, `stop_agent` its `save-end` - so it fills the REAL button and never draws a second one beside it
 // (it drew a second Reply on the strip, 2026-10-13). An old saved pick of a removed verb (`done`, `later`) lands on the live one.
+const normalWord = (s) => String(s || "").trim().toLowerCase();
+// The Advisor returns catalogue words in English; only catalogue-owned words may be translated for matching.
+const catalogueWords = new Map([
+  ...Object.values(VERBS).flatMap((v) => [v.label, ...Object.values(v.states || {})]),
+  ...Object.values(CHOICES).filter(Array.isArray).flatMap((choices) => choices.map(([, word]) => word)),
+].filter(Boolean).map((word) => [normalWord(word), word]));
 const sameAct = (v, pick) => {
   const verb = liveVerb(pick?.verb);
   if (!verb) return false;
-  const l = String(v.label || "").trim().toLowerCase(), want = String(pick?.label || "").trim().toLowerCase(), id = String(v.id || "");
+  const l = normalWord(v.label), want = normalWord(pick?.label), id = String(v.id || "");
+  const canonical = catalogueWords.get(want);
   // ADVISED SEND IS A SEND: the draft's button keeps its `approve` id while it reads Redraft, Mark done or Checking delivery…,
   // and the line said "Send" over the one that was not (the Advisor audit, 2026-10-15)
-  if (verb === "approve" && ![label("approve"), label("approve", "action")].some((w) => l === w.toLowerCase()) && !l.startsWith("send")) return false;
-  return id === verb || id.endsWith(`:${verb}`) || verbOfRow(id) === verb || (!!want && l === want);
+  const sends = [VERBS.approve.label, VERBS.approve.states.action, label("approve"), label("approve", "action"), label("approve", "unknown")].map(normalWord);
+  if (verb === "approve" && !sends.includes(l) && !l.startsWith("send") && !l.startsWith(normalWord(label("approve")))) return false;
+  return id === verb || id.endsWith(`:${verb}`) || verbOfRow(id) === verb || (!!want && (l === want || (!!canonical && l === normalWord(t(canonical)))));
 };
 // ...the one on the bar before the card's own of the same act - the card's main move (it holds the bar's first slot, rowOf), then the
 // row's own, then one only the card draws: the draft's Mark done (`<rid>:done`) was found first and lit on the card, a screen down,
@@ -297,13 +308,13 @@ export function rowOf({ list, ref, end: last = false, off = "" }, pick = null) {
   // walk ends; only its hover says so. Back still greys on the first; setup's Back and Next, and the floor's, are not the walk's
   const greyed = (v) => (v && off ? { ...v, disabled: true, steady: false, title: off, why: off } : v);
   const nx = by("next").find((v) => !(last && v.id === "next")) || by("next").find((v) => v.id === "next");
-  const next = greyed(nx && last && nx.id === "next" ? { ...nx, title: "The last one - Next ends the walk" } : nx || null),
+  const next = greyed(nx && last && nx.id === "next" ? { ...nx, title: t("The last one - Next ends the walk") } : nx || null),
     back = greyed(by("back")[0] || null);
   if (decide.length > ROOM) { more = [...decide.slice(ROOM), ...more]; decide = decide.slice(0, ROOM); }   // the row stays a short line of chips; the rest wait behind More
   // a greyed decision says why it is greyed - the advised one never is (advisedIn skips greyed verbs), so the card's own move speaks
   return { ref, decide, agent, more, primary, lit: advised?.card ? advised.id : "", next: next && { ...next, tone: pick?.verb === "next" && (!next.disabled || next.steady) ? "p" : "s" },
     back: back && { ...back, tone: "s" },
-    why: head?.disabled && head.why ? `${head.label} is off - ${head.why}` : "" };
+    why: head?.disabled && head.why ? t("{label} is off - {reason}", { label: head.label, reason: head.why }) : "" };
 }
 
 // THE ROW IN THREE (the owner, 2026-10-28): Nav, then ONE pill of the moves that finish or advance this item - Mark done, the agent's move

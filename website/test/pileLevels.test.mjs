@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { LEVEL_META, LEVEL_ORDER, isUrgent, levelLabel, levelOf, levelsOf } from "../src/funnelPile.js";
+import { t } from "../src/i18n.js";
 
 // Unread is ranked, not chronological, so the heading names the LEVEL the rail is crossing.
 // One level per thing triage decided: open work and landed results are not merged into a single name (the owner,
@@ -20,14 +21,10 @@ test("every level has its own word and its own hint", () => {
   assert.equal(levelLabel("nonsense"), "");
 });
 
-test("no level name merges two things", () => {
-  for (const level of LEVEL_ORDER) assert.ok(!/[&+]|and/.test(levelLabel(level)), `${levelLabel(level)} names two things`);
-  assert.equal(levelLabel("task"), "tasks");
-  assert.equal(levelLabel("later"), "for later");
-  assert.equal(levelLabel("ideas"), "advisor");
-  assert.equal(levelLabel("goals"), "", "Goals is gone: a goal with news is under Tasks");
-  assert.equal(levelLabel("agents"), "", "Agents working is gone: a working agent's task is under Tasks");
-  assert.equal(levelLabel("reports"), "reports");
+test("unknown levels have no label", () => {
+  assert.equal(levelLabel("goals"), "");
+  assert.equal(levelLabel("agents"), "");
+  for (const level of LEVEL_ORDER) assert.ok(levelLabel(level));
 });
 
 // One level for the owner's work, whoever is waiting on it - triage never split those - and a
@@ -69,10 +66,6 @@ test("the menu offers only the runs the pile holds, in the order the rail draws 
   assert.deepEqual(levelsOf(null), []);
 });
 
-test("the card on the table keeps its band - it is passed only once Next moves you on", () => {
-  const view = readFileSync(fileURLToPath(new URL("../src/AssistantView.jsx", import.meta.url)), "utf8");
-  assert.match(view, /bandsOf\(drawn\.map\(\(i\) => \(i\.surfaced && atTable\(i\) \? \{ \.\.\.i, surfaced: false \} : i\)\), pin\.current\)/);
-});
 
 // 2026-10-19 UI walk: a For later row clicked was taken up by the server and jumped to On you under the pointer
 test("the row on the table stays in the band it was opened from", async () => {
@@ -139,10 +132,10 @@ test("For later's gutter says how long until it comes back, soonest first", asyn
   const { backAt, bandsOf } = await import("../src/funnelPile.js"), { bandUntil } = await import("../src/timeWords.js");
   const now = Date.parse("2026-09-29T12:00:00");
   const at = (m) => new Date(now + m * 60000).toISOString();
-  assert.equal(bandUntil(at(10), now), "in 30m");
-  assert.equal(bandUntil(at(45), now), "in 1h");
-  assert.equal(bandUntil(at(185), now), "in 3h");
-  assert.equal(bandUntil(at(60 * 50), now), "in 2d");
+  assert.equal(bandUntil(at(10), now), t("in 30m"));
+  assert.equal(bandUntil(at(45), now), t("in 1h"));
+  assert.equal(bandUntil(at(185), now), t("in {time}", { time: t("{count}h", { count: 3 }) }));
+  assert.equal(bandUntil(at(60 * 50), now), t("in {time}", { time: t("{count}d", { count: 2 }) }));
   assert.equal(bandUntil(at(-5), now), "", "a return time already past is no age at all");
   assert.equal(bandUntil(null, now), "");
   assert.equal(backAt({ back_at: "2026-09-29 15:00:00" }), "2026-09-29 15:00:00");

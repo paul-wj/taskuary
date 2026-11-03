@@ -6,25 +6,30 @@ import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import { ALERT, ALERT_INK, BORDER, DIM, FAINT, INK, PANEL2, ROLES, mono } from "./theme.jsx";
 import { label as btnLabel } from "./buttons.js";
 import { STATUS, recHead, runWords, secs } from "./workflowFlow.js";
-import { plural } from "./timeWords.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 const DOT = { repaired: "#a58bb5", ok: ROLES.done.solid, failed: ALERT, waiting: ROLES.working.solid, dry: "#8a9bab", skipped: "#cfc9bf" };
-export const Dot = ({ status }) => <Box component="span" title={STATUS[status] || status}
-  sx={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", flexShrink: 0, bgcolor: DOT[status] || "#cfc9bf" }} />;
+export const Dot = ({ status }) => {
+  useLocale();
+  return <Box component="span" title={STATUS[status] ? t(STATUS[status]) : status}
+    sx={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", flexShrink: 0, bgcolor: DOT[status] || "#cfc9bf" }} />;
+};
 
 // what a step came back with - from a test, or the last run
 export function StepResult({ rec, compact }) {
+  useLocale();
   if (!rec) return null;
   return (
     <Box sx={{ mt: compact ? 0.5 : 0 }}>
       <Typography variant="caption" sx={{ display: "flex", alignItems: "center", gap: 0.75, color: rec.status === "failed" ? ALERT_INK : DIM, flexWrap: "wrap" }}>
-        <Dot status={rec.status} /><Box component="span" sx={{ fontWeight: 600 }}>{STATUS[rec.status] || rec.status}</Box>
+        <Dot status={rec.status} /><Box component="span" sx={{ fontWeight: 600 }}>{STATUS[rec.status] ? t(STATUS[rec.status]) : rec.status}</Box>
         {rec.ms != null && <span>· {secs(rec.ms)}</span>}
-        {rec.rows != null && !/\brows?\b/.test(rec.head || "") && <span>· {plural(rec.rows, "row")}</span>}
+        {rec.rows != null && !/\brows?\b/.test(rec.head || "") && <span>· {t(rec.rows === 1 ? "{count} row" : "{count} rows", { count: rec.rows })}</span>}
         {rec.head && rec.status !== "failed" && <span>· {rec.head}</span>}
       </Typography>
       {rec.error && <Typography variant="caption" sx={{ display: "block", color: ALERT_INK, mt: 0.25, whiteSpace: "pre-wrap" }}>{rec.error}</Typography>}
-      {rec.why && rec.status !== "failed" && <Typography variant="caption" sx={{ display: "block", color: DIM, mt: 0.25 }}>why · {rec.why}</Typography>}
+      {rec.why && rec.status !== "failed" && <Typography variant="caption" sx={{ display: "block", color: DIM, mt: 0.25 }}>{t("why · {reason}", { reason: rec.why })}</Typography>}
       {(rec.warnings || []).map((w) => <Typography key={w} variant="caption" sx={{ display: "block", color: "#7a5b2f", mt: 0.25 }}>⚠ {w}</Typography>)}
       {rec.body && <Box component="pre" sx={{ ...mono, fontSize: 11, lineHeight: 1.45, color: INK, whiteSpace: "pre-wrap", wordBreak: "break-word",
         bgcolor: PANEL2, border: `1px solid ${BORDER}`, borderRadius: 1, p: 1, m: 0, mt: 0.6, maxHeight: compact ? 180 : 260, overflow: "auto" }}>{rec.body}</Box>}
@@ -36,6 +41,7 @@ export function StepResult({ rec, compact }) {
 // every repair the run made to its own steps, with what broke, why and what changed - a record, with no Take it back (the owner,
 // 2026-10-19: "no take it back button. hate that"): a repair the owner does not want is changed back in the step editor
 export default function RunSteps({ steps, onFix, fixing, dense, repairs }) {
+  useLocale();
   const [open, setOpen] = useState(null);
   if (!steps?.length) return null;
   const failed = steps.some((r) => r.status === "failed");
@@ -57,10 +63,10 @@ export default function RunSteps({ steps, onFix, fixing, dense, repairs }) {
       {(repairs || []).map((x, k) => (
         <Box key={k} data-tq-self-repair="" sx={{ mb: 0.6, px: 1, py: 0.6, borderRadius: 1, border: "1px solid #ddd0e5", bgcolor: "#f7f3f9" }}>
           <Typography variant="caption" sx={{ display: "flex", alignItems: "baseline", gap: 1, color: INK, flexWrap: "wrap" }}>
-            <Box component="span" sx={{ fontWeight: 600 }}>Repaired itself · {x.label}</Box>
+            <Box component="span" sx={{ fontWeight: 600 }}>{t("Repaired itself · {label}", { label: x.label })}</Box>
             <Box component="span" sx={{ color: DIM, flex: 1, minWidth: 160 }}>{x.why}</Box>
           </Typography>
-          <Typography variant="caption" sx={{ display: "block", color: FAINT }}>what broke · {x.error}</Typography>
+          <Typography variant="caption" sx={{ display: "block", color: FAINT }}>{t("what broke · {error}", { error: x.error })}</Typography>
           {(x.diff || []).flatMap((d) => (d.keys || []).map((c) => (
             <Typography key={`${d.id}-${c.key}`} variant="caption" sx={{ display: "block", color: DIM, ...mono, fontSize: 10.5, wordBreak: "break-word" }}>
               {d.label || d.id} · {c.key}: {shown(c.was)} → {shown(c.now)}</Typography>)))}
@@ -78,7 +84,7 @@ export default function RunSteps({ steps, onFix, fixing, dense, repairs }) {
               <Box component="span" sx={{ fontWeight: 600, whiteSpace: "nowrap" }}>{r.status === "repaired" ? "↻" : `${++n}.`} {r.label}</Box>
               <Box component="span" sx={{ color: r.status === "failed" ? ALERT_INK : DIM, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
                 {recHead(r)}</Box>
-              <Box component="span" sx={{ color: FAINT, ml: "auto", whiteSpace: "nowrap", ...mono, fontSize: 10.5 }}>{r.status === "skipped" ? "skipped" : secs(r.ms)}</Box>
+              <Box component="span" sx={{ color: FAINT, ml: "auto", whiteSpace: "nowrap", ...mono, fontSize: 10.5 }}>{r.status === "skipped" ? t("skipped") : secs(r.ms)}</Box>
             </Typography>
             {open === i && <Box onClick={(e) => e.stopPropagation()}><StepResult rec={r} compact /></Box>}
           </Box>

@@ -13,6 +13,8 @@ import { cannotStart, useCapabilities } from "./capabilities.js";
 import { choice, label as btn } from "./buttons.js";
 import { useViewExtras } from "./pageView.js";
 import { BORDER, FAINT, INK } from "./theme.jsx";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 // the box's own placeholder: what the owner is asked, the same words on every door
 export const ASK_WHAT = "What should it do? What about it is the issue? - optional; paste or drop a picture too";
@@ -23,6 +25,7 @@ export const ASK_MEETING = "What should it get ready? e.g. pull the open issues 
 // The box itself, drawn the same wherever it opens. `onValue` takes a value or an updater: the mic's words land after the press,
 // so they are appended to what is in the box THEN, not to what was there when recording started.
 export function RunForm({ title, picker, note, value, onValue, pics, placeholder = ASK_WHAT, children, actions, autoFocus = false, sx }) {
+  useLocale();
   const add = (x) => onValue((cur) => (cur ? `${cur} ${x}` : x));
   return (
     <Box data-tq-agent-box="" sx={{ mt: 1, pt: 1, borderTop: `1px solid ${BORDER}`, ...sx }}>
@@ -32,7 +35,7 @@ export function RunForm({ title, picker, note, value, onValue, pics, placeholder
         {note && <Typography variant="caption" sx={{ color: FAINT }}>{note}</Typography>}
       </Box>
       <TextField fullWidth multiline minRows={2} maxRows={5} size="small" value={value} autoFocus={autoFocus}
-        onChange={(e) => onValue(e.target.value)} placeholder={placeholder} {...pics.drop}
+        onChange={(e) => onValue(e.target.value)} placeholder={[ASK_WHAT, ASK_REPORT, ASK_MEETING].includes(placeholder) ? t(placeholder) : placeholder} {...pics.drop}
         InputProps={{ endAdornment: (
           <Box sx={{ display: "flex", alignSelf: "flex-start", gap: 0.25 }}>
             <AttachImage pics={pics} sx={{ width: 30, height: 30 }} />
@@ -52,6 +55,7 @@ export function RunForm({ title, picker, note, value, onValue, pics, placeholder
 // `view`: { item, title } - the box is the page the pop-up Assistant reads while it is open (pageView.js): its words box and its Send to agent,
 // so "prep me for this meeting: pull the open issues with these people" fills it and starts it as the owner would (the owner, 2026-11-02)
 export function AgentAsk({ coding: wantCoding = false, title, what, placeholder = ASK_WHAT, onStart, onClose, inline = false, view = null }) {
+  useLocale();
   const caps = useCapabilities(), canCode = !!caps.coding;
   const { agents, models, kinds, brainList, brainModels, generalBrains, agentsRead, codingReady } = useAgents();
   const [general, setGeneral] = useState(!(wantCoding && canCode));
@@ -71,7 +75,7 @@ export function AgentAsk({ coding: wantCoding = false, title, what, placeholder 
       await onStart?.({ verb: coding ? "coding_agent" : "regular_agent", kind: coding ? "coding" : "general",
         text: withImages(text.trim(), pics.paths) || "", agent: coding ? null : run.agent || null,
         brain: coding ? run.brain || null : null, pick: coding ? null : run.pick || null, model: run.model || null });
-    } catch (e) { setErr(e?.response?.data?.detail || e?.message || "It did not start - press it again."); }
+    } catch (e) { setErr(e?.response?.data?.detail || e?.message || { key: "It did not start - press it again." }); }
     finally { setBusy(false); }
   };
   const verb = coding ? "coding_agent" : "regular_agent";
@@ -91,13 +95,13 @@ export function AgentAsk({ coding: wantCoding = false, title, what, placeholder 
           <span title={why || undefined}><Button size="small" variant="contained" disableElevation data-tq-agent-start={coding ? "coding" : "general"}
             disabled={busy || pics.busy || !!why} onClick={start}
             startIcon={busy ? <CircularProgress size={11} /> : <TaskuaryMark size={13} />}>
-            {busy ? "Starting…" : btn(verb)}</Button></span>
+            {busy ? t("Starting…") : btn(verb)}</Button></span>
           {/* the other kind is one press away, as on the task's own box - never chosen for the owner */}
           {canCode && <Button size="small" variant="outlined" disabled={busy} onClick={() => swap(coding)}>
             {choice("agent", coding ? "regular_agent" : "coding_agent")}</Button>}
-          <Button size="small" variant="text" disabled={busy} onClick={onClose}>Cancel</Button>
+          <Button size="small" variant="text" disabled={busy} onClick={onClose}>{t("Cancel")}</Button>
         </>}>
-        {err && <Typography role="alert" variant="caption" sx={{ color: "#7a2f3c", display: "block", mt: 0.5 }}>{err}</Typography>}
+        {err && <Typography role="alert" variant="caption" sx={{ color: "#7a2f3c", display: "block", mt: 0.5 }}>{typeof err === "object" ? t(err.key) : err}</Typography>}
       </RunForm>
     </Box>
   );

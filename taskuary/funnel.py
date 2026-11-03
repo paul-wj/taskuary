@@ -563,6 +563,25 @@ def run_failed(store, tid, live_too: bool = False) -> dict | None:
     c = classify(' '.join(str(last.get('Text') or '').split()) or 'it stopped without saying why', tid=tid)
     return {'sentence': _sentence(c['sentence']), 'fix': c['fix']}
 
+def _story_i18n(source, **values):
+    """Presentation template only; values may contain user or agent text and are never translated."""
+    return {'source': source, 'values': values}
+
+
+def _idle_i18n(source, agent, old='', **values):
+    return _story_i18n(source + '{old}', agent=_story_i18n(agent), Agent=_story_i18n(_cap(agent)),
+                       old=_story_i18n(old) if old else '', **values)
+
+
+def _news_i18n(store, tid, message):
+    who = agent_word((store.get_task(tid) or {}).get('Kind'))
+    sender = str(message.get('FromName') or message.get('FromEmail') or 'Someone').split(' at ')[0]
+    when = str(message.get('SentAt') or '')
+    day = 'today' if when[:10] == datetime.now().strftime('%Y-%m-%d') else when[:10]
+    return _story_i18n('{sender} wrote again {day} at {time}, after {agent} last worked on it.',
+                       sender=_story_i18n('Someone') if sender == 'Someone' and not (message.get('FromName') or message.get('FromEmail')) else sender,
+                       day=_story_i18n('today') if day == 'today' else day, time=when[11:16], agent=_story_i18n(who))
+
 
 def idle_state(store, tid) -> dict:
     """Why nothing is running on a task that was handed to an agent and never began: {'kind', 'line', 'row'}.
@@ -588,20 +607,31 @@ def idle_state(store, tid) -> dict:
     agent = agent_word(t.get('Kind'))
     tags = str(t.get('Tags') or '')
     old = ' It has been waiting since yesterday.' if str(t.get('CreatedAt') or '')[:10] < datetime.now().strftime('%Y-%m-%d') else ''
-    out = lambda kind, line, row='': {'kind': kind, 'line': line, 'row': row}
+    def out(kind, line, row='', line_i18n=None, row_i18n=None):
+        static_rows = {'asks to move - where is the code?', 'not started - it needs to know where the code is',
+                       'queued - waiting its turn', 'queued - starts when a slot frees', 'held for you - not started',
+                       'not started yet', 'waiting on you', 'working'}
+        result = {'kind': kind, 'line': line, 'row': row}
+        if line_i18n: result['line_i18n'] = line_i18n
+        if row_i18n or row in static_rows: result['row_i18n'] = row_i18n or _story_i18n(row)
+        return result
     news = news_since_agent(store, tid)
-    if news: return out('news', news_line(store, tid, news))
+    if news: return out('news', news_line(store, tid, news), line_i18n=_news_i18n(store, tid, news))
     if terminal.SAVED in [x.strip() for x in tags.split(',')]:
-        return out('saved', 'You stopped it and its report is written.')     # the moves are the item's own buttons (news_line)
+        return out('saved', 'You stopped it and its report is written.',
+                   line_i18n=_story_i18n('You stopped it and its report is written.'))
     if terminal.INTERRUPTED in [x.strip() for x in tags.split(',')]:
-        return out('interrupted', f'Taskuary closed while {agent} had this, so its work stopped there. Nothing restarts by itself.' + old)
+        return out('interrupted', f'Taskuary closed while {agent} had this, so its work stopped there. Nothing restarts by itself.' + old,
+                   line_i18n=_idle_i18n('Taskuary closed while {agent} had this, so its work stopped there. Nothing restarts by itself.', agent, old))
     if held_for_repo(t):
         # plain words: "repository" is on the jargon list (words.json) - the row's own Choose where the code is answers it
         # ...and a run that found the work is in other code asked to move it (wrapup.asks_to_move): it did start, so it never says "before it can start"
         if store.last_transcript(tid):
             return out('held', f'Waiting for you. {agent[:1].upper() + agent[1:]} found the work is not in this code and asks where to move it - '
-                               'change where the code is and it starts there.', 'asks to move - where is the code?')
-        return out('held', f'Waiting for you. It needs to know where the code is before {agent} can start.' + old, 'not started - it needs to know where the code is')
+                               'change where the code is and it starts there.', 'asks to move - where is the code?',
+                       line_i18n=_idle_i18n('Waiting for you. {Agent} found the work is not in this code and asks where to move it - change where the code is and it starts there.', agent))
+        return out('held', f'Waiting for you. It needs to know where the code is before {agent} can start.' + old, 'not started - it needs to know where the code is',
+                   line_i18n=_idle_i18n('Waiting for you. It needs to know where the code is before {agent} can start.', agent, old))
     # THE QUEUE SAYS WHY (A3, 2026-09-25): a full house, a start that keeps failing and a CLI that is not installed all
     # read "nothing has started it" - only the Tasks list showed the queue
     q = store.get_dispatch(tid) or {}
@@ -609,23 +639,40 @@ def idle_state(store, tid) -> dict:
         err = ' '.join(str(q.get('LastError') or '').split()).rstrip('.')[:160]
         short = err.split(': ', 1)[0] if len(err) > 60 else err
         if q.get('State') == 'failed':
-            return out('failed', failed_line(err or 'the start failed', is_permanent(err), int(q.get('Attempts') or 0)) + old,
-                       f"couldn't start: {short or 'the start failed'}")
+            permanent, tries = is_permanent(err), int(q.get('Attempts') or 0)
+            why = err or _story_i18n('the start failed')
+            source = "Couldn't start: {reason}. This is a setup problem, so Start fails the same way until it is fixed - check the agent and the repository this task uses." if permanent else (
+                "Couldn't start after {tries} tries: {reason}. Press Start to try again, or Cancel." if tries else
+                "Couldn't start: {reason}. Press Start to try again, or Cancel.")
+            return out('failed', failed_line(err or 'the start failed', permanent, tries) + old,
+                       f"couldn't start: {short or 'the start failed'}",
+                       line_i18n=_idle_i18n(source, agent, old, reason=why, tries=tries),
+                       row_i18n=_story_i18n("couldn't start: {reason}", reason=short or _story_i18n('the start failed')))
         if q.get('State') == 'retrying':
             at = str(q.get('NextAt') or '')[11:16]
+            when = _story_i18n('at {time}', time=at) if at else _story_i18n('shortly')
             return out('retrying', f"Couldn't start yet ({err or 'no reason given'}) - trying again {f'at {at}' if at else 'shortly'}." + old,
-                       f"couldn't start yet - trying again {f'at {at}' if at else 'shortly'}")
+                       f"couldn't start yet - trying again {f'at {at}' if at else 'shortly'}",
+                       line_i18n=_idle_i18n("Couldn't start yet ({reason}) - trying again {when}.", agent, old, reason=err or _story_i18n('no reason given'), when=when),
+                       row_i18n=_story_i18n("couldn't start yet - trying again {when}", when=when))
         # a ranked wait is not a full house: it waits for its turn in value order, with free slots or not (rank.py)
         if q.get('Value') is not None:
             return out('queued', 'Waiting its turn. Waiting work starts most valuable first, and this starts when it comes up.' + old,
-                       'queued - waiting its turn')
+                       'queued - waiting its turn',
+                       line_i18n=_idle_i18n('Waiting its turn. Waiting work starts most valuable first, and this starts when it comes up.', agent, old))
         return out('queued', f'Waiting its turn. Every agent slot is busy, and {agent} starts on this when one frees up.' + old,
-                   'queued - starts when a slot frees')
+                   'queued - starts when a slot frees',
+                   line_i18n=_idle_i18n('Waiting its turn. Every agent slot is busy, and {agent} starts on this when one frees up.', agent, old))
     # A RUN THAT FAILED SAYS SO, with its reason in plain words (owner-approved, 2026-10-21): it read "Not started yet. Nothing has
     # started the assistant on this." under a chip saying stopped, while the run's own last word was why it failed
-    if (f := run_failed(store, tid)): return out('failed', f"Failed - {f['sentence']}", f"failed - {f['sentence'][:1].lower()}{f['sentence'][1:]}")
+    if (f := run_failed(store, tid)):
+        reason = f['sentence']
+        return out('failed', f"Failed - {reason}", f"failed - {reason[:1].lower()}{reason[1:]}",
+                   line_i18n=_story_i18n('Failed - {reason}', reason=reason),
+                   row_i18n=_story_i18n('failed - {reason}', reason=f'{reason[:1].lower()}{reason[1:]}'))
     if any(r.get('Status') in ('stopped', 'failed', 'error') for r in (store.list_runs(tid) or [])):
-        return out('left', f'{_cap(agent)} ran on this and stopped without finishing it.' + old)
+        return out('left', f'{_cap(agent)} ran on this and stopped without finishing it.' + old,
+                   line_i18n=_idle_i18n('{Agent} ran on this and stopped without finishing it.', agent, old))
     # ...and a pty worker leaves NO run row at all - it writes a transcript on the way out, which is
     # the very thing the task card reads to offer "Continue previous work". Only runs were consulted
     # here, so two tasks an agent had actually worked and walked away from reported "it was handed to
@@ -637,9 +684,11 @@ def idle_state(store, tid) -> dict:
     # ...and nothing came in since, or news_since_agent would have said so above: "Nothing has started on what came in since" was
     # said over a batch whose session closed with nothing new on it at all (TQ-1112 shape) - the task is simply still open
     if session_finished(store, tid):
-        return out('left', f'{_cap(agent)} finished its work - its record is below. The task is still open.' + old)
+        return out('left', f'{_cap(agent)} finished its work - its record is below. The task is still open.' + old,
+                   line_i18n=_idle_i18n('{Agent} finished its work - its record is below. The task is still open.', agent, old))
     if store.last_transcript(tid):
-        return out('left', f'{_cap(agent)} ran on this and left without finishing it.' + old)
+        return out('left', f'{_cap(agent)} ran on this and left without finishing it.' + old,
+                   line_i18n=_idle_i18n('{Agent} ran on this and left without finishing it.', agent, old))
     msg, lifted = store.last_inbound_on_task(tid) or {}, False
     for r in reversed(store.message_routes(msg.get('MessageId')) or []) if msg.get('MessageId') else []:
         said = held_clause(r.get('Reason'))
@@ -661,18 +710,24 @@ def idle_state(store, tid) -> dict:
             # domain and then we won't have issue again"): the box that says why nothing started carries the two presses, worded for
             # the channel (senders.trust_offer)
             from .senders import trust_offer
-            return {**out('held', f'Waiting for you. {_sentence(said)}' + old, 'held for you - not started'), 'trust': trust_offer(store, tid)}
-        return out('held', f'Waiting for you. {_sentence(said)}' + old, 'held for you - not started')
+            return {**out('held', f'Waiting for you. {_sentence(said)}' + old, 'held for you - not started',
+                          line_i18n=_idle_i18n('Waiting for you. {reason}', agent, old, reason=_sentence(said))), 'trust': trust_offer(store, tid)}
+        return out('held', f'Waiting for you. {_sentence(said)}' + old, 'held for you - not started',
+                   line_i18n=_idle_i18n('Waiting for you. {reason}', agent, old, reason=_sentence(said)))
     if not auto_code_enabled(store) and (t.get('Kind') or '') == 'coding':
         return out('held', f'Waiting for you. Starting {agent} by itself is switched off, so it waits for you.' + old,
-                   'held for you - not started')
+                   'held for you - not started',
+                   line_i18n=_idle_i18n('Waiting for you. Starting {agent} by itself is switched off, so it waits for you.', agent, old))
     # ...the box says the hold is gone, and that it still waits for the owner's own Start: trusting is not starting (2026-10-26)
     # ...and A LIVE SESSION IS NOT "NOT STARTED" (the stress test, 2026-11-02): a general session leaves no run row and no transcript while it
     # lives, so a parked one fell through every fact above to "Not started yet. Nothing has started the assistant on this." - beside "needs you"
-    if (live := live_session_state(tid, agent)): return out('live', *live)
+    if (live := live_session_state(tid, agent)):
+        source = 'Waiting for you. {Agent} finished its turn and waits on you.' if live[1] == 'waiting on you' else '{Agent} is working on this.'
+        return out('live', *live, line_i18n=_idle_i18n(source, agent))
     if lifted: return out('idle', f'Not started yet. The sender is trusted now - start {agent} when you want it; what was held never starts by itself.' + old,
-                          'not started yet')
-    return out('idle', f'Not started yet. Nothing has started {agent} on this.' + old, 'not started yet')
+                          'not started yet', line_i18n=_idle_i18n('Not started yet. The sender is trusted now - start {agent} when you want it; what was held never starts by itself.', agent, old))
+    return out('idle', f'Not started yet. Nothing has started {agent} on this.' + old, 'not started yet',
+               line_i18n=_idle_i18n('Not started yet. Nothing has started {agent} on this.', agent, old))
 
 
 def not_started_why(store, tid) -> str: return idle_state(store, tid)['line']
@@ -715,7 +770,8 @@ def agent_story(store, tid) -> dict | None:
     if not t or t.get('Status') in ('done', 'dropped'): return None
     tags = [x.strip() for x in str(t.get('Tags') or '').split(',')]
     who = agent_word(t.get('Kind'))
-    if news_since_agent(store, tid): return {'kind': 'news', 'line': news_line(store, tid)}
+    if (news := news_since_agent(store, tid)):
+        return {'kind': 'news', 'line': news_line(store, tid, news), 'line_i18n': _news_i18n(store, tid, news)}
     left, q, st = agent_left(store, tid), store.get_dispatch(tid), idle_state(store, tid)
     held, why = st['kind'] == 'held', st['line']
     if not (str(t.get('Assignee') or '').startswith('agent:') or left or q or held):
@@ -727,6 +783,7 @@ def agent_story(store, tid) -> dict | None:
     # ...and a run that FINISHED is finished, not "not started" over its own "finished its work" sentence (G7, 2026-10-20)
     if not left: return {'kind': 'held' if held else 'queued' if q else 'finished' if session_finished(store, tid)
                                  else 'live' if st['kind'] == 'live' else 'idle', 'line': why,
+                         **{k: st[k] for k in ('line_i18n', 'row_i18n', 'why_i18n') if k in st},
                          **({'trust': st['trust']} if held and st.get('trust') else {})}
     evs = store.worker_events(tid) or []
     sid = str(evs[-1]['Sid']) if evs else None
@@ -738,19 +795,22 @@ def agent_story(store, tid) -> dict | None:
         n = next((c for c in reversed(store.list_comments(tid) or []) if c.get('Actor') in terminal.INTERRUPTING), None)
         if n: cut = {'Kind': 'disconnected', 'Source': n['Actor'], 'CreatedAt': n['CreatedAt'], 'Sid': sid}; run = [*run, cut]
     how = 'restarted' if cut and cut.get('Source') == 'startup' else 'closed'
-    line = why
+    line, line_i18n = why, st.get('line_i18n')
     if interrupted and cut:
         t0, t1 = _dt(run[0]['CreatedAt']), _dt(cut['CreatedAt'])
         mins = int((t1 - t0).total_seconds() // 60) if t0 and t1 else None
         into = f', {plural(mins, "minute")} in,' if mins else ','
         line = f'Taskuary {how} at {str(cut["CreatedAt"])[11:16]} while {who} had this{into} so its work stopped there. Nothing restarts by itself.'
+        duration = _story_i18n(', {count} minute in,' if mins == 1 else ', {count} minutes in,', count=mins) if mins else ','
+        line_i18n = _story_i18n('Taskuary {how} at {time} while {agent} had this{duration} so its work stopped there. Nothing restarts by itself.',
+                                how=_story_i18n(how), time=str(cut['CreatedAt'])[11:16], agent=_story_i18n(who), duration=duration)
     steps = []
     for e in run:
         k, src = e['Kind'], e.get('Source')
         w = ('Started' if not steps else None) if k == 'working' else \
             (f'Cut off - Taskuary {how}' if src in terminal.INTERRUPTING else 'Session ended') if k == 'disconnected' else _EVENT_SAYS.get(k)
         if w and (not steps or steps[-1]['text'] != w):
-            steps.append({'at': e['CreatedAt'], 'text': w, 'cut': k == 'disconnected' and src in terminal.INTERRUPTING})
+            steps.append({'at': e['CreatedAt'], 'text': w, 'text_i18n': _story_i18n(w), 'cut': k == 'disconnected' and src in terminal.INTERRUPTING})
     if len(steps) > 8: steps = steps[:1] + steps[-7:]
     said = next((e for e in reversed(run) if e['Kind'] == 'turn_end' and str(e.get('Text') or '').strip()), None)
     # ...and a run that FAILED is a failure, with the place that fixes it when there is one (Connect an AI): the step offers Try again
@@ -762,6 +822,8 @@ def agent_story(store, tid) -> dict | None:
     return {'kind': 'interrupted' if interrupted else 'failed' if failed else 'left', 'line': line, 'steps': steps,
             'said': _said(said['Text']) if said else '', 'said_at': said['CreatedAt'] if said else None,
             **({'why': why} if why and why.rstrip('.') not in line else {}),
+            **({'line_i18n': line_i18n} if line_i18n else {}),
+            **{k: st[k] for k in ('row_i18n', 'why_i18n') if k in st},
             **({'fix': ran.get('fix')} if failed else {})}
 
 

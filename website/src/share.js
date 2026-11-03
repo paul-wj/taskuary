@@ -5,6 +5,7 @@
 //   - a report's result names its `message`, an agent's or a workflow's names its `task` - the server reads the words from the store
 //   - anything else on the table (a dashboard) brings its own `title` and `text` / `html` / `data` rows - the server cleans the HTML
 import { CHOICES, hint, label } from "./buttons.js";
+import { t } from "./i18n.js";
 
 export const SHARE_ID = "share";                       // the row id; buttons.json's share_result lists it
 export const WAYS = (CHOICES.share || []).map(([key, word]) => ({ key, word }));
@@ -22,9 +23,9 @@ export const shareable = (r) => !!r && !!(r.task || r.message || String(r.text |
 export function waysOf(ways, failed = false, { summary = false, summaryWhy = "", noResult = "" } = {}) {
   return WAYS.map(({ key, word }) => {
     const w = ways?.[key === "summary" ? "email" : key];
-    const own = key === "summary" ? (summary ? "" : summaryWhy || "a summary is written from a task's work - this has none") : noResult;
-    const why = own || (failed ? "Taskuary did not answer - try again in a moment" : !ways ? "Checking…" : w?.ok ? "" : w?.why || "this cannot work here yet");
-    return { key, word, ok: !why, why };
+    const own = key === "summary" ? (summary ? "" : summaryWhy || t("a summary is written from a task's work - this has none")) : noResult;
+    const why = own || (failed ? t("Taskuary did not answer - try again in a moment") : !ways ? t("Checking…") : w?.ok ? "" : w?.why || t("this cannot work here yet"));
+    return { key, word: t(word), ok: !why, why };
   });
 }
 // a greyed Shared link because the switch is off is one press from the switch (the owner turns it on; nothing turns it on for them)
@@ -39,10 +40,10 @@ export function shareBody(result, how, extra = {}) {
 
 // what the card's badge says on its hover once a way went - the badge itself is the button's own word, "✓ Share" (presses are badges)
 export function sharedNote(how, out, copied) {
-  if (how === "summary") return `Drafted - it waits on its task for you to press ${label("approve")}`;
-  if (how === "email") return `Drafted for ${(out?.to || []).join(", ")} on ${out?.ref || "its task"} - nothing is sent until you press ${label("approve")}`;
-  const where = how === "link" ? `Link for your network, open until ${String(out?.expires || "").slice(0, 16)}` : how === "onedrive" ? "In OneDrive, in the Taskuary folder" : "In Google Drive, in the Taskuary folder";
-  return `${where}${out?.url ? ` - ${copied ? "link copied" : `copy it: ${out.url}`}` : ""}`;
+  if (how === "summary") return t("Drafted - it waits on its task for you to press {approve}", { approve: label("approve") });
+  if (how === "email") return t("Drafted for {recipients} on {ref} - nothing is sent until you press {approve}", { recipients: (out?.to || []).join(", "), ref: out?.ref || t("its task"), approve: label("approve") });
+  const where = how === "link" ? t("Link for your network, open until {expires}", { expires: String(out?.expires || "").slice(0, 16) }) : how === "onedrive" ? t("In OneDrive, in the Taskuary folder") : t("In Google Drive, in the Taskuary folder");
+  return out?.url ? copied ? t("{where} - link copied", { where }) : t("{where} - copy it: {url}", { where, url: out.url }) : where;
 }
 
 // the row verb: its one name and hint from buttons.json; `run` opens the menu at the button

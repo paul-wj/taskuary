@@ -8,12 +8,15 @@ import "./reportRows.css";
 import { Bars, Line } from "./dashboard/charts.jsx";
 import { Attachments } from "./Attachments.jsx";
 import { colWords, fmtNum, numOf, places, reportShape, reportSummary } from "./reportRows.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 const BARS = 12;     // a ranking past a dozen is a table's job; the table beside it holds every row
 
 export default function ReportRows({ rows, name, mid }) {
+  const locale = useLocale();
   const shape = useMemo(() => reportShape(rows), [rows]);
-  const said = useMemo(() => reportSummary(rows, shape), [rows, shape]);
+  const said = useMemo(() => reportSummary(rows, shape, t), [rows, shape, locale]);
   const p = useMemo(() => Object.fromEntries(shape.nums.map((c) => [c, places(rows, c)])), [rows, shape]);
   const [on, setOn] = useState(-1), body = useRef(null);
   const { lab, val } = shape;
@@ -22,7 +25,7 @@ export default function ReportRows({ rows, name, mid }) {
     const i = rows.indexOf(r); setOn(i);
     body.current?.querySelector(`tr[data-i="${i}"]`)?.scrollIntoView({ block: "nearest" });
   };
-  const what = lab ? `${colWords(val)} by ${colWords(lab)}` : colWords(val);
+  const what = lab ? t("{value} by {label}", { value: colWords(val), label: colWords(lab) }) : colWords(val);
   const c = { kind: shape.chart, title: what.charAt(0).toUpperCase() + what.slice(1), x: lab, y: val, agg: "sum", w: 2, twin: false, h: rows.length > 8 ? 260 : 200 };
   const marks = rows.map((r, i) => ({ key: lab ? String(r[lab] ?? "") : `#${i + 1}`, value: numOf(r[val]), rows: [r] }));
   const cell = (r, k) => (shape.nums.includes(k) ? fmtNum(numOf(r[k]), p[k]) : r[k] == null ? "" : String(r[k]));

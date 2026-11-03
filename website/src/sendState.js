@@ -4,6 +4,7 @@
 // could not be written carries its reason in DraftError. The UI repeats those facts and never
 // invents its own: hiding a button is not authorization, and a missing draft is not an fyi.
 import { label } from "./buttons.js";
+import { t } from "./i18n.js";
 
 // A SEND THAT NEVER ANSWERS (2026-10-23): the decide POST had no timeout, so behind a stalled server the button read "Sending…"
 // for minutes. After a minute the press lets go and the card reads the review again: the server keeps the attempt's DeliveryState,
@@ -35,7 +36,7 @@ export function replySendFailure(data) {
 // THE FAILURE'S HEADLINE: a reply that did not go says so; a PROPOSAL that failed sent no reply at all - an approved push that failed
 // read "The reply was not sent. it ran and failed: ..." (2026-10-29) - so its own sentence stands alone ("The held step failed: ...")
 export const failureHead = (failure, act = false) =>
-  failure?.unknown ? "Delivery has not been confirmed." : act ? "" : "The reply was not sent.";
+  failure?.unknown ? t("Delivery has not been confirmed.") : act ? "" : t("The reply was not sent.");
 
 // THE PLACE THAT FIXES A FAILED SEND (outbound.Fixable): from the answer just now, else from the envelope a reload reads - a fix
 // that lived only in the answer was gone after a refresh, and the sentence was all that was left
@@ -60,15 +61,15 @@ export function reviewDeliveryState(review) {
   return { state, active, frozen, canCheck: state === "unknown" && !active,
     body: frozen ? saved?.body ?? review?.FinalText ?? review?.DraftText ?? "" : null,
     envelope: frozen ? saved?.envelope || envelope || {} : null,
-    label: active ? state === "unknown" ? "Checking delivery…" : "Sending…" : label("approve", "check"),
-    line: active ? "Delivery is in progress. The attempted text, recipients and attachments are kept unchanged while the provider responds."
-      : state === "unknown" ? "The provider has not confirmed this attempt. Check delivery to look for the original reply. A missing receipt will not send it again. The attempted text, recipients and attachments stay unchanged." : "" };
+    label: active ? state === "unknown" ? t("Checking delivery…") : t("Sending…") : label("approve", "check"),
+    line: active ? t("Delivery is in progress. The attempted text, recipients and attachments are kept unchanged while the provider responds.")
+      : state === "unknown" ? t("The provider has not confirmed this attempt. Check delivery to look for the original reply. A missing receipt will not send it again. The attempted text, recipients and attachments stay unchanged.") : "" };
 }
 
 export function sendBlockLine(rv) {
   if (!rv || rv.CanSend !== false) return "";
-  const why = rv.SendBlock || FALLBACK_BLOCK[String(rv.Channel || "").toLowerCase()] || `replies cannot go out on ${rv.Channel || "this channel"}`;
-  return `Cannot send from here: ${why}. The draft stays here to copy or edit.`;
+  const why = rv.SendBlock || (FALLBACK_BLOCK[String(rv.Channel || "").toLowerCase()] ? t(FALLBACK_BLOCK[String(rv.Channel || "").toLowerCase()]) : t("replies cannot go out on {channel}", { channel: rv.Channel || t("this channel") }));
+  return t("Cannot send from here: {reason}. The draft stays here to copy or edit.", { reason: why });
 }
 
 export function draftState(rv) {
@@ -77,6 +78,6 @@ export function draftState(rv) {
   // THE WRITER SAID WHAT IT NEEDS (store.set_review_draft_needs): no failure - a plain line, whole, and the Advisor lights Send to agent /
   // Continue. It came as a DraftError: red, cut mid-word, "New task to fix this" (walk 2026-10-29)
   if (rv?.DraftNeeds) { const s = String(rv.DraftNeeds).trim(); return { state: "needs", line: s.charAt(0).toUpperCase() + s.slice(1), retry: true }; }
-  if (rv?.DraftError) return { state: "failed", line: `Draft failed: ${rv.DraftError}. Press ${label("redraft", "none")} again or write the answer yourself.`, retry: true };
-  return { state: "undrafted", line: "No draft yet — draft it with AI or write the answer.", retry: true };
+  if (rv?.DraftError) return { state: "failed", line: t("Draft failed: {error}. Press {action} again or write the answer yourself.", { error: rv.DraftError, action: label("redraft", "none") }), retry: true };
+  return { state: "undrafted", line: t("No draft yet — draft it with AI or write the answer."), retry: true };
 }

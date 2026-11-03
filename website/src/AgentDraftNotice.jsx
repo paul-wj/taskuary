@@ -6,11 +6,16 @@
 import React from "react";
 import { Box, Button, Typography } from "@mui/material";
 import ForwardToInboxIcon from "@mui/icons-material/ForwardToInbox";
-import { noticeLine } from "./agentDraftAsk.js";
+import { draftedBy, draftedTo } from "./agentDraftAsk.js";
 import { BORDER, INK } from "./theme.jsx";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 // `asks`: the agent's pending drafts (agentDraftAsk.agentAsks); `at`: "popup" (over a terminal) or "chat"; `onOpen(r)`: Close out at that draft
-export default function AgentDraftNotice({ asks = [], at = "popup", agent = "The agent", onOpen }) {
+export default function AgentDraftNotice({ asks = [], at = "popup", agent, onOpen }) {
+  useLocale();
+  const notice = (r) => t(r.Kind === "clarification" ? "{agent} drafted a question to {recipient}" : "{agent} drafted a message to {recipient}",
+    { agent: draftedBy(r, agent || t("The agent")), recipient: draftedTo(r) });
   if (!asks.length) return null;
   const pop = at === "popup";
   return (
@@ -22,10 +27,10 @@ export default function AgentDraftNotice({ asks = [], at = "popup", agent = "The
           ...(pop ? { boxShadow: "0 8px 22px rgba(32,38,30,.2), 0 2px 5px rgba(32,38,30,.1)" } : {}) }}>
           <ForwardToInboxIcon sx={{ fontSize: 16, color: "#55697a", flexShrink: 0 }} />
           <Typography sx={{ flex: 1, minWidth: 0, color: INK, fontWeight: 600, fontSize: 12.5, lineHeight: 1.35, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}
-            title={noticeLine(r, agent)}>{noticeLine(r, agent)}</Typography>
+            title={notice(r)}>{notice(r)}</Typography>
           {/* ...a door to Close out, never a send (pageView.js reads it as the owner's own press) */}
-          <Button size="small" data-tq-view-btn="open_draft_in_close_out" onClick={() => onOpen?.(r)} title="Read, edit and send it in Close out"
-            sx={{ flexShrink: 0, fontSize: 11.5, minHeight: 26, py: 0, px: 1, whiteSpace: "nowrap" }}>Open in Close out</Button>
+          <Button size="small" data-tq-view-btn="open_draft_in_close_out" onClick={() => onOpen?.(r)} title={t("Read, edit and send it in Close out")}
+            sx={{ flexShrink: 0, fontSize: 11.5, minHeight: 26, py: 0, px: 1, whiteSpace: "nowrap" }}>{t("Open in Close out")}</Button>
         </Box>
       ))}
     </Box>

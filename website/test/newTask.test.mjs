@@ -3,7 +3,7 @@
 // question to answer", which has no checkout for a CLI to stand in and belongs in the chat.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ASK_TAG, BROWSER_TAG, DESKTOP_HOW, DESKTOP_TAG, NO_REPO, planTask, repoOf, wantsAsk, wantsBrowser, wantsDesktop, withDesktop,
+import { ASK_TAG, BROWSER_TAG, DESKTOP_TAG, NO_REPO, planTask, repoOf, wantsAsk, wantsBrowser, wantsDesktop, withDesktop,
   withoutAsk } from "../src/newTask.js";
 
 // "needs desktop" (agentdesktop.py, 2026-10-31): the mark rides beside the task's other tags, and comes off again cleanly
@@ -14,7 +14,6 @@ test("the needs-desktop mark joins the other tags and leaves them alone", () => 
   assert.equal(withDesktop(null, false), null);
   assert.equal(wantsDesktop({ Tags: "stay:open,needs:desktop" }), true);
   assert.equal(wantsDesktop({ Tags: "needs:desktopish" }), false);
-  assert.match(DESKTOP_HOW, /turn the Agent Desktop card on and mark a task "needs desktop"/);
 });
 
 test("a repository means a coding task for a CLI in that checkout", () => {

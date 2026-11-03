@@ -3,6 +3,8 @@
 // card. A live socket pushes new rows in; the list is not on a timer. (The Timeline - every message in date
 // order, a tab beside Work - was removed 2026-10-15; its row detail panel, 2026-10-20.)
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { t, translateDescriptor } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 import {
   Alert, Box, Button, Chip, ListSubheader, MenuItem, Popover, TextField, Tooltip, Typography, useMediaQuery,
 } from "@mui/material";
@@ -10,7 +12,7 @@ import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import FilterAltIcon from "@mui/icons-material/FilterAlt";
 import api from "./api";
 import { label as bLabel, hint as bHint } from "./buttons.js";
-import { plainError } from "./apiError.js";
+import { errorPresentation, errorText } from "./apiError.js";
 import SearchEverything, { OPEN_SEARCH, searchPicked } from "./SearchEverything.jsx";
 import { fadeBand } from "./timelineFade.js";
 import { syncFace, syncPhaseLabel } from "./syncTiming.js";
@@ -61,17 +63,19 @@ const CHANNEL_LABELS = { email: "Mailboxes", teams: "Teams chats", slack: "Slack
 // 2026-09-16: "the work/timeline vs all kinds/all sources filters look weird"). This one says what
 // it is filtering TO - "All items", "Email", "Email - rrdbreports" - and opens on both lists at once.
 export const filterLabel = (cat, pick, cats = CATEGORIES, labels = CHANNEL_LABELS) => {
-  const kind = cat ? (cats.find((o) => o.key === cat)?.label || cat) : "";
+  const foundKind = cats.find((o) => o.key === cat)?.label;
+  const kind = cat ? (foundKind && cats === CATEGORIES ? t(foundKind) : foundKind || cat) : "";
   const src = !pick ? ""
-    : pick.startsWith("channel:") ? `all ${labels[pick.slice(8)] || pick.slice(8)}`.toLowerCase()
+    : pick.startsWith("channel:") ? t("all {channel}", { channel: (labels === CHANNEL_LABELS && labels[pick.slice(8)] ? t(labels[pick.slice(8)]) : labels[pick.slice(8)] || pick.slice(8)).toLowerCase() })
       : String(pick.split(":").slice(2).join(":")).split("@")[0];
-  return [kind, src].filter(Boolean).join(" \u00b7 ") || "All items";
+  return [kind, src].filter(Boolean).join(" \u00b7 ") || t("All items");
 };
 
 // the sidebar buttons' marks, one per SIDE_NAV key
 const NAV_ICONS = { new: AddIcon, reports: BarChartIcon, connections: PowerOutlinedIcon, hub: TravelExploreIcon, settings: TuneIcon };
 
 function FilterButton({ cat, pick, channels, srcByChannel, srcQ, setSrcQ, onChange }) {
+  useLocale();
   const [el, setEl] = useState(null);
   const close = () => { setEl(null); setSrcQ(""); };
   const narrowed = !!cat || !!pick;
@@ -83,7 +87,7 @@ function FilterButton({ cat, pick, channels, srcByChannel, srcQ, setSrcQ, onChan
           larger"): full width, and it says on its face what the rail is narrowed to - it was an icon beside Work | Timeline
           that left that to its tooltip. It fills in when the rail is narrowed. */}
       <Box component="button" type="button" onClick={(e) => setEl(e.currentTarget)}
-        data-tq-filter="true" aria-label={`Filter the rail - ${label}`}
+        data-tq-filter="true" aria-label={t("Filter the rail - {label}", { label })}
         sx={{ flex: 1, minWidth: 0, height: 30, display: "flex", alignItems: "center", gap: 0.75, px: 1.25,
           borderRadius: "8px", border: `1px solid ${narrowed ? "#b9c3cb" : BORDER}`, bgcolor: narrowed ? "#e4e9ee" : PANEL,
           cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 600, color: narrowed ? INK : DIM, textAlign: "left",
@@ -96,35 +100,35 @@ function FilterButton({ cat, pick, channels, srcByChannel, srcQ, setSrcQ, onChan
         anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
         transformOrigin={{ vertical: "top", horizontal: "left" }}
         slotProps={{ paper: { sx: { width: 320, maxHeight: 560, p: 1.25 } } }}>
-        <Typography sx={{ fontSize: 9.5, fontWeight: 600, letterSpacing: ".1em", textTransform: "uppercase", color: FAINT, mb: 0.75 }}>Kind</Typography>
+        <Typography sx={{ fontSize: 9.5, fontWeight: 600, letterSpacing: ".1em", textTransform: "uppercase", color: FAINT, mb: 0.75 }}>{t("Kind")}</Typography>
         <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.6, mb: 1.25 }}>
           {CATEGORIES.map((o) => (
-            <Chip key={o.key} size="small" label={o.label} data-tq-kind={o.key || "all"}
+            <Chip key={o.key} size="small" label={t(o.label)} data-tq-kind={o.key || "all"}
               onClick={() => onChange(o.key, pick)}
               sx={{ height: 24, fontSize: 11, fontWeight: 600, borderRadius: 99,
                 bgcolor: cat === o.key ? "#e4e9ee" : PANEL2, color: cat === o.key ? "#41525f" : DIM,
                 border: `1px solid ${cat === o.key ? "#cbd4dc" : BORDER}` }} />
           ))}
         </Box>
-        <Typography sx={{ fontSize: 9.5, fontWeight: 600, letterSpacing: ".1em", textTransform: "uppercase", color: FAINT, mb: 0.75 }}>Source</Typography>
-        <TextField fullWidth placeholder="search sources…" value={srcQ} onChange={(e) => setSrcQ(e.target.value)}
+        <Typography sx={{ fontSize: 9.5, fontWeight: 600, letterSpacing: ".1em", textTransform: "uppercase", color: FAINT, mb: 0.75 }}>{t("Source")}</Typography>
+        <TextField fullWidth placeholder={t("search sources…")} value={srcQ} onChange={(e) => setSrcQ(e.target.value)}
           sx={{ bgcolor: "#fff", mb: 0.5 }} inputProps={{ style: { fontSize: 12, padding: "5px 8px" } }} />
         <Box sx={{ maxHeight: 220, overflowY: "auto", mx: -0.5 }}>
-          <MenuItem selected={!pick} onClick={() => onChange(cat, "")} sx={{ fontSize: 12, borderRadius: 1 }}>all sources</MenuItem>
+          <MenuItem selected={!pick} onClick={() => onChange(cat, "")} sx={{ fontSize: 12, borderRadius: 1 }}>{t("all sources")}</MenuItem>
           {/* 96 discovered buckets turned this into a page-long wall. It is a bounded, searchable
               list: type to narrow, and each channel shows a few with a count for the rest. */}
           {channels.flatMap((ch) => {
             const all = (srcByChannel[ch] || []).filter((n) => !q || String(n).toLowerCase().includes(q));
-            const label = CHANNEL_LABELS[ch] || ch;
-            if (q && !all.length && !label.toLowerCase().includes(q)) return [];
+            const label = CHANNEL_LABELS[ch] || ch, shownLabel = CHANNEL_LABELS[ch] ? t(label) : label;
+            if (q && !all.length && !label.toLowerCase().includes(q) && !shownLabel.toLowerCase().includes(q)) return [];
             const shown = q ? all.slice(0, 12) : all.slice(0, 6);
             return [
               <ListSubheader key={`h${ch}`} sx={{ fontSize: 9.5, lineHeight: 1.9, color: FAINT, letterSpacing: 1,
                 textTransform: "uppercase", bgcolor: PANEL, px: 1 }}>
-                {label}{all.length > shown.length ? ` \u00b7 ${all.length}` : ""}
+                {shownLabel}{all.length > shown.length ? ` \u00b7 ${all.length}` : ""}
               </ListSubheader>,
               <MenuItem key={`c${ch}`} selected={pick === `channel:${ch}`} onClick={() => onChange(cat, `channel:${ch}`)}
-                sx={{ fontSize: 12, borderRadius: 1 }}>all {label.toLowerCase()}</MenuItem>,
+                sx={{ fontSize: 12, borderRadius: 1 }}>{t("all {channel}", { channel: shownLabel.toLowerCase() })}</MenuItem>,
               ...shown.map((n) => (
                 <MenuItem key={`${ch}:${n}`} selected={pick === `src:${ch}:${n}`} onClick={() => onChange(cat, `src:${ch}:${n}`)}
                   sx={{ fontSize: 11.5, pl: 2.5, borderRadius: 1 }}>
@@ -133,14 +137,14 @@ function FilterButton({ cat, pick, channels, srcByChannel, srcQ, setSrcQ, onChan
               )),
               ...(all.length > shown.length ? [
                 <MenuItem key={`m${ch}`} disabled sx={{ fontSize: 10.5, pl: 2.5, color: FAINT, opacity: 1 }}>
-                  +{all.length - shown.length} more — type to find one
+                  {t("+{count} more — type to find one", { count: all.length - shown.length })}
                 </MenuItem>] : []),
             ];
           })}
         </Box>
         {narrowed && (
           <Button size="small" onClick={() => { onChange("", ""); close(); }}
-            sx={{ mt: 0.75, fontSize: 11, textTransform: "none", color: ACCENT }}>Show everything</Button>
+            sx={{ mt: 0.75, fontSize: 11, textTransform: "none", color: ACCENT }}>{t("Show everything")}</Button>
         )}
       </Popover>
     </>
@@ -176,6 +180,7 @@ function NextIn({ atRef, render }) {
 }
 
 export default function FeedView({ onOpenTask, onChanged, active = true, top = null, stage = null, onPull = null, railOnNarrow = false, onInventoryFilter = null, unreadInventory = null, onGo = null, navOn = "", openNew = 0, setupMode = false, setupRail = null }) {
+  useLocale();
   // below md there is no stage beside the rail; whatever is opened slides over it instead, so a
   // tap on a row is never a tap that did nothing
   const narrow = useMediaQuery("(max-width:899.95px)");
@@ -338,7 +343,7 @@ export default function FeedView({ onOpenTask, onChanged, active = true, top = n
       if (batch == null) return;                 // 304: the list on screen is still the truth
       setRows(batch); rowsLen.current = batch.length; setErr("");
     } catch (e) {
-      if (request === loadRequest.current) setErr(processingErrorMessage(e, "Failed to load the feed"));
+      if (request === loadRequest.current) { const detail = processingErrorMessage(e, ""); setErr(detail ? { message: detail } : { source: "Failed to load the feed", values: {} }); }
     }
   }, [fparams, canonicalUnread, unreadInventory, top]);
 
@@ -400,7 +405,7 @@ export default function FeedView({ onOpenTask, onChanged, active = true, top = n
     } else if (wasRunning.current) {
       setBgSync(false); setSyncWhat(""); load(rowsLen.current);
     } else if (completedBetweenChecks) {
-      setBgSync(true); setSyncWhat("check finished"); load(rowsLen.current);
+      setBgSync(true); setSyncWhat({ source: "check finished", values: {} }); load(rowsLen.current);
       clearTimeout(completionTimer.current);
       completionTimer.current = setTimeout(() => { setBgSync(false); setSyncWhat(""); }, 900);
     }
@@ -430,7 +435,7 @@ export default function FeedView({ onOpenTask, onChanged, active = true, top = n
     setSyncErr("");
     // ...an answer that refused is its own words; only no answer at all leaves the state unknown
     try { await api.post("/api/ingest/poll"); }
-    catch (e) { if (e?.response) { setSyncing(false); setSyncErr(plainError(e, "The sync was refused.")); } else setSyncUnknown(true); }
+    catch (e) { if (e?.response) { setSyncing(false); setSyncErr(errorPresentation(e, "The sync was refused.")); } else setSyncUnknown(true); }
     await syncObserver.current?.refresh();
   }, [syncUnknown]);
 
@@ -519,14 +524,14 @@ export default function FeedView({ onOpenTask, onChanged, active = true, top = n
           {SIDE_NAV.map((n) => {
             const Icon = NAV_ICONS[n.key];
             return (
-              <Tooltip key={n.key} title={n.hint} placement="right">
+              <Tooltip key={n.key} title={t(n.hint)} placement="right">
                 <Box component="button" type="button" data-tq-nav={n.key} aria-current={navOn === n.key ? "page" : undefined}
                   onClick={() => (n.key === "new" && !onGo ? setNewOpen(true) : onGo?.(n.go, n.key))}
                   sx={{ display: "flex", alignItems: "center", gap: 1.25, width: "100%", height: 30, px: 1.25, border: 0,
                     borderRadius: "8px", cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, textAlign: "left",
                     color: navOn === n.key ? INK : "#4d4a43", bgcolor: navOn === n.key ? "#e4e9ee" : "transparent",
                     "& svg": { fontSize: 16, color: "#6e685f" }, "&:hover": { bgcolor: navOn === n.key ? "#e4e9ee" : PANEL2 } }}>
-                  <Icon />{n.label}
+                  <Icon />{t(n.label)}
                 </Box>
               </Tooltip>
             );
@@ -574,22 +579,22 @@ export default function FeedView({ onOpenTask, onChanged, active = true, top = n
                 refreshing ... when it's not refreshing it should not have a ..."): at rest, the day's one count and the whole
                 time - the other counts ride its tooltip; while a sync runs, no counts, and the line says what it is reading */}
             {rows && !(syncing || bgSync) && stats.slice(0, 1).map((s2) => (
-              <Box key={s2.label} title={stats.map((x) => `${x.n} ${x.label}`).join(" · ")}
+              <Box key={s2.label} title={stats.map((x) => `${x.n} ${t(x.label)}`).join(" · ")}
                 sx={{ display: "flex", alignItems: "baseline", gap: 0.4, flexShrink: 0 }}>
                 <Typography sx={{ fontWeight: 600, fontSize: 11.5, color: INK }}>{s2.n}</Typography>
-                <Typography variant="caption" sx={{ color: FAINT, fontSize: 10.5 }}>{s2.label}</Typography>
+                <Typography variant="caption" sx={{ color: FAINT, fontSize: 10.5 }}>{t(s2.label)}</Typography>
               </Box>
             ))}
-            {!rows && <Typography variant="caption" sx={{ color: FAINT, fontSize: 10.5 }}>Loading item counts…</Typography>}
+            {!rows && <Typography variant="caption" sx={{ color: FAINT, fontSize: 10.5 }}>{t("Loading item counts…")}</Typography>}
             </Box>
-            <Typography variant="caption" noWrap data-tq-sync-line="" title={syncErr || undefined}
+            <Typography variant="caption" noWrap data-tq-sync-line="" title={syncErr ? errorText(syncErr) : undefined}
               sx={{ color: syncErr ? ALERT_INK : syncing || bgSync ? ACCENT : FAINT, fontSize: 10.5, minWidth: 0, textAlign: "center" }}>
-              {syncErr ? `✗ ${syncErr}` : syncUnknown ? "Sync status unavailable — rechecking"
-                : <NextIn atRef={nextAtRef} render={(nextIn) => syncFace({ busy: syncing || bgSync, what: syncWhat, every, lastAt: lastSync, nextIn, checked: true, started: syncStarted,
+              {syncErr ? `✗ ${errorText(syncErr)}` : syncUnknown ? t("Sync status unavailable — rechecking")
+                : <NextIn atRef={nextAtRef} render={(nextIn) => syncFace({ busy: syncing || bgSync, what: translateDescriptor(syncWhat), every, lastAt: lastSync, nextIn, checked: true, started: syncStarted,
                     terse: !(syncing || bgSync) })} />}
             </Typography>
             <Button size="small" variant="text" disabled={!syncUnknown && (syncing || bgSync)} onClick={() => syncNow(false)}
-              title={syncing || bgSync ? syncWhat : bHint("sync_now", syncUnknown ? "unknown" : undefined)}
+              title={syncing || bgSync ? translateDescriptor(syncWhat) : bHint("sync_now", syncUnknown ? "unknown" : undefined)}
               startIcon={<SyncIcon data-tq-sync-icon sx={{ fontSize: 12,
                 color: syncing || bgSync ? ACCENT : "inherit",
                 ...(!syncUnknown && (syncing && !bgSync || bgSync && (!syncPhase || syncPhase === "fetching"))
@@ -613,16 +618,16 @@ export default function FeedView({ onOpenTask, onChanged, active = true, top = n
               while mail is still held, after the first good answer, saying "I'm catching up" in a quieter colour */}
           {!setupMode && (thinking || triageErr) && (
             <Typography variant="caption" noWrap title={triageErr || thinking} sx={{ color: triageErr ? ALERT_INK : DIM, fontWeight: 600, fontSize: 10.5 }}>
-              {thinking || "I'm having trouble thinking for a few minutes. Mail is still coming in and I'm holding all of it."}
+              {thinking || t("I'm having trouble thinking for a few minutes. Mail is still coming in and I'm holding all of it.")}
             </Typography>
           )}
           {err && (
             <Alert severity="error" variant="outlined" onClose={() => setErr("")}
               action={<Button size="small" color="error" onClick={() => { setErr(""); setRows(null); load(rowsLen.current); }}
-                sx={{ fontSize: 11 }}>{bLabel("try_again")}</Button>}
+                sx={{ fontSize: 11 }}>{t(bLabel("try_again"))}</Button>}
               sx={{ py: 0, borderRadius: 2, bgcolor: PANEL, alignItems: "center",
                 "& .MuiAlert-message": { fontSize: 11.5, py: 0.5 }, "& .MuiAlert-action": { pt: 0, alignItems: "center" } }}>
-              {err}
+              {errorText(err)}
             </Alert>
           )}
         </Box>

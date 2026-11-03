@@ -5,23 +5,31 @@
 import { useCallback, useEffect, useState } from "react";
 import api from "./api";
 import { label } from "./buttons.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 // Update branch and Re-run checks are GitHub's own offers; "anyway" is the close-out's Approve, past the rules (concierge.OFFER_WORDS)
-export const OFFER_LABEL = { update: "Update branch", rerun: "Re-run checks", anyway: `${label("approve", "action")} anyway` };
-export const OFFER_HINT = {
-  update: "GitHub merges the base into the pull request, so its checks run again against today's base",
-  rerun: "Re-runs the failed checks on the pull request's head commit",
-  anyway: "Merges although the card says why it should not - only where this repository and your settings allow it",
+export const OFFER_LABEL = {
+  get update() { return t("Update branch"); },
+  get rerun() { return t("Re-run checks"); },
+  get anyway() { return t("{action} anyway", { action: label("approve", "action") }); },
 };
+export const OFFER_HINT = {
+  get update() { return t("GitHub merges the base into the pull request, so its checks run again against today's base"); },
+  get rerun() { return t("Re-runs the failed checks on the pull request's head commit"); },
+  get anyway() { return t("Merges although the card says why it should not - only where this repository and your settings allow it"); },
+};
+const READ_FAILED = { state: "unknown", ok: false, offers: [], note: "" };
+
 
 export function useCloseoutState(rid) {
+  useLocale();
   const [gh, setGh] = useState(null);
   const load = useCallback(() => {
     if (!rid) { setGh(null); return; }
     // a reading that failed is NOT a clean pull request: null drew a live Close out over a GitHub nobody had read (2026-09-29).
     // Only "no close-out here" (404) means there is nothing to read.
-    api.get(`/api/reviews/${rid}/closeout`).then(({ data }) => setGh(data)).catch((e) => setGh(e?.response?.status === 404 ? null
-      : { state: "unknown", ok: false, offers: [], note: "", reason: "Taskuary could not read GitHub just now - open the card again in a moment" }));
+    api.get(`/api/reviews/${rid}/closeout`).then(({ data }) => setGh(data)).catch((e) => setGh(e?.response?.status === 404 ? null : READ_FAILED));
   }, [rid]);
   useEffect(() => { load(); }, [load]);
   // Update branch / Re-run checks: run on GitHub, then read the card again - neither closes anything
@@ -30,5 +38,5 @@ export function useCloseoutState(rid) {
     load();
     return data?.said || "";
   };
-  return { gh, reload: load, act };
+  return { gh: gh === READ_FAILED ? { ...gh, reason: t("Taskuary could not read GitHub just now - open the card again in a moment") } : gh, reload: load, act };
 }

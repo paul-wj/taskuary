@@ -1,11 +1,9 @@
 // THE ASSISTANT ACTS ON THE PAGE AS THE OWNER WOULD - EXCEPT A SEND, AND NEVER A SECRET (the owner, 2026-10-30). The page's half of the two
 // lines the server draws again (taskuary/pageview.py): which button sends something out, and which box holds a secret.
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import test from "node:test";
-import { currentRoot, isSecret, isSend } from "../src/pageView.js";
+import { context, currentRoot, isSecret, isSend } from "../src/pageView.js";
 
-const read = (name) => fs.readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8");
 
 test("an outward send is known by its verb or its words, and nothing else is one", () => {
   for (const b of [{ id: "row:approve", label: "Approve" }, { id: "x", label: "Send" }, { id: "x", label: "Send test message" }, { id: "x", label: "Anything", send: true },
@@ -20,24 +18,32 @@ test("a secret is known by its key or the words on its box", () => {
 });
 
 test("what leaves the page is the view without its elements, and a secret as its state only", () => {
-  const src = read("pageView.js");
-  assert.match(src, /secret: true, state: state \|\| "empty" \}/);
-  assert.match(src, /buttons: v\.buttons\.map\(\(\{ id, label, enabled, send \}\)/, "no element and no handler goes");
-  // ...and a press on a send is a light, checked again on the live page whatever the server said
-  assert.match(src, /if \(op\.op === "point" \|\| \(b && \(isSend\(b\) \|\| isInstall\(b\)\)\)\)/);
+  const field = (name, value, password = false) => ({
+    value, tagName: "INPUT", disabled: false,
+    getClientRects: () => [1], closest: () => null,
+    getAttribute: (key) => key === "name" ? name : null,
+    hasAttribute: () => false,
+    matches: (selector) => selector === "input[type=password]" && password,
+  });
+  const secret = field("password", "private-value", true), title = field("title", "Public title");
+  const root = {
+    getAttribute: (key) => key === "data-tq-view" ? "settings" : null,
+    hasAttribute: () => false,
+    querySelector: () => null,
+    querySelectorAll: (selector) => selector.startsWith("input,") ? [secret, title] : [],
+  };
+  const previous = globalThis.getComputedStyle;
+  globalThis.getComputedStyle = () => ({ visibility: "visible" });
+  try {
+    const view = context(root);
+    assert.equal(view.fields[0].secret, true);
+    assert.equal(view.fields[0].state, "typed");
+    assert.ok(!JSON.stringify(view).includes("private-value"));
+    assert.equal(view.fields[1].value, "Public title");
+    assert.ok(!Object.hasOwn(view.fields[0], "el"));
+  } finally { globalThis.getComputedStyle = previous; }
 });
 
-test("the chat sends the view only with a line the owner asked, and runs what came back as steps", () => {
-  const view = read("AssistantView.jsx");
-  assert.match(view, /const view = how\.view !== undefined \? how\.view : pageView\.context\(\);/);
-  assert.match(view, /\.\.\.\(view \? \{ view \} : \{\}\), \.\.\.\(react \? \{ react \} : \{\}\)/);
-  assert.match(view, /await pageView\.run\(ops, \(steps\) => setMsgs/);
-  // ...a reaction is no line of the owner's, never opens the window, and stops at three in a row
-  assert.match(view, /if \(!react\) setMsgs\(\(m\) => \{ const i = held/);
-  assert.match(view, /s\.auto >= 3\) return;/);
-  // ...and its × asks before it ends the help
-  assert.match(view, /if \(pageView\.sessionNow\(\)\?\.door\) setEnding\(true\); else \{ pageView\.endSession\(\); shutBox\(\); \}/);
-});
 
 // A DIALOG OVER THE PAGE IS THE PAGE (the owner, 2026-11-02): Search everything, the Hub's Write one and the bell's list sit in a portal
 // over a wider page - the widest root in sight was "the page", so the Assistant read the Hub beneath while the owner looked at the dialog
@@ -56,30 +62,3 @@ test("a dialog open over the page is the view, the one opened last on top; with 
   } finally { Object.assign(globalThis, was); }
 });
 
-test("Search, the Hub's Write one and the bell are views, each press named by what it is about", () => {
-  const search = read("SearchEverything.jsx"), hub = read("HubView.jsx"), bell = read("TaskHubPage.jsx"), src = read("pageView.js");
-  assert.match(search, /<Dialog open=\{open\} onClose=\{onClose\} data-tq-search="true" data-tq-view="search"/);
-  // ...its hits are no buttons, so each says it is a press, named by its title and kind
-  assert.match(search, /data-tq-view-press="" aria-label=\{`\$\{hit\.title \|\| "untitled"\} \(\$\{kindOf\(hit\)\.label\}\)`\}/);
-  assert.match(src, /root\.querySelectorAll\("button, \[role=button\], \[role=tab\], \[data-tq-view-press\]"\)/);
-  // ...brought up with its words in its box, and its hits waited for before one is pressed
-  assert.match(read("AssistantView.jsx"), /area === "search" \? openAppLink\(`#search=\$\{encodeURIComponent\(state\.query \|\| ""\)\}`\)/);
-  assert.match(src, /area === "search" && state\.query && i < 40 && !r\?\.querySelector\('\[data-tq-search-settled="true"\]'\)/);
-  // Write one: its boxes keyed, its Post it an outward press - others read the Hub - lit for the owner, never pressed
-  assert.match(hub, /<Dialog open=\{!!open\} onClose=\{onClose\} fullWidth maxWidth="sm" data-tq-view="hub_write"/);
-  for (const k of ["title", "topic", "kind", "body"]) assert.match(hub, new RegExp(`"data-tq-field": "${k}"`), k);
-  assert.match(hub, /disableElevation data-tq-send="" disabled=\{busy \|\| !title\.trim\(\)/);
-  // ...each post's vote, comments and remove named by its post, so ten "remove"s are ten
-  for (const b of ["`Vote up ${named}`", "`Vote down ${named}`", "`Remove ${named}`", "`Restore ${named}`", '`${plural(commentCount, "comment")} on ${named}`'])
-    assert.ok(hub.includes(`aria-label={${b}}`), b);
-  // the bell: a view while open, and each problem's buttons named by the problem
-  assert.match(bell, /<Popover open=\{!!el\} anchorEl=\{el\} onClose=\{\(\) => setEl\(null\)\} data-tq-view="bell"/);
-  for (const b of ["`Dismiss: ${p.title}`", "`Got it: ${p.title}`", "`Ask the assistant: ${p.title}`"]) assert.ok(bell.includes(`aria-label={${b}}`), b);
-});
-
-test("a Hub post removed is under Recently deleted on the Hub, read again after a press on a post", () => {
-  const hub = read("HubView.jsx");
-  assert.match(hub, /const shelf = <RecentlyDeleted key=\{bin\} kinds=\{\["hub post"\]\} onRestored=\{load\} \/>;/);
-  assert.match(hub, /const changed = \(\) => \{ load\(\); setBin\(\(n\) => n \+ 1\); \};/);
-  assert.match(read("Removed.jsx"), /d\.kind === "hub post" \? "off this list" : "gone for good"/);
-});

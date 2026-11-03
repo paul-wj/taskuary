@@ -11,6 +11,8 @@ import { Attachments } from "./Attachments.jsx";
 import { cleanText, tsMs } from "./ui.jsx";
 import { dayLabel, fmtTime } from "./dates.js";
 import { BORDER, FAINT, INK } from "./theme.jsx";
+import { getLocale, t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 // the channels whose messages are a conversation, not letters
 export const CHAT_CHANNELS = new Set(["whatsapp", "teams", "slack", "telegram", "imessage", "discord", "mattermost",
@@ -34,7 +36,7 @@ export const splitBody = (body) => {
 };
 
 const dayOf = (at) => { const d = new Date(tsMs(at)); return Number.isNaN(d.getTime()) ? "" : d.toDateString(); };
-const timeOf = (at) => { const d = new Date(tsMs(at)); return Number.isNaN(d.getTime()) ? "" : fmtTime(d, undefined, { hour: "numeric", minute: "2-digit" }); };
+const timeOf = (at) => { const d = new Date(tsMs(at)); return Number.isNaN(d.getTime()) ? "" : fmtTime(d, getLocale(), { hour: "numeric", minute: "2-digit" }); };
 
 // COMPACT (the task-view cleanup, owner-approved 2026-10-25: Show all on a six-message burst drew 476px, about 79px a message): the name
 // INSIDE the bubble, once per run of one sender's messages, and the time at the end of the line - about 34px for a one-line message.
@@ -45,6 +47,7 @@ const timeOf = (at) => { const d = new Date(tsMs(at)); return Number.isNaN(d.get
 const firstName = (m) => String(m.FromName || m.FromEmail || m.Channel || "").split(/[\s@]+/)[0];
 
 export default function ChatThread({ messages = [], maxHeight = 460 }) {
+  useLocale();
   // newest first, like the rest of the app: the box opens at its top, which is the latest line
   const list = [...messages].sort((a, b) => tsMs(b.SentAt) - tsMs(a.SentAt));
   return (
@@ -75,7 +78,7 @@ export default function ChatThread({ messages = [], maxHeight = 460 }) {
                   {words}</Box>
                 {/* the time at the line's end, on the line: a one-line message stays one line */}
                 <Box component="span" sx={{ display: "inline-block", color: FAINT, fontSize: 11, ml: 1.25, whiteSpace: "nowrap" }}>
-                  {voice ? "🎤 transcribed · " : ""}{timeOf(m.SentAt)}</Box>
+                  {voice ? `${t("🎤 transcribed")} · ` : ""}{timeOf(m.SentAt)}</Box>
                 {/* full reading size, as wide as the bubble - the small one was a thumbnail you had to click to read
                     (the owner, 2026-10-15: "images do look small in the chat") */}
                 {hasFiles && <Attachments messageId={m.MessageId} />}

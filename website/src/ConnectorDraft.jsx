@@ -5,12 +5,14 @@ import { Box, Button, CircularProgress, Typography } from "@mui/material";
 import api from "./api";
 import { PANEL, BORDER, DIM, INK } from "./theme.jsx";
 import { applied, changes, keepDraft, keptDraft, saveBody, say, splitNow, stage, stageable } from "./connectorDraft.js";
-import { plural } from "./timeWords.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 const Draft = createContext(null);
 
 // the draft a connection card holds, over the connection and its sources
 export function useCardDraft(conn, sources, reload) {
+  useLocale();
   // what was left unsaved on this card last time it was open comes back with it (keepDraft) - leaving never asks
   const id = conn?.ConnectorId;
   const [want, setWant] = useState(() => keptDraft(id).want);
@@ -27,7 +29,7 @@ export function useCardDraft(conn, sources, reload) {
   const setOn = async (on) => {
     setFlip(on); setErr("");
     try { await api.post("/api/connectors", { ConnectorId: id, Active: !!on }); await reload?.(); }
-    catch (e) { setErr(e?.response?.data?.detail || `the connection could not be switched ${on ? "on" : "off"} - try again`); }
+    catch (e) { setErr(e?.response?.data?.detail ? { text: e.response.data.detail } : { key: on ? "the connection could not be switched on - try again" : "the connection could not be switched off - try again" }); }
     finally { setFlip(null); }
   };
   const draftConn = conn && flip !== null ? { ...applied(conn, want), Active: flip } : applied(conn, want);
@@ -50,7 +52,7 @@ export function useCardDraft(conn, sources, reload) {
       discard(); setSaved(n || 1);
       await reload?.();
     } catch (e) {
-      setErr(e?.response?.data?.detail || "the changes could not be saved - nothing was lost, try again");
+      setErr(e?.response?.data?.detail ? { text: e.response.data.detail } : { key: "the changes could not be saved - nothing was lost, try again" });
     } finally { setBusy(false); }
   };
   const ctx = {
@@ -61,7 +63,7 @@ export function useCardDraft(conn, sources, reload) {
     },
     stageSource: (body) => setWantSrc((m) => ({ ...m, [body.SourceId]: stage(m[body.SourceId], body) })),
   };
-  return { conn: draftConn, sources: draftSources, pending, save, discard, busy, err, saved, ctx, flipping: flip !== null };
+  return { conn: draftConn, sources: draftSources, pending, save, discard, busy, err: err.key ? t(err.key) : err.text || "", saved, ctx, flipping: flip !== null };
 }
 
 export const DraftProvider = ({ value, children }) => <Draft.Provider value={value}>{children}</Draft.Provider>;
@@ -84,33 +86,42 @@ export function useSaveSource(reload) {
 
 // "2 unsaved changes" and each one, then Discard / Save. Sticky, so it stays in reach on a long card.
 export function SaveBar({ draft, labels = {}, words = {} }) {
+  useLocale();
   const n = draft.pending.length;
   if (!n && draft.saved) return (
     <Box role="status" sx={{ position: "sticky", bottom: 12, zIndex: 5, mt: 2, px: 1.5, py: 1, bgcolor: PANEL, border: `1px solid ${BORDER}`,
       borderLeft: "3px solid #47654a", borderRadius: 2, fontSize: 13, color: "#47654a", fontWeight: 600 }}>
-      ✓ Saved {draft.saved === 1 ? "your change" : `${draft.saved} changes`}
+      {draft.saved === 1 ? t("✓ Saved your change") : t("✓ Saved {count} changes", { count: draft.saved })}
     </Box>
   );
   // a refused switch press, with nothing staged: said where a refused Save is
   if (!n) return draft.err ? <Typography role="alert" sx={{ mt: 2, color: "#8a3646", fontSize: 12 }}>{draft.err}</Typography> : null;
+  const displayValue = (value, key) => {
+    if (words[key] && words[key][String(value ?? "")] !== undefined) return say(value, key, words);
+    if (value === true) return t("on");
+    if (value === false || value === undefined || value === null || value === "") return t("off");
+    if (Array.isArray(value) && !value.length) return t("none");
+    return say(value, key, words);
+  };
   const line = (c) => {
     const label = labels[c.key] || c.key.replace(/_/g, " ");
     const obj = (c.from && typeof c.from === "object") || (c.to && typeof c.to === "object");
-    return `${c.where ? `${c.where} · ` : ""}${label}${obj ? " changed" : `: ${say(c.from, c.key, words)} → ${say(c.to, c.key, words)}`}`;
+    const prefix = c.where ? `${c.where} · ` : "";
+    return obj ? t("{prefix}{label} changed", { prefix, label }) : `${prefix}${label}: ${displayValue(c.from, c.key)} → ${displayValue(c.to, c.key)}`;
   };
   return (
-    <Box className="tq-savebar" role="region" aria-label="Unsaved changes"
+    <Box className="tq-savebar" role="region" aria-label={t("Unsaved changes")}
       sx={{ position: "sticky", bottom: 12, zIndex: 5, mt: 2, p: 1.5, bgcolor: PANEL, border: `1px solid ${BORDER}`,
         borderLeft: "3px solid #55697a", borderRadius: 2, boxShadow: "0 4px 16px rgba(30,40,50,.12)" }}>
-      <Typography sx={{ fontWeight: 600, fontSize: 13, color: INK, mb: 0.5 }}>{plural(n, "unsaved change")}</Typography>
+      <Typography sx={{ fontWeight: 600, fontSize: 13, color: INK, mb: 0.5 }}>{t(n === 1 ? "{count} unsaved change" : "{count} unsaved changes", { count: n })}</Typography>
       <Box component="ul" sx={{ m: 0, pl: 2.25, mb: 1, color: DIM, fontSize: 12.5, lineHeight: 1.6 }}>
         {draft.pending.map((c) => <li key={`${c.where}|${c.field}|${c.key}`}>{line(c)}</li>)}
       </Box>
       {draft.err && <Typography sx={{ color: "#8a3646", fontSize: 12, mb: 1 }}>{draft.err}</Typography>}
       <Box sx={{ display: "flex", gap: 1, justifyContent: "flex-end" }}>
-        <Button size="small" onClick={draft.discard} disabled={draft.busy}>Discard</Button>
+        <Button size="small" onClick={draft.discard} disabled={draft.busy}>{t("Discard")}</Button>
         <Button size="small" variant="contained" disableElevation onClick={draft.save} disabled={draft.busy}>
-          {draft.busy ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : "Save"}</Button>
+          {draft.busy ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : t("Save")}</Button>
       </Box>
     </Box>
   );

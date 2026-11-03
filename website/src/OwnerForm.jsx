@@ -9,10 +9,13 @@
 import React, { useEffect, useState } from "react";
 import { Alert, Box, Button, TextField } from "@mui/material";
 import api from "./api";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 const Field = (p) => <TextField size="small" fullWidth sx={{ bgcolor: "#fff" }} {...p} />;
 
 export default function OwnerForm({ onDone }) {
+  useLocale();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
@@ -27,17 +30,17 @@ export default function OwnerForm({ onDone }) {
   const save = async () => {
     setBusy(true); setErr("");
     try { await api.put("/api/owner", { name: name.trim(), email: email.trim() || null }); await onDone(); }
-    catch (e) { setErr(e?.response?.data?.detail || "could not save that"); }
+    catch (e) { setErr(e?.response?.data?.detail ? { text: e.response.data.detail } : { key: "could not save that" }); }
     setBusy(false);
   };
   return (
     <Box sx={{ display: "flex", gap: 1, mt: 1, flexWrap: "wrap" }}>
-      <Field label="Your name" value={name} onChange={(e) => setName(e.target.value)} sx={{ bgcolor: "#fff", flex: 1, minWidth: 160 }} />
-      <Field label="Email" value={email} onChange={(e) => setEmail(e.target.value)} sx={{ bgcolor: "#fff", flex: 1, minWidth: 160 }} />
+      <Field label={t("Your name")} value={name} onChange={(e) => setName(e.target.value)} sx={{ bgcolor: "#fff", flex: 1, minWidth: 160 }} />
+      <Field label={t("Email")} value={email} onChange={(e) => setEmail(e.target.value)} sx={{ bgcolor: "#fff", flex: 1, minWidth: 160 }} />
       <Button variant="contained" disableElevation size="small" disabled={busy || !name.trim()} onClick={save}>
-        {busy ? "…" : "Save"}
+        {busy ? "…" : t("Save")}
       </Button>
-      {err && <Alert severity="error" sx={{ width: "100%", fontSize: 12.5 }}>{err}</Alert>}
+      {err && <Alert severity="error" sx={{ width: "100%", fontSize: 12.5 }}>{err.text || t(err.key)}</Alert>}
     </Box>
   );
 }

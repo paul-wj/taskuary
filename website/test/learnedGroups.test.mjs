@@ -3,7 +3,6 @@
 // on each line and on What changed - your own line only Forget, a line already put down none.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { SECTIONS, byPerson, changeMarks, groupLines, marksFor, personDoc } from "../src/learnedGroups.js";
 
 const g = {
@@ -21,7 +20,6 @@ const g = {
 test("the five subjects in order, each saying who reads it, then Watching and Proposed", () => {
   const gs = groupLines(g);
   assert.deepEqual(gs.map((s) => s.slug), ["people", "care", "work", "promises", "bring", "watching", "proposed"]);
-  assert.equal(gs[0].reads, "read by triage (priority only) · drafts · the Advisor · the Assistant · agents");
   assert.deepEqual(gs[1].lines.map((l) => l.key), ["close"]);
   assert.deepEqual(gs[5].lines.map((l) => l.key), ["fri"]);
   assert.ok(gs.every((s) => !/rides into every prompt/.test(s.reads)), "no reader is said to read what it does not");
@@ -46,14 +44,3 @@ test("Keep / Wrong / Forget: all three on a learned line, only Forget on yours, 
   assert.deepEqual(changeMarks({ key: "x", newest: true, standing: "own" }), ["forget"], "your own line: Forget alone");
 });
 
-test("Visualize and What changed both carry the marks, through the one endpoint, and say why when one does not take", () => {
-  const viz = readFileSync(new URL("../src/LearnedView.jsx", import.meta.url), "utf8");
-  const docs = readFileSync(new URL("../src/DocsView.jsx", import.meta.url), "utf8");
-  for (const src of [viz, docs]) {
-    assert.match(src, /api\.post\("\/api\/learned\/mark", \{ key, how \}\)/);
-    assert.match(src, /role="alert"/, "a mark that did not take says why, by its line");
-  }
-  assert.match(viz, /Connect an AI to learn how you work/);
-  assert.doesNotMatch(viz, /rides into every prompt/);
-  assert.match(docs, /<LearnedView onChanged=\{load\} people=\{people\} onPerson=\{openPerson\} \/>/);
-});

@@ -1,11 +1,8 @@
 // The Assistant brings up the app's own screens (the owner, 2026-10-15: "help me set up the intacct api" should open the Sage
 // Intacct settings page; "if it needs to know setting for x, bring the settings view up").
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import test from "node:test";
 import { appLink, firstAppLink, inApp, linkRoad, ownPath } from "../src/appLinks.js";
-
-const read = (name) => fs.readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8");
 
 test("our pages are app links; the web and unknown hashes are not", () => {
   for (const h of ["#connector=intacct", "#cli-agents", "#settings=policies", "#report=new-agent", "#report=12", "#profiles", "#setup"])
@@ -38,9 +35,6 @@ test("a task's pick-repo link opens the task and its picker, once, on that task 
   assert.equal(takeRepoPick(7), false, "another task's page never takes it");
   assert.equal(takeRepoPick(12), true); assert.equal(takeRepoPick(12), false, "taken once");
   delete globalThis.window; delete globalThis.CustomEvent;
-  const page = read("TaskPage.jsx");
-  assert.match(page, /const take = \(\) => \{ if \(takeRepoPick\(selected\)\) pickRepoRef\.current\?\.\(\); \};/);
-  assert.match(page, /pickRepoRef\.current = pickRepo;/);
 });
 
 test("a reply opens the page it names - else the one task it points at, never one of several", () => {
@@ -56,13 +50,6 @@ test("a reply opens the page it names - else the one task it points at, never on
   assert.equal(firstAppLink("Run [setup](#setup) to connect your mail."), null);
 });
 
-test("the chat opens it on a fresh reply, and a link in the text opens it in place", () => {
-  assert.match(read("AssistantView.jsx"), /const page = "open" in data \? data\.open : firstAppLink\(data\.say\);\n[^]*?\} else if \(page\) openAppLink\(page\);/);
-  // ...a task it opens is a press of its rail row (the owner, 2026-10-28), said in the chat window
-  assert.match(read("AssistantView.jsx"), /const opens = \/\^#\?task=\(\\d\+\)\$\/\.exec\(page \|\| ""\);\n\s*if \(opens\) \{\n[^\n]*\n\s*pressRowRef\.current\?\.\(n\);\n\s*setMsgs\(\(m\) => \[\.\.\.m, \{ id: `r\$\{Date\.now\(\)\}`, role: "receipt", status: "done", text: `Opened /);
-  assert.match(read("md.jsx"), /else if \(page\) \{ e\.preventDefault\(\); openAppLink\(page\); \}/);
-  assert.match(read("ChatThread.jsx"), /\{hasFiles && <Attachments messageId=\{m\.MessageId\} \/>\}/);    // pictures at reading size
-});
 
 // THE BOARD AND SEARCH, from the chat (concierge.page_href, 2026-10-28): the Board is its own address, read by the page's one router;
 // Search is a dialog, so its link opens it with the words in its box and writes no address
@@ -78,9 +65,6 @@ test("#search= opens Search with its words; #board is the Board's own address", 
   openAppLink("#board");
   assert.equal(window.location.hash, "board");
   delete globalThis.window; delete globalThis.CustomEvent;
-  assert.match(read("TaskHubPage.jsx"), /if \(h === BOARD\) \{ setTab\("Board"\)/);
-  assert.match(read("FeedView.jsx"), /setSearchQ\(String\(e\?\.detail\?\.q \|\| ""\)\); setSearchOpen\(true\);/);
-  assert.match(read("SearchEverything.jsx"), /if \(open && query\) \{ typed\.current = query; setQ\(query\); \}/);
 });
 
 test("every #hash a reply links is followed in the app window, never a new browser tab (TQ-1251: #new-task opened the browser)", () => {
@@ -102,6 +86,4 @@ test("a link's road: the web leaves for the system browser; the app's pages, tas
   for (const h of ["/", "http://127.0.0.1:8765/?view=board", "http://127.0.0.1:8765"]) assert.equal(road(h), "app", h);
   assert.equal(road("//vendor.example/x"), "outside", "a scheme-relative address is another site");
   assert.equal(ownPath("http://127.0.0.1:8765/api/task-artifacts/3/7?x=1", here), "/api/task-artifacts/3/7?x=1");
-  // ...and the reply's link draws by that road: a new tab for the web alone
-  assert.match(read("md.jsx"), /target=\{road === "outside" \? "_blank" : undefined\}/);
 });

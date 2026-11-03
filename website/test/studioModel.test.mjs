@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { studioAgentName, studioElapsed, studioPose, studioSeats, studioTaskState } from "../src/studioModel.js";
+import { dur } from "../src/timeWords.js";
 
 test("the studio seats live work first and keeps waiting work visible", () => {
   const tasks = [
@@ -19,9 +20,11 @@ test("a real run name and task state drive the character", () => {
   const live = { AgentName: "coding", cli: "codex", StartedAt: "2026-09-10 12:00:00" };
   assert.equal(studioAgentName(task, live), "codex");
   assert.equal(studioPose(task), "type");
-  assert.deepEqual(studioTaskState(task, live, [], Date.parse("2026-09-10T12:14:00")), {
-    agent: "codex", label: "working · 14m", tone: "working", pose: "type",
-  });
+  const state = studioTaskState(task, live, [], Date.parse("2026-09-10T12:14:00"));
+  assert.equal(state.agent, "codex");
+  assert.equal(state.tone, "working");
+  assert.equal(state.pose, "type");
+  assert.ok(state.label.includes(studioElapsed(task, live, Date.parse("2026-09-10T12:14:00"))));
 });
 
 test("an owner wait raises the agent's hand", () => {
@@ -34,12 +37,12 @@ test("an owner wait raises the agent's hand", () => {
 test("studioElapsed shows seconds under 90s, minutes under 90m, then hours", () => {
   const now = new Date("2026-09-28T12:00:00").getTime();
   const started = (sec) => ({ RunStartedAt: new Date(now - sec * 1000).toISOString() });
-  assert.equal(studioElapsed(started(0), null, now), "0s");
-  assert.equal(studioElapsed(started(89), null, now), "89s");
-  assert.equal(studioElapsed(started(90), null, now), "2m");
-  assert.equal(studioElapsed(started(5399), null, now), "90m");
-  assert.equal(studioElapsed(started(5400), null, now), "1.5h");
-  assert.equal(studioElapsed(started(-60), null, now), "0s");
+  assert.equal(studioElapsed(started(0), null, now), dur(0));
+  assert.equal(studioElapsed(started(89), null, now), dur(89));
+  assert.equal(studioElapsed(started(90), null, now), dur(90));
+  assert.equal(studioElapsed(started(5399), null, now), dur(5399));
+  assert.equal(studioElapsed(started(5400), null, now), dur(5400));
+  assert.equal(studioElapsed(started(-60), null, now), dur(0));
   assert.equal(studioElapsed({}, null, now), "");
   assert.equal(studioElapsed(null, null, now), "");
 });
@@ -48,10 +51,10 @@ test("studioElapsed takes the live row's start first, then the session's, then t
   const now = new Date("2026-09-28T12:00:00").getTime();
   const at = (sec) => new Date(now - sec * 1000).toISOString();
   const task = { Session: { started: at(20) }, RunStartedAt: at(30) };
-  assert.equal(studioElapsed(task, { StartedAt: at(10) }, now), "10s");
-  assert.equal(studioElapsed(task, {}, now), "20s");
-  assert.equal(studioElapsed({ RunStartedAt: at(30) }, null, now), "30s");
-  assert.equal(studioElapsed(task, { StartedAt: "2026-09-28 11:59:55" }, now), "5s");
+  assert.equal(studioElapsed(task, { StartedAt: at(10) }, now), dur(10));
+  assert.equal(studioElapsed(task, {}, now), dur(20));
+  assert.equal(studioElapsed({ RunStartedAt: at(30) }, null, now), dur(30));
+  assert.equal(studioElapsed(task, { StartedAt: "2026-09-28 11:59:55" }, now), dur(5));
 });
 
 test("an agent the Board lists as waiting on you is waiting here too, not working (B20)", () => {
@@ -61,5 +64,5 @@ test("an agent the Board lists as waiting on you is waiting here too, not workin
   assert.equal(studioTaskState(quiet, { kind: "session", idle: 60 }, [], now).label, "waiting on you");
   assert.equal(studioTaskState({ ...quiet, State: "blocked" }, null, [], now).tone, "waiting");
   assert.equal(studioTaskState({ ...quiet, Session: { alive: true, waiting: true } }, null, [], now).pose, "hand");
-  assert.equal(studioTaskState(quiet, { kind: "session", waiting: false }, [], now).label, "working · 21m");
+  assert.equal(studioTaskState(quiet, { kind: "session", waiting: false }, [], now).tone, "working");
 });

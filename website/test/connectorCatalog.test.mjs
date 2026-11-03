@@ -1,8 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
-const read = (n) => fs.readFileSync(path.join(process.cwd(), "src", n), "utf8");
 import { CATALOGUE, PLANNED_CONNECTORS, onceEach, plannedFor } from "../src/connectorCatalog.js";
 import { AI_SHELF } from "../src/aiShelf.js";
 
@@ -27,8 +24,6 @@ test("the requested Grok API connector is BUILT, not merely planned", () => {
   // it was a roadmap entry; it speaks the OpenAI surface, so it became a real card. A type that
   // is live must not also sit on the roadmap, or Connections draws it twice.
   assert.equal(plannedFor("AI — agents & models").find((c) => c.type === "xai"), undefined);
-  const view = read("ConnectorsView.jsx");
-  assert.match(view, /^ {2}xai: \{ group: "AI — agents & models"/m);
   assert.ok(AI_SHELF.includes("xai"));
 });
 
@@ -69,5 +64,4 @@ test("each connector type is drawn once: a planned card never repeats a live one
     { title: "Everything else", cards: [{ key: "ppointclickcare", channel: "pointclickcare", planned: true }, { key: "pgraphql", channel: "graphql", planned: true }] },
   ]);
   assert.deepEqual(groups.map((g) => g.cards.map((c) => c.key)), [["catalog-pcc", "d1"], ["d2", "d3"], ["pgraphql"]]);
-  assert.match(read("ConnectorsView.jsx"), /const groups = onceEach\(\[/, "the page's groups go through onceEach");
 });

@@ -5,6 +5,7 @@
 // A draft an agent saved for a person: its own `taskuary --reply` (wrapup.agent_reply: DraftBy "agent:<name>"), or its question to the
 // sender (the clarification kind). Taskuary's own drafts and the emails a task owes are Close out's alone, as before.
 import { deliveryMeta, deliveryTo } from "./replyDelivery.js";
+import { t } from "./i18n.js";
 
 const isReply = (r) => r?.Kind !== "action" && r?.Kind !== "slot";
 export const isAgentDraft = (r) => !!r && r.Status === "pending" && isReply(r) && !!String(r.DraftText || "").trim()
@@ -17,8 +18,9 @@ export const agentAsks = (reviews = []) => (reviews || []).filter(isAgentDraft);
 export const askWhere = (mode) => (mode === "live" ? "popup" : mode === "general" ? "chat" : null);
 // the notice's words: the agent by the name it wrote under, the person by name ("Erin Blake", not "Erin Blake <erin@...>")
 export const draftedBy = (r, agent = "The agent") => (String(r?.DraftBy || "").startsWith("agent:") ? String(r.DraftBy).slice(6) || agent : agent);
-export const draftedTo = (r) => deliveryTo(r).split(",").map((a) => a.replace(/\s*<[^>]*>/, "").trim() || a.trim()).filter(Boolean).join(", ");
-export const noticeLine = (r, agent) => (r.Kind === "clarification" ? `${draftedBy(r, agent)} drafted a question to ${draftedTo(r)}` : `${draftedBy(r, agent)} drafted a message to ${draftedTo(r)}`);
+export const draftedTo = (r) => deliveryTo(r, { presentation: true }).split(",").map((a) => a.replace(/\s*<[^>]*>/, "").trim() || a.trim()).filter(Boolean).join(", ");
+export const noticeLine = (r, agent) => t(r.Kind === "clarification" ? "{agent} drafted a question to {recipient}" : "{agent} drafted a message to {recipient}",
+  { agent: draftedBy(r, agent || t("The agent")), recipient: draftedTo(r) });
 
 // ALREADY ANSWERED (the owner, 2026-11-02: "if you responded to it already, the draft should say you responded already"): a reply that went
 // to that person after the message the draft answers - sent outside Taskuary (the round's "You answered ... in <mailbox>") or from here.
@@ -28,16 +30,16 @@ const emails = (v) => (JSON.stringify(v ?? "").toLowerCase().match(/[a-z0-9._%+-
 const toOf = (s) => emails(s.msg ? s.msg.RecipientsJson : [deliveryMeta(s.review).to, s.review?.FromEmail]);
 export function alreadyAnswered({ draft, sent = [], against = null, ms = (s) => Date.parse(s) || 0 } = {}) {
   if (!draft) return null;
-  const t = (s) => ms(s) || 0, after = against ? t(against.SentAt) || t(against.CreatedAt) : 0;
+  const timeMs = (s) => ms(s) || 0, after = against ? timeMs(against.SentAt) || timeMs(against.CreatedAt) : 0;
   const person = emails([deliveryMeta(draft).to, draft.FromEmail, against?.FromEmail])[0] || "";
   // ...to that person: a reply that names its recipients and leaves them out went to someone else on the thread
-  const hit = (sent || []).filter((s) => s.review?.ReviewId !== draft.ReviewId && t(s.at) > after && String(s.text || "").trim()
+  const hit = (sent || []).filter((s) => s.review?.ReviewId !== draft.ReviewId && timeMs(s.at) > after && String(s.text || "").trim()
     && (!person || !toOf(s).length || toOf(s).includes(person))).at(-1);
   if (!hit) return null;
   const flat = String(hit.text).replace(/\s+/g, " ").trim(), words = flat.length > 60 ? `${flat.slice(0, 60).replace(/\s+\S*$/, "")}...` : flat;
-  return { who: draftedTo(draft) || against?.FromName || "them", at: hit.at, words };
+  return { who: draftedTo(draft) || against?.FromName || t("them"), at: hit.at, words };
 }
-export const answeredLine = (a, when = (s) => s) => (a ? `You already answered ${a.who} at ${when(a.at)}: "${a.words}"` : "");
+export const answeredLine = (a, when = (s) => s) => (a ? t("You already answered {who} at {time}: \"{words}\"", { who: a.who, time: when(a.at), words: a.words }) : "");
 
 // THE REPLY BESIDE THE AGENT (the owner, 2026-11-02: "if the agent makes a reply, bring out the reply (Close out) tab side by side"): the task
 // view pairs Agent | Close out on its own for the agent's draft - once the agent is not working (a working terminal is never squeezed: its

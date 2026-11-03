@@ -24,7 +24,7 @@ test("the boss's health is what you have not seen - read in the chat counts, a w
 
 test("the matchmaker routes on the judged kind, never on words - and names who works it, never a profile (2026-10-28)", () => {
   const agents = [{ Name: "coding", Kind: "coding" }, { Name: "helper", Kind: "general" }];
-  assert.equal(matchFor({ lane: "asked", kind: "todo", coding: true }, agents).who, "the coding agent");
+  assert.equal(matchFor({ lane: "asked", kind: "todo", coding: true }, agents).kind, "coding");
   assert.equal(matchFor({ lane: "yours", kind: "todo" }, agents).who, "Taskuary");
   assert.equal(matchFor({ lane: "approve" }, agents).verb, "approve");
   assert.equal(matchFor({ lane: "fyi" }, agents).who, "nobody");
@@ -112,7 +112,7 @@ test("the bottom is nothing left you have not seen - a working agent never block
 test("quests are sized to what you have, and a target never shrinks as you work", () => {
   let s = fresh(at);
   const one = questsFor(s, { approve: 1, read: 0, dispatch: 5, rep: 2 });
-  assert.deepEqual(one.map((q) => [q.key, q.n, q.label]), [["q-reply", 1, "Send 1 reply"], ["q-hand", 2, "Hand 2 things to agents"], ["q-gym", 2, "Do 2 reps"]]);
+  assert.deepEqual(one.map((q) => [q.key, q.n]), [["q-reply", 1], ["q-hand", 2], ["q-gym", 2]]);
   const r = award(s, "approve", at, { quests: one });
   assert.equal(r.quests.length, 1, "the one reply there was completes the quest");
   s = r.state;

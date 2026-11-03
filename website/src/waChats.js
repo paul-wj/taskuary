@@ -1,6 +1,7 @@
 // A WhatsApp chat is found by WHO it is - the person's name, their phone number, the group's name - never by its JID (the
 // owner, 2026-10-23: "search should be by phone number, name or group name not id's. you can show id's in small under").
 // The server's twin is taskuary/wanames.py; the rows arrive named and with `phone` from it.
+import { t } from "./i18n.js";
 
 // ...a LID (<n>@lid) too: WhatsApp addresses most 1:1 chats by one now, and it is no more searchable than any other id (2026-10-26)
 export const isWaJid = (s) => /@(s\.whatsapp\.net|g\.us|lid)$/.test(String(s || ""));
@@ -24,7 +25,7 @@ export function bareName(name, jid) {
 }
 
 // what the chat is called on screen: its name, else its number, else a group nobody has named yet
-export const waLabel = (jid, name = "") => (bareName(name, jid) ? waPhone(jid) || (isWaGroup(jid) ? "WhatsApp group" : String(jid || "")) : name);
+export const waLabel = (jid, name = "") => (bareName(name, jid) ? waPhone(jid) || (isWaGroup(jid) ? t("WhatsApp group") : String(jid || "")) : name);
 
 export const isPhoneQuery = (q) => digits(q).length >= 3 && !/[^\d\s+()\-./]/.test(String(q || "").trim());
 

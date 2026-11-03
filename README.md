@@ -280,6 +280,18 @@ an inbound trigger creates tasks, a feed connection shows issues to read without
 connection leaves issues off. PRs default off. An explicit repository picker overrides
 that connection's role without enabling other repositories or connections.
 
+## Interface language
+
+Open **Settings → Language** (or **设置 → 语言**) and select **English** or **简体中文**.
+The interface switches immediately without reloading or resetting the current view or form.
+The first visit follows the browser language; your selection is remembered in that browser
+across reloads and app restarts. If browser storage is unavailable, switching still works
+for the current session.
+
+Only interface labels, instructions and date/time displays change. Mail, task titles, drafts,
+AI replies, user documents and terminal output are not translated. Commands, model names and
+connection identifiers stay unchanged.
+
 ## Try it without installing anything
 
 ```bash

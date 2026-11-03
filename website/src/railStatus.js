@@ -4,6 +4,7 @@
 // plain logo, its words in the icon's label.
 // Pure, so node --test reads it.
 import { KIND_META, rowMeta, taskStateMeta } from "./funnelPile.js";
+import { t } from "./i18n.js";
 
 // THE ONLY BADGES (the owner, 2026-10-22: too many emojis on the rail): the hand of somebody - or an agent - waiting on you, which
 // waves, and the flag of a reply ready to send. Every other state is the plain logo; its words are the icon's label and hover.
@@ -66,4 +67,5 @@ export const taskStatus = ({ live = null, rail = null, state = null, closed = fa
 };
 
 // what a row's icon says to a reader that cannot see it: the state's words (a screen reader, a hover, a reader without colour)
-export const statusLabel = (st, agent = "") => (!st ? "" : st.spins ? `${agent || "an agent"} is working on this` : st.word);
+export const statusLabel = (st, agent = "") => (!st ? "" : st.spins
+  ? t("{agent} is working on this", { agent: agent || t("an agent") }) : t(st.word));

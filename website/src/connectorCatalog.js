@@ -5,6 +5,7 @@
 // Keeping the roadmap in data rather than scattering one-off cards through ConnectorsView makes it
 // harder for a category to quietly become empty.
 import catalogue from "../../taskuary/connectorcatalog.json" with { type: "json" };
+import { t } from "./i18n.js";
 
 const grouped = {};
 for (const c of catalogue.cards) {
@@ -66,7 +67,7 @@ const BY_TYPE = Object.fromEntries(catalogue.cards.map((c) => [c.type, c]));
 const shortName = (t) => t.replace(/\s*\(.*?\)\s*/g, " ").replace(/\s+(\/|-)\s.*$/, "").trim();
 /** "Outlook mailbox" for "Add another Outlook mailbox" - null where a second card makes no sense. */
 export const oneOf = (type) => {
-  if (type in ONE) return ONE[type];
+  if (type in ONE) return ONE[type] === null ? null : t(ONE[type]);
   const c = BY_TYPE[type];
-  return c ? `${shortName(c.title)} ${UNIT[c.group] || "account"}` : `${type} connection`;
+  return t("{name} {unit}", { name: c ? shortName(c.title) : type, unit: t(c ? UNIT[c.group] || "account" : "connection") });
 };

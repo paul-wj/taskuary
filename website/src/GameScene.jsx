@@ -6,6 +6,8 @@ import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.j
 
 import { BORDER, FAINT, INK, PANEL, ROLES, mono } from "./theme.jsx";
 import { zoneAt } from "./assistantGame.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 // The Assistant Game's office. The studio room in the middle is the Agent Floor (one desk per agent
 // that can run at once); around it sit the Meeting Room where people wait on you (mail at the table,
@@ -86,6 +88,7 @@ const MARK_COLORS = { need: "#d9a441", send: "#6f9a6e", info: "#6d8fa6", bad: "#
 
 export default function GameScene({ seats, selectedId, onSelect, focus = "all", onZone, npcs = [], cabinets = [],
   picked = null, onPick, onCabinet, onCore, onExit, zoneCounts = {}, inset = { left: 0, right: 0 }, active = true, meetings = [] }) {
+  const locale = useLocale();
   const hostRef = useRef(null);
   const labelRefs = useRef([]);
   const tagRefs = useRef(new Map());     // id -> DOM node of an NPC / zone / cabinet tag
@@ -103,6 +106,7 @@ export default function GameScene({ seats, selectedId, onSelect, focus = "all", 
   useEffect(() => { sceneApi.current?.syncNpcs(npcs); }, [npcs]);
   useEffect(() => { sceneApi.current?.syncCabinets(cabinets); }, [cabinets]);
   useEffect(() => { sceneApi.current?.meetings(meetings); }, [meetings]);
+  useEffect(() => { sceneApi.current?.translate(); }, [locale]);
   useEffect(() => { sceneApi.current?.fly(focus); }, [focus]);
   useEffect(() => { sceneApi.current?.resize(); }, [inset.left, inset.right]);
 
@@ -123,7 +127,7 @@ export default function GameScene({ seats, selectedId, onSelect, focus = "all", 
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.05;
-    renderer.domElement.setAttribute("aria-label", "Interactive 3D office: the agents at their desks, your tasks in the gym, people waiting in the meeting room, fyi's in the coffee room, the memory archive and the assistant core");
+    renderer.domElement.setAttribute("aria-label", t("Interactive 3D office: the agents at their desks, your tasks in the gym, people waiting in the meeting room, fyi's in the coffee room, the memory archive and the assistant core"));
     renderer.domElement.tabIndex = 0;
     host.prepend(renderer.domElement);
 
@@ -311,12 +315,16 @@ export default function GameScene({ seats, selectedId, onSelect, focus = "all", 
     box(door, 1.23, 0.7, 0.035, "#c5a67d", 0.79, 0.58, 0.078);
     ball(door, 0.055, 0.055, 0.055, "#72664b", 1.35, 1.45, 0.13);
 
-    const sign = canvasTexture((ctx, canvas) => {
+    const sign = canvasTexture(() => {});
+    const drawSign = () => {
+      const { canvas } = sign, ctx = canvas.getContext("2d");
       ctx.fillStyle = "#f4eee3"; ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = "#53685a"; ctx.textAlign = "center";
       ctx.font = "700 44px Segoe UI, sans-serif"; ctx.fillText("TASKUARY", 256, 112);
-      ctx.fillStyle = "#8c8a7e"; ctx.font = "500 22px Segoe UI, sans-serif"; ctx.fillText("THE STUDIO", 256, 158);
-    });
+      ctx.fillStyle = "#8c8a7e"; ctx.font = "500 22px Segoe UI, sans-serif"; ctx.fillText(t("THE STUDIO"), 256, 158);
+      sign.texture.needsUpdate = true;
+    };
+    drawSign();
     box(room, 1.72, 1.02, 0.09, COLORS.trim, 4.13, 2.47, -3.81);
     const signGeometry = new THREE.PlaneGeometry(1.6, 0.9);
     geometries.set("studio-sign", signGeometry);
@@ -368,9 +376,9 @@ export default function GameScene({ seats, selectedId, onSelect, focus = "all", 
     const drawMeetings = (list) => {
       const ctx = meetScreen.canvas.getContext("2d");
       ctx.fillStyle = "#1e2a2f"; ctx.fillRect(0, 0, 512, 288);
-      ctx.fillStyle = "#7fd1c6"; ctx.font = "800 26px Segoe UI, sans-serif"; ctx.fillText("COMING UP", 26, 46);
+      ctx.fillStyle = "#7fd1c6"; ctx.font = "800 26px Segoe UI, sans-serif"; ctx.fillText(t("COMING UP"), 26, 46);
       ctx.font = "500 21px Segoe UI, sans-serif";
-      (list.length ? list.slice(0, 4) : [{ title: "nothing on the calendar soon" }]).forEach((m, i) => {
+      (list.length ? list.slice(0, 4) : [{ title: t("nothing on the calendar soon") }]).forEach((m, i) => {
         ctx.fillStyle = list.length ? "#e8eee5" : "#7c8590";
         ctx.fillText(shortLine(`${m.when ? `${m.when}  ` : ""}${m.title}`, 36), 26, 96 + i * 46);
       });
@@ -605,7 +613,7 @@ export default function GameScene({ seats, selectedId, onSelect, focus = "all", 
         ctx.fillRect(0, 0, canvas.width, 38);
         if (!occupied) {
           ctx.fillStyle = "#aaa394"; ctx.font = "500 22px Segoe UI, sans-serif";
-          ctx.fillText("free desk", 28, 182);
+          ctx.fillText(t("free desk"), 28, 182);
           surface.texture.needsUpdate = true;
           return;
         }
@@ -620,7 +628,7 @@ export default function GameScene({ seats, selectedId, onSelect, focus = "all", 
         ctx.fillText(shortLine(descriptor.task.Title, 38), 27, 158);
         const tail = (descriptor.liveRow?.tail || []).slice(-3);
         ctx.fillStyle = "#91aaa7"; ctx.font = "500 16px Consolas, monospace";
-        (tail.length ? tail : [descriptor.state.pose === "paper" ? "working through the task…" : "agent session active…"])
+        (tail.length ? tail : [t(descriptor.state.pose === "paper" ? "working through the task…" : "agent session active…")])
           .forEach((line, index) => ctx.fillText(shortLine(line, 48), 27, 210 + index * 27));
         surface.texture.needsUpdate = true;
       };
@@ -716,7 +724,9 @@ export default function GameScene({ seats, selectedId, onSelect, focus = "all", 
     };
     let hovered = -1, hoverNpc = null, hoverCab = null, hoverZone = null, hoverCore = false;
     const select = () => {};
-    sceneApi.current = { sync, syncNpcs, syncCabinets, select, fly, reset: resetCamera, resize: () => resize(), meetings: drawMeetings };
+    sceneApi.current = { sync, syncNpcs, syncCabinets, select, fly, reset: resetCamera, resize: () => resize(), meetings: drawMeetings,
+      translate: () => { drawSign(); drawMeetings(props.current.meetings || []); sync(seatsRef.current);
+        renderer.domElement.setAttribute("aria-label", t("Interactive 3D office: the agents at their desks, your tasks in the gym, people waiting in the meeting room, fyi's in the coffee room, the memory archive and the assistant core")); } };
     drawMeetings(props.current.meetings || []);
     sync(seatsRef.current);
     syncNpcs(props.current.npcs || []);
@@ -845,12 +855,12 @@ export default function GameScene({ seats, selectedId, onSelect, focus = "all", 
         if (d < reach) cands.push({ d, at: obj, ...hit });
       };
       for (const pool of Object.values(npcPools)) for (const slot of pool) if (slot.item)
-        consider(slot.holder, 1.5, { kind: "npc", key: slot.item.key, anchor: slot.anchor, say: slot.zone === "archive" ? "bust the ghost" : slot.zone === "gym" ? `train · ${shortLine(slot.item.title, 26)}` : `talk to ${slot.item.who || "them"}` });
+        consider(slot.holder, 1.5, { kind: "npc", key: slot.item.key, anchor: slot.anchor, say: slot.zone === "archive" ? t("bust the ghost") : slot.zone === "gym" ? t("train · {title}", { title: shortLine(slot.item.title, 26) }) : t("talk to {name}", { name: slot.item.who || t("them") }) });
       workstations.forEach((seat) => { if (seat.group.visible && seat.descriptor)
         consider(seat.person.root, 1.5, { kind: "desk", id: seat.descriptor.task.TaskId, anchor: seat.anchor, say: `${seat.descriptor.state.agent} · ${seat.descriptor.task.ref}` }); });
-      cabinetMeshes.forEach((c) => { if (c.topic) consider(c.cab, 1.4, { kind: "cabinet", id: c.topic.Topic, anchor: c.anchor, say: `open ${c.topic.Topic}` }); });
-      consider(core, 2.2, { kind: "core", anchor: coreAnchor, say: "talk to the core" });
-      consider(doorSpot, 1.3, { kind: "door", anchor: doorAnchor, say: "leave - back to the chat" });
+      cabinetMeshes.forEach((c) => { if (c.topic) consider(c.cab, 1.4, { kind: "cabinet", id: c.topic.Topic, anchor: c.anchor, say: t("open {topic}", { topic: c.topic.Topic }) }); });
+      consider(core, 2.2, { kind: "core", anchor: coreAnchor, say: t("talk to the core") });
+      consider(doorSpot, 1.3, { kind: "door", anchor: doorAnchor, say: t("leave - back to the chat") });
       near = cands.sort((a, b) => a.d - b.d)[0] || null;
     };
     const interact = (n) => {
@@ -1058,12 +1068,12 @@ export default function GameScene({ seats, selectedId, onSelect, focus = "all", 
       "& canvas": { display: "block", width: "100%", height: "100%", outline: "none", cursor: "grab" } }}>
       {!ready && !failed && (
         <Box sx={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", color: FAINT, fontSize: 12 }}>
-          Opening the office…
+          {t("Opening the office…")}
         </Box>
       )}
       {failed && (
         <Box sx={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", color: FAINT, fontSize: 12 }}>
-          The 3D office needs WebGL enabled.
+          {t("The 3D office needs WebGL enabled.")}
         </Box>
       )}
       {seats.map((descriptor, index) => (
@@ -1115,25 +1125,25 @@ export default function GameScene({ seats, selectedId, onSelect, focus = "all", 
             bgcolor: focus === zone ? "#f0c05a" : "rgba(24,28,34,.82)", color: focus === zone ? "#1c1f24" : "#fff",
             fontSize: 11.5, fontWeight: 600, letterSpacing: 0.3, boxShadow: "0 6px 18px rgba(0,0,0,.2)",
             "&:hover": { bgcolor: "#f0c05a", color: "#1c1f24" } }}>
-          {name}{zoneCounts[zone] ? <Box component="span" sx={{ ml: 0.75, px: 0.6, borderRadius: 99, bgcolor: "#b04a5c", color: "#fff", fontSize: 10.5 }}>{zoneCounts[zone]}</Box> : null}
+          {t(name)}{zoneCounts[zone] ? <Box component="span" sx={{ ml: 0.75, px: 0.6, borderRadius: 99, bgcolor: "#b04a5c", color: "#fff", fontSize: 10.5 }}>{zoneCounts[zone]}</Box> : null}
         </Box>
       ))}
 
       <Box ref={tagRef("near")} sx={{ ...pinned, transform: "translate(-50%, 10px)", pointerEvents: "none", px: 1, py: 0.3, borderRadius: "7px", bgcolor: "#1c1f24",
         color: "#f0c05a", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap", border: "1px solid #f0c05a", zIndex: 5 }} />
-      <Box ref={tagRef("door")} onClick={() => onExit?.()} title="Walk out through the door (or click) - back to the Assistant's chat"
+      <Box ref={tagRef("door")} onClick={() => onExit?.()} title={t("Walk out through the door (or click) - back to the Assistant's chat")}
         sx={{ ...pinned, px: 1, py: 0.35, borderRadius: "7px", cursor: "pointer", whiteSpace: "nowrap", bgcolor: "#1c1f24", color: "#f3f1ec",
-          fontSize: 11, fontWeight: 600, border: "1px solid rgba(255,255,255,.25)", "&:hover": { borderColor: "#f0c05a", color: "#f0c05a" } }}>🚪 Back to chat</Box>
+          fontSize: 11, fontWeight: 600, border: "1px solid rgba(255,255,255,.25)", "&:hover": { borderColor: "#f0c05a", color: "#f0c05a" } }}>{t("🚪 Back to chat")}</Box>
       <Box ref={tagRef("you")} sx={{ ...pinned, pointerEvents: "none", px: 0.8, py: 0.15, borderRadius: 99, bgcolor: "#f0c05a",
-        color: "#1c1f24", fontSize: 10, fontWeight: 600, letterSpacing: 1 }}>YOU</Box>
+        color: "#1c1f24", fontSize: 10, fontWeight: 600, letterSpacing: 1 }}>{t("YOU")}</Box>
 
       <Box sx={{ position: "absolute", left: "50%", bottom: 12, transform: "translateX(-50%)", zIndex: 4,
         display: { xs: "none", sm: "flex" }, alignItems: "center", gap: 1, px: 1.2, py: 0.65, borderRadius: "8px",
         bgcolor: "rgba(24,28,34,.78)", backdropFilter: "blur(7px)" }}>
-        <Typography sx={{ fontSize: 10.5, color: "#cfd5dc" }}>WASD walk · E talk · N next · 1-6 jump · Esc out</Typography>
+        <Typography sx={{ fontSize: 10.5, color: "#cfd5dc" }}>{t("WASD walk · E talk · N next · 1-6 jump · Esc out")}</Typography>
         <Box component="button" type="button" onClick={() => sceneApi.current?.reset()}
           sx={{ border: 0, bgcolor: "transparent", color: "#f0c05a", fontSize: 10.5, fontWeight: 600,
-            cursor: "pointer", p: 0, "&:hover": { textDecoration: "underline" } }}>Reset view</Box>
+            cursor: "pointer", p: 0, "&:hover": { textDecoration: "underline" } }}>{t("Reset view")}</Box>
       </Box>
     </Box>
   );

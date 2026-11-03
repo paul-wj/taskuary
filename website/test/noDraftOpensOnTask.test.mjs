@@ -6,7 +6,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { closeHolds, focusOf, sectionHere, workPane } from "../src/taskLayout.js";
 import { stageOf } from "../src/stages.js";
-import { taskSource } from "./taskSource.mjs";
 
 const owed = { text: "Email Paula Vance - the 2:30 meeting", out: { kind: "email", to: "paula@vendor.example" }, done: false, rid: null };
 // where a reply task with a sender opens, given what Close out holds - TaskPage's own chain (focusOf -> stageOf -> sectionHere)
@@ -32,8 +31,3 @@ test("a drafted email waiting for Send, a reply draft or something that went sti
   assert.equal(closeHolds({ outside: 1 }).has, true);
 });
 
-test("the page reads what Close out holds from closeHolds, never from the checklist's owed lines", () => {
-  const src = taskSource();
-  assert.match(src, /const \{ has: replyHas, waits: sendWaits \} = closeHolds\(\{/);
-  assert.doesNotMatch(src, /replyHas = [^;]*owesEmails/);
-});

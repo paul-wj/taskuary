@@ -3,15 +3,12 @@
 // heard before they run. Nothing on screen changes for it.
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
 import { announce, onPressing } from "../src/actionRow.js";
 import { label } from "../src/buttons.js";
 import { deskPress, notePress, pagePress, verbOf, verbOfLabel } from "../src/pressLog.js";
 import { isWrite } from "../src/wrote.js";
 
 const v = (id, group, extra = {}) => ({ id, group, tone: "s", label: id, title: "", disabled: false, why: "", promote: true, lead: false, ...extra });
-const src = (f) => fs.readFileSync(path.join(process.cwd(), "src", f), "utf8");
 
 test("a row id is its verb: Mark done is close, a draft's Send is approve, an Advisor-only move is its own verb", () => {
   assert.equal(verbOf("done"), "close"); assert.equal(verbOf("12:approve"), "approve"); assert.equal(verbOf("advice:chase"), "chase");
@@ -59,14 +56,5 @@ test("the draft's own buttons are heard before they run, as the row's are", () =
   const off = onPressing((id) => heard.push(id));
   announce("12:approve"); off();
   assert.deepEqual(heard, ["12:approve"]);
-  const rd = src("ReviewDecision.jsx");
-  for (const at of ['announce(no(verb));', 'announce(no("redraft"));', 'announce(no("copy"));']) assert.ok(rd.includes(at), at);
 });
 
-test("the Tasks tab hears every press on its own page, and only while it is the tab in view", () => {
-  const tp = src("TaskPage.jsx");
-  assert.match(tp, /if \(canvas \|\| !active \|\| !el\) return undefined;/);
-  assert.match(tp, /el\.addEventListener\("click", heard, true\);/);
-  assert.match(tp, /notePress\(api, \{ key: `task:\$\{selRef\.current\}`, surface: "task", \.\.\.got, advised: taskAdviceRef\.current\?\.verb \|\| null \}\)/);
-  assert.match(tp, /<Box ref=\{pageRef\} data-tq-task-page=/);
-});

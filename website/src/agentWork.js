@@ -11,7 +11,7 @@
 // the name is already on the task, so an agent that reads as working needs no new endpoint.
 import { AGENT_SHOWN } from "./kinds.js";
 import { toolTarget } from "./assistantStream.js";
-import { plural } from "./timeWords.js";
+import { t } from "./i18n.js";
 
 // ONE NAME AT WORK (the owner, 2026-10-28): the agent is Taskuary on every screen. The profile it runs under ("researcher",
 // a kind's "Research") read as the actor - "researcher asked you something" over a run signing the owner up for things - and it
@@ -48,8 +48,8 @@ export const workOf = (trace) => {
 export const doingNow = (work) => {
   const step = work?.running?.[0] || work?.steps?.[work.steps.length - 1];
   if (!step) return "";
-  if (/fetch|read/i.test(step.tool)) return `Reading ${sourceOf(step.target) || step.target}`.trim();
-  if (/search/i.test(step.tool)) return `Searching for ${step.target}`.trim();
+  if (/fetch|read/i.test(step.tool)) return t("Reading {target}", { target: sourceOf(step.target) || step.target }).trim();
+  if (/search/i.test(step.tool)) return t("Searching for {target}", { target: step.target }).trim();
   return `${step.tool} ${step.target}`.trim();
 };
 
@@ -67,8 +67,8 @@ export const saidFromTail = (tail) => (tail || [])
 // The trail as a COUNT. A finished tool call is history, and six of them are six rectangles of
 // history stacked in front of the one thing that is happening.
 export const trailText = (work) => [
-  work?.searches?.length && `${work.searches.length} search${work.searches.length === 1 ? "" : "es"}`,
-  work?.reads?.length && `${plural(work.reads.length, "page")} read`,
+  work?.searches?.length && t(work.searches.length === 1 ? "{count} search" : "{count} searches", { count: work.searches.length }),
+  work?.reads?.length && t(work.reads.length === 1 ? "{count} page read" : "{count} pages read", { count: work.reads.length }),
 ].filter(Boolean).join(" · ");
 
 // The TURN's clock, not the session's: a conversation opened this morning has been alive for hours
@@ -81,9 +81,9 @@ export const turnStart = (messages) => {
 
 export const elapsedText = (ms) => {
   const s = Math.max(0, Math.round((ms || 0) / 1000));
-  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+  return s < 60 ? t("{seconds}s", { seconds: s }) : t("{minutes}m {seconds}s", { minutes: Math.floor(s / 60), seconds: String(s % 60).padStart(2, "0") });
 };
 
 // The Assistant's answer being written: a real brain took 4-51 s behind three silent dots, which read as hung (the owner, 2026-10-20:
 // "working... Ns"). Nothing in the first second - most answers are back by then - and whole seconds after it, floored so it never jumps ahead.
-export const workingLine = (ms) => (ms >= 1000 ? `Working… ${elapsedText(Math.floor(ms / 1000) * 1000)}` : "");
+export const workingLine = (ms) => (ms >= 1000 ? t("Working… {elapsed}", { elapsed: elapsedText(Math.floor(ms / 1000) * 1000) }) : "");

@@ -19,7 +19,6 @@ TWO KINDS OF TEXT live in a stop, and the difference is the whole design:
 from loguru import logger
 
 from . import setup
-from .timewords import plural
 
 AT = 'setup_walk_at'                 # where the owner stopped; a setting, so a reload resumes
 
@@ -147,27 +146,56 @@ def _live(store) -> list:
     return [c['Name'] or c['Type'] for c in store.list_connectors()
             if c['Active'] and c['Type'] in setup.INBOUND]
 
+# The English fact remains the server and AI-facing value. Its descriptor identifies only
+# app-authored presentation text; values such as names and model IDs are never translated.
+def _ui(source, **values):
+    return {'source': source, 'values': values}
+
+
+def _ui_english(value):
+    if isinstance(value, dict) and 'source' in value and 'values' in value:
+        return value['source'].format_map({k: _ui_english(v) for k, v in value['values'].items()})
+    return value
+
+
+class _Fact(str):
+    def __new__(cls, descriptor):
+        result = super().__new__(cls, _ui_english(descriptor))
+        result.ui = descriptor
+        return result
+
+
+def _fact(source, **values):
+    return _Fact(_ui(source, **values))
+
+
+def _join_facts(items):
+    descriptor = items[0].ui
+    for item in items[1:]:
+        descriptor = _ui('{first} · {second}', first=descriptor, second=item.ui)
+    return _Fact(descriptor)
+
 
 # One read per fact: each of these used to be a lambda that called its source three times, so
 # drawing a single stop swept the connector table three times over.
 def _fact_connections(s) -> str:
     live = _live(s)
-    return f'{len(live)} connected: ' + ', '.join(live[:3]) if live else 'none yet'
+    return _fact('{count} connected: {value}', count=len(live), value=', '.join(live[:3])) if live else _fact('none yet')
 
 
 def _fact_tasks(s) -> str:
     """...and the replies waiting on this stop, now that a draft waits on the task it belongs to
     rather than in a queue of its own (the Review stop retired with the tab, 2026-09-22)."""
     tasks, waiting = s.list_tasks(), [r for r in s.list_reviews(None) if r.get('Status') == 'pending']
-    here = f'{len(tasks)} here so far' if tasks else 'none yet'
-    return here + (f' · {len(waiting)} repl{"y" if len(waiting) == 1 else "ies"} waiting for your yes' if waiting else '')
+    here = _fact('{count} here so far', count=len(tasks)) if tasks else _fact('none yet')
+    return _join_facts([here, _fact('{count} reply waiting for your yes' if len(waiting) == 1 else '{count} replies waiting for your yes', count=len(waiting))]) if waiting else here
 
 
 def _named(rows, key='Name', n=3) -> str:
     """`3 things: a, b, c` - a count leads because it is the answer, the names follow because a
     number alone does not tell you whether it is the right three."""
     names = [str(r[key]) for r in rows if r.get(key)]
-    return f"{len(names)}: {', '.join(names[:n])}" + ('…' if len(names) > n else '') if names else 'none yet'
+    return _fact('{count}: {value}', count=len(names), value=', '.join(names[:n]) + ('…' if len(names) > n else '')) if names else _fact('none yet')
 
 
 def _fact_ai(s) -> str:
@@ -181,18 +209,19 @@ def _fact_ai(s) -> str:
 
 def _fact_models(s) -> str:
     from .aidefaults import said
-    return ', '.join(f"{label}: {said(s, key) or 'not set'}" for label, key in
-                     (('triage', 'triage_ai'), ('assistant', 'concierge_ai'), ('general', 'assistant_ai')))
+    values = {label: said(s, key) or _ui('not set') for label, key in
+              (('triage', 'triage_ai'), ('assistant', 'concierge_ai'), ('general', 'assistant_ai'))}
+    return _fact('triage: {triage}, assistant: {assistant}, general: {general}', **values)
 
 
 def _fact_sync(s) -> str:
     waiting = s.pending_triage(limit=200)
-    return f'{len(waiting)} waiting to be triaged' if waiting else 'nothing waiting'
+    return _fact('{count} waiting to be triaged', count=len(waiting)) if waiting else _fact('nothing waiting')
 
 
 def _fact_docs(s) -> str:
     profiles = {(r.get('rules_doc') or r['Name']) for r in s.list_agents()}
-    return f"{len(profiles)} profile documents: {', '.join(sorted(profiles)[:3])}" if profiles else 'none yet'
+    return _fact('{count} profile documents: {value}', count=len(profiles), value=', '.join(sorted(profiles)[:3])) if profiles else _fact('none yet')
 
 
 def _fact_board(s) -> str:
@@ -211,27 +240,31 @@ def _fact_reports(s) -> str:
         except ValueError: cfg = {}
         # a dashboard is said as one: the built-in Taskuary at a glance is not a third "report"
         (flows if cfg.get('is_workflow') else dashes if cfg.get('type') == 'dashboard' else reports).append(cfg.get('title') or row['Address'] or '')
-    if not reports and not flows and not dashes: return 'none yet'
-    said = []
-    if reports: said.append(f"{plural(len(reports), 'report')}: {', '.join(x for x in reports[:3] if x)}")
-    if dashes: said.append(f"{plural(len(dashes), 'dashboard')}: {', '.join(x for x in dashes[:3] if x)}")
-    if flows: said.append(f"{plural(len(flows), 'workflow')}: {', '.join(x for x in flows[:3] if x)}")
-    return ' · '.join(said)
+    if not reports and not flows and not dashes: return _fact('none yet')
+    parts = []
+    for rows, one, many in (
+        (reports, '{count} report: {value}', '{count} reports: {value}'),
+        (dashes, '{count} dashboard: {value}', '{count} dashboards: {value}'),
+        (flows, '{count} workflow: {value}', '{count} workflows: {value}'),
+    ):
+        if rows:
+            parts.append(_fact(one if len(rows) == 1 else many, count=len(rows), value=', '.join(x for x in rows[:3] if x)))
+    return _join_facts(parts)
 
 
 def _fact_assistant(s) -> str:
     from .aidefaults import said
-    return f"speaking on {said(s, 'concierge_ai') or 'no brain yet'}"
+    return _fact('speaking on {value}', value=said(s, 'concierge_ai') or _ui('no brain yet'))
 
 
 def _fact_hub(s) -> str:
     posts = s.lore_posts(None, None, 200, 'new', 'live', None)
-    return f'{len(posts)} posted so far' if posts else 'nothing posted yet'
+    return _fact('{count} posted so far', count=len(posts)) if posts else _fact('nothing posted yet')
 
 
 def _fact_settings(s) -> str:
     on = [k for k in ('triage_ai', 'default_agent', 'notify_channel') if str(s.get_setting(k) or '').strip()]
-    return f"{len(on)} of the three headline settings chosen" if on else 'all on their defaults'
+    return _fact('{count} of the three headline settings chosen', count=len(on)) if on else _fact('all on their defaults')
 
 
 # What THIS install has done, for EVERY stop - the walk is a tour of an install, not of the product,
@@ -248,7 +281,9 @@ def state(store, at=None) -> dict:
     """The whole walk: every stop, with the checklist's own done-ness on the first four and this
     install's facts wherever a fact beats a sentence."""
     if at is None: at = _at(store)
-    checklist = setup.state(store)
+    from . import firstrun
+    first = firstrun.state(store)
+    checklist = setup.state(store, first=first)
     steps = {x['key']: x for x in checklist['steps']}
     stops = []
     for n, stop in enumerate(STOPS):
@@ -258,6 +293,19 @@ def state(store, at=None) -> dict:
         # `goto` is here too: a hand-written copy beside the checklist's is the one field of the
         # five that could drift without a word of the stop changing
         if row: o.update(done=row['done'], detail=row['detail'], blurb=row['why'], title=row['title'], goto=row['goto'])
+        if row:
+            if stop['key'] == 'owner' and row['done']:
+                o['detail_ui'] = _ui('signed as {value}', value=(store.owner() or {}).get('owner') or '')
+            elif stop['key'] == 'ai':
+                brain = first['brain']
+                if brain['ready']:
+                    o['detail_ui'] = _ui('running on {value}', value=brain['name'])
+                if brain['type'] and brain['type'] != 'cli':
+                    o['goto_label_ui'] = _ui('Open the {provider} card', provider=brain['name'] or _ui('provider'))
+            elif stop['key'] == 'inbound' and first['connected']:
+                o['detail_ui'] = _ui('already connected: {value}', value=', '.join(first['connected'][:3]))
+            elif stop['key'] == 'sync' and row['done']:
+                o['detail_ui'] = _ui('your first items are ready to review')
         if row and row.get('action') == 'sync':
             o.update(action='sync', enabled=row['enabled'], first_items=checklist['first_items'])
         fact = FACTS.get(stop['key'])
@@ -265,7 +313,10 @@ def state(store, at=None) -> dict:
         # install that most needs the walk is the half-configured one where some of those reads
         # throw. A stop that cannot count simply says nothing, which is what it did before it could.
         if fact:
-            try: o['facts'] = fact(store)
+            try:
+                result = fact(store)
+                o['facts'] = str(result)
+                if isinstance(result, _Fact): o['facts_ui'] = result.ui
             except Exception as e: logger.warning(f"the {stop['key']} stop could not read its facts: {e}")
         stops.append(o)
     return {'stops': stops, 'at': at, 'total': len(STOPS)}

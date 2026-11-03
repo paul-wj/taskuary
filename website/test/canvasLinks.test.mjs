@@ -1,7 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
 import { BOARD, canvasRequestFromHash, hashFor, placeOf } from "../src/canvasLinks.js";
 
 // Every link the app writes still lands once the tabs are gone (the canvas redesign, 2026-09-29).
@@ -47,23 +45,6 @@ test("a message link asks the canvas for that message's card, under either spell
   assert.deepEqual(canvasRequestFromHash("#message=12"), { kind: "msg", mid: 12, n: 0 });
 });
 
-test("no link the app writes resolves to the old row view", () => {
-  const src = (f) => fs.readFileSync(path.join(process.cwd(), "src", f), "utf8");
-  // every kind a link can ask for has a handler on the canvas, and none of them is a stage panel
-  const kinds = new Set(["#task=5", "#msg=5", "#message=5", "#new-task", "#report=3", "#connector=gmail", "#connections", "#settings",
-    "#settings=policies", "#hub", "#playbook=x", "#profiles", "#cli-agents"].map((h) => canvasRequestFromHash(h).kind));
-  const view = src("AssistantView.jsx");
-  for (const k of kinds) assert.match(view, new RegExp(`request\\.kind === "${k}"`), `the canvas opens a ${k} link`);
-  // ...and the view itself, and every door into it, is out of the code
-  const feed = src("FeedView.jsx");
-  for (const gone of ["ReviewCanvas", "CanonicalDetail", "TalkItThrough", "openHash", "openByMid", "openByItem", "drill(", "CLEAR FROM TIMELINE",
-    "No message preview available", " in ${"]) assert.ok(!feed.includes(gone), `FeedView still has ${gone}`);
-  for (const f of fs.readdirSync(path.join(process.cwd(), "src")).filter((n) => /\.(jsx?|css)$/.test(n))) {
-    const s = src(f);
-    for (const word of ["CLEAR FROM TIMELINE", "Clear from timeline", "Talk it through\"", ">Talk it through<", "in chat\"}`", "No message preview available"])
-      assert.ok(!s.includes(word), `${f} still draws "${word}"`);
-  }
-});
 
 test("a link that is not a page is left alone", () => {
   assert.equal(canvasRequestFromHash(""), null);

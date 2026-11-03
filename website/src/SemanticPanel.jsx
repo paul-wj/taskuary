@@ -13,6 +13,8 @@ import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import ScienceIcon from "@mui/icons-material/Science";
 import api from "./api";
 import { BORDER, DIM, FAINT, INK, PANEL, PANEL2, mono } from "./theme.jsx";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 const STATE = {
   verified: { label: "certified", c: { bg: "#dfeade", fg: "#47654a", bd: "#c8d9c7" } },
@@ -29,6 +31,7 @@ const num = (v) => (v === null || v === undefined || v === "" ? "—"
 // decides whether the metric may answer. A row that stopped matching says by how much, because
 // "off by exactly the rent" is how you find which accounts the definition is missing.
 const Fixture = ({ f, onDrop }) => {
+  useLocale();
   const off = f.LastGot === null || f.LastGot === undefined ? null : Number(f.LastGot) - Number(f.Expected);
   const bad = f.LastPass === 0;
   return (
@@ -38,41 +41,42 @@ const Fixture = ({ f, onDrop }) => {
       <Box component="td" sx={{ py: 0.4, pr: 1, textAlign: "right" }}><Typography variant="caption" sx={{ ...mono, color: INK }}>{num(f.Expected)}</Typography></Box>
       <Box component="td" sx={{ py: 0.4, pr: 1, textAlign: "right" }}>
         <Typography variant="caption" sx={{ ...mono, color: bad ? "#8a3646" : f.LastPass === 1 ? "#47654a" : FAINT }}>
-          {f.LastError ? "error" : num(f.LastGot)}
+          {f.LastError ? t("error") : num(f.LastGot)}
         </Typography>
       </Box>
       <Box component="td" sx={{ py: 0.4, pr: 1, textAlign: "right" }}>
         <Typography variant="caption" sx={{ ...mono, fontSize: 10, color: bad ? "#8a3646" : FAINT }}
-          title={f.LastError || ""}>{off === null ? "" : off === 0 ? "exact" : num(off)}</Typography>
+          title={f.LastError || ""}>{off === null ? "" : off === 0 ? t("exact") : num(off)}</Typography>
       </Box>
       <Box component="td" sx={{ py: 0.4 }}><Typography variant="caption" sx={{ color: FAINT, fontSize: 10 }} noWrap>{f.Source || ""}</Typography></Box>
       <Box component="td" sx={{ py: 0.4, textAlign: "right" }}>
         <Typography variant="caption" onClick={() => onDrop(f.FixtureId)}
-          sx={{ color: FAINT, fontSize: 10, cursor: "pointer", "&:hover": { color: "#8a3646" } }}>remove</Typography>
+          sx={{ color: FAINT, fontSize: 10, cursor: "pointer", "&:hover": { color: "#8a3646" } }}>{t("remove")}</Typography>
       </Box>
     </Box>
   );
 };
 
 const Metric = ({ m, minFixtures, open, onOpen, onChanged }) => {
+  const locale = useLocale();
   const s = stateOf(m);
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
   const [tried, setTried] = useState(null);
-  const [t, setT] = useState({ scope: "", period: "" });
+  const [trial, setTrial] = useState({ scope: "", period: "" });
   const [nf, setNf] = useState({ Scope: "", Period: "", Expected: "", Source: "" });
   const fixtures = m.fixtures || [];
   const passing = fixtures.filter((f) => f.LastPass === 1).length;
 
   const run = async (what, fn) => {
     setBusy(what); setErr("");
-    try { await fn(); } catch (e) { setErr(e?.response?.data?.detail || `could not ${what}`); }
+    try { await fn(); } catch (e) { setErr(e?.response?.data?.detail || { action: what }); }
     setBusy("");
   };
   const check = () => run("check it", async () => { await api.post(`/api/semantic/metrics/${m.MetricId}/check`); onChanged(); });
   const tryIt = () => run("run it", async () => {
     setTried(null);
-    const { data } = await api.post(`/api/semantic/metrics/${m.MetricId}/try`, { scope: t.scope || null, period: t.period || null });
+    const { data } = await api.post(`/api/semantic/metrics/${m.MetricId}/try`, { scope: trial.scope || null, period: trial.period || null });
     setTried(data);
   });
   const addFixture = () => run("save that number", async () => {
@@ -87,62 +91,62 @@ const Metric = ({ m, minFixtures, open, onOpen, onChanged }) => {
         <StatusIcon status={m.Status} sx={{ fontSize: 15, color: s.c.fg }} />
         <Typography sx={{ ...mono, fontSize: 11.5, fontWeight: 600, color: INK }}>{m.Name}</Typography>
         <Typography variant="caption" sx={{ color: DIM, flex: 1, minWidth: 0 }} noWrap>{m.Label || m.Definition || ""}</Typography>
-        <Chip size="small" label={s.label} sx={{ height: 16, fontSize: 9, bgcolor: s.c.bg, color: s.c.fg, border: `1px solid ${s.c.bd}` }} />
+        <Chip size="small" label={t(s.label)} sx={{ height: 16, fontSize: 9, bgcolor: s.c.bg, color: s.c.fg, border: `1px solid ${s.c.bd}` }} />
         <Typography variant="caption" sx={{ ...mono, fontSize: 10, color: FAINT, whiteSpace: "nowrap" }}>
-          {passing}/{fixtures.length} match{fixtures.length < minFixtures ? ` · needs ${minFixtures}` : ""}
+          {t("{passing}/{total} match", { passing, total: fixtures.length })}{fixtures.length < minFixtures ? t(" · needs {count}", { count: minFixtures }) : ""}
         </Typography>
       </Box>
       {open && (
         <Box sx={{ px: 1.1, pb: 1, display: "flex", flexDirection: "column", gap: 0.9 }}>
           {m.Definition && <Typography variant="body2" sx={{ color: INK, fontSize: 12, lineHeight: 1.5 }}>{m.Definition}</Typography>}
-          {m.Grain && <Typography variant="caption" sx={{ color: FAINT }}>One row is: {m.Grain}</Typography>}
+          {m.Grain && <Typography variant="caption" sx={{ color: FAINT }}>{t("One row is: {grain}", { grain: m.Grain })}</Typography>}
           {m.LastCheckNote && <Typography variant="caption" sx={{ color: m.Status === "verified" ? "#47654a" : "#8a3646" }}>{m.LastCheckNote}</Typography>}
 
           {/* the proof, or the absence of it */}
           <Box>
             <Typography sx={{ ...mono, fontSize: 9, letterSpacing: 1, color: "#6b5f45", fontWeight: 600, mb: 0.3 }}>
-              KNOWN NUMBERS IT MUST MATCH
+              {t("KNOWN NUMBERS IT MUST MATCH")}
             </Typography>
             {fixtures.length ? (
               <Box component="table" sx={{ width: "100%", borderCollapse: "collapse" }}>
                 <Box component="thead"><Box component="tr">
                   {["scope", "period", "known", "got", "off", "where from", ""].map((h, i) => (
                     <Box component="th" key={h + i} sx={{ textAlign: i >= 2 && i <= 4 ? "right" : "left", pb: 0.3 }}>
-                      <Typography variant="caption" sx={{ ...mono, fontSize: 9, color: FAINT }}>{h}</Typography>
+                      <Typography variant="caption" sx={{ ...mono, fontSize: 9, color: FAINT }}>{h === "off" ? (locale === "en" ? h : t("difference")) : t(h)}</Typography>
                     </Box>))}
                 </Box></Box>
                 <Box component="tbody">{fixtures.map((f) => <Fixture key={f.FixtureId} f={f} onDrop={dropFixture} />)}</Box>
               </Box>
             ) : (
               <Typography variant="caption" sx={{ color: FAINT }}>
-                None yet — it cannot be trusted until it matches numbers you already know are right.
+                {t("None yet — it cannot be trusted until it matches numbers you already know are right.")}
               </Typography>
             )}
             <Box sx={{ display: "flex", gap: 0.5, mt: 0.6, flexWrap: "wrap", alignItems: "center" }}>
               {[["Scope", "what names one row", 130], ["Period", "2026-07", 90], ["Expected", "the right number", 130], ["Source", "where it came from", 150]].map(([k, ph, w]) => (
-                <TextField key={k} size="small" placeholder={ph} value={nf[k]} onChange={(e) => setNf({ ...nf, [k]: e.target.value })}
+                <TextField key={k} size="small" placeholder={t(ph)} value={nf[k]} onChange={(e) => setNf({ ...nf, [k]: e.target.value })}
                   sx={{ width: w, bgcolor: PANEL2, "& input": { fontSize: 11, py: 0.5 } }} />
               ))}
-              <Button size="small" disabled={!!busy || !nf.Expected} onClick={addFixture} sx={{ fontSize: 10.5 }}>Add known number</Button>
+              <Button size="small" disabled={!!busy || !nf.Expected} onClick={addFixture} sx={{ fontSize: 10.5 }}>{t("Add known number")}</Button>
             </Box>
           </Box>
 
           {/* try it without recording anything - the step where a definition gets fixed */}
           <Box sx={{ display: "flex", gap: 0.5, alignItems: "center", flexWrap: "wrap" }}>
-            <TextField size="small" placeholder="scope" value={t.scope} onChange={(e) => setT({ ...t, scope: e.target.value })}
+            <TextField size="small" placeholder={t("scope")} value={trial.scope} onChange={(e) => setTrial({ ...trial, scope: e.target.value })}
               sx={{ width: 110, bgcolor: PANEL2, "& input": { fontSize: 11, py: 0.5 } }} />
-            <TextField size="small" placeholder="2026-07" value={t.period} onChange={(e) => setT({ ...t, period: e.target.value })}
+            <TextField size="small" placeholder="2026-07" value={trial.period} onChange={(e) => setTrial({ ...trial, period: e.target.value })}
               sx={{ width: 90, bgcolor: PANEL2, "& input": { fontSize: 11, py: 0.5 } }} />
             <Button size="small" disabled={!!busy} onClick={tryIt} sx={{ fontSize: 10.5 }}>
-              {busy === "run it" ? "Running…" : "Run it once"}
+              {t(busy === "run it" ? "Running…" : "Run it once")}
             </Button>
             {tried && <Typography variant="caption" sx={{ ...mono, color: INK }}>
-              {num(tried.value)} <Typography component="span" variant="caption" sx={{ color: FAINT }}>from {tried.rows} row(s), {tried.ms}ms</Typography>
+              {num(tried.value)} <Typography component="span" variant="caption" sx={{ color: FAINT }}>{t("from {rows} row(s), {ms}ms", { rows: tried.rows, ms: tried.ms })}</Typography>
             </Typography>}
             <Box sx={{ flex: 1 }} />
             <Button size="small" variant="contained" disableElevation disabled={!!busy} onClick={check}
               sx={{ fontSize: 10.5, bgcolor: "#6f8a6e", "&:hover": { bgcolor: "#5b7259" } }}>
-              {busy === "check it" ? "Checking…" : "Check every known number"}
+              {t(busy === "check it" ? "Checking…" : "Check every known number")}
             </Button>
           </Box>
 
@@ -151,8 +155,8 @@ const Metric = ({ m, minFixtures, open, onOpen, onChanged }) => {
             {JSON.stringify(m.Spec || {}, null, 2)}
           </Box>
           {m.Notes && <Typography variant="caption" sx={{ color: DIM, whiteSpace: "pre-wrap" }}>{m.Notes}</Typography>}
-          {m.Skill && <Typography variant="caption" sx={{ color: FAINT }}>Frozen as skill <b style={mono}>{m.Skill}</b> — every later run uses it.</Typography>}
-          {err && <Typography variant="caption" sx={{ color: "#8a3646" }}>{err}</Typography>}
+          {m.Skill && <Typography variant="caption" sx={{ color: FAINT }}>{t("Frozen as skill {skill} — every later run uses it.", { skill: m.Skill })}</Typography>}
+          {err && <Typography variant="caption" sx={{ color: "#8a3646" }}>{typeof err === "string" ? err : t("could not {action}", { action: t(err.action) })}</Typography>}
         </Box>
       )}
     </Box>
@@ -160,13 +164,14 @@ const Metric = ({ m, minFixtures, open, onOpen, onChanged }) => {
 };
 
 export default function SemanticPanel() {
+  useLocale();
   const [rows, setRows] = useState(null);
   const [minFixtures, setMin] = useState(3);
   const [open, setOpen] = useState(null);
   const [err, setErr] = useState("");
   const load = useCallback(() => api.get("/api/semantic/metrics")
     .then(({ data }) => { setRows(data.data || []); setMin(data.minFixtures || 3); })
-    .catch((e) => { setErr(e?.response?.data?.detail || "could not read the definitions"); setRows([]); }), []);
+    .catch((e) => { setErr(e?.response?.data?.detail || { fallback: true }); setRows([]); }), []);
   useEffect(() => { load(); }, [load]);
 
   if (rows === null) return <Box sx={{ p: 3, display: "grid", placeItems: "center" }}><CircularProgress size={18} /></Box>;
@@ -174,26 +179,20 @@ export default function SemanticPanel() {
   return (
     <Box sx={{ p: 1.25, overflowY: "auto", height: "100%" }}>
       <Typography variant="caption" sx={{ color: DIM, display: "block", mb: 1, lineHeight: 1.5 }}>
-        What the assistant may state as fact about our own numbers. Every system is configured differently,
-        so a query written from the API alone is plausible and wrong — a definition here is only certified
-        while it still matches {minFixtures} or more numbers you already knew were right. Work them out in the
-        chat; this is where you see what it now believes.
+        {t("What the assistant may state as fact about our own numbers. Every system is configured differently, so a query written from the API alone is plausible and wrong — a definition here is only certified while it still matches {count} or more numbers you already knew were right. Work them out in the chat; this is where you see what it now believes.", { count: minFixtures })}
       </Typography>
-      {err && <Alert severity="error" sx={{ mb: 1, py: 0 }}>{err}</Alert>}
+      {err && <Alert severity="error" sx={{ mb: 1, py: 0 }}>{typeof err === "string" ? err : t("could not read the definitions")}</Alert>}
       {!rows.length ? (
         <Box sx={{ border: `1px dashed ${BORDER}`, borderRadius: 1.5, p: 2, textAlign: "center" }}>
-          <Typography variant="body2" sx={{ color: DIM }}>No number has been proved yet.</Typography>
+          <Typography variant="body2" sx={{ color: DIM }}>{t("No number has been proved yet.")}</Typography>
           <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.5 }}>
-            Ask the assistant for one in the chat — name a figure you already report on and the period you
-            want it for. It will look at the real schema, propose a definition, and ask you for a few cases
-            whose numbers you already know. Once they reconcile, the metric appears here and every later
-            run uses it.
+            {t("Ask the assistant for one in the chat — name a figure you already report on and the period you want it for. It will look at the real schema, propose a definition, and ask you for a few cases whose numbers you already know. Once they reconcile, the metric appears here and every later run uses it.")}
           </Typography>
         </Box>
       ) : (
         <>
           <Typography sx={{ ...mono, fontSize: 10, color: "#6b5f45", fontWeight: 600, mb: 0.6 }}>
-            {by("verified")} CERTIFIED · {by("draft")} BEING PROVED{by("broken") ? ` · ${by("broken")} STOPPED MATCHING` : ""}
+            {t("{verified} CERTIFIED · {draft} BEING PROVED", { verified: by("verified"), draft: by("draft") })}{by("broken") ? t(" · {count} STOPPED MATCHING", { count: by("broken") }) : ""}
           </Typography>
           {rows.map((m) => (
             <Metric key={m.MetricId} m={m} minFixtures={minFixtures} open={open === m.MetricId}

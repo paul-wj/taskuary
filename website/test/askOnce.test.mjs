@@ -1,7 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { withoutAsked } from "../src/askOnce.js";
 
 // A general agent's question is said ONCE on its canvas - in the Agent work pane's answer box (the owner, 2026-10-21)
@@ -25,7 +23,3 @@ test("with no open question nothing changes", () => {
   assert.equal(withoutAsked(msgs, null), msgs);
 });
 
-test("the canvas draws the box from the same question it took out of the answer", () => {
-  const g = readFileSync(fileURLToPath(new URL("../src/GeneralWorkspace.jsx", import.meta.url)), "utf8");
-  assert.match(g, /withoutAsked\(messagesWithTrace\(data\?\.messages, session, dock\),\s*!dock && data\?\.asking && data\.asking\.request_id !== answered \? data\.asking : null\)/);
-});

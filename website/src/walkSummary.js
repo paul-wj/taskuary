@@ -5,6 +5,7 @@
 import { LEVEL_ORDER, SECTION_WORDS, bandsOf, levelOf } from "./funnelPile.js";
 import { census, isAgentKind, isUrgent } from "./lanes.js";
 import { plural } from "./timeWords.js";
+import { t } from "./i18n.js";
 
 export const GROUPS = LEVEL_ORDER.map((key) => ({ key, word: SECTION_WORDS[key] }));
 export const groupOf = (i) => levelOf(i);
@@ -17,6 +18,7 @@ const isAgentRow = (i) => !!i?.agent && (AGENT_LANES.has(i.lane) || isAgentKind(
 // and the phone another; the 2026-10-13 "why does fyi say my name??" fix reached only this one. Every card the page
 // gets went through funnel.present, which sets `shows`; the plain field is all that is left for a card without it.
 export const whoOf = (i) => i?.shows?.who || String(i?.who || i?.agent || "").trim() || "someone";
+export const whoLabel = (i) => i?.shows?.who || String(i?.who || i?.agent || "").trim() || t("someone");
 
 // the task number a row belongs to, "" for one with no task yet
 export const refOf = (i) => i?.ref || (i?.tid ? `TQ-${String(i.tid).padStart(4, "0")}` : "");
@@ -33,7 +35,7 @@ const cut = (t, n = 40) => t.length <= n ? t : `${t.slice(0, n).replace(/\s+\S*$
 const byAgent = (i) => isAgentRow(i) || i?.kind === "agentdone"
   || (!!i?.agent && (!String(i?.who || "").trim() || String(i.who).trim().toLowerCase() === String(i.agent).toLowerCase()));
 const gistWord = (i) => whoOf(i) === "Report" ? String(i.title || "").split(/ [-—] /)[0]
-  : byAgent(i) && i.title ? cut(String(i.title).trim()) : whoOf(i);
+  : byAgent(i) && i.title ? cut(String(i.title).trim()) : whoLabel(i);
 export const gistOf = (g, max = 2) => {
   const ws = [...new Set(g.rows.map(gistWord))].filter(Boolean);
   // a task's title is a sentence: two side by side cut each other off ("I need you to find every…, Thom…") - one, and the count of the rest
@@ -50,11 +52,12 @@ export function summarize(items) {
   }, []);
   // the band's count is the RAIL's count (every row), the rows under it fold twins; `you` is how many of them are on you (lanes.onYou)
   // ...and `urgent` how many are urgent: there is no Urgent band any more (2026-10-22), an urgent row is counted where it sits
-  const groups = bandsOf(items).map((b) => ({ key: b.level, word: SECTION_WORDS[b.level], n: b.items.length, rows: fold(b.items),
+  const groups = bandsOf(items).map((b) => ({ key: b.level, word: t(SECTION_WORDS[b.level]), n: b.items.length, rows: fold(b.items),
     you: census(b.items).onYou, urgent: b.items.filter((i) => !i.settling && isUrgent(i)).length }));
   const n = groups.reduce((t, g) => t + g.n, 0);
   const lead = n
-    ? `${plural(n, "thing")}: ${groups.map((g) => `${g.n} ${g.key === "fyi" ? g.word : g.word.toLowerCase()}${g.urgent ? ` (${g.urgent} urgent)` : ""}`).join(", ")}.`
-    : "Nothing is waiting on you.";
+    ? t("{count}: {groups}.", { count: plural(n, "thing"), groups: groups.map((g) =>
+      `${g.n} ${g.key === "fyi" ? g.word : g.word.toLowerCase()}${g.urgent ? t(" ({count} urgent)", { count: g.urgent }) : ""}`).join(", ") })
+    : t("Nothing is waiting on you.");
   return { n, groups, lead };
 }

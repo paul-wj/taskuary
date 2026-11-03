@@ -2,7 +2,9 @@
 // one rule that matters is testable: the result is said ONCE (the owner, 2026-10-10: "make sure it's full and complete
 // record but don't duplicate sections").
 
-import { plural } from "./timeWords.js";
+import { t } from "./i18n.js";
+
+const counted = (n, one, many) => t(n === 1 ? one : many, { count: n });
 
 const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
 // markdown's marks off a line shown as plain text (a folded summary, an earlier session's one line)
@@ -51,7 +53,7 @@ const span = (n) => n < 60 ? `${n}s` : n < 3600 ? `${Math.round(n / 60)}m` : `${
 const count = (n) => n >= 1e6 ? `${(n / 1e6).toFixed(1).replace(/\.0$/, "")}M` : n >= 1e3 ? `${Math.round(n / 1e3)}K` : String(n);
 export const runCost = (s) => {
   const u = s?.usage || {}, fresh = (u.in || 0) - (u.cached || 0) + (u.out || 0);
-  return [Number.isFinite(s?.took) && s.took > 0 ? span(s.took) : "", fresh > 0 ? `${count(fresh)} tokens` : "",
+  return [Number.isFinite(s?.took) && s.took > 0 ? span(s.took) : "", fresh > 0 ? t("{count} tokens", { count: count(fresh) }) : "",
     u.cost > 0 ? (u.cost < 0.01 ? "<$0.01" : `$${u.cost.toFixed(2)}`) : ""].filter(Boolean);
 };
 
@@ -59,7 +61,7 @@ export const runCost = (s) => {
 export const recordFacts = (s) => {
   const c = s?.counts || {};
   return [s?.cli || s?.by, s?.at && s.at.slice(0, 16),
-    c.thought ? plural(c.thought, "thought") : "", c.tool ? plural(c.tool, "step") : "", ...runCost(s)].filter(Boolean);
+    c.thought ? counted(c.thought, "{count} thought", "{count} thoughts") : "", c.tool ? counted(c.tool, "{count} step", "{count} steps") : "", ...runCost(s)].filter(Boolean);
 };
 
 // is there anything behind "Every step" that the card does not already show?
@@ -70,9 +72,9 @@ export const hasMore = (s) => !!(recordSteps(s).some((x) => x.k !== "result") ||
 // 2026-10-12: "main summary, then details behind more"). Earlier runs are not in it: they are listed under the latest (runHeads)
 export const moreParts = (s, { draft = "", timeline = [], since = null } = {}) => {
   const steps = recordSteps(s).filter((x) => x.k !== "result").length, files = s?.files?.length || 0;
-  return [cardParts(s, draft).message && "its last message", files && plural(files, "file"), timeline?.length && "the timeline",
-    since?.text && "since then", (steps || s?.plan?.length) && (s?.source === "conversation" ? "its working" : plural(steps, "step")),
-    s?.refused?.length && plural(s.refused.length, "refusal")].filter(Boolean);
+  return [cardParts(s, draft).message && t("its last message"), files && counted(files, "{count} file", "{count} files"), timeline?.length && t("the timeline"),
+    since?.text && t("since then"), (steps || s?.plan?.length) && (s?.source === "conversation" ? t("its working") : counted(steps, "{count} step", "{count} steps")),
+    s?.refused?.length && counted(s.refused.length, "{count} refusal", "{count} refusals")].filter(Boolean);
 };
 
 // the state line over the record: the story's sentence, else - nothing being left to do - what ended it upstream, which is
@@ -81,7 +83,7 @@ export const recordHead = (story, ended) => story?.line ? { state: story, since:
   : ended?.text ? { state: { kind: "ended", line: ended.text }, since: null } : { state: null, since: null };
 
 const SOURCES = { conversation: "the conversation", screen: "what was on screen" };
-export const sourceLabel = (src) => SOURCES[src] || src || "";
+export const sourceLabel = (src) => SOURCES[src] ? t(SOURCES[src]) : src || "";
 
 // A RUN BY ITS LAST WORDS (the owner, 2026-10-15: "main thing is the last summary message from each model run"): its last message,
 // without the prompt box a screen-read log carries along with it ("▌▌ Work in a new folder..."), else its written summary
@@ -114,7 +116,7 @@ export const runsOf = (sessions) => (sessions || []).map((s, i, all) => {
 // what came of it in one line - its write-up's summary, else the first paragraph of its own last words. `skip`: a live session's sid, which
 // is the terminal above, never a report under it
 export const runHeads = (sessions, skip = "") => runsOf((sessions || []).filter((s) => !skip || s.sid !== skip)).map(({ s, n, said }) => ({
-  s, n, at: String(s.at || "").slice(0, 16), who: s.cli || s.by || "agent",
+  s, n, at: String(s.at || "").slice(0, 16), who: s.cli || s.by || t("agent"),
   line: plain(String(norm(s.report?.summary) ? s.report.summary : said || "").trim().split(/\n\s*\n/)[0]).replace(/\s+/g, " ") }));
 
 // THE RESULT, WHEN AN AGENT HAS STOPPED AND SAVED (the task page redesign, owner-approved 2026-10-21): what it found, how it resolved it,
@@ -153,9 +155,10 @@ export const resultLine = (s, said = "") => {
 // it. `waiting`: the steps still held, said before the result; `after`: the rest, said under it.
 const hhmm = (t) => String(t || "").slice(11, 16);
 export const heldLines = (held) => {
-  const line = (h) => h.state === "held" ? `Not done yet: Taskuary is holding "${h.what}" for your approval.`
-    : h.state === "done" ? `Taskuary ran "${h.what}" on your approval${h.answered ? ` at ${hhmm(h.answered)}` : ""}.`
-    : `Not done: "${h.what}" was turned down.`;
+  const line = (h) => h.state === "held" ? t('Not done yet: Taskuary is holding "{what}" for your approval.', { what: h.what })
+    : h.state === "done" ? h.answered ? t('Taskuary ran "{what}" on your approval at {time}.', { what: h.what, time: hhmm(h.answered) })
+      : t('Taskuary ran "{what}" on your approval.', { what: h.what })
+    : t('Not done: "{what}" was turned down.', { what: h.what });
   return { waiting: (held || []).filter((h) => h.state === "held").map(line), after: (held || []).filter((h) => h.state !== "held").map(line) };
 };
 // ...and WHAT IT MADE, once: the pages it showed or published, then the files it left in the task's outputs folder - a page shown FROM that

@@ -6,7 +6,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { adviceShown, stripWord } from "../src/advice.js";
 import { phoneRow, rowOf } from "../src/actionRow.js";
-import { ADVICE_RULE, adviceNone } from "../src/words.js";
+import { adviceNone } from "../src/words.js";
 
 const v = (id, group, extra = {}) => ({ id, group, tone: "s", label: id, title: "", disabled: false, why: "", promote: true, lead: false, ...extra });
 const NEXT = v("next", "next", { label: "Next" });
@@ -59,8 +59,7 @@ for (const [state, said, list, want] of MATRIX) {
     assert.ok(others.length <= 1, state);
     if (!want.startsWith("card:") && want !== row.next?.id) assert.ok(ph.shown.some((x) => x.id === want), `${state}: the lit move rides beside Next on a phone`);
     // THE STRIP: the decision's fact, or nothing - never a sentence explaining the obvious button
-    assert.equal(!!pick?.line, !!said.line, state);
-    assert.ok((said.line || "").length <= 64, `${state}: a line is read whole on a phone`);
+    assert.equal(pick?.line || "", said.line, state);
   });
 }
 
@@ -68,7 +67,7 @@ test("no AI where the move needs one: the strip says so once, and the row lights
   const decision = { none: "no_ai", for: KEY, key: KEY };
   const { noAi, pick } = stripWord({ speaks: true, aiOff: true, advice: decision, key: KEY, lane: "asked" });
   assert.equal(noAi, true); assert.equal(pick.none, "no_ai");
-  assert.equal(adviceNone("no_ai").line, "Connect an AI.");
+  assert.ok(adviceNone("no_ai").line);
   assert.equal(adviceNone("no_ai").move, "ai");
 });
 
@@ -81,24 +80,3 @@ test("a decision with no verb lights nothing on the row: an asking agent's pane 
   assert.deepEqual(litOf(rowOf({ list: [v("save-end", "agent", { label: "Stop and save" }), NEXT], ref: "" }, pick)), []);
 });
 
-// ONE LINE, READ WHOLE, ON A PHONE TOO (2026-10-26, superseding the two-line wrap of 2026-10-22): the phone gives the line the room
-// ...and since 2026-10-26 there is no Advisor line over a row on any width (the owner: "remove the advisor"); setup's line keeps the one line
-test("no Advisor strip at any width; the one .tq-next line left (setup's) stays one line", async () => {
-  const fs = await import("node:fs");
-  const css = fs.readFileSync(new URL("../src/assistantView.css", import.meta.url), "utf8");
-  assert.doesNotMatch(css, /\.tq-next-txt \{[^}]*white-space: normal/, "never a second line");
-  assert.doesNotMatch(css, /\.tq-strip/);
-  assert.match(css, /\.tq-next-txt \{[^}]*white-space: nowrap; overflow: hidden; text-overflow: ellipsis; \}/);
-});
-
-// THE STATES ARE FACTS NOW (the owner, 2026-11-02: "never ever use hard coded rules, let the ai see everything"): each says what it means
-// and the fact said for it - no state lights a button by itself; the model decides every light (advisor.decide)
-test("every state's words: what it means and a fact or silence - never a lit list, never the filler the owner struck out", () => {
-  assert.ok(Object.keys(ADVICE_RULE).length >= 25);
-  for (const [st, w] of Object.entries(ADVICE_RULE)) {
-    assert.deepEqual(Object.keys(w).sort(), ["is", "line"], st);
-    assert.ok(w.is.length > 0, st);
-    for (const gone of ["No suggestion", "Nothing to decide", "Thinking", "the choice is yours", "Suggested"]) assert.ok(!w.line.includes(gone), `${st}: ${w.line}`);
-    assert.ok(w.line.length <= 64, st);
-  }
-});

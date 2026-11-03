@@ -5,13 +5,15 @@ import CloseIcon from "@mui/icons-material/Close";
 import RestoreIcon from "@mui/icons-material/RestoreFromTrash";
 import api from "./api.js";
 import { BORDER, DIM, FAINT, INK } from "./theme.jsx";
-import { plural } from "./timeWords.js";
 import { announceRemoved, clearRemoved, lastRemoved, onRemoved, removedLine, showsRemoved } from "./removed.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 export const restoreDeleted = async (did) => (await api.post(`/api/deleted/${did}/restore`)).data;
 
 // "Removed Outlook mail - Undo": the one line a Remove leaves. Undo puts it back as it was and says so; a refusal is said here too.
 export function UndoLine({ kinds, onRestored, sx }) {
+  useLocale();
   const [r, setR] = useState(() => lastRemoved());
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -20,17 +22,17 @@ export function UndoLine({ kinds, onRestored, sx }) {
   const undo = async () => {
     setBusy(true); setErr("");
     try { await restoreDeleted(r.did); clearRemoved(r.did); await onRestored?.(r); }
-    catch (e) { setErr(e?.response?.data?.detail || "It could not be put back."); }
+    catch (e) { setErr(e?.response?.data?.detail || { local: "It could not be put back." }); }
     setBusy(false);
   };
   return (
     <Box data-tq-undo={r.kind} role="status" sx={{ display: "flex", alignItems: "center", gap: 1, px: 1.25, py: 0.5, mb: 1.5, borderRadius: 1.5,
       bgcolor: "#f3efe8", border: `1px solid ${BORDER}`, ...sx }}>
       <Typography variant="body2" sx={{ color: INK, flex: 1, minWidth: 0 }} noWrap>
-        {removedLine(r.title, r.verb)}{err ? <Box component="span" sx={{ color: "#6b2733", fontWeight: 600 }}> - {err}</Box> : ""}
+        {removedLine(r.title, r.verb)}{err ? <Box component="span" sx={{ color: "#6b2733", fontWeight: 600 }}> - {err?.local ? t(err.local) : err}</Box> : ""}
       </Typography>
-      <Button size="small" disabled={busy} onClick={undo} sx={{ fontWeight: 700 }}>Undo</Button>
-      <IconButton size="small" aria-label="Dismiss" title="Dismiss" onClick={() => clearRemoved(r.did)}><CloseIcon sx={{ fontSize: 14 }} /></IconButton>
+      <Button size="small" disabled={busy} onClick={undo} sx={{ fontWeight: 700 }}>{t("Undo")}</Button>
+      <IconButton size="small" aria-label={t("Dismiss notification")} title={t("Dismiss notification")} onClick={() => clearRemoved(r.did)}><CloseIcon sx={{ fontSize: 14 }} /></IconButton>
     </Box>
   );
 }
@@ -53,18 +55,19 @@ export function useDeleted(kinds) {
 }
 
 export function RecentlyDeleted({ kinds, onRestored, sx }) {
+  useLocale();
   const { items, load } = useDeleted(kinds);
   const [err, setErr] = useState("");
   if (!items.length) return null;
   const restore = async (d) => {
     setErr("");
     try { await restoreDeleted(d.id); clearRemoved(d.id); await load(); await onRestored?.(d); }
-    catch (e) { setErr(e?.response?.data?.detail || "It could not be restored."); }
+    catch (e) { setErr(e?.response?.data?.detail || { local: "It could not be restored." }); }
   };
   return (
     <Box data-tq-recently-deleted={kinds.join(",")} sx={{ mt: 2, ...sx }}>
-      <Typography sx={{ fontSize: 12, fontWeight: 600, color: DIM, px: 0.5, mb: 0.5 }}>Recently deleted</Typography>
-      {err && <Typography variant="body2" sx={{ color: "#6b2733", fontWeight: 600, px: 0.5 }}>✗ {err}</Typography>}
+      <Typography sx={{ fontSize: 12, fontWeight: 600, color: DIM, px: 0.5, mb: 0.5 }}>{t("Recently deleted")}</Typography>
+      {err && <Typography variant="body2" sx={{ color: "#6b2733", fontWeight: 600, px: 0.5 }}>✗ {err?.local ? t(err.local) : err}</Typography>}
       {items.map((d) => (
         <Box key={d.id} data-tq-deleted={d.id} sx={{ display: "flex", alignItems: "center", gap: 1.5, py: 1, px: 0.5, borderBottom: `1px solid ${BORDER}` }}>
           <RestoreIcon sx={{ fontSize: 18, color: FAINT, flexShrink: 0 }} />
@@ -72,10 +75,10 @@ export function RecentlyDeleted({ kinds, onRestored, sx }) {
             <Typography sx={{ color: DIM, fontWeight: 600, fontSize: 13.5 }} noWrap>{d.title}</Typography>
             <Typography variant="caption" sx={{ color: FAINT, display: "block" }} noWrap>
               {/* ...a Hub post is never gone for good: past its days it leaves this list and stays on the Hub's removed shelf */}
-              {d.kind} · {d.kind === "hub post" ? "off this list" : "gone for good"} {d.days_left > 0 ? `in ${plural(d.days_left, "day")}` : "today"}
+              {t("{kind} · {disposition} {when}", { kind: d.kind, disposition: t(d.kind === "hub post" ? "off this list" : "gone for good"), when: d.days_left > 0 ? t(d.days_left === 1 ? "in {count} day" : "in {count} days", { count: d.days_left }) : t("today") })}
             </Typography>
           </Box>
-          <Button size="small" variant="outlined" onClick={() => restore(d)}>Restore</Button>
+          <Button size="small" variant="outlined" onClick={() => restore(d)}>{t("Restore")}</Button>
         </Box>
       ))}
     </Box>

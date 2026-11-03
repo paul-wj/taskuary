@@ -9,9 +9,11 @@ import {
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import api from "./api";
 import { BORDER, DIM, FAINT, INK, PANEL2 } from "./theme.jsx";
-import { plural } from "./timeWords.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 export default function SoulInterview({ open, onClose, onWritten }) {
+  useLocale();
   const [question, setQuestion] = useState(null);
   const [total, setTotal] = useState(7);
   const [answers, setAnswers] = useState([]);
@@ -59,37 +61,37 @@ export default function SoulInterview({ open, onClose, onWritten }) {
   return (
     <Dialog open={open} onClose={busy ? undefined : onClose} maxWidth="sm" fullWidth>
       <DialogTitle sx={{ pb: 0.5 }}>
-        Shape SOUL.md with the assistant
+        {t("Shape SOUL.md with the assistant")}
         <Typography variant="caption" sx={{ color: FAINT, display: "block", fontWeight: 400, mt: 0.25 }}>
-          Seven questions, one at a time. Each new question follows what you have already said.
+          {t("Seven questions, one at a time. Each new question follows what you have already said.")}
         </Typography>
       </DialogTitle>
       <LinearProgress variant={question ? "determinate" : "indeterminate"}
         value={question ? Math.max(4, ((number - 1) / total) * 100) : undefined} />
       <DialogContent sx={{ pt: "18px !important" }}>
-        {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 2 }}>{err}</Alert>}
+        {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 2 }}>{err === "Could not start the interview" || err === "The assistant could not continue the interview" || err === "Answer at least one question so the assistant has something true to write from." ? t(err) : err}</Alert>}
         {!question && busy === "question" ? (
           <Box sx={{ display: "flex", gap: 1.25, alignItems: "center", color: DIM, py: 4, justifyContent: "center" }}>
-            <CircularProgress size={18} /><Typography variant="body2">The assistant is choosing the first question…</Typography>
+            <CircularProgress size={18} /><Typography variant="body2">{t("The assistant is choosing the first question…")}</Typography>
           </Box>
         ) : question && (
           <>
             <Typography variant="caption" sx={{ color: FAINT, fontWeight: 600, letterSpacing: ".06em" }}>
-              QUESTION {number} OF {total}
+              {t("QUESTION {number} OF {total}", { number, total })}
             </Typography>
             <Typography sx={{ fontSize: 19, lineHeight: 1.35, fontWeight: 600, color: INK, mt: 0.75, mb: 1 }}>
               {question.q}
             </Typography>
             <Typography variant="body2" sx={{ color: DIM, mb: 2 }}>{question.why}</Typography>
             <TextField autoFocus fullWidth multiline minRows={3} maxRows={8} size="small"
-              placeholder={question.placeholder || "Answer in your own words"} value={answer}
+              placeholder={question.placeholder || t("Answer in your own words")} value={answer}
               onChange={(e) => setAnswer(e.target.value)} disabled={!!busy}
               onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && answer.trim()) advance(); }}
               sx={{ bgcolor: "#fff", "& textarea": { fontSize: 13.5, lineHeight: 1.55 } }} />
             {!!answers.length && (
               <Box sx={{ mt: 2, bgcolor: PANEL2, border: `1px solid ${BORDER}`, borderRadius: 1.5, p: 1.25 }}>
                 <Typography variant="caption" sx={{ color: FAINT, display: "block" }}>
-                  The assistant is carrying forward {plural(answers.filter((row) => row.a).length, "answer")} from the earlier questions.
+                  {t(answers.filter((row) => row.a).length === 1 ? "The assistant is carrying forward {count} answer from the earlier questions." : "The assistant is carrying forward {count} answers from the earlier questions.", { count: answers.filter((row) => row.a).length })}
                 </Typography>
               </Box>
             )}
@@ -97,11 +99,11 @@ export default function SoulInterview({ open, onClose, onWritten }) {
         )}
       </DialogContent>
       <DialogActions>
-        <Button onClick={onClose} disabled={!!busy}>Cancel</Button>
-        {question && <Button onClick={() => advance(true)} disabled={!!busy}>Skip</Button>}
+        <Button onClick={onClose} disabled={!!busy}>{t("Cancel")}</Button>
+        {question && <Button onClick={() => advance(true)} disabled={!!busy}>{t("Skip")}</Button>}
         <Button variant="contained" disableElevation disabled={!!busy || !question || !answer.trim()}
           onClick={() => advance()} startIcon={busy ? <CircularProgress size={12} sx={{ color: "#fff" }} /> : <AutoAwesomeIcon sx={{ fontSize: 15 }} />}>
-          {busy === "write" ? "Writing…" : busy === "question" ? "Thinking…" : number >= total ? "Write SOUL.md" : "Next question"}
+          {t(busy === "write" ? "Writing…" : busy === "question" ? "Thinking…" : number >= total ? "Write SOUL.md" : "Next question")}
         </Button>
       </DialogActions>
     </Dialog>

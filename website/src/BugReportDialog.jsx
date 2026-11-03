@@ -9,12 +9,15 @@ import { draftRequest, howToOpen, openBugReport, rawError, shownError } from "./
 import { capture, copyShot } from "./shot.js";
 import { DIM, FAINT } from "./theme.jsx";
 import { label as btnLabel } from "./buttons.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 const CUT = "The full report is on your clipboard - paste it into the issue.";
 const SHOT_ON = "The screenshot is on your clipboard - paste it into the issue.";
 const REFUSED = "The clipboard refused it - select the text and copy it yourself.";
 
 export default function BugReportDialog({ open, onClose, screen, error, supportUrl }) {
+  useLocale();
   const [req, setReq] = useState(null);
   const [draft, setDraft] = useState(null);
   const [refused, setRefused] = useState("");
@@ -38,7 +41,7 @@ export default function BugReportDialog({ open, onClose, screen, error, supportU
       setDraft(data); setTitle(data.title || ""); setText(data.explanation || ""); setTech(techOf(data));
     }).catch((e) => {
       const d = e?.response?.data?.detail;
-      if (live) setRefused(typeof d === "string" ? d : "The report could not be drafted.");
+      if (live) setRefused(typeof d === "string" ? { text: d } : { text: "The report could not be drafted.", localized: true });
     });
     return () => { live = false; };
   }, [open, screen, error]);
@@ -74,38 +77,41 @@ export default function BugReportDialog({ open, onClose, screen, error, supportU
     PaperProps={{ sx: { maxHeight: "90vh" } }}>
     <DialogTitle id="bug-report-title">{btnLabel("report_bug", wish ? "feature" : undefined)}</DialogTitle>
     <DialogContent>
-      {refused ? <Typography sx={{ fontSize: 13.5 }}>{refused}</Typography>
-        : !draft ? <Box sx={{ display: "flex", alignItems: "center", gap: 1.25, color: DIM, fontSize: 13 }}><CircularProgress size={16} />{wish ? "Preparing the request…" : "Preparing the report…"}</Box>
+      {refused ? <Typography sx={{ fontSize: 13.5 }}>{refused.localized ? t(refused.text) : refused.text}</Typography>
+        : !draft ? <Box sx={{ display: "flex", alignItems: "center", gap: 1.25, color: DIM, fontSize: 13 }}><CircularProgress size={16} />{t(wish ? "Preparing the request…" : "Preparing the report…")}</Box>
         : <>
-          <Typography sx={{ color: DIM, fontSize: 13, mb: 2 }}>This goes to a public GitHub page. Check it before you submit.</Typography>
-          <TextField fullWidth size="small" label="Title" value={title} disabled={busy} onChange={(e) => setTitle(e.target.value)} sx={{ mb: 2 }} />
-          <TextField fullWidth multiline minRows={3} label={wish ? "What would help" : "What happened"} value={text} disabled={busy} onChange={(e) => setText(e.target.value)} />
+          <Typography sx={{ color: DIM, fontSize: 13, mb: 2 }}>{t("This goes to a public GitHub page. Check it before you submit.")}</Typography>
+          <TextField fullWidth size="small" label={t("Title")} value={title} disabled={busy} onChange={(e) => setTitle(e.target.value)} sx={{ mb: 2 }} />
+          <TextField fullWidth multiline minRows={3} label={t(wish ? "What would help" : "What happened")} value={text} disabled={busy} onChange={(e) => setText(e.target.value)} />
           <Button size="small" onClick={() => setShowTech(!showTech)} aria-expanded={showTech}
-            sx={{ mt: 1.5, px: 0, color: DIM, textTransform: "none" }}>{showTech ? "Hide technical details" : "Technical details"}</Button>
+            sx={{ mt: 1.5, px: 0, color: DIM, textTransform: "none" }}>{t(showTech ? "Hide technical details" : "Technical details")}</Button>
           {showTech && <TextField fullWidth multiline minRows={6} maxRows={16} value={tech} disabled={busy} onChange={(e) => setTech(e.target.value)}
-            inputProps={{ "aria-label": "Technical details", style: { fontFamily: "ui-monospace, Consolas, monospace", fontSize: 12 } }} />}
-          <FormControlLabel sx={{ display: "flex", mt: 1 }} label={<Typography sx={{ fontSize: 13 }}>Add a screenshot</Typography>}
+            inputProps={{ "aria-label": t("Technical details"), style: { fontFamily: "ui-monospace, Consolas, monospace", fontSize: 12 } }} />}
+          <FormControlLabel sx={{ display: "flex", mt: 1 }} label={<Typography sx={{ fontSize: 13 }}>{t("Add a screenshot")}</Typography>}
             control={<Checkbox size="small" checked={!!shot} disabled={busy} onChange={(e) => takeShot(e.target.checked)} />} />
-          {shot && <Typography sx={{ color: FAINT, fontSize: 12 }}>Every word in it is blanked out. Only the layout shows.</Typography>}
+          {shot && <Typography sx={{ color: FAINT, fontSize: 12 }}>{t("Every word in it is blanked out. Only the layout shows.")}</Typography>}
         </>}
-      {note && <Typography sx={{ color: DIM, fontSize: 12.5, mt: 1.5 }} role="status">{note}</Typography>}
+      {note && <Typography sx={{ color: DIM, fontSize: 12.5, mt: 1.5 }} role="status">{t(note)}</Typography>}
     </DialogContent>
     <DialogActions sx={{ px: 3, pb: 2, flexWrap: "wrap", gap: 1 }}>
-      {supportUrl && <Button href={supportUrl} target="_blank" rel="noopener noreferrer" sx={{ mr: "auto", color: DIM, textTransform: "none" }}>Open GitHub</Button>}
+      {supportUrl && <Button href={supportUrl} target="_blank" rel="noopener noreferrer" sx={{ mr: "auto", color: DIM, textTransform: "none" }}>{t("Open GitHub")}</Button>}
       {refused ? <>
-        <Button onClick={() => copyText(rawError(req), "Copied.")}>Copy the error</Button>
-        <Button onClick={onClose}>Close</Button>
+        <Button onClick={() => copyText(rawError(req), "Copied.")}>{t("Copy the error")}</Button>
+        <Button onClick={onClose}>{t("Close")}</Button>
       </> : <>
-        {!draft && <Button onClick={onClose}>Close</Button>}
-        {shot && !shotOnClip && <Button onClick={() => say(copyShot(shot), SHOT_ON, true)}>Copy the screenshot</Button>}
-        <Button onClick={() => copyText(fullReport(title, body()), "Copied.")} disabled={!draft || busy}>Copy full report</Button>
-        <Button variant="contained" onClick={send} disabled={!draft || busy || !title.trim()}>{busy ? "Opening…" : "Send"}</Button>
+        {!draft && <Button onClick={onClose}>{t("Close")}</Button>}
+        {shot && !shotOnClip && <Button onClick={() => say(copyShot(shot), SHOT_ON, true)}>{t("Copy the screenshot")}</Button>}
+        <Button onClick={() => copyText(fullReport(title, body()), "Copied.")} disabled={!draft || busy}>{t("Copy full report")}</Button>
+        <Button variant="contained" onClick={send} disabled={!draft || busy || !title.trim()}>{t(busy ? "Opening…" : "Send")}</Button>
       </>}
     </DialogActions>
   </Dialog>;
 }
 
 // the quiet link under an error the page drew: small, dim, no icon - an offer, not an alarm
-export const ReportLink = ({ text, style }) => <button type="button" onClick={() => openBugReport(shownError(text))}
-  style={{ display: "block", marginTop: 4, padding: 0, border: 0, background: "none", color: DIM, fontSize: 11.5, cursor: "pointer", textDecoration: "underline", ...style }}>
-  {btnLabel("report_bug")}</button>;
+export const ReportLink = ({ text, style }) => {
+  useLocale();
+  return <button type="button" onClick={() => openBugReport(shownError(text))}
+    style={{ display: "block", marginTop: 4, padding: 0, border: 0, background: "none", color: DIM, fontSize: 11.5, cursor: "pointer", textDecoration: "underline", ...style }}>
+    {btnLabel("report_bug")}</button>;
+};

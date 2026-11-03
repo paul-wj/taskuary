@@ -16,7 +16,11 @@ export function draftBehind(api, rid, instruction = null) {
   if (jobs.get(rid)?.state === "drafting") return jobs.get(rid).promise;
   const promise = api.post(`/api/reviews/${rid}/draft`, instruction ? { instruction } : {})
     .then(({ data }) => put(rid, { state: "done", draft: data?.draft || "", needs: data?.needs || null }))
-    .catch((e) => put(rid, { state: "failed", error: e?.response?.data?.detail || e?.message || "the draft could not be written" }));
+    .catch((e) => {
+      const error = e?.response?.data?.detail || e?.message;
+      put(rid, { state: "failed", error: error || "the draft could not be written",
+        ...(!error ? { error_i18n: { source: "the draft could not be written", values: {} } } : {}) });
+    });
   put(rid, { state: "drafting", promise });
   return promise;
 }

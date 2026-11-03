@@ -14,7 +14,7 @@ import { isAgentKind } from "./autostart.js";
 import { mono } from "./theme.jsx";
 import { FileChips } from "./BoardView.jsx";
 import { WorkLine, isWaiting } from "./ui.jsx";
-import { studioSeats, studioTaskIsLive, studioTaskState } from "./studioModel.js";
+import { studioSeats, studioTaskIsLive, studioTaskState, studioElapsed } from "./studioModel.js";
 import { laneMeta } from "./funnelPile.js";
 import { proposalOf } from "./proposalCard.js";
 import { Btn, G, ItemInspector, Moves, Who, errText, glass } from "./gameItem.jsx";
@@ -23,7 +23,8 @@ import {
   channelKind, ZONES, zoneMeta, zoneItems, needsYou, bossHp, matchFor, award, levelOf, loadGame, saveGame, shareCard,
   MOVE_WORDS, ACHIEVEMENTS, questsFor, questProgress, COMBO_WINDOW, comboMult,
 } from "./assistantGame.js";
-import { plural } from "./timeWords.js";
+import { t as tr, translateDescriptor } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 const GameScene = React.lazy(() => import("./GameScene.jsx"));
 
@@ -57,8 +58,34 @@ function useSound() {
 const MARKS = { approve: { glyph: "✓", tone: "send" }, fyi: { glyph: "i", tone: "info" }, report: { glyph: "i", tone: "info" },
   broken: { glyph: "!", tone: "bad" }, forgotten: { glyph: "?", tone: "ask" } };
 const markOf = (item) => MARKS[item.lane] || (needsYou(item) ? { glyph: "!", tone: "need" } : null);
+const GAME_ERRORS = new Set(["it did not start", "no draft slot came back - try Draft a reply", "that did not go through"]);
+const message = (source, values = {}) => ({ source, values });
+const displayMessage = (value) => Array.isArray(value) ? value.map(displayMessage).join("")
+  : translateDescriptor(value);
+const QUEST_WORDS = {
+  "q-reply": ["Send {count} reply", "Send {count} replies"],
+  "q-hand": ["Hand {count} thing to agents", "Hand {count} things to agents"],
+  "q-coffee": ["Catch up on {count} fyi", "Catch up on {count} fyi's"],
+  "q-gym": ["Do {count} rep", "Do {count} reps"],
+};
+const questMessage = (q) => {
+  const count = Math.max(q.n, 1), words = QUEST_WORDS[q.key];
+  return words ? message(words[count === 1 ? 0 : 1], { count }) : q.label;
+};
+const questLabel = (q) => displayMessage(questMessage(q));
+const matchWho = (m) => m.who === "nobody" && m.verb === "read" ? tr("nobody")
+  : m.who === "you" && !["answer", "watch"].includes(m.verb) ? tr("you") : m.who;
+const displayState = (task, liveRow, agents, clock) => {
+  const state = studioTaskState(task, liveRow, agents, clock);
+  if (state.tone === "working") {
+    const elapsed = studioElapsed(task, liveRow, clock);
+    return { ...state, label: elapsed ? tr("working · {elapsed}", { elapsed }) : tr("working") };
+  }
+  return { ...state, label: tr(state.label) };
+};
 
 export default function AssistantGame({ onOpenTask, onExit, onNavigate, active = true }) {
+  const locale = useLocale();
   const [tasks, setTasks] = useState(null);
   const [agents, setAgents] = useState([]);
   const [cap, setCap] = useState(null);
@@ -77,12 +104,12 @@ export default function AssistantGame({ onOpenTask, onExit, onNavigate, active =
   // setBanner(b) queues it (the bottom and a cleared gym jump the line); setBanner(null) puts the shown one down.
   const [banners, setBanners] = useState([]);
   const banner = banners[0] || null;
-  const setBanner = (b) => setBanners((q) => !b ? q.slice(1) : q.some((x) => x.title === b.title && x.kind === b.kind) ? q
+  const setBanner = (b) => setBanners((q) => !b ? q.slice(1) : q.some((x) => JSON.stringify(x.title) === JSON.stringify(b.title) && x.kind === b.kind) ? q
     : b.kind === "bottom" || b.kind === "gymclear" ? [b, ...q] : [...q, b]);
   const [busy, setBusy] = useState("");
   const [trophies, setTrophies] = useState(false);
   const [folded, setFolded] = useState(false);    // the room panel, down to its title bar
-  const [chat, setChat] = useState([{ who: "core", text: "I'm the Assistant Core. Ask me who should take what, or what to do next - I read the same pile you do." }]);
+  const [chat, setChat] = useState([{ who: "core", intro: true, text: "I'm the Assistant Core. Ask me who should take what, or what to do next - I read the same pile you do." }]);
   const sound = useSound();
   const wide = useMediaQuery("(min-width:900px)");
   const opened = useRef(new Set());
@@ -143,8 +170,8 @@ export default function AssistantGame({ onOpenTask, onExit, onNavigate, active =
   const sceneSeats = useMemo(() => desks.map((task) => task ? {
     task,
     liveRow: live[task.TaskId] || null,
-    state: studioTaskState(task, live[task.TaskId], agents, clock),
-  } : null), [desks, live, agents, clock]);
+    state: displayState(task, live[task.TaskId], agents, clock),
+  } : null), [desks, live, agents, clock, locale]);
   // Next read these: what only wanted knowing leaves the room; what still needs you stays, read
   const shown = useMemo(() => pile.filter((i) => !passed.has(i.key) || needsYou(i)), [pile, passed]);
   const zones = useMemo(() => zoneItems(shown), [shown]);
@@ -157,13 +184,13 @@ export default function AssistantGame({ onOpenTask, onExit, onNavigate, active =
   }, [mine, zones]);
   const npcs = useMemo(() => [
     ...["meeting", "coffee", "archive"].flatMap((zone) => zones[zone].filter((i) => i.kind !== "meeting").map((i) => ({
-      key: i.key, zone, sub: channelKind(i), who: i.who || laneMeta(i.lane).word, title: i.title, mark: markOf(i) }))),
+      key: i.key, zone, sub: channelKind(i), who: i.who || tr(laneMeta(i.lane).word), title: i.title, mark: markOf(i) }))),
     ...gym.map((g) => {
       const list = rowChecklist(g.task), done = list.filter((c) => c.done).length;
-      return { key: g.key, zone: "gym", who: g.task?.ref || g.item?.ref || kindLabel("task"), title: g.task?.Title || g.item?.title,
+      return { key: g.key, zone: "gym", who: g.task?.ref || g.item?.ref || tr(kindLabel("task")), title: g.task?.Title || g.item?.title,
         mark: g.item && needsYou(g.item) ? { glyph: "!", tone: "need" } : list.length ? { glyph: `${done}/${list.length}`, tone: "send" } : null };
     }),
-  ], [zones, gym]);
+  ], [zones, gym, locale]);
   const meetings = useMemo(() => zones.meeting.filter((i) => i.kind === "meeting" || i.lane === "time")
     .map((i) => ({ title: i.title, when: String(i.event?.start || i.when || "").slice(11, 16) })), [zones]);
   const zoneCounts = useMemo(() => ({
@@ -221,15 +248,15 @@ export default function AssistantGame({ onOpenTask, onExit, onNavigate, active =
       if (!move) { if (key) setPile(left); return out; }       // a move that does not score (a second question inside a minute)
       const r = award(gameRef.current, move, Date.now(), world);
       gameRef.current = r.state; setGame(r.state); saveGame(r.state);
-      if (r.gained > 0) { sound.coin(); toast({ kind: "xp", text: `+${r.gained} XP`, sub: `${MOVE_WORDS[move]}${r.mult > 1 ? ` · combo x${r.mult}` : ""}` }); }
-      r.quests.forEach((q) => toast({ kind: "quest", text: `Quest done +${q.xp}`, sub: q.label || q.says(q.n), ms: 3600 }));
-      if (r.levelUp) { sound.level(); setBanner({ kind: "level", title: `Level ${r.levelUp.level}`, sub: r.levelUp.title }); }
-      r.unlocked.forEach((a) => { sound.level(); setBanner({ kind: "trophy", title: a.name, sub: a.says }); });
+      if (r.gained > 0) { sound.coin(); toast({ kind: "xp", text: `+${r.gained} XP`, sub: [message(MOVE_WORDS[move]), ...(r.mult > 1 ? [" · ", message("combo x{count}", { count: r.mult })] : [])] }); }
+      r.quests.forEach((q) => toast({ kind: "quest", text: message("Quest done +{xp}", { xp: q.xp }), sub: questMessage(q), ms: 3600 }));
+      if (r.levelUp) { sound.level(); setBanner({ kind: "level", title: message("Level {level}", { level: r.levelUp.level }), sub: message(r.levelUp.title) }); }
+      r.unlocked.forEach((a) => { sound.level(); setBanner({ kind: "trophy", title: message(a.name), sub: message(a.says) }); });
       if (key) setPile(left);
       setPicked((p) => p === key && move !== "draft" ? null : p);
       loadWorld(); load();
       return out;
-    } catch (e) { sound.nope(); toast({ kind: "err", text: "Didn't land", sub: errText(e), ms: 4200 }); return null; }
+    } catch (e) { sound.nope(); const detail = errText(e); toast({ kind: "err", text: message("Didn't land"), sub: e?.receipt_i18n || (!e?.response && GAME_ERRORS.has(detail) ? message(detail) : detail), ms: 4200 }); return null; }
     finally { setBusy(""); }
   };
   useEffect(() => { if (!banner) return undefined; const t = setTimeout(() => setBanner(null), banner.kind === "bottom" || banner.kind === "gymclear" ? 4200 : 2600); return () => clearTimeout(t); }, [banner]);
@@ -250,11 +277,11 @@ export default function AssistantGame({ onOpenTask, onExit, onNavigate, active =
   const win = (move, title, sub) => {
     setConfetti((n) => n + 1);
     sound.level();
-    if (gameRef.current.dayBy?.[move]) { setBanner({ kind: move, title, sub }); return; }
+    if (gameRef.current.dayBy?.[move]) { setBanner({ kind: move, title: message(title), sub: message(sub) }); return; }
     const r = award(gameRef.current, move);
     gameRef.current = r.state; setGame(r.state); saveGame(r.state);
-    setBanner({ kind: move, title: `${title} · +${r.gained} XP`, sub });
-    r.unlocked.forEach((a) => setBanner({ kind: "trophy", title: a.name, sub: a.says }));
+    setBanner({ kind: move, title: [message(title), ` · +${r.gained} XP`], sub: message(sub) });
+    r.unlocked.forEach((a) => setBanner({ kind: "trophy", title: message(a.name), sub: message(a.says) }));
   };
   const prevHp = useRef(null), prevGym = useRef(null);
   useEffect(() => {
@@ -273,12 +300,12 @@ export default function AssistantGame({ onOpenTask, onExit, onNavigate, active =
     passedRef.current = new Set([...passedRef.current, item.key]);
     setPassed(passedRef.current);
     const n = nextAfter(item.key);
-    if (!n) { toast({ kind: "quest", text: "Pile walked ✦", sub: "nothing left you haven't seen" }); go("all"); return; }
+    if (!n) { toast({ kind: "quest", text: message("Pile walked ✦"), sub: message("nothing left you haven't seen") }); go("all"); return; }
     const z = zoneItems([n]);
     go(Object.keys(z).find((k) => z[k].length), n.key);
   };
   const jumpIn = (tid, opts) => {
-    if (!opened.current.has(tid)) { opened.current.add(tid); const r = award(gameRef.current, "open"); gameRef.current = r.state; setGame(r.state); saveGame(r.state); toast({ kind: "xp", text: `+${r.gained} XP`, sub: "Jumped into the code space" }); }
+    if (!opened.current.has(tid)) { opened.current.add(tid); const r = award(gameRef.current, "open"); gameRef.current = r.state; setGame(r.state); saveGame(r.state); toast({ kind: "xp", text: `+${r.gained} XP`, sub: message("Jumped into the code space") }); }
     onOpenTask(tid, opts);
   };
   const ask = async (text) => {
@@ -294,13 +321,13 @@ export default function AssistantGame({ onOpenTask, onExit, onNavigate, active =
     // the answer arrives the way the chat's does: words, the buttons that go with them, a proposal to confirm,
     // or the thing it pointed at. A reply request drafts at once, as it does in the chat (PW-126).
     const item = data.item || (key ? byKey[key] : null);
-    setChat((c) => [...c, { who: "core", text: data.say || "Done.", chips: data.chips || [], options: data.options || [],
+    setChat((c) => [...c, { who: "core", text: data.say || "Done.", intro: !data.say, chips: data.chips || [], options: data.options || [],
       proposal: proposalOf(data), item }]);
     if (data.decision?.verb === "reply" && item?.mid) play("draft", item.key, () => api.post(`/api/messages/${item.mid}/reply`, { draft: true, instruction: data.decision.text || null }));
   };
   const share = async () => {
-    try { await navigator.clipboard.writeText(shareCard(game)); toast({ kind: "info", text: "Run copied", sub: "counts only - no names, no subjects" }); }
-    catch { toast({ kind: "err", text: "Couldn't copy", sub: "your browser blocked the clipboard" }); }
+    try { await navigator.clipboard.writeText(shareCard(game, undefined, tr)); toast({ kind: "info", text: message("Run copied"), sub: message("counts only - no names, no subjects") }); }
+    catch { toast({ kind: "err", text: message("Couldn't copy"), sub: message("your browser blocked the clipboard") }); }
   };
 
   if (!tasks) return <CircularProgress size={22} sx={{ m: 4 }} />;
@@ -336,9 +363,9 @@ export default function AssistantGame({ onOpenTask, onExit, onNavigate, active =
               fontWeight: 600, fontSize: 14, color: G.gold }}>{lv.level}</Box>
           </Box>
           <Box sx={{ minWidth: 0 }}>
-            <Typography sx={{ fontSize: 10, letterSpacing: 1.4, color: G.faint, fontWeight: 600, textTransform: "uppercase" }}>Assistant game</Typography>
-            <Typography noWrap sx={{ fontSize: 14, fontWeight: 600, color: G.ink }}>{lv.title}</Typography>
-            <Typography sx={{ ...mono, fontSize: 10.5, color: G.dim }}>{game.xp} XP · {lv.span - lv.into} to Lv {lv.level + 1}</Typography>
+            <Typography sx={{ fontSize: 10, letterSpacing: 1.4, color: G.faint, fontWeight: 600, textTransform: "uppercase" }}>{tr("Assistant game")}</Typography>
+            <Typography noWrap sx={{ fontSize: 14, fontWeight: 600, color: G.ink }}>{tr(lv.title)}</Typography>
+            <Typography sx={{ ...mono, fontSize: 10.5, color: G.dim }}>{tr("{xp} XP · {left} to Lv {level}", { xp: game.xp, left: lv.span - lv.into, level: lv.level + 1 })}</Typography>
           </Box>
         </Box>
 
@@ -348,13 +375,13 @@ export default function AssistantGame({ onOpenTask, onExit, onNavigate, active =
           <Box sx={{ height: 3, mt: 0.5, borderRadius: 2, bgcolor: "rgba(255,255,255,.1)", overflow: "hidden" }}>
             <Box sx={{ height: "100%", width: `${comboLeft * 100}%`, bgcolor: G.gold, transition: "width 1s linear" }} />
           </Box>
-          <Typography sx={{ fontSize: 9.5, color: G.faint, letterSpacing: 1, fontWeight: 600, mt: 0.25 }}>{combo > 1 ? `${combo} COMBO` : "COMBO"}</Typography>
+          <Typography sx={{ fontSize: 9.5, color: G.faint, letterSpacing: 1, fontWeight: 600, mt: 0.25 }}>{combo > 1 ? tr("{count} COMBO", { count: combo }) : tr("COMBO")}</Typography>
         </Box>
 
         <Box sx={{ flex: "1 1 220px", minWidth: 180 }}>
           <Box sx={{ display: "flex", alignItems: "baseline", gap: 1 }}>
-            <Typography sx={{ fontSize: 10, letterSpacing: 1.3, fontWeight: 600, color: G.red }}>INBOX BOSS</Typography>
-            <Typography sx={{ ...mono, fontSize: 10.5, color: G.dim, ml: "auto" }}>{hp ? `${hp} to the bottom` : "defeated ✦ you're at the bottom"}</Typography>
+            <Typography sx={{ fontSize: 10, letterSpacing: 1.3, fontWeight: 600, color: G.red }}>{tr("INBOX BOSS")}</Typography>
+            <Typography sx={{ ...mono, fontSize: 10.5, color: G.dim, ml: "auto" }}>{hp ? tr("{count} to the bottom", { count: hp }) : tr("defeated ✦ you're at the bottom")}</Typography>
           </Box>
           <Box sx={{ height: 9, mt: 0.5, borderRadius: 5, bgcolor: "rgba(255,255,255,.08)", overflow: "hidden", border: `1px solid ${G.line}` }}>
             <Box sx={{ height: "100%", width: `${(hp / hpMax.current) * 100}%`, transition: "width .6s cubic-bezier(.2,.9,.3,1.2)",
@@ -366,9 +393,9 @@ export default function AssistantGame({ onOpenTask, onExit, onNavigate, active =
           {quests.map((q) => {
             const n = questProgress(game, q), done = game.quests?.includes(q.key);
             return (
-              <Box key={q.key} title={`+${q.xp} XP when done today`} sx={{ px: 1, py: 0.5, borderRadius: "9px", bgcolor: done ? "rgba(143,207,143,.15)" : G.card,
+              <Box key={q.key} title={tr("+{xp} XP when done today", { xp: q.xp })} sx={{ px: 1, py: 0.5, borderRadius: "9px", bgcolor: done ? "rgba(143,207,143,.15)" : G.card,
                 border: `1px solid ${done ? "rgba(143,207,143,.5)" : G.line}`, minWidth: 118 }}>
-                <Typography noWrap sx={{ fontSize: 10.5, fontWeight: 600, color: done ? G.green : G.ink }}>{done ? "✓ " : ""}{q.label}</Typography>
+                <Typography noWrap sx={{ fontSize: 10.5, fontWeight: 600, color: done ? G.green : G.ink }}>{done ? "✓ " : ""}{questLabel(q)}</Typography>
                 <Box sx={{ height: 3, mt: 0.4, borderRadius: 2, bgcolor: "rgba(255,255,255,.1)" }}>
                   <Box sx={{ height: "100%", width: `${q.n ? (n / q.n) * 100 : 100}%`, borderRadius: 2, bgcolor: done ? G.green : G.mint }} />
                 </Box>
@@ -378,33 +405,33 @@ export default function AssistantGame({ onOpenTask, onExit, onNavigate, active =
         </Box>
 
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-          <Typography title="time since today's run started" sx={{ ...mono, fontSize: 12, color: G.dim, mr: 0.5 }}>
+          <Typography title={tr("time since today's run started")} sx={{ ...mono, fontSize: 12, color: G.dim, mr: 0.5 }}>
             ⏱ {Math.floor(runSecs / 3600) ? `${Math.floor(runSecs / 3600)}h ` : ""}{Math.floor((runSecs % 3600) / 60)}m
           </Typography>
-          <HudButton onClick={() => setTrophies((v) => !v)} title="Trophies">🏆 {game.got.length}/{ACHIEVEMENTS.length}</HudButton>
-          <HudButton onClick={sound.toggle} title={sound.on ? "Sound on" : "Sound off"}>{sound.on ? "🔊" : "🔇"}</HudButton>
-          <HudButton onClick={share} title="Copy your run to share - counts only" gold>Share run</HudButton>
-          <HudButton onClick={onExit} title="Back to the Assistant's chat - the same items, as a conversation">💬 Back to chat</HudButton>
+          <HudButton onClick={() => setTrophies((v) => !v)} title={tr("Trophies")}>🏆 {game.got.length}/{ACHIEVEMENTS.length}</HudButton>
+          <HudButton onClick={sound.toggle} title={tr(sound.on ? "Sound on" : "Sound off")}>{sound.on ? "🔊" : "🔇"}</HudButton>
+          <HudButton onClick={share} title={tr("Copy your run to share - counts only")} gold>{tr("Share run")}</HudButton>
+          <HudButton onClick={onExit} title={tr("Back to the Assistant's chat - the same items, as a conversation")}>{tr("💬 Back to chat")}</HudButton>
         </Box>
       </Box>
 
       {/* ── the map: five spaces, and the way back out ───────────────────────────────────────── */}
       <Box sx={{ position: "absolute", zIndex: 7, left: 12, top: 84, display: "flex", flexDirection: "column", gap: 0.5, width: { xs: 54, md: 158 } }}>
-        <MapButton on={focus === "all"} onClick={() => go("all")} k="Esc" name="Whole office" />
-        {ZONES.map((z) => <MapButton key={z.key} on={focus === z.key} onClick={() => go(z.key)} k={z.hotkey} name={z.name} n={zoneCounts[z.key]} />)}
+        <MapButton on={focus === "all"} onClick={() => go("all")} k="Esc" name={tr("Whole office")} />
+        {ZONES.map((z) => <MapButton key={z.key} on={focus === z.key} onClick={() => go(z.key)} k={z.hotkey} name={tr(z.name)} n={zoneCounts[z.key]} />)}
       </Box>
 
       {/* ── the space you jumped into ─────────────────────────────────────────────────────────── */}
       {/* compact on purpose: the office is the screen, this is the clipboard you carry. It folds to its title. */}
       <Box sx={{ ...glass, position: "absolute", zIndex: 7, right: 12, top: 84, width: { xs: "calc(100% - 90px)", sm: 320 },
         maxHeight: folded ? "none" : "calc(100% - 100px)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
-        <Box onClick={() => setFolded((v) => !v)} title={folded ? "Open the panel" : "Fold the panel"}
+        <Box onClick={() => setFolded((v) => !v)} title={tr(folded ? "Open the panel" : "Fold the panel")}
           sx={{ display: "flex", alignItems: "center", gap: 1, px: 1.4, py: 0.9, cursor: "pointer", borderBottom: folded ? "none" : `1px solid ${G.line}` }}>
           <Box sx={{ ...mono, px: 0.6, borderRadius: "5px", fontSize: 10, fontWeight: 600, bgcolor: "rgba(240,192,90,.15)", color: G.gold }}>
             {focus === "all" ? "Esc" : zoneMeta(focus)?.hotkey}</Box>
           <Box sx={{ minWidth: 0, flex: 1 }}>
-            <Typography noWrap sx={{ fontSize: 13.5, fontWeight: 600 }}>{focus === "all" ? "Briefing" : zoneMeta(focus)?.name}</Typography>
-            {!folded && <Typography noWrap sx={{ fontSize: 10.5, color: G.faint }}>{focus === "all" ? "who should take what" : zoneMeta(focus)?.blurb}</Typography>}
+            <Typography noWrap sx={{ fontSize: 13.5, fontWeight: 600 }}>{tr(focus === "all" ? "Briefing" : zoneMeta(focus)?.name)}</Typography>
+            {!folded && <Typography noWrap sx={{ fontSize: 10.5, color: G.faint }}>{tr(focus === "all" ? "who should take what" : zoneMeta(focus)?.blurb)}</Typography>}
           </Box>
           <Typography sx={{ fontSize: 14, color: G.dim }}>{folded ? "▾" : "▴"}</Typography>
         </Box>
@@ -428,8 +455,8 @@ export default function AssistantGame({ onOpenTask, onExit, onNavigate, active =
           <Box key={t.id} sx={{ ...glass, px: 1.6, py: 0.8, display: "flex", alignItems: "baseline", gap: 1, animation: "sgPop .35s cubic-bezier(.2,.9,.3,1.4)",
             borderColor: t.kind === "err" ? G.red : t.kind === "quest" ? G.green : t.kind === "xp" ? G.gold : G.line,
             "@keyframes sgPop": { from: { opacity: 0, transform: "translateY(-10px) scale(.9)" }, to: { opacity: 1, transform: "none" } } }}>
-            <Typography sx={{ fontWeight: 600, fontSize: t.kind === "xp" ? 18 : 14, color: t.kind === "err" ? G.red : t.kind === "quest" ? G.green : G.gold }}>{t.text}</Typography>
-            <Typography sx={{ fontSize: 12, color: G.dim, maxWidth: 360 }} noWrap>{t.sub}</Typography>
+            <Typography sx={{ fontWeight: 600, fontSize: t.kind === "xp" ? 18 : 14, color: t.kind === "err" ? G.red : t.kind === "quest" ? G.green : G.gold }}>{displayMessage(t.text)}</Typography>
+            <Typography sx={{ fontSize: 12, color: G.dim, maxWidth: 360 }} noWrap>{displayMessage(t.sub)}</Typography>
           </Box>
         ))}
       </Box>
@@ -439,29 +466,29 @@ export default function AssistantGame({ onOpenTask, onExit, onNavigate, active =
           background: "radial-gradient(circle, rgba(20,24,30,.35), rgba(20,24,30,0) 60%)" }}>
           <Box sx={{ ...glass, px: 5, py: 3, textAlign: "center", borderColor: G.gold, animation: "sgBoom .5s cubic-bezier(.2,.9,.3,1.5)",
             "@keyframes sgBoom": { from: { opacity: 0, transform: "scale(.6) rotate(-3deg)" }, to: { opacity: 1, transform: "none" } } }}>
-            <Typography sx={{ fontSize: 11, letterSpacing: 3, color: G.gold, fontWeight: 600 }}>{banner.kind === "level" ? "LEVEL UP" : banner.kind === "bottom" ? "BOTTOM OF THE PILE" : banner.kind === "gymclear" ? "EVERY SET DONE" : "TROPHY UNLOCKED"}</Typography>
-            <Typography sx={{ fontSize: 34, fontWeight: 600 }}>{banner.kind === "level" ? "⬆ " : banner.kind === "bottom" ? "⚔ " : banner.kind === "gymclear" ? "💪 " : "🏆 "}{banner.title}</Typography>
-            <Typography sx={{ fontSize: 14, color: G.dim }}>{banner.sub}</Typography>
+            <Typography sx={{ fontSize: 11, letterSpacing: 3, color: G.gold, fontWeight: 600 }}>{tr(banner.kind === "level" ? "LEVEL UP" : banner.kind === "bottom" ? "BOTTOM OF THE PILE" : banner.kind === "gymclear" ? "EVERY SET DONE" : "TROPHY UNLOCKED")}</Typography>
+            <Typography sx={{ fontSize: 34, fontWeight: 600 }}>{banner.kind === "level" ? "⬆ " : banner.kind === "bottom" ? "⚔ " : banner.kind === "gymclear" ? "💪 " : "🏆 "}{displayMessage(banner.title)}</Typography>
+            <Typography sx={{ fontSize: 14, color: G.dim }}>{displayMessage(banner.sub)}</Typography>
           </Box>
         </Box>
       )}
       {trophies && (
         <Box sx={{ ...glass, position: "absolute", zIndex: 9, top: 84, left: { xs: 12, md: 180 }, width: 300, maxHeight: "calc(100% - 110px)", overflowY: "auto", p: 1.5 }}>
           <Box sx={{ display: "flex", alignItems: "center", mb: 1 }}>
-            <Typography sx={{ fontWeight: 600, flex: 1 }}>Trophies</Typography>
-            <HudButton onClick={() => setTrophies(false)}>Close</HudButton>
+            <Typography sx={{ fontWeight: 600, flex: 1 }}>{tr("Trophies")}</Typography>
+            <HudButton onClick={() => setTrophies(false)}>{tr("Close")}</HudButton>
           </Box>
           {ACHIEVEMENTS.map((a) => {
             const got = game.got.includes(a.key);
             return (
               <Box key={a.key} sx={{ display: "flex", gap: 1, alignItems: "center", py: 0.7, opacity: got ? 1 : 0.45 }}>
                 <Box sx={{ fontSize: 20, filter: got ? "none" : "grayscale(1)" }}>🏆</Box>
-                <Box><Typography sx={{ fontSize: 12.5, fontWeight: 600 }}>{a.name}</Typography>
-                  <Typography sx={{ fontSize: 11, color: G.dim }}>{a.says}</Typography></Box>
+                <Box><Typography sx={{ fontSize: 12.5, fontWeight: 600 }}>{tr(a.name)}</Typography>
+                  <Typography sx={{ fontSize: 11, color: G.dim }}>{tr(a.says)}</Typography></Box>
               </Box>
             );
           })}
-          <Typography sx={{ ...mono, fontSize: 10.5, color: G.faint, mt: 1 }}>{game.moves} moves · best combo x{game.best} · {game.today} XP today</Typography>
+          <Typography sx={{ ...mono, fontSize: 10.5, color: G.faint, mt: 1 }}>{tr("{moves} moves · best combo x{best} · {xp} XP today", { moves: game.moves, best: game.best, xp: game.today })}</Typography>
         </Box>
       )}
     </Box>
@@ -502,10 +529,11 @@ function Card({ on, onClick, children, accent }) {
 }
 
 const Match = ({ item, agents }) => {
+  useLocale();
   const m = matchFor(item, agents);
   return (
     <Box sx={{ mt: 0.8, px: 1, py: 0.6, borderRadius: "8px", bgcolor: "rgba(127,209,198,.08)", border: "1px dashed rgba(127,209,198,.35)" }}>
-      <Typography sx={{ fontSize: 11, color: G.mint }}>✦ Best match: <b>{m.who}</b> — {m.why}</Typography>
+      <Typography sx={{ fontSize: 11, color: G.mint }}>✦ {tr("Best match:")} <b>{matchWho(m)}</b> — {tr(m.why)}</Typography>
     </Box>
   );
 };
@@ -529,39 +557,41 @@ function ItemList({ items, picked, setPicked, agents, busy, play, onOpenTask, on
 // the briefing reads the walk: what you have not seen yet comes first (the boss's health), then what you have
 // seen that is still on you - so the bottom never looks like a to-do list that did not move
 function Briefing({ pile, agents, onGo, hp, passed }) {
+  useLocale();
   const fresh = pile.filter((i) => i.lane !== "working" && !i.surfaced && !passed.has(i.key));
   const onYou = pile.filter((i) => needsYou(i) && !fresh.includes(i));
-  if (!pile.length) return <Empty text="Nothing is waiting anywhere in the office. Inbox Boss defeated - go get a coffee." />;
+  if (!pile.length) return <Empty text={tr("Nothing is waiting anywhere in the office. Inbox Boss defeated - go get a coffee.")} />;
   const row = (i, accent) => {
     const m = matchFor(i, agents);
     return (
       <Card key={i.key} onClick={() => onGo(i)} accent={accent}>
         <Who item={i} />
         <Typography sx={{ fontSize: 13, fontWeight: 600, mt: 0.3 }}>{i.title}</Typography>
-        <Typography sx={{ fontSize: 11, color: G.mint, mt: 0.4 }}>✦ {m.who} · {m.why}</Typography>
+        <Typography sx={{ fontSize: 11, color: G.mint, mt: 0.4 }}>✦ {matchWho(m)} · {tr(m.why)}</Typography>
       </Card>
     );
   };
   const head = (text, color) => <Typography sx={{ fontSize: 10, fontWeight: 600, letterSpacing: 1.2, color, px: 0.5, mb: 0.6, mt: 0.4 }}>{text}</Typography>;
   return <>
     {hp > 0 ? <>
-      {head(`⚔ NOT SEEN YET · ${hp} TO THE BOTTOM`, G.red)}
+      {head(tr("⚔ NOT SEEN YET · {count} TO THE BOTTOM", { count: hp }), G.red)}
       {fresh.slice(0, 4).map((i) => row(i, G.red))}
-      {fresh.length > 4 && <Typography sx={{ fontSize: 11.5, color: G.faint, px: 0.5, mb: 1 }}>+{fresh.length - 4} more - press N on any of them to walk the lot</Typography>}
+      {fresh.length > 4 && <Typography sx={{ fontSize: 11.5, color: G.faint, px: 0.5, mb: 1 }}>{tr("+{count} more - press N on any of them to walk the lot", { count: fresh.length - 4 })}</Typography>}
     </> : (
       <Box sx={{ mb: 1, p: 1.1, borderRadius: "11px", bgcolor: "rgba(143,207,143,.1)", border: "1px solid rgba(143,207,143,.4)" }}>
-        <Typography sx={{ fontSize: 13, fontWeight: 600, color: G.green }}>⚔ You're at the bottom</Typography>
-        <Typography sx={{ fontSize: 11.5, color: G.dim }}>Everything has been seen. {onYou.length ? "What is left is still yours to settle:" : "Nothing is left on you."}</Typography>
+        <Typography sx={{ fontSize: 13, fontWeight: 600, color: G.green }}>{tr("⚔ You're at the bottom")}</Typography>
+        <Typography sx={{ fontSize: 11.5, color: G.dim }}>{tr(onYou.length ? "Everything has been seen. What is left is still yours to settle:" : "Everything has been seen. Nothing is left on you.")}</Typography>
       </Box>
     )}
     {onYou.length > 0 && <>
-      {hp > 0 && head(`SEEN, STILL ON YOU · ${onYou.length}`, G.gold)}
+      {hp > 0 && head(tr("SEEN, STILL ON YOU · {count}", { count: onYou.length }), G.gold)}
       {onYou.slice(0, 4).map((i) => row(i, G.gold))}
     </>}
   </>;
 }
 
 function FloorSpace({ seated, queue, live, agents, clock, pick, setPick, items, busy, play, onJump, onOpenTask, onNavigate, onNext, picked, setPicked, cap, setCap, free, desks }) {
+  useLocale();
   // what the floor wants from you that is not just a desk at work: a raised hand, a stopped or saved
   // session, a finished job to read, a task nobody is on - each opens into the inspector
   const seatedIds = new Set(seated.map((t) => t.TaskId));
@@ -569,13 +599,13 @@ function FloorSpace({ seated, queue, live, agents, clock, pick, setPick, items, 
   const byTid = Object.fromEntries(items.filter((i) => i.tid).map((i) => [i.tid, i]));
   return <>
     {calls.length > 0 && <>
-      <Typography sx={{ fontSize: 10, fontWeight: 600, letterSpacing: 1.2, color: G.red, px: 0.5, mb: 0.6 }}>ON THE FLOOR FOR YOU · {calls.length}</Typography>
+      <Typography sx={{ fontSize: 10, fontWeight: 600, letterSpacing: 1.2, color: G.red, px: 0.5, mb: 0.6 }}>{tr("ON THE FLOOR FOR YOU · {count}", { count: calls.length })}</Typography>
       <ItemList items={calls} picked={picked} setPicked={setPicked} agents={agents} busy={busy} play={play} onOpenTask={onOpenTask} onNavigate={onNavigate} onNext={onNext} />
     </>}
-    <Typography sx={{ fontSize: 10, fontWeight: 600, letterSpacing: 1.2, color: G.faint, px: 0.5, mb: 0.6, mt: calls.length ? 1.2 : 0 }}>AT THE DESKS · {seated.length}</Typography>
+    <Typography sx={{ fontSize: 10, fontWeight: 600, letterSpacing: 1.2, color: G.faint, px: 0.5, mb: 0.6, mt: calls.length ? 1.2 : 0 }}>{tr("AT THE DESKS · {count}", { count: seated.length })}</Typography>
     {seated.map((task) => {
       const liveRow = live[task.TaskId];
-      const state = studioTaskState(task, liveRow, agents, clock);
+      const state = displayState(task, liveRow, agents, clock);
       const selected = pick === task.TaskId, item = byTid[task.TaskId];
       return (
         <Card key={task.TaskId} on={selected} onClick={() => setPick(selected ? null : task.TaskId)} accent={state.tone === "waiting" ? G.red : G.green}>
@@ -583,7 +613,7 @@ function FloorSpace({ seated, queue, live, agents, clock, pick, setPick, items, 
             <Typography noWrap sx={{ fontSize: 11, fontWeight: 600, color: state.tone === "waiting" ? G.red : G.green }}>{state.agent}</Typography>
             <Typography sx={{ ...mono, fontSize: 10, color: G.faint, ml: "auto" }}>{task.ref}</Typography>
             {task.Waiting > 0 && <Typography sx={{ ...mono, fontSize: 10, color: G.gold, fontWeight: 600 }}
-              title={`${plural(task.Waiting, "queued prompt")} waiting in the funnel`}>✎ {task.Waiting}</Typography>}
+              title={tr(task.Waiting === 1 ? "{count} queued prompt waiting in the funnel" : "{count} queued prompts waiting in the funnel", { count: task.Waiting })}>✎ {task.Waiting}</Typography>}
           </Box>
           <Typography noWrap sx={{ fontSize: 13, fontWeight: 600, pt: 0.3 }}>{task.Title}</Typography>
           <Typography sx={{ fontSize: 11, color: G.dim, pt: 0.2 }}>{state.label}</Typography>
@@ -596,24 +626,24 @@ function FloorSpace({ seated, queue, live, agents, clock, pick, setPick, items, 
           {liveRow?.files?.length > 0 && <Box sx={{ pt: 0.6 }}><FileChips files={liveRow.files} /></Box>}
           {selected && (item
             ? <ItemInspector item={item} agents={agents} busy={busy} play={play} onOpenTask={onOpenTask} onNavigate={onNavigate} onNext={onNext} />
-            : <Box sx={{ display: "flex", gap: 0.6, mt: 0.9 }}><Btn kind="gold" onClick={() => onJump(task.TaskId)}>⌨ Jump into the code space</Btn></Box>)}
+            : <Box sx={{ display: "flex", gap: 0.6, mt: 0.9 }}><Btn kind="gold" onClick={() => onJump(task.TaskId)}>{tr("⌨ Jump into the code space")}</Btn></Box>)}
         </Card>
       );
     })}
-    {!seated.length && <Empty text="The desks are quiet. New work will bring an agent to one." />}
-    {queue.length > 0 && <Typography sx={{ fontSize: 10, fontWeight: 600, letterSpacing: 1.2, color: G.faint, px: 0.5, mt: 1.2, mb: 0.6 }}>WAITING FOR A DESK · {queue.length}</Typography>}
+    {!seated.length && <Empty text={tr("The desks are quiet. New work will bring an agent to one.")} />}
+    {queue.length > 0 && <Typography sx={{ fontSize: 10, fontWeight: 600, letterSpacing: 1.2, color: G.faint, px: 0.5, mt: 1.2, mb: 0.6 }}>{tr("WAITING FOR A DESK · {count}", { count: queue.length })}</Typography>}
     {queue.slice(0, 6).map((task) => (
       <Card key={task.TaskId} onClick={() => onJump(task.TaskId)}>
         <Typography sx={{ ...mono, fontSize: 10.5, color: G.faint }}>{task.ref}{task.Waiting > 0 ? ` · ✎ ${task.Waiting}` : ""}</Typography>
         <Typography noWrap sx={{ fontSize: 12.5, color: G.dim }}>{task.Title}</Typography>
       </Card>
     ))}
-    {queue.length > 6 && <Typography sx={{ fontSize: 11, color: G.faint, px: 0.5 }}>+{queue.length - 6} more waiting</Typography>}
+    {queue.length > 6 && <Typography sx={{ fontSize: 11, color: G.faint, px: 0.5 }}>{tr("+{count} more waiting", { count: queue.length - 6 })}</Typography>}
     <Box sx={{ mt: 1.5, px: 0.5 }}>
       <Box sx={{ display: "flex", alignItems: "baseline", gap: 0.75 }}>
-        <Typography sx={{ fontSize: 11.5, color: G.dim, flex: 1 }}>Desks (agents at once)</Typography>
+        <Typography sx={{ fontSize: 11.5, color: G.dim, flex: 1 }}>{tr("Desks (agents at once)")}</Typography>
         <Typography sx={{ ...mono, fontSize: 13, fontWeight: 600 }}>{cap ?? "—"}</Typography>
-        <Typography sx={{ fontSize: 11, color: G.faint }}>{free} free of {desks.length}</Typography>
+        <Typography sx={{ fontSize: 11, color: G.faint }}>{tr("{free} free of {total}", { free, total: desks.length })}</Typography>
       </Box>
       <Slider size="small" min={1} max={8} step={1} marks value={cap ?? 4} onChange={(_, value) => setCap(value)}
         onChangeCommitted={(_, value) => api.patch("/api/settings", { name: "auto_sessions", value: String(value) }).catch(() => {})}
@@ -630,7 +660,8 @@ const rowChecklist = (t) => {
 
 // the meeting room, split the way the people reached you: coming up, mail, chat, and the tools that pinged
 function MeetingSpace({ items, ...room }) {
-  if (!items.length) return <Empty text="The meeting room is empty. Nobody is waiting on you." />;
+  useLocale();
+  if (!items.length) return <Empty text={tr("The meeting room is empty. Nobody is waiting on you.")} />;
   const groups = [
     ["📅 COMING UP", items.filter((i) => i.kind === "meeting" || i.lane === "time"), "#7fd1c6"],
     ["✉ EMAIL · AT THE TABLE", items.filter((i) => i.kind !== "meeting" && i.lane !== "time" && channelKind(i) === "email"), "#f0c05a"],
@@ -639,7 +670,7 @@ function MeetingSpace({ items, ...room }) {
   ].filter(([, list]) => list.length);
   return groups.map(([label, list, color], n) => (
     <Box key={label} sx={{ mt: n ? 1.2 : 0 }}>
-      <Typography sx={{ fontSize: 10, fontWeight: 600, letterSpacing: 1.2, color, px: 0.5, mb: 0.6 }}>{label} · {list.length}</Typography>
+      <Typography sx={{ fontSize: 10, fontWeight: 600, letterSpacing: 1.2, color, px: 0.5, mb: 0.6 }}>{tr(label)} · {list.length}</Typography>
       <ItemList {...room} items={list} />
     </Box>
   ));
@@ -647,7 +678,8 @@ function MeetingSpace({ items, ...room }) {
 
 // THE GYM: your own tasks as stations. Each checklist box is a rep, the last one (or Finish) is the set.
 function GymSpace({ gym, picked, setPicked, busy, play, reload, onOpenTask, onNext, ...room }) {
-  if (!gym.length) return <Empty text="No tasks of your own. Rest day." />;
+  useLocale();
+  if (!gym.length) return <Empty text={tr("No tasks of your own. Rest day.")} />;
   const tick = (t, c) => play(c.done ? null : "rep", null, async () => {
     const { data } = await api.patch(`/api/tasks/${t.TaskId}/checklist/${c.id}`, { done: !c.done });
     // the last tick closes the task (server: tick_checklist) - that is the set, scored on its own
@@ -663,7 +695,7 @@ function GymSpace({ gym, picked, setPicked, busy, play, reload, onOpenTask, onNe
       <Card key={g.key} on={on} onClick={() => setPicked(on ? null : g.key)} accent={g.item && needsYou(g.item) ? G.red : G.gold}>
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.7 }}>
           <Typography sx={{ fontSize: 11, fontWeight: 600, color: G.gold }}>🏋 {ref}</Typography>
-          {list.length > 0 && <Typography sx={{ ...mono, fontSize: 10.5, color: G.dim, ml: "auto" }}>{done}/{list.length} reps</Typography>}
+          {list.length > 0 && <Typography sx={{ ...mono, fontSize: 10.5, color: G.dim, ml: "auto" }}>{tr("{done}/{total} reps", { done, total: list.length })}</Typography>}
         </Box>
         <Typography sx={{ fontSize: 13, fontWeight: 600, mt: 0.3 }}>{title}</Typography>
         {list.length > 0 && (
@@ -687,8 +719,8 @@ function GymSpace({ gym, picked, setPicked, busy, play, reload, onOpenTask, onNe
           </Box>}
           {g.item && <ItemInspector item={g.item} agents={room.agents} busy={busy} play={play} onOpenTask={onOpenTask} onNavigate={room.onNavigate} onNext={onNext} />}
           <Box sx={{ display: "flex", gap: 0.5, mt: 0.9, flexWrap: "wrap" }}>
-            {g.task && <Btn kind="gold" disabled={!!busy} onClick={() => finish(g)} title="Closes the task - every box on it is ticked">🏁 Finish the set · +30</Btn>}
-            {(g.task || g.item?.tid) && <Btn onClick={() => onOpenTask((g.task || g.item).TaskId || g.item.tid)}>Open {ref}</Btn>}
+            {g.task && <Btn kind="gold" disabled={!!busy} onClick={() => finish(g)} title={tr("Closes the task - every box on it is ticked")}>{tr("🏁 Finish the set · +30")}</Btn>}
+            {(g.task || g.item?.tid) && <Btn onClick={() => onOpenTask((g.task || g.item).TaskId || g.item.tid)}>{tr("Open {ref}", { ref })}</Btn>}
           </Box>
         </Box>}
       </Card>
@@ -697,7 +729,8 @@ function GymSpace({ gym, picked, setPicked, busy, play, reload, onOpenTask, onNe
 }
 
 function CoffeeSpace({ items, onSettle, ...room }) {
-  if (!items.length) return <Empty text="The pot is empty and so is the room. Nothing to catch up on." />;
+  useLocale();
+  if (!items.length) return <Empty text={tr("The pot is empty and so is the room. Nothing to catch up on.")} />;
   // THE WHOLE POT, the count the room's badge shows: what is only there to be known is read away (done), and a
   // broken connection or a failed report is put down the way Next puts it down (read, back if the error changes) -
   // never marked done, because nothing fixed it
@@ -711,12 +744,13 @@ function CoffeeSpace({ items, onSettle, ...room }) {
   const broken = items.filter((i) => !knowOnly(i)).length;
   return <>
     {items.length > 1 && <Box sx={{ mb: 1 }}><Btn kind="mint" disabled={!!room.busy} onClick={drain}
-      title={broken ? `${broken} broken - set aside until its error changes, never marked fixed` : undefined}>☕ Drain the pot - all {items.length}</Btn></Box>}
+      title={broken ? tr("{count} broken - set aside until its error changes, never marked fixed", { count: broken }) : undefined}>{tr("☕ Drain the pot - all {count}", { count: items.length })}</Btn></Box>}
     <ItemList {...room} items={items} accent={(i) => i.lane === "broken" || i.bad ? G.red : G.mint} />
   </>;
 }
 
 function ArchiveSpace({ ghosts, hub, picked, setPicked, busy, play, reload, ...room }) {
+  useLocale();
   const [files, setFiles] = useState(null);
   const [form, setForm] = useState(null);
   const pulled = useRef(new Set()), voted = useRef(new Set());
@@ -736,21 +770,21 @@ function ArchiveSpace({ ghosts, hub, picked, setPicked, busy, play, reload, ...r
     p: 0.9, fontSize: 12.5, fontFamily: "inherit", mb: 0.6 };
   return <>
     {ghosts.length > 0 && <>
-      <Typography sx={{ fontSize: 10, fontWeight: 600, letterSpacing: 1.2, color: "#b9c3ff", px: 0.5, mb: 0.6 }}>👻 GHOSTS · THREADS THAT SLIPPED · {ghosts.length}</Typography>
+      <Typography sx={{ fontSize: 10, fontWeight: 600, letterSpacing: 1.2, color: "#b9c3ff", px: 0.5, mb: 0.6 }}>{tr("👻 GHOSTS · THREADS THAT SLIPPED · {count}", { count: ghosts.length })}</Typography>
       <ItemList {...room} items={ghosts} picked={picked} setPicked={setPicked} busy={busy} play={play} accent={() => "#b9c3ff"} />
     </>}
     <Box sx={{ display: "flex", alignItems: "center", px: 0.5, mt: ghosts.length ? 1.4 : 0, mb: 0.6 }}>
-      <Typography sx={{ fontSize: 10, fontWeight: 600, letterSpacing: 1.2, color: G.faint, flex: 1 }}>🗄 FILING CABINETS · THE HUB · {hub.topics.length}</Typography>
-      <Btn kind="mint" onClick={() => setForm({ title: "", body: "", topic: topic || "" })}>+ File a lesson</Btn>
+      <Typography sx={{ fontSize: 10, fontWeight: 600, letterSpacing: 1.2, color: G.faint, flex: 1 }}>{tr("🗄 FILING CABINETS · THE HUB · {count}", { count: hub.topics.length })}</Typography>
+      <Btn kind="mint" onClick={() => setForm({ title: "", body: "", topic: topic || "" })}>{tr("+ File a lesson")}</Btn>
     </Box>
     {form && (
       <Card on>
-        <Box component="input" placeholder="What did we learn? (title)" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} sx={input} />
-        <Box component="textarea" rows={4} placeholder="The lesson, so the next person (or agent) doesn't relearn it" value={form.body} onChange={(e) => setForm({ ...form, body: e.target.value })} sx={input} />
-        <Box component="input" placeholder="cabinet (topic)" value={form.topic} onChange={(e) => setForm({ ...form, topic: e.target.value })} sx={input} />
+        <Box component="input" placeholder={tr("What did we learn? (title)")} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} sx={input} />
+        <Box component="textarea" rows={4} placeholder={tr("The lesson, so the next person (or agent) doesn't relearn it")} value={form.body} onChange={(e) => setForm({ ...form, body: e.target.value })} sx={input} />
+        <Box component="input" placeholder={tr("cabinet (topic)")} value={form.topic} onChange={(e) => setForm({ ...form, topic: e.target.value })} sx={input} />
         <Box sx={{ display: "flex", gap: 0.6 }}>
-          <Btn kind="gold" disabled={!!busy || !form.title.trim() || !form.body.trim() || !form.topic.trim()} onClick={file}>🗂 File it · +25</Btn>
-          <Btn onClick={() => setForm(null)}>Cancel</Btn>
+          <Btn kind="gold" disabled={!!busy || !form.title.trim() || !form.body.trim() || !form.topic.trim()} onClick={file}>{tr("🗂 File it · +25")}</Btn>
+          <Btn onClick={() => setForm(null)}>{tr("Cancel")}</Btn>
         </Box>
       </Card>
     )}
@@ -760,7 +794,7 @@ function ArchiveSpace({ ghosts, hub, picked, setPicked, busy, play, reload, ...r
           sx={{ ...mono, border: `1px solid ${t.Topic === picked ? G.gold : G.line}`, bgcolor: t.Topic === picked ? "rgba(240,192,90,.12)" : G.card,
             color: G.ink, borderRadius: "8px", px: 1, py: 0.5, fontSize: 11.5, cursor: "pointer" }}>🗄 {t.Topic} <span style={{ color: G.faint }}>{t.n}</span></Box>
       ))}
-      {!hub.topics.length && <Empty text="The cabinets are empty. File the first lesson." />}
+      {!hub.topics.length && <Empty text={tr("The cabinets are empty. File the first lesson.")} />}
     </Box>
     {topic && (files || []).map((f) => (
       <Card key={f.LoreId} onClick={() => pull(f)}>
@@ -771,7 +805,7 @@ function ArchiveSpace({ ghosts, hub, picked, setPicked, busy, play, reload, ...r
         <Typography sx={{ fontSize: 13, fontWeight: 600, mt: 0.3 }}>{f.Title}</Typography>
         <Typography sx={{ fontSize: 12, color: G.dim, mt: 0.4 }}>{f.Body}</Typography>
         <Box sx={{ mt: 0.7 }}>
-          <Btn disabled={voted.current.has(f.LoreId) || !!busy} onClick={() => vote(f)}>👍 Useful · +10</Btn>
+          <Btn disabled={voted.current.has(f.LoreId) || !!busy} onClick={() => vote(f)}>{tr("👍 Useful · +10")}</Btn>
         </Box>
       </Card>
     ))}
@@ -779,6 +813,7 @@ function ArchiveSpace({ ghosts, hub, picked, setPicked, busy, play, reload, ...r
 }
 
 function CoreSpace({ chat, onAsk, busy, play, pile, agents, picked, onGo }) {
+  useLocale();
   const [text, setText] = useState("");
   const end = useRef(null);
   useEffect(() => { end.current?.scrollIntoView({ block: "end" }); }, [chat.length]);
@@ -792,11 +827,11 @@ function CoreSpace({ chat, onAsk, busy, play, pile, agents, picked, onGo }) {
           <Box sx={{ maxWidth: "88%", px: 1.1, py: 0.7, borderRadius: m.who === "you" ? "11px 11px 2px 11px" : "11px 11px 11px 2px",
             bgcolor: m.who === "you" ? G.gold : "rgba(127,209,198,.12)", color: m.who === "you" ? "#1c1f24" : G.ink,
             border: m.who === "you" ? "none" : "1px solid rgba(127,209,198,.3)" }}>
-            <Typography sx={{ fontSize: 12.5, whiteSpace: "pre-wrap" }}>{m.text}</Typography>
+            <Typography sx={{ fontSize: 12.5, whiteSpace: "pre-wrap" }}>{m.intro ? tr(m.text) : m.text}</Typography>
           </Box>
           {/* what came with the answer - the thing it pointed at, its choices, and the buttons for it, all live */}
           {m.who === "core" && n === chat.length - 1 && <Box sx={{ maxWidth: "94%", width: "100%" }}>
-            {m.item && <Box sx={{ mt: 0.5 }}><Btn kind="mint" onClick={() => onGo(m.item)}>Go to it → {m.item.title}</Btn></Box>}
+            {m.item && <Box sx={{ mt: 0.5 }}><Btn kind="mint" onClick={() => onGo(m.item)}>{tr("Go to it → {title}", { title: m.item.title })}</Btn></Box>}
             {!!m.options?.length && <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap", mt: 0.5 }}>
               {m.options.map((o) => <Btn key={o} disabled={!!busy} onClick={() => send(o)}>{o}</Btn>)}</Box>}
             {(!!m.chips?.length || m.proposal) && m.item?.key && (
@@ -805,33 +840,33 @@ function CoreSpace({ chat, onAsk, busy, play, pile, agents, picked, onGo }) {
           </Box>}
         </Box>
       ))}
-      {busy === "busy" && <Typography sx={{ fontSize: 11.5, color: G.mint, px: 0.5 }}>✦ thinking…</Typography>}
+      {busy === "busy" && <Typography sx={{ fontSize: 11.5, color: G.mint, px: 0.5 }}>{tr("✦ thinking…")}</Typography>}
       <div ref={end} />
     </Box>
-    {inHand && <Typography sx={{ fontSize: 11, color: G.faint, mb: 0.5 }}>Asking about: <b style={{ color: G.dim }}>{inHand.title}</b></Typography>}
+    {inHand && <Typography sx={{ fontSize: 11, color: G.faint, mb: 0.5 }}>{tr("Asking about:")} <b style={{ color: G.dim }}>{inHand.title}</b></Typography>}
     <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap", mb: 0.8 }}>
       {["What should I do next?", "Who should take the top thing?", "What's slipping?"].map((q) =>
-        <Btn key={q} disabled={!!busy} onClick={() => send(q)}>{q}</Btn>)}
+        <Btn key={q} disabled={!!busy} onClick={() => send(q)}>{tr(q)}</Btn>)}
     </Box>
     <Box component="form" onSubmit={(e) => { e.preventDefault(); if (text.trim()) send(text); }} sx={{ display: "flex", gap: 0.6, mb: 1.5 }}>
-      <Box component="input" value={text} onChange={(e) => setText(e.target.value)} placeholder="Ask the core…"
+      <Box component="input" value={text} onChange={(e) => setText(e.target.value)} placeholder={tr("Ask the core…")}
         sx={{ flex: 1, bgcolor: "rgba(0,0,0,.25)", color: G.ink, border: `1px solid ${G.line}`, borderRadius: "9px", px: 1, py: 0.7, fontSize: 12.5, fontFamily: "inherit" }} />
-      <Btn kind="mint" disabled={!!busy || !text.trim()} onClick={() => send(text)}>Ask</Btn>
+      <Btn kind="mint" disabled={!!busy || !text.trim()} onClick={() => send(text)}>{tr("Ask")}</Btn>
     </Box>
-    <Typography sx={{ fontSize: 10, fontWeight: 600, letterSpacing: 1.2, color: G.faint, px: 0.5, mb: 0.6 }}>✦ MATCHMAKER · WHO SHOULD TAKE WHAT</Typography>
+    <Typography sx={{ fontSize: 10, fontWeight: 600, letterSpacing: 1.2, color: G.faint, px: 0.5, mb: 0.6 }}>{tr("✦ MATCHMAKER · WHO SHOULD TAKE WHAT")}</Typography>
     {board.map((i) => {
       const m = matchFor(i, agents);
       return (
         <Card key={i.key} onClick={() => onGo(i)}>
           <Box sx={{ display: "flex", alignItems: "center", gap: 0.8 }}>
             <Typography noWrap sx={{ fontSize: 12.5, fontWeight: 600, flex: 1 }}>{i.title}</Typography>
-            <Typography sx={{ fontSize: 11, fontWeight: 600, color: m.who === "you" ? G.gold : G.mint, whiteSpace: "nowrap" }}>→ {m.who}</Typography>
+            <Typography sx={{ fontSize: 11, fontWeight: 600, color: m.who === "you" ? G.gold : G.mint, whiteSpace: "nowrap" }}>→ {matchWho(m)}</Typography>
           </Box>
-          <Typography sx={{ fontSize: 11, color: G.faint }}>{i.who} · {m.why}</Typography>
+          <Typography sx={{ fontSize: 11, color: G.faint }}>{i.who} · {tr(m.why)}</Typography>
         </Card>
       );
     })}
-    {!board.length && <Empty text="Nothing to match. Everyone has what they need." />}
+    {!board.length && <Empty text={tr("Nothing to match. Everyone has what they need.")} />}
   </>;
 }
 

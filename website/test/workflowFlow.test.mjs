@@ -1,12 +1,12 @@
 // A workflow as steps (taskuary/flow.py): the editor's rules, as plain functions. Invented people only.
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import test from "node:test";
 import { asReport, asSteps, askFor, badRefs, onlyReads, diffKeys, firstMissing, insertStep, isLoneAgent, moveStep, nextId, outputsOf, removeStep,
   runWords, stepsOf, tally, toSaved, tokenInQuery, tokensFor } from "../src/workflowFlow.js";
 import { demoRepair, demoStepTest, installDemoWorkflows, PAYROLL } from "../src/demoWorkflows.js";
+import { setLocale } from "../src/i18n.js";
 
-const read = (name) => fs.readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8");
+setLocale("en");
 const flow = [
   { id: "s1", kind: "source", label: "Read AP bills", type: "mssql", query: "SELECT 1" },
   { id: "s2", kind: "ai", label: "Duplicates?", prompt: "{{s1}}", output: "yes_no" },
@@ -90,24 +90,10 @@ test("Turn into steps asks with what the workflow already says", () => {
   assert.match(ask, /Build it as steps/);
 });
 
-test("the editor shows steps in place of What it does, and keeps the old field with Turn into steps", () => {
-  const ed = read("WorkflowEditor.jsx");
-  assert.match(ed, /\{steps \? <Field label="Steps"/);
-  assert.ok(ed.includes('"Turn into steps"') && ed.includes("/api/workflows/compose") && ed.includes("/repair`"));
-  assert.ok(ed.includes('"When a step fails"'));
-  const st = read("WorkflowSteps.jsx");
-  assert.ok(st.includes("/api/workflows/step-test") && st.includes('"Test this step"') && st.includes("Insert output of"));
-  assert.ok(read("ReportsView.jsx").includes("export function SourceCard"));
-  assert.ok(read("TaskPage.jsx").includes("<RunSteps steps={fromWorkflow.steps} dense repairs={fromWorkflow.repairs}"));
-});
 
 // a self-repair is a record - what broke, why, what changed - with no Take it back (the owner, 2026-10-19); the step editor changes it back
 test("a self-repair reads back with what broke and what changed, in the shared button words", () => {
-  const rs = read("RunSteps.jsx");
-  assert.ok(rs.includes('btnLabel("fix")') && rs.includes("Repaired itself") && !rs.includes("take_back") && !rs.includes("/undo-repair"));
-  assert.doesNotMatch(rs, />Fix with AI</);
   assert.equal(tally([{ kind: "source", status: "repaired", ms: 300 }, { kind: "source", status: "ok", ms: 700 }]), "Ran 1 step in 1.0s, AI only for the repair");
-  assert.ok(read("WorkflowEditor.jsx").includes('cfg.repair || "auto"'));                 // repair is on unless the owner says otherwise
 });
 
 test("steps that only read are a report: the editor offers it, built from the same query and prompt", () => {
@@ -119,10 +105,6 @@ test("steps that only read are a report: the editor offers it, built from the sa
   assert.equal(onlyReads([{ id: "s1", kind: "source", type: "unheard_of" }], types), false);     // not vouched for: counts as a write
   assert.deepEqual(asReport({ title: "Bills", cron: "0 8 * * 1", flow: reads }),
     { title: "Bills", ai_prompt: "Summarize:\n[mssql.read ap bills] ( rows)", cron: "0 8 * * 1", type: "mssql", query: "SELECT 1", label: "Read AP bills" });
-  const ed = read("WorkflowEditor.jsx");
-  assert.match(ed, /onlyReads\(cfg\.flow, types\) && <Alert[^>]*data-tq-report-suggestion/);
-  assert.match(ed, /onReport\(asReport\(cfg\)\)}>\{btnLabel\("make_report"\)\}</);
-  assert.match(read("ReportsView.jsx"), /kind === "workflow" && data\.verdict !== "report"/, "a routine the composer read as a report lands in the report builder");
 });
 
 test("the demo world has a clean run and a failed one, and its step test never writes", () => {

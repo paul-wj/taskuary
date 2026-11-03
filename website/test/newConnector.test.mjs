@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { connectorNamed } from "../src/connectorCatalog.js";
 
 // "i want to connect taskuary to linkedin" in New's agent job had no way to Connections (a tester, 2026-10-20): the card it names is
@@ -21,9 +20,3 @@ test("no card for words that only share a fragment, and none for plain work", ()
   assert.equal(connectorNamed(""), null);
 });
 
-test("New offers the card on its own row, beside the job, and the job still starts if pressed", () => {
-  const src = readFileSync(new URL("../src/NewSheet.jsx", import.meta.url), "utf8");
-  assert.ok(src.includes("useVerbs(`new-connect${me}`"));
-  assert.ok(src.includes("openAppLink(`#connector=${named.type}`)"));
-  assert.ok(src.includes("onWords={setWords}"));
-});

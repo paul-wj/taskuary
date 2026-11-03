@@ -4,13 +4,14 @@
 // tool. Words Taskuary itself wrote from what it read (a report, the assistant) are not "someone" - they say so instead.
 // The presses are the server's words for this sender (senders.trust_offer) - the same ones the held box carries (the owner,
 // 2026-10-26): "Trust Erin", "Trust everyone at vendor.example", a Slack workspace's name - and no organisation where there is none.
+import { t } from "./i18n.js";
 export const strangerLine = (d) => {
   if (d?.origin?.origin !== "stranger") return null;
   // ...and Taskuary's own work offers no "Trust it" (the owner, 2026-10-27: "trust it for something taskuary itself made??"): there is no
   // one to trust - what it read is the risk, and the line just says so; a step it holds still carries its own presses (trustInBox)
-  const ours = /^written by Taskuary/i.test(d.origin.why || ""), what = /report/i.test(d.origin.why || "") ? "a report" : "what it read";
-  return { text: ours ? `Taskuary wrote this from ${what} - an agent asks before anything risky` : "From someone you haven't worked with here yet - anything risky waits for your OK",
-    trust: ours ? null : d.origin.trust?.person || "Trust them", trustOrg: ours ? null : d.origin.trust?.org || null,
+  const ours = /^written by Taskuary/i.test(d.origin.why || ""), report = /report/i.test(d.origin.why || "");
+  return { text: ours ? t(report ? "Taskuary wrote this from a report - an agent asks before anything risky" : "Taskuary wrote this from what it read - an agent asks before anything risky") : t("From someone you haven't worked with here yet - anything risky waits for your OK"),
+    trust: ours ? null : d.origin.trust?.person || t("Trust them"), trustOrg: ours ? null : d.origin.trust?.org || null,
     why: d.origin.why || "", danger: d.origin.danger || null };
 };
 
@@ -26,6 +27,6 @@ export const trustInBox = (story) => story?.kind === "held" && !!story.trust?.pe
 // triage's (message.DangerAim): 'owner' says "a scam aimed at you" - its reason on hover (DangerNote) - and the steer words stay for text
 // written to hijack the agent, and for a reading that never said whom (rows from before)
 export const SCAM_LINE = "⚠ Looks like a scam aimed at you - don't click or pay.";
-export const dangerLine = (danger, aim = null) => (!danger ? null : aim === "owner" ? SCAM_LINE : `⚠ Reads as an attempt to steer the agent: ${danger}`);
+export const dangerLine = (danger, aim = null) => (!danger ? null : aim === "owner" ? t(SCAM_LINE) : t("⚠ Reads as an attempt to steer the agent: {danger}", { danger }));
 export const dangerOf = (d) => d?.origin?.danger || null;
 export const dangerAimOf = (d) => d?.origin?.danger_aim || null;

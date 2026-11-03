@@ -18,6 +18,8 @@ import api from "./api";
 import { isOwnerAuthor } from "./agentIdentity.js";
 import { BORDER, DIM, FAINT, INK, PANEL, PANEL2, card, mono } from "./theme.jsx";
 import { Empty, timeAgo, TaskuaryMark } from "./ui.jsx";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 // what a note IS, in the agents' own vocabulary. The colour is a dot beside the word, never a
 // wash over the card: one oxblood surface in this app means ALERT, and a note is not an alert.
@@ -55,19 +57,21 @@ const Face = ({ who, ownerName, size = 30 }) => {
 };
 
 const Kind = ({ kind }) => {
+  useLocale();
   const k = KINDS[kind] || KINDS.note;
   return (
-    <Tooltip title={k.hint}>
+    <Tooltip title={t(k.hint)}>
       <Box sx={{ display: "inline-flex", alignItems: "center", gap: 0.55, px: 0.85, height: 19, borderRadius: 99,
         border: `1px solid ${BORDER}`, bgcolor: PANEL, flexShrink: 0 }}>
         <Box sx={{ width: 6, height: 6, borderRadius: "50%", bgcolor: k.dot }} />
-        <Typography sx={{ fontSize: 10, fontWeight: 600, color: DIM, letterSpacing: 0.2 }}>{k.label}</Typography>
+        <Typography sx={{ fontSize: 10, fontWeight: 600, color: DIM, letterSpacing: 0.2 }}>{t(k.label)}</Typography>
       </Box>
     </Tooltip>
   );
 };
 
 const Note = ({ n, onOpenTask, ownerName }) => {
+  useLocale();
   const read = String(n.ReadBy || "").split(",").filter(Boolean);
   return (
     <Box sx={{ display: "flex", gap: 1.25, py: 1.5, borderBottom: `1px solid ${BORDER}` }}>
@@ -101,7 +105,7 @@ const Note = ({ n, onOpenTask, ownerName }) => {
             </Tooltip>
           )}
           {!!read.length && (
-            <Typography sx={{ fontSize: 10, color: FAINT }}>· read by {read.join(", ")}</Typography>
+            <Typography sx={{ fontSize: 10, color: FAINT }}>· {t("read by {names}", { names: read.join(", ") })}</Typography>
           )}
         </Box>
       </Box>
@@ -110,6 +114,7 @@ const Note = ({ n, onOpenTask, ownerName }) => {
 };
 
 export default function AgentWall({ onOpenTask, refresh, active = true }) {
+  useLocale();
   const [rows, setRows] = useState(null);
   const [body, setBody] = useState("");
   const [kind, setKind] = useState("note");
@@ -148,7 +153,7 @@ export default function AgentWall({ onOpenTask, refresh, active = true }) {
       <Box sx={{ ...card, p: 1.5, mb: 1.5 }}>
         <Box sx={{ display: "flex", gap: 1.25, alignItems: "flex-start" }}>
           <Face who="you" />
-          <TextField fullWidth multiline maxRows={4} size="small" value={body} placeholder="Leave a live handoff for the agents…"
+          <TextField fullWidth multiline maxRows={4} size="small" value={body} placeholder={t("Leave a live handoff for the agents…")}
             onChange={(e) => setBody(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); post(); } }}
             sx={{ bgcolor: "#fff", "& textarea": { fontSize: 13 } }} />
@@ -159,26 +164,25 @@ export default function AgentWall({ onOpenTask, refresh, active = true }) {
             {Object.entries(KINDS).filter(([k]) => k !== "summary").map(([k, v]) => (
               <MenuItem key={k} value={k} sx={{ fontSize: 12 }}>
                 <Box component="span" sx={{ display: "inline-block", width: 7, height: 7, borderRadius: "50%",
-                  bgcolor: v.dot, mr: 1 }} />{v.label}
+                  bgcolor: v.dot, mr: 1 }} />{t(v.label)}
               </MenuItem>
             ))}
           </Select>
           <Typography variant="caption" sx={{ color: FAINT, flex: 1 }}>
-            Task-specific and short-lived; hard-earned durable knowledge belongs in the Hub. Agents post here with <code>taskuary --note</code>.
+            {t("Task-specific and short-lived; hard-earned durable knowledge belongs in the Hub. Agents post here with")} <code>taskuary --note</code>.
           </Typography>
           {/* the older days are still here, folded - one summary each, per checkout */}
           <Button size="small" onClick={() => setAll((x) => !x)} sx={{ fontSize: 11, color: DIM, textTransform: "none" }}>
-            {all ? "show live handoffs" : "show note history"}
+            {t(all ? "show live handoffs" : "show note history")}
           </Button>
           <Button size="small" variant="contained" disableElevation disabled={busy || !body.trim()} onClick={post}
-            endIcon={<SendIcon sx={{ fontSize: 15 }} />}>Post</Button>
+            endIcon={<SendIcon sx={{ fontSize: 15 }} />}>{t("Post")}</Button>
         </Box>
       </Box>
 
       {!rows.length ? (
         <Empty>
-          Nothing on the wall yet. Agents post here as they work — what they are taking, what they
-          found, and “ready to push” when a tree is safe to build on — and read it before they start.
+          {t("Nothing on the wall yet. Agents post here as they work — what they are taking, what they found, and “ready to push” when a tree is safe to build on — and read it before they start.")}
         </Empty>
       ) : days.map(([day, notes]) => (
         <Box key={day} sx={{ mb: 1 }}>

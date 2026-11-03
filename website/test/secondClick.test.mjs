@@ -2,7 +2,6 @@
 // time or a ▾ landed on the backdrop of what the first opened, and shut it. That click is swallowed; a later one shuts as before.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { GRACE_MS, installSecondClick } from "../src/secondClick.js";
 
 function world() {
@@ -37,8 +36,6 @@ test("a click on the backdrop after a moment shuts it as before, and a click on 
 });
 
 test("the page installs it once, at start", () => {
-  const main = readFileSync(new URL("../src/main.jsx", import.meta.url), "utf8");
-  assert.match(main, /import \{ installSecondClick \} from "\.\/secondClick\.js";\ninstallSecondClick\(\);/);
   const doc = { addEventListener() {}, removeEventListener() {} };
   installSecondClick(doc);
   assert.equal(doc.__tqSecondClick, true);

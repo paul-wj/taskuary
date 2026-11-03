@@ -2,6 +2,7 @@
 // (read-only only where the triage judged an item dangerous). One shape for the task page and the rail: what each item's state is called, what the owner may press on it, and
 // the one line that says how far the batch got.
 import { label } from "./buttons.js";
+import { t } from "./i18n.js";
 
 export const CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳";
 export const circled = (n) => CIRCLED[n - 1] || String(n);
@@ -9,8 +10,11 @@ const OPEN = ["waiting", "working", "needs_you"];
 export const isOpen = (i) => OPEN.includes(i?.State);
 
 // the state, in words - "needs you" is the only one that shouts
-export const stateWord = (i) => ({ waiting: "not yet read", working: "reading", needs_you: "needs you", done: "done",
-  ended: (i?.EndedWhy || "").toLowerCase().includes("merged") ? "merged" : "closed" })[i?.State] || i?.State || "";
+export const stateWord = (i) => {
+  const word = { waiting: "not yet read", working: "reading", needs_you: "needs you", done: "done",
+    ended: (i?.EndedWhy || "").toLowerCase().includes("merged") ? "merged" : "closed" }[i?.State];
+  return word ? t(word) : i?.State || "";
+};
 
 const isPull = (i) => /github\.com\/[^/]+\/[^/]+\/pull\/\d+/.test(i?.Link || "");
 
@@ -21,23 +25,23 @@ const isPull = (i) => /github\.com\/[^/]+\/[^/]+\/pull\/\d+/.test(i?.Link || "")
 // cloud for an outsider (cloudfix.py). A fix that is done has its own pull request, and Merge merges that one.
 export const fixing = (i) => i?.Fix === "running";
 export function fixLine(i) {
-  if (fixing(i)) return "Being fixed in GitHub's cloud…";
-  if (i?.Fix === "done") return "Fixed in GitHub's cloud - its pull request is ready to merge.";
-  if (i?.Fix === "failed") return "The cloud fix did not work.";
+  if (fixing(i)) return t("Being fixed in GitHub's cloud…");
+  if (i?.Fix === "done") return t("Fixed in GitHub's cloud - its pull request is ready to merge.");
+  if (i?.Fix === "failed") return t("The cloud fix did not work.");
   return "";
 }
 export function actions(i) {
   if (!i) return [];
   if (fixing(i)) return [];
-  if (!isOpen(i)) return [{ action: "reopen", label: "Open again" }];
-  if (i.State !== "needs_you") return [{ action: "settle", label: "Nothing to do" }];
+  if (!isOpen(i)) return [{ action: "reopen", label: t("Open again") }];
+  if (i.State !== "needs_you") return [{ action: "settle", label: t("Nothing to do") }];
   const p = i.Propose, fixed = i.Fix === "done";
   const canFix = isPull(i) && p === "changes" && i.canFix !== false;
-  const all = [...(canFix ? [{ action: "fix", label: i.Fix === "failed" ? `${label("fix")} again` : label("fix"), primary: true }] : []),
-    ...(i.Link && p === "changes" ? [{ action: "open", label: "Ask for changes", href: i.Link, primary: !canFix }] : []),
-    ...(fixed && i.FixLink ? [{ action: "open-fix", label: "See the fix", href: i.FixLink }] : []),
-    ...(isPull(i) && i.reviewed ? [{ action: "merge", label: fixed ? "Merge the fix" : "Merge", primary: p === "merge" }] : []),
-    ...(isPull(i) ? [{ action: "close", label: "Close it", primary: p === "close" }] : []), { action: "settle", label: "Nothing to do" }];
+  const all = [...(canFix ? [{ action: "fix", label: i.Fix === "failed" ? t("{action} again", { action: label("fix") }) : label("fix"), primary: true }] : []),
+    ...(i.Link && p === "changes" ? [{ action: "open", label: t("Ask for changes"), href: i.Link, primary: !canFix }] : []),
+    ...(fixed && i.FixLink ? [{ action: "open-fix", label: t("See the fix"), href: i.FixLink }] : []),
+    ...(isPull(i) && i.reviewed ? [{ action: "merge", label: fixed ? t("Merge the fix") : t("Merge"), primary: p === "merge" }] : []),
+    ...(isPull(i) ? [{ action: "close", label: t("Close it"), primary: p === "close" }] : []), { action: "settle", label: t("Nothing to do") }];
   return [...all.filter((a) => a.primary), ...all.filter((a) => !a.primary)];
 }
 
@@ -47,7 +51,7 @@ export function progress(items) {
   if (!its.length) return "";
   const settled = its.filter((i) => !isOpen(i)).length;
   const you = its.filter((i) => i.State === "needs_you").map((i) => circled(i.Place));
-  return [`${settled} of ${its.length} done`, you.length ? `${you.join("")} need${you.length === 1 ? "s" : ""} you` : ""].filter(Boolean).join(" · ");
+  return [t("{settled} of {total} done", { settled, total: its.length }), you.length ? t(you.length === 1 ? "{items} needs you" : "{items} need you", { items: you.join("") }) : ""].filter(Boolean).join(" · ");
 }
 
 // the rail row's own height has room for a count, not a sentence: "1/4" (settled of all)

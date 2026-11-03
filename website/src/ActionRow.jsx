@@ -7,17 +7,20 @@ import { NAV, ROW_HOLD_MS, ROW_STUCK_MS, TYPES, advisedAny, fitRow, navShort, pr
 import { adviceNone } from "./words.js";
 import { label } from "./buttons.js";
 import { CONNECT_AI } from "./ConnectAi.jsx";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 // what a refused proposal says on the line: the item moved under the Advisor (409) is not the owner's mistake - the page reads
 // the advice again, and the line says the suggestion is the new one
-export const proposeFailed = (e) => (e?.response?.status === 409 ? "This changed - here's the updated suggestion."
-  : e?.response?.data?.detail || "That did not go through - try again.");
+export const proposeFailed = (e) => (e?.response?.status === 409 ? { source: "This changed - here's the updated suggestion." }
+  : e?.response?.data?.detail || { source: "That did not go through - try again." });
 
 // THE ADVISOR'S PICK, ON THE ROW AND NOWHERE ELSE (the owner, 2026-10-26: "maybe keep the box but remove the advisor? not sure the advisor
 // is really useful"): the strip that said its line over the row is gone - the lit button does the talking, and the few lines that warn
 // are drawn in the task beside what they are about (advice.taskNote, AdvisorNote). What stays here is the move the row has no button
 // for, joined to the row so it can be lit, and a hidden mark the walks read to tell a decided item from one still being read.
 export function AdvisorNext({ advice, onPropose, onErr = null }) {
+  useLocale();
   const verbs = useRowVerbs();
   const [going, setGoing] = useState(false);
   // A MOVE THE ROW HAS NO BUTTON FOR (Not ours, Take it myself, Chase, Let it go) was hidden, and then got a button of its own beside
@@ -35,21 +38,22 @@ export function AdvisorNext({ advice, onPropose, onErr = null }) {
   // ...it IS the advice, so it is the dark one (rowOf fills it like any advised verb)
   // ...at the END of its type (group "more"): in front, it pushed the type's own second button into ▾ when the advice landed (2026-10-19)
   useVerbs("advice", lacks ? [{ id: `advice:${advice.verb}`, label: advice.label, group: "more", tone: "p", disabled: going,
-    title: "What the Advisor suggests", run }] : [], lacks);
+    title: t("What the Advisor suggests"), run }] : [], lacks);
   return advice?.verb ? <div hidden data-tq-advice="" data-tq-silent="" data-tq-advice-verb={advice.verb} /> : null;
 }
 
 // ONE PILL: the moves the width holds, and its own ▾ for the rest (foldsOf) - the move pill unlabelled, Change with its one quiet word
 const PILL = { move: "What to do", change: "Change the task", more: "More" };
 function Cluster({ g, btn, act = press }) {
+  useLocale();
   const [at, setAt] = useState(null);
   return (
-    <div className="tq-cl" role="group" aria-label={g.label || PILL[g.type] || "This one"} data-tq-type={g.type}>
-      {g.label && <span className="tq-cl-h" aria-hidden="true">{g.label}</span>}
+    <div className="tq-cl" role="group" aria-label={g.label ? t(g.label) : t(PILL[g.type] || "This one")} data-tq-type={g.type}>
+      {g.label && <span className="tq-cl-h" aria-hidden="true">{t(g.label)}</span>}
       <div className="tq-cl-b">
         {g.shown.map(btn)}
         {g.rest.length > 0 && <>
-          <button type="button" className="tq-ab s tq-cl-more" aria-haspopup="menu" aria-expanded={!!at} aria-label={`More ${g.label ? g.label.toLowerCase() + " " : ""}actions`}
+          <button type="button" className="tq-ab s tq-cl-more" aria-haspopup="menu" aria-expanded={!!at} aria-label={g.label ? t("More {group} actions", { group: t(g.label).toLowerCase() }) : t("More actions")}
             data-tq-more={g.type} onClick={(e) => setAt(e.currentTarget)}>▾</button>
           <Menu open={!!at} anchorEl={at} onClose={() => setAt(null)} anchorOrigin={{ vertical: "top", horizontal: "center" }} transformOrigin={{ vertical: "bottom", horizontal: "center" }}
             slotProps={{ paper: { sx: { minWidth: 200, borderRadius: 2 } } }}>
@@ -65,6 +69,7 @@ function Cluster({ g, btn, act = press }) {
 
 // the row says what to do, by type - not which task or how long it waited: the card above says both (the owner, 2026-10-13)
 export default function ActionRow({ inline = false, advised: given = null, hold = false, early = true }) {
+  const locale = useLocale();
   // `hold` (actionRow.useRowHold, its number): the new row is not whole yet - the row drawn last stays up as it was, and its presses do
   // nothing, until it is; with none drawn yet (a reload) there is no row until then. Never hidden, never greyed, never drawn twice
   // ...and at most ROW_HOLD_MS from the moment the held row is kept off one that may be drawn (`early`: the new item's own verbs are up)
@@ -117,7 +122,7 @@ export default function ActionRow({ inline = false, advised: given = null, hold 
   const [box, setBox] = useState(null), ghost = useRef(null);
   const [m, setM] = useState(null), [avail, setAvail] = useState(0), [over, setOver] = useState({ at: "", n: 0 }), [fonts, setFonts] = useState(0);
   const narrow = useMediaQuery("(max-width:1099px)");   // the row's own breakpoint (assistantView.css): pills lose their min-width
-  const parts = JSON.stringify([next?.label || "", back?.label || "", [...decide, ...agent, ...more].map((v) => [v.id, v.label, v.tone])]);
+  const parts = JSON.stringify([locale, next?.label || "", back?.label || "", [...decide, ...agent, ...more].map((v) => [v.id, v.label, v.tone])]);
   useEffect(() => { let on = true; document.fonts?.ready?.then(() => on && setFonts((n) => n + 1)); return () => { on = false; }; }, []);
   useLayoutEffect(() => { if (box && ghost.current) setM(measure(ghost.current, box)); }, [box, parts, narrow, phone, fonts]);
   useLayoutEffect(() => {
@@ -154,13 +159,13 @@ export default function ActionRow({ inline = false, advised: given = null, hold 
       title={(v.disabled && v.why) || v.title || (fit.tight ? v.label : undefined)} onClick={(e) => act(v.id, e, e.currentTarget, v.of)}>{v.label}</button>
   );
   return (
-    <div className={inline ? "tq-arow inline" : "tq-arow"} role="toolbar" aria-label={ref ? `What to do with ${ref}` : "What to do with this one"} data-tq-row=""
+    <div className={inline ? "tq-arow inline" : "tq-arow"} role="toolbar" aria-label={ref ? t("What to do with {ref}", { ref }) : t("What to do with this one")} data-tq-row=""
       aria-busy={hold || undefined}>
       <div className={fit.tight ? "tq-arow-verbs tight" : "tq-arow-verbs"} ref={setBox} data-tq-fold={fit.level}>
         {/* NAV, ONE PILL (the owner, 2026-10-27): the walk's Back (up the line) and Next (down it), labelled like the types - never folded */}
-        {(next || back) && <div className="tq-cl tq-cl-next" role="group" aria-label={NAV} data-tq-type="nav">
+        {(next || back) && <div className="tq-cl tq-cl-next" role="group" aria-label={t(NAV)} data-tq-type="nav">
           {/* ...on a phone the pill keeps the row its words (pill-leaves-room): no label, and Back is its arrow alone, its name on it for a reader - and on a squeezed desk bar (navShort) */}
-          {!short && <span className="tq-cl-h" aria-hidden="true">{NAV}</span>}
+          {!short && <span className="tq-cl-h" aria-hidden="true">{t(NAV)}</span>}
           <div className="tq-cl-b">
             {back && <button type="button" className={`tq-ab ${back.tone} next`} data-tq-back="" data-tq-walk-back="" data-tq-short={short ? "" : undefined}
               aria-label={back.label} title={back.title || back.label} disabled={back.disabled}
@@ -173,7 +178,7 @@ export default function ActionRow({ inline = false, advised: given = null, hold 
       {/* every part the row can draw, unseen, in the row's own classes - what fitRow adds up */}
       <div className="tq-arow-ghost" ref={ghost} aria-hidden="true">
         <div className="tq-cl">
-          {[...TYPES, ...(phone ? [] : [["nav", NAV]])].map(([t, l]) => <span key={t} className="tq-cl-h" data-tq-wl={t}>{l}</span>)}
+          {[...TYPES, ...(phone ? [] : [["nav", NAV]])].map(([type, l]) => <span key={type} className="tq-cl-h" data-tq-wl={type}>{l ? t(l) : l}</span>)}
           <div className="tq-cl-b">
             {next && <span className={`tq-ab ${next.tone} next`} data-tq-wn="">{next.label}</span>}
             {back && <span className={`tq-ab ${back.tone} next`} data-tq-back="" data-tq-wbk="" data-tq-short={phone ? "" : undefined}>{phone ? "" : back.label}</span>}

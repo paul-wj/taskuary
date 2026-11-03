@@ -10,7 +10,7 @@
 // a file name instead of a path, the search's query, a page's host, a task's id - and never by guessing intent from words. The raw call
 // and its output stay in `detail`, which the canvas keeps behind the row's disclosure for debugging.
 import { forScreen } from "./agentMarkers.js";
-import { plural } from "./timeWords.js";
+import { t } from "./i18n.js";
 
 const flat = (s) => String(s || "").split(/\s+/).join(" ").trim();
 const clip = (s, n = 90) => { const t = flat(s); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
@@ -70,12 +70,12 @@ const taskuaryCall = (path, cmd) => {
   const [where, query = ""] = path.split("?");
   const bits = where.split("/").filter(Boolean);
   const param = (k) => { const m = new RegExp(`(?:^|&)${k}=([^&]*)`).exec(query); try { return m ? decodeURIComponent(m[1].replace(/\+/g, " ")) : ""; } catch { return m[1]; } };
-  if (bits[0] === "search") { const q = param("q"); return { kind: "mail", summary: q && !q.includes("$") ? `Searched your mail for ${quoted(q)}` : "Searched your mail", q }; }
-  if (bits[0] === "tasks" && /^\d+$/.test(bits[1] || "")) return { kind: "task", summary: `Opened TQ-${bits[1].padStart(4, "0")}` };
-  if (bits[0] === "tasks") return { kind: "task", summary: "Looked at your task list" };
-  if (bits[0] === "messages" && /^\d+$/.test(bits[1] || "")) return { kind: "mail", summary: `Opened message ${bits[1]}` };
-  if (bits[0] === "tools" && bits[1] === "run") { const t = (/"type"\s*:\s*"([\w.-]+)"/.exec(cmd) || [])[1]; return { kind: "data", summary: t ? `Looked up data in ${t}` : "Looked up data in a connected system" }; }
-  return { kind: "data", summary: `Looked up ${(bits[0] || "data").replace(/[-_]/g, " ")} in Taskuary` };
+  if (bits[0] === "search") { const q = param("q"); return { kind: "mail", summary: q && !q.includes("$") ? t("Searched your mail for {query}", { query: quoted(q) }) : t("Searched your mail"), q }; }
+  if (bits[0] === "tasks" && /^\d+$/.test(bits[1] || "")) return { kind: "task", summary: t("Opened TQ-{id}", { id: bits[1].padStart(4, "0") }) };
+  if (bits[0] === "tasks") return { kind: "task", summary: t("Looked at your task list") };
+  if (bits[0] === "messages" && /^\d+$/.test(bits[1] || "")) return { kind: "mail", summary: t("Opened message {id}", { id: bits[1] }) };
+  if (bits[0] === "tools" && bits[1] === "run") { const type = (/"type"\s*:\s*"([\w.-]+)"/.exec(cmd) || [])[1]; return { kind: "data", summary: type ? t("Looked up data in {system}", { system: type }) : t("Looked up data in a connected system") }; }
+  return { kind: "data", summary: t("Looked up {item} in Taskuary", { item: bits[0] ? bits[0].replace(/[-_]/g, " ") : t("data") }) };
 };
 
 // AGENT-BROWSER IN WORDS, from its own fixed grammar (browsergate.LOOKS / TYPES lists the same verbs): Codex and Gemini read "Ran
@@ -96,17 +96,17 @@ export const browserStep = (args) => {
   }
   const [verb = "", ...rest] = a.map(String), v = verb.toLowerCase();
   const step = (summary, more = {}) => ({ kind: "page", summary, browser: true, ...more });
-  if (["open", "goto", "navigate"].includes(v)) { const host = hostOf(rest[0]) || hostOf(`https://${rest[0] || ""}`); return step(host ? `Opened ${host}` : "Opened a page", { host }); }
-  if (AB_LOOKS.has(v)) return step("Looked at the page");
+  if (["open", "goto", "navigate"].includes(v)) { const host = hostOf(rest[0]) || hostOf(`https://${rest[0] || ""}`); return step(host ? t("Opened {host}", { host }) : t("Opened a page"), { host }); }
+  if (AB_LOOKS.has(v)) return step(t("Looked at the page"));
   if (v === "find") {
     // find <locator> <value> <action> [text]: a role's own name may sit before the action ("button "Pay now" click") or after it
     const ai = rest.findIndex((w, i) => i >= 2 && AB_ACTIONS.has(w.toLowerCase())), act = ai >= 0 ? rest[ai].toLowerCase() : "";
     const value = (ai > 2 && rest.slice(2, ai).join(" ")) || (rest[0] !== "role" && rest[1]) || (ai >= 0 && rest.slice(ai + 1).join(" ")) || rest[1];
-    if (["fill", "type"].includes(act)) return step(value ? `Typed into ${quoted(value)}` : "Typed into a box");
-    if (["click", "dblclick", "press"].includes(act)) return step(value ? `Clicked ${quoted(value)}` : "Clicked on the page");
-    return step(value ? `Looked for ${quoted(value)} on the page` : "Looked at the page");
+    if (["fill", "type"].includes(act)) return step(value ? t("Typed into {value}", { value: quoted(value) }) : t("Typed into a box"));
+    if (["click", "dblclick", "press"].includes(act)) return step(value ? t("Clicked {value}", { value: quoted(value) }) : t("Clicked on the page"));
+    return step(value ? t("Looked for {value} on the page", { value: quoted(value) }) : t("Looked at the page"));
   }
-  return step(AB_SAID[v] || (v ? `Used the browser (${v})` : "Used the browser"));
+  return step(AB_SAID[v] ? t(AB_SAID[v]) : v ? t("Used the browser ({verb})", { verb: v }) : t("Used the browser"));
 };
 
 const commandStep = (cmd, depth = 0) => {
@@ -129,30 +129,30 @@ const commandStep = (cmd, depth = 0) => {
     }
     if (FETCH.has(p)) {
       const url = args.find((a) => /^https?:\/\//i.test(a) || a.includes("/api/"));
-      if (!url) { found.push({ kind: "run", summary: `Ran ${p}` }); continue; }
+      if (!url) { found.push({ kind: "run", summary: t("Ran {command}", { command: p }) }); continue; }
       const api = url.indexOf("/api/"), host = hostOf(url);
       if (api >= 0 && (!host || /^(localhost|127\.0\.0\.1)$/i.test(host))) found.push(taskuaryCall(url.slice(api + 5), seg.text));
-      else found.push({ kind: "page", summary: `Read a page on ${host || clip(url, 40)}`, host });
+      else found.push({ kind: "page", summary: t("Read a page on {host}", { host: host || clip(url, 40) }), host });
       continue;
     }
     // `cat > desk.svg` WRITES desk.svg: it read "Read <<EOF" (the stress test, 2026-11-02)
     const to = args.findIndex((a) => /^>>?$/.test(a)), into = to >= 0 ? args[to + 1] : (args.find((a) => /^>>?[^>&]/.test(a)) || "").replace(/^>+/, "");
-    if (READERS.has(p) && into && !/^(\/dev\/null|nul|\$null)$/i.test(into)) { found.push({ kind: "edit", summary: `Wrote ${baseName(into)}`, file: into }); continue; }
-    if (READERS.has(p) && plain.length) { const f = plain[plain.length - 1]; found.push({ kind: "read", summary: `Read ${baseName(f)}`, file: f }); continue; }
+    if (READERS.has(p) && into && !/^(\/dev\/null|nul|\$null)$/i.test(into)) { found.push({ kind: "edit", summary: t("Wrote {file}", { file: baseName(into) }), file: into }); continue; }
+    if (READERS.has(p) && plain.length) { const f = plain[plain.length - 1]; found.push({ kind: "read", summary: t("Read {file}", { file: baseName(f) }), file: f }); continue; }
     if (GREPS.has(p) || (p === "git" && args[0] === "grep")) {
       const e = args.indexOf("-e"), pat = e >= 0 ? args[e + 1] : plain[p === "git" ? 1 : 0];
-      found.push({ kind: "search", summary: pat ? `Searched files for ${quoted(pat)}` : "Searched files", pattern: pat }); continue;
+      found.push({ kind: "search", summary: pat ? t("Searched files for {pattern}", { pattern: quoted(pat) }) : t("Searched files"), pattern: pat }); continue;
     }
-    if (LISTS.has(p)) { const d = plain[0]; found.push({ kind: "list", summary: d && d !== "." ? `Listed the files in ${baseName(d)}` : "Listed the files here" }); continue; }
-    if (SNIPPET[p] && args.some((a) => a === "-c" || a === "-e")) { found.push({ kind: "run", summary: `Ran a ${SNIPPET[p]} snippet`, filler: true }); continue; }
+    if (LISTS.has(p)) { const d = plain[0]; found.push({ kind: "list", summary: d && d !== "." ? t("Listed the files in {directory}", { directory: baseName(d) }) : t("Listed the files here") }); continue; }
+    if (SNIPPET[p] && args.some((a) => a === "-c" || a === "-e")) { found.push({ kind: "run", summary: t("Ran a {language} snippet", { language: SNIPPET[p] }), filler: true }); continue; }
     const sub = args[0] && /^[a-z][\w.-]{0,24}$/i.test(args[0]) ? ` ${SNIPPET[p] ? baseName(args[0]) : args[0]}` : "";
-    found.push({ kind: "run", summary: `Ran ${p}${sub}`, filler: !!SNIPPET[p] });
+    found.push({ kind: "run", summary: t("Ran {command}", { command: `${p}${sub}` }), filler: !!SNIPPET[p] });
   }
   // a snippet that only reshapes what a fetch brought back is not a step of its own
   const real = found.filter((s) => !s.filler);
   const use = real.length ? real : found;
   if (!use.length) return null;
-  return { ...use[0], summary: use.length > 1 ? `${use[0].summary}, and ${use.length - 1} more` : use[0].summary };
+  return { ...use[0], summary: use.length > 1 ? t("{summary}, and {count} more", { summary: use[0].summary, count: use.length - 1 }) : use[0].summary };
 };
 
 // ── a tool call, by its name and arguments ───────────────────────────────────────────────────────
@@ -186,26 +186,27 @@ export const describeCall = (name, args = {}) => {
     // ...Claude's own words for a browser step ("Press the pay button for invoice INV-1001") say more than the verb does
     if (s && s.kind !== "run" && !(s.browser && a.description)) return s;
     if (a.description) return { kind: s?.browser ? "page" : "run", summary: clip(a.description) };
-    return s || { kind: "run", summary: "Ran a command" };
+    return s || { kind: "run", summary: t("Ran a command") };
   }
-  if (kind === "read") { const f = fileOf(a); return { kind, summary: f ? `Read ${baseName(f)}` : "Read a file", file: f }; }
-  if (kind === "search") { const pat = a.pattern || a.query || a.regex; return { kind, summary: pat ? `Searched files for ${quoted(pat)}` : "Searched files", pattern: pat }; }
-  if (kind === "list") { const g = a.pattern || a.glob, d = a.path || a.dir_path || a.directory; return { kind, summary: g ? `Looked for files matching ${quoted(g)}` : d ? `Listed the files in ${baseName(d)}` : "Listed the files" }; }
-  if (kind === "web") { const q = a.query || a.q || a.search_term; return { kind, summary: q ? `Searched the web for ${quoted(q)}` : "Searched the web", q }; }
-  if (kind === "page") { const host = hostOf(a.url || firstUrl(a.prompt)); return { kind, summary: host ? `Read a page on ${host}` : "Read a web page", host }; }
+  if (kind === "read") { const f = fileOf(a); return { kind, summary: f ? t("Read {file}", { file: baseName(f) }) : t("Read a file"), file: f }; }
+  if (kind === "search") { const pat = a.pattern || a.query || a.regex; return { kind, summary: pat ? t("Searched files for {pattern}", { pattern: quoted(pat) }) : t("Searched files"), pattern: pat }; }
+  if (kind === "list") { const g = a.pattern || a.glob, d = a.path || a.dir_path || a.directory; return { kind, summary: g ? t("Looked for files matching {pattern}", { pattern: quoted(g) }) : d ? t("Listed the files in {directory}", { directory: baseName(d) }) : t("Listed the files") }; }
+  if (kind === "web") { const q = a.query || a.q || a.search_term; return { kind, summary: q ? t("Searched the web for {query}", { query: quoted(q) }) : t("Searched the web"), q }; }
+  if (kind === "page") { const host = hostOf(a.url || firstUrl(a.prompt)); return { kind, summary: host ? t("Read a page on {host}", { host }) : t("Read a web page"), host }; }
   if (kind === "edit" || kind === "write") {
     const changes = Array.isArray(a.changes) ? a.changes : [];
-    if (changes.length > 1) return { kind: "edit", summary: `Changed ${changes.length} files` };
+    if (changes.length > 1) return { kind: "edit", summary: t("Changed {count} files", { count: changes.length }) };
     const f = fileOf(a) || changes[0]?.path || "";
-    return { kind: "edit", summary: f ? `${kind === "write" ? "Wrote" : "Edited"} ${baseName(f)}` : "Changed a file", file: f };
+    return { kind: "edit", summary: f ? t(kind === "write" ? "Wrote {file}" : "Edited {file}", { file: baseName(f) }) : t("Changed a file"), file: f };
   }
-  if (kind === "helper") return { kind, summary: a.description ? `Handed part of the work to a helper: ${clip(a.description, 70)}` : "Handed part of the work to a helper" };
-  if (kind === "plan") { const n = (a.todos || a.plan || []).length; return { kind, summary: n ? `Updated its plan (${n} steps)` : "Updated its plan" }; }
-  if (kind === "sync") return { kind, summary: `Checked for new mail${a.new ? ` (${a.new} new)` : ""}` };
+  if (kind === "helper") return { kind, summary: a.description ? t("Handed part of the work to a helper: {description}", { description: clip(a.description, 70) }) : t("Handed part of the work to a helper") };
+  if (kind === "plan") { const n = (a.todos || a.plan || []).length; return { kind, summary: n ? t("Updated its plan ({count} steps)", { count: n }) : t("Updated its plan") }; }
+  if (kind === "sync") return { kind, summary: a.new ? t("Checked for new mail ({count} new)", { count: a.new }) : t("Checked for new mail") };
   // anything else: its own name in words, and the one argument a person would want - a query, a host, a file
-  const label = String(mcp ? mcp[2] : a.title || name || "a tool").replace(/[_-]+/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").trim();
+  const label = String(mcp ? mcp[2] : a.title || name || t("a tool")).replace(/[_-]+/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").trim();
   const target = a.query ? quoted(a.query) : hostOf(a.url) || (fileOf(a) ? baseName(fileOf(a)) : "");
-  return { kind: "tool", summary: `Used ${label}${mcp ? ` (${mcp[1].replace(/[_-]+/g, " ")})` : ""}${target ? ` on ${target}` : ""}` };
+  const tool = `${label}${mcp ? ` (${mcp[1].replace(/[_-]+/g, " ")})` : ""}`;
+  return { kind: "tool", summary: target ? t("Used {tool} on {target}", { tool, target }) : t("Used {tool}", { tool }) };
 };
 
 // a mail search's own answer says how many it found - read off the JSON it returned, when it is JSON
@@ -261,9 +262,9 @@ export function stepsOf(trace, { answer = "", keepStart = true } = {}) {
     } else if (e.type === "live" && !structured && e.detail && !ECHO.test(String(e.detail))) {
       say("said", e.detail);
     } else if (e.type === "start" && keepStart) {
-      steps.push({ id: `start-${steps.length}`, kind: "note", summary: `Started ${e.session?.provider || "the selected agent"}`, detail: "", status: "done" });
+      steps.push({ id: `start-${steps.length}`, kind: "note", summary: t("Started {provider}", { provider: e.session?.provider || t("the selected agent") }), detail: "", status: "done" });
     } else if (e.type === "error") {
-      steps.push({ id: `error-${steps.length}`, kind: "error", summary: `⚠ ${e.detail?.result || e.error || "The assistant could not answer."}`, detail: "", status: "error" });
+      steps.push({ id: `error-${steps.length}`, kind: "error", summary: `⚠ ${e.detail?.result || e.error || t("The assistant could not answer.")}`, detail: "", status: "error" });
     }
   }
   // what it said that the answer says again is the answer: a CLI's final text streams in as progress too
@@ -280,25 +281,28 @@ export function stepsOf(trace, { answer = "", keepStart = true } = {}) {
 }
 
 // ── consecutive calls of one kind read as one line ───────────────────────────────────────────────
-const listOf = (xs, n = 3) => { const u = [...new Set(xs.filter(Boolean))]; return u.length > n ? `${u.slice(0, n).join(", ")} and ${u.length - n} more` : u.join(", "); };
+const listOf = (xs, n = 3) => { const u = [...new Set(xs.filter(Boolean))]; return u.length > n ? t("{items} and {count} more", { items: u.slice(0, n).join(", "), count: u.length - n }) : u.join(", "); };
 const together = (run) => {
   const k = run[0].kind, n = run.length;
   if (k === "read") {
     const dirs = new Set(run.map((s) => parent(s.file)));
-    return dirs.size === 1 && [...dirs][0] ? `Read ${n} files in ${[...dirs][0]}/` : `Read ${n} files`;
+    return dirs.size === 1 && [...dirs][0] ? t("Read {count} files in {directory}/", { count: n, directory: [...dirs][0] }) : t("Read {count} files", { count: n });
   }
-  if (k === "search") return `Searched files for ${listOf(run.map((s) => s.pattern && quoted(s.pattern)))}`;
-  if (k === "web") return `Searched the web for ${listOf(run.map((s) => s.q && quoted(s.q)))}`;
-  if (k === "page") { const h = [...new Set(run.map((s) => s.host).filter(Boolean))]; return h.length === 1 ? `Read ${n} pages on ${h[0]}` : `Read ${n} pages (${listOf(h)})`; }
-  if (k === "mail" && run.every((s) => s.q !== undefined)) return `Searched your mail for ${listOf(run.map((s) => s.q && !s.q.includes("$") && quoted(s.q)))}`;
-  if (k === "edit") return `Changed ${n} files`;
-  return run.every((s) => s.summary === run[0].summary) ? `${run[0].summary} (${n} times)` : null;
+  if (k === "search") return t("Searched files for {pattern}", { pattern: listOf(run.map((s) => s.pattern && quoted(s.pattern))) });
+  if (k === "web") return t("Searched the web for {query}", { query: listOf(run.map((s) => s.q && quoted(s.q))) });
+  if (k === "page") { const h = [...new Set(run.map((s) => s.host).filter(Boolean))]; return h.length === 1 ? t("Read {count} pages on {host}", { count: n, host: h[0] }) : t("Read {count} pages ({hosts})", { count: n, hosts: listOf(h) }); }
+  if (k === "mail" && run.every((s) => s.q !== undefined)) return t("Searched your mail for {query}", { query: listOf(run.map((s) => s.q && !s.q.includes("$") && quoted(s.q))) });
+  if (k === "edit") return t("Changed {count} files", { count: n });
+  return run.every((s) => s.summary === run[0].summary) ? t("{summary} ({count} times)", { summary: run[0].summary, count: n }) : null;
 };
 const statusOf = (run) => run.some((s) => s.status === "running") ? "running" : run.some((s) => s.status === "error") ? "error"
   : run.some((s) => s.status === "recovered") ? "recovered" : "done";
 const detailOf = (s) => [s.raw, s.output && `→ ${s.output.length > 1500 ? `${s.output.slice(0, 1500)}…` : s.output}`].filter(Boolean).join("\n");
-const withCount = (summary, run) => run[0].kind === "mail" && run.every((s) => s.count !== undefined)
-  ? `${summary} (${plural(run.reduce((t, s) => t + s.count, 0), "result")})` : summary;
+const withCount = (summary, run) => {
+  if (run[0].kind !== "mail" || !run.every((s) => s.count !== undefined)) return summary;
+  const count = run.reduce((total, s) => total + s.count, 0);
+  return t("{summary} ({results})", { summary, results: t(count === 1 ? "{count} result" : "{count} results", { count }) });
+};
 
 function group(steps) {
   const out = [];

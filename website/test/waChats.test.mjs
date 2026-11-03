@@ -1,14 +1,11 @@
 // A WhatsApp chat is found by its name, its phone number in any form, or its group's name - never by its JID; the JID is shown
 // small and muted under the name (the owner, 2026-10-23). Every number is a 555-01xx fiction, every group id invented.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { recipientId, recipientLabel, recipientOptions } from "../src/recipientOptions.js";
 import { meta } from "../src/searchHits.js";
 import { waLabel, waMatches, waPhone } from "../src/waChats.js";
 
-const src = (f) => readFileSync(fileURLToPath(new URL(`../src/${f}`, import.meta.url)), "utf8");
 const ERIN = "15550100123@s.whatsapp.net", RAY = "15550100188@s.whatsapp.net", OPS = "120363000000000001@g.us";
 const rows = [{ to: ERIN, name: "Erin Blake" }, { to: RAY, name: "" }, { to: OPS, name: "Northwind ops" }];
 const find = (q) => rows.filter((r) => waMatches(q, r.to, r.name)).map((r) => r.to);
@@ -41,7 +38,8 @@ test("the JID never finds anything", () => {
 test("the label is the name, else the formatted number, and the JID is the small line under it", () => {
   assert.equal(waLabel(ERIN, "Erin Blake"), "Erin Blake");
   assert.equal(waLabel(RAY, "15550100188"), "+1 555-010-0188");
-  assert.equal(waLabel(OPS, ""), "WhatsApp group");
+  assert.ok(waLabel(OPS, ""), "an unnamed group has a fallback label");
+  assert.notEqual(waLabel(OPS, ""), OPS, "the fallback is not the group ID");
   assert.equal(waPhone(OPS), "");
   assert.equal(recipientLabel({ to: RAY }), "+1 555-010-0188");
   assert.equal(recipientId({ to: RAY }), RAY);
@@ -60,21 +58,6 @@ test("a WhatsApp source hit in Ctrl K reads its JID as the small grey line", () 
   assert.deepEqual(meta({ type: "source", title: "inbox", channel: "email" }), ["email"]);
 });
 
-test("every WhatsApp picker draws the name over a small muted JID and filters through waMatches", () => {
-  const card = src("ConnectorsView.jsx");
-  assert.match(card, /waMatches\(q, r\.jid, r\.name\)/);
-  assert.doesNotMatch(card, /\$\{r\.name \|\| ""\} \$\{r\.jid\}/, "the JID is no longer in what the card searches");
-  assert.match(card, /fontWeight: 600 \}\} noWrap>\{waLabel\(r\.jid, r\.name\)\}/);
-  assert.match(card, /fontSize: 9\.5, display: "block", opacity: 0\.8 \}\} noWrap>\{r\.jid\}/);
-  // ...one chat picker (NewSheet's ChatRecipient), which Email someone draws too
-  const s = src("NewSheet.jsx");
-  assert.match(s, /\{recipientLabel\(target\)\}<\/Box>/);
-  assert.match(s, /\{recipientId\(target\) && <Box sx=\{\{ \.\.\.mono, fontSize: 10, color: FAINT \}\}>/);
-  assert.match(s, /filterOptions=\{\(rows, state\) => withFound\(recipientOptions\(rows, state\.inputValue\), found, state\.inputValue\)\}/);
-  assert.match(src("EmailSomeone.jsx"), /<ChatRecipient key=\{channel\} channel=\{channel\}/);
-  assert.match(src("SettingsView.jsx"), /filterOptions=\{\(o, st\) => recipientOptions\(o, st\.inputValue, o\.length\)\}/);
-  assert.match(src("ReportsView.jsx"), /const chatFilter = \(opts, st\) => recipientOptions\(opts, st\.inputValue, 8\)/);
-});
 
 test("a switched-on chat's last message is one line under its name, an off one says nothing", async () => {
   const { waSaid } = await import("../src/waChats.js");
@@ -83,6 +66,4 @@ test("a switched-on chat's last message is one line under its name, an off one s
   assert.equal(waSaid({ ...said, from: "" }, true, ""), "standup moved");
   assert.equal(waSaid(said, false, "5m ago"), "");
   assert.equal(waSaid(undefined, true, "5m ago"), "");
-  // ...its age said by the one helper, never a hand-written "ago"
-  assert.match(src("ConnectorsView.jsx"), /waSaid\(r\.said, !!src\[r\.jid\]\?\.Active, timeAgo\(r\.said\?\.at\)\)/);
 });

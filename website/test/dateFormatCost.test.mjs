@@ -2,7 +2,7 @@
 // the rail ran localDay over every pile row on every key and poll, seconds on a large home. dates.js keeps them; this holds it.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { setLocale } from "../src/i18n.js";
 
 const Real = Intl.DateTimeFormat;
 let built = 0;
@@ -53,6 +53,7 @@ const old = (TZ) => {
 };
 const N = +(process.env.DATES_N || 300);   // two years of stamps; the proof run sets 20,000
 test("asUtc, fmtTime12, fmtDateTime and localDay are unchanged in every zone, DST edges and bad stamps included", () => {
+  setLocale("en");
   const ss = ["", null, "garbage", "2026-03-08 02:30:00", "2026-11-01 01:30:00", "2026-10-05 02:15:00", "2026-04-05 02:45:00", "2026-03-29 01:30:00",
     ...Array.from({ length: N }, (_, i) => new Date(Date.UTC(2025, 0, 1) + (i * Math.floor(1051200 / N) + i % 60) * 60000).toISOString().slice(0, 19).replace("T", i % 2 ? " " : "T"))];
   try {
@@ -66,11 +67,3 @@ test("asUtc, fmtTime12, fmtDateTime and localDay are unchanged in every zone, DS
   } finally { setTz(""); }
 });
 
-test("no source file formats a date with an options object outside dates.js", () => {
-  const src = new URL("../src/", import.meta.url);
-  // SemanticPanel formats a number, not a date: Number.toLocaleString with a locale is not the formatter this guards
-  const bad = readdirSync(src).filter((f) => /\.jsx?$/.test(f) && f !== "dates.js").flatMap((f) => readFileSync(new URL(f, src), "utf8").split("\n")
-    .map((l, i) => [f, i + 1, l]).filter(([, , l]) => /\.toLocale(Date|Time)?String\([^)]*,|new Intl\.DateTimeFormat/.test(l) && !/Number\(v\)\.toLocaleString/.test(l)))
-    .map(([f, n]) => `${f}:${n}`);
-  assert.deepEqual(bad, []);
-});

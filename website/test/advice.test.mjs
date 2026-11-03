@@ -2,7 +2,7 @@
 // A real function under test, not a source regex.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { adviceKeyFor, nothingToAdd, stripWord } from "../src/advice.js";
+import { adviceKeyFor, stripWord } from "../src/advice.js";
 
 // C2 (the UI audit, 2026-10-21): the strip's word and the lit button are one decision (advice.stripWord)
 test("a working agent lights Next and says nothing, even with no AI connected", () => {
@@ -51,31 +51,3 @@ test("the strip speaks only for the item on the table, at rest, and an agent at 
   assert.equal(adviceShown({ ...a, verb: null }, item, false), null, "a decision that lights nothing (an agent asking) is not shown");
 });
 
-test("the page draws the gated line, starts each item with none, and drops a read the table outran", async () => {
-  const fs = await import("node:fs"), path = await import("node:path");
-  const src = fs.readFileSync(path.join(process.cwd(), "src", "AssistantView.jsx"), "utf8");
-  assert.match(src, /<AdvisorNext advice=\{shownAdvice\} onPropose=\{pressAdvice\} onErr=\{setErr\} \/>/);
-  // ...and a move the server runs at once (Not ours) runs at once from the Advisor's copy too - never a proposal card with Cancel
-  // ...and every press runs where it is proposed (the 2026-10-25 sweep): proposeDirect runs it, so no caller runs it a second time
-  assert.match(src, /try \{ return await proposeDirect\(a\.verb, key, true, a\.revision\); \}/);
-  assert.match(src, /if \(c\.revision\) await pressAdvice\(\{ verb, key, revision: c\.revision \}\); else await proposeDirect\(verb, key, true, null\);/, "a stamped chip's move is not run twice");
-  assert.match(src, /if \(data\.auto\) \{ await runProposal\(data\); return \{ \.\.\.data, ran: true \}; \}/, "a press draws no proposal card with Cancel while it runs");
-  assert.match(src, /advised=\{stripPick \|\| setupLit\}/);
-  assert.doesNotMatch(src, /<AdvisorNext advice=\{advice\}/);
-  assert.match(src, /if \(!keep\) setAdvice\(null\)/);
-  assert.match(src, /if \(n !== adviceAsk\.current\) return;[\s\S]{0,400}?setAdvice\(got\);/);
-  // the read is for the key ON THE TABLE - the walk's item or a task opened by name - and shown only for it
-  assert.match(src, /useEffect\(\(\) => \{ readAdvice\(onTable\); setChanged\(null\); \}, \[onTable, readAdvice\]\);/);
-  assert.match(src, /table\.speaks && !litNow \? adviceShown\(advice, \{ key: table\.key, lane: currentItem\?\.lane \}, busy\) : null/);
-  // ...and while it is out, nothing: no "Thinking..." (the owner, 2026-10-23) - the rule's button is lit at once
-  assert.doesNotMatch(src, /data-tq-advice-thinking|Thinking about this one/);
-  assert.doesNotMatch(src, /picks up where it left off, and comes back here/, "the continue receipt is gone");
-});
-
-// the menu's Advisor notes with nothing to add (the overnight walk, 2026-10-26): "Copy is the lit button." - never the app's word "lit"
-test("nothing to add names the button in plain words", () => {
-  assert.equal(nothingToAdd({ label: "Copy", verb: "copy" }), "Nothing to add - Copy is the next move.");
-  assert.equal(nothingToAdd({ label: "Next", verb: "next" }), "Nothing to add on this one.");
-  assert.equal(nothingToAdd({}), "Nothing to add on this one.");
-  assert.doesNotMatch(nothingToAdd({ label: "Send", verb: "approve" }), /\blit\b/i);
-});

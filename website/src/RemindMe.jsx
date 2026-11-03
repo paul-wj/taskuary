@@ -4,6 +4,8 @@ import EventIcon from "@mui/icons-material/Event";
 import api from "./api.js";
 import { remindDay, remindWaiting, usualLabel, usualLine, usualWhy } from "./taskFilter.js";
 import { hint, label } from "./buttons.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 // REMIND ME (the owner, 2026-09-25): put an open task away until a day - "remind me of this in 2 weeks, or
 // whenever I want". Until then it is Upcoming in Tasks and off the work rail; that morning it is back. One road
@@ -21,6 +23,7 @@ const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0
 // `act`: the walk's own road for the day (railwalk.leave "remind") - the day and the move in one call; else the task's reminder route
 // `said`: the day the owner's words named, {until, day} (assistantLight's light.day) - its button comes first
 export function RemindPicker({ task, anchor, onClose, onDone, path, act = null, onLeave, onStay, live = false, said = null }) {
+  useLocale();
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const away = remindWaiting(task);
@@ -42,8 +45,8 @@ export function RemindPicker({ task, anchor, onClose, onDone, path, act = null, 
       const data = act && leaving ? await act(until) : (await api.post(path || `/api/tasks/${task.TaskId}/remind`, { until })).data;
       onClose?.(); onDone?.(data);
     } catch (e) {
-      const msg = e?.response?.data?.detail || e?.message || "could not set the reminder";
-      setErr(msg); if (leaving) onStay?.(msg);
+      const msg = e?.response?.data?.detail || e?.message;
+      setErr(msg ? { text: msg } : { key: "could not set the reminder" }); if (leaving) onStay?.(msg || { source: "could not set the reminder", values: {} });
     }
     finally { setBusy(false); }
   };
@@ -51,10 +54,10 @@ export function RemindPicker({ task, anchor, onClose, onDone, path, act = null, 
     <Popover open={!!anchor} anchorEl={anchor} onClose={onClose} anchorOrigin={{ vertical: "bottom", horizontal: "left" }}>
       <Box sx={{ p: 1.5, display: "grid", gap: 1, width: 240 }}>
         <Typography sx={{ fontSize: 12, fontWeight: 600, color: "#41525f" }}>
-          {away ? `Away until ${remindDay(task.RemindAt)}` : "Bring it back on…"}</Typography>
+          {away ? t("Away until {day}", { day: remindDay(task.RemindAt) }) : t("Bring it back on…")}</Typography>
         {live && !away ? (
           <Typography sx={{ fontSize: 12, color: "#7a2f3c" }}>
-            An agent is still open on this task. Press Stop and save first, then put it away.</Typography>
+            {t("An agent is still open on this task. Press Stop and save first, then put it away.")}</Typography>
         ) : <>
           {/* THE DAY THE OWNER SAID leads (the owner, 2026-10-27): "remind me Monday" lit this picker with no Monday in it */}
           {said?.until && said?.day && !away && (
@@ -73,43 +76,44 @@ export function RemindPicker({ task, anchor, onClose, onDone, path, act = null, 
           <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
             {QUICK.map(([label, until]) => (
               <Button key={until} size="small" variant="outlined" disabled={busy} onClick={() => set(until)}
-                sx={{ fontSize: 11, minHeight: 26, py: 0, px: 1 }}>{label}</Button>
+                sx={{ fontSize: 11, minHeight: 26, py: 0, px: 1 }}>{t(label)}</Button>
             ))}
           </Box>
           {/* later TODAY, at a time (2026-10-06: only tomorrow could be picked); the server refuses a time already gone */}
           <Box component="label" sx={{ display: "grid", gap: 0.4, fontSize: 11.5, color: "#6b6459" }}>
-            Later today
+            {t("Later today")}
             <input type="time" id={`remind-time-${task.TaskId}`} disabled={busy}
               onBlur={(e) => e.target.value && set(`today ${e.target.value}`)}
               style={{ font: "inherit", fontSize: 13, padding: "4px 6px", borderRadius: 6, border: "1px solid #d8d1c5" }} />
           </Box>
           <Box component="label" sx={{ display: "grid", gap: 0.4, fontSize: 11.5, color: "#6b6459" }}>
-            Or pick a day
+            {t("Or pick a day")}
             <input type="date" id={`remind-${task.TaskId}`} min={iso(tomorrow)} disabled={busy}
               onChange={(e) => e.target.value && set(e.target.value)}
               style={{ font: "inherit", fontSize: 13, padding: "4px 6px", borderRadius: 6, border: "1px solid #d8d1c5" }} />
           </Box>
         </>}
-        {away && <Button size="small" disabled={busy} onClick={() => set("none")} sx={{ justifySelf: "start", fontSize: 11 }}>Bring it back now</Button>}
-        {err && <Typography sx={{ fontSize: 11.5, color: "#7a2f3c" }}>{err}</Typography>}
+        {away && <Button size="small" disabled={busy} onClick={() => set("none")} sx={{ justifySelf: "start", fontSize: 11 }}>{t("Bring it back now")}</Button>}
+        {err && <Typography sx={{ fontSize: 11.5, color: "#7a2f3c" }}>{err.text || t(err.key)}</Typography>}
       </Box>
     </Popover>
   );
 }
 
 export default function RemindMe({ task, compact = false, sx, onDone, act = null, onLeave, onStay, live = false, lit = false, said = null }) {
+  useLocale();
   const [at, setAt] = useState(null);
   const [day, setDay] = useState(null);     // the said day as it was at the press: the light that carried it goes out then
   const away = remindWaiting(task);
-  const title = away ? `Away until ${remindDay(task.RemindAt)} - change the day or bring it back now`
-                     : `${label("defer")} - ${hint("defer")}`;
+  const title = away ? t("Away until {day} - change the day or bring it back now", { day: remindDay(task.RemindAt) })
+                     : `${t(label("defer"))} - ${t(hint("defer"))}`;
   return (
     <>
       {compact
         ? <Tooltip title={title}><IconButton size="small" sx={{ color: "#55697a", ...sx }} onClick={(e) => setAt(e.currentTarget)}>
             <EventIcon sx={{ fontSize: 16 }} /></IconButton></Tooltip>
         : <Button size="small" variant={lit ? "contained" : "outlined"} disableElevation sx={sx} title={title} startIcon={<EventIcon sx={{ fontSize: 16, color: lit ? "inherit" : "#55697a" }} />}
-            onClick={(e) => { setDay(said); setAt(e.currentTarget); }}>{away ? `Back ${remindDay(task.RemindAt)}` : label("defer")}</Button>}
+            onClick={(e) => { setDay(said); setAt(e.currentTarget); }}>{away ? t("Back {day}", { day: remindDay(task.RemindAt) }) : t(label("defer"))}</Button>}
       <RemindPicker task={task} anchor={at} onClose={() => setAt(null)} onDone={onDone} act={act} onLeave={onLeave} onStay={onStay} live={live} said={day} />
     </>
   );

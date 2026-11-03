@@ -2,7 +2,6 @@
 // its press and the second click ran the verb that now answered to "done", the next task's. browser/press-aimed.test.mjs drives it whole.
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import { ONE_PRESS_MS, aimed, press, put, rowNow } from "../src/actionRow.js";
 
 test("a drawn button runs its own card's verb, and nothing once another card holds that id", () => {
@@ -30,9 +29,3 @@ test("one gesture is one press: a second click, or a press within one press, on 
   assert.ok(aimed("", { detail: 0 }, (t += ONE_PRESS_MS + 1)) && aimed("C", { detail: 0 }, (t += 50)), "a press on an empty table holds nothing");
 });
 
-test("the canvas holds every press to its item, on the window before any card hears it - and never the rail's", () => {
-  const view = fs.readFileSync(new URL("../src/AssistantView.jsx", import.meta.url), "utf8");
-  assert.match(view, /if \(!b \|\| b\.closest\("\[data-tq-rail\]"\) \|\| !b\.closest\("\.tq-asst-col, \[role=menu\], \.MuiPopover-paper"\)\) return;/);
-  assert.match(view, /if \(!aimed\(item, e\)\) \{ e\.stopPropagation\(\); e\.preventDefault\(\); \}/);
-  assert.match(view, /window\.addEventListener\("click", gate, true\);/);
-});

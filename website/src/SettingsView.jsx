@@ -4,6 +4,8 @@
 // Search reaches EVERYTHING (knobs, rules, help text, the section names themselves)
 // and lands you on the same anchor, under the same path the rail shows.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { t, setLocale } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 import { refreshCapabilities, useCapabilities } from "./capabilities.js";
 import { nothingMatches } from "./searchHits.js";
 import { placeName } from "./words.js";
@@ -37,7 +39,7 @@ import { PANEL2, BORDER, DIM, FAINT, INK, ACCENT2, card, mono, ACTION_COLORS } f
 import { ChannelIcon, Empty } from "./ui.jsx";
 import { RecentlyDeleted, UndoLine, removeNow } from "./Removed.jsx";
 import { normalizeBrainOptions } from "./brainOptions.js";
-import { recordRow, workingTable } from "./workingNumbers.js";
+import { WORKING_ROWS } from "./workingNumbers.js";
 import { mailboxChoices, mailboxValue } from "./ruleMailbox.js";
 import { ABOUT_SECTIONS, AUDIT_SECTIONS, secId, pageId, scrollToSection, sectionOffset, SCROLL_TOP } from "./settingsMap.js";
 import MenuBookIcon from "@mui/icons-material/MenuBook";
@@ -45,6 +47,18 @@ import DocsView, { OPERATOR_DOCS } from "./DocsView.jsx";
 import RoleStart from "./RoleStart.jsx";
 import { AGENT_SHOWN, instructionsHint } from "./kinds.js";
 import { recipientLabel, recipientOptions } from "./recipientOptions.js";
+
+function LanguageSelector() {
+  const locale = useLocale();
+  return <Box sx={{ display: "flex", alignItems: "center", gap: 1, my: 1.5 }}>
+    <Typography component="label" htmlFor="taskuary-language" sx={{ color: DIM, fontSize: 12.5 }}>{t("Language")}</Typography>
+    <Select native id="taskuary-language" value={locale} onChange={(e) => setLocale(e.target.value)}
+      inputProps={{ "aria-label": t("Language") }} size="small" sx={{ bgcolor: "#fff", fontSize: 12.5 }}>
+      <option value="en">English</option>
+      <option value="zh-CN">简体中文</option>
+    </Select>
+  </Box>;
+}
 
 
 const KINDS = ["keyword", "sender", "sender_domain", "noreply", "first_time_sender"];
@@ -88,41 +102,41 @@ function SignatureSetting({ value, save }) {
     setBusy(true); setNote(""); setOffer("");
     try {
       const { data } = await api.post("/api/signature/learn", {}, { timeout: 120_000 });
-      if (data.signature) { setText(data.signature); save(data.signature); setNote("Read from your sent mail - check it below."); }
-      else setNote("Your sent mail has no closing lines in common - type it in.");
-    } catch (e) { setNote(e?.response?.data?.detail || "Couldn't read your sent mail."); }
+      if (data.signature) { setText(data.signature); save(data.signature); setNote({ key: "Read from your sent mail - check it below." }); }
+      else setNote({ key: "Your sent mail has no closing lines in common - type it in." });
+    } catch (e) { setNote(e?.response?.data?.detail || { key: "Couldn't read your sent mail." }); }
     setBusy(false);
   };
   const saveBox = (address, signature) => api.post("/api/signature/mailbox", { address, signature })
     .then(() => setBoxes((bs) => (bs || []).map((b) => (b.address === address ? { ...b, signature } : b))))
-    .catch(() => setNote(`Couldn't save the one for ${address}.`));
+    .catch(() => setNote({ key: "Couldn't save the one for {address}.", values: { address } }));
   return (
     <Box data-tq-signature="" sx={{ display: "flex", flexDirection: "column", gap: 1, width: "100%", maxWidth: 460 }}>
       {offer && !text.trim() && (
         <Box data-tq-signature-offer="" sx={{ border: `1px solid ${BORDER}`, borderRadius: 1.5, bgcolor: "#fff", px: 1.5, py: 1 }}>
-          <Typography sx={{ fontSize: 12, color: DIM, mb: 0.5 }}>Your sent mail ends with this - is it your signature?</Typography>
+          <Typography sx={{ fontSize: 12, color: DIM, mb: 0.5 }}>{t("Your sent mail ends with this - is it your signature?")}</Typography>
           <Typography sx={{ fontSize: 12.5, color: INK, whiteSpace: "pre-line" }}>{offer}</Typography>
           <Box sx={{ display: "flex", gap: 1, mt: 1 }}>
-            <Button size="small" variant="contained" disableElevation onClick={() => { setText(offer); save(offer); setOffer(""); }}>Use this</Button>
-            <Button size="small" onClick={() => setOffer("")}>Not this</Button>
+            <Button size="small" variant="contained" disableElevation onClick={() => { setText(offer); save(offer); setOffer(""); }}>{t("Use this", {}, "signature")}</Button>
+            <Button size="small" onClick={() => setOffer("")}>{t("Not this")}</Button>
           </Box>
         </Box>
       )}
       <TextField multiline minRows={3} value={text} onChange={(e) => setText(e.target.value)} sx={{ bgcolor: "#fff" }}
-        label={boxes?.length > 1 ? "Default - for any mailbox without its own" : undefined}
-        inputProps={{ style: { fontSize: 12.5 }, "aria-label": "Email signature" }} onBlur={() => text !== value && save(text.trim())} />
+        label={boxes?.length > 1 ? t("Default - for any mailbox without its own") : undefined}
+        inputProps={{ style: { fontSize: 12.5 }, "aria-label": t("Email signature") }} onBlur={() => text !== value && save(text.trim())} />
       <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
-        <Button size="small" variant="outlined" disabled={busy} onClick={read}>{busy ? "Reading…" : "Read it from my sent mail"}</Button>
-        {note && <Typography sx={{ fontSize: 12, color: DIM }}>{note}</Typography>}
+        <Button size="small" variant="outlined" disabled={busy} onClick={read}>{t(busy ? "Reading…" : "Read it from my sent mail")}</Button>
+        {note && <Typography sx={{ fontSize: 12, color: DIM }}>{typeof note === "string" ? note : t(note.key, note.values)}</Typography>}
       </Box>
       {(boxes || []).map((b) => <MailboxSignature key={b.address} box={b} save={saveBox} />)}
       <Box sx={{ border: `1px solid ${BORDER}`, borderRadius: 1.5, bgcolor: "#fff", px: 1.5, py: 1, fontSize: 12.5, whiteSpace: "pre-line", color: INK }}>
-        {"Hi Erin,\n\nThanks - that's done.\n\n"}{text.trim() || acct.accounts[0]?.signature
-          || <span style={{ color: DIM }}>(no signature - your sign-off in STYLE.md, else your name)</span>}
+        {t("Hi Erin,\n\nThanks - that's done.\n\n")}{text.trim() || acct.accounts[0]?.signature
+          || <span style={{ color: DIM }}>{t("(no signature - your sign-off in STYLE.md, else your name)")}</span>}
       </Box>
       {!text.trim() && !!acct.accounts.length && (
         <Typography data-tq-account-signature="" sx={{ fontSize: 12, color: DIM }}>
-          Nothing typed here, so each email uses the signature its own mailbox’s sent mail ends with{acct.accounts.length > 1 ? ` (above: ${acct.accounts[0].address}'s)` : ""}.
+          {acct.accounts.length > 1 ? t("Nothing typed here, so each email uses the signature its own mailbox’s sent mail ends with (above: {address}'s).", { address: acct.accounts[0].address }) : t("Nothing typed here, so each email uses the signature its own mailbox’s sent mail ends with.")}
         </Typography>
       )}
     </Box>
@@ -134,7 +148,7 @@ function MailboxSignature({ box, save }) {
   useEffect(() => { setText(box.signature || ""); }, [box.signature]);
   return (
     <TextField data-tq-mailbox-signature={box.address} multiline minRows={2} size="small" value={text} sx={{ bgcolor: "#fff" }}
-      label={`From ${box.address}`} helperText="Blank uses the default." onChange={(e) => setText(e.target.value)}
+      label={t("From {address}", { address: box.address })} helperText={t("Blank uses the default.")} onChange={(e) => setText(e.target.value)}
       inputProps={{ style: { fontSize: 12.5 } }} onBlur={() => text.trim() !== (box.signature || "") && save(box.address, text.trim())} />
   );
 }
@@ -180,8 +194,8 @@ const PhoneDoorways = ({ onLoaded, onNavigate }) => {
     catch (e) {
       setRows(null);
       setErr(e?.response?.status === 404
-        ? "This page needs a newer Taskuary than the one running — restart the app and it appears."
-        : (e?.response?.data?.detail || "could not read your channels just now"));
+        ? { key: "This page needs a newer Taskuary than the one running — restart the app and it appears." }
+        : (e?.response?.data?.detail || { key: "could not read your channels just now" }));
       onLoaded?.(false);
     }
   }, [onLoaded]);
@@ -196,13 +210,13 @@ const PhoneDoorways = ({ onLoaded, onNavigate }) => {
   const choose = async (channel, chat) => {
     setBusy(channel); setWErr("");
     try { await api.post("/api/assistant/doorways", { channel, chat }); await load(); }
-    catch (e) { setWErr(e?.response?.data?.detail || "could not set that chat"); }
+    catch (e) { setWErr(e?.response?.data?.detail || { key: "could not set that chat" }); }
     setBusy("");
   };
   const listen = async (channel, how) => {
     setBusy(channel); setWErr("");
     try { await api.post("/api/assistant/doorways/listens", { channel, listens: how }); await load(); }
-    catch (e) { setWErr(e?.response?.data?.detail || "could not change that"); }
+    catch (e) { setWErr(e?.response?.data?.detail || { key: "could not change that" }); }
     setBusy("");
   };
   return (
@@ -218,8 +232,8 @@ const PhoneDoorways = ({ onLoaded, onNavigate }) => {
               </Typography>
               {!r.live ? (
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-                  <Typography variant="body2" sx={{ color: DIM }}>not switched on yet</Typography>
-                  <Button size="small" variant="outlined" onClick={() => toCard(r.connectorId || r.channel)}>Open the {CHANNEL_NAME[r.channel] || r.channel} card</Button>
+                  <Typography variant="body2" sx={{ color: DIM }}>{t("not switched on yet")}</Typography>
+                  <Button size="small" variant="outlined" onClick={() => toCard(r.connectorId || r.channel)}>{t("Open the {channel} card", { channel: CHANNEL_NAME[r.channel] || r.channel })}</Button>
                 </Box>
               ) : (
                 <>
@@ -229,9 +243,9 @@ const PhoneDoorways = ({ onLoaded, onNavigate }) => {
                     isOptionEqualToValue={(o, v) => o.to === v.to}
                     filterOptions={(o, st) => recipientOptions(o, st.inputValue, o.length)}
                     onChange={(_e, v) => choose(r.channel, v?.to || "")}
-                    noOptionsText={r.channel === "whatsapp"
+                    noOptionsText={t(r.channel === "whatsapp"
                       ? "no private chat seen yet — message yourself on WhatsApp, then press Look again"
-                      : "no private chat seen yet — send your bot a direct message, then press Look again"}
+                      : "no private chat seen yet — send your bot a direct message, then press Look again")}
                     renderOption={(props, o) => (
                       <li {...props} key={o.to} style={{ display: "block", paddingTop: 4, paddingBottom: 4 }}>
                         <Typography variant="body2" sx={{ fontSize: 12.5, color: INK, fontWeight: 600 }}>{recipientLabel(o)}</Typography>
@@ -239,11 +253,11 @@ const PhoneDoorways = ({ onLoaded, onNavigate }) => {
                       </li>
                     )}
                     renderInput={(params) => <TextField {...params} sx={{ bgcolor: "#fff" }}
-                      placeholder="not connected — pick the chat that is only you" />} />
+                      placeholder={t("not connected — pick the chat that is only you")} />} />
                   {r.chat && <Button size="small" disabled={busy === r.channel}
-                    onClick={() => choose(r.channel, "")} sx={{ fontSize: 11.5 }}>disconnect</Button>}
+                    onClick={() => choose(r.channel, "")} sx={{ fontSize: 11.5 }}>{t("disconnect")}</Button>}
                   {!r.chat && <Button size="small" disabled={looking} onClick={lookAgain} sx={{ fontSize: 11.5 }}
-                    title="Read the chats again - after you message yourself or your bot">{looking ? "Looking…" : "Look again"}</Button>}
+                    title={t("Read the chats again - after you message yourself or your bot")}>{t(looking ? "Looking…" : "Look again")}</Button>}
                 </>
               )}
             </Box>
@@ -254,13 +268,13 @@ const PhoneDoorways = ({ onLoaded, onNavigate }) => {
                 <Select size="small" value={r.listens || "walk"} disabled={busy === r.channel}
                   sx={{ bgcolor: "#fff", fontSize: 12.5, minWidth: 260 }}
                   onChange={(e) => listen(r.channel, e.target.value)}>
-                  <MenuItem value="always" sx={{ fontSize: 12 }}>listens any time you message it</MenuItem>
-                  <MenuItem value="walk" sx={{ fontSize: 12 }}>listens once a walk is handed over, and after it comes back</MenuItem>
+                  <MenuItem value="always" sx={{ fontSize: 12 }}>{t("listens any time you message it")}</MenuItem>
+                  <MenuItem value="walk" sx={{ fontSize: 12 }}>{t("listens once a walk is handed over, and after it comes back")}</MenuItem>
                 </Select>
                 <Typography variant="caption" sx={{ color: FAINT, flex: 1, minWidth: 200 }}>
-                  {r.listens === "always"
+                  {t(r.listens === "always"
                     ? "Anything you type there runs the same walk the chat here runs — and may include private mail, tasks, reviews and agent output."
-                    : "Quiet until you hand a walk over from the chat here. Once a walk comes back, that chat keeps listening, so a message there picks it up again."}
+                    : "Quiet until you hand a walk over from the chat here. Once a walk comes back, that chat keeps listening, so a message there picks it up again.")}
                 </Typography>
               </Box>
             )}
@@ -268,21 +282,20 @@ const PhoneDoorways = ({ onLoaded, onNavigate }) => {
         );
       })}
       {err && (
-        <Typography variant="body2" sx={{ color: "#6b2733", py: 2 }}>{err}</Typography>
+        <Typography variant="body2" sx={{ color: "#6b2733", py: 2 }}>{typeof err === "string" ? err : t(err.key)}</Typography>
       )}
       {rows && !rows.length && (
         <Box sx={{ py: 2, display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
-          <Typography variant="body2" sx={{ color: DIM }}>No WhatsApp or Telegram connection yet — add one and it appears here.</Typography>
-          <Button size="small" variant="outlined" onClick={() => toCard("whatsapp")}>Set up WhatsApp</Button>
-          <Button size="small" variant="outlined" onClick={() => toCard("telegram")}>Set up Telegram</Button>
+          <Typography variant="body2" sx={{ color: DIM }}>{t("No WhatsApp or Telegram connection yet — add one and it appears here.")}</Typography>
+          <Button size="small" variant="outlined" onClick={() => toCard("whatsapp")}>{t("Set up WhatsApp")}</Button>
+          <Button size="small" variant="outlined" onClick={() => toCard("telegram")}>{t("Set up Telegram")}</Button>
         </Box>
       )}
-      {rows === null && !err && <Typography variant="body2" sx={{ color: FAINT, py: 2 }}>reading your channels…</Typography>}
+      {rows === null && !err && <Typography variant="body2" sx={{ color: FAINT, py: 2 }}>{t("reading your channels…")}</Typography>}
       <Typography variant="body2" sx={{ color: FAINT, mt: 2 }}>
-        Only chats you are alone in are offered. A group can never command the assistant, and an answer
-        about your mail must not land where other people are reading.
+        {t("Only chats you are alone in are offered. A group can never command the assistant, and an answer about your mail must not land where other people are reading.")}
       </Typography>
-      {wErr && <Typography variant="body2" sx={{ color: "#6b2733", mt: 1 }}>✗ {wErr}</Typography>}
+      {wErr && <Typography variant="body2" sx={{ color: "#6b2733", mt: 1 }}>✗ {typeof wErr === "string" ? wErr : t(wErr.key)}</Typography>}
     </Box>
   );
 };
@@ -363,14 +376,17 @@ const isState = (name) => name.includes(":") || name.endsWith("_at") || STATE.ha
 const showValue = (v, m = {}) => {
   if (v === null || v === undefined) return "";
   const s = String(v);
-  if (m.type === "switch") return s === "1" ? "on" : "off";
-  return m.optionLabels?.[s] || (s === "" ? "blank" : s);
+  if (m.type === "switch") return t(s === "1" ? "on" : "off");
+  if (m.optionLabels?.[s]) return t(m.optionLabels[s]);
+  if (m.type === "select" && m.options?.includes(s)) return t(s.replaceAll("_", " "));
+  if (m.type === "sound" && SOUNDS.includes(s)) return t(s);
+  return s === "" ? t("blank") : s;
 };
 const defaultNote = (s, m) => {
   const d = showValue(s.Default, m);
   if (!d) return "";
   const now = showValue(s.Value, m);
-  return now === d ? `Default: ${d} \u2014 unchanged.` : `Default: ${d}. Yours: ${now}.`;
+  return now === d ? t("Default: {default} — unchanged.", { default: d }) : t("Default: {default}. Yours: {current}.", { default: d, current: now });
 };
 
 // ONLY A KNOB THE SCHEMA NAMES IS DRAWN (the 2026-10-19 UI walk): Configuration > Other listed twelve one-shot migration flags
@@ -414,7 +430,7 @@ const SECTIONS = { about: ABOUT_SECTIONS, config: GROUPS, audit: AUDIT_SECTIONS 
 // keyboard "find in page" or a browser restoring the anchor does not go through scrollToSection.
 const SectionHead = ({ page, name }) => (
   <Typography id={secId(page, name)} sx={{ color: INK, fontWeight: 600, fontSize: 14.5, pt: 0.5, pb: 0.75, mb: 1.75,
-    borderBottom: `1px solid ${BORDER}`, scrollMarginTop: `${SCROLL_TOP}px` }}>{name}</Typography>
+    borderBottom: `1px solid ${BORDER}`, scrollMarginTop: `${SCROLL_TOP}px` }}>{t(name)}</Typography>
 );
 
 // THE HEADING THAT STARTS A PAGE, and the reason the document reads as a document rather than as
@@ -427,9 +443,9 @@ const PageHead = ({ page, first }) => (
   <Box sx={{ mt: first ? 0 : 7, pt: first ? 0 : 5, borderTop: first ? "none" : `1px solid ${BORDER}` }}>
     <Box id={pageId(page)} sx={{ display: "flex", alignItems: "center", gap: 1, scrollMarginTop: `${SCROLL_TOP}px` }}>
       {React.createElement(PAGES[page].icon, { sx: { fontSize: 17, color: FAINT } })}
-      <Typography sx={{ color: INK, fontWeight: 600, fontSize: 15 }}>{PAGES[page].title}</Typography>
+      <Typography sx={{ color: INK, fontWeight: 600, fontSize: 15 }}>{t(PAGES[page].title)}</Typography>
     </Box>
-    <Typography variant="body2" sx={{ color: DIM, mt: 0.25, mb: 2 }}>{PAGES[page].desc}</Typography>
+    <Typography variant="body2" sx={{ color: DIM, mt: 0.25, mb: 2 }}>{t(PAGES[page].desc)}</Typography>
   </Box>
 );
 
@@ -439,6 +455,7 @@ const PageHead = ({ page, first }) => (
 // no-undef is what caught it before it shipped.
 // `only` (the assistant canvas): draw ONE page - and on Configuration, one group of it - instead of the whole document
 function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDocSel, onCatalog, only = null }) {
+  const locale = useLocale();
   const canCode = useCapabilities().coding;                   // no coding tool connected: coding is not offered (capabilities.js)
   const [policies, setPolicies] = useState(null);
   const [settings, setSettings] = useState([]);
@@ -492,7 +509,7 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
           .filter((a) => !seen.has(a.label) && seen.add(a.label)));
       }).catch(() => {});
       api.get("/api/connectors").then(({ data }) => setConnectors(data.data || [])).catch(() => {});
-    } catch (e) { setErr(e?.response?.data?.detail || "Failed to load settings"); }
+    } catch (e) { setErr(e?.response?.data?.detail || { key: "Failed to load settings" }); }
   }, []);
 
   const selectedBrains = useMemo(() => {
@@ -501,17 +518,17 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
   }, [settings]);
   const brainOptions = useMemo(
     () => normalizeBrainOptions(brains, agentModels, selectedBrains),
-    [brains, agentModels, selectedBrains]);
+    [brains, agentModels, selectedBrains, locale]);
   useEffect(() => { if (!own) load(); }, [load, own]);
 
   // EVERY WRITE ON THIS PAGE GOES THROUGH `run`: it says "Saved", or why not in words, and the page
   // re-reads either way so what you see is what is stored - a refused switch flips back.
   const { run, note } = useSaveNote();
-  const savePolicy = async (p) => { if ((await run(() => api.post("/api/policies", p), { ok: "Rule saved" })).ok) setDraft(null); load(); };
+  const savePolicy = async (p) => { if ((await run(() => api.post("/api/policies", p), { ok: "Rule saved", localize: true })).ok) setDraft(null); load(); };
   const togglePolicy = async (p) => { await run(() => api.post("/api/policies", { PolicyId: p.PolicyId, Active: !p.Active }),
-    { ok: p.Active ? "Rule switched off" : "Rule switched on" }); load(); };
+    { ok: p.Active ? "Rule switched off" : "Rule switched on", localize: true }); load(); };
   // REMOVE IS AT ONCE (the owner, 2026-10-21): "Removed <rule> - Undo" over the list, and Recently deleted keeps it 30 days
-  const deletePolicy = async (p) => { await run(() => removeNow(() => api.delete(`/api/policies/${p.PolicyId}`), "rule", p.Name), { ok: "", lead: "Not removed — " }); load(); };
+  const deletePolicy = async (p) => { await run(() => removeNow(() => api.delete(`/api/policies/${p.PolicyId}`), "rule", p.Name), { ok: "", lead: "Not removed — ", localize: true }); load(); };
   // `el`: the text box that was typed in - put back to the stored value when the save is refused,
   // or it keeps showing a value that is not the one in force
   const saveSetting = async (name, value, el) => {
@@ -524,7 +541,7 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
   const [verifying, setVerifying] = useState(false);
   const runVerify = async () => {
     setVerifying(true); setVerify(null);
-    const r = await run(() => api.get("/api/audit/verify"), { ok: "", lead: "Couldn't check the record — " });
+    const r = await run(() => api.get("/api/audit/verify"), { ok: "", lead: "Couldn't check the record — ", localize: true });
     if (r.ok) setVerify(r.r.data);
     setVerifying(false);
   };
@@ -539,14 +556,14 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
   const results = !q ? [] : [
     // the sections themselves, under the same path the rail draws - typing "display" should offer
     // the section, not only the three knobs that happen to sit in it (the owner, 2026-09-18)
-    ...Object.entries(SECTIONS).flatMap(([pg, names]) => names.filter((n) => hit(n, PAGES[pg].title))
-      .map((n) => ({ key: `s${pg}${n}`, label: n, crumb: `${PAGES[pg].title} → ${n}`, section: true,
+    ...Object.entries(SECTIONS).flatMap(([pg, names]) => names.filter((n) => hit(n, PAGES[pg].title, t(n), t(PAGES[pg].title)))
+      .map((n) => ({ key: `s${pg}${n}`, label: t(n), crumb: `${t(PAGES[pg].title)} → ${t(n)}`, section: true,
         go: () => { setQ(""); onJump(pg, n); } }))),
-    ...settings.filter((s) => { if (hidden(s.Name)) return false; const m = meta(s.Name); return hit(s.Name, s.Description, m.label, m.desc, m.help, m.group); })
-      .map((s) => ({ key: `k${s.Name}`, label: meta(s.Name).label, crumb: `Configuration → ${meta(s.Name).group}`,
+    ...settings.filter((s) => { if (hidden(s.Name)) return false; const m = meta(s.Name); return hit(s.Name, s.Description, m.label, m.desc, m.help, m.group, t(m.label), t(m.desc || ""), t(m.help || ""), t(m.group)); })
+      .map((s) => ({ key: `k${s.Name}`, label: t(meta(s.Name).label), crumb: `${t("Configuration")} → ${t(meta(s.Name).group)}`,
         go: () => { setQ(""); onJump("config", meta(s.Name).group); } })),
     ...(policies || []).filter((p) => hit(p.Name, p.Kind, p.Pattern, p.Action, p.Reason))
-      .map((p) => ({ key: `p${p.PolicyId}`, label: p.Name, crumb: PAGES.policies.title, go: () => { setQ(""); onJump("policies"); } })),
+      .map((p) => ({ key: `p${p.PolicyId}`, label: p.Name, crumb: t(PAGES.policies.title), go: () => { setQ(""); onJump("policies"); } })),
   ];
 
   const control = (s) => {
@@ -558,17 +575,17 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
       <Select size="small" value={codingOptions.some((o) => o.value === s.Value) ? s.Value : (codingOptions[0]?.value || "")}
         onChange={(e) => saveSetting(s.Name, e.target.value)} sx={{ minWidth: 140, fontSize: 12.5, bgcolor: "#fff" }}>
         {codingOptions.map((o) => <MenuItem key={o.value} value={o.value} sx={{ fontSize: 12.5 }}>{o.label}</MenuItem>)}
-        {!codingOptions.length && <MenuItem value="" disabled sx={{ fontSize: 12.5 }}>no coding CLI yet — add one under Connections</MenuItem>}
+        {!codingOptions.length && <MenuItem value="" disabled sx={{ fontSize: 12.5 }}>{t("no coding CLI yet — add one under Connections")}</MenuItem>}
       </Select>
     );
     // WHO TAKES YOUR MAIL IS TASKUARY (the owner, 2026-10-29: profile names hidden in Settings too, as on every other screen - kinds.json
     // `shown_`): the choice is which instructions it follows, said as that - "Instructions: ap" - never a profile standing as a worker
     if (m.type === "profile") return (
       <Select size="small" displayEmpty value={profileNames.includes(s.Value) ? s.Value : ""} title={instructionsHint(s.Value) || undefined}
-        renderValue={(v) => (v ? AGENT_SHOWN : "nobody - leave it for me to pick")}
+        renderValue={(v) => (v ? t(AGENT_SHOWN) : t("nobody - leave it for me to pick"))}
         onChange={(e) => saveSetting(s.Name, e.target.value)} sx={{ minWidth: 160, fontSize: 12.5, bgcolor: "#fff" }}>
-        <MenuItem value="" sx={{ fontSize: 12.5 }}>nobody - leave it for me to pick</MenuItem>
-        {profileNames.map((n) => <MenuItem key={n} value={n} sx={{ fontSize: 12.5 }}>{AGENT_SHOWN}
+        <MenuItem value="" sx={{ fontSize: 12.5 }}>{t("nobody - leave it for me to pick")}</MenuItem>
+        {profileNames.map((n) => <MenuItem key={n} value={n} sx={{ fontSize: 12.5 }}>{t(AGENT_SHOWN)}
           <Box component="span" sx={{ color: DIM, ml: 0.75 }}>{instructionsHint(n)}</Box></MenuItem>)}
       </Select>
     );
@@ -576,13 +593,13 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
       const values = s.Value === "*" ? ["*"] : String(s.Value || "").split(",").filter((v) => codingOptions.some((o) => o.value === v));
       return (
         <Select size="small" multiple displayEmpty value={values}
-          renderValue={(picked) => picked.includes("*") ? "automatic — any other coding CLI"
-            : picked.length ? picked.map((v) => codingOptions.find((o) => o.value === v)?.label || v).join(" → ") : "none"}
+          renderValue={(picked) => picked.includes("*") ? t("automatic — any other coding CLI")
+            : picked.length ? picked.map((v) => codingOptions.find((o) => o.value === v)?.label || v).join(" → ") : t("none")}
           onChange={(e) => {
             const picked = typeof e.target.value === "string" ? e.target.value.split(",") : e.target.value;
             saveSetting(s.Name, picked.includes("*") ? "*" : picked.join(","));
           }} sx={{ minWidth: 250, maxWidth: 380, fontSize: 12.5, bgcolor: "#fff" }}>
-          <MenuItem value="*" sx={{ fontSize: 12.5 }}>automatic — any other configured coding CLI</MenuItem>
+          <MenuItem value="*" sx={{ fontSize: 12.5 }}>{t("automatic — any other configured coding CLI")}</MenuItem>
           {codingOptions.map((o) => <MenuItem key={o.value} value={o.value} sx={{ fontSize: 12.5 }}>{o.label}</MenuItem>)}
         </Select>
       );
@@ -594,7 +611,7 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
         onChange={(e) => saveSetting(s.Name, e.target.value)}>
         {brainOptions.map((b) => (
           <MenuItem key={b.value} value={b.value} disabled={!b.ready} sx={{ fontSize: 12.5 }}>
-            {b.label}{b.ready ? "" : " — no key saved"}
+            {b.label}{b.ready ? "" : t(" — no key saved")}
           </MenuItem>
         ))}
       </Select>
@@ -605,12 +622,12 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
       return (
         <Select size="small" multiple displayEmpty value={values}
           renderValue={(picked) => picked.length
-            ? picked.map((v) => options.find((b) => b.value === v)?.label || v).join(" → ") : "none"}
+            ? picked.map((v) => options.find((b) => b.value === v)?.label || v).join(" → ") : t("none")}
           onChange={(e) => saveSetting(s.Name, (typeof e.target.value === "string"
             ? e.target.value.split(",") : e.target.value).join(","))}
           sx={{ minWidth: 250, maxWidth: 420, fontSize: 12.5, bgcolor: "#fff" }}>
           {options.map((b) => <MenuItem key={b.value} value={b.value} disabled={!b.ready} sx={{ fontSize: 12.5 }}>
-            {b.label}{b.ready ? "" : " — unavailable"}
+            {b.label}{b.ready ? "" : t(" — unavailable")}
           </MenuItem>)}
         </Select>
       );
@@ -628,18 +645,18 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
       return (
         <Box sx={{ display: "flex", gap: 0.6, flexWrap: "wrap", justifyContent: "flex-end", maxWidth: 360 }}>
           {keys.map((k) => (
-            <Box key={k} component="button" type="button" title={m.flags[k].help} aria-pressed={!!val(k)}
+            <Box key={k} component="button" type="button" title={t(m.flags[k].help)} aria-pressed={!!val(k)}
               onClick={() => saveSetting(k, val(k) ? "0" : "1")}
               sx={{ display: "inline-flex", alignItems: "center", px: 0.9, py: 0.35, borderRadius: 99,
                 cursor: "pointer", fontFamily: "inherit", fontSize: 11.5, fontWeight: val(k) ? 700 : 500, userSelect: "none",
                 bgcolor: val(k) ? "#eae4d8" : "#e9e3d8", color: val(k) ? "#55697a" : DIM,
                 border: `1px solid ${val(k) ? "#d8cfbe" : BORDER}`, "&:hover": { borderColor: "#d8cfbe" } }}>
-              {m.flags[k].label}
+              {t(m.flags[k].label)}
             </Box>
           ))}
           {/* all three off is a real choice, not a broken row - say what it means */}
           {none && <Typography variant="caption" sx={{ color: FAINT, alignSelf: "center", ml: 0.5 }}>
-            nobody — every task waits for your click
+            {t("nobody — every task waits for your click")}
           </Typography>}
         </Box>
       );
@@ -671,9 +688,9 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
           <Select size="small" value={s.Value || "chime"} sx={{ width: 130, bgcolor: "#fff", fontSize: 12.5 }}
             onChange={(e) => { saveSetting(s.Name, e.target.value); playSound(e.target.value); }}>
-            {SOUNDS.map((o) => <MenuItem key={o} value={o} sx={{ fontSize: 12.5 }}>{o}</MenuItem>)}
+            {SOUNDS.map((o) => <MenuItem key={o} value={o} sx={{ fontSize: 12.5 }}>{t(o)}</MenuItem>)}
           </Select>
-          <IconButton size="small" title="Preview" disabled={(s.Value || "chime") === "off"} onClick={() => playSound(s.Value || "chime")}>
+          <IconButton size="small" title={t("Preview")} disabled={(s.Value || "chime") === "off"} onClick={() => playSound(s.Value || "chime")}>
             <PlayArrowIcon sx={{ fontSize: 18 }} />
           </IconButton>
         </Box>
@@ -682,7 +699,7 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
     if (m.type === "select") return (
       <Select size="small" value={s.Value} onChange={(e) => saveSetting(s.Name, e.target.value)} sx={{ minWidth: 140, fontSize: 12.5, bgcolor: "#fff" }}>
         {m.options.map((o) => <MenuItem key={o} value={o} sx={{ fontSize: 12.5 }}>
-          {(m.optionLabels && m.optionLabels[o]) || o.replaceAll("_", " ")}
+          {m.optionLabels?.[o] ? t(m.optionLabels[o]) : t(o.replaceAll("_", " "))}
         </MenuItem>)}
       </Select>
     );
@@ -694,7 +711,7 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
           MenuProps={{ PaperProps: { sx: { maxHeight: 380 } } }}
           sx={{ minWidth: 240, fontSize: 12.5, bgcolor: "#fff" }}
           onChange={(e) => saveSetting(s.Name, e.target.value)}>
-          <MenuItem value="" sx={{ fontSize: 12.5 }}>this machine's local time</MenuItem>
+          <MenuItem value="" sx={{ fontSize: 12.5 }}>{t("this machine's local time")}</MenuItem>
           {zones.map((z) => <MenuItem key={z} value={z} sx={{ fontSize: 12.5 }}>{z}</MenuItem>)}
         </Select>
       );
@@ -705,14 +722,14 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
         onBlur={(e) => e.target.value !== s.Value && saveSetting(s.Name, e.target.value, e.target)} />
     );
     if (m.type === "switch" || ["0", "1"].includes(String(s.Value))) return (
-      <Switch checked={s.Value === "1"} title={m.hover || undefined} onChange={() => saveSetting(s.Name, s.Value === "1" ? "0" : "1")} />
+      <Switch checked={s.Value === "1"} title={m.hover ? t(m.hover) : undefined} onChange={() => saveSetting(s.Name, s.Value === "1" ? "0" : "1")} />
     );
     // A JSON KNOB IS CHECKED BEFORE IT IS SENT. A stray quote used to save, and the reader ignored the
     // whole value without a word - so every role quietly fell back to the default brain.
     if (JSON_KNOBS.has(s.Name)) {
       const bad = jsonBad[s.Name];
       return (
-        <TextField defaultValue={s.Value} multiline minRows={1} error={!!bad} helperText={bad || " "}
+        <TextField defaultValue={s.Value} multiline minRows={1} error={!!bad} helperText={bad ? t(bad) : " "}
           placeholder='{"researcher": "codex"}' sx={{ width: 260, bgcolor: "#fff" }} inputProps={{ style: { fontSize: 12.5, fontFamily: "monospace" } }}
           onBlur={(e) => {
             const v = e.target.value.trim(), why = jsonProblem(v);
@@ -750,7 +767,7 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
   // A spinner that never stops is the worst thing this page can show: on the install where
   // /api/settings answered 500, Settings span for ever and said nothing (2026-09-22).
   if (!policies && !own) return err
-    ? <Alert severity="error" sx={{ m: 1 }}>{err}</Alert>
+    ? <Alert severity="error" sx={{ m: 1 }}>{typeof err === "string" ? err : t(err.key)}</Alert>
     : <CircularProgress size={22} sx={{ m: 4 }} />;
 
   // WHAT ONE PAGE OF THE DOCUMENT DRAWS. Every one of them is drawn, every time: Settings is
@@ -779,10 +796,10 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
             <Box sx={{ flex: 1, minWidth: 0, cursor: m.help ? "pointer" : "default" }}
               onClick={() => m.help && setHelp({ title: m.label, body: m.help })}>
               <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13.5, display: "flex", alignItems: "center", gap: 0.75 }}>
-                {m.label}
+                {t(m.label)}
                 {m.help && <HelpOutlineIcon sx={{ fontSize: 15, color: "#cfc9bf" }} />}
               </Typography>
-              <Typography variant="body2" sx={{ color: DIM, mt: 0.25 }}>{m.desc || s.Description}</Typography>
+              <Typography variant="body2" sx={{ color: DIM, mt: 0.25 }}>{m.desc ? t(m.desc) : s.Description}</Typography>
               {/* the line every description was missing: what shipped, and whether this is
                   still it. Quiet on purpose - it is a fact you check, not a thing to read. */}
               {defaultNote(s, m) && (
@@ -821,78 +838,77 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
               {/* the page title above already says what these are; this line is the door to the rules of the rules */}
               <Typography component="button" type="button" variant="body2" onClick={() => setHelp(SECTION_HELP.policies)}
                 sx={{ color: "#55697a", cursor: "pointer", border: 0, background: "none", padding: 0, font: "inherit", "&:hover": { textDecoration: "underline" } }}>
-                How precedence works →
+                {t("How precedence works →")}
               </Typography>
             </Typography>
             <Box sx={{ flex: 1 }} />
-            <Button size="small" variant="contained" startIcon={<AddIcon sx={{ fontSize: 14 }} />} onClick={() => setDraft({ ...NEW_POLICY })}>Add rule</Button>
+            <Button size="small" variant="contained" startIcon={<AddIcon sx={{ fontSize: 14 }} />} onClick={() => setDraft({ ...NEW_POLICY })}>{t("Add rule")}</Button>
           </Box>
           <UndoLine kinds={["rule"]} onRestored={load} sx={{ mt: 1.5, mb: 0 }} />
           {!(policies || []).length && !draft && (
             <Box sx={{ ...card, bgcolor: PANEL2, p: 2.25, mt: 2, maxWidth: 680 }}>
-              <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13.5 }}>No routing rules yet</Typography>
+              <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13.5 }}>{t("No routing rules yet")}</Typography>
               <Typography variant="body2" sx={{ color: DIM, mt: 0.5, mb: 1.5, maxWidth: 560 }}>
-                Rules are optional — triage judges everything else. Add one when a sender, domain, or kind of
-                message should always be hidden, kept out of your tasks, or put in front of you as urgent.
+                {t("Rules are optional — triage judges everything else. Add one when a sender, domain, or kind of message should always be hidden, kept out of your tasks, or put in front of you as urgent.")}
               </Typography>
               <Button size="small" variant="outlined" startIcon={<AddIcon sx={{ fontSize: 14 }} />}
-                onClick={() => setDraft({ ...NEW_POLICY })}>Add your first rule</Button>
+                onClick={() => setDraft({ ...NEW_POLICY })}>{t("Add your first rule")}</Button>
             </Box>
           )}
           {(policies || []).map((p) => (
             <Box key={p.PolicyId} sx={{ display: "flex", alignItems: "center", gap: 1.5, py: 1.75, borderBottom: `1px solid ${BORDER}`, opacity: p.Active ? 1 : 0.55 }}>
-              <Chip size="small" label={p.Action.replace("_", " ")}
+              <Chip size="small" label={ACTIONS.includes(p.Action) ? t(p.Action.replace("_", " ")) : p.Action.replace("_", " ")}
                 sx={{ bgcolor: ACTION_COLORS[p.Action]?.bg, color: ACTION_COLORS[p.Action]?.fg, height: 21, fontSize: 10.5, width: 100, justifyContent: "center" }} />
               <Box sx={{ flex: 1, minWidth: 0 }}>
                 <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13.5 }} noWrap>{p.Name}</Typography>
-                <Typography variant="caption" sx={{ color: FAINT, display: "block" }} noWrap>{KIND_LABEL[p.Kind] || p.Kind}{p.Pattern ? `: ${p.Pattern}` : ""}{p.Mailbox ? ` · only mail to ${p.Mailbox.split("|").join(", ")}` : ""}</Typography>
+                <Typography variant="caption" sx={{ color: FAINT, display: "block" }} noWrap>{KIND_LABEL[p.Kind] ? t(KIND_LABEL[p.Kind]) : p.Kind}{p.Pattern ? `: ${p.Pattern}` : ""}{p.Mailbox ? t(" · only mail to {mailbox}", { mailbox: p.Mailbox.split("|").join(", ") }) : ""}</Typography>
               </Box>
               <Typography variant="caption" sx={{ color: FAINT, whiteSpace: "nowrap" }}
-                title="When two rules with the same action match, the lower number wins">priority {p.SortOrder}</Typography>
-              <Button size="small" onClick={() => setDraft({ ...p, Active: !!p.Active })}>Edit</Button>
+                title={t("When two rules with the same action match, the lower number wins")}>{t("priority {number}", { number: p.SortOrder })}</Typography>
+              <Button size="small" onClick={() => setDraft({ ...p, Active: !!p.Active })}>{t("Edit")}</Button>
               <Switch checked={!!p.Active} onChange={() => togglePolicy(p)} />
-              <IconButton size="small" title="Remove this rule" aria-label="Remove this rule" onClick={() => deletePolicy(p)}><DeleteOutlineIcon sx={{ fontSize: 16 }} /></IconButton>
+              <IconButton size="small" title={t("Remove this rule")} aria-label={t("Remove this rule")} onClick={() => deletePolicy(p)}><DeleteOutlineIcon sx={{ fontSize: 16 }} /></IconButton>
             </Box>
           ))}
           <RecentlyDeleted kinds={["rule"]} onRestored={load} />
           {draft && (
             <Box sx={{ ...card, bgcolor: PANEL2, p: 2, mt: 2, display: "flex", flexDirection: "column", gap: 1.25 }}>
-              <Typography variant="body2" sx={{ color: "#55697a", fontWeight: 600 }}>{draft.PolicyId ? `Edit rule · ${draft.Name}` : "New rule"}</Typography>
-              <TextField label="Name" value={draft.Name} onChange={(e) => setDraft({ ...draft, Name: e.target.value })} />
+              <Typography variant="body2" sx={{ color: "#55697a", fontWeight: 600 }}>{draft.PolicyId ? t("Edit rule · {name}", { name: draft.Name }) : t("New rule")}</Typography>
+              <TextField label={t("Name")} value={draft.Name} onChange={(e) => setDraft({ ...draft, Name: e.target.value })} />
               <Box sx={{ display: "flex", gap: 1, flexWrap: { xs: "wrap", sm: "nowrap" } }}>
-                <TextField select fullWidth label="Matches mail" value={draft.Kind} onChange={(e) => setDraft({ ...draft, Kind: e.target.value })}>
-                  {KINDS.map((k) => <MenuItem key={k} value={k}>{KIND_LABEL[k]}</MenuItem>)}
+                <TextField select fullWidth label={t("Matches mail")} value={draft.Kind} onChange={(e) => setDraft({ ...draft, Kind: e.target.value })}>
+                  {KINDS.map((k) => <MenuItem key={k} value={k}>{t(KIND_LABEL[k])}</MenuItem>)}
                 </TextField>
                 {/* an old rule may carry an action the engine dropped - shown as "pick one" rather than as a blank box */}
-                <TextField select fullWidth label="Then" value={ACTIONS.includes(draft.Action) ? draft.Action : ""}
-                  error={!ACTIONS.includes(draft.Action)} helperText={ACTIONS.includes(draft.Action) ? " " : "pick what this rule does"}
+                <TextField select fullWidth label={t("Then")} value={ACTIONS.includes(draft.Action) ? draft.Action : ""}
+                  error={!ACTIONS.includes(draft.Action)} helperText={ACTIONS.includes(draft.Action) ? " " : t("pick what this rule does")}
                   onChange={(e) => setDraft({ ...draft, Action: e.target.value })}>
-                  {ACTIONS.map((a) => <MenuItem key={a} value={a}>{ACTION_LABEL[a]}</MenuItem>)}
+                  {ACTIONS.map((a) => <MenuItem key={a} value={a}>{t(ACTION_LABEL[a])}</MenuItem>)}
                 </TextField>
-                <TextField label="Priority" type="number" sx={{ width: 110, flexShrink: 0 }} value={draft.SortOrder}
-                  helperText="lower wins a tie" onChange={(e) => setDraft({ ...draft, SortOrder: Number(e.target.value) })} />
+                <TextField label={t("Priority")} type="number" sx={{ width: 110, flexShrink: 0 }} value={draft.SortOrder}
+                  helperText={t("lower wins a tie")} onChange={(e) => setDraft({ ...draft, SortOrder: Number(e.target.value) })} />
               </Box>
               {!["noreply", "first_time_sender"].includes(draft.Kind) && (
-                <TextField label={PATTERN_LABEL[draft.Kind] || "What to match"}
+                <TextField label={t(PATTERN_LABEL[draft.Kind] || "What to match")}
                   value={draft.Pattern || ""} onChange={(e) => setDraft({ ...draft, Pattern: e.target.value })} />
               )}
               {(() => {
                 const boxes = mailboxChoices(mailboxes, draft.Mailbox);
                 return boxes.length > 0 && (
-                  <TextField select label="Applies to" value={mailboxValue(boxes, draft.Mailbox)} data-tq-rule-mailbox
+                  <TextField select label={t("Applies to")} value={mailboxValue(boxes, draft.Mailbox)} data-tq-rule-mailbox
                     SelectProps={{ displayEmpty: true }} InputLabelProps={{ shrink: true }}
                     onChange={(e) => setDraft({ ...draft, Mailbox: e.target.value })}>
-                    {boxes.map((o) => <MenuItem key={o.value || "all"} value={o.value}>{o.label}</MenuItem>)}
+                    {boxes.map((o) => <MenuItem key={o.value || "all"} value={o.value}>{!o.value ? t("All mailboxes") : o.label.endsWith(" (not connected)") ? t("{mailboxes} (not connected)", { mailboxes: o.label.slice(0, -" (not connected)".length) }) : o.label}</MenuItem>)}
                   </TextField>
                 );
               })()}
-              <TextField label="Reason (shown to the reviewer)" value={draft.Reason} onChange={(e) => setDraft({ ...draft, Reason: e.target.value })} />
+              <TextField label={t("Reason (shown to the reviewer)")} value={draft.Reason} onChange={(e) => setDraft({ ...draft, Reason: e.target.value })} />
               <Box sx={{ display: "flex", gap: 0.75 }}>
                 <Button size="small" variant="contained" disabled={!draft.Name || !draft.Reason || !ACTIONS.includes(draft.Action)}
-                  onClick={() => savePolicy(draft)}>Save</Button>
+                  onClick={() => savePolicy(draft)}>{t("Save")}</Button>
                 {(!draft.Name || !draft.Reason) && <Typography variant="caption" sx={{ color: FAINT, alignSelf: "center" }}>
-                  a name and a reason are needed to save</Typography>}
-                <Button size="small" onClick={() => setDraft(null)}>Cancel</Button>
+                  {t("a name and a reason are needed to save")}</Typography>}
+                <Button size="small" onClick={() => setDraft(null)}>{t("Cancel")}</Button>
               </Box>
             </Box>
           )}
@@ -910,42 +926,37 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
         <Box>
           <SectionHead page="audit" name={AUDIT_SECTIONS[0]} />
           <Typography variant="body2" sx={{ color: DIM, mb: 1 }}>
-            Every consequential action — a message routed, a verdict given, a reply sent, an agent started, a connector or setting changed —
-            is one row in an append-only log. Each row carries a hash of its own contents and of the row before it, so changing history
-            after the fact breaks every hash from that point on. <b>Verify</b> recomputes the chain and says whether the record you see is
-            the record that was written.
+            {t("Every consequential action — a message routed, a verdict given, a reply sent, an agent started, a connector or setting changed — is one row in an append-only log. Each row carries a hash of its own contents and of the row before it, so changing history after the fact breaks every hash from that point on. Verify recomputes the chain and says whether the record you see is the record that was written.")}
             <Typography component="button" type="button" variant="body2" onClick={() => setHelp(SECTION_HELP.audit)}
               sx={{ color: "#55697a", cursor: "pointer", border: 0, background: "none", padding: 0, font: "inherit", ml: 0.75, "&:hover": { textDecoration: "underline" } }}>
-              How to read it →
+              {t("How to read it →")}
             </Typography>
           </Typography>
           <Button variant="contained" disabled={verifying} onClick={runVerify}
             startIcon={verifying ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : <VerifiedIcon sx={{ fontSize: 16 }} />}>
-            {verifying ? "Checking every row…" : "Verify chain"}</Button>
+            {t(verifying ? "Checking every row…" : "Verify chain")}</Button>
           {verify && (
             <Box sx={{ mt: 2 }}>
               {verify.ok && <Typography sx={{ fontWeight: 600, fontSize: 13.5, color: "#47654a" }}>
-                ✓ Intact — {verify.rows} rows verified
+                {t("✓ Intact — {count} rows verified", { count: verify.rows })}
               </Typography>}
               {/* two different findings, and calling both "BROKEN" cried wolf about a bug in
                   store.py: a row whose CONTENTS were edited is the thing this log exists to catch,
                   and a row that two concurrent writers linked to the same parent is not. */}
               {!!verify.altered_ids?.length && (
                 <Alert severity="error" sx={{ fontSize: 12.5, mb: 1 }}>
-                  <b>Contents altered</b> at {verify.altered_ids.join(", ")} — {verify.altered_ids.length === 1 ? "this row does" : "these rows do"} not
-                  match {verify.altered_ids.length === 1 ? "its" : "their"} own hash. This is what the log is for: something changed the record after it was written.
+                  {t(verify.altered_ids.length === 1
+                    ? "Contents altered at {rows} — this row does not match its own hash. This is what the log is for: something changed the record after it was written."
+                    : "Contents altered at {rows} — these rows do not match their own hash. This is what the log is for: something changed the record after it was written.", { rows: verify.altered_ids.join(", ") })}
                 </Alert>
               )}
               {!!verify.forked_ids?.length && (
                 <Alert severity="warning" sx={{ fontSize: 12.5 }}>
-                  <b>Out of order</b> at {verify.forked_ids.join(", ")} — nothing was altered.
-                  Two writers linked to the same previous row at the same moment, which was a bug in
-                  Taskuary's own writer (fixed — it cannot happen to rows written from here on).
-                  The contents of every row are intact.
+                  {t("Out of order at {rows} — nothing was altered. Two writers linked to the same previous row at the same moment, which was a bug in Taskuary's own writer (fixed — it cannot happen to rows written from here on). The contents of every row are intact.", { rows: verify.forked_ids.join(", ") })}
                 </Alert>
               )}
               {!verify.ok && <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.75 }}>
-                {verify.rows} rows checked.
+                {t("{count} rows checked.", { count: verify.rows })}
               </Typography>}
             </Box>
           )}
@@ -962,12 +973,12 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
   /* ── searching replaces the document; the rail is always on screen either way ────── */
   if (q) return (
     <Box>
-      {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 1.5 }}>{err}</Alert>}
+      {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 1.5 }}>{typeof err === "string" ? err : t(err.key)}</Alert>}
       {note}
-      {!results.length ? <Empty>{nothingMatches(q, "Settings")}</Empty> : (
+      {!results.length ? <Empty>{nothingMatches(q, t("Settings"))}</Empty> : (
         <>
           <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 1 }}>
-            {results.length} {results.length === 1 ? "result" : "results"}
+            {t(results.length === 1 ? "{count} result" : "{count} results", { count: results.length })}
           </Typography>
           <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", md: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
             {results.map((r) => (
@@ -989,7 +1000,7 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
   // used to stop dead, with Routing policies reachable only by clicking the rail.
   return (
     <Box>
-      {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 1.5 }}>{err}</Alert>}
+      {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 1.5 }}>{typeof err === "string" ? err : t(err.key)}</Alert>}
       {/* ...or, on the assistant canvas, the one page it opened (`only`), without its heading - the canvas's frame says it */}
       {NAV.map((k, i) => (!only || only.page === k) && (
         <React.Fragment key={k}>
@@ -1042,6 +1053,7 @@ const RAIL = 236, GUTTER = 24;   // the rail's own width, and the grid gap besid
 // `browse` (the assistant canvas, CanvasBrowse.jsx): the pages are the sections, Configuration's groups its cards, and one
 // group (or one page) opens with its own controls - drawn through the canvas's frame instead of this tab's rail.
 export default function SettingsView({ onNavigate, browse = null, browseState = {}, onBrowseState = null }) {
+  useLocale();
   const canCode = useCapabilities().coding;                   // no coding tool connected: no Coding agent section (capabilities.js)
   const [page, setPage] = useState(NAV[0]);      // the rail's first entry is where Settings opens - About you
   // Docs' rail entries switch the document, so the selection belongs here beside `page` - and the
@@ -1179,32 +1191,32 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
     const knobsIn = (g) => Object.values(schema.knobs || {}).filter((k) => k.group === g).length;
     // SEARCH, as the tab had it: a setting you half remember is found by its words, and opens the group it lives in
     const needle = q.trim().toLowerCase();
-    const hits = needle ? Object.entries(schema.knobs || {}).filter(([k, m]) => `${k} ${m.label || ""} ${m.desc || ""}`.toLowerCase().includes(needle)) : [];
+    const hits = needle ? Object.entries(schema.knobs || {}).filter(([k, m]) => `${k} ${m.label || ""} ${m.desc || ""} ${t(m.label || "")} ${t(m.desc || "")}`.toLowerCase().includes(needle)) : [];
     // DOCS IS A SHELF OF FILES, not one page (the owner, 2026-09-29: "I don't see the rest of the docs ... we need sub
     // settings to see all the files soul.md/counsel"): the same tree the tab's rail drew - the operator documents, the
     // profiles, the playbooks and their New / Manage entries, How it works - each a card that opens that document
     // ...each card saying what it is, not which shelf it is on ("Operator documents" in grey under every name)
-    const what = { ...Object.fromEntries(OPERATOR_DOCS.map((d) => [`d:${d.name}`, d.blurb])),
-      ...Object.fromEntries((docCat.profiles || []).map((r) => [`p:${r.name}`, r.purpose])),
-      "a:new-profile": "A new worker with its own rules", "a:manage-profiles": "Add, rename or remove workers",
-      "g:how": "The assistant and the gates a message passes" };
+    const what = { ...Object.fromEntries(OPERATOR_DOCS.map((d) => [`d:${d.name}`, t(d.blurb.split(/(?<=\.)\s/)[0])])),
+      ...Object.fromEntries((docCat.profiles || []).map((r) => [`p:${r.name}`, String(r.purpose || "").split(/(?<=\.)\s/)[0]])),
+      "a:new-profile": t("A new worker with its own rules"), "a:manage-profiles": t("Add, rename or remove workers"),
+      "g:how": t("The assistant and the gates a message passes") };
     let shelf = "";
     const docCards = docsTree(docCat).flatMap((e) => {
       if (e.head) shelf = e.key;
       if (e.head && e.key !== "g:how") return [];
-      return [{ key: e.key, shelf, title: e.label, sub: String(what[e.key] || "").split(/(?<=\.)\s/)[0], sel: e.sel }];
+      return [{ key: e.key, shelf, title: e.key.startsWith("p:") || e.key.startsWith("pp:") ? e.label : t(e.label), sub: what[e.key] || "", sel: e.sel }];
     }).filter((c) => (SHELF[section] || []).includes(c.shelf));
     // ...a hit keeps the knob it found: it opened its group at the top, the setting itself somewhere below (the 2026-10-19 UI walk)
-    const cards = needle ? hits.map(([k, m]) => ({ key: m.group, title: m.label || k, sub: `${m.group} · ${m.desc || ""}`, section: "config", knob: k }))
+    const cards = needle ? hits.map(([k, m]) => ({ key: m.group, title: m.label ? t(m.label) : k, sub: `${t(m.group)} · ${m.desc ? t(m.desc) : ""}`, section: "config", knob: k }))
       // ...a group the schema puts nothing in is not a card: "Other" said "its own panel" over an empty page once strays stopped drawing
-      : section === "config" ? GROUPS.filter((g) => knobsIn(g) && (g !== "Coding agent" || canCode)).map((g) => ({ key: g, title: g, sub: `${knobsIn(g)} settings` }))
+      : section === "config" ? GROUPS.filter((g) => knobsIn(g) && (g !== "Coding agent" || canCode)).map((g) => ({ key: g, title: t(g), sub: t("{count} settings", { count: knobsIn(g) }) }))
       : SHELF[section] ? docCards
-      : section ? [{ key: section, title: PAGES[section].title, sub: PAGES[section].desc }] : [];
+      : section ? [{ key: section, title: t(PAGES[section].title), sub: t(PAGES[section].desc) }] : [];
     const open = gone || !section ? null : browseState.open;
     return browse({
-      title: "Settings",
-      summary: "how Taskuary works for you · pick a section",
-      sections: NAV.flatMap((k) => [{ key: k, label: PAGES[k].title }, ...(k === "docs" ? [{ key: "profiles", label: "Profiles" }] : [])]),
+      title: t("Settings"),
+      summary: t("how Taskuary works for you · pick a section"),
+      sections: NAV.flatMap((k) => [{ key: k, label: t(PAGES[k].title) }, ...(k === "docs" ? [{ key: "profiles", label: t("Profiles") }] : [])]),
       section: needle ? "" : section,
       onSection: (key) => { setQ(""); onBrowseState?.({ section: key, open: null }); },
       cards: cards.map((c, i) => ({ ...c, key: needle ? `${c.key}-${i}` : c.key,
@@ -1216,13 +1228,13 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
         } })),
       query: q,
       search: (
-        <TextField fullWidth size="small" placeholder="Search settings…" value={q} onChange={(e) => setQ(e.target.value)}
-          inputProps={{ "aria-label": "Search settings", "data-tq-browse-search": "" }}
+        <TextField fullWidth size="small" placeholder={t("Search settings…")} value={q} onChange={(e) => setQ(e.target.value)}
+          inputProps={{ "aria-label": t("Search settings"), "data-tq-browse-search": "" }}
           InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon sx={{ fontSize: 17, color: FAINT }} /></InputAdornment> }}
           sx={{ mt: 1.5, bgcolor: "#fff", borderRadius: 2 }} />
       ),
       // what the assistant changed here - the tab drew it over Configuration
-      tools: <>{section === "config" && !open && !needle ? <Box sx={{ mt: 1.5 }}><AssistantChanges /></Box>
+      tools: <><LanguageSelector />{section === "config" && !open && !needle ? <Box sx={{ mt: 1.5 }}><AssistantChanges /></Box>
         // the shelf's profiles come from DocsView's own reads - mounted unseen, as the tab's rail had it
         : SHELF[section] && !open ? <>
           {/* the one-click road to a whole role - worker, playbooks, where the mail goes (roles.py) - offered beside the workers */}
@@ -1231,9 +1243,9 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
       detail: open ? <SettingsPages only={{ page, group: section === "config" ? open : null, knob: browseState.knob || "", at: browseState.at }} q="" setQ={() => {}} onNavigate={onNavigate}
         onJump={() => {}} onSections={setCfgSecs} docSel={docSel} setDocSel={setDocSel} onCatalog={onCatalog} /> : null,
       onBack: () => onBrowseState?.({ ...browseState, open: null }),
-      openLabel: !open ? "" : SHELF[section] ? `the document "${docCards.find((c) => c.key === open)?.title || "Docs"}" (Settings - ${section === "docs" ? "Docs" : "Profiles"})`
-        : `the settings group "${section === "config" ? open : PAGES[section]?.title}" (Settings)`,
-      note: gone ? `“${browseState.open}” is not a settings group any more - here are the ones there are.` : "",
+      openLabel: !open ? "" : SHELF[section] ? t('the document "{document}" (Settings - {section})', { document: docCards.find((c) => c.key === open)?.title || t("Docs"), section: t(section === "docs" ? "Docs" : "Profiles") })
+        : t('the settings group "{group}" (Settings)', { group: t(section === "config" ? open : PAGES[section]?.title) }),
+      note: gone ? t("“{group}” is not a settings group any more - here are the ones there are.", { group: browseState.open }) : "",
     });
   }
 
@@ -1246,8 +1258,9 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
     <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", md: `${RAIL}px minmax(0,1fr)` },
       gap: 3, alignItems: "start", mx: "auto", maxWidth: RAIL + GUTTER + PAGE }}>
       <Box sx={{ position: { md: "sticky" }, top: { md: 62 }, maxHeight: { md: "calc(100vh - 74px)" }, overflowY: { md: "auto" } }}>
-        <Typography id="tqSettingsRail" sx={{ color: INK, fontWeight: 600, fontSize: 16, mb: 1.5 }}>Settings</Typography>
-        <TextField fullWidth placeholder="Search settings…" value={q}
+        <Typography id="tqSettingsRail" sx={{ color: INK, fontWeight: 600, fontSize: 16, mb: 1.5 }}>{t("Settings")}</Typography>
+        <LanguageSelector />
+        <TextField fullWidth placeholder={t("Search settings…")} value={q}
           onChange={(e) => setQ(e.target.value)} sx={{ mb: 1.5, bgcolor: "#fff", borderRadius: 2 }}
           InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon sx={{ fontSize: 17, color: FAINT }} /></InputAdornment> }} />
         {/* THE RAIL IS THE MAP: a page, and under it the sections that page stacks. Eleven
@@ -1265,9 +1278,9 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
                   color: on ? "#41525f" : DIM, bgcolor: on ? "#eae4d8" : "transparent",
                   "&:hover": { bgcolor: on ? "#eae4d8" : "#f4f1ec" } }}>
                 {React.createElement(PAGES[k].icon, { sx: { fontSize: 16 } })}
-                <Box component="span" sx={{ flex: 1, minWidth: 0 }}>{PAGES[k].title}</Box>
+                <Box component="span" sx={{ flex: 1, minWidth: 0 }}>{t(PAGES[k].title)}</Box>
                 {!!secs.length && (
-                  <ExpandMoreIcon titleAccess={`${shown ? "hide" : "show"} ${PAGES[k].title}'s sections`}
+                  <ExpandMoreIcon titleAccess={t(shown ? "hide {page}'s sections" : "show {page}'s sections", { page: t(PAGES[k].title) })}
                     onClick={(e) => { e.stopPropagation(); setOpen((o) => ({ ...o, [k]: !shown })); }}
                     sx={{ fontSize: 17, color: FAINT, transition: "transform .15s", transform: shown ? "none" : "rotate(-90deg)",
                       "&:hover": { color: INK } }} />
@@ -1287,7 +1300,7 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
                       fontWeight: at ? 650 : e.head ? 700 : 400,
                       letterSpacing: e.head ? ".02em" : 0,
                       "&:hover": { color: "#41525f", borderLeftColor: at ? ACCENT2 : "#c8c0b3" } }}>
-                    {e.label}
+                    {e.section || e.head || e.key.startsWith("a:") || e.key.startsWith("d:") ? t(e.label) : e.label}
                   </Box>
                 );
               })}
@@ -1295,7 +1308,7 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
           );
         })}
         <Typography variant="caption" sx={{ color: FAINT, display: "block", pt: 2, px: 1.25, lineHeight: 1.6 }}>
-          Everything here is stored locally, in the same SQLite file as your tasks.
+          {t("Everything here is stored locally, in the same SQLite file as your tasks.")}
         </Typography>
         {/* the one link out to the docs, and it is here because this is where someone already is
             when they are looking a setting up (taskuary.com/docs/settings is generated from the
@@ -1303,7 +1316,7 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
         <Typography variant="caption" sx={{ color: FAINT, display: "block", pt: 1, px: 1.25 }}>
           <Box component="a" href="https://taskuary.com/docs/settings" target="_blank" rel="noreferrer"
             sx={{ color: "#55697a", textDecoration: "none", "&:hover": { textDecoration: "underline" } }}>
-            Full documentation →
+            {t("Full documentation →")}
           </Box>
         </Typography>
       </Box>
@@ -1334,15 +1347,15 @@ const AssistantChanges = () => {
   if (!rows.length) return null;
   const said = (r) => {
     const d = r.detail || {};
-    if (r.entity === "setting") return `${d.key}: ${d.from ?? "(blank)"} → ${d.to}`;
-    if (r.entity === "source") return `${r.action} · ${d.title || `report ${r.id}`}${d.to ? ` → ${d.to}` : ""}${d.changed ? ` (${d.changed.join(", ")})` : ""}`;
-    if (r.entity === "connector") return `${r.action.replace("_", " ")} · ${d.name || `connection ${r.id}`}`;
+    if (r.entity === "setting") return `${d.key}: ${d.from ?? t("(blank)")} → ${d.to}`;
+    if (r.entity === "source") return `${r.action} · ${d.title || t("report {id}", { id: r.id })}${d.to ? ` → ${d.to}` : ""}${d.changed ? ` (${d.changed.join(", ")})` : ""}`;
+    if (r.entity === "connector") return `${r.action.replace("_", " ")} · ${d.name || t("connection {id}", { id: r.id })}`;
     return `${r.entity} ${r.action}`;
   };
   return (
     <Box sx={{ ...card, mb: 2, px: 1.5, py: 1.1, borderLeft: "4px solid #6f8a6e" }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-        <Typography sx={{ ...mono, fontSize: 10, fontWeight: 600, letterSpacing: 1.2, color: ACCENT2, flex: 1, textTransform: "uppercase" }}>What the assistant changed</Typography>
+        <Typography sx={{ ...mono, fontSize: 10, fontWeight: 600, letterSpacing: 1.2, color: ACCENT2, flex: 1, textTransform: "uppercase" }}>{t("What the assistant changed")}</Typography>
       </Box>
       {rows.map((r, i) => (
         <Typography key={i} variant="body2" sx={{ fontSize: 12, color: INK, mt: 0.4 }}>
@@ -1358,27 +1371,28 @@ const WorkingNumbers = () => {
   const [wins, setWins] = useState(null), [record, setRecord] = useState([]);
   useEffect(() => { api.get("/api/working").then(({ data }) => { setWins(data.windows || []); setRecord(data.record || []); }).catch(() => setWins([])); }, []);
   if (wins === null) return <CircularProgress size={16} sx={{ display: "block", mt: 1 }} />;
-  if (!wins.length) return <Empty>Not counted - Taskuary did not answer.</Empty>;
+  if (!wins.length) return <Empty>{t("Not counted - Taskuary did not answer.")}</Empty>;
   const cols = `130px repeat(${wins.length}, minmax(0, 1fr))`;
+  const cell = (n, parts) => n ? `${n}: ${parts.filter(([count]) => count > 0).map(([count, label]) => t("{count} {label}", { count, label: t(label) })).join(" · ")}` : t("none");
   return (
     <Box sx={{ mt: 1 }}>
       <Box sx={{ display: "grid", gridTemplateColumns: cols, gap: 1.5, pb: 0.5, borderBottom: `1px solid ${BORDER}` }}>
-        <span />{wins.map((w) => <Typography key={w.days} sx={{ ...mono, fontSize: 10, letterSpacing: 1, color: FAINT }}>LAST {w.days} DAYS</Typography>)}
+        <span />{wins.map((w) => <Typography key={w.days} sx={{ ...mono, fontSize: 10, letterSpacing: 1, color: FAINT }}>{t("LAST {count} DAYS", { count: w.days })}</Typography>)}
       </Box>
-      {workingTable(wins).map((r) => (
-        <Box key={r.label} sx={{ display: "grid", gridTemplateColumns: cols, gap: 1.5, alignItems: "baseline", py: 0.75, borderBottom: `1px solid ${BORDER}` }}>
-          <Typography variant="caption" sx={{ color: INK, fontWeight: 600 }}>{r.label}</Typography>
-          {r.cells.map((c, i) => <Typography key={i} variant="caption" sx={{ color: DIM }}>{c}</Typography>)}
+      {WORKING_ROWS.map(([label, count, parts]) => (
+        <Box key={label} sx={{ display: "grid", gridTemplateColumns: cols, gap: 1.5, alignItems: "baseline", py: 0.75, borderBottom: `1px solid ${BORDER}` }}>
+          <Typography variant="caption" sx={{ color: INK, fontWeight: 600 }}>{t(label)}</Typography>
+          {wins.map((w, i) => <Typography key={i} variant="caption" sx={{ color: DIM }}>{cell(count(w), parts(w))}</Typography>)}
         </Box>
       ))}
       {/* THE TRACK RECORD (2026-10-25): each draft pattern's last 30 days - read-only, and nothing is ever sent on it */}
       <Typography sx={{ ...mono, fontSize: 10, letterSpacing: 1, color: FAINT, mt: 2, pb: 0.5, borderBottom: `1px solid ${BORDER}` }}
-        data-tq-track-record>TRACK RECORD · LAST 30 DAYS · NOTHING IS SENT WITHOUT YOUR PRESS</Typography>
-      {!record.length && <Typography variant="caption" sx={{ color: FAINT, display: "block", py: 0.75 }}>No drafts in the last 30 days.</Typography>}
-      {record.map(recordRow).map((r) => (
-        <Box key={r.label} sx={{ display: "grid", gridTemplateColumns: "minmax(0, 260px) minmax(0, 1fr)", gap: 1.5, alignItems: "baseline", py: 0.75, borderBottom: `1px solid ${BORDER}` }}>
-          <Typography variant="caption" sx={{ color: INK, fontWeight: 600, overflowWrap: "anywhere" }}>{r.label}</Typography>
-          <Typography variant="caption" sx={{ color: DIM }}>{r.cell}</Typography>
+        data-tq-track-record>{t("TRACK RECORD · LAST 30 DAYS · NOTHING IS SENT WITHOUT YOUR PRESS")}</Typography>
+      {!record.length && <Typography variant="caption" sx={{ color: FAINT, display: "block", py: 0.75 }}>{t("No drafts in the last 30 days.")}</Typography>}
+      {record.map((r, i) => (
+        <Box key={i} sx={{ display: "grid", gridTemplateColumns: "minmax(0, 260px) minmax(0, 1fr)", gap: 1.5, alignItems: "baseline", py: 0.75, borderBottom: `1px solid ${BORDER}` }}>
+          <Typography variant="caption" sx={{ color: INK, fontWeight: 600, overflowWrap: "anywhere" }}>{t("{kind} to {domain}", { kind: r.kind, domain: r.domain })}</Typography>
+          <Typography variant="caption" sx={{ color: DIM }}>{cell(r.total, [[r.as_drafted, "sent as drafted"], [r.edited, "edited"], [r.rejected, "rejected"]])}</Typography>
         </Box>
       ))}
     </Box>
@@ -1392,16 +1406,16 @@ const AuditHistory = () => {
   if (rows === null) return <CircularProgress size={16} sx={{ display: "block", mt: 3 }} />;
   const hit = (r) => !q || `${r.Actor} ${r.Action} ${r.EntityType} ${r.EntityId} ${r.Detail || ""}`.toLowerCase().includes(q.toLowerCase());
   const shown = rows.filter(hit);
-  const who = (r) => ACTOR_LABEL[r.Actor] || r.Actor || r.ActorType || "?";
+  const who = (r) => ACTOR_LABEL[r.Actor] ? t(ACTOR_LABEL[r.Actor]) : r.Actor || r.ActorType || "?";
   return (
     <Box sx={{ mt: 3 }}>
       <Box sx={{ display: "flex", alignItems: "baseline", gap: 1.5, mb: 1 }}>
-        <Typography sx={{ ...mono, fontSize: 10, letterSpacing: 1, color: FAINT }}>LAST {rows.length} ACTIONS</Typography>
+        <Typography sx={{ ...mono, fontSize: 10, letterSpacing: 1, color: FAINT }}>{t("LAST {count} ACTIONS", { count: rows.length })}</Typography>
         <Box sx={{ flex: 1 }} />
-        <TextField size="small" placeholder="filter — a task id, an action, a word" value={q} onChange={(e) => setQ(e.target.value)}
+        <TextField size="small" placeholder={t("filter — a task id, an action, a word")} value={q} onChange={(e) => setQ(e.target.value)}
           sx={{ width: 280, bgcolor: "#fff" }} inputProps={{ style: { fontSize: 12, padding: "5px 9px" } }} />
       </Box>
-      {!shown.length && <Empty>Nothing matches.</Empty>}
+      {!shown.length && <Empty>{t("Nothing matches.")}</Empty>}
       {shown.map((r) => (
         <Box key={r.Id} sx={{ display: "grid", gridTemplateColumns: "150px 110px 150px minmax(0, 1fr) 70px", gap: 1.5, alignItems: "baseline", py: 0.75, borderBottom: `1px solid ${BORDER}` }}>
           <Typography variant="caption" sx={{ ...mono, color: FAINT, fontSize: 10.5 }}>{String(r.CreatedAt || "").slice(0, 16)}</Typography>
@@ -1411,7 +1425,7 @@ const AuditHistory = () => {
             {r.EntityType}{r.EntityId ? ` ${r.EntityType === "task" ? `TQ-${String(r.EntityId).padStart(4, "0")}` : `#${r.EntityId}`}` : ""}
             {r.Detail ? ` — ${typeof r.Detail === "string" ? r.Detail : JSON.stringify(r.Detail)}` : ""}
           </Typography>
-          <Typography variant="caption" sx={{ ...mono, color: "#cfc9bf", fontSize: 9.5 }} title={`row hash ${r.RowHash || ""}`}>{String(r.RowHash || "").slice(0, 8)}</Typography>
+          <Typography variant="caption" sx={{ ...mono, color: "#cfc9bf", fontSize: 9.5 }} title={t("row hash {hash}", { hash: r.RowHash || "" })}>{String(r.RowHash || "").slice(0, 8)}</Typography>
         </Box>
       ))}
     </Box>
@@ -1423,12 +1437,12 @@ const HelpDialog = ({ help, onClose }) => (
     {help && (
       <>
         <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          <HelpOutlineIcon sx={{ fontSize: 18, color: ACCENT2 }} />{help.title}
+          <HelpOutlineIcon sx={{ fontSize: 18, color: ACCENT2 }} />{t(help.title)}
         </DialogTitle>
         <DialogContent>
-          <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", color: INK, lineHeight: 1.6 }}>{help.body}</Typography>
+          <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", color: INK, lineHeight: 1.6 }}>{t(help.body)}</Typography>
         </DialogContent>
-        <DialogActions><Button variant="contained" onClick={onClose}>Got it</Button></DialogActions>
+        <DialogActions><Button variant="contained" onClick={onClose}>{t("Got it")}</Button></DialogActions>
       </>
     )}
   </Dialog>

@@ -25,19 +25,20 @@ const NF = [0, 1, 2].map((p) => new Intl.NumberFormat("en-US", { minimumFraction
 export const fmtNum = (n, p = 0) => (n === null || n === undefined ? "" : NF[Math.max(0, Math.min(2, p))].format(n));
 // a report's day is the data, not a moment: said as it is written, never moved into a zone
 const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const day = (v) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v || "")); return m ? `${MON[+m[2] - 1]} ${+m[3]}` : String(v ?? ""); };
+const day = (v, translate) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v || "")); return m ? translate("{month} {day}", { month: translate(String(MON[+m[2] - 1])), day: +m[3] }) : String(v ?? ""); };
 // ...and WHAT IT FOUND, in one line from the rows themselves (no AI): how many, the total where a total means something, and the
 // row that stands out - the peak of a run of days, the largest of a ranking
 const NO_TOTAL = /avg|average|mean|median|rate|ratio|pct|percent|share|score|index|age_days|days_old/i;
-export function reportSummary(rows, shape = reportShape(rows)) {
+export function reportSummary(rows, shape = reportShape(rows), translate = (source, values = {}) => source.replace(/\{(\w+)\}/g, (_, key) => values[key] ?? "")) {
   const n = rows.length, { lab, val, dated } = shape;
-  const count = dated ? `${n} days` : `${n} ${n === 1 ? "row" : "rows"}`;
+  const count = dated ? translate("{count} days", { count: n }) : translate(n === 1 ? "{count} row" : "{count} rows", { count: n });
   if (!val || !n) return count;
   const p = places(rows, val), vs = rows.map((r) => numOf(r[val]) ?? 0), top = Math.max(...vs), at = rows[vs.indexOf(top)];
   const sum = vs.reduce((a, b) => a + b, 0), what = colWords(val);
-  const total = NO_TOTAL.test(val) ? "" : `${fmtNum(sum, p)} ${what} in all`;
-  const stand = !lab ? "" : dated ? `peak ${fmtNum(top, p)} on ${day(at[lab])}${vs.length > 1 && vs.indexOf(top) !== vs.length - 1 ? `, latest ${fmtNum(vs[vs.length - 1], p)}` : ", the latest day"}`
-    : `largest ${at[lab]} at ${fmtNum(top, p)}${total && sum > 0 && n > 1 ? ` (${Math.round((top / sum) * 100)}%)` : ""}`;
+  const total = NO_TOTAL.test(val) ? "" : translate("{total} {what} in all", { total: fmtNum(sum, p), what });
+  const stand = !lab ? "" : dated ? translate("peak {value} on {day}", { value: fmtNum(top, p), day: day(at[lab], translate) })
+    + (vs.length > 1 && vs.indexOf(top) !== vs.length - 1 ? translate(", latest {value}", { value: fmtNum(vs[vs.length - 1], p) }) : translate(", the latest day"))
+    : translate("largest {label} at {value}", { label: at[lab], value: fmtNum(top, p) }) + (total && sum > 0 && n > 1 ? ` (${Math.round((top / sum) * 100)}%)` : "");
   return [count, total, stand].filter(Boolean).join(" · ");
 }
 

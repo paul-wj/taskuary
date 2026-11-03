@@ -1374,7 +1374,7 @@ def _run_kind(op: dict, background: BackgroundTasks):
             return {'title': title, 'active': on}
         if kind == 'report.route':
             # one line of the route card - the same card the Reports page edits (the owner, 2026-09-27)
-            from .reports import full_route, route_words, set_line
+            from .reports import full_route, route_words, route_words_i18n, set_line
             line = str(p.get('line') or '').strip().lower()
             try: new = set_line(cfg, line, str(p.get('how') or '').strip().lower(), str(p.get('when') or ''),
                                 str(p.get('rule') or '').strip().lower(), p.get('count'), str(p.get('text') or ''))
@@ -1389,7 +1389,8 @@ def _run_kind(op: dict, background: BackgroundTasks):
             store.save_source({'SourceId': tid, 'ConfigJson': json.dumps(new)}, ACTOR)
             store.audit('source', tid, 'route', 'assistant', detail={'title': title, 'line': line, 'from': prev, 'to': new['route'][line],
                                                                      **({'recipient': to} if to else {})})
-            return {'title': title, 'route': route_words(new), **({'to': to} if to and line in ('send', 'alert') else {})}
+            return {'title': title, 'route': route_words(new), 'route_i18n': route_words_i18n(new),
+                    **({'to': to} if to and line in ('send', 'alert') else {})}
         if kind == 'report.edit':
             patch = p.get('config') if isinstance(p.get('config'), dict) else {}
             if not patch: raise HTTPException(422, 'say what to change - config is the keys to change')
@@ -6374,11 +6375,14 @@ def retriage_message(mid: int):
 def sources():
     # default_repo rides along so the Board's repo picker preselects it; a report carries its route in
     # the server's own words, so the page never re-derives the rules (reports.route_words)
-    from .reports import route_words
+    from .reports import route_words, route_words_i18n
     rows = store.list_sources(active_only=False)
     for r in rows:
         if r.get('Channel') != 'report': continue
-        try: r['RouteWords'] = route_words(json.loads(r.get('ConfigJson') or '{}'))
+        try:
+            report_cfg = json.loads(r.get('ConfigJson') or '{}')
+            r['RouteWords'] = route_words(report_cfg)
+            r['RouteWords_i18n'] = route_words_i18n(report_cfg)
         except ValueError: pass
     return {'data': rows, 'default_repo': (cfg.get('github') or {}).get('default_repo')}
 

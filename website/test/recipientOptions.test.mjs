@@ -40,7 +40,7 @@ test("a typed address is offered alongside searchable known contacts", () => {
 
 // the owner, 2026-11-02: the Assistant's "write to the team WhatsApp group" opened Send something on email with To empty
 test("Send something opens on the channel it was asked for, its chat in To", () => {
-  const grp = "120363000000000001@g.us", targets = [{ channel: "email", to: [] }, { channel: "whatsapp", to: [{ to: grp, name: "Northwind team" }] }];
+  const grp = "group@chat.test", targets = [{ channel: "email", to: [] }, { channel: "whatsapp", to: [{ to: grp, name: "Northwind team" }] }];
   assert.deepEqual(sendPrefill(targets, "whatsapp", grp), { channel: "whatsapp", to: grp, emailTo: [] });
   assert.deepEqual(sendPrefill(targets, "whatsapp", ""), { channel: "whatsapp", to: "", emailTo: [] });
   assert.deepEqual(sendPrefill(targets, "email", "gail@northwind.example"), { channel: "email", to: "", emailTo: ["gail@northwind.example"] });

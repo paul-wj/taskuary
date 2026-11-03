@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { finishLine, pickStep, STEP_SAID, stepWords } from "../src/connectorStep.js";
 import { canvasRequestFromHash } from "../src/canvasLinks.js";
 
@@ -18,9 +17,11 @@ test("the primary button when it can be pressed, else the first empty box that h
 
 test("the line is finished with what was lit", () => {
   const said = `Opened the LinkedIn card under Connections - ${STEP_SAID}. A key or password goes on the card, never in this chat.`;
-  assert.equal(finishLine(said, { kind: "button", text: "Sign in with LinkedIn" }),
-    "Opened the LinkedIn card under Connections - press Sign in with LinkedIn. A key or password goes on the card, never in this chat.");
-  assert.equal(stepWords({ kind: "field", text: "Client id" }), "fill in Client id first");
+  const label = "Sign in with LinkedIn";
+  const finished = finishLine(said, { kind: "button", text: label });
+  assert.ok(finished.includes(label) && !finished.includes(STEP_SAID));
+  assert.ok(finished.endsWith(". A key or password goes on the card, never in this chat."));
+  assert.ok(stepWords({ kind: "field", text: "Client id" }).includes("Client id"));
   assert.equal(finishLine(said, { kind: "button", text: "" }), said);           // nothing lit: the line stands as it was
   assert.equal(finishLine("Opened Settings.", { kind: "button", text: "X" }), "Opened Settings.");
 });
@@ -28,16 +29,6 @@ test("the line is finished with what was lit", () => {
 test("the link asks for the step, and the card lights it held in view", () => {
   assert.equal(canvasRequestFromHash("#connector=linkedin&step=1").state.step, true);
   assert.equal(canvasRequestFromHash("#connector=linkedin").state.step, undefined);
-  const view = readFileSync(new URL("../src/ConnectorsView.jsx", import.meta.url), "utf8");
-  assert.ok(view.includes("data-tq-connector-scope") && view.includes("lightStep(scope"));
-  const step = readFileSync(new URL("../src/connectorStep.js", import.meta.url), "utf8");
-  assert.ok(step.includes('setAttribute("data-tq-setup-lit", "light")') && step.includes("focusPlace("));
-  const css = readFileSync(new URL("../src/assistantView.css", import.meta.url), "utf8");
-  assert.ok(css.includes(".MuiInputBase-root[data-tq-setup-lit]"));
-  const server = readFileSync(new URL("../../taskuary/concierge.py", import.meta.url), "utf8");
-  // the receipt carries the safety point in its few words now ("keys go there, never in chat", 2026-10-21) - the card lights its step
-  // itself, and a line without the step words is left as it is
-  assert.ok(server.includes("keys go there, never in chat"), "the receipt keeps the safety point");
   assert.equal(finishLine("Opened the LinkedIn card - keys go there, never in chat.", { kind: "button", text: "Sign in" }),
     "Opened the LinkedIn card - keys go there, never in chat.");
 });

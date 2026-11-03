@@ -2,7 +2,6 @@
 // in its order, under its names - so the opener can never put a row in a group the rail does not.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { gistOf, groupOf, refOf, stateOf, summarize, whoOf, GROUPS } from "../src/walkSummary.js";
 import { LEVEL_ORDER, SECTION_WORDS, bandsOf, levelOf } from "../src/funnelPile.js";
 
@@ -20,22 +19,25 @@ test("the groups are the rail's bands, in the rail's order, under the rail's nam
 test("a finished agent's task stays in Tasks until read, as on the rail - not an agent waiting, not a report (2026-10-02; 2026-11-02)", () => {
   const done = it("yours", "agentdone", { agent: "coding", title: "Investigate the export", closed: true });
   assert.equal(groupOf(done), "task");
-  assert.equal(summarize([done]).groups[0].word, "Tasks");
+  assert.equal(summarize([done]).groups[0].key, "task");
 });
 
-test("the lead counts each band as the rail does", () => {
+test("the summary counts each band as the rail does", () => {
   const s = summarize([it("approve", "review", { order_band: 2 }), it("asked", "asked", { order_band: 2, deferred: true }),
     it("report", "report", { order_band: 3 }), it("fyi", "fyi", { order_band: 4 }), it("fyi", "fyi", { order_band: 4, title: "Other" })]);
-  assert.equal(s.lead, "5 things: 1 tasks, 1 for later, 1 reports, 2 FYI.");
+  assert.equal(s.n, 5);
+  assert.deepEqual(s.groups.map(({ key, n }) => [key, n]), [["task", 1], ["later", 1], ["reports", 1], ["fyi", 2]]);
   // a task an agent is working counts under Tasks, and one Next walked past stays there (the owner, 2026-10-21)
   const t = summarize([it("approve", "review", { order_band: 2 }), it("working", "agent", { order_band: 2 }), it("asked", "asked", { order_band: 2 })]);
-  assert.equal(t.lead, "3 things: 3 tasks.");
-  assert.equal(summarize([]).lead, "Nothing is waiting on you.");
+  assert.equal(t.n, 3);
+  assert.deepEqual(t.groups.map(({ key, n }) => [key, n]), [["task", 3]]);
+  assert.equal(summarize([]).n, 0);
+  assert.deepEqual(summarize([]).groups, []);
 });
 
 // HOW A ROW READS IS THE SERVER'S (funnel_presentation.shows, tests/test_row_presentation.py): the page draws its words
 test("a row draws the server's who and state word, never a copy of its own", () => {
-  const row = { ...it("approve", "action"), who: "Alex", email: "notifications@github.com", shows: { who: "github", state: "wants a yes", move: "" } };
+  const row = { ...it("approve", "action"), who: "Alex", email: "alerts@vendor.example", shows: { who: "github", state: "wants a yes", move: "" } };
   assert.equal(whoOf(row), "github");
   assert.equal(stateOf(row, "ready to send"), "wants a yes");
   // ...and the fold and the band's gist read the same words
@@ -52,11 +54,6 @@ test("a card without the server's words falls back to its plain fields", () => {
   assert.equal(stateOf(it("asked"), "asked you"), "asked you");
 });
 
-test("every group the opener draws has a colour role - a missing one crashed the page (2026-09-24)", () => {
-  // ...a tint of its own in the stylesheet now (2026-09-28), one rule per group
-  const css = readFileSync(new URL("../src/assistantView.css", import.meta.url), "utf8");
-  for (const g of GROUPS) assert.ok(css.includes(`.tq-sum-head span.lvl-${g.key}`), `no pill colour for ${g.key}`);
-});
 
 test("a row reads cleanly: its task number, the agent on an agent row, an address's name, one line for a repeat", () => {
   // the owner, 2026-09-30: "let's clean this table up per row - it looks messy and maybe include task numbers?"

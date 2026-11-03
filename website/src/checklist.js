@@ -2,6 +2,7 @@
 // ids; these helpers render GitHub task-list Markdown, parse it back, flip one box without
 // touching the others, and word progress without ever calling the task done - ticking boxes is
 // progress on the list, closing the task is the owner's separate decision.
+import { t } from "./i18n.js";
 
 export const checklistMarkdown = (items) => (items || []).map((i) => `- [${i.done ? "x" : " "}] ${i.text}`).join("\n");
 
@@ -34,7 +35,7 @@ export function progressLine(items) {
   const n = (items || []).length;
   if (!n) return "";
   const done = items.filter((i) => i.done).length;
-  return `${done} of ${n} done${done === n ? " — Mark done when it is really finished" : ""}`;
+  return t(done === n ? "{done} of {total} done — Mark done when it is really finished" : "{done} of {total} done", { done, total: n });
 }
 
 // A TICK SHOWN BEFORE THE SERVER ANSWERS (the task page, 2026-10-20): `ticks` is { id: done } for presses still in flight, drawn over

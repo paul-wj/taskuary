@@ -10,10 +10,13 @@ import AccountTreeIcon from "@mui/icons-material/AccountTree";
 import api from "./api";
 import { BORDER, DIM, FAINT, INK } from "./theme.jsx";
 import { AUTO, OTHER, chosenRepo } from "./newRepo.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 const small = { "& .MuiInputBase-root": { fontSize: 12.5, bgcolor: "#fcfaf7" } };
 
 export default function NewRepo({ agent = "", bus, out, first = "" }) {
+  useLocale();
   const [rows, setRows] = useState(null);
   const [pick, setPick] = useState(AUTO);
   const [said, setSaid] = useState(first);
@@ -29,32 +32,32 @@ export default function NewRepo({ agent = "", bus, out, first = "" }) {
   // what the card reads when the owner presses Start: the words AS THEY ARE THEN, not as the last debounce saw them
   out.current = (words) => chosenRepo({ rows: list, pick, said: words, name, path });
   const c = chosenRepo({ rows: list, pick, said, name, path });
-  const why = pick === OTHER ? "a checkout that is not in the list - the folder is saved for it"
-    : pick ? "your choice"
-    : c.repo ? "named in what you wrote" : "not named - picked from what you write, when you start";
+  const why = pick === OTHER ? t("a checkout that is not in the list - the folder is saved for it")
+    : pick ? t("your choice")
+    : c.repo ? t("named in what you wrote") : t("not named - picked from what you write, when you start");
   return (
     <Box data-tq-new-repo="">
       <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
         <AccountTreeIcon sx={{ fontSize: 15, color: DIM }} />
-        <Typography variant="caption" sx={{ color: DIM, fontWeight: 600 }}>Repository</Typography>
-        <select aria-label="Repository the session opens in" value={pick} onChange={(e) => setPick(e.target.value)}
+        <Typography variant="caption" sx={{ color: DIM, fontWeight: 600 }}>{t("Repository")}</Typography>
+        <select aria-label={t("Repository the session opens in")} value={pick} onChange={(e) => setPick(e.target.value)}
           style={{ fontSize: 12.5, padding: "5px 6px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", color: INK, minWidth: 240, maxWidth: "100%" }}>
-          <option value={AUTO}>{c.named ? `Auto - ${c.repo}` : "Auto - picks from what you write"}</option>
-          {list.map((r) => <option key={r.repo} value={r.repo}>{r.repo}{r.has_path ? "" : " (no local folder)"}</option>)}
-          <option value={OTHER}>Another repository…</option>
+          <option value={AUTO}>{c.named ? t("Auto - {repo}", { repo: c.repo }) : t("Auto - picks from what you write")}</option>
+          {list.map((r) => <option key={r.repo} value={r.repo}>{r.repo}{r.has_path ? "" : t(" (no local folder)")}</option>)}
+          <option value={OTHER}>{t("Another repository…")}</option>
         </select>
-        <Typography variant="caption" sx={{ color: FAINT, flex: 1, minWidth: 180 }}>{rows === null ? "loading the list…" : why}</Typography>
+        <Typography variant="caption" sx={{ color: FAINT, flex: 1, minWidth: 180 }}>{rows === null ? t("loading the list…") : why}</Typography>
       </Box>
       {pick === OTHER && (
         <Box sx={{ display: "flex", gap: 1, mt: 1, flexWrap: "wrap" }}>
-          <TextField size="small" label="Repository" placeholder="owner/name" value={name} onChange={(e) => setName(e.target.value)} sx={{ ...small, flex: 1, minWidth: 180 }} />
-          <TextField size="small" label="Folder on this machine" value={path} onChange={(e) => setPath(e.target.value)} sx={{ ...small, flex: 2, minWidth: 220 }} />
+          <TextField size="small" label={t("Repository")} placeholder="owner/name" value={name} onChange={(e) => setName(e.target.value)} sx={{ ...small, flex: 1, minWidth: 180 }} />
+          <TextField size="small" label={t("Folder on this machine")} value={path} onChange={(e) => setPath(e.target.value)} sx={{ ...small, flex: 2, minWidth: 220 }} />
         </Box>
       )}
       {pick !== OTHER && c.needsPath && (
         <Box sx={{ mt: 1 }}>
-          <TextField size="small" fullWidth label={`Where is ${c.repo} checked out?`} value={path} onChange={(e) => setPath(e.target.value)}
-            helperText="Saved on the agent, so every later task for this repository opens there." sx={small} />
+          <TextField size="small" fullWidth label={t("Where is {repo} checked out?", { repo: c.repo })} value={path} onChange={(e) => setPath(e.target.value)}
+            helperText={t("Saved on the agent, so every later task for this repository opens there.")} sx={small} />
         </Box>
       )}
     </Box>

@@ -8,13 +8,15 @@ export async function startFirstSync(api) {
 export async function firstSyncProgress(api) {
   const [ingest, setup] = await Promise.all([api.get("/api/ingest/status"), api.get("/api/setup")]);
   const status = ingest.data || {}, state = setup.data || {};
-  const problems = [status.failed?.length ? `Check these connections: ${status.failed.join(", ")}.` : "",
-    status.triageError || ""].filter(Boolean);
-  if (problems.length) return { phase: "failed", message: problems.join(" "), state };
-  if (state.pending) return { phase: "reading", message: "Items have arrived; the AI is reading them.", state };
+  const problems = [
+    ...(status.failed?.length ? [{ source: "Check these connections: {names}.", values: { names: status.failed.join(", ") } }] : []),
+    ...(status.triageError ? [{ text: status.triageError }] : []),
+  ];
+  if (problems.length) return { phase: "failed", messages: problems, state };
+  if (state.pending) return { phase: "reading", messages: [{ source: "Items have arrived; the AI is reading them." }], state };
   if (status.status?.state === "running")
-    return { phase: "reading", message: status.status.what || "Reading your connected sources…", state };
+    return { phase: "reading", messages: [status.status.what ? { text: status.status.what } : { source: "Reading your connected sources…" }], state };
   if (state.steps?.find((step) => step.key === "sync")?.done)
-    return { phase: "ready", message: "Your first items are ready. Open one to see how it was sorted and any draft.", state };
-  return { phase: "empty", message: "The read finished with nothing to look at yet. Check which folders the connection reads, or send a new message to that mailbox and read again.", state };
+    return { phase: "ready", messages: [{ source: "Your first items are ready. Open one to see how it was sorted and any draft." }], state };
+  return { phase: "empty", messages: [{ source: "The read finished with nothing to look at yet. Check which folders the connection reads, or send a new message to that mailbox and read again." }], state };
 }

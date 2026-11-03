@@ -1,7 +1,7 @@
 // Reconcile optimistic chat bubbles with the durable turns returned by the server.
 // Local bubbles use a/u/r/context ids; persisted comments use their database id. Comparing only
 // ids drew both copies after every freshness read even though the server had recorded one turn.
-import { label as btn } from "./buttons.js";
+import { ALL_LABELS, VERBS } from "./buttons.js";
 
 const optimistic = (m) => typeof m?.id === "string" && /^(?:a|u|r|context)\d+$/.test(m.id);
 const words = (v) => String(v || "").replace(/\s+/g, " ").trim();
@@ -61,6 +61,8 @@ export function mergeDurableTurns(local = [], durable = []) {
                        ...(bubble.chips?.length && !turn.chips?.length ? { chips: bubble.chips } : {}),
                        // ...and its status: the durable turn has none, and an error receipt lost its "Report this bug" with it
                        ...(bubble.role === "receipt" ? { role: "receipt", tid: bubble.tid, ref: bubble.ref, chips: bubble.chips,
+                                                         ...(bubble.uiSource ? { uiSource: bubble.uiSource, uiValues: bubble.uiValues } : {}),
+                                                         ...(bubble.text_i18n ? { text_i18n: bubble.text_i18n } : {}),
                                                          ...(bubble.status ? { status: bubble.status } : {}) } : {}) };
       claimed.add(at);
     } else if ((at2 = cardOf(turn) ? messages.findIndex((m, i) => claimed.has(i) && sameTurn(m, turn)) : -1) >= 0) {
@@ -126,11 +128,19 @@ export function actReceipt(data = {}, tableKey = null) {
   const where = !act ? "" : act.key && act.key === tableKey ? "this task" : act.ref || "this task";
   const said = String(act?.line || data.receipt || "").trim();
   if (said) return { text: said, status: data.pressed ? "done" : "warn" };
-  if (!act) return { text: "No answer came back on that - nothing was changed.", status: "warn" };
-  if (!act.label) return { text: `Brought up ${where}.`, status: "warn" };
-  return data.pressed ? { text: `${act.label} - ${where}${act.note ? `: ${act.note}` : ""}.`, status: "done" }
+  if (!act) return { text: "No answer came back on that - nothing was changed.", status: "warn",
+    text_i18n: { source: "No answer came back on that - nothing was changed.", values: {} } };
+  const whereUi = where === "this task" && (!act.ref || (act.key && act.key === tableKey))
+    ? { source: "this task", values: {} } : where;
+  if (!act.label) return { text: `Brought up ${where}.`, status: "warn",
+    text_i18n: { source: "Brought up {where}.", values: { where: whereUi } } };
+  const verb = VERBS[act.verb], knownLabel = verb ? [verb.label, ...Object.values(verb.states || {})].includes(act.label) : ALL_LABELS.includes(act.label);
+  const label = knownLabel ? { source: act.label, values: {} } : act.label;
+  return data.pressed ? { text: `${act.label} - ${where}${act.note ? `: ${act.note}` : ""}.`, status: "done",
+    text_i18n: { source: act.note ? "{label} - {where}: {note}." : "{label} - {where}.", values: { label, where: whereUi, note: act.note } } }
     // ...with the day the words named (trust audit F4, 2026-10-28): "remind me Monday" said only "Remind me is ready", the day lost
-    : { text: `${act.label}${act.day?.day ? ` (${act.day.day})` : ""} is ready on the row for ${where} - yours to press.`, status: "warn" };
+    : { text: `${act.label}${act.day?.day ? ` (${act.day.day})` : ""} is ready on the row for ${where} - yours to press.`, status: "warn",
+      text_i18n: { source: act.day?.day ? "{label} ({day}) is ready on the row for {where} - yours to press." : "{label} is ready on the row for {where} - yours to press.", values: { label, day: act.day?.day, where: whereUi } } };
 }
 // ...and a Close with a note carries its note (`note`), drawn after the badge (the owner, 2026-10-23: "write on it marked done with note")
 export function pressLine(messages = [], it, label, note = "") {
@@ -155,4 +165,4 @@ export const pressedNoteOf = (m) => m?.pressedNote || m?.card?.pressed_note || "
 const READ_ON_NEXT = new Set(["report", "fyi"]);
 // ...and an agent's finished task, read by Next from its place under Tasks (the owner, 2026-11-02)
 const readOnNext = (c) => READ_ON_NEXT.has(c?.lane) || c?.kind === "agentdone" || (c?.kind === "report" && !c?.tid);
-export const nextBadge = (card) => btn("next", card?.kind === "fyis" ? "batch" : readOnNext(card) ? "read" : undefined);
+export const nextBadge = (card) => card?.kind === "fyis" ? VERBS.next.states.batch : readOnNext(card) ? VERBS.next.states.read : VERBS.next.label;

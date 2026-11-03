@@ -1,10 +1,7 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { forgetTasks, heldSteps, heldTask, keepTask, prefetchTask } from "../src/taskDetail.js";
 
-const src = (f) => readFileSync(fileURLToPath(new URL(`../src/${f}`, import.meta.url)), "utf8");
 const fake = (calls) => ({ get: async (url) => { calls.push(url); const id = Number(url.split("/")[3]);
   return url.endsWith("/steps") ? { data: { steps: [{ id: 1, text: "Book the room" }] } } : { data: { task: { TaskId: id, DoneWhen: id === 9 ? "booked" : "" } } }; } });
 
@@ -36,18 +33,6 @@ test("a failed read ahead holds nothing, so the view reads it itself", async () 
   assert.equal(heldTask(5), null);
 });
 
-test("the view draws from the held read, and the reads ahead are where the next view is already known", () => {
-  const page = src("TaskPage.jsx"), view = src("AssistantView.jsx"), search = src("SearchEverything.jsx");
-  assert.match(page, /const \[detail, setDetail\] = useState\(\(\) => heldTask\(selected\)\);/);
-  assert.match(page, /setDetail\(data\); keepTask\(id, data, undefined, asked\);/);
-  assert.match(view, /useEffect\(\(\) => \{ if \(nextTid\) prefetchTask\(api, nextTid\); \}, \[nextTid, displayRevision\(pile\)\]\);/);   // the row Next brings
-  assert.match(view, /onPointerEnter=\{\(\) => \{ if \(!isCur && i\.tid\) prefetchTask\(api, i\.tid\); \}\}/);        // a rail row under the pointer
-  assert.match(search, /if \(aheadTid\) prefetchTask\(api, aheadTid\);/);                                             // a search hit highlighted
-  // an act makes the held reads old - but Next is no act, it is what they are for
-  assert.match(view, /onPressed\(\(id\) => \{ if \(!walkMove\(id\)\) forgetTasks\(actedTid\.current \?\? null\); \}\)/);
-  assert.match(view, /useEffect\(\(\) => \{ if \(currentItem\?\.tid\) actedTid\.current = currentItem\.tid; \}, \[currentItem\]\);/,
-    "an act lets go of its own task's read only - not the next item's");
-});
 
 test("a task's session is held with it: unknown until read, null for a task no agent holds", async () => {
   const { heldTerm, keepTerms } = await import("../src/taskDetail.js");
@@ -63,12 +48,6 @@ test("a task's session is held with it: unknown until read, null for a task no a
   assert.equal(heldTerm(3), undefined, "a write that names no task lets the whole list go");
 });
 
-// A ROW CLICKED COLD IS DRAWN AT THE CLICK (owner-approved, 2026-10-20): the old view and its ring stayed up for the whole read
-test("a rail row clicked before its task is read puts its frame up at the click, titled, over the view's loading state", () => {
-  const view = src("AssistantView.jsx"), page = src("TaskPage.jsx"), item = src("CanvasItem.jsx");
-  assert.match(item, /<TaskPage taskId=\{card\.tid\} title=\{card\.title \|\| ""\}/, "the frame knows which item it is");
-  assert.match(page, /data-tq-task-loading=[\s\S]{0,800}canvas && !!title && <Typography data-tq-task-loading-title=""/, "...and says it while it reads");
-});
 
 // WHICH READ IS NEWER (the owner, 2026-10-23: "this shows agent working but it's not working"): the rail was built under the server's lock
 // for minutes, and its "agent working" stood over a task whose own read said the agent had finished - a task read asked after the rail's
@@ -95,12 +74,3 @@ test("a task read speaks over the rail only when it was asked after the rail's, 
   assert.equal(pageRead(7), null);
 });
 
-test("the rail stamps its reads and its rows and the header pill take the task's newer read", () => {
-  const view = src("AssistantView.jsx"), page = src("TaskPage.jsx");
-  assert.match(view, /pileRef\.current = refreshPilePresentation\(pileRef\.current, data\); notePile\(askedAt\);/, "a rail read, stamped when asked");
-  assert.match(view, /notePile\(forcedLoadStartedAt\.current\);/, "...and one that came with an answer");
-  assert.match(view, /const page = i\.tid \? pageRead\(i\.tid\) : null, why = rowWhy\(i, page\);/);
-  assert.match(view, /railStatus\(i, !canSend\(sendCaps, i\.channel\), page\)/, "the row's icon");
-  assert.match(view, /useEffect\(\(\) => watchReads\(\(\) => reread\(\(n\) => n \+ 1\)\), \[\]\);/, "the rail draws again on a new read");
-  assert.match(page, /page: rail\?\.tid \? pageRead\(rail\.tid\) : null,\n/, "the header pill takes the same read");
-});

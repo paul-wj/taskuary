@@ -7,6 +7,7 @@
 //
 // A round ends where the next one starts: at a reopen (server store.closeouts - new mail's, or a Reopen press), or at a message from them
 // that came after the round was already answered or closed. A reply belongs to the round it went in, a close (and its note) ends it.
+import { t } from "./i18n.js";
 const SENT = new Set(["approved", "edited", "sent"]);
 const UNSENT = new Set(["no_reply", "closed_unsent", "rejected", "superseded"]);
 const isReply = (r) => r.Kind !== "action" && r.Kind !== "slot";
@@ -60,11 +61,13 @@ export const roundReviews = (reviews = [], rounds = []) => {
 // `when` formats a time, `day` a date.
 export const roundHead = (r, { when = String, day = String } = {}) => {
   const last = r.sent.at(-1), who = last?.review?.FromName || r.answering?.FromName || r.answering?.FromEmail || "";
-  const what = last ? `${last.msg ? "You answered" : "Replied to"}${who ? ` ${who}` : ""}${last.msg?.SourceName ? ` in ${last.msg.SourceName}` : ""}`
-    : r.close?.note ? "Closed with a note"
-    : r.unsent.length && r.close ? "Closed without sending"
-    : r.close ? (r.close.to === "dropped" ? "Put down" : "Marked done")
-    : r.ins.length ? "Not answered" : "";
+  const what = last ? (last.msg
+    ? last.msg.SourceName ? t("You answered{person} in {source}", { person: who ? ` ${who}` : "", source: last.msg.SourceName }) : t("You answered{person}", { person: who ? ` ${who}` : "" })
+    : t("Replied to{person}", { person: who ? ` ${who}` : "" }))
+    : r.close?.note ? t("Closed with a note")
+    : r.unsent.length && r.close ? t("Closed without sending")
+    : r.close ? t(r.close.to === "dropped" ? "Put down" : "Marked done")
+    : r.ins.length ? t("Not answered") : "";
   const at = last ? when(last.at) : r.close ? (r.close.note ? when(r.close.at) : day(r.close.at)) : "";
   const line = String(last?.text || r.close?.note || r.unsent.at(-1)?.DraftText || r.answering?.ReadText || r.answering?.BodyText || "").replace(/\s+/g, " ").trim();
   return { what, at, head: [what, at].filter(Boolean).join(" · "), line };

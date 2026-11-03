@@ -6,7 +6,7 @@ import { OTHER, aggregate, componentRows, daysAgo, delta, fmt, groupBy, inRange,
   snapshotOf, sortRows, spanOf4, stacked, timeSeries } from "../src/dashboard/slice.js";
 import { canvasRequestFromHash, hashFor } from "../src/canvasLinks.js";
 import { DRAFT_HASH } from "../src/draftHandoff.js";
-import { DASH, placeHref } from "../src/words.js";
+import { placeHref } from "../src/words.js";
 
 const NOW = new Date("2026-10-23T10:00:00");
 const d = (n) => daysAgo(n, NOW);
@@ -110,7 +110,6 @@ test("every way to the dashboards' shelf lands on it, and reads back to the same
     assert.equal(r.state.section, "dashboards", h);
     assert.equal(canvasRequestFromHash(hashFor("reports", r.state)).state.section, "dashboards", h);
   }
-  assert.ok(DASH.new.startsWith("+ New"));
 });
 
 test("a shared dashboard carries its tiles as lines and the rows it drew - several sources each marked by its label", () => {

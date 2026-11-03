@@ -7,6 +7,8 @@ import { needsLink, UNLINKED_LINE, UNLINKED_EVENT } from "./unlinked.js";
 import { record } from "./lastError.js";
 import BugReportDialog from "./BugReportDialog.jsx";
 import { label as btnLabel } from "./buttons.js";
+import { LocaleContext, LocaleProvider, useLocale } from "./LocaleProvider.jsx";
+import { t } from "./i18n.js";
 import { installOneLine } from "./oneLine.js";
 installOneLine();
 import { installTouchHints } from "./touchHint.js";
@@ -37,6 +39,7 @@ window.addEventListener("load", () => setTimeout(() => { try { sessionStorage.re
 // white-screening everything, terminal sessions included. The boundary names the error, and
 // "try again" just re-renders - state and sessions live server-side, so nothing is lost.
 class Boundary extends React.Component {
+  static contextType = LocaleContext;
   // the fallback replaces the top bar, Help with it: the crash's own report has to be offered here
   state = { err: null, report: null };
   static getDerivedStateFromError(err) { return { err }; }
@@ -47,10 +50,10 @@ class Boundary extends React.Component {
       <div style={{ maxWidth: 720, margin: "80px auto", padding: 24, fontFamily: "'IBM Plex Sans', 'Segoe UI', sans-serif",
         background: "#fff", border: "1px solid #f3d1d1", borderRadius: 12 }}>
         <div style={{ fontWeight: 600, fontSize: 16, color: "#6b2733", marginBottom: 8 }}>
-          Something in this view failed to draw
+          {t("Something in this view failed to draw")}
         </div>
         <div style={{ fontSize: 13, color: "#1f2430", marginBottom: 12 }}>
-          Your data and any running agent sessions are untouched — they live on the server, not in this page.
+          {t("Your data and any running agent sessions are untouched — they live on the server, not in this page.")}
         </div>
         <pre style={{ fontSize: 11.5, background: "#f4f1ec", border: "1px solid #e1dcd5", borderRadius: 8,
           padding: 12, whiteSpace: "pre-wrap", color: "#5e685f", maxHeight: 180, overflow: "auto" }}>
@@ -64,7 +67,7 @@ class Boundary extends React.Component {
         <button onClick={() => location.reload()}
           style={{ marginLeft: 8, padding: "6px 16px", borderRadius: 8, border: "1px solid #e1dcd5",
             background: "#fff", color: "#1f2430", cursor: "pointer" }}>
-          Reload the app
+          {t("Reload the app")}
         </button>
         <button type="button" onClick={() => this.setState({ report: { message: String(this.state.err?.message || this.state.err), stack: this.state.err?.stack } })}
           style={{ marginLeft: 12, padding: 0, border: 0, background: "none", color: "#4d4a43", fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>
@@ -76,11 +79,13 @@ class Boundary extends React.Component {
   }
 }
 
-const unlinked = needsLink(document, typeof localStorage === "undefined" ? null : localStorage);
-const Unlinked = () => <div style={{ margin: "80px auto", maxWidth: 560, fontFamily: "'IBM Plex Sans', 'Segoe UI', sans-serif", fontSize: 14, color: "#5e685f" }}>{UNLINKED_LINE}</div>;
+let storage = null;
+try { storage = globalThis.localStorage; } catch { /* storage unavailable */ }
+const unlinked = needsLink(document, storage);
+const Unlinked = () => { useLocale(); return <div style={{ margin: "80px auto", maxWidth: 560, fontFamily: "'IBM Plex Sans', 'Segoe UI', sans-serif", fontSize: 14, color: "#5e685f" }}>{t(UNLINKED_LINE)}</div>; };
 const root = createRoot(document.getElementById("root"));
-root.render(unlinked ? <Unlinked /> : <Boundary><TaskHubPage /></Boundary>);
+root.render(<LocaleProvider>{unlinked ? <Unlinked /> : <Boundary><TaskHubPage /></Boundary>}</LocaleProvider>);
 // the token went stale under an open page (unlinked.staleToken): every call would meet 401 from here on
-window.addEventListener(UNLINKED_EVENT, () => root.render(<Unlinked />), { once: true });
+window.addEventListener(UNLINKED_EVENT, () => root.render(<LocaleProvider><Unlinked /></LocaleProvider>), { once: true });
 
 startTracking();   // the static demo only, and only on taskuary.com

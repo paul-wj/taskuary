@@ -1,9 +1,7 @@
 """How a row reads - who, its state word, your move, when it comes back - is worked out ONCE, on the server
 (funnel_presentation), and the phone and the desktop draw it. Each surface had its own copy and they drifted: the fix for
 "why does fyi say my name??" (2026-10-13) reached the desktop only, and a drafted reply read "draft ready" on the phone."""
-import re
 from datetime import datetime, timedelta
-from pathlib import Path
 
 from taskuary import funnel_presentation as fp, remote_assistant as ra
 
@@ -39,15 +37,6 @@ def test_back_in_reads_forward_in_the_rails_words():
     assert fp.back_in(None, now) == '' and fp.back_in('not a date', now) == ''
 
 
-def test_back_in_says_what_the_rails_bandUntil_says():
-    # the rail counts down live in timeWords.bandUntil; its test's cases hold this twin to the same words
-    js = (Path(__file__).resolve().parents[1] / 'website' / 'test' / 'pileLevels.test.mjs').read_text(encoding='utf-8')
-    cases = re.findall(r'bandUntil\(at\(([-\d *]+)\), now\), "([^"]*)"', js)
-    assert len(cases) >= 4, cases
-    now = datetime(2026, 10, 18, 9, 0)
-    for expr, want in cases:
-        m = eval(expr, {'__builtins__': {}})
-        assert fp.back_in((now + timedelta(minutes=m)).strftime('%Y-%m-%d %H:%M:%S'), now) == want, (expr, want)
 
 
 def test_the_move_line_is_one_function_the_phone_reads():

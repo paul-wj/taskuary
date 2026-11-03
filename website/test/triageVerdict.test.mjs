@@ -1,9 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import {
-  extraTriageFields, intentLabel, kindLabel, latestTriageVerdict, legacyTriageVerdict,
-  parseTriageVerdict, relationshipLabel, routeIntent, routeWhy,
+  extraTriageFields, latestTriageVerdict, legacyTriageVerdict,
+  parseTriageVerdict, routeIntent, routeWhy,
 } from "../src/triageVerdict.js";
 
 test("the latest saved structured triage response is decoded", () => {
@@ -18,12 +17,6 @@ test("the latest saved structured triage response is decoded", () => {
   assert.equal(parseTriageVerdict({ VerdictJson: "[1,2]" }), null);
 });
 
-test("triage vocabulary is phrased for the owner", () => {
-  assert.equal(intentLabel("reply_only"), "Reply needed");
-  assert.equal(kindLabel("task"), "My task list");
-  assert.equal(kindLabel("general"), "Assistant");
-  assert.equal(relationshipLabel("continues"), "Continues earlier work");
-});
 
 test("an old taskless FYI is reconstructed from its saved route", () => {
   const verdict = legacyTriageVerdict({

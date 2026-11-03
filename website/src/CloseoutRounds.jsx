@@ -9,6 +9,8 @@ import { roundHead } from "./closeoutRounds.js";
 import { fmtDateTime, fmtDay } from "./dates.js";
 import { cleanText } from "./ui.jsx";
 import { BORDER, DIM, FAINT } from "./theme.jsx";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 const cap = { color: FAINT, fontSize: 10 }, said = { color: DIM, lineHeight: 1.55, whiteSpace: "pre-wrap", overflowWrap: "anywhere" };
 const Quote = ({ head, children }) => (
@@ -19,26 +21,28 @@ const Quote = ({ head, children }) => (
 
 // ONE ROUND, OPEN: what they asked, what went (from here, or typed outside Taskuary), a draft closed unsent, and the close
 const Round = ({ r }) => {
+  useLocale();
   const a = r.answering, who = a?.FromName || a?.FromEmail || "";
   return (<>
-    {a && <Typography sx={{ fontSize: 12.5, color: FAINT }}>Answering <Box component="span" sx={{ color: DIM, fontWeight: 600 }}>{who}</Box>:{" "}
+    {a && <Typography sx={{ fontSize: 12.5, color: FAINT }}>{t("Answering")} <Box component="span" sx={{ color: DIM, fontWeight: 600 }}>{who}</Box>:{" "}
       {cleanText(a.ReadText || a.BodyText || a.Subject || "")}{a.SentAt ? ` · ${fmtDateTime(a.SentAt)}` : ""}</Typography>}
-    {r.sent.map((s, i) => <Quote key={i} head={s.msg ? ["Sent by you", s.msg.SourceName, fmtDateTime(s.at)].filter(Boolean).join(" · ")
-      : `What was sent${s.at ? ` · ${fmtDateTime(s.at)}` : ""}`}>{cleanText(s.text)}</Quote>)}
-    {r.unsent.slice(-1).map((u) => <Quote key={u.ReviewId} head="Not sent - closed without sending">{u.DraftText}</Quote>)}
+    {r.sent.map((s, i) => <Quote key={i} head={s.msg ? [t("Sent by you"), s.msg.SourceName, fmtDateTime(s.at)].filter(Boolean).join(" · ")
+      : [t("What was sent"), s.at && fmtDateTime(s.at)].filter(Boolean).join(" · ")}>{cleanText(s.text)}</Quote>)}
+    {r.unsent.slice(-1).map((u) => <Quote key={u.ReviewId} head={t("Not sent - closed without sending")}>{u.DraftText}</Quote>)}
     {r.close && <Typography data-tq-round-closed="" variant="body2" sx={{ mt: 0.75, color: "#47654a", fontWeight: 600, fontSize: 12.5 }}>
-      ✓ {r.close.to === "dropped" ? "Put down" : r.close.note ? "Closed with a note" : "Marked done"} · {fmtDateTime(r.close.at)}
+      ✓ {t(r.close.to === "dropped" ? "Put down" : r.close.note ? "Closed with a note" : "Marked done")} · {fmtDateTime(r.close.at)}
       {r.close.note && <Box component="span" sx={{ display: "block", color: DIM, fontWeight: 400, whiteSpace: "pre-wrap" }}>{r.close.note}</Box>}</Typography>}
   </>);
 };
 
 // `rounds` oldest first, the current one last (closeoutRounds.js): every one before it, newest on top
 export default function EarlierRounds({ rounds = [] }) {
+  useLocale();
   const old = rounds.slice(0, -1).reverse();
   if (!old.length) return null;
   return (
-    <FoldList mark={{ "data-tq-rounds-before": "" }} title="Earlier rounds" count={old.length}>
+    <FoldList mark={{ "data-tq-rounds-before": "" }} title={t("Earlier rounds")} count={old.length}>
       {old.map((r) => { const h = roundHead(r, { when: fmtDateTime, day: fmtDay });
-        return <FoldLine key={r.n} mark={{ "data-tq-round-before": r.n }} head={`Round ${r.n} · ${h.head}`} line={cleanText(h.line)}><Round r={r} /></FoldLine>; })}
+        return <FoldLine key={r.n} mark={{ "data-tq-round-before": r.n }} head={t("Round {number} · {heading}", { number: r.n, heading: h.head })} line={cleanText(h.line)}><Round r={r} /></FoldLine>; })}
     </FoldList>);
 }

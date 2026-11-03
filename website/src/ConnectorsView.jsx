@@ -39,7 +39,7 @@ import { isPollField, pollSecondsField } from "./pollFields.js";
 import { githubInboundValue } from "./githubInbound.js";
 import { ALWAYS, ENDS, HI, LO, MARKS, SAYS, clampLevel, combines, defaultLevel, kindOf } from "./combineLevel.js";
 import { useSaveNote } from "./SaveNote.jsx";
-import { plainError } from "./apiError.js";
+import { errorPresentation, errorText } from "./apiError.js";
 import { namesRestart, pairAgain, restartBridge } from "./waBridge.js";
 import { waLine } from "./waStatus.js";
 import { DraftProvider, SaveBar, useCardDraft, useSaveConnector, useSaveSource } from "./ConnectorDraft.jsx";
@@ -47,7 +47,7 @@ import { editedBoxes, syncState } from "./connectorDraft.js";
 import { AI_SHELF, needsGateway } from "./aiShelf.js";
 import { cliCardOf } from "./cliCard.js";
 import { hint as btnHint, label as btnLabel } from "./buttons.js";
-import { noun, placeName } from "./words.js";
+import { noun, placeName, PLACES } from "./words.js";
 import { plural } from "./timeWords.js";
 import { openAppLink } from "./appLinks.js";
 import { LIT, lightField, lightStep } from "./connectorStep.js";
@@ -58,6 +58,27 @@ import { PEOPLE_MISSING } from "./peopleSearch.js";
 import ReasonPanel from "./ReasonNetwork.jsx";
 import { DESKTOP_HOW } from "./newTask.js";
 import { openHelp, sayEarlier, viewResult } from "./pageView.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
+
+// Keep tab values stable: translated labels are presentation, not navigation state.
+function LocalTabs({ tabs, value, onChange }) {
+  useLocale();
+  const labels = tabs.map((tab) => t(tab));
+  return <UnderTabs tabs={labels} value={t(value)} onChange={(label) => onChange(tabs[labels.indexOf(label)])} />;
+}
+// App-authored transient messages keep their source until render, unlike server text.
+const LOCAL_MESSAGE = Symbol("local message");
+const LOCAL_ERROR = Symbol("local error");
+const message = (key, values) => ({ [LOCAL_MESSAGE]: true, key, values });
+const errorMessage = (error) => ({ [LOCAL_ERROR]: true, error });
+const displayMessage = (value) => value?.[LOCAL_ERROR] ? errorText(value.error) : value?.[LOCAL_MESSAGE]
+  ? t(value.key, Object.fromEntries(Object.entries(value.values || {}).map(([key, part]) => [key, displayMessage(part)]))) : value;
+const testFailure = (error, fallback) => {
+  const detailPresentation = errorPresentation(error, fallback);
+  return { ok: false, detail: detailPresentation.message || detailPresentation.source, detailPresentation };
+};
+
 
 /* ── Get AI to set it up: THE ASSISTANT, IN THE CHAT (the owner, 2026-10-30: "don't you think this sort of ai troubleshooting should go
    on in the assistant. it's more intuitive and it will know if you change something in the screen"). The button is the card's door to
@@ -84,10 +105,11 @@ function useAiWalk({ conn }) {
 // ...and out of the view the Assistant is sent (data-tq-view-skip): it is the door INTO that chat, so a press from the chat ("walk me
 // thru setting this up") typed a second line the owner never wrote - the Assistant walks the card in words (the Connections audit, 2026-11-02)
 function AiWalkButton({ ai }) {
+  useLocale();
   return (
-    <Button variant="outlined" onClick={ai.start} data-tq-ai-setup="start" data-tq-view-skip="" title="Optional - opens the chat, and the Assistant sets this card up with you"
+    <Button variant="outlined" onClick={ai.start} data-tq-ai-setup="start" data-tq-view-skip="" title={t("Optional - opens the chat, and the Assistant sets this card up with you")}
       startIcon={<BoltIcon sx={{ fontSize: 15 }} />}>
-      Get AI to set it up
+      {t("Get AI to set it up")}
     </Button>
   );
 }
@@ -448,7 +470,7 @@ const META = {
     desc: "One key, the whole catalog — open-weights Llama / Qwen / Mistral and every closed model, through OpenRouter's OpenAI-compatible API.",
     howto: ["Create a key at openrouter.ai → Keys.",
       "Paste it under Credentials; optionally set a model from openrouter.ai/models (e.g. meta-llama/llama-3.3-70b-instruct). Empty = openrouter/auto picks per request.",
-      `Test runs a real round trip. Enable to wire it into triage, drafts, the digest and LEARNED.md — or pick it explicitly under ${placeName("sorting")}.`] },
+      `Test runs a real round trip. Enable to wire it into triage, drafts, the digest and LEARNED.md — or pick it explicitly under ${PLACES.sorting.name}.`] },
   meta: { group: "AI — agents & models", channel: "ai", srcLabel: null,
     fields: [["model (default muse-spark-1.2)", "model"], ["base_url (default https://api.meta.ai/v1)", "base_url"]],
     secretLabel: "Meta Model API key",
@@ -456,8 +478,8 @@ const META = {
     howto: ["Create a key at dev.meta.ai → API keys (a payment method is required; Meta publishes no free tier).",
       "Paste it under Credentials. Leave model blank for muse-spark-1.2, or name muse-spark-1.3.",
       "muse-spark-1.2-contributor costs about a twelfth as much — because you opt in to Meta using your prompts and completions to improve its products, and it is rate-limited to 100 requests/minute against 3,000. Do not point it at real work mail unless you mean to share it.",
-      `Test runs a real round trip. Enable to wire it into triage, drafts and the digest — or pick it explicitly under ${placeName("sorting")}.`,
-      `This is the TRIAGE road. For coding sessions on Muse Spark, install the muse CLI under ${placeName("ai_apps")} (Windows, macOS and Linux).`] },
+      `Test runs a real round trip. Enable to wire it into triage, drafts and the digest — or pick it explicitly under ${PLACES.sorting.name}.`,
+      `This is the TRIAGE road. For coding sessions on Muse Spark, install the muse CLI under ${PLACES.ai_apps.name} (Windows, macOS and Linux).`] },
   // NINE PROVIDERS, ONE SURFACE. Each of these speaks the OpenAI chat-completions schema exactly,
   // so llm.py holds them as a table (OPENAI_COMPATIBLE) rather than nine branches, and a card here
   // is a base url, a default model and a key. base_url is offered on every one for the same reason
@@ -542,7 +564,7 @@ const META = {
     // the allowance and the cap are the sign-in box's own words, right above this line - said twice, one under the other
     desc: "Your ChatGPT plan as Taskuary's brain - triage, the Assistant, reports.",
     howto: ["Sign in with ChatGPT above: your browser opens auth.openai.com, you sign in with your own ChatGPT account and allow plan usage, and the card finishes by itself.",
-      `Then pick it as a brain under ${placeName("sorting")}. It is text only: screenshots are not sent, and it has no tools.`,
+      `Then pick it as a brain under ${PLACES.sorting.name}. It is text only: screenshots are not sent, and it has no tools.`,
       "Set or raise the weekly cap for Taskuary in ChatGPT's settings. When the cap is used up the brain stops and says so - it does not fall back to paid credits unless you allow that in ChatGPT.",
       "Test runs a real round trip on your plan."] },
   typesafe: { group: "AI — agents & models", channel: "ai", srcLabel: null,
@@ -550,7 +572,7 @@ const META = {
     desc: "TypeSafe's Jev — answers typed questions with calibrated probabilities instead of words. It can decide where a finished report goes; it cannot write one.",
     howto: ["Create a key at typesafe.ai → API keys.",
       "Paste it under Credentials. Test asks Jev one real question and reports the confidence it came back with — there is no completion to run.",
-      `Then pick it under ${placeName("sorting")} → Where runs go. It appears in no other brain picker, on purpose.`,
+      `Then pick it under ${PLACES.sorting.name} → Where runs go. It appears in no other brain picker, on purpose.`,
       "Before you trust it: open a report with an AI routing line and press try it on the last 5 runs, with and without this chosen. That replays both judges over the same real runs."] },
   ollama: { group: "AI — agents & models", channel: "ai", srcLabel: null,
     fields: [["base_url (default http://127.0.0.1:11434)", "base_url"], ["model — required, e.g. llama3.2 / qwen2.5", "model"]],
@@ -558,8 +580,8 @@ const META = {
     desc: "Open-source models on YOUR machine — Ollama out of the box, or any OpenAI-compatible server (LM Studio, llama.cpp, vLLM). Your mail never leaves the box.",
     howto: ["Install Ollama (ollama.com) and pull a model: ollama pull llama3.2 — or point base_url at LM Studio (http://127.0.0.1:1234), llama.cpp or vLLM.",
       "Enter the model name (ollama list shows what's installed). No key needed for a local server.",
-      `Test runs a real round trip through the local model, then Enable makes it the triage brain — or pick it under ${placeName("sorting")}.`,
-      `For the CODING side, local models ride the CLI road instead: add any CLI that reads a prompt on stdin under ${placeName("ai_apps")}.`],
+      `Test runs a real round trip through the local model, then Enable makes it the triage brain — or pick it under ${PLACES.sorting.name}.`,
+      `For the CODING side, local models ride the CLI road instead: add any CLI that reads a prompt on stdin under ${PLACES.ai_apps.name}.`],
     agent: ["Check for a local server yourself: GET http://127.0.0.1:11434/api/tags (Ollama) - and http://127.0.0.1:1234/v1/models for LM Studio. If Ollama is not installed, ask the owner once whether to install it, then do it (winget install Ollama.Ollama on Windows, brew install ollama on a Mac, the ollama.com script on Linux) and start it.",
       "If /api/tags lists no models, ask which to pull (suggest llama3.2 for a laptop, qwen2.5 for more headroom) and run `ollama pull <model>` yourself - it downloads gigabytes, so say so and wait for it.",
       "Save model (and base_url only if not the default) in ConfigJson; no Secret. Test (POST {base}/api/connectors/{cid}/test{hdr}) runs a real round trip. Turn the connector on and say SETUP DONE - and that the owner can pick it as the triage brain under Settings."] },
@@ -1294,7 +1316,12 @@ const DATA_META = {
     agent: ["GET {base}/api/connectors{hdr}, find the knowledge card. Ask the owner which SharePoint library folders and local folders to index; save them as sharepoint_paths / folders in ConfigJson (POST {base}/api/connectors{hdr} with ConnectorId, ConfigJson, Active:true).",
       "POST {base}/api/knowledge/reindex{hdr} with {\"connector_id\": <id>} and read back what was indexed and what would not read (pdf needs pypdf). Then POST {base}/api/tools/run{hdr} with {\"type\": \"kb_search\", \"query\": \"...\"} to prove a question comes back with passages. SETUP DONE."],
     actions: [{ label: "Reindex now", post: "/api/knowledge/reindex", body: (c) => ({ connector_id: c.ConnectorId }),
-      say: (r) => `${r.indexed} indexed, ${r.unchanged} unchanged, ${r.removed} removed · ${plural(r.docs, "document")} / ${plural(r.chunks, "passage")}` + (r.errors?.length ? ` · ${plural(r.errors.length, "problem")}: ${r.errors.slice(0, 3).join("; ")}` : "") }] },
+      say: (r) => message("{indexed} indexed, {unchanged} unchanged, {removed} removed · {documents} / {passages}{problems}", {
+        indexed: r.indexed, unchanged: r.unchanged, removed: r.removed,
+        documents: message(r.docs === 1 ? "{count} document" : "{count} documents", { count: r.docs }),
+        passages: message(r.chunks === 1 ? "{count} passage" : "{count} passages", { count: r.chunks }),
+        problems: r.errors?.length ? message(r.errors.length === 1 ? " · {count} problem: {details}" : " · {count} problems: {details}", { count: r.errors.length, details: r.errors.slice(0, 3).join("; ") }) : "",
+      }) }] },
   // The handbook (handbook.py) had every control except the card they hang on: `enabled()` looked
   // for a connector of this type, scopes.py classified handbook_write as a WRITE action, and
   // /api/tools/run enforces Active + role + Authority - but only `if conn`, and no card meant no
@@ -1312,6 +1339,7 @@ const DATA_META = {
 /* A question typed on the Knowledge base card, answered from the index - the same search a
    kb_search report or an agent's tool call gets, so what the card shows is what they would see. */
 function KbSearch({ conn }) {
+  useLocale();
   const [q, setQ] = useState("");
   const [hits, setHits] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -1324,13 +1352,13 @@ function KbSearch({ conn }) {
   };
   return (
     <Box sx={{ mt: 2, maxWidth: 560 }}>
-      <Typography variant="body2" sx={{ fontWeight: 600, color: INK, mb: 0.75 }}>Ask the knowledge base</Typography>
+      <Typography variant="body2" sx={{ fontWeight: 600, color: INK, mb: 0.75 }}>{t("Ask the knowledge base")}</Typography>
       <Box sx={{ display: "flex", gap: 1 }}>
-        <TextField size="small" fullWidth placeholder="e.g. what is our resident refund policy" value={q} sx={{ bgcolor: "#fff" }}
+        <TextField size="small" fullWidth placeholder={t("e.g. what is our resident refund policy")} value={q} sx={{ bgcolor: "#fff" }}
           onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && go()} />
-        <Button variant="outlined" disabled={busy || !q.trim()} onClick={go}>{busy ? <CircularProgress size={14} /> : "Search"}</Button>
+        <Button variant="outlined" disabled={busy || !q.trim()} onClick={go}>{busy ? <CircularProgress size={14} /> : t("Search")}</Button>
       </Box>
-      {hits && hits.length === 0 && <Typography variant="caption" sx={{ color: DIM, display: "block", mt: 1 }}>nothing matched — is anything indexed yet?</Typography>}
+      {hits && hits.length === 0 && <Typography variant="caption" sx={{ color: DIM, display: "block", mt: 1 }}>{t("nothing matched — is anything indexed yet?")}</Typography>}
       {(hits || []).map((h) => (
         <Box key={`${h.doc_id}-${h.seq}`} sx={{ mt: 1, p: 1, border: `1px solid ${BORDER}`, borderRadius: 1.5, bgcolor: PANEL2 }}>
           <Typography variant="body2" sx={{ fontWeight: 600, color: INK }}>{h.name} <Typography component="span" variant="caption" sx={{ color: DIM }}>· {h.source}/{h.path} · {(h.modified || "").slice(0, 10)}</Typography></Typography>
@@ -1360,12 +1388,13 @@ const savedOn = (c, key) => !!(parse(c?.ConfigJson)[key] || (c?.ConfigSaved || [
 // and empty once saved, its label saying so - the Gmail card's OAuth secret and refresh token came back readable in plain boxes
 // (the UI audit, 2026-10-21) because only one card drew them masked
 export function ConfigField({ conn, field: [label, key, ph, help], cfg, setCfg, ...rest }) {
+  useLocale();
   const onChange = (e) => setCfg({ ...cfg, [key]: e.target.value });
   if (!(conn?.WriteOnlyKeys || []).includes(key))
-    return <TextField label={label} placeholder={ph || ""} helperText={help} value={cfg[key] || ""} sx={{ bgcolor: "#fff" }} onChange={onChange} {...rest} />;
+    return <TextField label={t(label)} placeholder={ph || ""} helperText={help ? t(help) : help} value={cfg[key] || ""} sx={{ bgcolor: "#fff" }} onChange={onChange} {...rest} />;
   return <TextField type="password" data-tq-write-only={key} autoComplete="new-password" sx={{ bgcolor: "#fff" }} {...rest}
-    label={(conn.ConfigSaved || []).includes(key) ? `${label} — saved, type to replace` : label} placeholder={ph || ""}
-    helperText={help ? `${help} Never shown again once saved.` : "Never shown again once saved."}
+    label={(conn.ConfigSaved || []).includes(key) ? t("{label} — saved, type to replace", { label: t(label) }) : t(label)} placeholder={ph || ""}
+    helperText={help ? `${t(help)} ${t("Never shown again once saved.")}` : t("Never shown again once saved.")}
     value={cfg[key] || ""} onChange={onChange} />;
 }
 // ...and a typed one goes back to empty once it is saved: the server holds it now
@@ -1396,20 +1425,22 @@ const CARD_STATE = {
 // missing package comes back structured (channels.test_connector) and this offers the button.
 // AN ERROR THAT SAYS "Restart bridge starts it" CARRIES THE BUTTON (the owner, 2026-10-22) - not a pointer to one further up the card
 const BridgeRestart = ({ cid, text }) => {
+  useLocale();
   const [busy, setBusy] = useState(false);
   if (!cid || !namesRestart(text)) return null;
   return (
     <Button size="small" variant="outlined" data-tq-restart-bridge="" disabled={busy} sx={{ mt: 0.75, fontSize: 11.5, textTransform: "none" }}
       startIcon={busy ? <CircularProgress size={12} /> : <RestartAltIcon sx={{ fontSize: 15 }} />}
-      title="Start the bridge again on this machine - you stay paired"
+      title={t("Start the bridge again on this machine - you stay paired")}
       onClick={async () => { setBusy(true); try { await restartBridge(cid); } catch { /* the pairing box shows the outcome */ } setBusy(false); }}>
-      {busy ? "Restarting…" : "Restart bridge"}</Button>
+      {busy ? t("Restarting…") : t("Restart bridge")}</Button>
   );
 };
 
 // THE WHATSAPP STATUS LINE (waStatus.js, 2026-10-23): what the bridge says, not what the switch says - short words, the
 // turned-away count a link into the chat picker where they can be switched on, and the next step as a button, not a paragraph
 const WaStatusLine = ({ st, cid, onTurnedAway, fixes = ["restart", "pair"] }) => {
+  useLocale();
   const [busy, setBusy] = useState("");
   const line = waLine(st);
   if (!line) return null;
@@ -1420,20 +1451,21 @@ const WaStatusLine = ({ st, cid, onTurnedAway, fixes = ["restart", "pair"] }) =>
       <Typography variant="body2" sx={{ color: DIM }}>
         {line.parts.join(" · ")}
         {line.away > 0 && <>{" · "}<Button size="small" variant="text" data-tq-wa-turned-away="" onClick={onTurnedAway}
-          title="Chats WhatsApp brought that are not switched on - open the list and switch on the ones that should come in"
+          title={t("Chats WhatsApp brought that are not switched on - open the list and switch on the ones that should come in")}
           sx={{ p: 0, minWidth: 0, fontSize: "inherit", textTransform: "none", verticalAlign: "baseline", textDecoration: "underline" }}>
-          {line.away} turned away</Button></>}
+          {t("{count} turned away", { count: line.away })}</Button></>}
       </Typography>
       {fix && <Button size="small" variant="outlined" disabled={!!busy} data-tq-wa-fix={fix} sx={{ fontSize: 11.5, textTransform: "none" }}
         startIcon={busy ? <CircularProgress size={12} /> : <RestartAltIcon sx={{ fontSize: 15 }} />}
-        title={fix === "pair" ? "Unlink this computer on your phone and show a new QR to scan - the old pairing is kept aside, not deleted"
-          : "Start the bridge again on this machine - you stay paired"}
-        onClick={act}>{busy ? (fix === "pair" ? "Unlinking…" : "Restarting…") : fix === "pair" ? "Pair again" : "Restart bridge"}</Button>}
+        title={fix === "pair" ? t("Unlink this computer on your phone and show a new QR to scan - the old pairing is kept aside, not deleted")
+          : t("Start the bridge again on this machine - you stay paired")}
+        onClick={act}>{busy ? (fix === "pair" ? t("Unlinking…") : t("Restarting…")) : fix === "pair" ? t("Pair again") : t("Restart bridge")}</Button>}
     </Box>
   );
 };
 
 const TestLine = ({ test, mt = 1, cid }) => {
+  useLocale();
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState("");
   // ...the card's answer is what the Assistant hears next, when it is helping with this card (pageView.viewResult) - silent otherwise
@@ -1443,7 +1475,7 @@ const TestLine = ({ test, mt = 1, cid }) => {
   return (
     <Box sx={{ mt }}>
       <Typography variant="body2" sx={{ fontWeight: 600, color: test.ok ? "#47654a" : "#6b2733" }}>
-        {test.ok ? "✓" : "✗"} {test.detail}{test.ms != null ? ` · ${test.ms}ms` : ""}
+        {test.ok ? "✓" : "✗"} {test.detailPresentation ? errorText(test.detailPresentation) : test.detailMessage ? displayMessage(test.detailMessage) : test.detail}{test.ms != null ? ` · ${test.ms}ms` : ""}
       </Typography>
       {!test.ok && <BridgeRestart cid={cid} text={test.detail} />}
       {ins && !done && (ins.can === false
@@ -1454,11 +1486,11 @@ const TestLine = ({ test, mt = 1, cid }) => {
               setBusy(true);
               try {
                 const { data } = await api.post("/api/deps/install", { package: ins.package });
-                setDone(`✓ ${data.name} installed — press Test again`);
-              } catch (e) { setDone(e?.response?.data?.detail || `could not install ${ins.name}`); }
+                setDone(message("✓ {name} installed — press Test again", { name: data.name }));
+              } catch (e) { setDone(e?.response?.data?.detail || message("could not install {name}", { name: ins.name })); }
               setBusy(false);
-            }}>{busy ? `Installing ${ins.name}…` : `Install ${ins.name}`}</Button>)}
-      {done && <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.5 }}>{done}</Typography>}
+            }}>{busy ? t("Installing {name}…", { name: ins.name }) : t("Install {name}", { name: ins.name })}</Button>)}
+      {done && <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.5 }}>{displayMessage(done)}</Typography>}
     </Box>
   );
 };
@@ -1468,8 +1500,20 @@ const TestLine = ({ test, mt = 1, cid }) => {
 // three heights on one wall. The border is always 1px - a live or failing card's extra weight is drawn INSIDE it, taking no room -
 // the description always holds two lines, and being connected says so in a pill on the title line.
 export const ConnCard = ({ c }) => {
+  useLocale();
   const st = CARD_STATE[connState(c)], extra = st.width - 1;
   const ring = extra > 0 ? `inset 0 0 0 ${extra}px ${st.border}` : "";
+  const status = c.statusData;
+  const display = !status ? (c.displayDesc ?? c.desc) : c.plain
+    ? status.error ? t(status.signedOut ? "Needs sign-in" : "Not answering - click to fix it")
+      : status.connected ? (status.synced ? t("Connected · checked {time}", { time: timeAgo(status.synced) }) : t("Connected")) : t("Not set up")
+    : t(status.active ? "on" : "off")
+      + (status.roles.length ? ` · ${status.roles.map((role) => ["trigger", "feed", "report", "tool"].includes(role) ? t(role) : role).join(" + ")}` : "")
+      + (status.sources ? ` · ${status.sources.active}/${status.sources.total} ${t(status.sources.label).toLowerCase()}`
+        : status.hasSecret ? ` · ${t("key saved")}`
+          : ["ollama", "local_whisper"].includes(c.type) ? ` · ${t("local — no key needed")}`
+          : c.type === "stt_server" ? ` · ${t("your server — key optional")}` : ` · ${t("no key yet")}`)
+      + (status.error ? ` · ${t("last test failed")}` : status.synced ? ` · ${t("ok {time}", { time: timeAgo(status.synced) })}` : "");
   return (
     <Box {...pressable(c.go, !c.planned)} data-tq-card={c.key}
       sx={{ ...FOCUS_RING, bgcolor: st.bg, border: `1px solid ${st.border}`, boxShadow: ring || "none", borderRadius: 2.5, p: 1.6, boxSizing: "border-box",
@@ -1485,13 +1529,13 @@ export const ConnCard = ({ c }) => {
         <Typography noWrap data-tq-setup-label="" sx={{ color: INK, fontWeight: 600, fontSize: 13, flex: 1, minWidth: 0 }}>{c.title}</Typography>
         {connState(c) === "on" && !c.plain && (
           <Box component="span" data-tq-conn-pill sx={{ flexShrink: 0, px: 0.75, py: 0.1, borderRadius: 99, fontSize: 10, fontWeight: 600,
-            lineHeight: 1.6, color: "#47654a", bgcolor: "#e8efe6", border: "1px solid #c9d8c5" }}>Connected</Box>
+            lineHeight: 1.6, color: "#47654a", bgcolor: "#e8efe6", border: "1px solid #c9d8c5" }}>{t("Connected")}</Box>
         )}
         <Box sx={{ width: 7, height: 7, borderRadius: "50%", bgcolor: connDot(c), flexShrink: 0 }} />
       </Box>
       <Typography sx={{ color: FAINT, fontSize: 11.5, lineHeight: 1.5, pt: 1, minHeight: "3em", boxSizing: "content-box",
         display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-        {c.desc}
+        {display}
       </Typography>
     </Box>
   );
@@ -1523,6 +1567,9 @@ export const connCardOf = (c, sources, go, plain = false) => {
   // the product's own logo wins over the channel glyph: five AI cards sharing one sparkle,
   // or Jira and Linear both wearing 'boards', tells you nothing about which is which
   return { key: `c${c.ConnectorId}`, type: c.Type, title: c.Name, desc: said, state, plain,
+    statusData: { active: c.Active, roles, hasSecret: c.HasSecret, error: !!c.LastError, signedOut: !!c.LastError && SIGNED_OUT.test(c.LastError),
+      synced: c.LastSyncAt, connected: c.Active && (c.HasSecret || c.LastSyncAt || (srcs || []).some((s) => s.Active)),
+      sources: srcs ? { active: srcs.filter((s) => s.Active).length, total: srcs.length, label: m.srcLabel || "sources" } : null },
     channel: hasLogo(c.Type) ? c.Type : (m.channel || c.Type),
     haystack: `${c.Name} ${c.Type} ${m.desc || ""} ${(m.howto || []).join(" ")}`, go };
 };
@@ -1551,6 +1598,7 @@ const PLACED = new Set(["graphql", "sqlite", "gcp", "kubernetes", "grafana", "el
   "netsuite", "sap", "workday", "adp", "epic", "cerner", "careview", "stooq"]);
 
 const VoiceVocabulary = ({ onBack }) => {
+  useLocale();
   const [text, setText] = useState("");
   const [limit, setLimit] = useState(100);
   const [busy, setBusy] = useState(true);
@@ -1564,7 +1612,7 @@ const VoiceVocabulary = ({ onBack }) => {
   useEffect(() => {
     let alive = true;
     api.get("/api/voice/vocabulary").then(({ data }) => { if (alive) { show(data); setBusy(false); } })
-      .catch((e) => { if (alive) { setErr(e?.response?.data?.detail || "Could not load voice vocabulary"); setBusy(false); } });
+      .catch((e) => { if (alive) { setErr(e?.response?.data?.detail || message("Could not load voice vocabulary")); setBusy(false); } });
     return () => { alive = false; };
   }, []);
   // same narration as Settings → Docs: poll while it runs so the button says what it is reading
@@ -1580,53 +1628,51 @@ const VoiceVocabulary = ({ onBack }) => {
     setBusy(true); setErr(""); setSaved("");
     try {
       const { data } = await api.put("/api/voice/vocabulary", { terms });
-      show(data); setSaved(`${plural((data.terms || []).length, "shared term")} saved`);
-    } catch (e) { setErr(e?.response?.data?.detail || "Could not save voice vocabulary"); }
+      show(data); setSaved(message((data.terms || []).length === 1 ? "{count} shared term saved" : "{count} shared terms saved", { count: (data.terms || []).length }));
+    } catch (e) { setErr(e?.response?.data?.detail || message("Could not save voice vocabulary")); }
     setBusy(false);
   };
   // history -> names, systems, acronyms (histgen.gen_vocabulary). Your edits in the box are saved
   // first so nothing typed is lost; your terms stay, the model's fill the room left.
   const generate = async () => {
-    setGenBusy(true); setErr(""); setSaved(""); setGenEv(null); setGenWhat("starting…");
+    setGenBusy(true); setErr(""); setSaved(""); setGenEv(null); setGenWhat(message("starting…"));
     try {
       if (text !== onServer) await api.put("/api/voice/vocabulary", { terms });
       const { data } = await api.post("/api/doc/vocabulary/generate");
       show((await api.get("/api/voice/vocabulary")).data); setSaved(`✓ ${data.detail}`);
       try { setGenEv((await api.get("/api/doc/generate/status")).data.evidence || null); } catch { /* receipts optional */ }
-    } catch (e) { setErr(e?.response?.data?.detail || "Could not generate from history"); }
+    } catch (e) { setErr(e?.response?.data?.detail || message("Could not generate from history")); }
     setGenBusy(false); setGenWhat("");
   };
   return (
     <Box sx={{ maxWidth: 760, mx: "auto" }}>
-      <Crumb section="Connections" onBack={onBack} title="Shared voice vocabulary" />
+      <Crumb section={t("Connections")} onBack={onBack} title={t("Shared voice vocabulary")} />
       <Typography variant="body2" sx={{ color: DIM, mb: 2, lineHeight: 1.7 }}>
-        One list for every AI voice connector, browser mic and voice note. Add unusual names, acronyms, products and internal system terms;
-        each active provider receives the same hints automatically. Hints improve recognition but never force words into a transcript.
-        Generate from history reads who writes to you and what about, and adds the names a recogniser would get wrong - your own lines stay.
+        {t("One list for every AI voice connector, browser mic and voice note. Add unusual names, acronyms, products and internal system terms; each active provider receives the same hints automatically. Hints improve recognition but never force words into a transcript. Generate from history reads who writes to you and what about, and adds the names a recogniser would get wrong - your own lines stay.")}
       </Typography>
       <Box sx={{ border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: PANEL, p: 2 }}>
         <TextField fullWidth multiline minRows={12} value={text} onChange={(e) => setText(e.target.value)} disabled={busy || genBusy}
-          label="Words and phrases" placeholder={"Taskuary\nNorthwind\nPayworth\nTQ-0243"}
-          helperText={`One term or phrase per line · up to ${limit} · 50 characters and 5 words per entry`} />
+          label={t("Words and phrases")} placeholder={"Taskuary\nNorthwind\nPayworth\nTQ-0243"}
+          helperText={t("One term or phrase per line · up to {limit} · 50 characters and 5 words per entry", { limit })} />
         <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 1.5 }}>
           <Typography variant="caption" sx={{ color: terms.length > limit ? "error.main" : FAINT }}>{terms.length}/{limit}</Typography>
           <Box sx={{ flex: 1 }} />
           <Button size="small" variant="outlined" onClick={generate} disabled={busy || genBusy || terms.length > limit}
             sx={{ fontSize: 11.5, textTransform: "none" }}
             startIcon={genBusy ? <CircularProgress size={12} /> : null}
-            title="Read the last three months of mail - who writes, about what - and add the names, systems and acronyms a recogniser would misspell. Your own lines stay.">
-            {genBusy ? (genWhat || "Reading what came in…") : "Generate from history"}
+            title={t("Read the last three months of mail - who writes, about what - and add the names, systems and acronyms a recogniser would misspell. Your own lines stay.")}>
+            {genBusy ? (displayMessage(genWhat) || t("Reading what came in…")) : t("Generate from history")}
           </Button>
           <Button variant="contained" disableElevation onClick={save} disabled={busy || genBusy || terms.length > limit || text === onServer}>
-            {busy ? "Saving…" : text === onServer ? "Saved" : "Save shared vocabulary"}
+            {busy ? t("Saving…") : text === onServer ? t("Saved") : t("Save shared vocabulary")}
           </Button>
         </Box>
-        {err && <Alert severity="error" sx={{ mt: 1.5 }}>{err}</Alert>}
-        {saved && <Alert severity="success" sx={{ mt: 1.5 }}>{saved}</Alert>}
+        {err && <Alert severity="error" sx={{ mt: 1.5 }}>{displayMessage(err)}</Alert>}
+        {saved && <Alert severity="success" sx={{ mt: 1.5 }}>{displayMessage(saved)}</Alert>}
         {/* the receipts: what history was read and counted, so every added name traces back to your own mail */}
         {genEv?.length > 0 && (
           <Box sx={{ mt: 1.5, p: 1.25, bgcolor: "#fff", border: `1px solid ${BORDER}`, borderRadius: 2 }}>
-            <Typography variant="caption" sx={{ color: DIM, fontWeight: 600, display: "block", mb: 0.5 }}>What it read</Typography>
+            <Typography variant="caption" sx={{ color: DIM, fontWeight: 600, display: "block", mb: 0.5 }}>{t("What it read")}</Typography>
             {genEv.map((l, i) => (
               <Typography key={i} variant="caption" component="div" sx={{ color: l.startsWith("  ") ? FAINT : DIM, whiteSpace: "pre-wrap", fontFamily: l.startsWith("  ") ? "monospace" : "inherit", fontSize: 11 }}>{l}</Typography>
             ))}
@@ -1638,6 +1684,7 @@ const VoiceVocabulary = ({ onBack }) => {
 };
 
 function AlchemyWalletGuide({ onBack, onData }) {
+  useLocale();
   const [sid, setSid] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -1654,64 +1701,68 @@ function AlchemyWalletGuide({ onBack, onData }) {
       const { data } = await api.post("/api/terminals", { rows: 32, cols: 110 });
       localStorage.setItem("tq-alchemy-wallet-shell", data.sid);
       setSid(data.sid);
-    } catch (e) { setError(e?.response?.data?.detail || "could not open the terminal"); }
+    } catch (e) { setError(e?.response?.data?.detail || message("could not open the terminal")); }
     setBusy(false);
   };
   const close = async () => {
     try { await api.delete(`/api/terminals/${encodeURIComponent(sid)}`); }
-    catch (e) { if (e?.response?.status !== 404) { setError(e?.response?.data?.detail || "could not close the terminal"); return; } }
+    catch (e) { if (e?.response?.status !== 404) { setError(e?.response?.data?.detail || message("could not close the terminal")); return; } }
     localStorage.removeItem("tq-alchemy-wallet-shell");
     setSid("");
   };
   const command = (value) => <Box component="pre" sx={{ m: 0, mt: 0.6, mb: 1.5, p: 1.2, bgcolor: "#f4f0e8",
     border: `1px solid ${BORDER}`, borderRadius: 1.5, overflowX: "auto", fontSize: 12 }}>{value}</Box>;
   return <Box sx={{ maxWidth: 850, mx: "auto" }}>
-    <Crumb section="Connections" onBack={onBack} title="Alchemy Agent Wallet" />
+    <Crumb section={t("Connections")} onBack={onBack} title="Alchemy Agent Wallet" />
     <Typography variant="body2" sx={{ color: DIM, mb: 2 }}>
-      Create the wallet in Alchemy’s Dashboard, then approve a CLI session for this computer. The session can be revoked in the Dashboard and does not put a private key in Taskuary.
+      {t("Create the wallet in Alchemy’s Dashboard, then approve a CLI session for this computer. The session can be revoked in the Dashboard and does not put a private key in Taskuary.")}
     </Typography>
     <Button variant="contained" disabled={busy || !!sid} onClick={start} startIcon={<TerminalIcon sx={{ fontSize: 16 }} />}>
-      {busy ? "Opening terminal…" : sid ? "Terminal open below" : "Set it up in terminal"}
+      {t(busy ? "Opening terminal…" : sid ? "Terminal open below" : "Set it up in terminal")}
     </Button>
-    {error && <Alert severity="error" sx={{ mt: 1 }}>{error}</Alert>}
+    {error && <Alert severity="error" sx={{ mt: 1 }}>{displayMessage(error)}</Alert>}
     {sid && <Box sx={{ mt: 2, mb: 2 }}>
       <Box sx={{ display: "flex", alignItems: "center", mb: 0.7 }}>
-        <Typography sx={{ fontWeight: 600, flex: 1 }}>Alchemy setup terminal</Typography>
-        <Button size="small" onClick={close}>Close terminal</Button>
+        <Typography sx={{ fontWeight: 600, flex: 1 }}>{t("Alchemy setup terminal")}</Typography>
+        <Button size="small" onClick={close}>{t("Close terminal")}</Button>
       </Box>
       <TerminalPane sid={sid} height={420} />
     </Box>}
     <Typography variant="body2" sx={{ color: DIM, mt: 2, mb: 1 }}>
-      Run these commands in the terminal above. Installation and wallet creation start only when you enter their commands.
+      {t("Run these commands in the terminal above. Installation and wallet creation start only when you enter their commands.")}
     </Typography>
-    <Typography sx={{ fontWeight: 600, color: INK }}>1. Install the CLI (Node.js 22 or newer)</Typography>
+    <Typography sx={{ fontWeight: 600, color: INK }}>{t("1. Install the CLI (Node.js 22 or newer)")}</Typography>
     {command("npm i -g @alchemy/cli@latest")}
-    <Typography sx={{ fontWeight: 600, color: INK }}>2. Sign in to Alchemy</Typography>
+    <Typography sx={{ fontWeight: 600, color: INK }}>{t("2. Sign in to Alchemy")}</Typography>
     {command("alchemy auth login --device-code")}
-    <Typography sx={{ fontWeight: 600, color: INK }}>3. Create an Agent Wallet and approve this computer</Typography>
+    <Typography sx={{ fontWeight: 600, color: INK }}>{t("3. Create an Agent Wallet and approve this computer")}</Typography>
     <Typography variant="body2" sx={{ color: DIM }}>
-      Create the wallet in the <a href="https://dashboard.alchemy.com/products/agent-wallet/evm-wallet" target="_blank" rel="noreferrer">Alchemy Agent Wallets Dashboard</a>, then run:
+      {t("Create the wallet in the")} <a href="https://dashboard.alchemy.com/products/agent-wallet/evm-wallet" target="_blank" rel="noreferrer">Alchemy Agent Wallets Dashboard</a>{t(", then run:")}
     </Typography>
     {command("alchemy wallet connect --mode session --instance-name taskuary")}
-    <Typography sx={{ fontWeight: 600, color: INK }}>4. Check the session and wallet address</Typography>
+    <Typography sx={{ fontWeight: 600, color: INK }}>{t("4. Check the session and wallet address")}</Typography>
     {command("alchemy --json --no-interactive wallet status --verify\nalchemy --json --no-interactive wallet address")}
     <Typography variant="body2" sx={{ color: DIM, mt: 1 }}>
-      To create local EVM and Solana key files instead, run <code>alchemy wallet connect --mode local</code>. Keep the generated key files private and backed up; this path stores signing keys on this computer.
+      {t("To create local EVM and Solana key files instead, run")} <code>alchemy wallet connect --mode local</code>{t(". Keep the generated key files private and backed up; this path stores signing keys on this computer.")}
     </Typography>
-    <Button size="small" variant="outlined" sx={{ mt: 2 }} onClick={onData}>Open Alchemy data connection</Button>
+    <Button size="small" variant="outlined" sx={{ mt: 2 }} onClick={onData}>{t("Open Alchemy data connection")}</Button>
   </Box>;
 }
 
 // A SEARCH THAT MATCHES NO CARD, planned ones included (the owner, 2026-11-01): one button asks for one through the one report popup -
 // the wish concierge.no_card files, drafted through the scrub, filed only by the owner's Submit on GitHub
-const RequestConnection = ({ q }) => (
-  <Button size="small" variant="outlined" data-tq-request-connection="" title={btnHint("report_bug", "connect")} onClick={() => openBugReport(connectionWish(q))}>
-    {connectName(q) ? btnLabel("report_bug", "connect").replace("this connection", connectName(q)) : btnLabel("report_bug", "connect")}
-  </Button>);
+const RequestConnection = ({ q }) => {
+  useLocale();
+  const name = connectName(q);
+  return <Button size="small" variant="outlined" data-tq-request-connection="" title={btnHint("report_bug", "connect")} onClick={() => openBugReport(connectionWish(q))}>
+    {name ? t("Request {connection}", { connection: name }) : btnLabel("report_bug", "connect")}
+  </Button>;
+};
 
 // `browse` (the assistant canvas, CanvasBrowse.jsx): draw the catalogue's groups, cards and one connector's detail through
 // the canvas's frame instead of this tab's rail - same data, same cards, same detail, same controls.
 export default function ConnectorsView({ onNavigate, browse = null, browseState = {}, onBrowseState = null }) {
+  useLocale();
   // a search handed in by whoever opened the page (setup's suggestions) lands in the box, where the owner can change it
   const asked = browseState?.q;
   const [connectors, setConnectors] = useState(null);
@@ -1731,7 +1782,7 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
       // the page's read ahead the first time (connectorLists.js); every load after it - a save, a sync - reads anew
       const [c, s, t] = await (takeLists() || Promise.all([api.get("/api/connectors"), api.get("/api/sources"), api.get("/api/report-types")]));
       setConnectors(c.data.data || []); setNOn(c.data.connected ?? null); setSources(s.data.data || []); setTypes(t.data.data || []);
-    } catch (e) { setErr(e?.response?.data?.detail || "Failed to load connectors"); }
+    } catch (e) { setErr(errorMessage(errorPresentation(e, "Failed to load connectors"))); }
   }, []);
   useEffect(() => { load(); }, [load]);
   // ...read again whenever a card closes: connecting or disconnecting a CLI happens on its panel
@@ -1744,7 +1795,7 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
   const syncNow = async () => {
     setSyncing(true);
     try { await api.post("/api/ingest/poll"); setTimeout(() => { setSyncing(false); load(); }, 3000); }
-    catch (e) { setSyncing(false); setErr(`Sync didn't start — ${plainError(e, "try again in a moment.")}`); }
+    catch (e) { setSyncing(false); setErr(message("Sync didn't start — {detail}", { detail: errorMessage(errorPresentation(e, "try again in a moment.")) })); }
   };
 
   const allOf = (type) => (connectors || []).filter((c) => c.Type === type);
@@ -1775,7 +1826,7 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
     // ...and a link to one that has since been removed says so, rather than landing on the catalogue unexplained
     // ...over the list, not over the card that was open before it: that read as the missing one, under a crumb that named neither (verify, 2026-10-19)
     if (!agents && !direct) {
-      setErr(`That connection (${want}) is not here any more - pick another, or add it again from its section.`);
+      setErr(message("That connection ({connection}) is not here any more - pick another, or add it again from its section.", { connection: want }));
       setOpen(null); onBrowseState?.({ ...browseState, open: null }); return;
     }
     const keys = agents ? ["agents"] : ["c", "d", "s"].map((p) => `${p}${direct.ConnectorId}`);
@@ -1815,36 +1866,47 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
   // three shapes of card, said once instead of inline in five groups
   const dataDesc = (c, rtype) => (c?.LastError ? "connection failing" : c?.LastSyncAt ? "connection ✓" : "not set up")
     + ` · ${plural(reports.filter((s2) => (parse(s2.ConfigJson).type || "rest") === rtype).length, "report")} (built under Reports)`;
-  const dataCards = (keys) => keys.flatMap((t) => allOf(t).filter(() => DATA_META[t]).map((c) => {
-    const dm = DATA_META[t];
-    return { key: `d${c.ConnectorId}`, title: c.Name, channel: t,
+  const dataCards = (keys) => keys.flatMap((type) => allOf(type).filter(() => DATA_META[type]).map((c) => {
+    const dm = DATA_META[type];
+    const count = reports.filter((s2) => dm.types.includes(parse(s2.ConfigJson).type)).length;
+    return { key: `d${c.ConnectorId}`, title: c.Name, channel: type,
       desc: (c.LastError ? "connection failing" : c.LastSyncAt ? "connection ✓" : "not set up")
-        + ` · ${plural(reports.filter((s2) => dm.types.includes(parse(s2.ConfigJson).type)).length, "report")} (built under Reports)`,
-      haystack: `${dm.title} ${t} ${dm.desc} ${dm.types.join(" ")} ` + dm.howto.join(" "),
+        + ` · ${plural(count, "report")} (built under Reports)`,
+      displayDesc: `${t(c.LastError ? "connection failing" : c.LastSyncAt ? "connection ✓" : "not set up")} · ${t(count === 1 ? "{count} report (built under Reports)" : "{count} reports (built under Reports)", { count })}`,
+      haystack: `${dm.title} ${type} ${dm.desc} ${dm.types.join(" ")} ` + dm.howto.join(" "),
       go: () => setOpen({ kind: "connector", id: c.ConnectorId }) };
   }));
   const channelCards = (keys) => keys.flatMap((t) => allOf(t).map(chanCard));
-  const specialCards = (type, title, rtype, haystack, desc = (c) => dataDesc(c, rtype)) => allOf(type).map((c) => ({
-    key: `s${c.ConnectorId}`, title: c.Name || title, channel: type,
-    desc: desc(c), haystack,
-    go: () => setOpen({ kind: "connector", id: c.ConnectorId }),
-  }));
+  const specialCards = (type, title, rtype, haystack, desc = (c) => dataDesc(c, rtype)) => allOf(type).map((c) => {
+    const count = reports.filter((s2) => (parse(s2.ConfigJson).type || "rest") === rtype).length;
+    return { key: `s${c.ConnectorId}`, title: c.Name || title, channel: type,
+      desc: desc(c), haystack,
+      displayDesc: ["reason_network", "agent_desktop"].includes(type) ? t(desc(c))
+        : `${t(c.LastError ? "connection failing" : c.LastSyncAt ? "connection ✓" : "not set up")} · ${t(count === 1 ? "{count} report (built under Reports)" : "{count} reports (built under Reports)", { count })}`,
+      go: () => setOpen({ kind: "connector", id: c.ConnectorId }) };
+  });
   const planned = types.filter((t) => t.status === "planned").map((t) => t.type);
   // `rest` catches whatever the server starts advertising that this file has not been taught
   // about yet, so a new planned type never silently vanishes from the catalog
   const plannedCards = (keys, rest = false) => (rest ? planned.filter((t) => !PLACED.has(t)) : keys.filter((t) => planned.includes(t)))
-    .map((t) => ({ key: `p${t}`, title: PLANNED_TITLES[t] || t.replace(/_/g, " "), desc: "planned",
-      channel: t, haystack: `${t} planned`, planned: true }));
+    .map((type) => ({ key: `p${type}`, title: PLANNED_TITLES[type] || type.replace(/_/g, " "), desc: t("planned"),
+      channel: type, haystack: `${type} planned`, planned: true }));
   const catalogCards = (category) => plannedFor(category).map((c) => ({
-    key: `catalog-${c.type}`, title: c.title, desc: `planned — ${c.desc}`, channel: c.type,
+    key: `catalog-${c.type}`, title: c.title, desc: t("planned — {description}", { description: t(c.desc) }), channel: c.type,
     haystack: `${c.type} ${c.title} ${c.desc} planned`, planned: true,
   }));
+  const connectedClis = (clis || []).filter((c) => c.configured && c.installed);
+  const installedClis = (clis || []).filter((c) => c.installed);
+  const cliDisplay = !clis ? t("Claude / Codex / Qwen Code / OpenCode / Kimi / Gemini — connect a coding CLI. Choose the default and model in {place}", { place: placeName("sorting") })
+    : connectedClis.length ? t("Connected: {names}", { names: connectedClis.map((c) => c.label || c.name).join(", ") })
+      : installedClis.length ? t("{count} installed on this computer · none connected - open to connect one", { count: installedClis.length })
+        : t("None installed - open to install a coding CLI");
 
   const groups = onceEach([
     { title: "AI — agents & models", cards: [
       { key: "agents", title: noun("cli_agents"), desc: `Claude / Codex / Qwen Code / OpenCode / Kimi / Gemini — connect a coding CLI. Choose the default and model in ${placeName("sorting")}`,
         channel: "cli", haystack: "ai cli agents claude codex qwen 通义千问 opencode deepseek 深度求索 kimi moonshot 月之暗面 glm 智谱 minimax gemini command args resume", go: () => setOpen({ kind: "agents" }),
-        ...cliCardOf(clis) },
+        ...cliCardOf(clis), displayDesc: cliDisplay },
       ...channelCards(AI_SHELF),
       ...catalogCards("AI — agents & models"),
     ]},
@@ -1853,8 +1915,8 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
       // what happens with NO card here is not visible anywhere else, and it looked like something was missing
       note: "Without a card here the mic still works where a voice is found: in Edge or Chrome it uses the browser's own recognition at once, and in the Taskuary window on Windows it uses Windows' own dictation (on this computer, no key) — free, live microphone only. With neither it shows crossed out. Voice notes on WhatsApp/Telegram land marked not transcribed, with a Transcribe button for later. A card is what transcribes a voice-note file on the server. Free choices: Groq (free tier) or Local Whisper (no key, on this machine). Edge's voices are text-to-speech — the other direction.",
       cards: [
-        { key: "voice-vocabulary", title: "Shared voice vocabulary", channel: "ai",
-          desc: "one system-wide list used by every voice connector and mic",
+        { key: "voice-vocabulary", title: t("Shared voice vocabulary"), channel: "ai",
+          desc: "one system-wide list used by every voice connector and mic", displayDesc: t("one system-wide list used by every voice connector and mic"),
           haystack: "custom shared voice vocabulary words phrases domain names acronyms",
           go: () => setOpen({ kind: "voice-vocabulary" }) },
         ...channelCards(["gemini_stt", "groq_stt", "openai_stt", "deepgram", "elevenlabs_stt", "stt_server", "local_whisper"]),
@@ -1922,7 +1984,7 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
     ]},
     { title: "Wallets & onchain", cards: [
       { key: "alchemy-wallet", title: "Alchemy Agent Wallet", channel: "alchemy", guide: true,
-        desc: "Create a wallet in Alchemy and approve a CLI session for this computer",
+        desc: "Create a wallet in Alchemy and approve a CLI session for this computer", displayDesc: t("Create a wallet in Alchemy and approve a CLI session for this computer"),
         haystack: "alchemy wallet agent wallet cli create connect session local evm solana",
         go: () => setOpen({ kind: "alchemy-wallet" }) },
     ]},
@@ -1948,12 +2010,12 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
     const openCard = all.find((c) => c.key === browseState.open);
     const inSection = q ? hits : (groups.find((g) => g.title === browseState.section)?.cards || []);
     return browse({
-      title: "Connections",
-      summary: `${connected} connected · ${all.filter((c) => c.planned).length} more in the catalogue · pick a section`,
-      sections: groups.map((g) => ({ key: g.title, label: g.title, n: g.cards.length || null })),
+      title: t("Connections"),
+      summary: t("{connected} connected · {planned} more in the catalogue · pick a section", { connected, planned: all.filter((c) => c.planned).length }),
+      sections: groups.map((g) => ({ key: g.title, label: t(g.title), n: g.cards.length || null })),
       section: q ? "" : browseState.section ?? null,
       onSection: (key) => { setQ(""); setOpen(null); onBrowseState?.({ section: key, open: null }); },
-      note: err || (q ? "" : groups.find((g) => g.title === browseState.section)?.note || ""),
+      note: err ? displayMessage(err) : (q ? "" : t(groups.find((g) => g.title === browseState.section)?.note || "")),
       // ...the card opened names its connector, so the address can (canvasLinks.hashFor) - a guide card has none and is its section's
       cards: inSection.map((c) => ({ key: c.key, node: <ConnCard c={{ ...c, go: c.go && (() => { c.go();
         onBrowseState?.({ ...browseState, section: q ? c.crumb || browseState.section : browseState.section, open: c.key,
@@ -1961,38 +2023,38 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
       detail, onBack: back,
       openLabel: openCard ? `the ${openCard.title} connector card (Connections), ${openCard.desc}` : conn ? `the ${conn.Name} connector card (Connections)` : "",
       search: (
-        <Box component="input" type="search" value={q} onChange={(e) => search(e.target.value)} placeholder="Search connectors…"
-          aria-label="Search connectors" data-tq-browse-search=""
+        <Box component="input" type="search" value={q} onChange={(e) => search(e.target.value)} placeholder={t("Search connectors…")}
+          aria-label={t("Search connectors")} data-tq-browse-search=""
           sx={{ mt: 1.5, width: "100%", boxSizing: "border-box", height: 34, px: 1.25, border: `1px solid ${BORDER}`, borderRadius: "8px",
             fontFamily: "inherit", fontSize: 12.5, color: INK, bgcolor: "#fff", outline: "none", "&:focus": { borderColor: "#55697a" } }} />
       ),
-      query: q, empty: "Nothing in this section yet.", noneAction: <RequestConnection q={q} />,
+      query: q, empty: t("Nothing in this section yet."), noneAction: <RequestConnection q={q} />,
     });
   }
 
   return (
-    <SideRail title="Connections" q={q} setQ={search}
-      placeholder="Search connectors…"
-      items={groups.map((g) => ({ key: g.title, label: g.title, n: g.cards.length || null }))}
+    <SideRail title={t("Connections")} q={q} setQ={search}
+      placeholder={t("Search connectors…")}
+      items={groups.map((g) => ({ key: g.title, label: t(g.title), n: g.cards.length || null }))}
       value={group} onChange={setGroup}
-      note="Keys and connection settings are stored locally, in the same SQLite file as your tasks.">
-      {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 1.5 }}>{err}</Alert>}
+      note={t("Keys and connection settings are stored locally, in the same SQLite file as your tasks.")}>
+      {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 1.5 }}>{displayMessage(err)}</Alert>}
       <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, mb: 2 }}>
         <Typography sx={{ color: INK, fontWeight: 600, fontSize: 15, flex: 1, minWidth: 0 }} noWrap>
-          {q ? `Matches for “${q}”` : shown.title}
+          {q ? t("Matches for “{query}”", { query: q }) : t(shown.title)}
         </Typography>
         <Button size="small" variant="contained" disableElevation onClick={syncNow} disabled={syncing}
           startIcon={syncing ? <CircularProgress size={12} sx={{ color: "#fff" }} /> : <SyncIcon sx={{ fontSize: 15 }} />}>
-          {syncing ? "Syncing…" : btnLabel("sync_now")}
+          {syncing ? t("Syncing…") : btnLabel("sync_now")}
         </Button>
       </Box>
 
       {q ? (
         <Box>
-          {!hits.length ? <><Empty>{nothingMatches(q, "Connections")}</Empty><Box sx={{ textAlign: "center", mt: 1 }}><RequestConnection q={q} /></Box></> : (
+          {!hits.length ? <><Empty>{nothingMatches(q, t("Connections"))}</Empty><Box sx={{ textAlign: "center", mt: 1 }}><RequestConnection q={q} /></Box></> : (
             <>
               <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 1 }}>
-                {hits.length} {hits.length === 1 ? "result" : "results"}
+                {t(hits.length === 1 ? "{count} result" : "{count} results", { count: hits.length })}
               </Typography>
               <CardGrid>{hits.map((r) => <ConnCard key={r.key} c={r} />)}</CardGrid>
             </>
@@ -2001,7 +2063,7 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
       ) : (
         <>
           {shown.note && (
-            <Typography variant="body2" sx={{ color: DIM, mb: 1.5, maxWidth: 860, lineHeight: 1.55 }}>{shown.note}</Typography>
+            <Typography variant="body2" sx={{ color: DIM, mb: 1.5, maxWidth: 860, lineHeight: 1.55 }}>{t(shown.note)}</Typography>
           )}
           <CardGrid>{shown.cards.map((c) => <ConnCard key={c.key} c={c} />)}</CardGrid>
         </>
@@ -2016,6 +2078,7 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
    `addOnly`: setup's simple card has no name to edit, only the door to a second mailbox of the same kind - a second
    Outlook account had no way in there at all (the owner, 2026-10-20: "I only see a way to connect one"). */
 function ConnectorIdentity({ conn, reload, onCreated, addOnly = false }) {
+  useLocale();
   const [name, setName] = useState(conn.Name || "");
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
@@ -2031,7 +2094,7 @@ function ConnectorIdentity({ conn, reload, onCreated, addOnly = false }) {
     if (!value || value === conn.Name) return;
     setBusy("rename"); setErr("");
     try { await api.post("/api/connectors", { ConnectorId: conn.ConnectorId, Name: value }); await reload(); }
-    catch (e) { setErr(e?.response?.data?.detail || "could not rename the connector"); }
+    catch (e) { setErr(e?.response?.data?.detail || message("could not rename the connector")); }
     setBusy("");
   };
   const add = async () => {
@@ -2041,31 +2104,31 @@ function ConnectorIdentity({ conn, reload, onCreated, addOnly = false }) {
     try {
       const { data } = await api.post("/api/connectors", { Type: conn.Type, Name: value });
       await reload(); onCreated?.(data.connectorId);
-    } catch (e) { setErr(e?.response?.data?.detail || "could not add the connector"); }
+    } catch (e) { setErr(e?.response?.data?.detail || message("could not add the connector")); }
     setBusy("");
   };
   if (addOnly && (!one || !connected)) return null;
   return (
     <Box data-tq-add-another={conn.Type} sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap", mb: addOnly ? 0 : 1.5, maxWidth: 720 }}>
       {!addOnly && <>
-        <TextField size="small" label="Connection name" value={name} onChange={(e) => setName(e.target.value)}
+        <TextField size="small" label={t("Connection name")} value={name} onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") rename(); }} sx={{ bgcolor: "#fff", minWidth: 240 }} />
         <Button size="small" variant="outlined" disabled={busy === "rename" || !name.trim() || name.trim() === conn.Name}
-          onClick={rename}>{busy === "rename" ? "Saving…" : "Save name"}</Button>
+          onClick={rename}>{busy === "rename" ? t("Saving…") : t("Save name")}</Button>
       </>}
       {!one || !connected ? null : !adding ? (
-        <Button size="small" startIcon={<AddIcon sx={{ fontSize: 14 }} />} onClick={() => setAdding(true)}>Add another {one}</Button>
+        <Button size="small" startIcon={<AddIcon sx={{ fontSize: 14 }} />} onClick={() => setAdding(true)}>{t("Add another {connection}", { connection: one })}</Button>
       ) : (
         <>
-          <TextField size="small" autoFocus label={`Name of the new ${one}`} value={newName}
+          <TextField size="small" autoFocus label={t("Name of the new {connection}", { connection: one })} value={newName}
             onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }}
             sx={{ bgcolor: "#fff", minWidth: 240 }} />
           <Button size="small" variant="contained" disableElevation disabled={busy === "add" || !newName.trim()}
-            onClick={add}>{busy === "add" ? "Adding…" : "Add"}</Button>
-          <Button size="small" onClick={() => { setAdding(false); setNewName(""); setErr(""); }}>Cancel</Button>
+            onClick={add}>{busy === "add" ? t("Adding…") : t("Add")}</Button>
+          <Button size="small" onClick={() => { setAdding(false); setNewName(""); setErr(""); }}>{t("Cancel")}</Button>
         </>
       )}
-      {err && <Alert severity="error" sx={{ width: "100%", py: 0 }}>{err}</Alert>}
+      {err && <Alert severity="error" sx={{ width: "100%", py: 0 }}>{displayMessage(err)}</Alert>}
     </Box>
   );
 }
@@ -2075,6 +2138,7 @@ function ConnectorIdentity({ conn, reload, onCreated, addOnly = false }) {
    this thing do for us", so it lists every playbook whose `uses:` line names this connection, and
    opens each on Reports → Playbooks (#playbook=<slug>), where the words are edited. */
 function CardPlaybooks({ type }) {
+  useLocale();
   const [books, setBooks] = useState(null);
   useEffect(() => {
     let live = true;
@@ -2087,22 +2151,22 @@ function CardPlaybooks({ type }) {
   return (
     <Box sx={{ mt: 3, p: 1.5, border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: PANEL }}>
       <Typography variant="caption" sx={{ color: "#6f8a6e", fontWeight: 600, letterSpacing: 1, display: "block", mb: 0.75 }}>
-        PLAYBOOKS — WHAT THIS CONNECTION DOES FOR US
+        {t("PLAYBOOKS — WHAT THIS CONNECTION DOES FOR US")}
       </Typography>
       {books.length === 0 && (
         <Typography variant="body2" sx={{ color: DIM, mb: 1 }}>
-          No playbook names this connection yet. One is drafted for you the first time an agent finishes a job with it; approve it on the task and the next such job runs on it.
+          {t("No playbook names this connection yet. One is drafted for you the first time an agent finishes a job with it; approve it on the task and the next such job runs on it.")}
         </Typography>
       )}
       {books.map((b) => (
         <Box key={b.slug} onClick={() => go(b.slug)} sx={{ display: "flex", alignItems: "baseline", gap: 1, py: 0.5, cursor: "pointer",
           "&:hover .pb-t": { textDecoration: "underline" } }}>
           <Typography className="pb-t" variant="body2" sx={{ color: INK, fontWeight: 600, whiteSpace: "nowrap" }}>{b.title}</Typography>
-          <Typography variant="caption" sx={{ color: FAINT }} noWrap>when: {b.when}</Typography>
+          <Typography variant="caption" sx={{ color: FAINT }} noWrap>{t("when: {when}", { when: b.when })}</Typography>
         </Box>
       ))}
       <Button size="small" variant="text" startIcon={<AddIcon sx={{ fontSize: 15 }} />} onClick={() => go(`new:${type}`)} sx={{ mt: 0.5 }}>
-        New playbook for this connection
+        {t("New playbook for this connection")}
       </Button>
     </Box>
   );
@@ -2112,6 +2176,7 @@ function CardPlaybooks({ type }) {
 // on the press, and "Removed <it> - Undo" stays on the card in its place. The sealed sign-in is kept only for the Undo line's minutes
 // (recentlydeleted.UNDO_SECONDS), then forgotten. `onBack` is kept for the callers; the card no longer leaves on a Remove.
 function RemoveConnection({ conn, reload }) {
+  useLocale();
   const [err, setErr] = useState("");
   // what leans on it, beside the button: read before the press, never asked after it (#238)
   const [uses, setUses] = useState(null);
@@ -2124,17 +2189,17 @@ function RemoveConnection({ conn, reload }) {
   const remove = async () => {
     setErr("");
     try { await removeNow(() => api.post(`/api/connectors/${conn.ConnectorId}/reset`), "connection", conn.Name || conn.Type); await reload(); }
-    catch (e) { setErr(e?.response?.data?.detail || "It could not be removed."); }
+    catch (e) { setErr(e?.response?.data?.detail || message("It could not be removed.")); }
   };
   return (
     <Box sx={{ mt: 3, pt: 1.5, borderTop: `1px solid ${BORDER}`, maxWidth: 720 }}>
       <UndoLine kinds={["connection"]} onRestored={reload} />
       <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
         <Button size="small" startIcon={<DeleteOutlineIcon sx={{ fontSize: 15 }} />} sx={{ color: "#867f74" }}
-          title="Wipes its saved sign-in and settings and switches its sources off - Undo puts them back"
-          onClick={remove}>Remove connection</Button>
+          title={t("Wipes its saved sign-in and settings and switches its sources off - Undo puts them back")}
+          onClick={remove}>{t("Remove connection")}</Button>
         {line && <Typography data-tq-used-by="" variant="caption" sx={{ color: DIM, lineHeight: 1.5 }}>{line}</Typography>}
-        {err && <Typography variant="body2" sx={{ color: "#6b2733", fontWeight: 600 }}>✗ {err}</Typography>}
+        {err && <Typography variant="body2" sx={{ color: "#6b2733", fontWeight: 600 }}>✗ {displayMessage(err)}</Typography>}
       </Box>
     </Box>
   );
@@ -2147,6 +2212,7 @@ function RemoveConnection({ conn, reload }) {
    Settings is not proof, a SELECT on the database is. Sending is probed separately and only
    on request, because the probe is what makes macOS pop the consent prompt. */
 function MacPermissions({ conn, test, busy, runTest }) {
+  useLocale();
   const [probe, setProbe] = useState(null);
   const [probing, setProbing] = useState(false);
   const [opened, setOpened] = useState("");
@@ -2159,17 +2225,17 @@ function MacPermissions({ conn, test, busy, runTest }) {
     setOpened(""); setOpenErr((o) => ({ ...o, [pane]: "" }));
     try {
       const { data } = await api.post("/api/platform/macos/open-settings", { pane });
-      if (data?.ok) setOpened(pane); else setOpenErr((o) => ({ ...o, [pane]: data?.detail || "Settings did not open" }));
-    } catch (e) { setOpenErr((o) => ({ ...o, [pane]: e?.response?.data?.detail || "Settings did not open" })); }
+      if (data?.ok) setOpened(pane); else setOpenErr((o) => ({ ...o, [pane]: data?.detail || message("Settings did not open") }));
+    } catch (e) { setOpenErr((o) => ({ ...o, [pane]: e?.response?.data?.detail || message("Settings did not open") })); }
   };
   const runProbe = async () => {
     setProbing(true); setProbe(null); setOpenErr((o) => ({ ...o, automation: "" }));
     try { const { data } = await api.post("/api/platform/macos/probe", { what: "messages_automation" }); setProbe(data); }
-    catch (e) { setProbe({ ok: false, detail: e?.response?.data?.detail || "probe call failed" }); }
+    catch (e) { setProbe({ ok: false, detail: e?.response?.data?.detail || message("probe call failed") }); }
     setProbing(false);
   };
   const copy = (s) => { try { navigator.clipboard.writeText(s); } catch { /* not in this context */ } };
-  const host = setup.host_name || (setup.host_path ? "the Python executable" : "the process running Taskuary");
+  const host = setup.host_name || (setup.host_path ? t("the Python executable") : t("the process running Taskuary"));
   const notMac = code === "macos_required";
   const readOk = code === "ready";
   const readNeeds = code === "full_disk_access_required";
@@ -2192,60 +2258,57 @@ function MacPermissions({ conn, test, busy, runTest }) {
   return (
     <Box sx={{ mt: 1, maxWidth: 760 }}>
       <Typography variant="body2" sx={{ color: DIM, mb: 1.5 }}>
-        Apple Messages stays on this Mac. Reading the history macOS already keeps needs <b>Full Disk Access</b>;
-        asking Messages.app to send a reply needs <b>Automation</b>. macOS controls both — Taskuary cannot grant or
-        bypass them, and both are granted to <b>{host}</b>, not to "Taskuary".
+        {t('Apple Messages stays on this Mac. Reading the history macOS already keeps needs Full Disk Access; asking Messages.app to send a reply needs Automation. macOS controls both — Taskuary cannot grant or bypass them, and both are granted to {host}, not to "Taskuary".', { host })}
       </Typography>
       {notMac ? (
         <Typography variant="body2" sx={{ color: "#6b2733", fontWeight: 600 }}>✗ {test.detail}</Typography>
       ) : (
         <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap" }}>
-          <Card title="Read Messages" sub="Full Disk Access" ok={readOk}>
+          <Card title={t("Read Messages")} sub={t("Full Disk Access")} ok={readOk}>
             <Typography variant="caption" sx={{ color: DIM, display: "block", mb: 1 }}>
-              Opens the local Messages database read-only so new messages and context can enter Taskuary.
+              {t("Opens the local Messages database read-only so new messages and context can enter Taskuary.")}
             </Typography>
             {(setup.host_name || setup.host_path) && (
               <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, mb: 1 }}>
-                <Typography variant="caption" sx={{ color: FAINT }}>grant to:</Typography>
+                <Typography variant="caption" sx={{ color: FAINT }}>{t("grant to:")}</Typography>
                 <Typography sx={{ ...mono, fontSize: 12, color: INK }} noWrap>{setup.host_name || setup.host_path}</Typography>
-                {setup.host_path && <IconButton size="small" onClick={() => copy(setup.host_path)} title="copy path"><ContentCopyIcon sx={{ fontSize: 13 }} /></IconButton>}
+                {setup.host_path && <IconButton size="small" onClick={() => copy(setup.host_path)} title={t("copy path")}><ContentCopyIcon sx={{ fontSize: 13 }} /></IconButton>}
               </Box>
             )}
             <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", alignItems: "center" }}>
               {fdaPane && <Button size="small" variant="outlined" startIcon={<OpenInNewIcon sx={{ fontSize: 13 }} />} onClick={() => openPane("full_disk_access")}>
-                Open Full Disk Access</Button>}
+                {t("Open Full Disk Access")}</Button>}
               <Button size="small" variant="contained" disableElevation disabled={busy === "test"} onClick={() => { setOpenErr((o) => ({ ...o, full_disk_access: "" })); runTest(); }}
                 startIcon={busy === "test" ? <CircularProgress size={11} sx={{ color: "#fff" }} /> : <BoltIcon sx={{ fontSize: 14 }} />}>
-                {!test ? "Test" : readNeeds ? "I enabled it — test again" : "Test again"}</Button>
+                {t(!test ? "Test" : readNeeds ? "I enabled it — test again" : "Test again")}</Button>
             </Box>
             <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.75 }}>
-              {fdaPane ? (setup.breadcrumb || "System Settings → Privacy & Security → Full Disk Access") : "not a permission problem - see the message below"}
-              {readNeeds && setup.restart_may_be_required && " · macOS may only apply it after the host is quit and relaunched"}
-              {opened === "full_disk_access" && " · Settings opened"}
-              {openErr.full_disk_access && ` · ${openErr.full_disk_access}`}
+              {fdaPane ? (!setup.breadcrumb || setup.breadcrumb === "System Settings → Privacy & Security → Full Disk Access" ? t("System Settings → Privacy & Security → Full Disk Access") : setup.breadcrumb) : t("not a permission problem - see the message below")}
+              {readNeeds && setup.restart_may_be_required && t(" · macOS may only apply it after the host is quit and relaunched")}
+              {opened === "full_disk_access" && t(" · Settings opened")}
+              {openErr.full_disk_access && ` · ${displayMessage(openErr.full_disk_access)}`}
             </Typography>
             <TestLine test={test} mt={1} />
             {!test && conn.LastError && <Typography variant="body2" sx={{ mt: 1, color: "#6b2733" }}>✗ {conn.LastErrorPlain || conn.LastError}</Typography>}
           </Card>
-          <Card title="Send Messages" sub="Automation: Messages" ok={sendOk}>
+          <Card title={t("Send Messages")} sub={t("Automation: Messages")} ok={sendOk}>
             <Typography variant="caption" sx={{ color: DIM, display: "block", mb: 1 }}>
-              Lets Taskuary ask Messages.app to send a reply. Testing this makes macOS ask whether {host} may control
-              Messages — allow it. <b>The test sends nothing.</b> Skip it and macOS asks on the first real reply instead.
+              {t("Lets Taskuary ask Messages.app to send a reply. Testing this makes macOS ask whether {host} may control Messages — allow it. The test sends nothing. Skip it and macOS asks on the first real reply instead.", { host })}
             </Typography>
             <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", alignItems: "center" }}>
               <Button size="small" variant="contained" disableElevation disabled={probing} onClick={runProbe}
                 startIcon={probing ? <CircularProgress size={11} sx={{ color: "#fff" }} /> : <BoltIcon sx={{ fontSize: 14 }} />}>
-                {probe ? "Test again" : "Test Automation"}</Button>
+                {t(probe ? "Test again" : "Test Automation")}</Button>
               {sendDenied && <Button size="small" variant="outlined" startIcon={<OpenInNewIcon sx={{ fontSize: 13 }} />} onClick={() => openPane("automation")}>
-                Open Automation settings</Button>}
+                {t("Open Automation settings")}</Button>}
             </Box>
             <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.75 }}>
-              System Settings → Privacy & Security → Automation → {host} → Messages
-              {opened === "automation" && " · Settings opened"}
-              {openErr.automation && ` · ${openErr.automation}`}
+              {t("System Settings → Privacy & Security → Automation → {host} → Messages", { host })}
+              {opened === "automation" && t(" · Settings opened")}
+              {openErr.automation && ` · ${displayMessage(openErr.automation)}`}
             </Typography>
             {probe && <Typography variant="body2" sx={{ mt: 1, fontWeight: 600, color: probe.ok ? "#47654a" : "#6b2733" }}>
-              {probe.ok ? "✓" : "✗"} {probe.detail}</Typography>}
+              {probe.ok ? "✓" : "✗"} {displayMessage(probe.detail)}</Typography>}
           </Card>
         </Box>
       )}
@@ -2264,14 +2327,12 @@ const SECRET_HELP = "Kept on this computer and never shown again.";      // firs
 // the simple card's one hint under the password, in words a first-time owner has: the full card's Guide says "under Credentials"
 // and "the imap->smtp pattern", which this screen has neither of (a fresh-home run, 2026-10-15)
 const SIMPLE_HINT = {
-  gmail: <>Not your normal password: Google makes a 16-letter App Password at{" "}
-    <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">myaccount.google.com/apppasswords</a>
-    {" "}- 2-Step Verification has to be on first.</>,
   imap: "Usually your normal email password. Yahoo and iCloud want an app password from their account page instead.",
   hipaa_ai: "The code is yours alone - usage is counted against it.",
 };
 
 export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, onBack: leave, onCreated, onNavigate, simple = false, onConnected, chatsAsk = null }) {
+  useLocale();
   // ONE SAVE FOR THE CARD (ConnectorDraft.jsx): every control below draws from the draft and stages into it
   const draft = useCardDraft(savedConn, savedSources, reload);
   const { conn, sources } = draft;
@@ -2306,11 +2367,12 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
       setSecret(""); setCfg(withoutWriteOnly(conn, cfg)); setCfgSaved(withoutWriteOnly(conn, cfg)); setTest(null); setFresh(!d?.error); reload();
       if (d?.error) setSaveSaid({ ok: false, detail: d.error });     // saved, but the key was refused: the fix is here, not a step on
       else {
-        setMsg("saved ✓");
-        if (d) setTest({ ok: true, detail: `authenticated as ${d.login} · ${d.repos} repos discovered · ${d.added} sources added · repo map written to SOUL.md` });
+        setMsg(message("saved ✓"));
+        if (d) setTest({ ok: true, detail: `authenticated as ${d.login} · ${d.repos} repos discovered · ${d.added} sources added · repo map written to SOUL.md`,
+          detailMessage: message("authenticated as {login} · {repos} repos discovered · {added} sources added · repo map written to SOUL.md", { login: d.login, repos: d.repos, added: d.added }) });
         setStep(1);
       }
-    } catch (e) { setSaveSaid({ ok: false, detail: plainError(e, "That didn't save. Try again in a moment.") }); }
+    } catch (e) { const detailPresentation = errorPresentation(e, "That didn't save. Try again in a moment."); setSaveSaid({ ok: false, detail: detailPresentation.message || detailPresentation.source, detailPresentation }); }
     setBusy("");
   };
   const [fresh, setFresh] = useState(false);     // saved since the last Test: its old failure is not said under the new save
@@ -2322,7 +2384,7 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
       // Apple Messages has a second card (Automation) on this step - a passing read test must
       // not whisk the step away before the person can try the send probe
       if (data.ok && conn.Type !== "imessage") setStep(m.srcLabel ? 2 : 3);
-    } catch (e) { setTest({ ok: false, detail: e?.response?.data?.detail || "test call failed" }); }
+    } catch (e) { setTest(testFailure(e, "test call failed")); }
     setBusy(""); reload();
   };
   // the box keeps what you typed when the add is refused, so the reason can be acted on
@@ -2331,10 +2393,10 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
     if (!newSrc.trim()) return;
     // A MAILBOX IS AN ADDRESS: "not an address" was added, ticked green and confirmed in a toast far away, and the steps after it
     // failed on raw errors (the UI audit, 2026-10-21) - refused here, under the box
-    if (m.channel === "email" && !validEmail(newSrc.trim())) { setSrcBad("That isn't an email address - type the whole address, like name@company.com."); return; }
+    if (m.channel === "email" && !validEmail(newSrc.trim())) { setSrcBad(message("That isn't an email address - type the whole address, like {example}.", { example: "alex@northwind.example" })); return; }
     setSrcBad("");
     const r = await run(() => api.post("/api/sources", { Channel: m.channel, Address: newSrc.trim(), ConnectorId: conn.ConnectorId, Active: true }),
-      { ok: `Added ${newSrc.trim()}`, lead: "Not added — " });
+      { ok: { source: "Added {address}", values: { address: newSrc.trim() } }, lead: { source: "Not added — " } });
     if (r.ok) setNewSrc("");
     reload();
   };
@@ -2358,13 +2420,13 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
   const [advanced, setAdvanced] = useState(false);
   const syncHere = async () => {
     setSrcSync(true);
-    const r = await run(() => api.post("/api/ingest/poll"), { ok: "Syncing — new items appear in a minute", lead: "Sync didn't start — " });
+    const r = await run(() => api.post("/api/ingest/poll"), { ok: "Syncing — new items appear in a minute", lead: "Sync didn't start — ", localize: true });
     if (r.ok) setTimeout(() => { setSrcSync(false); reload(); }, 3000);
     else setSrcSync(false);
   };
   const toggleSource = (s) => draft.ctx.stageSource({ SourceId: s.SourceId, Active: !s.Active });
   // a source removed AT ONCE (the owner, 2026-10-21): "Removed <address> - Undo" under the list puts it back as it was
-  const removeSrc = async (s) => { await run(() => removeNow(() => api.delete(`/api/sources/${s.SourceId}`), "source", s.Address), { ok: "", lead: "Not removed — " }); reload(); };
+  const removeSrc = async (s) => { await run(() => removeNow(() => api.delete(`/api/sources/${s.SourceId}`), "source", s.Address), { ok: "", lead: "Not removed — ", localize: true }); reload(); };
   const setActive = (on) => draft.ctx.stageConn({ ConnectorId: conn.ConnectorId, Active: on });   // saves on the press (splitNow)
   // "12 turned away" opens the chat picker - the sources step, right after Credentials and Test - where each has its switch
   const openPicker = () => { if (m.srcLabel) setStep(2); };
@@ -2383,17 +2445,17 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
         {MS_SIGNIN.includes(conn.Type) && !adminFields && (
           <Button size="small" variant="text" onClick={() => setAdminFields(true)}
             sx={{ alignSelf: "flex-start", fontSize: 12, color: DIM, px: 0.5 }}>
-            Admin? Use a tenant app registration instead →
+            {t("Admin? Use a tenant app registration instead →")}
           </Button>
         )}
         {conn.Type === "gmail" && !gOwn && (
           <Button size="small" variant="text" onClick={() => setGOwn(true)} sx={{ alignSelf: "flex-start", fontSize: 12, color: DIM, px: 0.5 }}>
-            Admin? Use your own Google OAuth client instead →
+            {t("Admin? Use your own Google OAuth client instead →")}
           </Button>
         )}
         {conn.Type === "imap" && /@(outlook|hotmail|live|msn)\.|office365|outlook\.office/i.test(`${cfg.address || ""} ${cfg.imap_host || ""}`) && (
           <Typography variant="body2" sx={{ color: "#6b2733", fontWeight: 600 }}>
-            Microsoft mailboxes no longer accept IMAP passwords — use the Outlook connector and “Sign in with Microsoft”.
+            {t("Microsoft mailboxes no longer accept IMAP passwords — use the Outlook connector and “Sign in with Microsoft”.")}
           </Typography>
         )}
         {(adminFields || ownFields.length > 0) && (
@@ -2401,23 +2463,23 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
             {need.map((f) => <ConfigField key={f[1]} conn={conn} field={f} cfg={cfg} setCfg={setCfg} />)}
             {/* WhatsApp has no secret at all - the bridge holds the pairing, not us */}
             {adminFields && m.secretLabel && (
-              <TextField label={conn.HasSecret ? `${m.secretLabel} (saved — type to replace)` : m.secretLabel} type="password"
+              <TextField label={conn.HasSecret ? t("{label} (saved — type to replace)", { label: t(m.secretLabel) }) : t(m.secretLabel)} type="password"
                 value={secret} onChange={(e) => setSecret(e.target.value)} sx={{ bgcolor: "#fff" }}
-                helperText={SECRET_HELP} />
+                helperText={t(SECRET_HELP)} />
             )}
             {maybe.map((f) => <ConfigField key={f[1]} conn={conn} field={f} cfg={cfg} setCfg={setCfg} />)}
             {late.length > 0 && <>
               <Button size="small" variant="text" data-tq-advanced="" onClick={() => setAdvanced((v) => !v)}
                 endIcon={advanced ? <ExpandLessIcon sx={{ fontSize: 16 }} /> : <ExpandMoreIcon sx={{ fontSize: 16 }} />}
-                sx={{ alignSelf: "flex-start", fontSize: 12, color: DIM, px: 0.5 }}>Advanced</Button>
+                sx={{ alignSelf: "flex-start", fontSize: 12, color: DIM, px: 0.5 }}>{t("Advanced")}</Button>
               {/* mounted while folded, so a value already saved is still the one Save sends */}
               <Collapse in={advanced} data-tq-advanced-fold=""><Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, pt: 0.5 }}>
                 {late.map((f) => <ConfigField key={f[1]} conn={conn} field={f} cfg={cfg} setCfg={setCfg} />)}</Box></Collapse>
             </>}
             <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
               <Button variant="contained" disableElevation disabled={busy === "save"} onClick={saveCreds}>
-                {busy === "save" ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : "Save & continue"}</Button>
-              {msg && <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>{msg}</Typography>}
+                {busy === "save" ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : t("Save & continue")}</Button>
+              {msg && <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>{displayMessage(msg)}</Typography>}
             </Box>
             <TestLine test={saveSaid} mt={0} />
           </>
@@ -2428,11 +2490,11 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
       <MacPermissions conn={conn} test={test} busy={busy} runTest={runTest} />
     ) : (
       <Box sx={{ mt: 1 }}>
-        <Typography variant="body2" sx={{ color: DIM, mb: 1 }}>Live probe — token / model / channel read, for real.</Typography>
+        <Typography variant="body2" sx={{ color: DIM, mb: 1 }}>{t("Live probe — token / model / channel read, for real.")}</Typography>
         <Button variant="contained" disableElevation disabled={busy === "test"} onClick={runTest}
-          startIcon={busy === "test" ? <CircularProgress size={12} sx={{ color: "#fff" }} /> : <BoltIcon sx={{ fontSize: 15 }} />}>Test</Button>
+          startIcon={busy === "test" ? <CircularProgress size={12} sx={{ color: "#fff" }} /> : <BoltIcon sx={{ fontSize: 15 }} />}>{t("Test")}</Button>
         <TestLine test={test} mt={1} cid={conn.ConnectorId} />
-        {!test && (fresh ? <Typography variant="body2" data-tq-saved-test="" sx={{ mt: 1, color: DIM }}>Saved - press Test to check it.</Typography>
+        {!test && (fresh ? <Typography variant="body2" data-tq-saved-test="" sx={{ mt: 1, color: DIM }}>{t("Saved - press Test to check it.")}</Typography>
           : conn.LastError && <>
             <Typography variant="body2" sx={{ mt: 1, color: "#6b2733" }}>✗ {conn.LastErrorPlain || conn.LastError}</Typography>
             <BridgeRestart cid={conn.ConnectorId} text={conn.LastError} /></>)}
@@ -2442,28 +2504,23 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
       <Box sx={{ mt: 1 }}>
         {conn.Type === "github" && (
           <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 0.5 }}>
-            The repos this connection reaches — discovery fills the list from the token. What each
-            repo's issues and PRs <b>do</b> (become tasks, show as feed, stay ignored) is decided in
-            one place: the <b>Inbound — what becomes work</b> step below.
+            {t("The repos this connection reaches — discovery fills the list from the token. What each repo's issues and PRs do (become tasks, show as feed, stay ignored) is decided in one place: the Inbound — what becomes work step below.")}
           </Typography>
         )}
-        {m.srcNote && <Typography variant="caption" data-tq-src-note="" sx={{ color: FAINT, display: "block", mb: 1, maxWidth: 560 }}>{m.srcNote}</Typography>}
+        {m.srcNote && <Typography variant="caption" data-tq-src-note="" sx={{ color: FAINT, display: "block", mb: 1, maxWidth: 560 }}>{t(m.srcNote)}</Typography>}
         {conn.Type === "whatsapp" && <WaChats conn={conn} mine={mine} reload={reload} onNavigate={onNavigate} onRoster={setRoster} toggle={toggleSource} ask={chatsAsk} />}
         {conn.Type === "telegram" && (
           <>
             <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 1, maxWidth: 560 }}>
-              No chat id to type: <b>message your bot</b> (or add it to a group), hit <b>{btnLabel("sync_now")}</b>, and the
-              chat appears below with its id — switched off. Flip on the chats that are yours; every other
-              chat stays out, because a public bot can be messaged by anyone. The field at the bottom is only
-              for an id you already know.
+              {t("No chat id to type: message your bot (or add it to a group), hit {sync}, and the chat appears below with its id — switched off. Flip on the chats that are yours; every other chat stays out, because a public bot can be messaged by anyone. The field at the bottom is only for an id you already know.", { sync: t(btnLabel("sync_now")) })}
             </Typography>
             {/* one line at any width: wrapped on a phone, it shrank to one line as "Syncing…" and the list under it jumped */}
             {/* the reason sits on a wrapper: a disabled button takes no hover, so its own title never shows */}
-            <Box component="span" title={sync.why} data-tq-sync-why={sync.why || undefined} sx={{ display: "inline-flex", maxWidth: "100%", mb: 1 }}>
+            <Box component="span" title={sync.why ? t(sync.why) : ""} data-tq-sync-why={sync.why || undefined} sx={{ display: "inline-flex", maxWidth: "100%", mb: 1 }}>
               <Button size="small" variant="outlined" onClick={syncHere} disabled={srcSync || (sync.show && !sync.ok)} sx={{ maxWidth: "100%" }}
                 startIcon={srcSync ? <CircularProgress size={11} /> : <SyncIcon sx={{ fontSize: 14 }} />}>
                 <Box component="span" sx={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {srcSync ? "Syncing…" : "Sync now — pull in chats that messaged the bot"}</Box>
+                  {srcSync ? t("Syncing…") : t("Sync now — pull in chats that messaged the bot")}</Box>
               </Button>
             </Box>
           </>
@@ -2481,18 +2538,18 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
               </Typography>
             )}
             <Box sx={{ flex: 1 }} />
-            {s.LastPolledAt && <Typography variant="caption" sx={{ color: FAINT }}>polled {timeAgo(s.LastPolledAt)}</Typography>}
+            {s.LastPolledAt && <Typography variant="caption" sx={{ color: FAINT }}>{t("polled {time}", { time: timeAgo(s.LastPolledAt) })}</Typography>}
             <Switch checked={!!s.Active} onChange={() => toggleSource(s)} />
-            <IconButton size="small" title="Remove it (off keeps it listed) - Undo puts it back" aria-label={`Remove ${s.Address}`} onClick={() => removeSrc(s)}>
+            <IconButton size="small" title={t("Remove it (off keeps it listed) - Undo puts it back")} aria-label={t("Remove {address}", { address: s.Address })} onClick={() => removeSrc(s)}>
               <DeleteOutlineIcon sx={{ fontSize: 16, color: "#867f74" }} />
             </IconButton>
           </Box>
         ))}
         <UndoLine kinds={["source"]} onRestored={reload} sx={{ mt: 1, mb: 0 }} />
         <Box sx={{ display: "flex", gap: 1, mt: 1.5, maxWidth: 460 }}>
-          <TextField fullWidth placeholder={m.srcPh} value={newSrc} sx={{ bgcolor: "#fff" }} error={!!srcBad} helperText={srcBad || undefined}
+          <TextField fullWidth placeholder={conn.Type === "teams" ? t("user UPN, e.g. {example}", { example: m.srcPh.split("e.g. ")[1] }) : m.srcPh === "added by Test" ? t("added by Test") : m.srcPh} value={newSrc} sx={{ bgcolor: "#fff" }} error={!!srcBad} helperText={srcBad ? displayMessage(srcBad) : undefined}
             onChange={(e) => { setNewSrc(e.target.value); setSrcBad(""); }} onKeyDown={(e) => e.key === "Enter" && addSource()} />
-          <Button variant="contained" disableElevation onClick={addSource}>Add</Button>
+          <Button variant="contained" disableElevation onClick={addSource}>{t("Add")}</Button>
         </Box>
         {MAIL_CARDS.includes(conn.Type) && <MailSignature conn={conn} addresses={mine.map((s) => s.Address)} reload={reload} />}
       </Box>
@@ -2510,17 +2567,17 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
         <Switch data-tq-card-on="" checked={!!conn.Active} disabled={draft.flipping} onChange={(e) => setActive(e.target.checked)} />
         {conn.Active && conn.Type === "whatsapp" && waSt ? <WaStatusLine st={waSt} cid={conn.ConnectorId} onTurnedAway={openPicker} /> : (
           <Typography variant="body2" sx={{ color: DIM }}>
-            {conn.Active
+            {t(conn.Active
               ? (isAI ? "On — wired into intent triage (the first active AI connector wins)." : "On — polling on schedule and via Sync now.")
-              : "Off — flip on once Test passes."}
+              : "Off — flip on once Test passes.")}
           </Typography>)}
         {/* the last step of a setup should be the first sync - not a wait for the ten-minute clock. It is there once the SERVER has the
             card on (syncState), and greyed - the reason in its hover - while a box or the Save bar holds an edit it would not read */}
         {sync.show && !isAI && (
-          <Box component="span" title={sync.why} data-tq-sync-why={sync.why || undefined} sx={{ display: "inline-flex" }}>
+          <Box component="span" title={sync.why ? t(sync.why) : ""} data-tq-sync-why={sync.why || undefined} sx={{ display: "inline-flex" }}>
             <Button size="small" variant="contained" disableElevation onClick={syncHere} disabled={srcSync || !sync.ok}
               startIcon={srcSync ? <CircularProgress size={11} sx={{ color: "#fff" }} /> : <SyncIcon sx={{ fontSize: 14 }} />}
-              sx={{ background: sync.ok ? "linear-gradient(90deg, #55697a, #7d9a7c)" : undefined }}>{srcSync ? "Syncing…" : btnLabel("sync_now")}</Button>
+              sx={{ background: sync.ok ? "linear-gradient(90deg, #55697a, #7d9a7c)" : undefined }}>{srcSync ? t("Syncing…") : btnLabel("sync_now")}</Button>
           </Box>
         )}
       </Box>
@@ -2534,7 +2591,7 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
     // a mailbox card keeps the Connections page's own Add another, so a second account of the same kind has a way in from setup too
     const another = MAIL_CARDS.includes(conn.Type) && <ConnectorIdentity conn={conn} reload={reload} onCreated={onCreated} addOnly />;
     // ...and SAYS WHAT IT READS before the owner hands a mailbox over (the setup sweep, 2026-10-28) - drafts wait for their press
-    const reads = MAIL_CARDS.includes(conn.Type) && <Typography variant="body2" data-tq-mail-reads="" sx={{ color: DIM }}>{MAIL_READS}</Typography>;
+    const reads = MAIL_CARDS.includes(conn.Type) && <Typography variant="body2" data-tq-mail-reads="" sx={{ color: DIM }}>{t(MAIL_READS)}</Typography>;
     // Microsoft is one sign-in, nothing to type; an AI card's key becomes the AI (firstrun.choose_key) - the same card either way
     if (conn.Type === "outlook") return (
       <Box sx={{ display: "flex", flexDirection: "column", gap: 1.25, maxWidth: 720 }}>
@@ -2562,7 +2619,11 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
         setTest({ ok: data.ok, detail: data.why });
         // refused, the first run reads its state again so the Advisor's line says why at once - not at the next poll (2026-10-19)
         if (data.ok) { setSecret(""); onConnected?.(); } else reload?.();
-      } catch (e) { setTest({ ok: false, detail: `${e?.response?.data?.detail || e?.message || "That didn't work."} Press Connect to try again.` }); }
+      } catch (e) {
+        const detail = errorPresentation(e, "That didn't work.");
+        setTest({ ok: false, detail: `${detail.message || detail.source} Press Connect to try again.`,
+          detailMessage: message("{detail} Press Connect to try again.", { detail: errorMessage(detail) }) });
+      }
       setBusy("");
     };
     // white is the box's, not its hint's: on the root it drew a white band under every field; the hint's link in the app's ink
@@ -2571,21 +2632,23 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
       <Box data-tq-simple-mail={conn.Type} sx={{ display: "flex", flexDirection: "column", gap: 1.25, maxWidth: 520 }}>
         {conn.Type === "imap" && /@(outlook|hotmail|live|msn)\.|office365|outlook\.office/i.test(`${cfg.address || ""} ${cfg.imap_host || ""}`) && (
           <Typography variant="body2" sx={{ color: "#6b2733", fontWeight: 600 }}>
-            That is a Microsoft mailbox - use the Microsoft 365 / Outlook card instead.</Typography>
+            {t("That is a Microsoft mailbox - use the Microsoft 365 / Outlook card instead.")}</Typography>
         )}
         {m.fields.filter(([, key]) => keep.includes(key)).map(([label, key, ph, helper]) => (
-          <TextField key={key} size="small" label={label} placeholder={ph || ""} value={cfg[key] || ""} sx={boxSx}
-            helperText={helper} onChange={(e) => setCfg({ ...cfg, [key]: e.target.value })} />
+          <TextField key={key} size="small" label={t(label)} placeholder={ph || ""} value={cfg[key] || ""} sx={boxSx}
+            helperText={helper ? t(helper) : helper} onChange={(e) => setCfg({ ...cfg, [key]: e.target.value })} />
         ))}
-        {m.secretLabel && <TextField size="small" type="password" label={m.secretLabel} value={secret} sx={boxSx}
-          onChange={(e) => setSecret(e.target.value)} helperText={SIMPLE_HINT[conn.Type] || (isAI ? (m.howto || [])[0] : (m.howto || [])[1]) || ""} />}
+        {m.secretLabel && <TextField size="small" type="password" label={t(m.secretLabel)} value={secret} sx={boxSx}
+          onChange={(e) => setSecret(e.target.value)} helperText={conn.Type === "gmail" ? <>{t("Not your normal password: Google makes a 16-letter App Password at")}{" "}
+            <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">myaccount.google.com/apppasswords</a>{" "}
+            {t("- 2-Step Verification has to be on first.")}</> : SIMPLE_HINT[conn.Type] ? t(SIMPLE_HINT[conn.Type]) : t((isAI ? (m.howto || [])[0] : (m.howto || [])[1]) || "")} />}
         {reads}
         <Box sx={{ display: "flex", alignItems: "center", gap: 1.25, flexWrap: "wrap" }}>
           <Button variant="contained" disableElevation disabled={busy === "save" || !ready} onClick={connect}>
-            {busy === "save" ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : "Connect"}</Button>
+            {busy === "save" ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : t("Connect")}</Button>
           {/* the check says what it is doing and how long it takes: an empty grey spinner read as stuck (the UI audit, 2026-10-21) */}
           {busy === "save" && <Typography variant="body2" data-tq-checking="" sx={{ color: DIM }}>
-            {isAI ? "Checking your key works - it sorts one test email, a minute or two…" : "Signing in to your mailbox - a minute or so…"}</Typography>}
+            {t(isAI ? "Checking your key works - it sorts one test email, a minute or two…" : "Signing in to your mailbox - a minute or so…")}</Typography>}
         </Box>
         <TestLine test={test} mt={0} />
         {another}
@@ -2596,7 +2659,7 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
     <DraftProvider value={draft.ctx}>
     <Box sx={{ maxWidth: 980, mx: "auto" }}>
       {note}
-      <Crumb section="Connections" onBack={onBack} title={conn.Name} />
+      <Crumb section={t("Connections")} onBack={onBack} title={conn.Name} />
       <ConnectorIdentity conn={conn} reload={reload} onCreated={onCreated} />
       {/* WhatsApp has no agent box: there is nothing for an agent to do that the pairing box does not do
           itself (install Node is the owner's; the bridge starts on its own; the QR is scanned from a phone).
@@ -2609,14 +2672,14 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
       {conn.Type === "gmail" && <GoogleCalendar conn={conn} cfg={cfg} reload={reload} />}
       {conn.Type === "gmail" && <GoogleFiles conn={conn} cfg={cfg} reload={reload} />}
       {conn.Type === "whatsapp" && <Box sx={{ mb: 2 }}><WaPair conn={conn} reload={reload} onStatus={setWaSt} onTurnedAway={openPicker} /></Box>}
-      <Typography variant="body2" sx={{ color: DIM, mb: 1.5 }}>{m.desc}</Typography>
-      <UnderTabs tabs={conn.Type === "whatsapp" ? ["Setup", "Guide"] : ["Setup", "Guide", "Agent"]} value={tab} onChange={setTab} />
+      <Typography variant="body2" sx={{ color: DIM, mb: 1.5 }}>{m.desc ? t(m.desc) : ""}</Typography>
+      <LocalTabs tabs={conn.Type === "whatsapp" ? ["Setup", "Guide"] : ["Setup", "Guide", "Agent"]} value={tab} onChange={setTab} />
       {tab === "Agent" && <AgentTab steps={m.agent} />}
       {tab === "Setup" && (
         <Stepper nonLinear activeStep={step} orientation="vertical" sx={{ "& .MuiStepLabel-label": { fontSize: 13.5, fontWeight: 600 } }}>
           {steps.map((s, i) => (
             <Step key={s.label} completed={s.done}>
-              <StepButton onClick={() => setStep(i)}>{s.label}</StepButton>
+              <StepButton onClick={() => setStep(i)}>{t(s.label)}</StepButton>
               <StepContent>{s.body}</StepContent>
             </Step>
           ))}
@@ -2626,7 +2689,8 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
       {/* ...nor a sign-in card (Outlook, Teams, Gmail): under its one-button sign-in, a greyed Get AI to set it up and its Connect an AI
           were two more things to read for nothing (the setup sweep, 2026-10-28) */}
       {!NO_AI_WALK.includes(conn.Type) && <AiSetup conn={conn} steps={m.howto || []} fields={m.fields || []} secretLabel={m.secretLabel} agentSteps={m.agent || []} reload={reload} />}
-      <SaveBar draft={draft} labels={DRAFT_LABELS} words={DRAFT_WORDS} />
+      <SaveBar draft={draft} labels={Object.fromEntries(Object.entries(DRAFT_LABELS).map(([key, label]) => [key, t(label)]))}
+        words={Object.fromEntries(Object.entries(DRAFT_WORDS).map(([key, values]) => [key, Object.fromEntries(Object.entries(values).map(([value, label]) => [value, t(label)]))]))} />
       <CardPlaybooks type={conn.Type} />
       <RemoveConnection conn={conn} reload={reload} onBack={leave} />
     </Box>
@@ -2638,18 +2702,19 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
 // THE ODBC DRIVERS ARE ASKED FOR BY THE CARD THAT PICKS ONE: every open of Connections asked the machine for them, for a card most
 // people never open (the overnight setup walk, 2026-10-26)
 function MssqlDetail({ conn, reload, onBack, onCreated }) {
+  useLocale();
   const [tab, setTab] = useState("Setup");
   const [drivers, setDrivers] = useState([]);
   useEffect(() => { api.get("/api/mssql/drivers").then(({ data }) => setDrivers(data.data || [])).catch(() => {}); }, []);
   if (!conn) return null;
   return (
     <Box sx={{ maxWidth: 980, mx: "auto" }}>
-      <Crumb section="Connections" onBack={onBack} title={conn.Name} />
+      <Crumb section={t("Connections")} onBack={onBack} title={conn.Name} />
       <ConnectorIdentity conn={conn} reload={reload} onCreated={onCreated} />
       <Typography variant="body2" sx={{ color: DIM, mb: 1.5 }}>
-        The connection only — build the scheduled reports (query + AI summary) under Reports.
+        {t("The connection only — build the scheduled reports (query + AI summary) under Reports.")}
       </Typography>
-      <UnderTabs tabs={["Setup", "Guide", "Agent"]} value={tab} onChange={setTab} />
+      <LocalTabs tabs={["Setup", "Guide", "Agent"]} value={tab} onChange={setTab} />
       {tab === "Agent" && <AgentTab steps={MSSQL_AGENT} />}
       {tab === "Setup" && <MssqlConnection conn={conn} drivers={drivers} reload={reload} />}
       {tab === "Guide" && <Steps steps={MSSQL_HOWTO} />}
@@ -2662,6 +2727,7 @@ function MssqlDetail({ conn, reload, onBack, onCreated }) {
 
 /* ── the SQL Server CONNECTION (set up once; reports inherit it) ────────── */
 function MssqlConnection({ conn, drivers, reload }) {
+  useLocale();
   const [cfg, setCfg] = useState(parse(conn.ConfigJson));
   const [secret, setSecret] = useState("");
   const [step, setStep] = useState(conn.LastSyncAt && !conn.LastError ? 1 : 0);
@@ -2676,53 +2742,53 @@ function MssqlConnection({ conn, drivers, reload }) {
       const body = { ConnectorId: conn.ConnectorId, ConfigJson: JSON.stringify(cfg), Active: true };
       if (secret) body.Secret = secret;
       await api.post("/api/connectors", body);
-      setMsg("saved ✓"); setSecret(""); setStep(1); reload();
-    } catch (e) { setTest({ ok: false, detail: e?.response?.data?.detail || "save failed" }); }
+      setMsg(message("saved ✓")); setSecret(""); setStep(1); reload();
+    } catch (e) { setTest(testFailure(e, "save failed")); }
     setBusy("");
   };
   const runTest = async () => {
     setBusy("test");
     try { setTest((await api.post(`/api/connectors/${conn.ConnectorId}/test`)).data); }
-    catch (e) { setTest({ ok: false, detail: e?.response?.data?.detail || "test call failed" }); }
+    catch (e) { setTest(testFailure(e, "test call failed")); }
     setBusy(""); reload();
   };
 
   return (
     <Stepper nonLinear activeStep={step} orientation="vertical" sx={{ "& .MuiStepLabel-label": { fontSize: 13.5, fontWeight: 600 } }}>
       <Step completed={!!(cfg.server || conn.LastSyncAt)}>
-        <StepButton onClick={() => setStep(0)}>Connection</StepButton>
+        <StepButton onClick={() => setStep(0)}>{t("Connection")}</StepButton>
         <StepContent>
           <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, maxWidth: 460, mt: 1 }}>
-            <TextField label="server" placeholder="localhost  ·  localhost\SQLEXPRESS  ·  HOST\INSTANCE" value={cfg.server || ""}
+            <TextField label={t("server")} placeholder="localhost  ·  localhost\SQLEXPRESS  ·  HOST\INSTANCE" value={cfg.server || ""}
               sx={{ bgcolor: "#fff" }} onChange={(e) => setCfg({ ...cfg, server: e.target.value })} />
-            <TextField label="database" placeholder="master" value={cfg.database || ""}
+            <TextField label={t("database")} placeholder="master" value={cfg.database || ""}
               sx={{ bgcolor: "#fff" }} onChange={(e) => setCfg({ ...cfg, database: e.target.value })} />
             <Select value={cfg.auth || "windows"} sx={{ bgcolor: "#fff" }} onChange={(e) => setCfg({ ...cfg, auth: e.target.value })}>
-              <MenuItem value="windows" sx={{ fontSize: 12.5 }}>Windows auth (local, trusted)</MenuItem>
-              <MenuItem value="sql" sx={{ fontSize: 12.5 }}>SQL login</MenuItem>
+              <MenuItem value="windows" sx={{ fontSize: 12.5 }}>{t("Windows auth (local, trusted)")}</MenuItem>
+              <MenuItem value="sql" sx={{ fontSize: 12.5 }}>{t("SQL login")}</MenuItem>
             </Select>
-            {sqlAuth && <TextField label="username" value={cfg.username || ""} sx={{ bgcolor: "#fff" }}
+            {sqlAuth && <TextField label={t("username")} value={cfg.username || ""} sx={{ bgcolor: "#fff" }}
               onChange={(e) => setCfg({ ...cfg, username: e.target.value })} />}
-            {sqlAuth && <TextField label={conn.HasSecret ? "password (saved — type to replace)" : "password"} type="password"
+            {sqlAuth && <TextField label={t(conn.HasSecret ? "password (saved — type to replace)" : "password")} type="password"
               value={secret} onChange={(e) => setSecret(e.target.value)} sx={{ bgcolor: "#fff" }} />}
             <Select value={cfg.driver || ""} displayEmpty sx={{ bgcolor: "#fff" }} onChange={(e) => setCfg({ ...cfg, driver: e.target.value })}>
-              <MenuItem value="" sx={{ fontSize: 12.5 }}>(auto — newest installed driver)</MenuItem>
+              <MenuItem value="" sx={{ fontSize: 12.5 }}>{t("(auto — newest installed driver)")}</MenuItem>
               {drivers.map((d) => <MenuItem key={d} value={d} sx={{ fontSize: 12.5 }}>{d}</MenuItem>)}
             </Select>
             <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
               <Button variant="contained" disableElevation disabled={busy === "save"} onClick={save}>
-                {busy === "save" ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : "Save & continue"}</Button>
-              {msg && <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>{msg}</Typography>}
+                {busy === "save" ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : t("Save & continue")}</Button>
+              {msg && <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>{displayMessage(msg)}</Typography>}
             </Box>
           </Box>
         </StepContent>
       </Step>
       <Step completed={!!(conn.LastSyncAt && !conn.LastError)}>
-        <StepButton onClick={() => setStep(1)}>Test connection</StepButton>
+        <StepButton onClick={() => setStep(1)}>{t("Test connection")}</StepButton>
         <StepContent>
-          <Typography variant="body2" sx={{ color: DIM, mb: 1, mt: 0.5 }}>Connects for real and reports the server version — every scheduled report inherits this connection.</Typography>
+          <Typography variant="body2" sx={{ color: DIM, mb: 1, mt: 0.5 }}>{t("Connects for real and reports the server version — every scheduled report inherits this connection.")}</Typography>
           <Button variant="contained" disableElevation disabled={busy === "test"} onClick={runTest}
-            startIcon={busy === "test" ? <CircularProgress size={12} sx={{ color: "#fff" }} /> : <BoltIcon sx={{ fontSize: 15 }} />}>Test</Button>
+            startIcon={busy === "test" ? <CircularProgress size={12} sx={{ color: "#fff" }} /> : <BoltIcon sx={{ fontSize: 15 }} />}>{t("Test")}</Button>
           <TestLine test={test} mt={1} />
           {!test && conn.LastError && <Typography variant="body2" sx={{ mt: 1, color: "#6b2733" }}>✗ {conn.LastErrorPlain || conn.LastError}</Typography>}
         </StepContent>
@@ -2734,9 +2800,10 @@ function MssqlConnection({ conn, drivers, reload }) {
 /* ── Remote Windows (WinRM) detail: machine name + live probe; reports live on Reports ── */
 /* ── Reason Network: a program the owner installs; the card finds it, holds who is trusted, and shows the network ── */
 function ReasonDetail({ conn, reload, onBack, onCreated }) {
+  useLocale();
   return (
     <Box sx={{ maxWidth: 980, mx: "auto" }}>
-      <Crumb section="Connections" onBack={onBack} title={conn.Name} />
+      <Crumb section={t("Connections")} onBack={onBack} title={conn.Name} />
       <ConnectorIdentity conn={conn} reload={reload} onCreated={onCreated} />
       <ReasonPanel conn={conn} reload={reload} />
       <CardPlaybooks type={conn.Type} />
@@ -2747,6 +2814,7 @@ function ReasonDetail({ conn, reload, onBack, onCreated }) {
 
 /* ── Agent Desktop: Vercel's agent-desktop, which the owner installs; the card finds it and holds the one switch (agentdesktop.py) ── */
 function DesktopDetail({ conn: savedConn, reload, onBack, onCreated }) {
+  useLocale();
   // the switch is the card's own press, saved at once as on every connection (useCardDraft.setOn) - the card has nothing else to save
   const draft = useCardDraft(savedConn, [], reload);
   const { conn } = draft;
@@ -2759,37 +2827,33 @@ function DesktopDetail({ conn: savedConn, reload, onBack, onCreated }) {
   const runTest = async () => {
     setBusy("test");
     try { setTest((await api.post(`/api/connectors/${conn.ConnectorId}/test`)).data); }
-    catch (e) { setTest({ ok: false, detail: e?.response?.data?.detail || "test call failed" }); }
+    catch (e) { setTest(testFailure(e, "test call failed")); }
     setBusy(""); reload();
   };
   return (
     <Box sx={{ maxWidth: 980, mx: "auto" }}>
-      <Crumb section="Connections" onBack={onBack} title={conn.Name} />
+      <Crumb section={t("Connections")} onBack={onBack} title={conn.Name} />
       <ConnectorIdentity conn={conn} reload={reload} onCreated={onCreated} />
       <Typography variant="body2" sx={{ color: DIM, mb: 1.5, maxWidth: 720 }}>
-        Your agents read and operate the desktop apps on this computer through their accessibility tree - the list of buttons
-        and boxes each app keeps, not screenshots - with Vercel <a href={tool?.url || "https://github.com/vercel-labs/agent-desktop"} target="_blank"
-        rel="noreferrer">agent-desktop</a>. Only your own tasks get it, never one from someone you have not vouched for. A step that would
-        send, pay, delete or submit waits on the task for your Approve.
+        {t("Your agents read and operate the desktop apps on this computer through their accessibility tree - the list of buttons and boxes each app keeps, not screenshots - with Vercel")} <a href={tool?.url || "https://github.com/vercel-labs/agent-desktop"} target="_blank" rel="noreferrer">agent-desktop</a>{t(". Only your own tasks get it, never one from someone you have not vouched for. A step that would send, pay, delete or submit waits on the task for your Approve.")}
       </Typography>
       {tool && !tool.installed && (
         <Alert severity="info" sx={{ mb: 1.5, maxWidth: 720 }}>
-          agent-desktop is not installed on this computer. Install it yourself with <code>{tool.install || "npm install -g agent-desktop"}</code>,
-          then press Test. Taskuary never installs or updates it.
+          {t("agent-desktop is not installed on this computer. Install it yourself with")} <code>{tool.install || "npm install -g agent-desktop"}</code>{t(", then press Test. Taskuary never installs or updates it.")}
         </Alert>
       )}
-      {tool?.installed && <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 1 }}>Found at <code>{tool.path}</code></Typography>}
-      <Typography variant="body2" sx={{ color: INK, fontWeight: 600, mb: 1 }}>{DESKTOP_HOW}</Typography>
+      {tool?.installed && <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 1 }}>{t("Found at")} <code>{tool.path}</code></Typography>}
+      <Typography variant="body2" sx={{ color: INK, fontWeight: 600, mb: 1 }}>{t(DESKTOP_HOW)}</Typography>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, py: .75, borderBottom: `1px solid ${BORDER}`, maxWidth: 720 }}>
         <Switch checked={!!conn.Active} disabled={draft.flipping} onChange={(e) => draft.ctx.stageConn({ ConnectorId: conn.ConnectorId, Active: e.target.checked })} />
         <Typography variant="body2" sx={{ color: INK }}>
-          {conn.Active ? "On: your agents may use desktop apps on this computer while you work beside them."
-            : "Off: your agents leave desktop apps alone, and any try is refused."}
+          {t(conn.Active ? "On: your agents may use desktop apps on this computer while you work beside them."
+            : "Off: your agents leave desktop apps alone, and any try is refused.")}
         </Typography>
       </Box>
       <Box sx={{ display: "flex", gap: 1, alignItems: "center", mt: 1.5 }}>
         <Button variant="outlined" disabled={busy === "test"} onClick={runTest}
-          startIcon={busy === "test" ? <CircularProgress size={12} /> : <BoltIcon sx={{ fontSize: 15 }} />}>Test</Button>
+          startIcon={busy === "test" ? <CircularProgress size={12} /> : <BoltIcon sx={{ fontSize: 15 }} />}>{t("Test")}</Button>
       </Box>
       <TestLine test={test} mt={1} />
       {draft.err && <Typography role="alert" sx={{ mt: 1, color: "#8a3646", fontSize: 12 }}>{draft.err}</Typography>}
@@ -2800,6 +2864,7 @@ function DesktopDetail({ conn: savedConn, reload, onBack, onCreated }) {
 }
 
 function WinrmDetail({ conn, reload, onBack, onCreated }) {
+  useLocale();
   const [tab, setTab] = useState("Setup");
   const [cfg, setCfg] = useState(parse(conn?.ConfigJson));
   const [test, setTest] = useState(null);
@@ -2811,38 +2876,37 @@ function WinrmDetail({ conn, reload, onBack, onCreated }) {
     setBusy("save"); setMsg("");
     try {
       await api.post("/api/connectors", { ConnectorId: conn.ConnectorId, ConfigJson: JSON.stringify(cfg), Active: true });
-      setMsg("saved ✓"); reload();
-    } catch (e) { setTest({ ok: false, detail: e?.response?.data?.detail || "save failed" }); }
+      setMsg(message("saved ✓")); reload();
+    } catch (e) { setTest(testFailure(e, "save failed")); }
     setBusy("");
   };
   const runTest = async () => {
     setBusy("test");
     try { setTest((await api.post(`/api/connectors/${conn.ConnectorId}/test`)).data); }
-    catch (e) { setTest({ ok: false, detail: e?.response?.data?.detail || "test call failed" }); }
+    catch (e) { setTest(testFailure(e, "test call failed")); }
     setBusy(""); reload();
   };
 
   return (
     <Box sx={{ maxWidth: 980, mx: "auto" }}>
-      <Crumb section="Connections" onBack={onBack} title={conn.Name} />
+      <Crumb section={t("Connections")} onBack={onBack} title={conn.Name} />
       <ConnectorIdentity conn={conn} reload={reload} onCreated={onCreated} />
       <Typography variant="body2" sx={{ color: DIM, mb: 1.5 }}>
-        Run PowerShell ON a machine you can RDP into (your Windows credentials) — the connection only;
-        build the scheduled reports under Reports.
+        {t("Run PowerShell ON a machine you can RDP into (your Windows credentials) — the connection only; build the scheduled reports under Reports.")}
       </Typography>
-      <UnderTabs tabs={["Setup", "Guide", "Agent"]} value={tab} onChange={setTab} />
+      <LocalTabs tabs={["Setup", "Guide", "Agent"]} value={tab} onChange={setTab} />
       {tab === "Guide" && <Steps steps={WINRM_HOWTO} />}
       {tab === "Agent" && <AgentTab steps={WINRM_AGENT} />}
       {tab === "Setup" && (
         <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, maxWidth: 460, mt: 1 }}>
-          <TextField label="machine name" placeholder="AZWEB01" value={cfg.host || ""} sx={{ bgcolor: "#fff" }}
+          <TextField label={t("machine name")} placeholder="AZWEB01" value={cfg.host || ""} sx={{ bgcolor: "#fff" }}
             onChange={(e) => setCfg({ ...cfg, host: e.target.value })} />
           <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
             <Button variant="contained" disableElevation disabled={busy === "save"} onClick={save}>
-              {busy === "save" ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : "Save"}</Button>
+              {busy === "save" ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : t("Save")}</Button>
             <Button variant="outlined" disabled={busy === "test" || !cfg.host} onClick={runTest}
-              startIcon={busy === "test" ? <CircularProgress size={12} /> : <BoltIcon sx={{ fontSize: 15 }} />}>Test</Button>
-            {msg && <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>{msg}</Typography>}
+              startIcon={busy === "test" ? <CircularProgress size={12} /> : <BoltIcon sx={{ fontSize: 15 }} />}>{t("Test")}</Button>
+            {msg && <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>{displayMessage(msg)}</Typography>}
           </Box>
           <TestLine test={test} mt={0} />
           {!test && conn.LastError && <Typography variant="body2" sx={{ color: "#6b2733" }}>✗ {conn.LastErrorPlain || conn.LastError}</Typography>}
@@ -2881,6 +2945,7 @@ const objName = (addr) => addr.slice(objType(addr).length) || addr;
 const PAGE_OBJ = 40;   // a 100-row wall is not a list; the rest is one click away
 
 function CloudObjects({ conn, meta, objects, reload }) {
+  useLocale();
   const saveSrc = useSaveSource(reload);
   const [busy, setBusy] = useState(false);
   const [q, setQ] = useState("");
@@ -2915,88 +2980,84 @@ function CloudObjects({ conn, meta, objects, reload }) {
   return (
     <Box sx={{ mt: 3, maxWidth: 760 }}>
       <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13.5 }}>
-        What you have access to — and what each one does
+        {t("What you have access to — and what each one does")}
       </Typography>
       <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.5, mb: 1 }}>
-        Discovery asks your {meta.title.includes("Azure") ? "app registration" : "keys"} what they can see and lists
-        it here. Everything arrives as <b>report only</b>: available to Reports, nothing polled. Switch one
-        to <b>feed</b> or <b>tasks</b> and Taskuary starts watching it on every sync.
+        {t("Discovery asks your {credentials} what they can see and lists it here. Everything arrives as report only: available to Reports, nothing polled. Switch one to feed or tasks and Taskuary starts watching it on every sync.", { credentials: t(meta.title.includes("Azure") ? "app registration" : "keys") })}
       </Typography>
       <Button size="small" variant="outlined" onClick={rediscover} disabled={busy} sx={{ mb: 1.5 }}
         startIcon={busy ? <CircularProgress size={11} /> : <SyncIcon sx={{ fontSize: 14 }} />}>
-        {busy ? "Discovering…" : objects.length ? "Re-run discovery" : "Discover what I can access"}
+        {t(busy ? "Discovering…" : objects.length ? "Re-run discovery" : "Discover what I can access")}
       </Button>
       {!objects.length ? (
-        <Empty>Nothing discovered yet — save the credentials above and press Discover.</Empty>
+        <Empty>{t("Nothing discovered yet — save the credentials above and press Discover.")}</Empty>
       ) : (
         <>
           <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap", mb: 1 }}>
-            <TextField size="small" placeholder="search by name…" value={q}
+            <TextField size="small" placeholder={t("search by name…")} value={q}
               onChange={(e) => { setQ(e.target.value); setLimit(PAGE_OBJ); }}
               sx={{ bgcolor: "#fff", width: 230 }}
               InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon sx={{ fontSize: 16, color: FAINT }} /></InputAdornment> }} />
             {kinds.length > 1 && (
               <FilterPills value={kind} onChange={(v) => { setKind(v); setLimit(PAGE_OBJ); }}
-                options={[{ key: "", label: "all", n: objects.length },
-                  ...kinds.map((p) => ({ key: p, label: OBJ_TYPES[p][1],
+                options={[{ key: "", label: t("all"), n: objects.length },
+                  ...kinds.map((p) => ({ key: p, label: t(OBJ_TYPES[p][1]),
                     n: objects.filter((s) => objType(s.Address) === p).length }))]} />
             )}
             <FilterPills value={mode} onChange={(v) => { setMode(v); setLimit(PAGE_OBJ); }}
-              options={[{ key: "", label: "any mode" },
-                ...CLOUD_MODES.map(([v]) => ({ key: v, label: v }))
+              options={[{ key: "", label: t("any mode") },
+                ...CLOUD_MODES.map(([v]) => ({ key: v, label: t(v) }))
                   .filter((o) => objects.some((s) => modeOf(s) === o.key))]} />
           </Box>
           <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap", mb: 0.5 }}>
             <Typography variant="caption" sx={{ color: FAINT }}>
-              {shown.length === objects.length ? plural(objects.length, "object")
-                : `${shown.length} of ${objects.length} shown`}
+              {shown.length === objects.length ? t(objects.length === 1 ? "{count} object" : "{count} objects", { count: objects.length })
+                : t("{shown} of {total} shown", { shown: shown.length, total: objects.length })}
             </Typography>
             {shown.length > 0 && shown.length < objects.length && (
               <>
-                <Typography variant="caption" sx={{ color: FAINT }}>· set all {shown.length} shown to</Typography>
+                <Typography variant="caption" sx={{ color: FAINT }}>{t("· set all {count} shown to", { count: shown.length })}</Typography>
                 {CLOUD_MODES.map(([v, label]) => (
-                  <Box key={v} component="span" title={label}
+                  <Box key={v} component="span" title={t(label)}
                     onClick={() => !bulk && setAllShown(v)}
                     sx={{ fontSize: 11, fontWeight: 600, color: bulk ? FAINT : "#55697a", cursor: bulk ? "default" : "pointer",
                       "&:hover": { textDecoration: bulk ? "none" : "underline" } }}>
-                    {bulk === v ? `${v}…` : v}
+                    {bulk === v ? `${t(v)}…` : t(v)}
                   </Box>
                 ))}
               </>
             )}
           </Box>
-          {!shown.length && <Empty>Nothing matches that search.</Empty>}
+          {!shown.length && <Empty>{t("Nothing matches that search.")}</Empty>}
           {shown.slice(0, limit).map((s) => (
             <Box key={s.SourceId} sx={{ display: "flex", alignItems: "center", gap: 1.5, py: 1, borderBottom: `1px solid ${BORDER}` }}>
               <Box sx={{ minWidth: 0, flex: 1 }}>
                 <Typography sx={{ ...mono, color: INK, fontSize: 12.5 }} noWrap title={s.Address}>{objName(s.Address)}</Typography>
                 <Typography variant="caption" sx={{ color: FAINT }}>
-                  {OBJ_KIND(s.Address)}
+                  {t(OBJ_KIND(s.Address))}
                   {/* two regions can hold log groups with the SAME name - without this they are
                       two identical rows and no way to tell which one you just switched on */}
                   {regionOf(s) ? ` · ${regionOf(s)}` : ""}
-                  {s.LastPolledAt ? ` · polled ${timeAgo(s.LastPolledAt)}` : ""}
+                  {s.LastPolledAt ? ` · ${t("polled {time}", { time: timeAgo(s.LastPolledAt) })}` : ""}
                 </Typography>
               </Box>
               <Select size="small" value={modeOf(s)} onChange={(e) => setOne(s, e.target.value)}
                 sx={{ fontSize: 11.5, height: 26, minWidth: 108, ".MuiSelect-select": { py: 0.4 } }}>
                 {CLOUD_MODES.map(([v, label]) => (
-                  <MenuItem key={v} value={v} sx={{ fontSize: 12 }} title={label}>{v}</MenuItem>
+                  <MenuItem key={v} value={v} sx={{ fontSize: 12 }} title={t(label)}>{t(v)}</MenuItem>
                 ))}
               </Select>
             </Box>
           ))}
           {shown.length > limit && (
             <Button size="small" onClick={() => setLimit(limit + PAGE_OBJ * 2)} sx={{ mt: 1 }}>
-              show {Math.min(PAGE_OBJ * 2, shown.length - limit)} more of {shown.length - limit}
+              {t("show {count} more of {remaining}", { count: Math.min(PAGE_OBJ * 2, shown.length - limit), remaining: shown.length - limit })}
             </Button>
           )}
         </>
       )}
       <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 1 }}>
-        <b>feed</b> and <b>tasks</b> watch for what is NEW since the last sync: a bucket reports each new object, a
-        log group batches the matching lines into one item, a workspace runs its saved query. An object nothing
-        discovered can still be typed in by hand as a report source under Reports.
+        {t("feed and tasks watch for what is NEW since the last sync: a bucket reports each new object, a log group batches the matching lines into one item, a workspace runs its saved query. An object nothing discovered can still be typed in by hand as a report source under Reports.")}
       </Typography>
     </Box>
   );
@@ -3008,6 +3069,7 @@ function CloudObjects({ conn, meta, objects, reload }) {
    what the provider's app must carry (the redirect URI), whether we are connected and to which
    company, and one button that opens the sign-in. The token comes back server-side. */
 function OAuthConnect({ conn, meta, reload }) {
+  useLocale();
   const [st, setSt] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -3024,7 +3086,7 @@ function OAuthConnect({ conn, meta, reload }) {
   useEffect(() => {
     if (!busy) return undefined;
     const id = setInterval(load, 3000);
-    const stop = setTimeout(() => { setBusy(false); setErr("Nothing came back from the sign-in in three minutes, so this stopped waiting. If you finished it, press the button again; otherwise start over."); }, 180000);
+    const stop = setTimeout(() => { setBusy(false); setErr(message("Nothing came back from the sign-in in three minutes, so this stopped waiting. If you finished it, press the button again; otherwise start over.")); }, 180000);
     return () => { clearInterval(id); clearTimeout(stop); };
   }, [busy, load]);
   const [url, setUrl] = useState("");   // the sign-in page that opened in another tab - a blocked popup needs it again
@@ -3033,7 +3095,7 @@ function OAuthConnect({ conn, meta, reload }) {
   // modal and calls back with the token, which goes straight to the server and nowhere else
   const teller = async () => {
     if (!window.TellerConnect) {
-      await new Promise((ok, no) => { const s = document.createElement("script"); s.src = st.connect_js; s.onload = ok; s.onerror = () => no(new Error("Teller Connect did not load - is cdn.teller.io reachable from here?")); document.head.appendChild(s); });
+      await new Promise((ok, no) => { const s = document.createElement("script"); s.src = st.connect_js; s.onload = ok; s.onerror = () => { const error = new Error("Teller Connect did not load - is cdn.teller.io reachable from here?"); error.presentation = message(error.message); no(error); }; document.head.appendChild(s); });
     }
     setBusy(true);
     const tc = window.TellerConnect.setup({
@@ -3042,7 +3104,7 @@ function OAuthConnect({ conn, meta, reload }) {
         try {
           await api.post(meta.connect.enroll(conn.ConnectorId), { access_token: enr.accessToken, enrollment_id: enr.enrollment?.id, institution: enr.enrollment?.institution?.name });
           await load(); reload();
-        } catch (e) { setErr(e?.response?.data?.detail || "the token did not save"); }
+        } catch (e) { setErr(e?.response?.data?.detail || message("the token did not save")); }
         setBusy(false);
       },
       onExit: () => setBusy(false),
@@ -3058,7 +3120,7 @@ function OAuthConnect({ conn, meta, reload }) {
     try {
       await api.post(meta.connect.claim(conn.ConnectorId), { setup_token: token.trim() });
       setToken(""); await load(); reload();
-    } catch (e) { setErr(e?.response?.data?.detail || "that token did not claim"); }
+    } catch (e) { setErr(e?.response?.data?.detail || message("that token did not claim")); }
     setBusy(false);
   };
   const go = async () => {
@@ -3067,45 +3129,45 @@ function OAuthConnect({ conn, meta, reload }) {
       if (meta.connect.widget === "token") return await pasteToken();
       if (meta.connect.widget === "teller") return await teller();
       const { data } = await api.get(meta.connect.start(conn.ConnectorId)); setUrl(data.url); window.open(data.url, "_blank", "noopener"); setBusy(true);
-    } catch (e) { setErr(e?.response?.data?.detail || e?.message || "could not start the sign-in"); }
+    } catch (e) { setErr(e?.response?.data?.detail || e?.presentation || e?.message || message("could not start the sign-in")); }
   };
   return (
     <Box sx={{ p: 1.5, border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: PANEL2 }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
         {meta.connect.widget === "token" && (
           <TextField size="small" value={token} onChange={(e) => setToken(e.target.value)} disabled={busy}
-            placeholder="setup token from your SimpleFIN account" sx={{ bgcolor: "#fff", minWidth: 260, flex: 1 }}
+            placeholder={t("setup token from your SimpleFIN account")} sx={{ bgcolor: "#fff", minWidth: 260, flex: 1 }}
             inputProps={{ spellCheck: false, autoComplete: "off", style: { fontSize: 12.5 } }} />
         )}
         <Button variant="contained" disableElevation onClick={go}
           disabled={busy || !st?.has_app || (meta.connect.widget === "token" && !token.trim())}
-          title={st?.has_app ? meta.connect.text : "save the app's client id and secret first"}>
-          {busy ? <><CircularProgress size={12} sx={{ color: "#fff", mr: 1 }} /> {meta.connect.widget === "token" ? "claiming…" : "waiting for the sign-in…"}</> : st?.connected ? "Reconnect" : meta.connect.label}
+          title={st?.has_app ? t(meta.connect.text) : t("save the app's client id and secret first")}>
+          {busy ? <><CircularProgress size={12} sx={{ color: "#fff", mr: 1 }} /> {meta.connect.widget === "token" ? t("claiming…") : t("waiting for the sign-in…")}</> : st?.connected ? t("Reconnect") : t(meta.connect.label)}
         </Button>
         {st?.connected
-          ? <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>✓ Connected{st.member ? ` as ${st.member}` : ""}{st.realm_id ? ` · company ${st.realm_id}` : ""}{st.institution ? ` · ${st.institution}` : ""}{(st.env || st.environment) === "sandbox" ? " · sandbox" : ""}{st.days_left != null ? ` · ${plural(st.days_left, "day")} left on the sign-in` : ""}</Typography>
-          : <Typography variant="body2" sx={{ color: DIM }}>{st?.has_app ? "keys saved — not connected yet" : "paste the application's keys below and Save first"}</Typography>}
+          ? <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>✓ {t("Connected")}{st.member ? t(" as {name}", { name: st.member }) : ""}{st.realm_id ? t(" · company {id}", { id: st.realm_id }) : ""}{st.institution ? ` · ${st.institution}` : ""}{(st.env || st.environment) === "sandbox" ? t(" · sandbox") : ""}{st.days_left != null ? t(st.days_left === 1 ? " · {count} day left on the sign-in" : " · {count} days left on the sign-in", { count: st.days_left }) : ""}</Typography>
+          : <Typography variant="body2" sx={{ color: DIM }}>{t(st?.has_app ? "keys saved — not connected yet" : "paste the application's keys below and Save first")}</Typography>}
         {busy && url && !st?.connected && (
           <Typography variant="caption" sx={{ color: DIM, display: "flex", alignItems: "center", gap: 1, flexBasis: "100%" }}>
-            Finish in the tab that opened — this box turns green by itself.
-            <a href={url} target="_blank" rel="noreferrer">Open it again</a>
-            <Button size="small" onClick={() => { setBusy(false); setUrl(""); }} sx={{ fontSize: 11.5, color: DIM }}>Cancel</Button>
+            {t("Finish in the tab that opened — this box turns green by itself.")}
+            <a href={url} target="_blank" rel="noreferrer">{t("Open it again")}</a>
+            <Button size="small" onClick={() => { setBusy(false); setUrl(""); }} sx={{ fontSize: 11.5, color: DIM }}>{t("Cancel")}</Button>
           </Typography>
         )}
       </Box>
       {st?.bridge && !st?.connected && (
         <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.75, lineHeight: 1.6 }}>
-          Link your banks and get the token at <Box component="a" href={st.bridge} target="_blank" rel="noopener" sx={{ color: INK }}>{st.bridge.replace(/^https:\/\//, "")}</Box> \u2014 My Accounts \u2192 Apps \u2192 Get a setup token.
+          {t("Link your banks and get the token at")} <Box component="a" href={st.bridge} target="_blank" rel="noopener" sx={{ color: INK }}>{st.bridge.replace(/^https:\/\//, "")}</Box> {t("— My Accounts → Apps → Get a setup token.")}
         </Typography>
       )}
       {st?.redirect_uri && (
         <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.75, lineHeight: 1.6 }}>
           {/* named from the card, not hardcoded: three providers share this box now, and it told
               a Zoho owner their INTUIT app needed the URI. */}
-          The {meta.title} app must list this redirect URL, exactly: <Box component="code" sx={{ ...mono, fontSize: 11, color: INK, bgcolor: "#fff", px: 0.6, borderRadius: 0.75, border: `1px solid ${BORDER}` }}>{st.redirect_uri}</Box>
+          {t("The {name} app must list this redirect URL, exactly:", { name: meta.title })} <Box component="code" sx={{ ...mono, fontSize: 11, color: INK, bgcolor: "#fff", px: 0.6, borderRadius: 0.75, border: `1px solid ${BORDER}` }}>{st.redirect_uri}</Box>
         </Typography>
       )}
-      {err && <Typography variant="body2" sx={{ color: "#6b2733", mt: 0.75 }}>✗ {err}</Typography>}
+      {err && <Typography variant="body2" sx={{ color: "#6b2733", mt: 0.75 }}>✗ {displayMessage(err)}</Typography>}
     </Box>
   );
 }
@@ -3114,18 +3176,19 @@ function OAuthConnect({ conn, meta, reload }) {
    Amazon Business roles or both, and the other API answers 403 - so Test fills the dots that answered, and a tick here
    is the owner's own say (the owner, 2026-10-30: "maybe make little fillable dots which api you have access to"). */
 function ApiDots({ apis, cfg, setCfg }) {
+  useLocale();
   const on = Array.isArray(cfg.apis) ? cfg.apis : [];
   const flip = (k) => setCfg({ ...cfg, apis: on.includes(k) ? on.filter((x) => x !== k) : apis.map(([a]) => a).filter((a) => a === k || on.includes(a)) });
   return (
     <Box data-tq-api-dots="" sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
-      <Typography variant="caption" sx={{ color: DIM }}>Reaches</Typography>
+      <Typography variant="caption" sx={{ color: DIM }}>{t("Reaches")}</Typography>
       {apis.map(([k, label]) => (
         <Box key={k} component="button" type="button" role="checkbox" aria-checked={on.includes(k)} onClick={() => flip(k)}
-          title={on.includes(k) ? `${label}: answered the last Test (or ticked) — click to untick` : `${label}: not reached — Test fills this in, or click to tick`}
+          title={on.includes(k) ? t("{label}: answered the last Test (or ticked) — click to untick", { label: t(label) }) : t("{label}: not reached — Test fills this in, or click to tick", { label: t(label) })}
           sx={{ display: "inline-flex", alignItems: "center", gap: 0.6, border: 0, bgcolor: "transparent", p: 0, cursor: "pointer", font: "inherit" }}>
           <Box component="span" sx={{ width: 9, height: 9, borderRadius: "50%", border: `1.5px solid ${on.includes(k) ? "#47654a" : FAINT}`,
             bgcolor: on.includes(k) ? "#47654a" : "transparent", flexShrink: 0 }} />
-          <Typography component="span" variant="caption" sx={{ color: on.includes(k) ? INK : DIM }}>{label}</Typography>
+          <Typography component="span" variant="caption" sx={{ color: on.includes(k) ? INK : DIM }}>{t(label)}</Typography>
         </Box>
       ))}
     </Box>
@@ -3133,6 +3196,7 @@ function ApiDots({ apis, cfg, setCfg }) {
 }
 
 function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload, onBack: leave, onCreated, byType = {} }) {
+  useLocale();
   // the same one Save as a channel card: what each discovered object is used for is held until the bar saves it
   const draft = useCardDraft(savedConn, savedSources, reload);
   const { conn, sources } = draft;
@@ -3157,10 +3221,10 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
     setCfg(next); setBusy("save"); setMsg("");
     try {
       await api.post("/api/connectors", { ConnectorId: conn.ConnectorId, ConfigJson: JSON.stringify(next) });
-      setMsg(`saved — using the ${meta.reuse.from} card's app ✓`);
+      setMsg(message("saved — using the {provider} card's app ✓", { provider: meta.reuse.from }));
       setBusy("test");
       setTest((await api.post(`/api/connectors/${conn.ConnectorId}/test`)).data);
-    } catch (e) { setTest({ ok: false, detail: e?.response?.data?.detail || "could not switch to the shared app" }); }
+    } catch (e) { setTest(testFailure(e, "could not switch to the shared app")); }
     setBusy(""); reload();
   };
 
@@ -3173,8 +3237,8 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
       await api.post("/api/connectors", body);
       // a write-only value typed is the server's now: the box goes back to empty, its label says saved
       if ((conn.WriteOnlyKeys || []).some((k) => cfg[k])) setCfg(withoutWriteOnly(conn, cfg));
-      setMsg("saved ✓"); setSecret(""); setTest(null); setFresh(true); reload();
-    } catch (e) { setTest({ ok: false, detail: e?.response?.data?.detail || "save failed" }); }
+      setMsg(message("saved ✓")); setSecret(""); setTest(null); setFresh(true); reload();
+    } catch (e) { setTest(testFailure(e, "save failed")); }
     setBusy("");
   };
   const runTest = async () => {
@@ -3183,7 +3247,7 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
       const t = (await api.post(`/api/connectors/${conn.ConnectorId}/test`, onScreen(conn, cfg, parse(conn.ConfigJson), secret))).data;
       setTest(t);
       if (Array.isArray(t?.apis)) setCfg((c) => ({ ...c, apis: t.apis }));   // the server saved the dots that answered; show them now
-    } catch (e) { setTest({ ok: false, detail: e?.response?.data?.detail || "test call failed" }); }
+    } catch (e) { setTest(testFailure(e, "test call failed")); }
     setBusy(""); reload();
   };
   // A SAVE IS NEWS, the last Test's failure is not: the old "need tenant_id" stayed under a good save (the UI audit, 2026-10-21)
@@ -3194,21 +3258,21 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
   return (
     <DraftProvider value={draft.ctx}>
     <Box sx={{ maxWidth: 980, mx: "auto" }}>
-      <Crumb section="Connections" onBack={onBack} title={conn.Name} />
+      <Crumb section={t("Connections")} onBack={onBack} title={conn.Name} />
       <ConnectorIdentity conn={conn} reload={reload} onCreated={onCreated} />
       <Typography variant="body2" sx={{ color: DIM, mb: 1.5 }}>
-        {meta.desc} The connection only — build the scheduled reports under Reports.
+        {t(meta.desc)} {t("The connection only — build the scheduled reports under Reports.")}
       </Typography>
-      <UnderTabs tabs={["Setup", "Guide", "Agent"]} value={tab} onChange={setTab} />
+      <LocalTabs tabs={["Setup", "Guide", "Agent"]} value={tab} onChange={setTab} />
       {tab === "Guide" && <Steps steps={meta.howto} />}
       {tab === "Agent" && <AgentTab steps={meta.agent} />}
       {tab === "Setup" && (
         <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, maxWidth: 560, mt: 1 }}>
           {canReuse && (
             <Box sx={{ p: 1.25, border: `1px dashed ${BORDER}`, borderRadius: 2, bgcolor: PANEL2 }}>
-              <Typography variant="body2" sx={{ fontWeight: 600, color: INK }}>{meta.reuse.title}</Typography>
-              <Typography variant="caption" sx={{ color: DIM, display: "block", lineHeight: 1.5, mb: 0.75 }}>{meta.reuse.text}</Typography>
-              <Button size="small" variant="outlined" disabled={!!busy} onClick={useShared}>Use it — save and test</Button>
+              <Typography variant="body2" sx={{ fontWeight: 600, color: INK }}>{t(meta.reuse.title)}</Typography>
+              <Typography variant="caption" sx={{ color: DIM, display: "block", lineHeight: 1.5, mb: 0.75 }}>{t(meta.reuse.text)}</Typography>
+              <Button size="small" variant="outlined" disabled={!!busy} onClick={useShared}>{t("Use it — save and test")}</Button>
             </Box>
           )}
           {meta.connect && <OAuthConnect conn={conn} meta={meta} reload={reload} />}
@@ -3218,43 +3282,45 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
           {meta.fields.map((f) => <ConfigField key={f[1]} conn={conn} field={f} cfg={cfg} setCfg={setCfg}
             {...(f[1] === "conn_str" && !(conn.WriteOnlyKeys || []).includes(f[1]) ? { multiline: true, minRows: 2 } : {})} />)}
           {meta.apis && <ApiDots apis={meta.apis} cfg={cfg} setCfg={setCfg} />}
-          {!meta.noSecret && <TextField label={conn.HasSecret ? `${meta.secretLabel} — saved, type to replace` : meta.secretLabel}
+          {!meta.noSecret && <TextField label={meta.secretLabel ? (conn.HasSecret ? t("{label} — saved, type to replace", { label: t(meta.secretLabel) }) : t(meta.secretLabel)) : meta.secretLabel}
             type="password" value={secret} onChange={(e) => setSecret(e.target.value)} sx={{ bgcolor: "#fff" }}
-            helperText={meta.secretHelp || SECRET_HELP} />}
+            helperText={t(meta.secretHelp || SECRET_HELP)} />}
           <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
             <Button variant="contained" disableElevation disabled={busy === "save"} onClick={save}>
-              {busy === "save" ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : "Save"}</Button>
+              {busy === "save" ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : t("Save")}</Button>
             <Button variant="outlined" disabled={busy === "test"} onClick={runTest}
               startIcon={busy === "test" ? <CircularProgress size={12} /> : <BoltIcon sx={{ fontSize: 15 }} />}>
-              {meta.discovers ? "Test & discover" : "Test"}</Button>
+              {t(meta.discovers ? "Test & discover" : "Test")}</Button>
             {/* a card's own verbs (the knowledge base's Reindex): one POST, the answer said in a line */}
             {(meta.actions || []).map((a) => (
               <Button key={a.label} variant="outlined" disabled={!!busy} onClick={async () => {
                 setBusy(a.label); setMsg("");
-                try { const r = (await api.post(a.post, a.body ? a.body(conn) : {})).data; setMsg(a.say ? a.say(r) : "done ✓"); }
-                catch (e) { setTest({ ok: false, detail: e?.response?.data?.detail || `${a.label} failed` }); }
+                try { const r = (await api.post(a.post, a.body ? a.body(conn) : {})).data; setMsg(a.say ? a.say(r) : message("done ✓")); }
+                catch (e) { const detail = e?.response?.data?.detail; setTest({ ok: false, detail: detail || `${a.label} failed`,
+                  ...(!detail ? { detailMessage: message("{action} failed", { action: message(a.label) }) } : {}) }); }
                 setBusy(""); reload();
-              }}>{busy === a.label ? <CircularProgress size={12} /> : a.label}</Button>
+              }}>{busy === a.label ? <CircularProgress size={12} /> : t(a.label)}</Button>
             ))}
             <AiWalkButton ai={ai} />
-            {msg && <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>{msg}</Typography>}
+            {msg && <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>{displayMessage(msg)}</Typography>}
           </Box>
           <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
             <Switch data-tq-card-on="" checked={!!conn.Active} disabled={draft.flipping} onChange={(e) => setActive(e.target.checked)} />
             <Typography variant="body2" sx={{ color: DIM }}>
-              {conn.Active ? "On — reports, routines and agents can use it." : "Off — flip on once Test passes."}
+              {t(conn.Active ? "On — reports, routines and agents can use it." : "Off — flip on once Test passes.")}
             </Typography>
           </Box>
           {meta.search && <KbSearch conn={conn} />}
           <TestLine test={test} mt={0} />
-          {!test && (fresh ? <Typography variant="body2" data-tq-saved-test="" sx={{ color: DIM }}>Saved - press Test to check it.</Typography>
+          {!test && (fresh ? <Typography variant="body2" data-tq-saved-test="" sx={{ color: DIM }}>{t("Saved - press Test to check it.")}</Typography>
             : conn.LastError && <Typography variant="body2" sx={{ color: "#6b2733" }}>✗ {conn.LastErrorPlain || conn.LastError}</Typography>)}
         </Box>
       )}
       {tab === "Setup" && meta.discovers && (
         <CloudObjects conn={conn} meta={meta} objects={objects} reload={reload} />
       )}
-      <SaveBar draft={draft} labels={DRAFT_LABELS} words={DRAFT_WORDS} />
+      <SaveBar draft={draft} labels={Object.fromEntries(Object.entries(DRAFT_LABELS).map(([key, label]) => [key, t(label)]))}
+        words={Object.fromEntries(Object.entries(DRAFT_WORDS).map(([key, values]) => [key, Object.fromEntries(Object.entries(values).map(([value, label]) => [value, t(label)]))]))} />
       <CardPlaybooks type={conn.Type} />
       <RemoveConnection conn={conn} reload={reload} onBack={leave} />
     </Box>
@@ -3285,6 +3351,7 @@ const GITHUB_PERMS = [
 ];
 
 const GithubPerms = ({ conn, reload }) => {
+  useLocale();
   const saveConn = useSaveConnector(reload);
   const cfg = JSON.parse(conn.ConfigJson || "{}");
   const toggle = async (key) => {
@@ -3293,22 +3360,19 @@ const GithubPerms = ({ conn, reload }) => {
   return (
     <Box sx={{ mt: 1, maxWidth: 620 }}>
       <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 0.5 }}>
-        OUTBOUND — what the coding agent may do <b>on GitHub</b> while it works your tasks. Unrelated
-        to the <b>Inbound</b> step above, which only controls what comes <b>in</b> to your timeline.
+        {t("OUTBOUND — what the coding agent may do on GitHub while it works your tasks. Unrelated to the Inbound step above, which only controls what comes in to your timeline.")}
       </Typography>
       {GITHUB_PERMS.map(([key, label, desc]) => (
         <Box key={key} sx={{ display: "flex", alignItems: "flex-start", gap: 1.5, py: 1.25, borderBottom: `1px solid ${BORDER}` }}>
           <Switch checked={!!cfg[key]} onChange={() => toggle(key)} sx={{ mt: -0.5 }} />
           <Box sx={{ minWidth: 0 }}>
-            <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13 }}>{label}</Typography>
-            <Typography variant="body2" sx={{ color: DIM }}>{desc}</Typography>
+            <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13 }}>{t(label)}</Typography>
+            <Typography variant="body2" sx={{ color: DIM }}>{t(desc)}</Typography>
           </Box>
         </Box>
       ))}
       <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 1 }}>
-        Both land in the instruction every agent session is seeded with, and in the SOUL.md line
-        describing this connection. A task whose ask explicitly says "open an issue" or "push"
-        may always do so, whatever these say.
+        {t('Both land in the instruction every agent session is seeded with, and in the SOUL.md line describing this connection. A task whose ask explicitly says "open an issue" or "push" may always do so, whatever these say.')}
       </Typography>
     </Box>
   );
@@ -3332,8 +3396,14 @@ const CLOSEOUT_SWITCHES = [
   ["comment", "Post your reply as the close-out's comment", "On the pull request or issue, with the merge or close - even with Reply to issue/PR authors off."],
   ["anyway", "Close out anyway, past the repository's own rules", "Off by default. Only for a repository where the token is an admin, and only on your press - the card says it is bypassing."],
 ];
+const CLOSEOUT_ACTIONS = {
+  pr: "Merge a pull request", update: "Update a behind branch", rerun: "Re-run failed checks",
+  issue: "Close an issue", comment: "Post your reply as the comment",
+  anyway: "Close out anyway, past the repo's rules", close: "Close a pull request without merging",
+};
 
 const GithubCloseout = ({ conn, mine, reload }) => {
+  useLocale();
   const saveConn = useSaveConnector(reload), saveSrc = useSaveSource(reload);
   const cfg = JSON.parse(conn.ConfigJson || "{}");
   const co = { ...CLOSEOUT_DEFAULTS, ...(cfg.closeout || {}) };
@@ -3352,26 +3422,24 @@ const GithubCloseout = ({ conn, mine, reload }) => {
   const runCheck = async () => {
     setBusy(true);
     try { setCheck((await api.get("/api/github/closeout-check")).data.data || []); }
-    catch (e) { setCheck([{ repo: "", error: e?.response?.data?.detail || "could not ask GitHub" }]); }
+    catch (e) { setCheck([{ repo: "", error: e?.response?.data?.detail || message("could not ask GitHub") }]); }
     setBusy(false);
   };
   const pick = (value, onChange, options, sx) => (
     <Select size="small" value={value} onChange={(e) => onChange(e.target.value)} sx={{ fontSize: 12, height: 28, ".MuiSelect-select": { py: 0.4 }, ...sx }}>
-      {options.map(([v, label]) => <MenuItem key={v} value={v} sx={{ fontSize: 12 }}>{label}</MenuItem>)}
+      {options.map(([v, label]) => <MenuItem key={v} value={v} sx={{ fontSize: 12 }}>{t(label)}</MenuItem>)}
     </Select>
   );
   return (
     <Box sx={{ mt: 1, maxWidth: 640 }}>
       <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 0.5 }}>
-        What <b>{btnLabel("approve", "action")}</b> does on GitHub when a task an agent finished comes to you. These are your choices; what each
-        repository <b>requires</b> (branch protection, required checks and reviews) is read from GitHub for every pull request,
-        and the card only offers what it allows.
+        {t("What {action} does on GitHub when a task an agent finished comes to you. These are your choices; what each repository requires (branch protection, required checks and reviews) is read from GitHub for every pull request, and the card only offers what it allows.", { action: btnLabel("approve", "action") })}
       </Typography>
       {CLOSEOUT_PICKS.map(([key, label, options, hint]) => (
         <Box key={key} sx={{ display: "flex", alignItems: "center", gap: 1.5, py: 1, borderBottom: `1px solid ${BORDER}` }}>
           <Box sx={{ flex: 1, minWidth: 0 }}>
-            <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13 }}>{label}</Typography>
-            {hint && <Typography variant="body2" sx={{ color: DIM }}>{hint}</Typography>}
+            <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13 }}>{t(label)}</Typography>
+            {hint && <Typography variant="body2" sx={{ color: DIM }}>{t(hint)}</Typography>}
           </Box>
           {pick(co[key], (v) => save({ [key]: v }), options)}
         </Box>
@@ -3380,14 +3448,14 @@ const GithubCloseout = ({ conn, mine, reload }) => {
         <Box key={key} sx={{ display: "flex", alignItems: "flex-start", gap: 1.5, py: 1.25, borderBottom: `1px solid ${BORDER}` }}>
           <Switch checked={!!co[key]} onChange={() => save({ [key]: !co[key] })} sx={{ mt: -0.5 }} />
           <Box sx={{ minWidth: 0 }}>
-            <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13 }}>{label}</Typography>
-            <Typography variant="body2" sx={{ color: DIM }}>{desc}</Typography>
+            <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13 }}>{t(label)}</Typography>
+            <Typography variant="body2" sx={{ color: DIM }}>{t(desc)}</Typography>
           </Box>
         </Box>
       ))}
       {mine.filter((s) => s.Active).length > 0 && (
         <Box sx={{ mt: 1.5 }}>
-          <Typography variant="caption" sx={{ ...mono, color: FAINT, letterSpacing: 1, fontSize: 10 }}>PER REPOSITORY — WHERE ONE DIFFERS</Typography>
+          <Typography variant="caption" sx={{ ...mono, color: FAINT, letterSpacing: 1, fontSize: 10 }}>{t("PER REPOSITORY — WHERE ONE DIFFERS")}</Typography>
           {mine.filter((s) => s.Active).map((s) => {
             const own = JSON.parse(s.ConfigJson || "{}").closeout || {};
             const val = (k) => (own[k] === undefined ? "" : k === "anyway" ? (own[k] ? "on" : "off") : own[k]);
@@ -3403,18 +3471,18 @@ const GithubCloseout = ({ conn, mine, reload }) => {
         </Box>
       )}
       <Box sx={{ mt: 1.5, display: "flex", alignItems: "center", gap: 1 }}>
-        <Button size="small" variant="outlined" disabled={busy} onClick={runCheck}>{busy ? "Asking GitHub…" : "Check the token"}</Button>
-        <Typography variant="caption" sx={{ color: FAINT }}>Whether the token may do what these settings turn on, per repository.</Typography>
+        <Button size="small" variant="outlined" disabled={busy} onClick={runCheck}>{t(busy ? "Asking GitHub…" : "Check the token")}</Button>
+        <Typography variant="caption" sx={{ color: FAINT }}>{t("Whether the token may do what these settings turn on, per repository.")}</Typography>
       </Box>
       {check && check.map((row) => (
         <Box key={row.repo || "err"} sx={{ mt: 1, px: 1.25, py: 0.75, border: `1px solid ${BORDER}`, borderRadius: 1.5 }}>
           <Typography sx={{ ...mono, fontSize: 12, color: INK, fontWeight: 600 }}>
-            {row.repo}{row.role ? ` · your role: ${row.role}` : ""}{row.methods ? ` · merges by ${row.method}` : ""}
+            {row.repo}{row.role ? t(" · your role: {role}", { role: row.role }) : ""}{row.methods ? t(" · merges by {method}", { method: row.method }) : ""}
           </Typography>
-          {row.error && <Typography variant="body2" sx={{ color: "#8a2f3a" }}>{row.error}</Typography>}
+          {row.error && <Typography variant="body2" sx={{ color: "#8a2f3a" }}>{displayMessage(row.error)}</Typography>}
           {(row.acts || []).map((a) => (
             <Typography key={a.key} variant="body2" sx={{ color: a.ok ? DIM : "#8a2f3a" }}>
-              {a.ok ? "✓" : "✗"} {a.what}{a.ok ? "" : ` - needs ${a.needs}`}
+              {a.ok ? "✓" : "✗"} {a.what === CLOSEOUT_ACTIONS[a.key] ? t(a.what) : a.what}{a.ok ? "" : t(" - needs {needs}", { needs: a.needs })}
             </Typography>
           ))}
         </Box>
@@ -3434,17 +3502,18 @@ const G_APP_KEYS = ["google_client_id", "google_client_secret", "google_refresh_
 // ...and a card that reads more than one mailbox (a shared one on the same sign-in) is more than one hat: one field per
 // address, saved under `signatures`, until it is edited showing the card's own one that signs it today (TQ-1191)
 function MailSignature({ conn, addresses = [], reload }) {
+  useLocale();
   const saveConn = useSaveConnector(reload);
   const cfg = parse(conn.ConfigJson);
   const per = cfg.signatures && typeof cfg.signatures === "object" ? cfg.signatures : {};
   const field = (key, label, value, onChange) => (
     <TextField key={key} data-tq-mail-signature={key} fullWidth multiline minRows={2} size="small" sx={{ mt: 2, maxWidth: 460, bgcolor: "#fff" }}
-      label={label} value={value} helperText="Blank uses the signature in Settings." onChange={onChange} />
+      label={label} value={value} helperText={t("Blank uses the signature in Settings.")} onChange={onChange} />
   );
   const save = (next) => saveConn({ ConnectorId: conn.ConnectorId, ConfigJson: JSON.stringify({ ...cfg, ...next }) });
   const boxes = [...new Map(addresses.filter((a) => String(a).includes("@")).map((a) => [a.toLowerCase(), a])).values()];
-  if (boxes.length < 2) return field("", "Signature for mail from this mailbox", cfg.signature || "", (e) => save({ signature: e.target.value }));
-  return <>{boxes.map((a) => field(a, `Signature for mail from ${a}`, a.toLowerCase() in per ? per[a.toLowerCase()] : cfg.signature || "",
+  if (boxes.length < 2) return field("", t("Signature for mail from this mailbox"), cfg.signature || "", (e) => save({ signature: e.target.value }));
+  return <>{boxes.map((a) => field(a, t("Signature for mail from {address}", { address: a }), a.toLowerCase() in per ? per[a.toLowerCase()] : cfg.signature || "",
     (e) => save({ signatures: { ...per, [a.toLowerCase()]: e.target.value } })))}</>;
 }
 
@@ -3485,6 +3554,7 @@ const SCOPE_META = {
 const SCOPE_KEYS = ["read", "write", "admin"];
 
 const AuthorityRow = ({ conn, reload }) => {
+  useLocale();
   const saveConn = useSaveConnector(reload);
   const fallback = String(conn.ScopeDefault || "read").toLowerCase();
   const current = String(conn.Scope || "").toLowerCase();
@@ -3496,19 +3566,18 @@ const AuthorityRow = ({ conn, reload }) => {
   };
   return (
     <Box sx={{ pt: 1.5 }}>
-      <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13 }}>Authority — how far the agents may reach</Typography>
+      <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13 }}>{t("Authority — how far the agents may reach")}</Typography>
       <Typography variant="body2" sx={{ color: DIM, mb: 1 }}>
-        Only bites when this is an agent tool. An action nobody has classified counts as write,
-        so a read-only connection stays read-only even for a verb we have never seen.
+        {t("Only bites when this is an agent tool. An action nobody has classified counts as write, so a read-only connection stays read-only even for a verb we have never seen.")}
       </Typography>
       {SCOPE_KEYS.map((s) => (
         <Box key={s} sx={{ display: "flex", alignItems: "flex-start", gap: 1.5, py: 1, borderBottom: `1px solid ${BORDER}` }}>
           <Radio checked={(current || fallback) === s} disabled={busy} onChange={() => set(s)} sx={{ mt: -0.75 }} />
           <Box sx={{ minWidth: 0 }}>
             <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13 }}>
-              {SCOPE_META[s][0]}{!current && fallback === s ? " — default" : ""}
+              {t(SCOPE_META[s][0])}{!current && fallback === s ? t(" — default") : ""}
             </Typography>
-            <Typography variant="body2" sx={{ color: DIM }}>{SCOPE_META[s][1]}</Typography>
+            <Typography variant="body2" sx={{ color: DIM }}>{t(SCOPE_META[s][1])}</Typography>
           </Box>
         </Box>
       ))}
@@ -3517,13 +3586,14 @@ const AuthorityRow = ({ conn, reload }) => {
 };
 
 const RoleStep = ({ conn, reload, only }) => {
+  useLocale();
   const [roles, toggle] = useRoles(conn, reload);
   const keys = only || Object.keys(ROLE_META);
   return (
     <Box sx={{ mt: 1, maxWidth: 620 }}>
       {keys.map((key) => (
         <RoleRow key={key} on={roles.has(key)} onToggle={() => toggle(key)}
-          label={ROLE_META[key][0]} desc={ROLE_META[key][1]} />
+          label={t(ROLE_META[key][0])} desc={t(ROLE_META[key][1])} />
       ))}
       {keys.includes("tool") && <AuthorityRow conn={conn} reload={reload} />}
     </Box>
@@ -3570,27 +3640,23 @@ const inboundDone = (conn, mine) => {
 
 // Bulk processing: rank it, don't clear it. One switch per connector, explained in place -
 // the whole idea is a paragraph, and a paragraph belongs next to the switch it explains.
-const BULK_HELP = (
-  <Box sx={{ p: 1.75, maxWidth: 380 }}>
-    <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.75 }}>Bulk processing</Typography>
-    <Typography variant="body2" sx={{ fontSize: 12.5, lineHeight: 1.55, mb: 1 }}>
-      <b>clear</b> — every task from here is worked in arrival order until the queue is empty. Right when the
-      inbox <i>is</i> the job.
-    </Typography>
-    <Typography variant="body2" sx={{ fontSize: 12.5, lineHeight: 1.55, mb: 1 }}>
-      <b>rank</b> — tasks from here join one value-ordered queue instead of racing for a session. The top
-      <i> K</i> are worked (<i>K</i> = <b>Agents at once</b> in Settings); when one finishes, the most valuable
-      waiting task slides in, and a new arrival re-ranks the queue rather than joining its tail. Nothing is
-      dropped — a low value waits.
-    </Typography>
-    <Typography variant="body2" sx={{ fontSize: 12.5, lineHeight: 1.55 }}>
-      Value is <b>words first</b>: addressed to you or merely cc’d, how many people, whether a colleague has
-      already replied, urgency, who the author is on a code host. With two or more waiting, one call to the
-      AI that sorts what comes in orders the head of the queue and adds its own reason. You see that order on the Board’s
-      Queued column.
-    </Typography>
-  </Box>
-);
+const BulkHelp = () => {
+  useLocale();
+  return (
+    <Box sx={{ p: 1.75, maxWidth: 380 }}>
+      <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.75 }}>{t("Bulk processing")}</Typography>
+      <Typography variant="body2" sx={{ fontSize: 12.5, lineHeight: 1.55, mb: 1 }}>
+        {t("clear — every task from here is worked in arrival order until the queue is empty. Right when the inbox is the job.")}
+      </Typography>
+      <Typography variant="body2" sx={{ fontSize: 12.5, lineHeight: 1.55, mb: 1 }}>
+        {t("rank — tasks from here join one value-ordered queue instead of racing for a session. The top K are worked (K = Agents at once in Settings); when one finishes, the most valuable waiting task slides in, and a new arrival re-ranks the queue rather than joining its tail. Nothing is dropped — a low value waits.")}
+      </Typography>
+      <Typography variant="body2" sx={{ fontSize: 12.5, lineHeight: 1.55 }}>
+        {t("Value is words first: addressed to you or merely cc’d, how many people, whether a colleague has already replied, urgency, who the author is on a code host. With two or more waiting, one call to the AI that sorts what comes in orders the head of the queue and adds its own reason. You see that order on the Board’s Queued column.")}
+      </Typography>
+    </Box>
+  );
+};
 
 const MODES = [
   ["clear", "One by one", "Every task from here goes to an agent as it arrives, in arrival order. When all agent slots are busy, the next ones queue - first in, first out - until the inbox is clear. Right when the inbox IS the job."],
@@ -3601,6 +3667,7 @@ const MODES = [
    into "Vendors" made that mail invisible here. The chooser lists the mailbox's folders (Graph) and
    keeps the picks on the source; the Inbox alone is the default. ── */
 const MailFolders = ({ conn, s, reload }) => {
+  useLocale();
   const saveSrc = useSaveSource(reload);
   const cfg = parse(s.ConfigJson);
   const chosen = new Set((cfg.folders || []).length ? cfg.folders : ["inbox"]);
@@ -3611,14 +3678,14 @@ const MailFolders = ({ conn, s, reload }) => {
     setOpen(true);
     if (list) return;
     try { const { data } = await api.get(`/api/connectors/${conn.ConnectorId}/mail/folders`, { params: { mailbox: s.Address } }); setList(data.data); }
-    catch (e) { setErr(e?.response?.data?.detail || "could not list folders"); setList([]); }
+    catch (e) { setErr(e?.response?.data?.detail || message("could not list folders")); setList([]); }
   };
   const toggle = async (id) => {
     const next = new Set(chosen); next.has(id) ? next.delete(id) : next.add(id);
     if (!next.size) return;                                       // a mailbox that reads nothing is a switched-off mailbox
     await saveSrc({ SourceId: s.SourceId, ConfigJson: JSON.stringify({ ...cfg, folders: [...next] }) });
   };
-  const label = chosen.size === 1 && chosen.has("inbox") ? "Inbox only" : plural(chosen.size, "folder");
+  const label = chosen.size === 1 && chosen.has("inbox") ? t("Inbox only") : t(chosen.size === 1 ? "{count} folder" : "{count} folders", { count: chosen.size });
   return (
     <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, flexWrap: "wrap" }}>
       <Button size="small" onClick={() => (open ? setOpen(false) : load())} sx={{ fontSize: 11, textTransform: "none", color: DIM, py: 0, minWidth: 0 }}>
@@ -3627,7 +3694,7 @@ const MailFolders = ({ conn, s, reload }) => {
       {open && (
         <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap", alignItems: "center" }}>
           {list === null && <CircularProgress size={11} />}
-          {err && <Typography variant="caption" sx={{ color: "#6b2733" }}>{err}</Typography>}
+          {err && <Typography variant="caption" sx={{ color: "#6b2733" }}>{displayMessage(err)}</Typography>}
           {(list || []).map((f) => (
             <Box key={f.id} onClick={() => toggle(f.id)}
               sx={{ px: 0.9, py: 0.2, borderRadius: 99, cursor: "pointer", fontSize: 11, userSelect: "none",
@@ -3656,6 +3723,7 @@ const credsDone = (conn, cfg, m) => conn.Type === "chatgpt" ? cfg?.auth === "use
    moment Node is there (no button to find, no agent to wait on); 3 the QR, scanned from the phone.
    A tester's agent-driven setup spun for five minutes on step 2; a person should never see that. ── */
 const WaPair = ({ conn, reload, onStatus, onTurnedAway }) => {
+  useLocale();
   const [st, setSt] = useState(null);
   const kicked = useRef(false);
   const startBridge = useCallback(async () => { try { await api.post(`/api/connectors/${conn.ConnectorId}/wa/bridge/start`); } catch { /* status polling shows the failure */ } }, [conn.ConnectorId]);
@@ -3684,17 +3752,17 @@ const WaPair = ({ conn, reload, onStatus, onTurnedAway }) => {
   // the steps and QR it will hold - the unpaired box, which is the one a person opens this card to see.
   if (!st) return (
     <Box data-tq-wa-pair="reading" sx={{ p: 1.5, border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: PANEL2, minHeight: 230, boxSizing: "border-box" }}>
-      <Typography sx={{ fontWeight: 600, fontSize: 13, color: INK }}>Pair with your phone</Typography>
+      <Typography sx={{ fontWeight: 600, fontSize: 13, color: INK }}>{t("Pair with your phone")}</Typography>
       <Typography variant="body2" sx={{ color: DIM, mt: 0.5, display: "flex", alignItems: "center", gap: 1 }}>
-        <CircularProgress size={11} sx={{ color: DIM }} />Reading the pairing status…</Typography>
+        <CircularProgress size={11} sx={{ color: DIM }} />{t("Reading the pairing status…")}</Typography>
     </Box>
   );
   if (st.unreachable) return (
     <Box sx={{ p: 1.5, border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: PANEL2 }}>
-      <Typography sx={{ fontWeight: 600, fontSize: 13, color: INK }}>Pair with your phone</Typography>
+      <Typography sx={{ fontWeight: 600, fontSize: 13, color: INK }}>{t("Pair with your phone")}</Typography>
       <Typography variant="body2" sx={{ color: DIM, mt: 0.5, display: "flex", alignItems: "center", gap: 1 }}>
         <CircularProgress size={11} sx={{ color: DIM }} />
-        Couldn't read the pairing status just now. This box tries again by itself every few seconds — if it stays like this, restart Taskuary.
+        {t("Couldn't read the pairing status just now. This box tries again by itself every few seconds — if it stays like this, restart Taskuary.")}
       </Typography>
     </Box>
   );
@@ -3713,12 +3781,12 @@ const WaPair = ({ conn, reload, onStatus, onTurnedAway }) => {
   return (
     <Box sx={{ p: 1.5, border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: PANEL2, display: "flex", gap: 2, alignItems: "flex-start", flexWrap: "wrap" }}>
       <Box sx={{ flex: 1, minWidth: 240 }}>
-        <Typography sx={{ fontWeight: 600, fontSize: 13, color: INK }}>Pair with your phone</Typography>
+        <Typography sx={{ fontWeight: 600, fontSize: 13, color: INK }}>{t("Pair with your phone")}</Typography>
         {!st.connected && (
           <Box sx={{ mb: 1 }}>
-            <StepLine n={1} label="Node 18+ on this machine" state={stateOf(1)} />
-            <StepLine n={2} label={phase === "installing" ? "Fetching the bridge (a minute or two, first time only)" : "The bridge is running"} state={stateOf(2)} />
-            <StepLine n={3} label="Scan the QR from your phone" state={stateOf(3)} />
+            <StepLine n={1} label={t("Node 18+ on this machine")} state={stateOf(1)} />
+            <StepLine n={2} label={t(phase === "installing" ? "Fetching the bridge (a minute or two, first time only)" : "The bridge is running")} state={stateOf(2)} />
+            <StepLine n={3} label={t("Scan the QR from your phone")} state={stateOf(3)} />
           </Box>
         )}
         {/* the bridge's own controls, whatever state it is in. A bridge that wedged, or one started before
@@ -3727,59 +3795,58 @@ const WaPair = ({ conn, reload, onStatus, onTurnedAway }) => {
             the auth folder, not the process. */}
         <Box sx={{ display: "flex", gap: 1, mt: 0.75, mb: 0.75, flexWrap: "wrap", alignItems: "center" }}>
           <Button size="small" variant="outlined" startIcon={<RestartAltIcon sx={{ fontSize: 15 }} />} disabled={busy}
-            title="Stop the running bridge (ours, or one started by hand - found by its port) and start it again from the code on disk. You stay paired."
+            title={t("Stop the running bridge (ours, or one started by hand - found by its port) and start it again from the code on disk. You stay paired.")}
             onClick={async () => { try { await api.post(`/api/connectors/${conn.ConnectorId}/wa/bridge/restart`); } catch { /* status polling shows the outcome */ } }}>
-            Restart bridge
+            {t("Restart bridge")}
           </Button>
           {st.bridge === false && st.node && !busy && phase !== "failed" && (
-            <Button size="small" variant="contained" disableElevation startIcon={<PlayArrowIcon sx={{ fontSize: 15 }} />} onClick={startBridge}>Start bridge</Button>
+            <Button size="small" variant="contained" disableElevation startIcon={<PlayArrowIcon sx={{ fontSize: 15 }} />} onClick={startBridge}>{t("Start bridge")}</Button>
           )}
           {/* connected or logged out: the card's own status line (Restart bridge is already beside it, so only Pair again) */}
           {st.connected || st.logged_out ? <WaStatusLine st={st} cid={conn.ConnectorId} onTurnedAway={onTurnedAway} fixes={["pair"]} /> : (
             <Typography variant="caption" sx={{ color: FAINT }}>
-              {reconnect.paused ? "automatic reconnect paused" : st.bridge === false ? "bridge not running" : "bridge up, not connected"}{st.manager?.phase ? ` · ${st.manager.phase}` : ""}
+              {t(reconnect.paused ? "automatic reconnect paused" : st.bridge === false ? "bridge not running" : "bridge up, not connected")}{st.manager?.phase ? ` · ${st.manager.phase}` : ""}
             </Typography>)}
         </Box>
         {reconnect.paused && reconnect.reason !== "logged out" && (
           <Alert severity="warning" sx={{ mb: 1, fontSize: 12.5 }}>
-            The WhatsApp connection kept dropping, so Taskuary stopped retrying before WhatsApp could flood your phone with linked-device sync notices. Check the network, then click Restart bridge once.
+            {t("The WhatsApp connection kept dropping, so Taskuary stopped retrying before WhatsApp could flood your phone with linked-device sync notices. Check the network, then click Restart bridge once.")}
           </Alert>
         )}
         {st.connected ? (
           <Box sx={{ mt: 0.5 }}>
-            <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>✓ Paired{st.me ? ` as ${st.me}` : ""}{st.phone ? ` · ${st.phone}` : ""} — the bridge is connected. Test, then enable.</Typography>
+            <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>✓ {t("Paired")}{st.me ? t(" as {name}", { name: st.me }) : ""}{st.phone ? ` · ${st.phone}` : ""} {t("— the bridge is connected. Test, then enable.")}</Typography>
           </Box>
         ) : st.bridge === false && !st.node ? (
           <Typography variant="caption" sx={{ color: DIM, lineHeight: 1.6, display: "block" }}>
-            Node is not installed here, and it is the one thing Taskuary cannot install for you. In a terminal:
+            {t("Node is not installed here, and it is the one thing Taskuary cannot install for you. In a terminal:")}
             <Box component="code" sx={{ ...mono, display: "block", my: 0.5, p: 0.75, bgcolor: "#fff", border: `1px solid ${BORDER}`, borderRadius: 1, fontSize: 12 }}>winget install OpenJS.NodeJS.LTS</Box>
-            (or download the LTS from nodejs.org and run the installer). This box re-checks every few seconds and moves on by itself once Node is there.
+            {t("(or download the LTS from nodejs.org and run the installer). This box re-checks every few seconds and moves on by itself once Node is there.")}
           </Typography>
         ) : st.bridge === false ? (
           <Box>
             <Typography variant="caption" sx={{ color: phase === "failed" ? "#a33" : DIM, lineHeight: 1.5, display: "block", mb: 0.75 }}>
-              {phase === "installing" ? "Fetching the bridge's dependency (Baileys, not bundled on purpose). The QR appears here the moment the bridge is up."
-                : phase === "failed" ? `The bridge could not start: ${st.manager.detail}`
-                : "Starting the bridge…"}
+              {phase === "installing" ? t("Fetching the bridge's dependency (Baileys, not bundled on purpose). The QR appears here the moment the bridge is up.")
+                : phase === "failed" ? t("The bridge could not start: {detail}", { detail: st.manager.detail })
+                : t("Starting the bridge…")}
             </Typography>
             {phase === "failed" && (
-              <Button size="small" variant="contained" disableElevation startIcon={<PlayArrowIcon sx={{ fontSize: 15 }} />} onClick={startBridge}>{btnLabel("try_again")}</Button>
+              <Button size="small" variant="contained" disableElevation startIcon={<PlayArrowIcon sx={{ fontSize: 15 }} />} onClick={startBridge}>{t(btnLabel("try_again"))}</Button>
             )}
           </Box>
         ) : st.pairing_code ? (
           <Typography variant="body2" sx={{ color: INK, mt: 0.5 }}>
-            Enter this code on your phone — WhatsApp → Linked devices → Link a device → Link with phone number:
+            {t("Enter this code on your phone — WhatsApp → Linked devices → Link a device → Link with phone number:")}
             <Box component="span" sx={{ ...mono, fontSize: 22, fontWeight: 600, letterSpacing: 3, display: "block", mt: 0.5 }}>{st.pairing_code}</Box>
           </Typography>
         ) : (
           <Typography variant="caption" sx={{ color: DIM, lineHeight: 1.5, display: "block", mt: 0.5 }}>
-            On your phone: <b>WhatsApp → Linked devices → Link a device</b>, and scan this. It refreshes by itself as WhatsApp rotates it;
-            this box turns green the moment the phone accepts. Nothing to type, no phone number to share.
+            {t("On your phone: WhatsApp → Linked devices → Link a device, and scan this. It refreshes by itself as WhatsApp rotates it; this box turns green the moment the phone accepts. Nothing to type, no phone number to share.")}
           </Typography>
         )}
       </Box>
       {!st.connected && st.qr_svg && (
-        <Box component="img" src={st.qr_svg} alt="WhatsApp pairing QR" sx={{ width: 220, height: 220, borderRadius: 1, bgcolor: "#fff", border: `1px solid ${BORDER}` }} />
+        <Box component="img" src={st.qr_svg} alt={t("WhatsApp pairing QR")} sx={{ width: 220, height: 220, borderRadius: 1, bgcolor: "#fff", border: `1px solid ${BORDER}` }} />
       )}
     </Box>
   );
@@ -3788,6 +3855,7 @@ const WaPair = ({ conn, reload, onStatus, onTurnedAway }) => {
 /* ── WhatsApp: the paired account's reachable roster, offered as sources. The catch-all covers
    direct chats; a group only comes into Taskuary once its JID is explicitly added. ── */
 const WaChats = ({ conn, mine, reload, onNavigate, onRoster, toggle, ask = null }) => {
+  useLocale();
   const saveConn = useSaveConnector(reload);
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState("");
@@ -3812,7 +3880,7 @@ const WaChats = ({ conn, mine, reload, onNavigate, onRoster, toggle, ask = null 
   const load = useCallback(async () => {
     try { const { data } = await api.get(`/api/connectors/${conn.ConnectorId}/wa/chats`); setRows(data.data); setErr("");
       onRoster?.(new Set((data.data || []).map((r) => r.jid))); }
-    catch (e) { setRows([]); setErr(e?.response?.data?.detail || "could not reach the bridge"); }
+    catch (e) { setRows([]); setErr(e?.response?.data?.detail || message("could not reach the bridge")); }
   }, [conn.ConnectorId, onRoster]);
   useEffect(() => { load(); }, [load]);
   const loadStanding = useCallback(async () => {
@@ -3830,7 +3898,7 @@ const WaChats = ({ conn, mine, reload, onNavigate, onRoster, toggle, ask = null 
     if (src[jid]) return toggle(src[jid]);
     setAdding(jid); setErr("");
     try { await api.post("/api/sources", { Channel: "whatsapp", Address: jid, ConnectorId: conn.ConnectorId, Active: true }); await reload(); }
-    catch (e) { setErr(e?.response?.data?.detail || "could not add that chat"); }
+    catch (e) { setErr(e?.response?.data?.detail || message("could not add that chat")); }
     setAdding("");
   };
   /* Choosing the chat and granting the standing permission used to be ONE click - the button wrote
@@ -3843,13 +3911,13 @@ const WaChats = ({ conn, mine, reload, onNavigate, onRoster, toggle, ask = null 
       const current = parse(conn.ConfigJson);
       await saveConn({ ConnectorId: conn.ConnectorId,
         ConfigJson: JSON.stringify({ ...current, assistant_chat: jid || "", poll_seconds: current.poll_seconds || 30 }) });
-    } catch (e) { setErr(e?.response?.data?.detail || "could not set the assistant chat"); }
+    } catch (e) { setErr(e?.response?.data?.detail || message("could not set the assistant chat")); }
     setGuideBusy("");
   };
   const setStandingTo = async (on) => {
     setStanding(on);
     try { await api.patch("/api/settings", { name: "phone_assistant", value: on ? "1" : "0" }); }
-    catch (e) { setErr(e?.response?.data?.detail || "could not change that"); loadStanding(); }
+    catch (e) { setErr(e?.response?.data?.detail || message("could not change that")); loadStanding(); }
   };
   // yours, then the one already in the funnel, then the rest as they come
   const needle = q.trim().toLowerCase();
@@ -3874,44 +3942,43 @@ const WaChats = ({ conn, mine, reload, onNavigate, onRoster, toggle, ask = null 
           genuinely the connector's: the pairing, and what comes in (the owner, 2026-09-17). */}
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1.25, py: 0.6, px: 0.8, flexWrap: "wrap",
         border: `1px solid ${guideJid ? "#c3d2c5" : BORDER}`, borderRadius: 1, bgcolor: guideJid ? "#f2f7f2" : "transparent" }}>
-        <Typography variant="caption" sx={{ color: DIM, fontWeight: 600 }}>Assistant chat</Typography>
+        <Typography variant="caption" sx={{ color: DIM, fontWeight: 600 }}>{t("Assistant chat")}</Typography>
         <Box sx={{ flex: 1, minWidth: 180 }}>
           <Typography variant="caption" sx={{ color: guideJid ? INK : FAINT, fontWeight: guideJid ? 600 : 400, display: "block" }} noWrap>
-            {guideJid ? waLabel(guideJid, chosen?.name) : "not connected"}
+            {guideJid ? waLabel(guideJid, chosen?.name) : t("not connected")}
           </Typography>
           {guideJid && <Typography variant="caption" sx={{ ...mono, color: FAINT, fontSize: 10, display: "block" }} noWrap>{guideJid}</Typography>}
         </Box>
         <Button size="small" sx={{ fontSize: 11 }} onClick={() => {
           openAppLink(`settings=config&group=${encodeURIComponent("Assistant on your phone")}`);
           onNavigate?.("Settings");
-        }}>Settings → Assistant on your phone</Button>
+        }}>{t("Settings → Assistant on your phone")}</Button>
       </Box>
       <Typography variant="overline" sx={{ color: DIM, letterSpacing: 1.4, fontSize: 10, fontWeight: 600, display: "block" }}>
-        WHAT COMES IN
+        {t("WHAT COMES IN")}
       </Typography>
       <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 0.75 }}>
-        Chats reachable through this paired account. Groups are loaded from WhatsApp; direct chats appear once Taskuary or the
-        bridge has seen them. Switch a chat on and it comes in; a <b>group</b> joins the funnel only when you switch it on here.
-        <Button size="small" onClick={load} sx={{ ml: 1, fontSize: 11, textTransform: "none", py: 0 }}>refresh</Button>
+        {t("Chats reachable through this paired account. Groups are loaded from WhatsApp; direct chats appear once Taskuary or the bridge has seen them. Switch a chat on and it comes in; a group joins the funnel only when you switch it on here.")}
+        <Button size="small" onClick={load} sx={{ ml: 1, fontSize: 11, textTransform: "none", py: 0 }}>{t("refresh")}</Button>
       </Typography>
       <Box sx={{ display: "flex", gap: 1, alignItems: "center", mb: 0.75, flexWrap: "wrap" }}>
-        <FilterPills options={["All", "People", "Groups"]} value={kind} onChange={setKind} />
+        <FilterPills options={["All", "People", "Groups"].map((key) => ({ key, label: t(key) }))} value={kind} onChange={setKind} />
         <TextField size="small" value={q} onChange={(e) => setQ(e.target.value)} sx={{ flex: 1, minWidth: 200, bgcolor: "#fff" }}
-          placeholder="search by name, phone number or group name" />
+          placeholder={t("search by name, phone number or group name")} />
       </Box>
-      {err && <Typography variant="caption" sx={{ color: "#6b2733", display: "block" }}>✗ {err}</Typography>}
-      {rows && !rows.length && !err && <Typography variant="caption" sx={{ color: FAINT }}>no reachable chats loaded yet — refresh, or send a message in a direct chat</Typography>}
+      {err && <Typography variant="caption" sx={{ color: "#6b2733", display: "block" }}>✗ {displayMessage(err)}</Typography>}
+      {rows && !rows.length && !err && <Typography variant="caption" sx={{ color: FAINT }}>{t("no reachable chats loaded yet — refresh, or send a message in a direct chat")}</Typography>}
       {shown.map((r) => (
         <Box key={r.jid} sx={{ display: "flex", alignItems: "center", gap: 1, py: 0.5, borderBottom: `1px solid ${BORDER}` }}>
           {/* the help text above promises "the row marked Myself" - it used to say "group", because
               that is the shape of the jid WhatsApp gives your own thread */}
-          <Chip size="small" label={r.self ? "Myself" : r.group ? "group" : "chat"}
+          <Chip size="small" label={t(r.self ? "Myself" : r.group ? "group" : "chat")}
             sx={{ height: 18, fontSize: 10, ...(r.self ? { bgcolor: "#dfe9e0", fontWeight: 600 } : {}) }} />
           <Box sx={{ minWidth: 0, flex: 1 }}>
             <Typography variant="body2" sx={{ color: INK, fontWeight: 600 }} noWrap>{waLabel(r.jid, r.name)}</Typography>
             {/* the number beside a saved name - a person is known by both; the id is the small grey line under them */}
             <Typography variant="caption" sx={{ color: FAINT, fontSize: 11, display: "block" }} noWrap>
-              {[waPhone(r.jid) !== waLabel(r.jid, r.name) ? waPhone(r.jid) : "", r.n ? `${r.n} msg` : "", r.last,
+              {[waPhone(r.jid) !== waLabel(r.jid, r.name) ? waPhone(r.jid) : "", r.n ? t("{count} msg", { count: r.n }) : "", r.last,
                 r.snippet ? `“${r.snippet}”` : ""].filter(Boolean).join(" · ")}
             </Typography>
             {/* a switched-on chat's last saved message (wanames.said) - an off chat's messages are never taken in, so it has none */}
@@ -3920,19 +3987,19 @@ const WaChats = ({ conn, mine, reload, onNavigate, onRoster, toggle, ask = null 
                 {waSaid(r.said, !!src[r.jid]?.Active, timeAgo(r.said?.at))}</Typography>)}
             <Typography variant="caption" sx={{ ...mono, color: FAINT, fontSize: 9.5, display: "block", opacity: 0.8 }} noWrap>{r.jid}</Typography>
           </Box>
-          {guideJid === r.jid && <Typography variant="caption" sx={{ color: "#47654a", fontWeight: 600 }}>✓ assistant chat</Typography>}
+          {guideJid === r.jid && <Typography variant="caption" sx={{ color: "#47654a", fontWeight: 600 }}>✓ {t("assistant chat")}</Typography>}
           {adding === r.jid ? <CircularProgress size={14} sx={{ mx: 1.5 }} />
             : <Switch size="small" checked={!!src[r.jid]?.Active} onChange={() => flip(r.jid)}
-                inputProps={{ "aria-label": `${waLabel(r.jid, r.name)} comes in` }} />}
+                inputProps={{ "aria-label": t("{name} comes in", { name: waLabel(r.jid, r.name) }) }} />}
         </Box>
       ))}
       {!needle && !all && ranked.length > shown.length && (
         <Button size="small" onClick={() => setAll(true)} sx={{ fontSize: 11.5, mt: 0.5 }}>
-          show the other {ranked.length - shown.length} chats
+          {t("show the other {count} chats", { count: ranked.length - shown.length })}
         </Button>
       )}
       {needle && !ranked.length && rows?.length ? (
-        <Typography variant="caption" sx={{ color: FAINT }}>no chat matches “{q}”</Typography>
+        <Typography variant="caption" sx={{ color: FAINT }}>{t("no chat matches “{query}”", { query: q })}</Typography>
       ) : null}
     </Box>
   );
@@ -3943,6 +4010,7 @@ const WaChats = ({ conn, mine, reload, onNavigate, onRoster, toggle, ask = null 
 // Sign in with ChatGPT: the browser goes to auth.openai.com and comes back to a one-off listener on 127.0.0.1, so there
 // is no code to type - the page only waits. A popup blocker is the one thing that can stop it, so the link is shown too.
 const ChatGptSignIn = ({ conn, cfg, reload }) => {
+  useLocale();
   const [flow, setFlow] = useState(null);      // {flow, url}
   const [state, setState] = useState("");      // "" | ok | error
   const [detail, setDetail] = useState("");
@@ -3959,15 +4027,16 @@ const ChatGptSignIn = ({ conn, cfg, reload }) => {
         // a wait with no end is a page that never says anything again: ten minutes is long past any real sign-in
         if (data.status === "pending" && Date.now() - flow.at > 600000) {
           api.post(`/api/connectors/${conn.ConnectorId}/chatgpt/cancel`, { flow: flow.flow }).catch(() => {});   // the listener too
-          setFlow(null); setState("error"); setDetail("The sign-in was not finished in ten minutes, so this stopped waiting. Press Sign in with ChatGPT to start a fresh one.");
+          setFlow(null); setState("error"); setDetail(message("The sign-in was not finished in ten minutes, so this stopped waiting. Press Sign in with ChatGPT to start a fresh one."));
           return;
         }
         if (data.status === "pending") { setTimeout(tick, 2000); return; }
         setFlow(null);
-        if (data.status === "ok") { setState("ok"); setDetail(data.adopted ? `Signed in as ${data.name || data.account} - it now sorts your mail.`
-          : `Signed in as ${data.name || data.account}. Your mail keeps the AI you chose; pick this one under ${placeName("sorting")} to switch.`); reload(); }
-        else { setState("error"); setDetail(data.detail || "the sign-in did not complete"); reload(); }   // the card's red dot (its LastError)
-      } catch (e) { if (!alive) return; setFlow(null); setState("error"); setDetail(e?.response?.data?.detail || "the sign-in did not complete"); }
+        if (data.status === "ok") { setState("ok"); setDetail(data.adopted
+          ? message("Signed in as {name} - it now sorts your mail.", { name: data.name || data.account })
+          : message("Signed in as {name}. Your mail keeps the AI you chose; pick this one under {place} to switch.", { name: data.name || data.account, place: message(PLACES.sorting.name) })); reload(); }
+        else { setState("error"); setDetail(data.detail || message("the sign-in did not complete")); reload(); }
+      } catch (e) { if (!alive) return; setFlow(null); setState("error"); setDetail(e?.response?.data?.detail || message("the sign-in did not complete")); }
     };
     const id = setTimeout(tick, 2000);
     return () => { alive = false; clearTimeout(id); };
@@ -3975,7 +4044,7 @@ const ChatGptSignIn = ({ conn, cfg, reload }) => {
   const start = async () => {
     setBusy(true); setState(""); setDetail("");
     try { const { data } = await api.post(`/api/connectors/${conn.ConnectorId}/chatgpt/signin`); setFlow({ ...data, at: Date.now() }); window.open(data.url, "_blank", "noopener"); }
-    catch (e) { setState("error"); setDetail(e?.response?.data?.detail || "could not start the sign-in"); }
+    catch (e) { setState("error"); setDetail(e?.response?.data?.detail || message("could not start the sign-in")); }
     setBusy(false);
   };
   // SIGN OUT IS AT ONCE (the owner, 2026-10-21: no "are you sure"), with "Signed out of <it> - Undo" in its place; the session is
@@ -3983,37 +4052,37 @@ const ChatGptSignIn = ({ conn, cfg, reload }) => {
   const signout = async () => {
     setState(""); setDetail("");
     try { await removeNow(() => api.post(`/api/connectors/${conn.ConnectorId}/chatgpt/signout`), "signout", "ChatGPT", "Signed out of"); }
-    catch (e) { setState("error"); setDetail(e?.response?.data?.detail || "it could not sign out"); }
+    catch (e) { setState("error"); setDetail(e?.response?.data?.detail || message("it could not sign out")); }
     reload();
   };
   return (
     <Box sx={{ p: 1.5, border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: PANEL2, display: "flex", flexDirection: "column", gap: 1 }}>
-      <Typography sx={{ fontWeight: 600, fontSize: 13, color: INK }}>Sign in with ChatGPT</Typography>
+      <Typography sx={{ fontWeight: 600, fontSize: 13, color: INK }}>{t("Sign in with ChatGPT")}</Typography>
       <UndoLine kinds={["signout"]} onRestored={reload} sx={{ mb: 0 }} />
       <Typography variant="caption" sx={{ color: DIM, lineHeight: 1.5 }}>
-        Your own ChatGPT account and plan - no API key. Calls count against your ChatGPT allowance, under a weekly cap you set in ChatGPT.
+        {t("Your own ChatGPT account and plan - no API key. Calls count against your ChatGPT allowance, under a weekly cap you set in ChatGPT.")}
       </Typography>
       {signedIn ? (
         <Box sx={{ display: "flex", gap: 1.5, alignItems: "center", flexWrap: "wrap" }}>
-          <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>✓ Signed in as {cfg.name ? `${cfg.name} · ` : ""}{cfg.account}</Typography>
-          <Button size="small" variant="outlined" onClick={signout} title="Anything set to run on your ChatGPT account stops until you sign in again - Undo puts it back">Sign out</Button>
+          <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>✓ {t("Signed in as {account}", { account: `${cfg.name ? `${cfg.name} · ` : ""}${cfg.account}` })}</Typography>
+          <Button size="small" variant="outlined" onClick={signout} title={t("Anything set to run on your ChatGPT account stops until you sign in again - Undo puts it back")}>{t("Sign out")}</Button>
         </Box>
       ) : flow ? (
         <Typography variant="caption" sx={{ color: DIM, display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
-          <CircularProgress size={11} /> Finish in the browser tab that opened - this page completes by itself.
-          <a href={flow.url} target="_blank" rel="noreferrer">Open it again</a>
+          <CircularProgress size={11} /> {t("Finish in the browser tab that opened - this page completes by itself.")}
+          <a href={flow.url} target="_blank" rel="noreferrer">{t("Open it again")}</a>
           <Button size="small" onClick={() => { api.post(`/api/connectors/${conn.ConnectorId}/chatgpt/cancel`, { flow: flow.flow }).catch(() => {});
-            setFlow(null); setState(""); setDetail(""); }} sx={{ fontSize: 11.5, color: DIM }}>Cancel</Button>
+            setFlow(null); setState(""); setDetail(""); }} sx={{ fontSize: 11.5, color: DIM }}>{t("Cancel")}</Button>
         </Typography>
       ) : (
         <Box><Button variant="contained" disableElevation disabled={busy} onClick={start}>
-          {busy ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : "Sign in with ChatGPT"}</Button></Box>
+          {busy ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : t("Sign in with ChatGPT")}</Button></Box>
       )}
       {detail && <Typography variant="body2" sx={{ fontWeight: 600, color: state === "ok" ? "#47654a" : "#6b2733" }}>
-        {state === "ok" ? "✓" : "✗"} {detail}</Typography>}
+        {state === "ok" ? "✓" : "✗"} {displayMessage(detail)}</Typography>}
       {/* opened again after a failed sign-in: the failure is still said, over the button that tries again (2026-10-20) */}
       {!detail && !flow && !signedIn && conn.LastError && <Typography variant="body2" sx={{ fontWeight: 600, color: "#6b2733" }}>
-        ✗ {String(conn.LastError).replace(/\.?\s*$/, ".")} Press Sign in with ChatGPT to try again.</Typography>}
+        ✗ {String(conn.LastError).replace(/\.?\s*$/, ".")} {t("Press Sign in with ChatGPT to try again.")}</Typography>}
     </Box>
   );
 };
@@ -4021,6 +4090,7 @@ const ChatGptSignIn = ({ conn, cfg, reload }) => {
 const STALL_MS = 90 * 1000;   // a browser sign-in this long without coming back: say what a tenant's admin approval looks like
 // shared with the first-run card on the canvas (FirstRun.jsx) - one Microsoft sign-in, wherever it is drawn
 export const MsSignIn = ({ conn, cfg, reload, onSignedIn, plain = false }) => {
+  useLocale();
   // {flow, mode: "browser", url} - the default, Microsoft's page in the browser coming back to this server - or {flow, mode: "code",
   // user_code, verification_uri, interval}, the device code the owner asks for when the browser cannot reach Taskuary on localhost
   const [flow, setFlow] = useState(null);
@@ -4048,8 +4118,8 @@ export const MsSignIn = ({ conn, cfg, reload, onSignedIn, plain = false }) => {
         if (!alive) return;
         // the code Microsoft handed out dies after expires_in seconds - stop there and say so rather than spin on
         if (data.status === "pending" && Date.now() - flow.at > (flow.expires_in || 900) * 1000) {
-          setFlow(null); setState("error"); setDetail(flow.mode === "browser" ? "The sign-in was not finished in ten minutes, so this stopped waiting. Press Sign in with Microsoft to start a fresh one."
-            : "The sign-in code expired before it was used. Press Sign in with Microsoft for a fresh one.");
+          setFlow(null); setState("error"); setDetail(message(flow.mode === "browser" ? "The sign-in was not finished in ten minutes, so this stopped waiting. Press Sign in with Microsoft to start a fresh one."
+            : "The sign-in code expired before it was used. Press Sign in with Microsoft for a fresh one."));
           return;
         }
         // the tenant refused the people scopes: a fresh code for the base ones replaces the old (server _ms_retry_base)
@@ -4057,11 +4127,11 @@ export const MsSignIn = ({ conn, cfg, reload, onSignedIn, plain = false }) => {
         if (data.status === "pending") { setTimeout(tick, wait); return; }
         setFlow(null);
         if (data.status === "ok") {
-          setState("ok"); setDetail(`Signed in as ${data.name || data.account} — ${data.account} is under ${chats ? "Users / chat ids" : "Mailboxes"} below and the first sync is running; what needs you shows up in the Assistant in a minute.`);
+          setState("ok"); setDetail(message("Signed in as {name} — {account} is under {section} below and the first sync is running; what needs you shows up in the Assistant in a minute.", { name: data.name || data.account, account: data.account, section: message(chats ? "Users / chat ids" : "Mailboxes") }));
           reload(); onSignedIn?.();
         }
-        else { setState("error"); setDetail(data.detail || "the sign-in did not complete"); if (data.admin_consent_url) setAdminUrl(data.admin_consent_url); }
-      } catch (e) { if (!alive) return; setFlow(null); setState("error"); setDetail(e?.response?.data?.detail || "the sign-in did not complete"); }
+        else { setState("error"); setDetail(data.detail || message("the sign-in did not complete")); if (data.admin_consent_url) setAdminUrl(data.admin_consent_url); }
+      } catch (e) { if (!alive) return; setFlow(null); setState("error"); setDetail(e?.response?.data?.detail || message("the sign-in did not complete")); }
     };
     const id = setTimeout(tick, wait);
     return () => { alive = false; clearTimeout(id); };
@@ -4074,7 +4144,7 @@ export const MsSignIn = ({ conn, cfg, reload, onSignedIn, plain = false }) => {
       setFlow({ ...data, at: Date.now() });
       if (data.mode === "browser") window.open(data.url, "_blank", "noopener");
     }
-    catch (e) { setState("error"); setDetail(e?.response?.data?.detail || "could not start the sign-in"); }
+    catch (e) { setState("error"); setDetail(e?.response?.data?.detail || message("could not start the sign-in")); }
     setBusy(false);
   };
   // a cancelled round is forgotten on the server too, so a browser tab finished later signs nothing in
@@ -4086,13 +4156,13 @@ export const MsSignIn = ({ conn, cfg, reload, onSignedIn, plain = false }) => {
   const signout = async () => {
     setState(""); setDetail(""); setAdminUrl("");
     try { await removeNow(() => api.post(`/api/connectors/${conn.ConnectorId}/ms/signout`), "signout", cfg.account || "Microsoft", "Signed out of"); }
-    catch (e) { setState("error"); setDetail(e?.response?.data?.detail || "it could not sign out"); }
+    catch (e) { setState("error"); setDetail(e?.response?.data?.detail || message("it could not sign out")); }
     reload();
   };
   const copy = (s) => { try { navigator.clipboard?.writeText(s); } catch { /* it is on screen anyway */ } };
   const adminLink = async () => {
     try { const { data } = await api.get(`/api/connectors/${conn.ConnectorId}/ms/adminlink`); setAdminUrl(data.url); }
-    catch (e) { setState("error"); setDetail(e?.response?.data?.detail || "could not build the approval link"); }
+    catch (e) { setState("error"); setDetail(e?.response?.data?.detail || message("could not build the approval link")); }
   };
   // A CORPORATE TENANT THAT WANTS AN ADMIN'S APPROVAL ends the round on Microsoft's own page ("Need admin approval" -> return
   // without consent -> AADSTS900971 "No reply address provided"): nothing ever comes back here, so the card says it after STALL_MS
@@ -4105,99 +4175,92 @@ export const MsSignIn = ({ conn, cfg, reload, onSignedIn, plain = false }) => {
   }, [flow]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <Box sx={{ p: 1.5, border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: PANEL2, display: "flex", flexDirection: "column", gap: 1 }}>
-      <Typography sx={{ fontWeight: 600, fontSize: 13, color: INK }}>Sign in with Microsoft</Typography>
+      <Typography sx={{ fontWeight: 600, fontSize: 13, color: INK }}>{t("Sign in with Microsoft")}</Typography>
       <UndoLine kinds={["signout"]} onRestored={reload} sx={{ mb: 0 }} />
       {/* the first-run card says it for someone who has never heard of a tenant (FirstRun.jsx) */}
       <Typography variant="caption" sx={{ color: DIM, lineHeight: 1.5 }}>
-        {plain ? "Press the button and sign in on Microsoft's page as usual. This page finishes by itself."
-          : chats ? <>Your own work account, your own chats — read here and answered as you. No Azure portal, no tenant id, no secret;
-        each Teams card signs in its own account, so a second organisation is a second card.</>
-          : <>Your own account, your own mailbox — mail, sending and calendar. No Azure portal, no tenant id, no secret;
-        work and personal (Outlook.com) accounts both work.</>}
+        {t(plain ? "Press the button and sign in on Microsoft's page as usual. This page finishes by itself."
+          : chats ? "Your own work account, your own chats — read here and answered as you. No Azure portal, no tenant id, no secret; each Teams card signs in its own account, so a second organisation is a second card."
+          : "Your own account, your own mailbox — mail, sending and calendar. No Azure portal, no tenant id, no secret; work and personal (Outlook.com) accounts both work.")}
       </Typography>
       {!flow && signedIn ? (
         <Box sx={{ display: "flex", gap: 1.5, alignItems: "center", flexWrap: "wrap" }}>
-          <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>✓ Signed in as {cfg.name ? `${cfg.name} · ` : ""}{cfg.account}</Typography>
+          <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>✓ {t("Signed in as {account}", { account: `${cfg.name ? `${cfg.name} · ` : ""}${cfg.account}` })}</Typography>
           <Button size="small" variant="outlined" onClick={signout}
-            title={`${chats ? "Teams chats" : "Mail and calendar"} stop syncing until you sign in again - Undo puts it back. Nothing already here is lost.`}>Sign out</Button>
+            title={t("{service} stop syncing until you sign in again - Undo puts it back. Nothing already here is lost.", { service: t(chats ? "Teams chats" : "Mail and calendar") })}>{t("Sign out")}</Button>
           {/* choosing it signs in again with the one more permission (or without it) - Microsoft's page opens for it */}
           {!plain && <AllowFiles checked={files} disabled={busy} hint={MS_FILES_HINT} onChange={(v) => { setFiles(v); start(v); }} />}
           {/* a sign-in from before Taskuary asked for contacts / people (peoplesearch.missing): searching for someone skips them */}
           {!!conn.PeopleMissing?.length && (
             <Typography variant="caption" sx={{ color: DIM, flexBasis: "100%" }}>
-              {PEOPLE_MISSING(chats ? "the people you write with most" : "your contacts")} Sign out and sign in again to add them.
+              {t(PEOPLE_MISSING(chats ? "the people you write with most" : "your contacts"))} {t("Sign out and sign in again to add them.")}
             </Typography>
           )}
         </Box>
       ) : flow?.mode === "browser" ? (
         <Typography variant="caption" sx={{ color: DIM, display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
-          <CircularProgress size={11} /> Finish signing in on Microsoft's page in the browser tab that opened - this page completes by itself.
-          <a href={flow.url} target="_blank" rel="noreferrer">Open it again</a>
-          <Button size="small" onClick={() => { cancel(); start(files, true); }} sx={{ fontSize: 11.5, color: DIM }}>Sign in with a code instead</Button>
-          <Button size="small" onClick={cancel} sx={{ fontSize: 11.5, color: DIM }}>Cancel</Button>
+          <CircularProgress size={11} /> {t("Finish signing in on Microsoft's page in the browser tab that opened - this page completes by itself.")}
+          <a href={flow.url} target="_blank" rel="noreferrer">{t("Open it again")}</a>
+          <Button size="small" onClick={() => { cancel(); start(files, true); }} sx={{ fontSize: 11.5, color: DIM }}>{t("Sign in with a code instead")}</Button>
+          <Button size="small" onClick={cancel} sx={{ fontSize: 11.5, color: DIM }}>{t("Cancel")}</Button>
           {/* a redirect the app does not list is refused ON Microsoft's page - it never comes back here, so the card says it ahead */}
           <Box component="span" data-tq-ms-redirect-hint="" sx={{ flexBasis: "100%" }}>
-            Microsoft shows error AADSTS50011 instead? The Microsoft app this card uses does not list http://localhost/api/ms/callback yet - whoever
-            manages that app adds it under Authentication → Mobile and desktop applications, then press Sign in again.</Box>
+            {t("Microsoft shows error AADSTS50011 instead? The Microsoft app this card uses does not list http://localhost/api/ms/callback yet - whoever manages that app adds it under Authentication → Mobile and desktop applications, then press Sign in again.")}</Box>
           {stalled && <Box component="span" data-tq-ms-stalled="" sx={{ flexBasis: "100%", color: INK, fontWeight: 600 }}>
-            The sign-in didn't come back. If your company asked for an admin's approval - or Microsoft showed an error like AADSTS900971
-            ("No reply address provided") or "Need admin approval" - your IT admin approves Taskuary once with the link below; once they have,
-            Cancel and sign in again. Sign in with a code instead works too.</Box>}
+            {t('The sign-in didn\'t come back. If your company asked for an admin\'s approval - or Microsoft showed an error like AADSTS900971 ("No reply address provided") or "Need admin approval" - your IT admin approves Taskuary once with the link below; once they have, Cancel and sign in again. Sign in with a code instead works too.')}</Box>}
         </Typography>
       ) : flow ? (
         <Box sx={{ display: "flex", flexDirection: "column", gap: 0.75 }}>
           <Typography variant="body2" sx={{ color: INK }}>
-            1. Open <a href={flow.verification_uri} target="_blank" rel="noreferrer">{String(flow.verification_uri).replace("https://", "")}</a> and enter this code:
+            {t("1. Open")} <a href={flow.verification_uri} target="_blank" rel="noreferrer">{String(flow.verification_uri).replace("https://", "")}</a> {t("and enter this code:")}
           </Typography>
           <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
             <Typography sx={{ ...mono, fontSize: 26, fontWeight: 600, letterSpacing: 3, color: INK, px: 1.5, py: 0.5,
               bgcolor: "#fff", border: `1px solid ${BORDER}`, borderRadius: 1.5 }}>{flow.user_code}</Typography>
-            <IconButton size="small" onClick={() => copy(flow.user_code)} title="copy the code"><ContentCopyIcon sx={{ fontSize: 15 }} /></IconButton>
+            <IconButton size="small" onClick={() => copy(flow.user_code)} title={t("copy the code")}><ContentCopyIcon sx={{ fontSize: 15 }} /></IconButton>
             <Button size="small" variant="contained" disableElevation component="a" href={flow.verification_uri} target="_blank" rel="noreferrer"
-              endIcon={<OpenInNewIcon sx={{ fontSize: 14 }} />}>Open the sign-in page</Button>
+              endIcon={<OpenInNewIcon sx={{ fontSize: 14 }} />}>{t("Open the sign-in page")}</Button>
           </Box>
           <Typography variant="caption" sx={{ color: DIM, display: "flex", alignItems: "center", gap: 0.75 }}>
-            <CircularProgress size={11} /> 2. Sign in with your Microsoft account and accept — this page finishes by itself.
-            <Button size="small" onClick={cancel} sx={{ fontSize: 11.5, color: DIM }}>Cancel</Button>
+            <CircularProgress size={11} /> {t("2. Sign in with your Microsoft account and accept — this page finishes by itself.")}
+            <Button size="small" onClick={cancel} sx={{ fontSize: 11.5, color: DIM }}>{t("Cancel")}</Button>
           </Typography>
         </Box>
       ) : (
         <Box sx={{ display: "flex", gap: 1.5, alignItems: "center", flexWrap: "wrap" }}>
           {signedOut && (
             <Typography variant="body2" sx={{ color: INK, fontWeight: 600, flexBasis: "100%" }}>
-              Microsoft signed you out{cfg.account ? ` of ${cfg.account}` : ""}. I can't see your {what} until you sign in again —
-              nothing is lost, and I'll catch up on everything that came in.
+              {t("Microsoft signed you out{account}. I can't see your {what} until you sign in again — nothing is lost, and I'll catch up on everything that came in.", { account: cfg.account ? t(" of {account}", { account: cfg.account }) : "", what: t(what) })}
             </Typography>
           )}
           <Button variant="contained" disableElevation disabled={busy} onClick={() => start()}>
-            {busy ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : signedOut ? "Sign in again" : "Sign in with Microsoft"}</Button>
+            {busy ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : signedOut ? t("Sign in again") : t("Sign in with Microsoft")}</Button>
           {/* the device code is the fallback, never the default: Conditional Access blocks it in many organisations */}
           <Button size="small" disabled={busy} onClick={() => start(files, true)} sx={{ fontSize: 11.5, color: DIM }}
-            title="For a Taskuary on another computer, or one this browser cannot reach: type a code on Microsoft's page instead">Sign in with a code instead</Button>
+            title={t("For a Taskuary on another computer, or one this browser cannot reach: type a code on Microsoft's page instead")}>{t("Sign in with a code instead")}</Button>
           {!plain && <AllowFiles checked={files} disabled={busy} hint={MS_FILES_HINT} onChange={setFiles} />}
           {/* the QUESTION is not the button. Asked and answered in one 48-character control, it was
               the widest thing on the card and read as a sentence somebody had made clickable. */}
           {!adminUrl && !signedOut && (
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
-              <Typography variant="caption" sx={{ color: DIM }}>Does IT have to approve apps?</Typography>
-              <Button size="small" onClick={adminLink} sx={{ fontSize: 11.5, color: DIM }}>Get the admin link</Button>
+              <Typography variant="caption" sx={{ color: DIM }}>{t("Does IT have to approve apps?")}</Typography>
+              <Button size="small" onClick={adminLink} sx={{ fontSize: 11.5, color: DIM }}>{t("Get the admin link")}</Button>
             </Box>
           )}
         </Box>
       )}
       {detail && <Typography variant="body2" sx={{ fontWeight: 600, color: state === "ok" ? "#47654a" : "#6b2733" }}>
-        {state === "ok" ? "✓" : "✗"} {detail}</Typography>}
+        {state === "ok" ? "✓" : "✗"} {displayMessage(detail)}</Typography>}
       {adminUrl && !signedIn && (
         <Box sx={{ p: 1.25, border: `1px dashed ${BORDER}`, borderRadius: 1.5, bgcolor: "#fff", display: "flex", flexDirection: "column", gap: 0.5 }}>
-          <Typography variant="body2" sx={{ fontWeight: 600, color: INK }}>Approval link for your Microsoft 365 admin</Typography>
+          <Typography variant="body2" sx={{ fontWeight: 600, color: INK }}>{t("Approval link for your Microsoft 365 admin")}</Typography>
           <Typography variant="caption" sx={{ color: DIM, lineHeight: 1.5 }}>
-            Forward this to whoever runs your Microsoft 365. They sign in, click Accept once, and everyone in your organisation can
-            sign in above. It is a consent grant, not an app registration - nothing to build on their side. Then click Sign in with Microsoft again.
+            {t("Forward this to whoever runs your Microsoft 365. They sign in, click Accept once, and everyone in your organisation can sign in above. It is a consent grant, not an app registration - nothing to build on their side. Then click Sign in with Microsoft again.")}
           </Typography>
           <Box sx={{ display: "flex", gap: 0.5, alignItems: "center" }}>
             <Typography sx={{ ...mono, fontSize: 11, color: INK, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{adminUrl}</Typography>
-            <IconButton size="small" onClick={() => copy(adminUrl)} title="copy the link"><ContentCopyIcon sx={{ fontSize: 15 }} /></IconButton>
-            <IconButton size="small" component="a" href={adminUrl} target="_blank" rel="noreferrer" title="open it (if you are the admin)"><OpenInNewIcon sx={{ fontSize: 15 }} /></IconButton>
+            <IconButton size="small" onClick={() => copy(adminUrl)} title={t("copy the link")}><ContentCopyIcon sx={{ fontSize: 15 }} /></IconButton>
+            <IconButton size="small" component="a" href={adminUrl} target="_blank" rel="noreferrer" title={t("open it (if you are the admin)")}><OpenInNewIcon sx={{ fontSize: 15 }} /></IconButton>
           </Box>
         </Box>
       )}
@@ -4209,6 +4272,7 @@ export const MsSignIn = ({ conn, cfg, reload, onSignedIn, plain = false }) => {
 const BATCHED = new Set(["github", "gitlab", "azdo", "linear", "trello", "jira", "sentry", "pagerduty"]);
 
 const ProcessingStep = ({ conn, reload, n }) => {
+  useLocale();
   const saveConn = useSaveConnector(reload);
   const [cfg, setCfg] = useState(parse(conn.ConfigJson));
   const [anchor, setAnchor] = useState(null);
@@ -4234,18 +4298,18 @@ const ProcessingStep = ({ conn, reload, n }) => {
     <Box sx={{ mt: 2 }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
         <Typography variant="caption" sx={{ ...mono, color: FAINT, letterSpacing: 1, fontSize: 10 }}>
-          {n} · PROCESSING — ONE BY ONE, OR RANKED TOGETHER
+          {t("{n} · PROCESSING — ONE BY ONE, OR RANKED TOGETHER", { n })}
         </Typography>
-        <IconButton size="small" onClick={(e) => setAnchor(e.currentTarget)} title="How the two modes work" sx={{ p: 0.25 }}>
+        <IconButton size="small" onClick={(e) => setAnchor(e.currentTarget)} title={t("How the two modes work")} sx={{ p: 0.25 }}>
           <InfoOutlinedIcon sx={{ fontSize: 14, color: FAINT }} />
         </IconButton>
         <Popover open={!!anchor} anchorEl={anchor} onClose={() => setAnchor(null)}
           anchorOrigin={{ vertical: "bottom", horizontal: "left" }} transformOrigin={{ vertical: "top", horizontal: "left" }}>
-          {BULK_HELP}
+          <BulkHelp />
         </Popover>
       </Box>
       <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.5, mb: 0.75 }}>
-        How tasks from this connection reach the agents. Applies to every task it creates; the Board’s Queued column follows it.
+        {t("How tasks from this connection reach the agents. Applies to every task it creates; the Board’s Queued column follows it.")}
       </Typography>
       <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", md: "minmax(0, 1fr) minmax(0, 1fr)" }, gap: 1 }}>
         {MODES.map(([v, title, desc]) => (
@@ -4255,20 +4319,20 @@ const ProcessingStep = ({ conn, reload, n }) => {
               "&:hover": { borderColor: "#6f8a6e" } }}>
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
               <Radio size="small" checked={mode === v} sx={{ p: 0 }} />
-              <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13 }}>{title}</Typography>
-              {v === "clear" && <Typography variant="caption" sx={{ color: FAINT }}>default</Typography>}
+              <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13 }}>{t(title)}</Typography>
+              {v === "clear" && <Typography variant="caption" sx={{ color: FAINT }}>{t("default")}</Typography>}
             </Box>
-            <Typography variant="caption" sx={{ color: DIM, display: "block", mt: 0.5, lineHeight: 1.5 }}>{desc}</Typography>
+            <Typography variant="caption" sx={{ color: DIM, display: "block", mt: 0.5, lineHeight: 1.5 }}>{t(desc)}</Typography>
             {v === "rank" && mode === "rank" && (
               <Box onClick={(e) => e.stopPropagation()} sx={{ mt: 1.25, pt: 1.25, borderTop: `1px solid ${BORDER}`,
                 display: "flex", alignItems: "center", gap: 1 }}>
-                <TextField size="small" type="number" value={head} label={batched ? "Per task" : "Read at once"}
+                <TextField size="small" type="number" value={head} label={t(batched ? "Per task" : "Read at once")}
                   onChange={(e) => setCfg({ ...cfg, bulk_head: e.target.value })}
                   onBlur={(e) => setHead(e.target.value)}
                   inputProps={{ min: 1, max: 20, style: { width: 52 } }} />
                 <Typography variant="caption" sx={{ color: DIM, lineHeight: 1.45 }}>
-                  {batched ? `The best ${head} go in one task, worked by one agent; the next ${head} start another (up to 20).`
-                    : "The rest wait in rank order. One more is read each time you finish one."}
+                  {batched ? t("The best {count} go in one task, worked by one agent; the next {count} start another (up to 20).", { count: head })
+                    : t("The rest wait in rank order. One more is read each time you finish one.")}
                 </Typography>
               </Box>
             )}
@@ -4281,6 +4345,7 @@ const ProcessingStep = ({ conn, reload, n }) => {
 
 // HOW FAR TRIAGE COMBINES this connection's messages into one task (combineLevel.js): saved as it is let go, one level per type
 const CombineStep = ({ conn, n }) => {
+  useLocale();
   const kind = kindOf(conn.Type);
   const [level, setLevel] = useState(defaultLevel(kind));
   const [err, setErr] = useState("");
@@ -4291,28 +4356,29 @@ const CombineStep = ({ conn, n }) => {
   }, [kind]);
   const save = async (v) => {
     const lv = clampLevel(v); if (!lv) return;
-    try { await api.put(`/api/combine/${kind}`, { level: lv }); setErr(""); } catch (e) { setErr(e?.response?.data?.detail || "Not saved"); }
+    try { await api.put(`/api/combine/${kind}`, { level: lv }); setErr(""); } catch (e) { setErr(e?.response?.data?.detail || message("Not saved")); }
   };
   return (
     <Box sx={{ mt: 2 }} data-testid="combine-level">
       <Typography variant="caption" sx={{ ...mono, color: FAINT, letterSpacing: 1, fontSize: 10 }}>
-        {n} · COMBINE — HOW READILY MESSAGES FROM HERE JOIN A TASK
+        {t("{n} · COMBINE — HOW READILY MESSAGES FROM HERE JOIN A TASK", { n })}
       </Typography>
       <Box sx={{ px: 1.5, mt: 0.5, maxWidth: 420 }}>
-        <Slider size="small" min={LO} max={HI} step={1} marks={MARKS} value={level} aria-label="Combine level"
+        <Slider size="small" min={LO} max={HI} step={1} marks={MARKS} value={level} aria-label={t("Combine level")}
           sx={{ mt: 2.5, mb: 0, "& .MuiSlider-markLabel": { top: -16, fontSize: 11, color: FAINT }, "& .MuiSlider-markLabelActive": { color: INK } }}
           onChange={(_, v) => setLevel(v)} onChangeCommitted={(_, v) => save(v)} />
         <Box sx={{ display: "flex", justifyContent: "space-between", mt: -0.5, fontSize: 11.5, color: DIM }}>
-          <span>{ENDS[0]}</span><span>{ENDS[1]}</span>
+          <span>{t(ENDS[0])}</span><span>{t(ENDS[1])}</span>
         </Box>
       </Box>
-      <Typography variant="caption" sx={{ color: DIM, display: "block", lineHeight: 1.5 }}>{SAYS[level]} {ALWAYS}</Typography>
-      {err && <Typography variant="caption" sx={{ color: "#a33", display: "block" }}>{err}</Typography>}
+      <Typography variant="caption" sx={{ color: DIM, display: "block", lineHeight: 1.5 }}>{t(SAYS[level])} {t(ALWAYS)}</Typography>
+      {err && <Typography variant="caption" sx={{ color: "#a33", display: "block" }}>{displayMessage(err)}</Typography>}
     </Box>
   );
 };
 
 const InboundStep = ({ conn, m, mine, reload }) => {
+  useLocale();
   const saveConn = useSaveConnector(reload), saveSrc = useSaveSource(reload);
   const [roles, toggle] = useRoles(conn, reload);
   const [cfg, setCfg] = useState(parse(conn.ConfigJson));
@@ -4327,33 +4393,28 @@ const InboundStep = ({ conn, m, mine, reload }) => {
     <Box sx={{ mt: 1, maxWidth: 640 }}>
       {/* 1 — the switch: does this connection create work at all */}
       <Typography variant="caption" sx={{ ...mono, color: FAINT, letterSpacing: 1, fontSize: 10 }}>
-        1 · DOES IT CREATE WORK
+        {t("1 · DOES IT CREATE WORK")}
       </Typography>
       {["trigger", "feed"].map((key) => (
         <RoleRow key={key} on={roles.has(key)} onToggle={() => toggle(key)}
-          label={ROLE_META[key][0]} desc={ROLE_META[key][1]} />
+          label={t(ROLE_META[key][0])} desc={t(ROLE_META[key][1])} />
       ))}
 
       {/* 2 — github only: what each repo's items do, overriding the switch per repo */}
       {gh && (
         <Box sx={{ mt: 2 }}>
           <Typography variant="caption" sx={{ ...mono, color: FAINT, letterSpacing: 1, fontSize: 10 }}>
-            2 · PER REPO — WHAT ISSUES AND PRS DO
+            {t("2 · PER REPO — WHAT ISSUES AND PRS DO")}
           </Typography>
           <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.5, mb: 0.5 }}>
-            <b>tasks</b> = sorted like everything else that comes in, <b>feed</b> = shown to read only, <b>replies</b> (issues) = the issues
-            themselves are ignored but a person commenting on one is sorted like everything else that comes in, <b>off</b> = ignored.
-            The third picker says <b>whose</b> items may start a coding agent by themselves: <b>team</b> =
-            owners, members and collaborators; <b>contributors</b> adds anyone who has had a change merged;
-            <b>anyone</b> = every author. Everyone else’s items still become tasks for you to promote.
-            A picker set here pulls that repo whatever the switches above say; nothing changes until you press Save below.
+            {t("tasks = sorted like everything else that comes in, feed = shown to read only, replies (issues) = the issues themselves are ignored but a person commenting on one is sorted like everything else that comes in, off = ignored. The third picker says whose items may start a coding agent by themselves: team = owners, members and collaborators; contributors adds anyone who has had a change merged; anyone = every author. Everyone else’s items still become tasks for you to promote. A picker set here pulls that repo whatever the switches above say; nothing changes until you press Save below.")}
           </Typography>
           {mine.filter((s) => s.Active).map((s) => {
             const gc = parse(s.ConfigJson);
             return (
               <Box key={s.SourceId} sx={{ display: "flex", alignItems: "center", gap: 1.5, py: 1, borderBottom: `1px solid ${BORDER}` }}>
                 <Typography sx={{ ...mono, color: INK, flex: 1, fontSize: 13 }} noWrap>{s.Address}</Typography>
-                {gc.private === false && <Chip size="small" label="public" sx={{ height: 18, fontSize: 9.5, bgcolor: "#f1e1da", color: "#6b2733" }} />}
+                {gc.private === false && <Chip size="small" label={t("public")} sx={{ height: 18, fontSize: 9.5, bgcolor: "#f1e1da", color: "#6b2733" }} />}
                 {["issues", "prs", "auto"].map((kind) => (
                   <Select key={kind} size="small" value={githubInboundValue(gc, roles, kind)}
                     sx={{ fontSize: 11.5, height: 26, ".MuiSelect-select": { py: 0.4 } }}
@@ -4365,17 +4426,14 @@ const InboundStep = ({ conn, m, mine, reload }) => {
                       // a public repo: anyone on the internet can open a PR, and with this on each one
                       // may start an agent (the session cap still holds - Settings → Agents at once, 4 by default)
                       if (kind === "auto" && v !== "off" && gc.private !== true) {
-                        const who = v === "anyone" ? "any author's" : v === "contributors" ? "any past contributor's" : "any team member's";
-                        setAsk({ title: `${s.Address} is ${gc.private === false ? "a public repo" : "not known to be private"}`,
-                          text: `With "${v}" on, ${who} PR or issue can start a coding agent by itself. Uncontrolled PRs mean uncontrolled agents, limited only by the session cap (Settings → Agents at once).`,
-                          label: `Turn on "${v}" anyway`, onConfirm: apply });
+                        setAsk({ address: s.Address, private: gc.private, value: v, onConfirm: apply });
                         return;
                       }
                       apply();
                     }}>
                     {(kind === "auto" ? ["off", "team", "contributors", "anyone"] : kind === "issues" ? ["tasks", "feed", "replies", "off"] : ["tasks", "feed", "off"]).map((v) => (
                       <MenuItem key={v} value={v} sx={{ fontSize: 12 }}>
-                        {kind === "prs" ? "PRs" : kind === "issues" ? "issues" : "agent"}: {v}</MenuItem>
+                        {t(kind === "prs" ? "PRs" : kind === "issues" ? "issues" : "agent")}: {t(v)}</MenuItem>
                     ))}
                   </Select>
                 ))}
@@ -4385,7 +4443,9 @@ const InboundStep = ({ conn, m, mine, reload }) => {
         </Box>
       )}
       {/* processing: one by one, or ranked together - every inbound card, whether on or not */}
-      {ask && <Confirm open title={ask.title} text={ask.text} confirmLabel={ask.label} onConfirm={ask.onConfirm} onClose={() => setAsk(null)} />}
+      {ask && <Confirm open title={t("{address} is {visibility}", { address: ask.address, visibility: t(ask.private === false ? "a public repo" : "not known to be private") })}
+        text={t('With "{value}" on, {who} PR or issue can start a coding agent by itself. Uncontrolled PRs mean uncontrolled agents, limited only by the session cap (Settings → Agents at once).', { value: t(ask.value), who: t(ask.value === "anyone" ? "any author's" : ask.value === "contributors" ? "any past contributor's" : "any team member's") })}
+        confirmLabel={t('Turn on "{value}" anyway', { value: t(ask.value) })} onConfirm={ask.onConfirm} onClose={() => setAsk(null)} />}
       <ProcessingStep conn={conn} reload={reload} n={gh ? "3" : "2"} />
       {/* how far triage combines its messages into one task - the message connections only */}
       {combines(conn.Type) && <CombineStep conn={conn} n="3" />}
@@ -4393,11 +4453,11 @@ const InboundStep = ({ conn, m, mine, reload }) => {
       {prompts.length > 0 && (
         <Box sx={{ mt: 2, opacity: on ? 1 : 0.5 }}>
           <Typography variant="caption" sx={{ ...mono, color: FAINT, letterSpacing: 1, fontSize: 10 }}>
-            {(gh || combines(conn.Type)) ? "4" : "3"} · WHAT THE AGENT IS TOLD ABOUT WORK FROM HERE
-            {on ? "" : " — turn inbound on above first"}
+            {t("{n} · WHAT THE AGENT IS TOLD ABOUT WORK FROM HERE", { n: (gh || combines(conn.Type)) ? "4" : "3" })}
+            {on ? "" : t(" — turn inbound on above first")}
           </Typography>
           {prompts.map(([key, label, hint]) => (
-            <TextField key={key} fullWidth multiline minRows={2} label={label} helperText={hint}
+            <TextField key={key} fullWidth multiline minRows={2} label={t(label)} helperText={t(hint)}
               value={cfg[key] || ""} onChange={(e) => setPrompt(key, e.target.value)}
               sx={{ bgcolor: "#fff", mt: 1.5 }} />
           ))}
@@ -4410,26 +4470,30 @@ const InboundStep = ({ conn, m, mine, reload }) => {
 /* What "Get AI to set it up" hands the coding agent. The Guide is written for a person; these
    steps are written for the agent - and where a card has none, the agent works from the Guide
    under the one standing rule the caption states. */
-const AgentTab = ({ steps }) => (
+const AgentTab = ({ steps }) => {
+  useLocale();
+  return (
   <Box>
     <Typography variant="body2" sx={{ color: DIM, mb: 1, maxWidth: 720, mx: "auto" }}>
-      What <b>Get AI to set it up</b> hands your coding agent, on top of one standing rule: anything on this machine —
-      installs, starting processes, commands, config, the API — is the agent's own job; only your accounts, phone,
-      browser or admin console are yours to do. {steps?.length ? "These steps are written for the agent:" :
-        "This connector has no agent-specific steps yet, so the agent works from the Guide under that rule."}
+      {t("What Get AI to set it up hands your coding agent, on top of one standing rule: anything on this machine — installs, starting processes, commands, config, the API — is the agent's own job; only your accounts, phone, browser or admin console are yours to do.")} {t(steps?.length ? "These steps are written for the agent:" :
+        "This connector has no agent-specific steps yet, so the agent works from the Guide under that rule.")}
     </Typography>
-    {!!steps?.length && <Steps steps={steps} />}
+    {!!steps?.length && <Steps steps={steps} translate={false} />}
   </Box>
-);
+  );
+};
 
-const Steps = ({ steps }) => (
+const Steps = ({ steps, translate = true }) => {
+  useLocale();
+  return (
   <Box sx={{ maxWidth: 720, mx: "auto" }}>
     {steps.map((step, i) => (
       <Box key={i} sx={{ display: "flex", gap: 1.5, py: 1.25, borderBottom: `1px solid ${BORDER}` }}>
         <Box sx={{ ...mono, width: 24, height: 24, borderRadius: "50%", bgcolor: "#eae4d8", color: "#55697a",
           fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{i + 1}</Box>
-        <Typography variant="body2" sx={{ color: INK, lineHeight: 1.55 }}>{step}</Typography>
+        <Typography variant="body2" sx={{ color: INK, lineHeight: 1.55 }}>{translate ? t(step) : step}</Typography>
       </Box>
     ))}
   </Box>
-);
+  );
+};

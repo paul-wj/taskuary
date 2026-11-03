@@ -2,32 +2,34 @@
 // can say it without loading the whole Reports tab
 // A cron line, said in words when it is one of the shapes people actually write; the raw
 // expression stays for anything cleverer, because a wrong paraphrase is worse than none.
+import { t } from "./i18n.js";
+
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 export const cronText = (expr) => {
   const f = String(expr || "").trim().split(/\s+/);
-  if (f.length !== 5) return `cron ${expr}`;
+  if (f.length !== 5) return t("cron {expr}", { expr });
   const [mi, h, dom, mon, dow] = f;
   const hhmm = /^\d+$/.test(mi) && /^\d+$/.test(h) ? `${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}` : null;
-  const every = (x, unit) => { const m = /^\*\/(\d+)$/.exec(x); return m ? `every ${m[1]}${unit}` : null; };
-  if (h === "*" && dom === "*" && mon === "*" && dow === "*") return every(mi, "m") || (mi === "*" ? "every minute" : `cron ${expr}`);
-  if (mi !== "*" && dom === "*" && mon === "*" && dow === "*") return every(h, "h") ? `${every(h, "h")} at :${String(mi).padStart(2, "0")}` : hhmm ? `daily ${hhmm}` : `cron ${expr}`;
+  const every = (x, unit) => { const m = /^\*\/(\d+)$/.exec(x); return m ? t(unit === "m" ? "every {count}m" : "every {count}h", { count: m[1] }) : null; };
+  if (h === "*" && dom === "*" && mon === "*" && dow === "*") return every(mi, "m") || (mi === "*" ? t("every minute") : t("cron {expr}", { expr }));
+  if (mi !== "*" && dom === "*" && mon === "*" && dow === "*") return every(h, "h") ? t("{interval} at :{minute}", { interval: every(h, "h"), minute: String(mi).padStart(2, "0") }) : hhmm ? t("daily {time}", { time: hhmm }) : t("cron {expr}", { expr });
   if (hhmm && dom === "*" && mon === "*") {
-    if (dow === "1-5") return `weekdays ${hhmm}`;
-    if (dow === "0,6" || dow === "6,0") return `weekends ${hhmm}`;
+    if (dow === "1-5") return t("weekdays {time}", { time: hhmm });
+    if (dow === "0,6" || dow === "6,0") return t("weekends {time}", { time: hhmm });
     const days = dow.split(",").map((d) => DOW[Number(d) % 7]).filter(Boolean);
-    if (days.length && days.length === dow.split(",").length) return `${days.join(", ")} ${hhmm}`;
+    if (days.length && days.length === dow.split(",").length) return t("{days} {time}", { days: days.map((d) => t(d)).join(", "), time: hhmm });
   }
-  if (hhmm && mon === "*" && dow === "*" && /^\d+$/.test(dom)) return `the ${dom}${["th", "st", "nd", "rd"][(dom % 10 > 3 || [11, 12, 13].includes(dom % 100)) ? 0 : dom % 10]} of the month ${hhmm}`;
-  return `cron ${expr}`;
+  if (hhmm && mon === "*" && dow === "*" && /^\d+$/.test(dom)) return t("the {day}{suffix} of the month {time}", { day: dom, suffix: ["th", "st", "nd", "rd"][(dom % 10 > 3 || [11, 12, 13].includes(dom % 100)) ? 0 : dom % 10], time: hhmm });
+  return t("cron {expr}", { expr });
 };
 
 // "on app startup" is a lie next to once_per_day/once_per_week - it fires on the FIRST launch of the
 // day (or week) and drops the rest. Saying "every" is what made one evening launch look like a restart.
-export const startupText = (c) => "on app startup" + (c.once_per_day ? " (at most once a day)"
-  : c.once_per_week ? " (at most once a week)" : "");
+export const startupText = (c) => c.once_per_day ? t("on app startup (at most once a day)")
+  : c.once_per_week ? t("on app startup (at most once a week)") : t("on app startup");
 export const reportSchedule = (c) => [c.on_startup && startupText(c), c.cron && cronText(c.cron),
-  c.every_minutes && `every ${c.every_minutes} minutes`, c.daily_at && `daily at ${c.daily_at}`]
-  .filter(Boolean).join(" + ") || "only when you press Run now";
+  c.every_minutes && t("every {count} minutes", { count: c.every_minutes }), c.daily_at && t("daily at {time}", { time: c.daily_at })]
+  .filter(Boolean).join(" + ") || t("only when you press Run now");
 
 export const TYPE_LABELS = {
   zoho_monthly_invoices: "Monthly Zoho invoices", taskuary: "Taskuary", taskuary_data: "Taskuary - its own rows",

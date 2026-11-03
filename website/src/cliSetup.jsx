@@ -14,10 +14,13 @@ import TerminalIcon from "@mui/icons-material/Terminal";
 import api from "./api";
 import { SessionPane, ThemeHint } from "./TerminalView.jsx";
 import { canSetup, setupTitle } from "./cliSetup.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 export { canSetup, setupTitle };
 
 export const useCliSetup = () => {
+  useLocale();
   const [opening, setOpening] = useState("");
   const [pane, setPane] = useState(null);              // { sid, taskId, name }
   const [note, setNote] = useState(null);              // { bad, text }
@@ -26,32 +29,34 @@ export const useCliSetup = () => {
 
   const openSetup = useCallback(async (cli) => {
     const name = typeof cli === "string" ? cli : cli?.setup || "", login = !!cli?.login;    // login: its sign-in alone (clisetup.LOGIN)
-    if (!name) { setNote({ bad: true, text: "Taskuary does not know how to set that one up" }); return null; }
+    if (!name) { setNote({ bad: true, source: "Taskuary does not know how to set that one up" }); return null; }
     const put = (fn, v) => { if (alive.current) fn(v); };
     put(setOpening, name); put(setNote, null);
     try {
       const { data } = await api.post("/api/cli/setup", { name, login });
       put(setPane, { sid: data.sid, taskId: data.taskId, name });
       // a second press reattaches: say so, or the owner waits for a pane that is already theirs
-      put(setNote, { text: data.existing ? "that set-up is already open — it is the pane below"
+      put(setNote, { source: data.existing ? "that set-up is already open — it is the pane below"
                                          : "answer it in the pane below — it will ask for its settings, then the sign-in" });
       put(setOpening, ""); return data;
     } catch (e) {
-      put(setNote, { bad: true, text: e?.response?.data?.detail || e?.message || "that did not work" });
+      const detail = e?.response?.data?.detail || e?.message;
+      put(setNote, detail ? { bad: true, text: detail } : { bad: true, source: "that did not work" });
       put(setOpening, ""); return null;
     }
   }, []);
 
-  return { openSetup, opening, pane, setPane, note, setNote };
+  return { openSetup, opening, pane, setPane, note: note?.source ? { ...note, text: t(note.source) } : note, setNote };
 };
 
 export const SetupButton = ({ cli, opening, onOpen, sx = {} }) => {
+  useLocale();
   if (!canSetup(cli)) return null;
   return (
     <Button size="small" variant="outlined" disabled={!!opening} onClick={() => onOpen(cli)}
       startIcon={<TerminalIcon sx={{ fontSize: 14 }} />} title={setupTitle(cli)}
       sx={{ fontSize: 11.5, whiteSpace: "nowrap", ...sx }}>
-      {opening === cli.setup ? "opening…" : "Set it up"}
+      {t(opening === cli.setup ? "opening…" : "Set it up")}
     </Button>
   );
 };

@@ -17,16 +17,22 @@ import { SourceCard } from "./ReportsView.jsx";
 import { Dot, StepResult } from "./RunSteps.jsx";
 import { KIND_WORDS, ONLY_IF, badRefs, canAddAgent, insertStep, missingIn, moveStep, recHead, removeStep, runWords, testWords, toSaved,
   tokenInQuery, tokensFor } from "./workflowFlow.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 const NOT_A_STEP = new Set(["agent", "assistant", "zoho_monthly_invoices"]);
 const KIND_TINT = { source: "#e6ebef", ai: "#efe9f3", task: "#e5ece2", draft: "#f3ede2", agent: "#efece6" };
 const field = { bgcolor: "#fff" };
 
-const KindChip = ({ kind }) => <Box component="span" sx={{ px: 0.75, py: 0.1, borderRadius: 1, fontSize: 10.5, fontWeight: 600, color: DIM,
-  bgcolor: KIND_TINT[kind] || PANEL2, whiteSpace: "nowrap", flexShrink: 0 }}>{KIND_WORDS[kind] || kind}</Box>;
+const KindChip = ({ kind }) => {
+  useLocale();
+  return <Box component="span" sx={{ px: 0.75, py: 0.1, borderRadius: 1, fontSize: 10.5, fontWeight: 600, color: DIM,
+    bgcolor: KIND_TINT[kind] || PANEL2, whiteSpace: "nowrap", flexShrink: 0 }}>{KIND_WORDS[kind] ? t(KIND_WORDS[kind]) : kind}</Box>;
+};
 
 // a text box with "Insert output of" - the earlier steps and what each one can hand on, put in where the cursor was
 function TokenField({ flow, index, value, onChange, label, placeholder, multiline, minRows, monospace }) {
+  useLocale();
   const [at, setAt] = useState(null);
   const ref = useRef(null);
   const sel = useRef(null);
@@ -44,13 +50,13 @@ function TokenField({ flow, index, value, onChange, label, placeholder, multilin
       {!!groups.length && <>
         <Typography component="button" type="button" onClick={(e) => setAt(e.currentTarget)}
           sx={{ border: 0, bgcolor: "transparent", p: 0, mt: 0.35, cursor: "pointer", color: "#55697a", fontSize: 11.5, fontWeight: 600,
-            "&:hover": { textDecoration: "underline" } }}>Insert output of…</Typography>
+            "&:hover": { textDecoration: "underline" } }}>{t("Insert output of…")}</Typography>
         <Menu anchorEl={at} open={!!at} onClose={() => setAt(null)}>
           {groups.flatMap((g) => [
             <MenuItem key={`h-${g.id}`} disabled sx={{ fontSize: 11, opacity: "1 !important", color: FAINT, fontWeight: 600, minHeight: 0, py: 0.5 }}>
-              {g.n}. {g.label}</MenuItem>,
+              {g.n}. {flow.find((s) => s.id === g.id)?.label || t(g.label)}</MenuItem>,
             ...g.tokens.map(([tok, says]) => <MenuItem key={tok} onClick={() => put(tok)} sx={{ fontSize: 12.5, pl: 3, gap: 1 }}>
-              {says}<Box component="span" sx={{ ...mono, fontSize: 11, color: FAINT, ml: "auto" }}>{tok}</Box></MenuItem>),
+              {flow.find((s) => s.id === g.id)?.kind === "ai" && flow.find((s) => s.id === g.id)?.output === "fields" ? says : t(says)}<Box component="span" sx={{ ...mono, fontSize: 11, color: FAINT, ml: "auto" }}>{tok}</Box></MenuItem>),
           ])}
         </Menu>
       </>}
@@ -59,26 +65,28 @@ function TokenField({ flow, index, value, onChange, label, placeholder, multilin
 }
 
 function OnlyIf({ flow, index, step, onChange }) {
+  useLocale();
   const above = flow.slice(0, index);
   if (!above.length) return null;
   const oi = step.only_if || null;
   return (
     <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-      <Typography variant="caption" sx={{ color: DIM, fontWeight: 600 }}>Only if</Typography>
+      <Typography variant="caption" sx={{ color: DIM, fontWeight: 600 }}>{t("Only if")}</Typography>
       <Select size="small" displayEmpty value={oi?.step || ""} sx={{ ...field, fontSize: 12.5, minWidth: 180 }}
         onChange={(e) => onChange({ only_if: e.target.value ? { step: e.target.value, is: oi?.is || "yes" } : undefined })}>
-        <MenuItem value="" sx={{ fontSize: 12.5 }}>always runs</MenuItem>
-        {above.map((s, n) => <MenuItem key={s.id} value={s.id} sx={{ fontSize: 12.5 }}>{n + 1}. {s.label || KIND_WORDS[s.kind]}</MenuItem>)}
+        <MenuItem value="" sx={{ fontSize: 12.5 }}>{t("always runs")}</MenuItem>
+        {above.map((s, n) => <MenuItem key={s.id} value={s.id} sx={{ fontSize: 12.5 }}>{n + 1}. {s.label || (KIND_WORDS[s.kind] ? t(KIND_WORDS[s.kind]) : s.kind)}</MenuItem>)}
       </Select>
       {oi && <Select size="small" value={oi.is} sx={{ ...field, fontSize: 12.5 }} onChange={(e) => onChange({ only_if: { ...oi, is: e.target.value } })}>
-        {ONLY_IF.map(([v, w]) => <MenuItem key={v} value={v} sx={{ fontSize: 12.5 }}>{w}</MenuItem>)}
+        {ONLY_IF.map(([v, w]) => <MenuItem key={v} value={v} sx={{ fontSize: 12.5 }}>{t(w)}</MenuItem>)}
       </Select>}
     </Box>
   );
 }
 
 function KindConfig({ step, flow, index, set, typeOptions, connectors, agents, test }) {
-  const tf = (k, label, ph, more = {}) => <TokenField flow={flow} index={index} value={step[k]} label={label} placeholder={ph}
+  useLocale();
+  const tf = (k, label, ph, more = {}) => <TokenField flow={flow} index={index} value={step[k]} label={t(label)} placeholder={k === "to" ? ph : t(ph)}
     onChange={(v) => set({ [k]: v })} {...more} />;
   if (step.kind === "source") return (
     <>
@@ -86,21 +94,20 @@ function KindConfig({ step, flow, index, set, typeOptions, connectors, agents, t
         typeOptions={typeOptions} onChange={set} test={test}
         onRetype={(t) => set({ type: t }, true)} onFill={(one) => set(one)} onCopy={() => {}} onRemove={() => {}} />
       {tokenInQuery(step) && <Alert severity="error" sx={{ fontSize: 12, py: 0 }}>
-        An earlier step's output can't go into a query - what a step read could rewrite it. Keep the query fixed, and judge its rows
-        in an AI step or with "only if".</Alert>}
+        {t("An earlier step's output can't go into a query - what a step read could rewrite it. Keep the query fixed, and judge its rows in an AI step or with \"only if\".")}</Alert>}
     </>
   );
   if (step.kind === "ai") return (
     <>
       {tf("prompt", "What should it judge, summarize or draft?", "Are any of these real duplicates, rather than a reissued invoice?", { multiline: true, minRows: 3 })}
       <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
-        <Typography variant="caption" sx={{ color: DIM, fontWeight: 600 }}>It answers</Typography>
+        <Typography variant="caption" sx={{ color: DIM, fontWeight: 600 }}>{t("It answers")}</Typography>
         <Select size="small" value={step.output || "text"} sx={{ ...field, fontSize: 12.5 }} onChange={(e) => set({ output: e.target.value })}>
-          <MenuItem value="yes_no" sx={{ fontSize: 12.5 }}>yes or no, and why</MenuItem>
-          <MenuItem value="fields" sx={{ fontSize: 12.5 }}>named fields</MenuItem>
-          <MenuItem value="text" sx={{ fontSize: 12.5 }}>text</MenuItem>
+          <MenuItem value="yes_no" sx={{ fontSize: 12.5 }}>{t("yes or no, and why")}</MenuItem>
+          <MenuItem value="fields" sx={{ fontSize: 12.5 }}>{t("named fields")}</MenuItem>
+          <MenuItem value="text" sx={{ fontSize: 12.5 }}>{t("text")}</MenuItem>
         </Select>
-        {step.output === "fields" && <TextField size="small" label="fields, comma separated" value={(step.fields || []).join(", ")} sx={{ ...field, minWidth: 220 }}
+        {step.output === "fields" && <TextField size="small" label={t("fields, comma separated")} value={(step.fields || []).join(", ")} sx={{ ...field, minWidth: 220 }}
           onChange={(e) => set({ fields: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} />}
       </Box>
       {test}
@@ -111,13 +118,13 @@ function KindConfig({ step, flow, index, set, typeOptions, connectors, agents, t
       {tf("title", "Task title", "Duplicate bill: {{s1.head}}")}
       {tf("summary", "What the task says", "The pairs, and what to do about them", { multiline: true, minRows: 2 })}
       <Select size="small" displayEmpty value={step.assignee || ""} sx={{ ...field, fontSize: 12.5, maxWidth: 260 }} onChange={(e) => set({ assignee: e.target.value })}>
-        <MenuItem value="" sx={{ fontSize: 12.5 }}>for you</MenuItem>
-        {agents.map((a) => <MenuItem key={a} value={a} sx={{ fontSize: 12.5 }}>for the {a} agent</MenuItem>)}
+        <MenuItem value="" sx={{ fontSize: 12.5 }}>{t("for you")}</MenuItem>
+        {agents.map((a) => <MenuItem key={a} value={a} sx={{ fontSize: 12.5 }}>{t("for the {agent} agent", { agent: a })}</MenuItem>)}
       </Select>
       {/* the task it opens takes one of the three priorities and no other word (the owner, 2026-10-25) - a step saved as high reads important */}
       <Select size="small" value={level(step.priority)} sx={{ ...field, fontSize: 12.5, maxWidth: 200 }} data-tq-step-priority=""
         onChange={(e) => set({ priority: e.target.value })}>
-        {PRIORITIES.map((p) => <MenuItem key={p} value={p} sx={{ fontSize: 12.5 }}>{p} priority</MenuItem>)}
+        {PRIORITIES.map((p) => <MenuItem key={p} value={p} sx={{ fontSize: 12.5 }}>{t("{priority} priority", { priority: t(p) })}</MenuItem>)}
       </Select>
       {test}
     </>
@@ -133,26 +140,27 @@ function KindConfig({ step, flow, index, set, typeOptions, connectors, agents, t
   return (
     <>
       {tf("prompt", "What the agent does with what the steps above found", "Open the vendor portal and void the second copy of each pair.", { multiline: true, minRows: 3 })}
-      <Typography variant="caption" sx={{ color: FAINT }}>Always the last step. It is handed every step's output, and Ask me before and Done when below.</Typography>
+      <Typography variant="caption" sx={{ color: FAINT }}>{t("Always the last step. It is handed every step's output, and Ask me before and Done when below.")}</Typography>
       {test}
     </>
   );
 }
 
 function AddStep({ flow, at, onAdd, last }) {
+  useLocale();
   const [el, setEl] = useState(null);
   const kinds = Object.keys(KIND_WORDS).filter((k) => k !== "agent" || (last && canAddAgent(flow)));
   return (
     <Box sx={{ display: "flex", alignItems: "center", pl: 1.25, minHeight: last ? 36 : 22 }}>
       {last ? <Button size="small" startIcon={<AddIcon sx={{ fontSize: 15 }} />} onClick={(e) => setEl(e.currentTarget)}
-        sx={{ ml: -0.5, fontSize: 12.5 }}>Add step</Button>
-        : <IconButton size="small" aria-label="Add a step here" onClick={(e) => setEl(e.currentTarget)}
+        sx={{ ml: -0.5, fontSize: 12.5 }}>{t("Add step")}</Button>
+        : <IconButton size="small" aria-label={t("Add a step here")} onClick={(e) => setEl(e.currentTarget)}
           sx={{ ml: -1.05, width: 22, height: 22, bgcolor: PANEL, border: `1px solid ${BORDER}`, opacity: 0.55, "&:hover": { opacity: 1, bgcolor: PANEL } }}>
           <AddIcon sx={{ fontSize: 14 }} /></IconButton>}
       <Menu anchorEl={el} open={!!el} onClose={() => setEl(null)}>
         {kinds.map((k) => <MenuItem key={k} sx={{ fontSize: 13, gap: 1 }} onClick={() => { setEl(null); onAdd(at, k); }}><KindChip kind={k} />
-          <Typography variant="caption" sx={{ color: FAINT }}>{{ source: "a query, a call, a file - the same every run", ai: "one model call: yes/no, fields or text",
-            task: "open a task for you or an agent", draft: "an email that waits for your approval", agent: "work that needs an agent's hands" }[k]}</Typography>
+          <Typography variant="caption" sx={{ color: FAINT }}>{t({ source: "a query, a call, a file - the same every run", ai: "one model call: yes/no, fields or text",
+            task: "open a task for you or an agent", draft: "an email that waits for your approval", agent: "work that needs an agent's hands" }[k])}</Typography>
         </MenuItem>)}
       </Menu>
     </Box>
@@ -160,8 +168,10 @@ function AddStep({ flow, at, onAdd, last }) {
 }
 
 export default function WorkflowSteps({ flow, setFlow, outputs, setOutputs, connectors, types, agents, title, sourceId, inputs, changed }) {
+  useLocale();
   const [open, setOpen] = useState(() => new Set(flow.length <= 3 ? flow.map((s) => s.id) : []));
   const [testing, setTesting] = useState("");
+  const [clientErrors, setClientErrors] = useState(() => new Set());
   const [tested, setTested] = useState(false);       // a test has run here - the outputs below are a test's, not the last run's
   const typeOptions = (types || []).filter((t) => t.status === "builtin" && !NOT_A_STEP.has(t.type));
   const toggle = (id) => setOpen((o) => { const n = new Set(o); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -174,9 +184,11 @@ export default function WorkflowSteps({ flow, setFlow, outputs, setOutputs, conn
     try {
       const { data } = await api.post("/api/workflows/step-test", { flow: toSaved(flow), index: i, outputs: outs, inputs, title, source_id: sourceId });
       const next = { ...outs, [flow[i].id]: data };
+      setClientErrors((old) => { const next = new Set(old); next.delete(flow[i].id); return next; });
       setOutputs(next); setTested(true); return next;
     } catch (e) {
       const next = { ...outs, [flow[i].id]: { id: flow[i].id, status: "failed", error: e?.response?.data?.detail || "the test could not run" } };
+      setClientErrors((old) => { const next = new Set(old); if (!e?.response?.data?.detail) next.add(flow[i].id); else next.delete(flow[i].id); return next; });
       setOutputs(next); return next;
     } finally { setTesting(""); }
   };
@@ -192,20 +204,20 @@ export default function WorkflowSteps({ flow, setFlow, outputs, setOutputs, conn
     <Box data-tq-flow="">
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1, flexWrap: "wrap" }}>
         <Typography variant="caption" sx={{ color: FAINT, flex: 1, minWidth: 220 }}>
-          Code runs each step the same way every time; a model runs only at the AI steps.{" "}
-          {!ran.length ? "" : tested ? testWords(ran.map((s) => outputs[s.id])) : `Last run: ${runWords(ran.map((s) => outputs[s.id]), true)}.`}
+          {t("Code runs each step the same way every time; a model runs only at the AI steps.")}{" "}
+          {!ran.length ? "" : tested ? testWords(ran.map((s) => outputs[s.id])) : t("Last run: {result}.", { result: runWords(ran.map((s) => outputs[s.id]), true) })}
         </Typography>
         {!!flow.length && <Button size="small" variant="outlined" disabled={!!testing} onClick={testAll}
-          startIcon={testing ? <CircularProgress size={12} /> : <PlayArrowIcon sx={{ fontSize: 15 }} />}>Test every step</Button>}
+          startIcon={testing ? <CircularProgress size={12} /> : <PlayArrowIcon sx={{ fontSize: 15 }} />}>{t("Test every step")}</Button>}
       </Box>
       {flow.map((s, i) => {
-        const rec = outputs[s.id], isOpen = open.has(s.id), bad = badRefs(flow, i), miss = missingIn(s), mark = changed?.[s.id];
+        const rec = outputs[s.id], shownRec = rec && clientErrors.has(s.id) ? { ...rec, error: t("the test could not run") } : rec, isOpen = open.has(s.id), bad = badRefs(flow, i), miss = missingIn(s), mark = changed?.[s.id];
         const test = (
           <Box sx={{ display: "flex", flexDirection: "column", gap: 0.75 }}>
             <Button size="small" variant="outlined" disabled={!!testing} onClick={() => testOne(i)} sx={{ alignSelf: "flex-start", fontSize: 12 }}
               startIcon={testing === s.id ? <CircularProgress size={12} /> : <PlayArrowIcon sx={{ fontSize: 14 }} />}>
-              {testing === s.id ? "Testing…" : "Test this step"}</Button>
-            <StepResult rec={rec} />
+              {testing === s.id ? t("Testing…") : t("Test this step")}</Button>
+            <StepResult rec={shownRec} />
           </Box>
         );
         return (
@@ -222,30 +234,30 @@ export default function WorkflowSteps({ flow, setFlow, outputs, setOutputs, conn
                 boxShadow: mark ? "0 0 0 2px #efe9f3" : "none" }}>
                 <Box onClick={() => toggle(s.id)} sx={{ display: "flex", alignItems: "center", gap: 1, px: 1.25, py: 0.9, cursor: "pointer", minWidth: 0 }}>
                   <KindChip kind={s.kind} />
-                  <Typography noWrap sx={{ color: INK, fontWeight: 600, fontSize: 13.5, flexShrink: 0, maxWidth: "42%" }}>{s.label || KIND_WORDS[s.kind]}</Typography>
+                  <Typography noWrap sx={{ color: INK, fontWeight: 600, fontSize: 13.5, flexShrink: 0, maxWidth: "42%" }}>{s.label || (KIND_WORDS[s.kind] ? t(KIND_WORDS[s.kind]) : s.kind)}</Typography>
                   {s.only_if && <Typography noWrap variant="caption" sx={{ color: FAINT, flexShrink: 2, minWidth: 0, display: { xs: "none", md: "block" } }}>
-                    only if {flow.find((x) => x.id === s.only_if.step)?.label || s.only_if.step} {ONLY_IF.find(([v]) => v === s.only_if.is)?.[1]}</Typography>}
+                    {t("only if {step} {condition}", { step: flow.find((x) => x.id === s.only_if.step)?.label || s.only_if.step, condition: t(ONLY_IF.find(([v]) => v === s.only_if.is)?.[1] || "") })}</Typography>}
                   <Box sx={{ flex: 1 }} />
                   {rec && <Typography noWrap variant="caption" sx={{ color: rec.status === "failed" ? ALERT_INK : FAINT, display: { xs: "none", sm: "flex" }, alignItems: "center",
                     gap: 0.6, maxWidth: 280, minWidth: 0 }}><Dot status={rec.status} />
-                    <Box component="span" sx={{ overflow: "hidden", textOverflow: "ellipsis" }}>{recHead(rec)}</Box></Typography>}
-                  {(miss || bad.length) && !isOpen ? <Typography variant="caption" sx={{ color: ALERT_INK, whiteSpace: "nowrap" }}>needs {miss || "a fix"}</Typography> : null}
+                    <Box component="span" sx={{ overflow: "hidden", textOverflow: "ellipsis" }}>{recHead(shownRec)}</Box></Typography>}
+                  {(miss || bad.length) && !isOpen ? <Typography variant="caption" sx={{ color: ALERT_INK, whiteSpace: "nowrap" }}>{t("needs {what}", { what: miss || t("a fix") })}</Typography> : null}
                   <Box onClick={(e) => e.stopPropagation()} sx={{ display: "flex", alignItems: "center" }}>
-                    <IconButton size="small" aria-label="Move up" disabled={i === 0 || s.kind === "agent"} onClick={() => setFlow(moveStep(flow, i, -1))}><ArrowUpwardIcon sx={{ fontSize: 15 }} /></IconButton>
-                    <IconButton size="small" aria-label="Move down" disabled={i === flow.length - 1 || flow[i + 1]?.kind === "agent" || s.kind === "agent"} onClick={() => setFlow(moveStep(flow, i, 1))}><ArrowDownwardIcon sx={{ fontSize: 15 }} /></IconButton>
-                    <IconButton size="small" aria-label="Remove this step" onClick={() => setFlow(removeStep(flow, i))}><CloseIcon sx={{ fontSize: 15 }} /></IconButton>
+                    <IconButton size="small" aria-label={t("Move up")} disabled={i === 0 || s.kind === "agent"} onClick={() => setFlow(moveStep(flow, i, -1))}><ArrowUpwardIcon sx={{ fontSize: 15 }} /></IconButton>
+                    <IconButton size="small" aria-label={t("Move down")} disabled={i === flow.length - 1 || flow[i + 1]?.kind === "agent" || s.kind === "agent"} onClick={() => setFlow(moveStep(flow, i, 1))}><ArrowDownwardIcon sx={{ fontSize: 15 }} /></IconButton>
+                    <IconButton size="small" aria-label={t("Remove this step")} onClick={() => setFlow(removeStep(flow, i))}><CloseIcon sx={{ fontSize: 15 }} /></IconButton>
                   </Box>
                   <ExpandMoreIcon sx={{ fontSize: 18, color: FAINT, transform: isOpen ? "rotate(180deg)" : "none", transition: "transform .15s" }} />
                 </Box>
                 {isOpen && <Box sx={{ px: 1.25, pb: 1.25, pt: 0.25, display: "flex", flexDirection: "column", gap: 1.1, borderTop: `1px solid ${BORDER}` }}>
                   {mark && <Typography variant="caption" sx={{ color: "#6a4f7a", fontWeight: 600, mt: 0.75 }}>
-                    {mark.has("*") ? "Added by the repair" : `Changed by the repair: ${[...mark].join(", ")}`}</Typography>}
-                  <TextField size="small" label="Step name" value={s.label || ""} placeholder={KIND_WORDS[s.kind]} sx={{ ...field, mt: mark ? 0 : 1 }}
+                    {mark.has("*") ? t("Added by the repair") : t("Changed by the repair: {keys}", { keys: [...mark].join(", ") })}</Typography>}
+                  <TextField size="small" label={t("Step name")} value={s.label || ""} placeholder={KIND_WORDS[s.kind] ? t(KIND_WORDS[s.kind]) : s.kind} sx={{ ...field, mt: mark ? 0 : 1 }}
                     onChange={(e) => setStep(i, { label: e.target.value })} />
                   <KindConfig step={s} flow={flow} index={i} set={(p, replace) => setStep(i, p, replace)} typeOptions={typeOptions}
                     connectors={connectors || []} agents={agents || []} test={test} />
                   {!!bad.length && <Typography variant="caption" sx={{ color: ALERT_INK }}>
-                    {bad.map((r) => `{{${r}}}`).join(", ")} {bad.length === 1 ? "is not a step" : "are not steps"} above this one.</Typography>}
+                    {t(bad.length === 1 ? "{refs} is not a step above this one." : "{refs} are not steps above this one.", { refs: bad.map((r) => `{{${r}}}`).join(", ") })}</Typography>}
                   {s.kind !== "agent" && <OnlyIf flow={flow} index={i} step={s} onChange={(p) => setStep(i, p)} />}
                 </Box>}
               </Box>

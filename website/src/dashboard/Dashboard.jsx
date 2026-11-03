@@ -7,8 +7,11 @@ import { DASH } from "../words.js";
 import { openAppLink } from "../appLinks.js";
 import { Bars, Drill, Line, List, Progress, Stacked, StatTile, Table } from "./charts.jsx";
 import { RANGES, componentRows, dateOf, groupBy, inSegment, rowsOf, segmentValues, seriesSlots, spanOf, spanOf4, stacked, timeSeries, where } from "./slice.js";
+import { t } from "../i18n.js";
+import { useLocale } from "../LocaleProvider.jsx";
 
 export default function Dashboard({ spec, data, stale = false, onOpen = openAppLink, now: nowAt }) {
+  useLocale();
   const f = spec?.filters || {};
   const [days, setDays] = useState(() => (RANGES.includes(Number(f.range)) ? Number(f.range) : 30));
   const [value, setValue] = useState("");
@@ -45,13 +48,13 @@ export default function Dashboard({ spec, data, stale = false, onOpen = openAppL
   return (
     <div className="tq-dash" data-tq-dashboard="">
       {(dated || choices.length > 0) && (
-        <div className="tq-dash-bar" role="toolbar" aria-label="Filters">
-          {dated && <div className="tq-dash-seg" role="group" aria-label="Date range">
-            {RANGES.map((d) => <button key={d} type="button" aria-pressed={days === d} onClick={() => { setDays(d); setDrill(null); }}>{DASH.ranges[String(d)]}</button>)}
+        <div className="tq-dash-bar" role="toolbar" aria-label={t("Filters")}>
+          {dated && <div className="tq-dash-seg" role="group" aria-label={t("Date range")}>
+            {RANGES.map((d) => <button key={d} type="button" aria-pressed={days === d} onClick={() => { setDays(d); setDrill(null); }}>{t(DASH.ranges[String(d)])}</button>)}
           </div>}
           {choices.length > 0 && <label>{segment.replace(/_/g, " ")}
             <select className="tq-dash-select" value={value} onChange={(e) => { setValue(e.target.value); setDrill(null); }}>
-              <option value="">{DASH.all}</option>{choices.map((v) => <option key={v} value={v}>{v}</option>)}
+              <option value="">{t(DASH.all)}</option>{choices.map((v) => <option key={v} value={v}>{v}</option>)}
             </select></label>}
         </div>
       )}

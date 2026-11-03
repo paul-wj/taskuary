@@ -6,7 +6,7 @@
 // Nothing here reads words. A zone comes from the lane triage already judged, a match from the
 // kind it already chose (no-hardcoded-words: the model reads intent, code only routes on it).
 import { isAgentKind, isMail, onYou } from "./lanes.js";
-import { plural } from "./timeWords.js";
+import { t } from "./i18n.js";
 import { AGENT_SHOWN, agentWord } from "./kinds.js";
 
 export const ZONES = [
@@ -154,10 +154,10 @@ export function award(state, move, now = Date.now(), world = null) {
 
 // daily quests read the day's tally - they reset with it
 export const QUESTS = [
-  { key: "q-reply", says: (n) => `Send ${plural(n, "reply", "replies")}`, move: "approve", n: 3, xp: 50 },
-  { key: "q-hand", says: (n) => `Hand ${plural(n, "thing", "things")} to agents`, move: "dispatch", n: 2, xp: 50 },
-  { key: "q-coffee", says: (n) => `Catch up on ${plural(n, "fyi", "fyi's")}`, move: "read", n: 4, xp: 30 },
-  { key: "q-gym", says: (n) => `Do ${plural(n, "rep", "reps")}`, move: "rep", n: 5, xp: 40 },
+  { key: "q-reply", says: (n) => t(n === 1 ? "Send {count} reply" : "Send {count} replies", { count: n }), move: "approve", n: 3, xp: 50 },
+  { key: "q-hand", says: (n) => t(n === 1 ? "Hand {count} thing to agents" : "Hand {count} things to agents", { count: n }), move: "dispatch", n: 2, xp: 50 },
+  { key: "q-coffee", says: (n) => t(n === 1 ? "Catch up on {count} fyi" : "Catch up on {count} fyi's", { count: n }), move: "read", n: 4, xp: 30 },
+  { key: "q-gym", says: (n) => t(n === 1 ? "Do {count} rep" : "Do {count} reps", { count: n }), move: "rep", n: 5, xp: 40 },
 ];
 // TODAY'S QUESTS, sized to what you actually have: the goal, or what is possible today if that is less - what
 // you already did plus what is still waiting. The sum does not move as you work (a sent reply leaves the pile
@@ -179,11 +179,11 @@ export function saveGame(s, store = globalThis.localStorage) { try { store?.setI
 
 // The share card is the viral part, and it is public the moment it is pasted: counts only, never a
 // name, a subject or a sender.
-export function shareCard(s, now = Date.now()) {
+export function shareCard(s, now = Date.now(), translate = (text, values = {}) => text.replace(/\{(\w+)\}/g, (match, key) => values[key] ?? match)) {
   const lv = levelOf(s.xp), secs = Math.max(0, Math.round((now - (s.runStart || now)) / 1000));
   const t = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
   const b = (k) => s.by?.[k] || 0;
-  return [`🏢 Taskuary · Assistant Game`, `Lv ${lv.level} ${lv.title} · ${s.xp} XP · best combo x${s.best}`,
-    `📨 ${b("approve")} sent  🤖 ${b("dispatch")} handed off  🔓 ${b("answer")} unblocked  👻 ${b("followup") + b("rest")} ghosts  ☕ ${b("read")} fyi`,
-    `⏱ today's run ${t} · 🏆 ${s.got.length}/${ACHIEVEMENTS.length}`].join("\n");
+  return [translate("🏢 Taskuary · Assistant Game"), translate("Lv {level} {title} · {xp} XP · best combo x{best}", { level: lv.level, title: translate(lv.title), xp: s.xp, best: s.best }),
+    translate("📨 {sent} sent  🤖 {handed} handed off  🔓 {unblocked} unblocked  👻 {ghosts} ghosts  ☕ {fyi} fyi", { sent: b("approve"), handed: b("dispatch"), unblocked: b("answer"), ghosts: b("followup") + b("rest"), fyi: b("read") }),
+    translate("⏱ today's run {time} · 🏆 {got}/{total}", { time: t, got: s.got.length, total: ACHIEVEMENTS.length })].join("\n");
 }

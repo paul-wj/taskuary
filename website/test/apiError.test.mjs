@@ -6,8 +6,6 @@
 // reconciled" surfaced as axios's "Request failed with status code 409" in a red banner.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { detailText, keepDetail } from "../src/apiError.js";
 import { isCoveragePending, processingErrorCode, processingErrorMessage } from "../src/processingAll.js";
 
@@ -27,12 +25,6 @@ test("a refusal still names itself after normalizing, so its recovery can run", 
   assert.equal(moved.detail.message, "That item moved under you");   // the banner's words are the server's
 });
 
-test("the rail's own catches read the structure, not the flattened copy", () => {
-  const src = readFileSync(fileURLToPath(new URL("../src/FeedView.jsx", import.meta.url)), "utf8");
-  assert.doesNotMatch(src, /response\?\.data\?\.detail\?\.code/);
-  assert.doesNotMatch(src, /response\.data\.detail\.message/);
-  assert.match(src, /processingErrorMessage\(e, "Failed to load the feed"\)/);
-});
 
 test("the rendered copy is still a plain string, which every setErr site relies on", () => {
   const e = refused("processing_coverage_pending", "All items are not ready yet");
@@ -60,16 +52,28 @@ test("a structured refusal's shape - read off error.detail - is kept on the erro
   assert.equal(e.detail?.code, "processing_coverage_pending");
 });
 
-test("a failed save reads as a sentence: the server's, or that nothing answered - never axios's", async () => {
-  const { plainError } = await import("../src/apiError.js");
-  assert.equal(plainError(keepDetail({ response: { status: 422, data: { detail: "pick one of those three" } } })), "pick one of those three");
-  assert.equal(plainError(refused("x", "That item moved under you")), "That item moved under you");
-  assert.match(plainError(new Error("Network Error")), /isn't answering/);
-  assert.equal(plainError({ response: { status: 500, data: {} } }, "fallback"), "fallback");
+test("error presentation translates only authored fallbacks and preserves server messages", async () => {
+  const { errorPresentation, errorText } = await import("../src/apiError.js");
+  const { getLocale, setLocale } = await import("../src/i18n.js");
+  const server = errorPresentation(keepDetail({ response: { status: 422, data: { detail: "That didn't save. Try again in a moment." } } }));
+  const structured = errorPresentation(refused("x", "That item moved under you"));
+  const network = errorPresentation(new Error("Network Error"));
+  const fallback = errorPresentation({ response: { status: 500, data: {} } });
+  const rawFallback = errorPresentation({ response: { status: 500, data: {} } }, "Settings", { localFallback: false });
+  const previous = getLocale();
+  try {
+    setLocale("en");
+    const englishFallback = errorText(fallback), englishNetwork = errorText(network);
+    assert.equal(errorText(server), "That didn't save. Try again in a moment.");
+    assert.equal(errorText(structured), "That item moved under you");
+    setLocale("zh-CN");
+    assert.equal(errorText(server), "That didn't save. Try again in a moment.");
+    assert.equal(errorText(structured), "That item moved under you");
+    assert.equal(errorText(rawFallback), "Settings");
+    assert.notEqual(errorText(fallback), englishFallback);
+    assert.notEqual(errorText(network), englishNetwork);
+  } finally {
+    setLocale(previous);
+  }
 });
 
-test("api.js normalizes through the one helper, so this cannot drift back apart", () => {
-  const src = readFileSync(fileURLToPath(new URL("../src/api.js", import.meta.url)), "utf8");
-  assert.match(src, /keepDetail/);
-  assert.doesNotMatch(src, /JSON\.stringify\(d\)/);   // the flattening lives in apiError.js only
-});

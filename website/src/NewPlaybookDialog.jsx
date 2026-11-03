@@ -5,12 +5,15 @@ import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import api from "./api";
 import ConnectAi from "./ConnectAi.jsx";
 import { sayEarlier } from "./pageView.js";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 
 const GeneralWorkspace = lazy(() => import("./GeneralWorkspace.jsx"));
-const failure = (e) => e?.response?.data?.detail || e.message || "Could not start playbook setup.";
+const failure = (e) => e?.response?.data?.detail || e.message || { key: "Could not start playbook setup." };
 
 // `initialText`: the words New's Playbook tab (or the Assistant) wrote - From scratch, filled in. `autoStart`: Set up with AI was pressed there
 export default function NewPlaybookDialog({ connectorType = "", initialText = "", autoStart = false, onClose, onManual }) {
+  useLocale();
   const [mode, setMode] = useState(initialText.trim() ? "scratch" : "");
   const [query, setQuery] = useState("");
   const [before, setBefore] = useState(0);
@@ -49,7 +52,8 @@ export default function NewPlaybookDialog({ connectorType = "", initialText = ""
       const ref = data.task?.ref || (data.task?.TaskId ? `TQ-${String(data.task.TaskId).padStart(4, "0")}` : "");
       if (data.task?.TaskId) {
         onClose?.();
-        sayEarlier({ title: `Started ${ref} - the general agent drafts the playbook with you there, and its Approve saves it.`, open: true });
+        sayEarlier({ title: `Started ${ref} - the general agent drafts the playbook with you there, and its Approve saves it.`,
+          title_i18n: { source: "Started {ref} - the general agent drafts the playbook with you there, and its Approve saves it.", values: { ref } }, open: true });
       } else setTask(data.task);
     } catch (e) {
       setError(failure(e));
@@ -66,69 +70,69 @@ export default function NewPlaybookDialog({ connectorType = "", initialText = ""
 
   return <Dialog open onClose={busy ? undefined : onClose} fullWidth maxWidth={task ? "lg" : "sm"}
     aria-labelledby="new-playbook-title" PaperProps={{ sx: task ? { height: "85vh" } : { maxHeight: "90vh" } }}>
-    <DialogTitle id="new-playbook-title">{task ? "Build your playbook with AI" : "New playbook"}</DialogTitle>
+    <DialogTitle id="new-playbook-title">{task ? t("Build your playbook with AI") : t("New playbook")}</DialogTitle>
     {task ? <DialogContent sx={{ display: "flex", flexDirection: "column", minHeight: 0, p: 0 }}>
       <Typography sx={{ px: 3, pb: 1, color: "text.secondary", fontSize: 13 }}>
-        Your assistant will draft the steps and review rules with you. Its draft appears here, with Approve.
+        {t("Your assistant will draft the steps and review rules with you. Its draft appears here, with Approve.")}
       </Typography>
       <Box sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
         <Suspense fallback={<CircularProgress sx={{ m: 3 }} />}><GeneralWorkspace task={task} compact /></Suspense>
       </Box>
     </DialogContent> : <DialogContent>
       <Typography sx={{ color: "text.secondary", mb: 2 }}>
-        A playbook teaches your assistant how to handle a recurring request. Start with an example, or describe what you need.
+        {t("A playbook teaches your assistant how to handle a recurring request. Start with an example, or describe what you need.")}
       </Typography>
-      {connectorType && <Alert severity="info" sx={{ mb: 2 }}>For your {connectorType} connection</Alert>}
+      {connectorType && <Alert severity="info" sx={{ mb: 2 }}>{t("For your {connector} connection", { connector: connectorType })}</Alert>}
       <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" }, gap: 1.5, mb: 2 }}>
         {[{ value: "email", title: "Use a past email", detail: "Choose a request you have received.", icon: <MailOutlineIcon /> },
           { value: "scratch", title: "Start from scratch", detail: "Tell the assistant what should happen.", icon: <AutoAwesomeIcon /> }].map((choice) =>
           <Button key={choice.value} variant={mode === choice.value ? "contained" : "outlined"} aria-pressed={mode === choice.value}
             disabled={busy} onClick={() => { setMode(choice.value); setError(""); }}
             sx={{ alignItems: "flex-start", flexDirection: "column", textAlign: "left", textTransform: "none", p: 2, gap: 0.75 }}>
-            {choice.icon}<Box component="span" sx={{ fontWeight: 600 }}>{choice.title}</Box>
-            <Box component="span" sx={{ fontSize: 12, fontWeight: 400 }}>{choice.detail}</Box>
+            {choice.icon}<Box component="span" sx={{ fontWeight: 600 }}>{t(choice.title)}</Box>
+            <Box component="span" sx={{ fontSize: 12, fontWeight: 400 }}>{t(choice.detail)}</Box>
           </Button>)}
       </Box>
       {mode === "email" && <>
-        <TextField fullWidth size="small" label="Search past emails" placeholder="Subject, sender, or a phrase"
+        <TextField fullWidth size="small" label={t("Search past emails")} placeholder={t("Subject, sender, or a phrase")}
           value={query} disabled={busy} onChange={(e) => { setQuery(e.target.value); setBefore(0); setRows([]); }} />
-        <Typography sx={{ fontSize: 12, color: "text.secondary", my: 1 }}>Searches incoming email already imported into Taskuary, including older mail.</Typography>
-        <Box sx={{ maxHeight: 230, overflowY: "auto", mb: 1 }} aria-label="Past emails" aria-busy={loading}>
+        <Typography sx={{ fontSize: 12, color: "text.secondary", my: 1 }}>{t("Searches incoming email already imported into Taskuary, including older mail.")}</Typography>
+        <Box sx={{ maxHeight: 230, overflowY: "auto", mb: 1 }} aria-label={t("Past emails")} aria-busy={loading}>
           {rows.map((row) => <Button key={row.MessageId} fullWidth aria-pressed={selected?.MessageId === row.MessageId}
             disabled={busy} onClick={() => setSelected(row)} variant={selected?.MessageId === row.MessageId ? "outlined" : "text"}
             sx={{ display: "block", textAlign: "left", textTransform: "none", px: 1.5, py: 1, mb: 0.5 }}>
-            <Typography sx={{ fontWeight: 600, fontSize: 13 }}>{row.Subject || "(no subject)"}</Typography>
+            <Typography sx={{ fontWeight: 600, fontSize: 13 }}>{row.Subject || t("(no subject)")}</Typography>
             <Typography sx={{ fontSize: 12, color: "text.secondary" }}>{row.FromName || row.FromEmail} · {(row.SentAt || "").slice(0, 10)}</Typography>
           </Button>)}
-          {loading && <CircularProgress size={20} sx={{ m: 1 }} aria-label="Searching emails" />}
+          {loading && <CircularProgress size={20} sx={{ m: 1 }} aria-label={t("Searching emails")} />}
           {!loading && !rows.length && <Typography sx={{ py: 2, fontSize: 13 }}>
-            {query ? "No emails match. Try another search or start from scratch." : "No imported emails yet. You can start from scratch."}
+            {query ? t("No emails match. Try another search or start from scratch.") : t("No imported emails yet. You can start from scratch.")}
           </Typography>}
-          {next && !loading && <Button onClick={() => setBefore(next)} disabled={busy}>Load more emails</Button>}
+          {next && !loading && <Button onClick={() => setBefore(next)} disabled={busy}>{t("Load more emails")}</Button>}
         </Box>
         {selected && <Box sx={{ bgcolor: "action.hover", p: 1.5, mb: 2, borderRadius: 1 }}>
-          <Typography sx={{ fontSize: 12, fontWeight: 600 }}>Selected example: {selected.Subject || "(no subject)"}</Typography>
-          <Typography sx={{ fontSize: 12, whiteSpace: "pre-wrap", maxHeight: 120, overflowY: "auto", mt: 0.75 }}>{selected.BodyText || "This email has no text preview."}</Typography>
-          <Button size="small" disabled={busy} onClick={() => setSelected(null)}>Remove example</Button>
+          <Typography sx={{ fontSize: 12, fontWeight: 600 }}>{t("Selected example: {subject}", { subject: selected.Subject || t("(no subject)") })}</Typography>
+          <Typography sx={{ fontSize: 12, whiteSpace: "pre-wrap", maxHeight: 120, overflowY: "auto", mt: 0.75 }}>{selected.BodyText || t("This email has no text preview.")}</Typography>
+          <Button size="small" disabled={busy} onClick={() => setSelected(null)}>{t("Remove example")}</Button>
         </Box>}
       </>}
-      {mode && <TextField fullWidth multiline minRows={3} label={mode === "email" ? "Anything to add? (optional)" : "What should this playbook do?"}
-        placeholder="When someone asks for updated item numbers, gather the latest data and prepare a summary for my review."
+      {mode && <TextField fullWidth multiline minRows={3} label={mode === "email" ? t("Anything to add? (optional)") : t("What should this playbook do?")}
+        placeholder={t("When someone asks for updated item numbers, gather the latest data and prepare a summary for my review.")}
         value={text} disabled={busy} onChange={(e) => setText(e.target.value)} />}
-      {error && <Alert severity="error" sx={{ mt: 2, alignItems: "center" }} action={noAi ? <ConnectAi variant="outlined" onGo={onClose} /> : null}>{error}</Alert>}
-      {mode && <Typography sx={{ color: "text.secondary", fontSize: 12, mt: 1.5 }}>The assistant will help you define the steps, connections, and what needs your approval.</Typography>}
+      {error && <Alert severity="error" sx={{ mt: 2, alignItems: "center" }} action={noAi ? <ConnectAi variant="outlined" onGo={onClose} /> : null}>{typeof error === "object" ? t(error.key) : error}</Alert>}
+      {mode && <Typography sx={{ color: "text.secondary", fontSize: 12, mt: 1.5 }}>{t("The assistant will help you define the steps, connections, and what needs your approval.")}</Typography>}
     </DialogContent>}
     <DialogActions sx={{ px: 3, pb: 2, flexWrap: "wrap", gap: 1 }}>
       {task ? <>
-        <Button href={`#task=${task.TaskId}`} onClick={onClose}>Open task</Button>
-        <Typography sx={{ mr: "auto", fontSize: 12, color: "text.secondary" }}>Saved as {task.ref || `TQ-${String(task.TaskId).padStart(4, "0")}`} - search finds it when you want to come back.</Typography>
-        <Button onClick={onClose}>Close</Button>
+        <Button href={`#task=${task.TaskId}`} onClick={onClose}>{t("Open task")}</Button>
+        <Typography sx={{ mr: "auto", fontSize: 12, color: "text.secondary" }}>{t("Saved as {ref} - search finds it when you want to come back.", { ref: task.ref || `TQ-${String(task.TaskId).padStart(4, "0")}` })}</Typography>
+        <Button onClick={onClose}>{t("Close")}</Button>
       </> : <>
-        <Button onClick={onManual} disabled={busy} sx={{ mr: "auto" }}>Write manually</Button>
-        <Button onClick={onClose} disabled={busy}>Cancel</Button>
+        <Button onClick={onManual} disabled={busy} sx={{ mr: "auto" }}>{t("Write manually")}</Button>
+        <Button onClick={onClose} disabled={busy}>{t("Cancel")}</Button>
         {/* a door to the chat, never pressed from it (data-tq-view-skip, the owner, 2026-11-02) */}
         <Button variant="contained" onClick={start} data-tq-view-skip="" disabled={busy || !mode || (mode === "email" ? !selected : !text.trim())}
-          startIcon={busy ? <CircularProgress size={16} color="inherit" /> : <AutoAwesomeIcon />}>{busy ? "Starting…" : "Set up with AI"}</Button>
+          startIcon={busy ? <CircularProgress size={16} color="inherit" /> : <AutoAwesomeIcon />}>{busy ? t("Starting…") : t("Set up with AI")}</Button>
       </>}
     </DialogActions>
   </Dialog>;

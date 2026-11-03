@@ -31,6 +31,8 @@ import { useVerbs } from "./actionRow.js";
 import ConnectAi from "./ConnectAi.jsx";
 import NewMeeting from "./NewMeeting.jsx";
 
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 // the server's own words for it (general.NO_AI)
 const NO_AI_LINE = "No AI is connected, so an agent can't run this yet - connect one, then send it again.";
 const NO_AI_PLAN = "No AI is connected to plan the steps - connect one, or choose Track it and add the steps yourself.";
@@ -82,6 +84,7 @@ const Fork = ({ on, title, hint, onClick }) => (
 // nobody (the UI audit, 2026-10-21). Only a whole address is taken - half a name never becomes a recipient behind the owner's back.
 // `label`: its name for the Assistant (pageView.labelOf) - its placeholder turns "Add another email" once one is in, a box renamed mid-ask
 export const EmailRecipients = ({ value, onChange, options, placeholder, label = "" }) => {
+  useLocale();
   const [typed, setTyped] = useState("");
   // ...and the server's search beside the list this form was given: "dynamo" is everyone at Dynamo (peopleSearch.js)
   const found = usePeopleSearch(typed, "email");
@@ -102,13 +105,13 @@ export const EmailRecipients = ({ value, onChange, options, placeholder, label =
       const address = typeof option === "string" ? option : option.to;
       return (
         <Box component="li" {...props} key={address} sx={{ display: "block !important", fontSize: 12.5 }}>
-          <Box sx={{ fontWeight: 600 }}>{typeof option === "string" ? `Use ${address}` : (option.name || address)}</Box>
+          <Box sx={{ fontWeight: 600 }}>{typeof option === "string" ? t("Use {address}", { address }) : (option.name || address)}</Box>
           {typeof option !== "string" && <Box sx={{ fontSize: 10.5, color: FAINT }}>{option.found && option.hint ? `${option.hint} · ${address}` : address}</Box>}
         </Box>
       );
     }}
     renderInput={(params) => (
-      <TextField {...params} placeholder={value.length ? "Add another email" : placeholder}
+      <TextField {...params} placeholder={value.length ? t("Add another email") : placeholder}
         inputProps={{ ...params.inputProps, ...(label ? { "data-tq-label": label } : {}) }}
         sx={{ "& .MuiInputBase-root": { fontSize: 13, bgcolor: "#fcfaf7" } }} />
     )} />
@@ -118,6 +121,7 @@ export const EmailRecipients = ({ value, onChange, options, placeholder, label =
 // WHO A CHAT GOES TO, picked by name: the known chats on this channel, and the server's search over them as you type - a description
 // the plain match cannot place goes to the model once (peopleSearch.js). Its own component, so a keystroke redraws the box, not the sheet.
 export const ChatRecipient = ({ channel, options, value, onChange }) => {
+  useLocale();
   const [typed, setTyped] = useState("");
   const found = usePeopleSearch(typed, channel);
   return (
@@ -127,7 +131,7 @@ export const ChatRecipient = ({ channel, options, value, onChange }) => {
       getOptionLabel={recipientLabel}
       isOptionEqualToValue={(option, v) => option.to === v.to}
       filterOptions={(rows, state) => withFound(recipientOptions(rows, state.inputValue), found, state.inputValue)}
-      noOptionsText={options.length ? "No matching conversation" : "nothing known on this channel yet"}
+      noOptionsText={options.length ? t("No matching conversation") : t("nothing known on this channel yet")}
       renderOption={(props, target) => (
         <Box component="li" {...props} key={target.to} sx={{ display: "block !important", fontSize: 12.5 }}>
           <Box sx={{ fontWeight: 600 }}>{recipientLabel(target)}</Box>
@@ -136,7 +140,7 @@ export const ChatRecipient = ({ channel, options, value, onChange }) => {
         </Box>
       )}
       renderInput={(params) => (
-        <TextField {...params} placeholder="Search people and conversations"
+        <TextField {...params} placeholder={t("Search people and conversations")}
           sx={{ "& .MuiInputBase-root": { fontSize: 13, bgcolor: "#fcfaf7" } }} />
       )} />
   );
@@ -147,6 +151,7 @@ export const ChatRecipient = ({ channel, options, value, onChange }) => {
 // that on every keystroke and made an ordinary sentence feel like terminal input over a slow
 // connection. The parent only hears when empty/non-empty changes and reads the value on submit.
 const AboutField = React.memo(forwardRef(function AboutField({ kind, how, onReady, bus, pics, initial = "", onWords, label = "" }, ref) {
+  useLocale();
   const [value, setValue] = useState(initial);
   const ready = useRef(false);
   // the words the Assistant wrote it up with (concierge._new) count as typed: the button is live from the first render
@@ -171,12 +176,12 @@ const AboutField = React.memo(forwardRef(function AboutField({ kind, how, onRead
       // ...named for the Assistant by the label over it (pageView.labelOf): it read as its placeholder - "chase the Payworth AP replacement" -
       // a box the model could not tell held the job's own words (the audit of New, 2026-11-02)
       inputProps={{ "data-tq-field": "about", "data-tq-label": label }}
-      placeholder={kind === "goal" ? "the nightly census lands in the new ledger for all three sites, and the old portal's export is switched off"
-        : kind === "send" ? "the census numbers he asked for, plus why Site 7 moved"
-        : kind === "agent" ? (how === "general" ? "why did Site 3's census move four points in July?"
-          : "work out why the nightly export drops the last facility")
-        : kind === "playbook" ? "when someone asks for their leave balance, gather it from payroll and draft the reply for my review"
-        : "chase the Payworth AP replacement"}
+      placeholder={kind === "goal" ? t("the nightly census lands in the new ledger for all three sites, and the old portal's export is switched off")
+        : kind === "send" ? t("the census numbers he asked for, plus why Site 7 moved")
+        : kind === "agent" ? (how === "general" ? t("why did Site 3's census move four points in July?")
+          : t("work out why the nightly export drops the last facility"))
+        : kind === "playbook" ? t("when someone asks for their leave balance, gather it from payroll and draft the reply for my review")
+        : t("chase the Payworth AP replacement")}
       // SAID, NOT TYPED (the owner, 2026-09-30: "can't ... use voice notes to write this prompt?"): the composer's own mic,
       // its words appended where the typing would go
       InputProps={{ endAdornment: (
@@ -198,6 +203,7 @@ const AboutField = React.memo(forwardRef(function AboutField({ kind, how, onRead
 // `start`: the Assistant pressed the agent's Send to agent for the owner - the card presses it once it can go (concierge._new)
 export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = false, initialKind = "send", initialHow = "", initialText = "", line = null, onSaid, start = false,
   initialChannel = "", initialTo = "", initialMeeting = null, initialRoutine = null }) {
+  const locale = useLocale();
   const [kind, setKind] = useState(initialKind);
   const said = useRef(null);      // the words, for the repository picker (see NewRepo)
   const repoPick = useRef(null);  // what the picker says to use, read on submit
@@ -271,12 +277,12 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
   // each sheet registers as ITSELF: the Feed's closed dialog and the chat's open card both said "new-send", one cleared what the
   // other put, and every put re-drew both - the Send something tab died in that loop (React #185, the UI audit 2026-10-21)
   const me = useId();
-  useVerbs(`new-connect${me}`, named ? [{ id: "new:open-connector", group: "decide", tone: "s", label: `Open the ${named.title} card`,
-    title: `${named.title} is connected on its own card under Connections - no agent needed`,
+  useVerbs(`new-connect${me}`, named ? [{ id: "new:open-connector", group: "decide", tone: "s", label: t("Open the {name} card", { name: named.title }),
+    title: t("{name} is connected on its own card under Connections - no agent needed", { name: named.title }),
     run: () => { onClose?.(); openAppLink(`#connector=${named.type}`); } }] : [], open && !!named);
   // ...and what it needs is a button on the row, not a sentence pointing at Connections
-  useVerbs(`new-send${me}`, [{ id: "new:connect-sending", group: "decide", tone: "s", label: "Connect a mailbox",
-    title: "Sending needs a mailbox or a chat with replies on", run: () => openAppLink(place("mail").href) }], open && targetsRead && kind === "send" && !targets.length);
+  useVerbs(`new-send${me}`, [{ id: "new:connect-sending", group: "decide", tone: "s", label: t("Connect a mailbox"),
+    title: t("Sending needs a mailbox or a chat with replies on"), run: () => openAppLink(place("mail").href) }], open && targetsRead && kind === "send" && !targets.length);
 
   const chanTargets = (targets.find((t) => t.channel === channel)?.to) || [];
   const mailTargets = (targets.find((t) => t.channel === "email")?.to) || [];
@@ -291,9 +297,9 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
           channel, to: channel === "email" ? emailTo : to.trim(),
           cc: channel === "email" ? cc : [], about: withImages(about, pics.paths), mode,
         });
-        setOk(mode === "task"
-          ? `${data.ref} — an agent is finding out first; the message is drafted when it is done.`
-          : `${data.ref} — drafted. It is open now, waiting for you to send it.`);
+        setOk({ key: mode === "task"
+          ? "{ref} — an agent is finding out first; the message is drafted when it is done."
+          : "{ref} — drafted. It is open now, waiting for you to send it.", values: { ref: data.ref } });
         aboutRef.current?.clear(); setHasAbout(false); pics.clear(); onDone?.(); onOpenTask?.(data.taskId);
       } else if (kind === "agent") {
         // one module decides chat-vs-terminal for the whole app, so the Board and this sheet can
@@ -302,7 +308,7 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
         // NOTHING TO RUN IT ON, SAID HERE AND THE SHEET STAYS OPEN (owner-approved, 2026-10-21): the task was made, its agent failed a
         // second later, and it sat on the rail under "waiting on you". Read fresh - the list loaded with the sheet may be from before
         if (general && !((await api.get("/api/agents")).data?.general_brains || []).length) {
-          setErr(NO_AI_LINE); setErrAi(true); setBusy(false); return;
+          setErr({ key: NO_AI_LINE }); setErrAi(true); setBusy(false); return;
         }
         // a session opens where the picker says (auto = the repository the words name, else the server guesses as ever);
         // the choice is the task's `repo:` tag, the override that always wins
@@ -333,11 +339,11 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
             : { agent: agent || null, brain: brain || null, model: model || null }), ...(line ? { said: line } : {}) }));
         } catch (e) {
           // ...and the line says the task is there: "nothing started" over a task already filed sent the owner to press again
-          throw { response: { data: { detail: `${data.ref} is filed but did not start - ${String(e?.response?.data?.detail || "the start was refused").replace(/\.$/, "")}. Press ${verb} to try it again.` } } };
+          throw { display: { key: "{ref} is filed but did not start - {reason}. Press {verb} to try it again.", values: { ref: data.ref, reason: String(e?.response?.data?.detail || "").replace(/\.$/, ""), verb: btn(how === "general" ? "regular_agent" : "coding_agent") } } };
         }
         filed.current = null;
         if (out?.said) onSaid?.(out.said);
-        setOk(`${data.ref} — ${outcomeOf(out).text}.`);
+        setOk({ key: "{ref} — {outcome}.", values: { ref: data.ref }, outcome: out });
         aboutRef.current?.clear(); setHasAbout(false); pics.clear(); onDone?.(); onOpenTask?.(data.taskId);
       } else if (kind === "playbook") {
         // the one road to a playbook is the shelf's New playbook: this press is its Set up with AI, made there once with these words
@@ -345,7 +351,7 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
       } else if (kind === "goal") {
         // PLAN IT WITH NO AI SAYS SO (owner-approved, 2026-10-21): it promised "planning the steps; they land in a moment" and none came
         if (plan && !((await api.get("/api/agents")).data?.general_brains || []).length) {
-          setErr(NO_AI_PLAN); setErrAi(true); setBusy(false); return;
+          setErr({ key: NO_AI_PLAN }); setErrAi(true); setBusy(false); return;
         }
         const title = about.split(/[.\n]/)[0].trim().slice(0, 120) || about.slice(0, 120);
         const { data } = await api.post("/api/tasks", { Title: title, Summary: who ? `${about}\nInvolved: ${who}` : about,
@@ -353,25 +359,25 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
         // the model writes the steps (server.plan_goal); "Track it" leaves the boxes to you
         if (plan && !noAi) api.post(`/api/tasks/${data.taskId}/read-ask`, { goal: true }).catch(() => null);
         // ...and with no AI nothing plans them: it promised steps that never came (the UI audit, 2026-10-21)
-        setOk(`${data.ref} — ${!plan ? "on your rail; add the steps on the task." : noAi ? "on your rail. No AI is connected, so nothing can plan the steps - add them on the task."
-          : "planning the steps; they land on the task in a moment."}`);
+        setOk({ key: !plan ? "{ref} — on your rail; add the steps on the task." : noAi ? "{ref} — on your rail. No AI is connected, so nothing can plan the steps - add them on the task."
+          : "{ref} — planning the steps; they land on the task in a moment.", values: { ref: data.ref } });
         aboutRef.current?.clear(); setHasAbout(false); setBy(""); setWho(""); onDone?.(); onOpenTask?.(data.taskId);
       } else {
         const { data } = await api.post("/api/notes", { title: about.slice(0, 300), body: "", when: when || null });
-        setOk(`Noted — it sits on ${String(data.at).slice(0, 16)} and nothing will touch it.`);
+        setOk({ key: "Noted — it sits on {day} and nothing will touch it.", values: { day: String(data.at).slice(0, 16) } });
         aboutRef.current?.clear(); setHasAbout(false); setWhen(""); onDone?.();
       }
-    } catch (e) { setErr(e?.response?.data?.detail || "That did not go through"); }
+    } catch (e) { setErr(e?.display || (e?.response?.data?.detail ? { text: e.response.data.detail } : { key: "That did not go through" })); }
     setBusy(false);
-  }, [kind, channel, to, emailTo, cc, mode, how, agent, brain, model, role, pick, when, by, who, plan, noAi, onDone, onOpenTask, onClose, pics, line, onSaid]);
+  }, [kind, channel, to, emailTo, cc, mode, how, agent, brain, model, role, pick, when, by, who, plan, noAi, onDone, onOpenTask, onClose, pics, line, onSaid, locale]);
 
   // ...and no live session without a coding tool the owner chose (owner-approved, 2026-10-21): Send to coding agent stays disabled
   const noCodingTool = kind === "agent" && how === "terminal" && (!agentsRead || !codingReady);
   const canGo = hasAbout && !noCodingTool && (kind !== "send" || (channel && (channel === "email" ? emailTo.length : to.trim())));
   // a hand-off is the one Send to agent / Send to coding agent (buttons.json); the others are this form's own words
-  const verb = kind === "send" ? (mode === "task" ? btn("regular_agent") : "Draft it")
-    : kind === "agent" ? btn(how === "general" ? "regular_agent" : "coding_agent") : kind === "goal" ? (plan ? "Plan it" : "Track it")
-    : kind === "playbook" ? "Set up with AI" : "Note it";
+  const verb = kind === "send" ? (mode === "task" ? t(btn("regular_agent")) : t("Draft it"))
+    : kind === "agent" ? t(btn(how === "general" ? "regular_agent" : "coding_agent")) : kind === "goal" ? (plan ? t("Plan it") : t("Track it"))
+    : kind === "playbook" ? t("Set up with AI") : t("Note it");
   // THE ASSISTANT PRESSED IT (`start`, concierge._new - the owner, 2026-11-02: "why can't assistant start an agent. i'm okay with that"):
   // an agent's job it wrote here is started by this card's own button, once, the moment the card can go - the same press the owner's is
   const autoPressed = useRef(false);
@@ -394,8 +400,8 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
   return (
     <Shell {...shell}>
       <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1, pb: 0.5 }}>
-        <Box sx={{ flex: 1 }}>What are we starting?</Box>
-        <IconButton aria-label="Close new task" size="small" onClick={close}><CloseIcon sx={{ fontSize: 17 }} /></IconButton>
+        <Box sx={{ flex: 1 }}>{t("What are we starting?")}</Box>
+        <IconButton aria-label={t("Close new task")} size="small" onClick={close}><CloseIcon sx={{ fontSize: 17 }} /></IconButton>
       </DialogTitle>
 
       {/* the kinds are tabs, not a select: three doors that all exist is the point of the sheet,
@@ -403,13 +409,13 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
       <Box sx={{ display: "flex", gap: 0.25, px: { xs: 1, sm: 3 }, borderBottom: `1px solid ${BORDER}`, overflowX: "auto", scrollbarWidth: "none" }}>
         {KINDS.map((k) => (
           <Box key={k.key} {...pressable(() => { setKind(k.key); setErr(""); setOk(""); })} role="tab"
-            aria-selected={kind === k.key} title={k.hint}
+            aria-selected={kind === k.key} title={t(k.hint)}
             sx={{ ...FOCUS_RING, display: "flex", alignItems: "center", gap: 0.75, px: { xs: 1, sm: 1.5 }, py: 1, cursor: "pointer", flexShrink: 0,
               fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap", mb: "-1px",
               color: kind === k.key ? INK : FAINT,
               borderBottom: `2px solid ${kind === k.key ? ACCENT : "transparent"}`,
               transition: "color .15s" }}>
-            <Box component="span" aria-hidden sx={{ fontSize: 13, lineHeight: 1 }}>{k.mark}</Box>{k.label}
+            <Box component="span" aria-hidden sx={{ fontSize: 13, lineHeight: 1 }}>{k.mark}</Box>{t(k.label)}
           </Box>
         ))}
       </Box>
@@ -418,7 +424,7 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
         {kind === "send" && (
           <>
             <Box>
-              <Label>Channel</Label>
+              <Label>{t("Channel")}</Label>
               <Box sx={{ display: "flex", gap: 0.75, flexWrap: "wrap" }}>
                 {targets.map((t) => (
                   <Box key={t.channel} onClick={() => { setChannel(t.channel); setTo(""); setEmailTo([]); setCc([]); }}
@@ -431,27 +437,27 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
                 ))}
                 {!targets.length && (
                   <Typography variant="caption" sx={{ color: FAINT }}>
-                    Nothing here can send yet - connect a mailbox, or turn replies on for a chat (the button below).
+                    {t("Nothing here can send yet - connect a mailbox, or turn replies on for a chat (the button below).")}
                   </Typography>
                 )}
               </Box>
             </Box>
             <Box>
-              <Label>To</Label>
+              <Label>{t("To")}</Label>
               {channel === "email" ? (
                 <EmailRecipients value={emailTo} onChange={setEmailTo} options={chanTargets} label="To"
-                  placeholder="Search contacts or type any email address" />
+                  placeholder={t("Search contacts or type any email address")} />
               ) : <ChatRecipient key={channel} channel={channel} options={chanTargets}
                 value={chanTargets.find((target) => target.to === to) || (to ? { to, name: "" } : null)}
                 onChange={(target) => setTo(target?.to || "")} />}
             </Box>
             {channel === "email" && (
               <Box>
-                <Label>CC</Label>
+                <Label>{t("CC")}</Label>
                 <EmailRecipients value={cc} onChange={setCc} options={chanTargets} label="CC"
-                  placeholder="Search contacts or type any email address" />
+                  placeholder={t("Search contacts or type any email address")} />
                 <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.75 }}>
-                  Drafts use STYLE.md. Docs → STYLE.md → Generate from history learns your recurring email signature.
+                  {t("Drafts use STYLE.md. Docs → STYLE.md → Generate from history learns your recurring email signature.")}
                 </Typography>
               </Box>
             )}
@@ -465,17 +471,17 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
                 walked back - the exact mistake newTask.js was written to prevent. Both doors,
                 stated, and the choice made before anything is created. */}
             <Box>
-              <Label>Who works it</Label>
+              <Label>{t("Who works it")}</Label>
               <Box sx={{ display: "flex", gap: 1 }}>
-                <Fork on={how === "terminal"} onClick={() => { setHow("terminal"); setModel(""); }} title="A live session"
-                  hint="a CLI agent on a keyboard, in a checkout — it edits, runs and reports back." />
-                <Fork on={how === "general"} onClick={() => { setHow("general"); setModel(""); }} title="A general agent"
-                  hint="a researcher, analyst or writer on its own. It looks things up, drafts and reports back." />
+                <Fork on={how === "terminal"} onClick={() => { setHow("terminal"); setModel(""); }} title={t("A live session")}
+                  hint={t("a CLI agent on a keyboard, in a checkout — it edits, runs and reports back.")} />
+                <Fork on={how === "general"} onClick={() => { setHow("general"); setModel(""); }} title={t("A general agent")}
+                  hint={t("a researcher, analyst or writer on its own. It looks things up, drafts and reports back.")} />
               </Box>
             </Box>
             {how === "general" && (
               <Box>
-                <Label>Agent</Label>
+                <Label>{t("Agent")}</Label>
                 {/* the task page's hand-off, the same three questions: which profile, which brain, which model */}
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1.25, flexWrap: "wrap" }}>
                   <AgentPicker agents={agents} models={models} kinds={kinds} agent={role} model={model}
@@ -486,7 +492,7 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
             )}
             {how === "terminal" && (
               <Box>
-                <Label>Agent</Label>
+                <Label>{t("Agent")}</Label>
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1.25, flexWrap: "wrap" }}>
                   <AgentPicker agents={agents} models={models} kinds={kinds} coding agent={agent} model={model}
                     brains={brainList} brainModels={brainModels} brain={brain} brainsRead={agentsRead} codingReady={codingReady}
@@ -502,7 +508,7 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
             )}
             {deskOn && (
               <FormControlLabel sx={{ ml: 0 }} control={<Checkbox size="small" checked={desk} onChange={(e) => setDesk(e.target.checked)} />}
-                label={<Typography variant="body2">Needs desktop - its agent may operate the desktop apps on this computer</Typography>} />
+                label={<Typography variant="body2">{t("Needs desktop - its agent may operate the desktop apps on this computer")}</Typography>} />
             )}
           </>
         )}
@@ -511,39 +517,39 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
           // ...THE DESCRIBE BOX IS THE CHAT'S NOW (2026-10-30): its builder comes up, and the Assistant sets it up there with you - or by hand
           <Box data-tq-new-repeat={kind} sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
             <SetupWithAi kind={kind} words={kind === initialKind ? initialText : ""} onOpen={() => { onClose?.(); openAppLink(NEW_HASH[kind]); }} />
-            <Button size="small" onClick={() => { onClose?.(); openAppLink(NEW_HASH[kind]); }}>Set it up by hand</Button>
+            <Button size="small" onClick={() => { onClose?.(); openAppLink(NEW_HASH[kind]); }}>{t("Set it up by hand")}</Button>
           </Box>
         )}
 
         {kind === "meeting" && (
           // ...its own form, its own Find times: the pick is the press, so the footer keeps only Cancel
           <NewMeeting renderTo={(p) => <EmailRecipients {...p} />} options={mailTargets} initial={initialKind === "meeting" ? initialMeeting || { about: initialText } : {}}
-            onPicked={(d) => { setOk(`${d.ref} — the invite is drafted in Close out, waiting for your ${btn("approve")}. Nothing went out.`); onDone?.(); onOpenTask?.(d.taskId); }} />
+            onPicked={(d) => { setOk({ key: "{ref} — the invite is drafted in Close out, waiting for your {approve}. Nothing went out.", values: { ref: d.ref }, approve: true }); onDone?.(); onOpenTask?.(d.taskId); }} />
         )}
 
         {!REPEATS.includes(kind) && kind !== "meeting" && <Box>
-          <Label>{aboutLabel}</Label>
+          <Label>{t(aboutLabel)}</Label>
           <AboutField ref={aboutRef} kind={kind} how={how} onReady={setHasAbout} bus={said} pics={pics} initial={initialText} onWords={setWords} label={aboutLabel} />
           {kind === "send" && (
             <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.75 }}>
-              Shorthand is fine — this is what you are telling the drafter, not what they read.
+              {t("Shorthand is fine — this is what you are telling the drafter, not what they read.")}
             </Typography>
           )}
           {kind === "playbook" && (
             <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.75 }}>
-              It opens under Reports → Playbooks, where your assistant drafts the steps with you — Approve there saves it.
+              {t("It opens under Reports → Playbooks, where your assistant drafts the steps with you — Approve there saves it.")}
             </Typography>
           )}
         </Box>}
 
         {kind === "send" && (
           <Box>
-            <Label>And then</Label>
+            <Label>{t("And then")}</Label>
             <Box sx={{ display: "flex", gap: 1 }}>
-              <Fork on={mode === "draft"} onClick={() => setMode("draft")} title="Draft it and show me"
-                hint="written in your voice from the thread. It opens for you as 🏁 ready to send - sending it leaves the task open." />
-              <Fork on={mode === "task"} onClick={() => setMode("task")} title="Find out first"
-                hint="an agent researches it, then drafts the message from what it actually found." />
+              <Fork on={mode === "draft"} onClick={() => setMode("draft")} title={t("Draft it and show me")}
+                hint={t("written in your voice from the thread. It opens for you as 🏁 ready to send - sending it leaves the task open.")} />
+              <Fork on={mode === "task"} onClick={() => setMode("task")} title={t("Find out first")}
+                hint={t("an agent researches it, then drafts the message from what it actually found.")} />
             </Box>
           </Box>
         )}
@@ -551,24 +557,24 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
         {kind === "goal" && (
           <>
             <Box>
-              <Label>By</Label>
+              <Label>{t("By")}</Label>
               <TextField type="date" size="small" value={by} onChange={(e) => setBy(e.target.value)} inputProps={{ "data-tq-field": "by", "data-tq-label": "By" }} sx={{ "& .MuiInputBase-root": { fontSize: 13, bgcolor: "#fcfaf7" } }} />
-              <Typography sx={{ fontSize: 11, color: FAINT, mt: 0.5 }}>The date shows on the goal's row on your rail, as "due" and the day.</Typography>
+              <Typography sx={{ fontSize: 11, color: FAINT, mt: 0.5 }}>{t('The date shows on the goal\'s row on your rail, as "due" and the day.')}</Typography>
             </Box>
             <Box>
-              <Label>Who is involved</Label>
-              <TextField fullWidth size="small" value={who} onChange={(e) => setWho(e.target.value)} placeholder="Ray Colton, Payworth (Marcus), the coding agent"
+              <Label>{t("Who is involved")}</Label>
+              <TextField fullWidth size="small" value={who} onChange={(e) => setWho(e.target.value)} placeholder={t("Ray Colton, Payworth (Marcus), the coding agent")}
                 inputProps={{ "data-tq-field": "who", "data-tq-label": "Who is involved" }}
                 sx={{ "& .MuiInputBase-root": { fontSize: 13, bgcolor: "#fcfaf7" } }} />
-              <Typography sx={{ fontSize: 11, color: FAINT, mt: 0.5 }}>People it may chase and systems it may touch. Anyone else is a question to you first.</Typography>
+              <Typography sx={{ fontSize: 11, color: FAINT, mt: 0.5 }}>{t("People it may chase and systems it may touch. Anyone else is a question to you first.")}</Typography>
             </Box>
             <Box>
-              <Label>And then</Label>
+              <Label>{t("And then")}</Label>
               <Box sx={{ display: "flex", gap: 1 }}>
-                <Fork on={plan} onClick={() => { planPicked.current = true; setPlan(true); }} title="Plan it and show me"
-                  hint="the AI proposes the steps from your words; you cut or add, then start the first one. It lands on the rail as a goal." />
-                <Fork on={!plan} onClick={() => { planPicked.current = true; setPlan(false); }} title="Track it, I have the plan"
-                  hint="type the steps yourself on the task; it chases the people on them and reports against the date." />
+                <Fork on={plan} onClick={() => { planPicked.current = true; setPlan(true); }} title={t("Plan it and show me")}
+                  hint={t("the AI proposes the steps from your words; you cut or add, then start the first one. It lands on the rail as a goal.")} />
+                <Fork on={!plan} onClick={() => { planPicked.current = true; setPlan(false); }} title={t("Track it, I have the plan")}
+                  hint={t("type the steps yourself on the task; it chases the people on them and reports against the date.")} />
               </Box>
             </Box>
           </>
@@ -576,7 +582,7 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
 
         {kind === "note" && (
           <Box>
-            <Label>Come back to it</Label>
+            <Label>{t("Come back to it")}</Label>
             {/* the note's row is stamped with WHEN IT IS FOR, so the Timeline's own clock is the
                 reminder: it sits in that day, out of the way until then (ownwork.note) */}
             {/* ...it and the goal's By and Who are named for the Assistant (pageView.labelOf): a box with no label of its own was never on
@@ -585,24 +591,24 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
               inputProps={{ "data-tq-field": "when", "data-tq-label": "Come back to it" }}
               sx={{ "& .MuiInputBase-root": { fontSize: 13, bgcolor: "#fcfaf7" } }} />
             <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.75 }}>
-              Leave it empty for now. A date puts the row in that day and it stays quiet until then.
+              {t("Leave it empty for now. A date puts the row in that day and it stays quiet until then.")}
             </Typography>
           </Box>
         )}
 
         {err && <Alert severity="error" sx={{ py: 0.25, fontSize: 12.5, alignItems: "center" }}
-          action={errAi ? <ConnectAi onGo={() => onClose?.()} /> : null}>{err}</Alert>}
-        {ok && <Alert severity="success" sx={{ py: 0.25, fontSize: 12.5 }}>{ok}</Alert>}
+          action={errAi ? <ConnectAi onGo={() => onClose?.()} /> : null}>{err.text || t(err.key, err.values?.verb ? { ...err.values, verb: t(err.values.verb), reason: err.values.reason || t("the start was refused") } : err.values)}</Alert>}
+        {ok && <Alert severity="success" sx={{ py: 0.25, fontSize: 12.5 }}>{t(ok.key, { ...ok.values, ...(Object.hasOwn(ok, "outcome") ? { outcome: outcomeOf(ok.outcome).text } : {}), ...(ok.approve ? { approve: t(btn("approve")) } : {}) })}</Alert>}
       </DialogContent>
 
       <Box sx={{ display: "flex", gap: 1, justifyContent: "flex-end", px: 3, py: 1.75,
         borderTop: `1px solid ${BORDER}`, bgcolor: PANEL2 }}>
-        <Button size="small" onClick={close} sx={{ color: DIM }}>Cancel</Button>
+        <Button size="small" onClick={close} sx={{ color: DIM }}>{t("Cancel")}</Button>
         {/* ...a playbook's Set up with AI opens the build in the chat: a door, out of the Assistant's view (the owner, 2026-11-02) */}
         {!REPEATS.includes(kind) && kind !== "meeting" && <Button size="small" variant="contained" disableElevation disabled={!canGo || busy} onClick={submit}
           {...(kind === "playbook" ? { "data-tq-view-skip": "" } : {})}
           startIcon={busy ? <CircularProgress size={12} sx={{ color: "#fff" }} /> : null}
-          sx={{ background: GRADIENT }}>{busy ? "Working…" : verb}</Button>}
+          sx={{ background: GRADIENT }}>{busy ? t("Working…") : verb}</Button>}
       </Box>
     </Shell>
   );

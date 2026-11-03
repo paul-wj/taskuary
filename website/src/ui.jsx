@@ -3,8 +3,10 @@ import { says } from "./laneSays.js";
 import { laneMeta, taskStateMeta } from "./funnelPile.js";
 import { AGENT, NOT_SENT, READY } from "./taskLifecycle.js";
 import { WORD } from "./lanes.js";
-import { ago, agoMins, dur, durSince, plural } from "./timeWords.js";
+import { ago, agoMins, dur, durSince } from "./timeWords.js";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { getLocale, t, translateDescriptor } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 import { useCapabilities, NO_CODING_TOOL } from "./capabilities.js";
 import { bareAddresses } from "./replyDelivery.js";
 import { keepAddresses, linkParts } from "./mailLinks.js";
@@ -60,6 +62,7 @@ import { personLine, runSearch, withFound } from "./peopleSearch.js";
 export { agentAssignee, assignedAgent, assigneeLabel } from "./agentIdentity.js";
 import { ROLES, ACTION_COLORS, TAGS, ASSISTANT, ALERT, ALERT_INK, ALERT_TINT, ALERT_BD, BORDER, CATPPUCCIN, TASK_STATUS_COLORS, mono, DIM, FAINT, INK, PANEL, ACCENT2, PANEL2, label } from "./theme.jsx";
 import { AGENT_SHOWN, shownAgent } from "./kinds.js";
+const message = (source, values = {}) => ({ source, values });
 
 // Taskuary actions wear Taskuary's actual product mark. The generic robot glyph suggested a
 // third-party bot and, on a quiet text button, did not make the dispatch action read as a button.
@@ -127,52 +130,54 @@ export const ChannelIcon = ({ channel, sx }) => {
    "127.0.0.1:7787 says" box over the page - the one dialog in the product that does not look
    like the product. */
 export const Confirm = ({ open, title, text, confirmLabel = "OK", onConfirm, onClose }) => {
+  useLocale();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const go = async () => {
     setBusy(true); setErr("");
     try { await onConfirm(); setBusy(false); onClose(); }
-    catch (e) { setErr(e?.response?.data?.detail || e?.message || "that did not work"); setBusy(false); }
+    catch (e) { setErr(e?.response?.data?.detail || e?.message || message("that did not work")); setBusy(false); }
   };
   return (
     <Dialog open={!!open} onClose={busy ? undefined : onClose} maxWidth="xs" fullWidth>
       <DialogTitle sx={{ fontSize: 15.5, fontWeight: 600, pb: 0.5 }}>{title}</DialogTitle>
       <DialogContent>
         <DialogContentText sx={{ fontSize: 13, color: DIM, whiteSpace: "pre-wrap" }}>{text}</DialogContentText>
-        {err && <Alert severity="error" sx={{ mt: 1.5 }}>{err}</Alert>}
+        {err && <Alert severity="error" sx={{ mt: 1.5 }}>{translateDescriptor(err)}</Alert>}
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2 }}>
-        <Button onClick={onClose} disabled={busy}>Cancel</Button>
+        <Button onClick={onClose} disabled={busy}>{t("Cancel")}</Button>
         <Button variant="contained" disableElevation onClick={go} disabled={busy}>
-          {busy ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : confirmLabel}</Button>
+          {busy ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : confirmLabel === "OK" ? t("OK") : confirmLabel}</Button>
       </DialogActions>
     </Dialog>
   );
 };
 
 export const ConfirmDelete = ({ open, what, consequence, confirmLabel = "Delete", title = null, undoable = false, onConfirm, onClose }) => {
+  useLocale();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const go = async () => {
     setBusy(true); setErr("");
     try { await onConfirm(); setBusy(false); onClose(); }
-    catch (e) { setErr(e?.response?.data?.detail || e?.message || "that did not work"); setBusy(false); }
+    catch (e) { setErr(e?.response?.data?.detail || e?.message || message("that did not work")); setBusy(false); }
   };
   return (
     <Dialog open={!!open} onClose={busy ? undefined : onClose} maxWidth="xs" fullWidth>
-      <DialogTitle sx={{ fontSize: 15.5, fontWeight: 600, pb: 0.5 }}>{title || `Delete ${what}?`}</DialogTitle>
+      <DialogTitle sx={{ fontSize: 15.5, fontWeight: 600, pb: 0.5 }}>{title || t("Delete {what}?", { what })}</DialogTitle>
       <DialogContent>
         <DialogContentText sx={{ fontSize: 13, color: DIM }}>
-          {consequence}{undoable ? "" : " This cannot be undone."}
+          {consequence}{undoable ? "" : t(" This cannot be undone.")}
         </DialogContentText>
-        {err && <Alert severity="error" sx={{ mt: 1.5, fontSize: 12.5 }}>{err}</Alert>}
+        {err && <Alert severity="error" sx={{ mt: 1.5, fontSize: 12.5 }}>{translateDescriptor(err)}</Alert>}
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2 }}>
         {/* Cancel is the default focus and sits where the eye lands: the safe one is not the
             one you hit by reflex */}
-        <Button onClick={onClose} disabled={busy} autoFocus sx={{ fontSize: 12.5 }}>Cancel</Button>
+        <Button onClick={onClose} disabled={busy} autoFocus sx={{ fontSize: 12.5 }}>{t("Cancel")}</Button>
         <Button onClick={go} disabled={busy} color="error" variant="contained" disableElevation
-          sx={{ fontSize: 12.5 }}>{busy ? "…" : confirmLabel}</Button>
+          sx={{ fontSize: 12.5 }}>{busy ? "…" : confirmLabel === "Delete" ? t("Delete") : confirmLabel}</Button>
       </DialogActions>
     </Dialog>
   );
@@ -186,34 +191,35 @@ export const RefChip = ({ taskId, onClick }) => taskId ? (
 ) : null;
 
 export const ActionChip = ({ action, reviewStatus, taskStatus, needsYou, category, working }) => {
+  useLocale();
   // an agent in a live session on this task: the row says so, by name - not "needs you"
   if (working && taskStatus !== "done" && reviewStatus !== "pending") {
     // "agent", not the agent's name: the name is whichever CLI happens to be configured (claude,
     // codex, a wrapper) and reads as a brand on a status chip; the tooltip still says who
-    return <Chip size="small" label="agent working" title={`${working} has this task open in a live session right now`}
+    return <Chip size="small" label={t("agent working")} title={t("{agent} has this task open in a live session right now", { agent: working })}
       sx={{ bgcolor: ROLES.working.tint, color: ROLES.working.ink, height: 19, fontSize: 10.5, fontWeight: 600 }} />;
   }
   // a category that is NOT a review state (info, promo, ignored…) is the whole story - a
   // stray review row must not turn a colleague's FYI into "reviewed · edited"
   const cat = category && TAGS[category];
   if (cat && !["coding", "todo", "review", "triaging"].includes(category) && taskStatus !== "done") {
-    return <Chip size="small" label={cat.label} title={cat.hint} sx={{ bgcolor: cat.bg, color: cat.fg, height: 19, fontSize: 10.5, fontWeight: 600 }} />;
+    return <Chip size="small" label={t(cat.label)} title={t(cat.hint)} sx={{ bgcolor: cat.bg, color: cat.fg, height: 19, fontSize: 10.5, fontWeight: 600 }} />;
   }
   // A finished task outranks everything else the chip could say.
   if (taskStatus === "done" && reviewStatus !== "pending") {
-    return <Chip size="small" label="done" sx={{ bgcolor: "#dfeade", color: "#47654a", height: 19, fontSize: 10.5, fontWeight: 600 }} />;
+    return <Chip size="small" label={t("done")} sx={{ bgcolor: "#dfeade", color: "#47654a", height: 19, fontSize: 10.5, fontWeight: 600 }} />;
   }
   // and "nobody is moving this" outranks the verdict: what happened to it matters less
   // than whether it is sitting on you right now
   if (needsYou) {
-    return <Chip size="small" label="needs you" sx={{ bgcolor: ALERT, color: "#fffdfb",
+    return <Chip size="small" label={t("needs you")} sx={{ bgcolor: ALERT, color: "#fffdfb",
       height: 19, fontSize: 10.5, fontWeight: 600 }} />;
   }
   // What actually matters to the reader: current state, not just the original verdict.
   // 'report' and 'feed' are NOT verdicts - nothing judged those items; they are here to be
   // read. Only 'ignored' means a policy actually rejected something.
   if (action === "triaging") {                     // decided in seconds: the pill breathes until then
-    return <Chip size="small" label="triaging…" sx={{ bgcolor: "#e6e0d5", color: "#6f6960", height: 19, fontSize: 10.5, fontWeight: 600,
+    return <Chip size="small" label={t("triaging…")} sx={{ bgcolor: "#e6e0d5", color: "#6f6960", height: 19, fontSize: 10.5, fontWeight: 600,
       "@keyframes tqBreathe": { "50%": { opacity: 0.45 } }, animation: "tqBreathe 1.4s ease-in-out infinite" }} />;
   }
   const key = ["report", "feed", "filed"].includes(action) ? action
@@ -222,7 +228,7 @@ export const ActionChip = ({ action, reviewStatus, taskStatus, needsYou, categor
         : action || "task_only";
   const c = (cat && !["pending", "auto"].includes(reviewStatus || "") ? cat : null) || ACTION_COLORS[key] || ACTION_COLORS.task_only;
   const decided = reviewStatus && !["pending", "auto"].includes(reviewStatus);
-  const label = !decided ? c.label : reviewStatus === "no_reply" ? "no reply needed" : `reviewed · ${reviewStatus}`;
+  const label = !decided ? t(c.label) : reviewStatus === "no_reply" ? t("no reply needed") : t("reviewed · {status}", { status: t(reviewStatus) });
   return <Chip size="small" label={label}
     sx={{ bgcolor: decided ? (reviewStatus === "no_reply" ? "#e9e3d8" : "#dfeade") : c.bg,
       color: decided ? (reviewStatus === "no_reply" ? "#867f74" : "#47654a") : c.fg, height: 19, fontSize: 10.5 }} />;
@@ -241,6 +247,7 @@ const Pill = ({ tone = "none", children }) => (
 );
 
 export const ProofCard = ({ taskId, onOpenTask }) => {
+  useLocale();
   const [p, setP] = useState(null);
   const [busy, setBusy] = useState("");
   const load = React.useCallback(() => {
@@ -249,33 +256,33 @@ export const ProofCard = ({ taskId, onOpenTask }) => {
   }, [taskId]);
   useEffect(() => { load(); }, [load]);
   if (!p) return null;
-  const t = p.tests || {}, ci = p.ci, ds = p.diffstat || {};
+  const tests = p.tests || {}, ci = p.ci, ds = p.diffstat || {};
   const act = async (path) => {
     setBusy(path);
     try { await api.post(`/api/tasks/${taskId}/${path}`); load(); }
-    catch (e) { setP({ ...p, error: e?.response?.data?.detail || "that did not work" }); }
+    catch (e) { setP({ ...p, error: e?.response?.data?.detail || message("that did not work") }); }
     setBusy("");
   };
   return (
     <Box sx={{ bgcolor: PANEL2, border: `1px solid ${BORDER}`, borderRadius: 1.5, px: 1.25, py: 1 }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap", mb: 0.5 }}>
         <Pill tone={ds.files ? "ok" : "none"}>
-          {ds.files ? `${plural(ds.files, "file")} · +${ds.added} −${ds.removed}` : "no file changes"}
+          {ds.files ? `${t(ds.files === 1 ? "{count} file" : "{count} files", { count: ds.files })} · +${ds.added} −${ds.removed}` : t("no file changes")}
         </Pill>
-        <Pill tone={!t.ran ? "none" : t.failed ? "bad" : "ok"}>
-          {!t.ran ? "no tests detected" : t.failed ? `${t.failed} failing / ${t.passed} passed` : `${t.passed} tests passed`}
+        <Pill tone={!tests.ran ? "none" : tests.failed ? "bad" : "ok"}>
+          {!tests.ran ? t("no tests detected") : tests.failed ? t("{failed} failing / {passed} passed", { failed: tests.failed, passed: tests.passed }) : t("{passed} tests passed", { passed: tests.passed })}
         </Pill>
         {ci && (
           <Pill tone={ci.checks?.state === "failure" ? "bad" : ci.checks?.state === "pending" ? "wait"
             : ci.checks?.state === "success" ? "ok" : "none"}>
-            {`${ci.kind === "pr" ? `PR #${ci.number}` : `${ci.branch} @ ${ci.sha}`} · CI ${ci.checks?.state || "unchecked"}`}
+            {`${ci.kind === "pr" ? `PR #${ci.number}` : `${ci.branch} @ ${ci.sha}`} · CI ${t(ci.checks?.state || "unchecked")}`}
           </Pill>
         )}
-        {p.seconds != null && <Pill>{dur(p.seconds)} elapsed</Pill>}
-        {p.attempts?.length > 1 && <Pill tone="wait">{p.attempts.length} attempts</Pill>}
+        {p.seconds != null && <Pill>{t("{duration} elapsed", { duration: dur(p.seconds) })}</Pill>}
+        {p.attempts?.length > 1 && <Pill tone="wait">{t("{count} attempts", { count: p.attempts.length })}</Pill>}
       </Box>
-      {t.ran && t.line && (
-        <Typography variant="caption" sx={{ ...mono, color: DIM, display: "block", fontSize: 10.5 }}>{t.line}</Typography>
+      {tests.ran && tests.line && (
+        <Typography variant="caption" sx={{ ...mono, color: DIM, display: "block", fontSize: 10.5 }}>{tests.line}</Typography>
       )}
       {p.files?.length > 0 && (
         <Box sx={{ mt: 0.5, maxHeight: 132, overflowY: "auto" }}>
@@ -299,7 +306,7 @@ export const ProofCard = ({ taskId, onOpenTask }) => {
       )}
       {p.gaps?.length > 0 && (
         <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.5 }}>
-          Not evidenced: {p.gaps.join(" · ")}
+          {t("Not evidenced: {gaps}", { gaps: p.gaps.join(" · ") })}
         </Typography>
       )}
       <Box sx={{ display: "flex", gap: 1.25, mt: 0.75, alignItems: "center", flexWrap: "wrap" }}>
@@ -307,12 +314,12 @@ export const ProofCard = ({ taskId, onOpenTask }) => {
           <>
             <Box component="a" href={ci.url} target="_blank" rel="noreferrer"
               sx={{ fontSize: 11, fontWeight: 600, color: "#55697a", textDecoration: "none" }}>
-              {ci.kind === "pr" ? "open PR ↗" : "the commit ↗"}
+              {ci.kind === "pr" ? t("open PR ↗") : t("the commit ↗")}
             </Box>
             <Box component="button" type="button" disabled={!!busy} onClick={() => act("ci")}
               sx={{ border: 0, bgcolor: "transparent", p: 0, font: "inherit",
                 fontSize: 11, fontWeight: 600, color: busy ? FAINT : "#55697a", cursor: "pointer" }}>
-              {busy === "ci" ? "Checking CI…" : "re-check CI"}
+              {busy === "ci" ? t("Checking CI…") : t("re-check CI")}
             </Box>
           </>
         ) : (
@@ -320,24 +327,24 @@ export const ProofCard = ({ taskId, onOpenTask }) => {
           // the other road stays one click away rather than buried in Settings
           <>
             <Box component="span" onClick={() => !busy && act("land")}
-              title={p.flow === "direct" ? "pushes the commits already in the checkout straight onto the default branch"
-                : "opens a DRAFT pull request from this task's branch — it merges only when you approve the task's close-out"}
+              title={p.flow === "direct" ? t("pushes the commits already in the checkout straight onto the default branch")
+                : t("opens a DRAFT pull request from this task's branch — it merges only when you approve the task's close-out")}
               sx={{ fontSize: 11, fontWeight: 600, color: busy ? FAINT : "#55697a", cursor: "pointer" }}>
-              {busy === "land" ? "landing…" : p.flow === "direct" ? "push straight to the branch" : "open a draft PR"}
+              {busy === "land" ? t("landing…") : p.flow === "direct" ? t("push straight to the branch") : t("open a draft PR")}
             </Box>
             <Box component="span" onClick={() => !busy && act(`land?flow=${p.flow === "direct" ? "pr" : "direct"}`)}
-              title="just this once, the other way"
+              title={t("just this once, the other way")}
               sx={{ fontSize: 11, color: busy ? FAINT : FAINT, cursor: "pointer", "&:hover": { color: "#55697a" } }}>
-              {p.flow === "direct" ? "or a draft PR" : "or push direct"}
+              {p.flow === "direct" ? t("or a draft PR") : t("or push direct")}
             </Box>
           </>
         )}
         {onOpenTask && (
           <Box component="span" onClick={() => onOpenTask(taskId)}
-            sx={{ fontSize: 11, fontWeight: 600, color: "#55697a", cursor: "pointer" }}>the whole session</Box>
+            sx={{ fontSize: 11, fontWeight: 600, color: "#55697a", cursor: "pointer" }}>{t("the whole session")}</Box>
         )}
       </Box>
-      {p.error && <Typography variant="caption" sx={{ color: "#6b2733", display: "block", mt: 0.5 }}>{p.error}</Typography>}
+      {p.error && <Typography variant="caption" sx={{ color: "#6b2733", display: "block", mt: 0.5 }}>{translateDescriptor(p.error)}</Typography>}
     </Box>
   );
 };
@@ -348,23 +355,25 @@ export const StatusDot = ({ ok, warn }) => (
 );
 
 // Expandable "prompt sent to agent" block inside a run trace - collapsed by default.
-export const PromptBlock = ({ text }) => (
-  <Box component="details" sx={{ my: 0.5 }}>
+export const PromptBlock = ({ text }) => {
+  useLocale();
+  return <Box component="details" sx={{ my: 0.5 }}>
     <Box component="summary" sx={{ ...mono, cursor: "pointer", color: ACCENT2, fontSize: 10.5 }}>
-      ▸ prompt sent to agent · {(text || "").length.toLocaleString()} chars — click to expand
+      {t("▸ prompt sent to agent · {count} chars — click to expand", { count: (text || "").length.toLocaleString() })}
     </Box>
     <Box component="pre" sx={{ ...mono, whiteSpace: "pre-wrap", bgcolor: PANEL2, borderRadius: 1.5,
       p: 1, mt: 0.5, fontSize: 10.5, lineHeight: 1.45, maxHeight: 320, overflow: "auto", color: DIM }}>
       {text}
     </Box>
   </Box>
-);
+};
 
 // The live agent console: a run's trace rendered like a terminal. Contiguous 'live'
 // events (streamed CLI output - tool calls, text) group into one dark scroll box that
 // follows the tail while the run is going; prompts stay collapsible; everything else
 // stays a one-line caption.
 export const RunTrace = ({ traceJson, running }) => {
+  useLocale();
   let evs = [];
   try { evs = JSON.parse(traceJson || "[]"); } catch { /* mid-write JSON: next poll fixes it */ }
   const boxRef = React.useRef(null);
@@ -390,7 +399,7 @@ export const RunTrace = ({ traceJson, running }) => {
         {running && tail && (
           <Typography variant="caption" sx={{ ...mono, color: CATPPUCCIN.cyan, fontSize: 10.5,
             "@keyframes tqBlink": { "50%": { opacity: 0.25 } }, animation: "tqBlink 1.1s step-end infinite" }}>
-            ▮ agent working…
+            {t("▮ agent working…")}
           </Typography>
         )}
       </Box>
@@ -430,9 +439,10 @@ export const DiffBlock = ({ text }) => {
    scroll it once and approve on vibes. A row per file with its own counts is a list you can
    work through, and the first file opens because a one-file change should need no clicks. */
 export const DiffFiles = ({ files, cwd, branch }) => {
+  useLocale();
   const [open, setOpen] = React.useState(() => new Set(files.length === 1 ? [0] : []));
   const flip = (i) => setOpen((s) => { const n = new Set(s); n.has(i) ? n.delete(i) : n.add(i); return n; });
-  if (!files.length) return <Empty>Nothing to push — no commits waiting, and the working tree is clean.</Empty>;
+  if (!files.length) return <Empty>{t("Nothing to push — no commits waiting, and the working tree is clean.")}</Empty>;
   return (
     <Box>
       <Typography variant="caption" sx={{ ...mono, color: FAINT, display: "block", mb: 0.75, wordBreak: "break-all" }}>
@@ -454,9 +464,9 @@ export const DiffFiles = ({ files, cwd, branch }) => {
             <Typography sx={{ ...mono, fontSize: 11, color: "#6b2733", fontVariantNumeric: "tabular-nums" }}>−{f.removed}</Typography>
           </Box>
           {open.has(i) && (f.binary
-            ? <Typography variant="caption" sx={{ color: FAINT, display: "block", px: 1.5, py: 1 }}>Binary file — git reports it changed, there is no text to show.</Typography>
+            ? <Typography variant="caption" sx={{ color: FAINT, display: "block", px: 1.5, py: 1 }}>{t("Binary file — git reports it changed, there is no text to show.")}</Typography>
             : f.truncated
-              ? <Typography variant="caption" sx={{ color: FAINT, display: "block", px: 1.5, py: 1 }}>Too large to render here — open it in your editor.</Typography>
+              ? <Typography variant="caption" sx={{ color: FAINT, display: "block", px: 1.5, py: 1 }}>{t("Too large to render here — open it in your editor.")}</Typography>
               : <DiffBlock text={f.patch} />)}
         </Box>
       ))}
@@ -482,6 +492,7 @@ export const useVoiceReady = () => {
 // One mic. Press to record, press again to stop; the clip goes to /api/voice/transcribe as its
 // raw bytes and the text lands through onText - into a prompt box, or straight into a session.
 export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) => {
+  useLocale();
   const voice = useVoiceReady();
   const live = React.useRef({}); live.current = { onText, onInterim };   // the latest handlers: a session outlives many renders
   const [rec, setRec] = React.useState(null);
@@ -527,12 +538,15 @@ export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) =
           onEnd: (line) => {
             setRec(null); if (ctl) ctl.current = null; if (all) live.current.onText?.(all);
             if (builtin && [dictationError("network"), dictationError("service-not-allowed")].includes(line)) {
-              setSrDown(true); line = `The browser's speech service did not answer - press the mic again to use ${builtin.label}`;
+              setSrDown(true); line = message("The browser's speech service did not answer - press the mic again to use {name}", { name: builtin.label });
             }
-            if (line) flash(line);
+            if (line) {
+              const stopped = typeof line === "string" && /^Browser voice stopped \((.*)\)$/.exec(line);
+              flash(stopped ? message("Browser voice stopped ({code})", { code: stopped[1] }) : typeof line === "string" ? message(line) : line);
+            }
           } });
         setRec(d); if (ctl) ctl.current = { cancel: () => d.cancel() };
-      } catch { flash("This browser cannot dictate here - set up a voice AI instead"); }
+      } catch { flash(message("This browser cannot dictate here - set up a voice AI instead")); }
       return;
     }
     if (viaLive) return listen();
@@ -549,12 +563,12 @@ export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) =
         try {
           const blob = viaBuiltin ? await toWav(clip) : clip;     // the computer's own recogniser reads WAV only
           const { data } = await api.post("/api/voice/transcribe", blob, { headers: { "Content-Type": blob.type || "audio/webm" } });
-          if (data.text) onText?.(data.text); else flash("nothing audible");
-        } catch (e) { flash(e?.response?.data?.detail || "transcription failed"); }
+          if (data.text) onText?.(data.text); else flash(message("nothing audible"));
+        } catch (e) { flash(e?.response?.data?.detail || message("transcription failed")); }
         setBusy(false);
       };
       mr.start(); setRec(mr);
-    } catch (e) { flash(e?.name === "NotAllowedError" ? dictationError("not-allowed") : "No microphone this browser can use - plug one in or allow it in the address bar"); }
+    } catch (e) { flash(e?.name === "NotAllowedError" ? message(dictationError("not-allowed")) : message("No microphone this browser can use - plug one in or allow it in the address bar")); }
   };
   // WINDOWS VOICE TYPING (voice.py LIVE; the owner, 2026-11-02: "use desktop if the machine has it"): the server listens on this
   // computer's microphone from the press to the next one. Each phrase lands as it settles - one by one into the chat box (onInterim),
@@ -568,10 +582,10 @@ export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) =
       if (error) flash(error);
     };
     try { id = (await api.post("/api/voice/listen")).data.id; }
-    catch (e) { flash(e?.response?.data?.detail || "Windows voice typing would not start"); return; }
+    catch (e) { flash(e?.response?.data?.detail || message("Windows voice typing would not start")); return; }
     timer = setInterval(async () => {
       try { const { data } = await api.get(`/api/voice/listen/${id}`, { params: { since: seen } }); take(data.said); if (data.done) end(data.error); }
-      catch { end("Windows voice typing stopped"); }
+      catch { end(message("Windows voice typing stopped")); }
     }, 400);
     const session = {
       stop: async () => {
@@ -584,18 +598,18 @@ export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) =
     setRec(session); if (ctl) ctl.current = { cancel: session.cancel };
   };
   const stop = () => { rec?.stop(); if (!viaBrowser && !viaLive) setRec(null); };   // the browser's dictation and voice typing report back themselves
-  const title = err || (!voice ? ""
-    : rec ? "Stop and transcribe"
-    : voice.ready ? `Dictate (${voice.label || voice.provider})`
-    : viaBrowser ? `Dictate — your browser's own recogniser. A voice AI (${placeName("voice")}) is more accurate and reads voice notes.`
-    : viaLive ? `Dictate — ${builtin.label}. A voice AI (${placeName("voice")}) also reads voice notes.`
-    : viaBuiltin ? `Dictate — ${builtin.label}. ${builtin.hint ? `${builtin.hint}. ` : ""}A voice AI (${placeName("voice")}) is more accurate and reads voice notes.`
-    : "Voice is off — no voice AI is set up yet");
+  const title = translateDescriptor(err) || (!voice ? ""
+    : rec ? t("Stop and transcribe")
+    : voice.ready ? t("Dictate ({provider})", { provider: voice.label || voice.provider })
+    : viaBrowser ? t("Dictate — your browser's own recogniser. A voice AI ({place}) is more accurate and reads voice notes.", { place: placeName("voice") })
+    : viaLive ? t("Dictate — {name}. A voice AI ({place}) also reads voice notes.", { name: builtin.label, place: placeName("voice") })
+    : viaBuiltin ? t("Dictate — {name}. {hint}A voice AI ({place}) is more accurate and reads voice notes.", { name: builtin.label, hint: builtin.hint ? `${builtin.hint}. ` : "", place: placeName("voice") })
+    : t("Voice is off — no voice AI is set up yet"));
   return (<>
-    <MuiTooltip title={ask ? "" : err ? <span data-tq-mic-err="">{err}</span> : title} open={!ask && (!!err || (hover && !!title))}
+    <MuiTooltip title={ask ? "" : err ? <span data-tq-mic-err="">{translateDescriptor(err)}</span> : title} open={!ask && (!!err || (hover && !!title))}
       onOpen={() => setHover(true)} onClose={() => setHover(false)}><span>
       <MuiIconButton size="small" onClick={rec ? stop : press} disabled={busy || !voice} sx={sx} data-tq-mic={off ? "off" : "on"}
-        aria-label={rec ? "stop recording" : off ? "voice is off - set up a voice AI" : "dictate"}>
+        aria-label={rec ? t("stop recording") : off ? t("voice is off - set up a voice AI") : t("dictate")}>
         {busy ? <CircularProgress size={size - 4} /> : rec ? <StopCircleIcon sx={{ fontSize: size, color: "#8a3646" }} />
           : off ? <MicOffIcon sx={{ fontSize: size, opacity: 0.7 }} /> : <MicIcon sx={{ fontSize: size }} />}
       </MuiIconButton>
@@ -603,17 +617,17 @@ export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) =
     <Popover open={!!ask} anchorEl={ask} onClose={() => setAsk(null)} data-tq-voice-ask
       anchorOrigin={{ vertical: "top", horizontal: "center" }} transformOrigin={{ vertical: "bottom", horizontal: "center" }}
       slotProps={{ paper: { sx: { p: 1.75, maxWidth: 320, borderRadius: 2, mt: -0.75 } } }}>
-      <Typography sx={{ fontSize: 13.5, fontWeight: 600, color: INK }}>Set up voice to talk instead of type</Typography>
+      <Typography sx={{ fontSize: 13.5, fontWeight: 600, color: INK }}>{t("Set up voice to talk instead of type")}</Typography>
       <Typography sx={{ fontSize: 12.5, color: DIM, mt: 0.5, lineHeight: 1.5 }}>
-        Pick a voice AI under {placeName("voice")}. Groq has a free tier; Local Whisper runs on this computer with no key.
+        {t("Pick a voice AI under {place}. Groq has a free tier; Local Whisper runs on this computer with no key.", { place: placeName("voice") })}
       </Typography>
       {/* a Mac's own voice typing takes any box with the cursor in it - this window cannot call it, the owner can (voice.py LIVE) */}
       {/Mac/.test(navigator.platform || navigator.userAgent || "") && <Typography sx={{ fontSize: 12.5, color: DIM, mt: 0.75, lineHeight: 1.5 }}>
-        Or use the Mac's own Dictation: click in the box and press the Dictation key (🎤), or Fn twice.
+        {t("Or use the Mac's own Dictation: click in the box and press the Dictation key (🎤), or Fn twice.")}
       </Typography>}
       <Box sx={{ display: "flex", gap: 1, mt: 1.5, flexWrap: "wrap" }}>
         <Button size="small" variant="contained" disableElevation sx={{ textTransform: "none" }}
-          onClick={() => { setAsk(null); openAppLink(place("voice").href); }}>Set up voice AI</Button>
+          onClick={() => { setAsk(null); openAppLink(place("voice").href); }}>{t("Set up voice AI")}</Button>
       </Box>
     </Popover>
   </>);
@@ -643,6 +657,7 @@ export const ChoiceList = ({ children }) => (
 );
 
 export const AgentReport = ({ body, artifacts: all = [] }) => {
+  useLocale();
   // WHAT THE AGENT DID (the owner, 2026-10-09: "Just show the last message/summary and that's all"; then "the original summary
   // was much more in detail? what happened to that?"). The detailed account is the ANSWER the agent saved for the task
   // (session_artifacts.result - the seven items); a later session's last message is only that session's own news (the deploy),
@@ -676,7 +691,7 @@ export const AgentReport = ({ body, artifacts: all = [] }) => {
       {words && <Box sx={{ fontSize: 13, color: INK }}><Md text={words} /></Box>}
       {since && since !== said && (
         <Box sx={{ mt: 1.2, pt: 1, borderTop: `1px solid ${BORDER}` }}>
-          <Typography sx={{ fontSize: 11.5, fontWeight: 600, color: DIM, mb: 0.4 }}>Latest session</Typography>
+          <Typography sx={{ fontSize: 11.5, fontWeight: 600, color: DIM, mb: 0.4 }}>{t("Latest session")}</Typography>
           <Box sx={{ fontSize: 13, color: INK }}><Md text={since} /></Box>
         </Box>
       )}
@@ -728,6 +743,7 @@ export const codingProfile = (agents = [], kinds = {}) => agents.find((a) => Str
 // [{id,label}] - Claude Code's catalog, codex's models_cache - so the menu reads the way that CLI's
 // own /model does; `choices` is the flat id list older payloads still send.
 export const ModelSelect = ({ info = {}, model, onModel, size = 30, whose = "tool", sx, menuProps, empty }) => {
+  useLocale();
   const rows = (info.models || []).filter((m) => m && m.id);
   const ids = rows.length ? rows.map((m) => m.id) : (info.choices || []);
   const labels = Object.fromEntries(rows.map((m) => [m.id, m.label || m.id]));
@@ -736,10 +752,10 @@ export const ModelSelect = ({ info = {}, model, onModel, size = 30, whose = "too
   const list = model && !ids.includes(model) ? [model, ...ids] : ids;
   const fs = sx?.fontSize || 12.5;
   return (
-    <Select size="small" displayEmpty value={model || ""} onChange={(e) => onModel(e.target.value)} MenuProps={menuProps} inputProps={{ "aria-label": "Model" }}
+    <Select size="small" displayEmpty value={model || ""} onChange={(e) => onModel(e.target.value)} MenuProps={menuProps} inputProps={{ "aria-label": t("Model") }}
       sx={{ fontSize: 12.5, height: size, bgcolor: "#fff", minWidth: 150, ...sx }}>
       <MenuItem value="" sx={{ fontSize: fs }}>
-        {empty || (info.default ? `default · ${info.default}` : `the ${whose}'s default model`)}
+        {empty || (info.default ? t("default · {model}", { model: info.default }) : t("the {whose}'s default model", { whose: t(whose) }))}
       </MenuItem>
       {list.map((m) => <MenuItem key={m} value={m} sx={{ fontSize: fs }}>{labels[m] || m}</MenuItem>)}
     </Select>
@@ -747,21 +763,24 @@ export const ModelSelect = ({ info = {}, model, onModel, size = 30, whose = "too
 };
 
 export { NO_CODING_TOOL };            // one wording, beside the check that greys on it (capabilities.cannotStart)
-export const NoCodingTool = () => (
-  <Box data-tq-no-coding-tool="" sx={{ display: "flex", alignItems: "center", gap: 1, fontSize: 12.5, color: INK }}>
-    <span>{NO_CODING_TOOL} -</span>
-    <Button size="small" variant="outlined" onClick={() => openAppLink(place("ai_apps").href)}>Connect one</Button>
-  </Box>);
+export const NoCodingTool = () => {
+  useLocale();
+  return <Box data-tq-no-coding-tool="" sx={{ display: "flex", alignItems: "center", gap: 1, fontSize: 12.5, color: INK }}>
+    <span>{t(NO_CODING_TOOL)} -</span>
+    <Button size="small" variant="outlined" onClick={() => openAppLink(place("ai_apps").href)}>{t("Connect one")}</Button>
+  </Box>;
+};
 
 // WHAT MATTERS FOR COMPUTER USE, in the brain menu itself (2026-10-25): four equal items gave no basis for the key choice. Only on a
 // task that wants a browser, and only where it is not ordinary. Text in an existing control.
-export const brainNote = (b, browser) => [b?.signed_out ? "not signed in" : "",
-  browser ? (b?.browser === false ? "can't use the browser" : b?.holds === false ? "browser acts not held" : "") : ""]
-  .filter(Boolean).map((t) => ` · ${t}`).join("");
+export const brainNote = (b, browser) => [b?.signed_out ? t("not signed in") : "",
+  browser ? (b?.browser === false ? t("can't use the browser") : b?.holds === false ? t("browser acts not held") : "") : ""]
+  .filter(Boolean).map((note) => ` · ${note}`).join("");
 
 export const AgentPicker = ({ agents, models, agent, model, onAgent, onModel, size = 30, kinds = {},
                              coding = false, brains = [], brain = "", onBrain, brainModels = {},
                              generalBrains = [], brainsRead = false, codingReady = true, pick = "", onPick, has = "", browser = false }) => {
+  useLocale();
   // A coding picker chooses the BRAIN - which CLI runs the work. It always did in spirit ("chooses
   // the executable, not one of several instruction profiles backed by it") but it named a profile
   // to say so; the role is the coding profile for every coding task now, so that list would be one entry
@@ -788,20 +807,20 @@ export const AgentPicker = ({ agents, models, agent, model, onAgent, onModel, si
           (triage's role, else the assistant's own), behind the scenes; the profiles themselves are kept in Docs -> Profiles. */}
       {/* ...each picker named for the Assistant (pageView.labelOf reads aria-label): unnamed, New's and the task's pickers were never on
           the view it was sent, and "use Claude Code for it" had nothing to pick (the audit of New, 2026-11-02) */}
-      {!handOff && <Select size="small" value={selected || ""} inputProps={{ "aria-label": coding ? "Coding tool" : "Profile" }}
+      {!handOff && <Select size="small" value={selected || ""} inputProps={{ "aria-label": coding ? t("Coding tool") : t("Profile") }}
         onChange={(e) => (coding ? onBrain : onAgent)(e.target.value)}
         sx={{ fontSize: 12.5, height: size, bgcolor: "#fff", minWidth: 120 }}>
         {list.map((a) => (
           <MenuItem key={a} value={a} sx={{ fontSize: 12.5 }}>
-            {a}{coding && brainModels[a] && brainModels[a].installed === false ? " · not installed" : ""}
+            {a}{coding && brainModels[a] && brainModels[a].installed === false ? t(" · not installed") : ""}
           </MenuItem>
         ))}
       </Select>}
       {handOff && (
-        <Select size="small" displayEmpty value={pick || ""} inputProps={{ "aria-label": "Brain" }} onChange={(e) => { onPick(e.target.value); onModel(""); }}
+        <Select size="small" displayEmpty value={pick || ""} inputProps={{ "aria-label": t("Brain") }} onChange={(e) => { onPick(e.target.value); onModel(""); }}
           sx={{ fontSize: 12.5, height: size, bgcolor: "#fff", minWidth: 150 }}>
           <MenuItem value="" sx={{ fontSize: 12.5 }}>
-            {!generalBrains.length ? "No AI connected" : browser ? "an AI that can use the browser" : "the brain it runs on"}
+            {!generalBrains.length ? t("No AI connected") : browser ? t("an AI that can use the browser") : t("the brain it runs on")}
           </MenuItem>
           {generalBrains.map((b) => <MenuItem key={b.pick} value={b.pick} sx={{ fontSize: 12.5 }}>{b.label}{brainNote(b, browser)}</MenuItem>)}
         </Select>
@@ -823,6 +842,7 @@ export const AgentPicker = ({ agents, models, agent, model, onAgent, onModel, si
 // as "Not our task doesn't work while syncing", and nothing said otherwise because the save
 // error was swallowed. Both ends are fixed here: the lock, and a visible failure.
 export const NotMine = ({ messageId, onDone, onLock, row, first, compact = false }) => {
+  useLocale();
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState("");
   // no default here on purpose: the server picks the scope this message calls for (a topic when
@@ -854,61 +874,57 @@ export const NotMine = ({ messageId, onDone, onLock, row, first, compact = false
       setSaved(data);
       setTimeout(() => onDone?.(), 1400);
     } catch (e) {
-      setErr(e?.response?.data?.detail || e?.message || "the verdict did not save — try again");
+      setErr(e?.response?.data?.detail || e?.message || message("the verdict did not save — try again"));
     }
     setBusy(false);
   };
   if (saved) return (
     <Box sx={row ? { px: 1.25, py: 1 } : undefined}>
       <Typography variant="caption" sx={{ color: "#47654a", fontWeight: 600, display: "block" }}>
-        ✓ noted — triage will apply this to{" "}
-        {saved.scope === "global" ? "every sender" : saved.scope === "subject" ? `any mail about “${saved.scopeKey}”` : saved.scopeKey}
-        {" "}from now on
+        {t("✓ noted — triage will apply this to {scope} from now on", { scope: saved.scope === "global" ? t("every sender") : saved.scope === "subject" ? t("any mail about “{topic}”", { topic: saved.scopeKey }) : saved.scopeKey })}
       </Typography>
       {/* the verdict works from here on; tasks opened BEFORE it are still sitting there, and
           saying nothing about them is how a fix reads as "still not learning" */}
       {!!saved.alsoCovered?.length && (
         <Typography variant="caption" sx={{ color: "#55697a", display: "block", mt: 0.25 }}>
-          {plural(saved.alsoCovered.length, "open task")} already match it
-          ({saved.alsoCovered.slice(0, 4).map((t) => `TQ-${String(t.taskId).padStart(4, "0")}`).join(", ")}
-          {saved.alsoCovered.length > 4 ? ", …" : ""}) — close them the same way if they are not yours either.
+          {t(saved.alsoCovered.length === 1 ? "{count} open task already match it ({refs}) — close them the same way if they are not yours either." : "{count} open tasks already match it ({refs}) — close them the same way if they are not yours either.", { count: saved.alsoCovered.length, refs: saved.alsoCovered.slice(0, 4).map((item) => `TQ-${String(item.taskId).padStart(4, "0")}`).join(", ") + (saved.alsoCovered.length > 4 ? ", …" : "") })}
         </Typography>
       )}
     </Box>
   );
   if (!open && compact) return (
     <Button size="small" disableElevation startIcon={<PsychologyOutlinedIcon sx={{ fontSize: 16 }} />}
-      onClick={() => setOpen(true)} title="Not our responsibility — explain why once so triage remembers"
+      onClick={() => setOpen(true)} title={t("Not our responsibility — explain why once so triage remembers")}
       sx={{ width: 190, height: 34, px: 1.5, justifyContent: "flex-start", borderRadius: 2,
         textTransform: "none", fontWeight: 600, fontSize: 12, whiteSpace: "nowrap", boxShadow: "none",
         color: "#5a3e83", bgcolor: "#f8f5fc", border: "1px solid #d9cbea",
         "&:hover": { bgcolor: "#f1eafa", borderColor: "#bca3d8", boxShadow: "none" } }}>
-      {btnLabel("not_ours")}
+      {t(btnLabel("not_ours"))}
       <Box component="span" aria-hidden sx={{ ml: 1, px: 0.65, py: 0.08, borderRadius: 0.8,
         bgcolor: "rgba(90,62,131,.1)", fontSize: 8.5, fontWeight: 600, letterSpacing: 0.7,
-        lineHeight: 1.5 }}>MEMORY</Box>
+        lineHeight: 1.5 }}>{t("MEMORY")}</Box>
     </Button>
   );
   if (!open) return row ? (
     <ChoiceRow first={first} tint="#e9e3d8" onClick={() => setOpen(true)}
       icon={<BlockIcon sx={{ fontSize: 15, color: "#867f74" }} />}
-      label={btnLabel("not_ours")} hint="say why once — triage remembers it for this topic, or this sender" />
+      label={t(btnLabel("not_ours"))} hint={t("say why once — triage remembers it for this topic, or this sender")} />
   ) : (
     <Button size="small" sx={{ color: "#867f74", fontSize: 11 }} onClick={() => setOpen(true)}
-      title="Not our responsibility — and remember why, so triage learns it">{btnLabel("not_ours")}</Button>
+      title={t("Not our responsibility — and remember why, so triage learns it")}>{t(btnLabel("not_ours"))}</Button>
   );
   return (
     <Box sx={{ width: "100%", flexBasis: compact ? "100%" : "auto", mt: row ? 0 : 1, p: 1.25, bgcolor: PANEL2,
       border: row ? "none" : `1px solid ${BORDER}`, borderRadius: row ? 0 : 1.5 }}>
       <Typography variant="caption" sx={{ color: DIM, fontWeight: 600, display: "block", mb: 0.5 }}>
-        Not our task — what should triage remember?
+        {t("Not our task — what should triage remember?")}
       </Typography>
       {/* WHAT the verdict is about, in the owner's words. Trimming the subject guesses at the
           standing part ("resident refund request") and drops the changing one (the resident);
           being told beats guessing, and a topic keyed too narrowly is a verdict that fires once. */}
       {scope === "subject" && (
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, mb: 0.75 }}>
-          <Typography variant="caption" sx={{ color: FAINT, whiteSpace: "nowrap" }}>mail about</Typography>
+          <Typography variant="caption" sx={{ color: FAINT, whiteSpace: "nowrap" }}>{t("mail about")}</Typography>
           <TextField fullWidth size="small" value={topic} sx={{ bgcolor: "#fff" }}
             inputProps={{ style: { fontSize: 12.5, padding: "4px 8px" } }}
             onChange={(e) => { setTopicEdited(true); setTopic(e.target.value); }} />
@@ -921,23 +937,23 @@ export const NotMine = ({ messageId, onDone, onLock, row, first, compact = false
           sx={{ fontSize: 11.5, height: 26, bgcolor: "#fff" }}>
           {/* the topic first, because a verdict is usually about a KIND OF WORK and whoever
               happens to send it next is not the point */}
-          {topic && <MenuItem value="subject" sx={{ fontSize: 12 }}>any mail about this</MenuItem>}
-          <MenuItem value="sender" sx={{ fontSize: 12 }}>this sender</MenuItem>
-          <MenuItem value="sender_domain" sx={{ fontSize: 12 }}>everyone at their domain</MenuItem>
-          <MenuItem value="global" sx={{ fontSize: 12 }}>every sender</MenuItem>
+          {topic && <MenuItem value="subject" sx={{ fontSize: 12 }}>{t("any mail about this")}</MenuItem>}
+          <MenuItem value="sender" sx={{ fontSize: 12 }}>{t("this sender")}</MenuItem>
+          <MenuItem value="sender_domain" sx={{ fontSize: 12 }}>{t("everyone at their domain")}</MenuItem>
+          <MenuItem value="global" sx={{ fontSize: 12 }}>{t("every sender")}</MenuItem>
         </Select>
         <Typography variant="caption" sx={{ color: FAINT, flex: 1, minWidth: 120 }}>
           {scope === "subject" && topic
-            ? `Matches any mail about “${topic}”, whoever sends it — the changing part of the subject is ignored.`
-            : "Their mail keeps arriving — only the verdict is learned."}
+            ? t("Matches any mail about “{topic}”, whoever sends it — the changing part of the subject is ignored.", { topic })
+            : t("Their mail keeps arriving — only the verdict is learned.")}
         </Typography>
-        <Button size="small" sx={{ color: DIM, fontSize: 11 }} onClick={() => setOpen(false)}>Cancel</Button>
+        <Button size="small" sx={{ color: DIM, fontSize: 11 }} onClick={() => setOpen(false)}>{t("Cancel")}</Button>
         <Button size="small" variant="contained" disableElevation
           disabled={busy || !note.trim() || (scope === "subject" && !topic.trim())} onClick={save}
-          sx={{ fontSize: 11.5 }}>{busy ? "saving…" : "Not ours — remember this"}</Button>
+          sx={{ fontSize: 11.5 }}>{busy ? t("saving…") : t("Not ours — remember this")}</Button>
       </Box>
       {err && <Typography variant="caption" sx={{ color: ROLES.bad.ink, fontWeight: 600, display: "block", mt: 0.75 }}>
-        {err} — your note is still here.
+        {t("{error} — your note is still here.", { error: translateDescriptor(err) })}
       </Typography>}
     </Box>
   );
@@ -946,6 +962,7 @@ export const NotMine = ({ messageId, onDone, onLock, row, first, compact = false
 // One door, then an explicit choice. Triage may suggest which kind fits, but it must not silently
 // choose the regular API agent or a coding CLI on the owner's behalf.
 export const SendToAgent = ({ messageId, subject, taskKind, onOpenTask, dense, row, first }) => {
+  useLocale();
   const canCode = useCapabilities().coding;                   // no coding tool connected: no Coding agent, and nothing suggests one (capabilities.js)
   const suggestedKind = canCode && (!taskKind || String(taskKind).toLowerCase() === "coding") ? "coding" : "general";
   const [agentKind, setAgentKind] = useState("");
@@ -971,34 +988,34 @@ export const SendToAgent = ({ messageId, subject, taskKind, onOpenTask, dense, r
       const outcome = outcomeOf(data);
       if (outcome.state === "needs_repo") { setRepoAsk({ taskId: data.taskId, agent: data.agent || agent }); }
       else {
-        setRepoAsk(null); setSent({ ...data, outcome }); setPrompt("");
+        setRepoAsk(null); setSent(data); setPrompt("");
         onOpenTask?.(data.taskId);          // the session IS the page - go watch it
       }
-    } catch (e) { setErr(e?.response?.data?.detail || "Could not reach the agent"); }
+    } catch (e) { setErr(e?.response?.data?.detail || message("Could not reach the agent")); }
     setBusy(false);
   };
   if (repoAsk) return (
     <Box sx={{ mt: 1, p: 1.25, bgcolor: PANEL2, border: `1px solid ${BORDER}`, borderRadius: 1.5 }}>
-      <Typography variant="caption" sx={{ color: DIM, fontWeight: 600, display: "block", mb: 0.5 }}>Which repository should the coding agent use?</Typography>
+      <Typography variant="caption" sx={{ color: DIM, fontWeight: 600, display: "block", mb: 0.5 }}>{t("Which repository should the coding agent use?")}</Typography>
       <RepoPicker taskId={repoAsk.taskId} agent={repoAsk.agent}
         onDone={(data) => { if (data?.repo) { setRepoAsk(null); send(); } }} />
-      <Button size="small" sx={{ fontSize: 11, color: DIM }} onClick={() => setRepoAsk(null)}>Not now - nothing was started</Button>
+      <Button size="small" sx={{ fontSize: 11, color: DIM }} onClick={() => setRepoAsk(null)}>{t("Not now - nothing was started")}</Button>
     </Box>
   );
   if (sent) return (
     <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: dense ? 0.5 : 1 }}>
       <TaskuaryMark size={16} />
       <Typography variant="caption" sx={{ color: "#47654a", fontWeight: 600 }}>
-        {sent.outcome?.text || `${sent.agent || "The agent"} is on it in a live session — ${sent.ref}`}
+        {outcomeOf(sent)?.text || t("{agent} is on it in a live session — {ref}", { agent: sent.agent || t("The agent"), ref: sent.ref })}
       </Typography>
-      <Button size="small" sx={{ fontSize: 11 }} onClick={() => onOpenTask?.(sent.taskId)}>watch it live →</Button>
-      <Button size="small" sx={{ fontSize: 11, color: DIM }} onClick={() => setSent(null)}>send another</Button>
+      <Button size="small" sx={{ fontSize: 11 }} onClick={() => onOpenTask?.(sent.taskId)}>{t("watch it live →")}</Button>
+      <Button size="small" sx={{ fontSize: 11, color: DIM }} onClick={() => setSent(null)}>{t("send another")}</Button>
     </Box>
   );
   if (!open) return row ? (
     <ChoiceRow first={first} tint="#e3e6e1" onClick={() => setOpen(true)}
       icon={<TaskuaryMark size={17} />}
-      label="Send to agent…" hint="choose a coding agent or a regular agent" />
+      label={t("Send to agent…")} hint={t("choose a coding agent or a regular agent")} />
   ) : (
     <Button size="small" disableElevation startIcon={<TaskuaryMark size={15} />}
       onClick={() => setOpen(true)}
@@ -1006,14 +1023,14 @@ export const SendToAgent = ({ messageId, subject, taskKind, onOpenTask, dense, r
         justifyContent: "flex-start", fontWeight: 600, whiteSpace: "nowrap", color: DIM, bgcolor: PANEL,
         border: `1px solid ${BORDER}`, boxShadow: "none",
         "&:hover": { color: INK, bgcolor: PANEL, borderColor: "#d8cfbe", boxShadow: "none" } }}>
-      Send to agent…
+      {t("Send to agent…")}
     </Button>
   );
   return (
     <Box sx={{ mt: 1, p: 1.25, bgcolor: PANEL2, border: `1px solid ${BORDER}`, borderRadius: 1.5 }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.75, flexWrap: "wrap" }}>
         <TaskuaryMark size={17} />
-        <Typography variant="caption" sx={{ color: DIM, fontWeight: 600 }}>Which kind of agent?</Typography>
+        <Typography variant="caption" sx={{ color: DIM, fontWeight: 600 }}>{t("Which kind of agent?")}</Typography>
         <Box sx={{ flex: 1, minWidth: 8 }} />
         {coding && <AgentPicker agents={agents} models={models} agent={agent} model={model} coding
           brains={brainList} brainModels={brainModels} brain={brain} onBrain={(b) => { setBrain(b); setModel(""); }}
@@ -1021,30 +1038,30 @@ export const SendToAgent = ({ messageId, subject, taskKind, onOpenTask, dense, r
       </Box>
       <Box sx={{ display: "flex", gap: 0.75, mb: agentKind ? 0.75 : 0, flexWrap: "wrap" }}>
         {canCode && <Button size="small" variant={agentKind === "coding" ? "contained" : "outlined"} disableElevation
-          onClick={() => setAgentKind("coding")}>{choice("agent", "coding_agent")}</Button>}
+          onClick={() => setAgentKind("coding")}>{t(choice("agent", "coding_agent"))}</Button>}
         <Button size="small" variant={agentKind === "general" ? "contained" : "outlined"} disableElevation
-          onClick={() => setAgentKind("general")}>{choice("agent", "regular_agent")}</Button>
+          onClick={() => setAgentKind("general")}>{t(choice("agent", "regular_agent"))}</Button>
       </Box>
       <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: agentKind ? 0.5 : 0 }}>
-        Triage tagged this {suggestedKind}; your choice here is what actually runs.
+        {t("Triage tagged this {kind}; your choice here is what actually runs.", { kind: t(suggestedKind) })}
       </Typography>
       {agentKind && <TextField fullWidth multiline minRows={2} size="small" autoFocus value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder={coding ? `What should it do? e.g. "Find why this failed and fix it, then tell me what changed."`
-            : "What should the agent do with this?"}
+          placeholder={coding ? t('What should it do? e.g. "Find why this failed and fix it, then tell me what changed."')
+            : t("What should the agent do with this?")}
           sx={{ bgcolor: "#fff" }} />}
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 0.75 }}>
         <Typography variant="caption" sx={{ color: FAINT, flex: 1, minWidth: 0 }} noWrap>
-          it gets the full message{subject ? ` “${subject}”` : ""} + your operator docs as context
+          {subject ? t("it gets the full message “{subject}” + your operator docs as context", { subject }) : t("it gets the full message + your operator docs as context")}
         </Typography>
-        <Button size="small" sx={{ fontSize: 11, color: DIM }} onClick={() => setOpen(false)}>Cancel</Button>
+        <Button size="small" sx={{ fontSize: 11, color: DIM }} onClick={() => setOpen(false)}>{t("Cancel")}</Button>
         <Button size="small" variant="contained" disableElevation disabled={busy || !agentKind} onClick={send}
           startIcon={busy ? <CircularProgress size={11} sx={{ color: "#fff" }} /> : null}
           sx={{ fontSize: 11.5, bgcolor: "#6f8a6e", "&:hover": { bgcolor: "#5b7259" } }}>
-          {busy ? "sending…" : btnLabel(agentKind === "coding" ? "coding_agent" : "regular_agent")}
+          {busy ? t("sending…") : t(btnLabel(agentKind === "coding" ? "coding_agent" : "regular_agent"))}
         </Button>
       </Box>
-      {err && <Typography variant="caption" sx={{ color: "#6b2733", display: "block", mt: 0.5 }}>{err}</Typography>}
+      {err && <Typography variant="caption" sx={{ color: "#6b2733", display: "block", mt: 0.5 }}>{translateDescriptor(err)}</Typography>}
     </Box>
   );
 };
@@ -1075,7 +1092,7 @@ export const isWaiting = (s) => (s?.waiting ?? (s?.idle >= IDLE_WAITING));
 // How long a parked agent has been holding its question - "asked you 5m ago". The row already carries the session that stateOf()
 // reads, so this costs nothing, and a question left for an hour should say so on the rail rather than only inside the task. The task
 // list and the task page each typed this once (2026-10-18).
-export const askedAgo = (t) => (t?.Session && isWaiting(t.Session) ? `asked you ${agoMins((Number(t.Session.idle) || 0) / 60)}` : "");
+export const askedAgo = (task) => (task?.Session && isWaiting(task.Session) ? t("asked you {time}", { time: agoMins((Number(task.Session.idle) || 0) / 60) }) : "");
 // A LIVE SESSION SPEAKS FOR ITSELF. The run row says `running` for as long as the pty is up,
 // including while the CLI sits at its prompt waiting for an answer - so the rail read "agent
 // working" on TQ-0004 while the page header, the Wall and the toast all said the agent had
@@ -1122,16 +1139,18 @@ export const stateOf = (t) => {
   return laneState(taskLane(t));
 };
 export const StateChip = ({ task }) => {
+  useLocale();
   const st = stateOf(task);
   // the rail's mark leads the word, as it does on the rail (⏳ waiting to start, 👋 agent waiting on you)
-  return <Chip size="small" label={st.mark && st.mark !== "spinner" ? `${st.mark} ${st.label}` : st.label}
+  return <Chip size="small" label={st.mark && st.mark !== "spinner" ? `${st.mark} ${t(st.label)}` : t(st.label)}
     sx={{ bgcolor: st.c.bg, color: st.c.fg, border: `1px solid ${st.c.bd}`, height: 19, fontSize: 10.5, fontWeight: 600 }} />;
 };
 
-export const TaskStatusChip = ({ status }) => (
-  <Chip size="small" label={String(status || "").replace(/_/g, " ")} sx={{ bgcolor: "transparent", border: `1px solid ${TASK_STATUS_COLORS[status] || "#a9a294"}55`,
-    color: TASK_STATUS_COLORS[status] || "#a9a294", height: 19, fontSize: 10.5 }} />
-);
+export const TaskStatusChip = ({ status }) => {
+  useLocale();
+  return <Chip size="small" label={t(String(status || "").replace(/_/g, " "))} sx={{ bgcolor: "transparent", border: `1px solid ${TASK_STATUS_COLORS[status] || "#a9a294"}55`,
+    color: TASK_STATUS_COLORS[status] || "#a9a294", height: 19, fontSize: 10.5 }} />;
+};
 
 const LC = {
   neutral: { bg: "#f4f1ec", fg: "#55697a", bd: "#d8cfbe" },
@@ -1160,9 +1179,10 @@ const lifecycleColor = (kind, phase) => {
 // Always name the state machine. A naked "done" beside an active terminal was the original
 // ambiguity: the task can be done while an agent is stopped and a reply is still unsent.
 export const LifecycleChip = ({ kind, phase, compact = false, sx = {} }) => {
+  useLocale();
   const c = lifecycleColor(kind, phase);
   // ...unless the phase names it already: "agent · agent working" says it twice
-  return <Chip size="small" label={String(phase || "").startsWith(kind) ? phase : `${kind} · ${phase}`}
+  return <Chip size="small" label={String(phase || "").startsWith(kind) ? t(phase) : `${t(kind)} · ${t(phase)}`}
     sx={{ bgcolor: c.bg, color: c.fg, border: `1px solid ${c.bd}`, height: compact ? 17 : 20,
       fontSize: compact ? 11 : 11.5, fontWeight: 500, "& .MuiChip-label": { px: compact ? 0.7 : 0.9 }, ...sx }} />;
 };
@@ -1344,20 +1364,21 @@ export const usePromptImages = () => {
 };
 
 // The pasted screenshots, as a strip of thumbnails under the box they were pasted into.
-export const PromptThumbs = ({ imgs, onDrop, h = 40, note = true }) => !imgs.length ? null : (
-  <Box sx={{ display: "flex", gap: 0.75, flexWrap: "wrap", alignItems: "center", mt: 0.5 }}>
+export const PromptThumbs = ({ imgs, onDrop, h = 40, note = true }) => {
+  useLocale();
+  return !imgs.length ? null : <Box sx={{ display: "flex", gap: 0.75, flexWrap: "wrap", alignItems: "center", mt: 0.5 }}>
     {imgs.map((im) => (
       <Box key={im.id} sx={{ position: "relative" }}>
         <Box component="img" src={im.url} alt="" sx={{ height: h, borderRadius: 0.75, border: "1px solid #ddd2b9", display: "block" }} />
-        <Box component="button" type="button" onClick={() => onDrop(im.id)} aria-label="Remove this image" sx={{ position: "absolute", top: -5, right: -5, width: 14, height: 14, borderRadius: 99,
+        <Box component="button" type="button" onClick={() => onDrop(im.id)} aria-label={t("Remove this image")} sx={{ position: "absolute", top: -5, right: -5, width: 14, height: 14, borderRadius: 99,
           bgcolor: "#6b5f45", color: "#fff", fontSize: 9, lineHeight: "14px", textAlign: "center", cursor: "pointer", border: 0, p: 0 }}>×</Box>
       </Box>
     ))}
     {note && <Typography variant="caption" sx={{ color: "#6b5f45", fontSize: 10 }}>
-      {imgs.length === 1 ? "goes with the prompt, as a file the agent opens" : `${imgs.length} images go with the prompt`}
+      {imgs.length === 1 ? t("goes with the prompt, as a file the agent opens") : t("{count} images go with the prompt", { count: imgs.length })}
     </Typography>}
   </Box>
-);
+};
 
 // THE WAITING ROOM, as a box you can type into from anywhere a task shows. What you think of
 // while the agent works goes in here and is typed into its session as one batch the moment it
@@ -1365,6 +1386,7 @@ export const PromptThumbs = ({ imgs, onDrop, h = 40, note = true }) => !imgs.len
 // box on the task page, on a Board card and in the Timeline's funnel bar, so the idea goes
 // where you are instead of you going to find the room.
 export const TellAgent = ({ taskId, taskRef, compact = false, onQueued }) => {
+  useLocale();
   const [wait, setWait] = React.useState({ data: [], state: null });
   const [text, setText] = React.useState("");
   const [flash, setFlash] = React.useState("");
@@ -1391,13 +1413,13 @@ export const TellAgent = ({ taskId, taskRef, compact = false, onQueued }) => {
         ? await api.post(`/api/tasks/${taskId}/waitroom/bulk`, { text: body })
         : await api.post(`/api/tasks/${taskId}/waitroom`, { text: body });
       dropImgs(); setText(""); setMany(false);
-      if (many) { setFlash(`${data.queued} prompts queued — they drip in one per stop`); setTimeout(() => setFlash(""), 5000); load(); onQueued?.(data); return; }
+      if (many) { setFlash(message("{count} prompts queued — they drip in one per stop", { count: data.queued })); setTimeout(() => setFlash(""), 5000); load(); onQueued?.(data); return; }
       // words that name none of a chooser's options are kept, not typed into it - say why, not "queued" (B12)
-      if (data.state === "not_a_choice") { failed(`Kept, not sent - ${data.why}`); load(); onQueued?.(data); return; }
-      setFlash(data.delivered ? (data.state === "restarted" ? "session reopened with it" : "typed in — the agent was parked") : "queued — goes in when the agent stops");
+      if (data.state === "not_a_choice") { failed(message("Kept, not sent - {reason}", { reason: data.why })); load(); onQueued?.(data); return; }
+      setFlash(message(data.delivered ? (data.state === "restarted" ? "session reopened with it" : "typed in — the agent was parked") : "queued — goes in when the agent stops"));
       setTimeout(() => setFlash(""), 4000);
       load(); onQueued?.(data);
-    } catch (e) { failed(`Not sent - ${e?.response?.data?.detail || "Taskuary didn't answer"}. Your words are still in the box; try again.`); }
+    } catch (e) { failed(message("Not sent - {error}. Your words are still in the box; try again.", { error: e?.response?.data?.detail || message("Taskuary didn't answer") })); }
   };
   const pending = wait.data.filter((w) => !w.DeliveredAt);
   const peekQueue = () => {
@@ -1405,21 +1427,21 @@ export const TellAgent = ({ taskId, taskRef, compact = false, onQueued }) => {
     clearTimeout(peekTimer.current); setShowQ(true);
     peekTimer.current = setTimeout(() => setShowQ(false), 3000);
   };
-  const stateLine = wait.state === "working" ? "agent is working — this waits for its next stop"
-    : wait.state === "asking" ? "agent is asking you something — what you write here IS the answer, and goes in at once"
-    : wait.state === "parked" ? "agent is parked — this goes straight in"
-    : wait.state === "no_session" ? "no live session — this reopens one with your note as the ask" : "";
+  const stateLine = wait.state === "working" ? t("agent is working — this waits for its next stop")
+    : wait.state === "asking" ? t("agent is asking you something — what you write here IS the answer, and goes in at once")
+    : wait.state === "parked" ? t("agent is parked — this goes straight in")
+    : wait.state === "no_session" ? t("no live session — this reopens one with your note as the ask") : "";
   // compact has no room for a header line, so the placeholder carries the state instead
-  const straight = ["asking", "parked", "no_session"].includes(wait.state), verb = straight && !many ? "Send" : "Queue";
-  const ph = many ? "One prompt per line — twenty is fine. Bullets and numbers are stripped; they drip in one per stop, in this order."
-    : !compact ? "Anything you think of while it works — queued, typed in when it stops. Enter to queue, Shift+Enter for a new line. Paste a screenshot to send it along."
-    : wait.state === "asking" ? "It is asking — answer here and it goes straight in"
-    : wait.state === "parked" ? "Tell the agent — goes straight in. Enter to send, paste a screenshot to attach it"
-    : wait.state === "no_session" ? "Tell the agent — reopens a session with this as the ask"
-    : "Tell the agent — queued, typed in when it stops. Enter to send, paste a screenshot to attach it";
+  const straight = ["asking", "parked", "no_session"].includes(wait.state), verb = straight && !many ? t("Send") : t("Queue");
+  const ph = many ? t("One prompt per line — twenty is fine. Bullets and numbers are stripped; they drip in one per stop, in this order.")
+    : !compact ? t("Anything you think of while it works — queued, typed in when it stops. Enter to queue, Shift+Enter for a new line. Paste a screenshot to send it along.")
+    : wait.state === "asking" ? t("It is asking — answer here and it goes straight in")
+    : wait.state === "parked" ? t("Tell the agent — goes straight in. Enter to send, paste a screenshot to attach it")
+    : wait.state === "no_session" ? t("Tell the agent — reopens a session with this as the ask")
+    : t("Tell the agent — queued, typed in when it stops. Enter to send, paste a screenshot to attach it");
   const input = (
     <TextField fullWidth multiline minRows={many ? 6 : 1} maxRows={many ? 14 : (compact ? 1 : 5)} size="small" value={text}
-      placeholder={compact && flash ? flash : ph}
+      placeholder={compact && flash ? translateDescriptor(flash) : ph}
       onChange={(e) => setText(e.target.value)} onPaste={onPaste}
       onKeyDown={(e) => { if (!many && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); queue(); } }}
       sx={{ bgcolor: "#fffdfb", "& .MuiInputBase-input": { fontSize: compact ? 11.5 : 12.5 },
@@ -1432,9 +1454,9 @@ export const TellAgent = ({ taskId, taskRef, compact = false, onQueued }) => {
           <Typography variant="body2" noWrap={compact} title={w.Note}
             sx={{ fontSize: compact ? 11 : 11.5, flex: 1, minWidth: 0, whiteSpace: compact ? "nowrap" : "pre-wrap", color: INK }}>{w.Note}</Typography>
           <Typography variant="caption" onClick={async () => {
-              try { await api.delete(`/api/tasks/${taskId}/waitroom/${w.WId}`); } catch { failed("Couldn't withdraw it - it may already have gone in."); }
+              try { await api.delete(`/api/tasks/${taskId}/waitroom/${w.WId}`); } catch { failed(message("Couldn't withdraw it - it may already have gone in.")); }
               load(); }}
-            sx={{ color: FAINT, cursor: "pointer", fontSize: 10, "&:hover": { color: "#8a3646" } }}>withdraw</Typography>
+            sx={{ color: FAINT, cursor: "pointer", fontSize: 10, "&:hover": { color: "#8a3646" } }}>{t("withdraw")}</Typography>
         </Box>
   ));
   // The full task page keeps the durable queue list open. The Wall gets the same list only as a
@@ -1452,7 +1474,7 @@ export const TellAgent = ({ taskId, taskRef, compact = false, onQueued }) => {
         {fail && (
           <Box role="alert" sx={{ position: "absolute", zIndex: 6, left: 0, right: 0, bottom: "calc(100% + 4px)", bgcolor: "#f3e7e9",
             border: "1px solid #8a364655", borderRadius: 1.5, px: 1, py: 0.5 }}>
-            <Typography variant="caption" sx={{ color: "#8a3646", fontSize: 11 }}>{fail}</Typography>
+            <Typography variant="caption" sx={{ color: "#8a3646", fontSize: 11 }}>{translateDescriptor(fail)}</Typography>
           </Box>
         )}
         {showQ && pending.length > 0 && (
@@ -1466,7 +1488,7 @@ export const TellAgent = ({ taskId, taskRef, compact = false, onQueued }) => {
         <Box sx={{ height: 40, boxSizing: "border-box", overflow: "hidden", bgcolor: "#f1ead9",
           border: "1px solid #ddd2b9", borderRadius: 1.5, px: 0.75, py: 0.45 }}>
           <Box sx={{ height: "100%", display: "flex", alignItems: "center", gap: 0.5 }}>
-          <Box title={pending.length ? `${plural(pending.length, "prompt")} waiting to go in — click to peek for 3 seconds; open the full task to withdraw them` : stateLine}
+          <Box title={pending.length ? t(pending.length === 1 ? "{count} prompt waiting to go in — click to peek for 3 seconds; open the full task to withdraw them" : "{count} prompts waiting to go in — click to peek for 3 seconds; open the full task to withdraw them", { count: pending.length }) : stateLine}
             onClick={peekQueue}
             sx={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center",
               width: 20, height: 24, color: "#6b5f45", flexShrink: 0, userSelect: "none",
@@ -1483,7 +1505,7 @@ export const TellAgent = ({ taskId, taskRef, compact = false, onQueued }) => {
           </Box>
           {input}
           {imgs.length > 0 && (
-            <Tooltip title={`${plural(imgs.length, "image")} attached — click to remove`}>
+            <Tooltip title={t(imgs.length === 1 ? "{count} image attached — click to remove" : "{count} images attached — click to remove", { count: imgs.length })}>
               <Box component="button" onClick={dropImgs}
                 sx={{ ...mono, height: 24, px: 0.6, borderRadius: 1, border: "1px solid #ddd2b9",
                   bgcolor: "#fffdfb", color: "#6b5f45", cursor: "pointer", fontSize: 9.5, whiteSpace: "nowrap" }}>
@@ -1503,13 +1525,13 @@ export const TellAgent = ({ taskId, taskRef, compact = false, onQueued }) => {
     <Box sx={{ bgcolor: "#f1ead9", border: "1px solid #ddd2b9", borderRadius: 2, p: 1.25 }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, mb: 0.5 }}>
         <Typography sx={{ ...mono, fontSize: 9.5, letterSpacing: 1, color: "#6b5f45", fontWeight: 600 }}>
-          ✎ TELL THE AGENT{taskRef ? ` · ${taskRef}` : ""}{pending.length ? ` · ${pending.length} waiting to go in` : ""}
+          {t("✎ TELL THE AGENT")}{taskRef ? ` · ${taskRef}` : ""}{pending.length ? ` · ${t("{count} waiting to go in", { count: pending.length })}` : ""}
         </Typography>
         <Box sx={{ flex: 1 }} />
         {stateLine && <Typography variant="caption" sx={{ color: "#6b5f45", fontSize: 10.5 }}>{stateLine}</Typography>}
         <Typography variant="caption" onClick={() => setMany((m) => !m)}
           sx={{ color: "#6b5f45", fontSize: 10.5, cursor: "pointer", textDecoration: "underline", ml: 1 }}>
-          {many ? "one note" : "paste a list"}
+          {many ? t("one note") : t("paste a list")}
         </Typography>
       </Box>
       <Box sx={{ display: "flex", gap: 1 }}>
@@ -1517,15 +1539,15 @@ export const TellAgent = ({ taskId, taskRef, compact = false, onQueued }) => {
         <MicButton sx={{ alignSelf: "flex-end", color: "#6b5f45" }} onText={(t) => setText((s) => (s.trim() ? `${s.trimEnd()} ${t}` : t))} />
         <Button size="small" variant="contained" disableElevation onClick={queue} disabled={!text.trim() && !imgs.length}
           sx={{ alignSelf: "flex-end", bgcolor: "#8a7a5c", "&:hover": { bgcolor: "#6b5f45" }, whiteSpace: "nowrap" }}>
-          {many ? `Queue ${lines || ""} prompt${lines === 1 ? "" : "s"}` : verb}</Button>
+          {many ? t(lines === 1 ? "Queue {count} prompt" : "Queue {count} prompts", { count: lines || "" }) : verb}</Button>
       </Box>
       {thumbs}
-      {flash && <Typography variant="caption" sx={{ color: "#47654a", display: "block", mt: 0.5 }}>{flash}</Typography>}
-      {fail && <Typography variant="caption" role="alert" sx={{ color: "#8a3646", display: "block", mt: 0.5 }}>{fail}</Typography>}
+      {flash && <Typography variant="caption" sx={{ color: "#47654a", display: "block", mt: 0.5 }}>{translateDescriptor(flash)}</Typography>}
+      {fail && <Typography variant="caption" role="alert" sx={{ color: "#8a3646", display: "block", mt: 0.5 }}>{translateDescriptor(fail)}</Typography>}
       {queued}
       {wait.data.some((w) => w.DeliveredAt) && (
         <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.5 }}>
-          {plural(wait.data.filter((w) => w.DeliveredAt).length, "earlier note")} already typed in.
+          {t(wait.data.filter((w) => w.DeliveredAt).length === 1 ? "{count} earlier note already typed in." : "{count} earlier notes already typed in.", { count: wait.data.filter((w) => w.DeliveredAt).length })}
         </Typography>
       )}
     </Box>
@@ -1534,20 +1556,21 @@ export const TellAgent = ({ taskId, taskRef, compact = false, onQueued }) => {
 
 // The same box behind one button, for places with no room for it (a Board card, the funnel bar).
 export const TellAgentButton = ({ taskId, taskRef, count = 0, small = false }) => {
+  useLocale();
   const [open, setOpen] = React.useState(false);
   const show = (e) => { e.stopPropagation(); setOpen(true); };
-  const label = count ? `${count} waiting` : "Tell the agent";
+  const label = count ? t("{count} waiting", { count }) : t("Tell the agent");
   return (
     <>
       {small ? (
-        <Box component="span" onClick={show} title="Tell the agent something — queued until it stops"
+        <Box component="span" onClick={show} title={t("Tell the agent something — queued until it stops")}
           sx={{ display: "inline-flex", alignItems: "center", gap: 0.4, px: 0.6, py: 0.15, borderRadius: 99, cursor: "pointer",
             bgcolor: "#f1ead9", color: "#6b5f45", border: "1px solid #ddd2b9", fontSize: 9.5, fontWeight: 600, whiteSpace: "nowrap",
             "&:hover": { bgcolor: "#e9dfc5" } }}>
           ✎ {label}
         </Box>
       ) : (
-        <Button size="small" disableElevation onClick={show} title="Tell the agent something — queued until it stops"
+        <Button size="small" disableElevation onClick={show} title={t("Tell the agent something — queued until it stops")}
           startIcon={<Box component="span" aria-hidden sx={{ fontSize: 13, lineHeight: 1 }}>✎</Box>}
           sx={{ width: 190, height: 34, px: 1.5, justifyContent: "flex-start", borderRadius: 2,
             textTransform: "none", fontSize: 12, fontWeight: 600, whiteSpace: "nowrap", color: DIM, bgcolor: PANEL,
@@ -1591,17 +1614,18 @@ const TERM_TONE = { done: CATPPUCCIN.faint, now: CATPPUCCIN.yellow, todo: CATPPU
 // the one header line, shared by the pane and the compact WorkLine
 const workHead = (work, who, waiting, asking, startedAt, promptPending = false, state = "", detail = "") => {
   if (promptPending) return { tone: CATPPUCCIN.yellow, mark: "▮", text: who,
-    tool: "prompt sent · waiting for first response", t: startedAt ? secsAgo(startedAt) : "", blink: true };
+    tool: t("prompt sent · waiting for first response"), t: startedAt ? secsAgo(startedAt) : "", blink: true };
   // the ONE sentence for the state (laneSays): a stall reads "stuck", never "asked you"; the request's words ride in the tool slot
   if (waiting) return { tone: CATPPUCCIN.yellow, mark: "⏸", text: says(state || (asking ? "asking" : "parked"), who), tool: String(detail || "").slice(0, 120), t: "" };
   // a tool that FAILED (the PostToolUseFailure hook) shows its failure where a running tool shows its name
   if (work?.tool?.name) return { tone: work.tool.error ? CATPPUCCIN.red : CATPPUCCIN.cyan, mark: work.tool.error ? "✗" : "▮", text: who,
-    tool: `${work.tool.name} ${fileName(work.tool.target) || work.tool.target || ""}${work.tool.error ? ` — failed: ${work.tool.error}` : ""}`.trim(), t: secsAgo(work.tool.at), blink: !work.tool.error };
-  if (work?.last_line) return { tone: CATPPUCCIN.cyan, mark: "▮", text: who, tool: `last line: ${work.last_line}`, t: startedAt ? secsAgo(startedAt) : "", blink: true, muted: true };
-  return { tone: CATPPUCCIN.cyan, mark: "▮", text: `${who} working`, tool: "", t: startedAt ? secsAgo(startedAt) : "", blink: true };
+    tool: `${work.tool.name} ${fileName(work.tool.target) || work.tool.target || ""}${work.tool.error ? ` — ${t("failed")}: ${work.tool.error}` : ""}`.trim(), t: secsAgo(work.tool.at), blink: !work.tool.error };
+  if (work?.last_line) return { tone: CATPPUCCIN.cyan, mark: "▮", text: who, tool: t("last line: {line}", { line: work.last_line }), t: startedAt ? secsAgo(startedAt) : "", blink: true, muted: true };
+  return { tone: CATPPUCCIN.cyan, mark: "▮", text: t("{agent} working", { agent: who }), tool: "", t: startedAt ? secsAgo(startedAt) : "", blink: true };
 };
 
 export const WorkPane = ({ run, onOpen }) => {
+  useLocale();
   // the CLI it runs, not the profile's nickname: a profile called codex that runs claude is claude here
   const work = run?.work || {}, who = shownAgent(run);
   const waiting = run?.kind === "session" && (run.asking || isWaiting(run));
@@ -1625,10 +1649,10 @@ export const WorkPane = ({ run, onOpen }) => {
       {!!todos.length && (
         <Box sx={{ borderTop: `1px dashed ${CATPPUCCIN.surface}`, mt: 0.4, pt: 0.35 }}>
           {fin ? (
-            <Box sx={{ color: CATPPUCCIN.green }}>✓ {work.n_done} of {work.n_todos} done{work.said ? <Box component="span" sx={{ color: CATPPUCCIN.faint }}> · {work.said.slice(0, 60)}</Box> : null}</Box>
+            <Box sx={{ color: CATPPUCCIN.green }}>✓ {t("{done} of {total} done", { done: work.n_done, total: work.n_todos })}{work.said ? <Box component="span" sx={{ color: CATPPUCCIN.faint }}> · {work.said.slice(0, 60)}</Box> : null}</Box>
           ) : (
             <>
-              {before > 0 && <Box sx={{ color: CATPPUCCIN.faint }}>✓ {before} done</Box>}
+              {before > 0 && <Box sx={{ color: CATPPUCCIN.faint }}>✓ {t("{count} done", { count: before })}</Box>}
               {rows.map((t, i) => (
                 <Box key={i} sx={{ display: "grid", gridTemplateColumns: "12px 1fr auto", gap: "0 6px", whiteSpace: "nowrap", overflow: "hidden",
                   color: t.status === "now" ? CATPPUCCIN.fg : CATPPUCCIN.faint, opacity: t.status === "todo" ? 0.8 : 1 }}>
@@ -1637,14 +1661,14 @@ export const WorkPane = ({ run, onOpen }) => {
                   <Box component="span" sx={{ color: CATPPUCCIN.faint, fontSize: 9 }}>{t.status === "now" ? `${work.n_done + 1}/${work.n_todos}` : ""}</Box>
                 </Box>
               ))}
-              {hidden - (before || 0) > 0 && <Box sx={{ color: CATPPUCCIN.faint }}>+{hidden - (before || 0)} more</Box>}
+              {hidden - (before || 0) > 0 && <Box sx={{ color: CATPPUCCIN.faint }}>{t("+{count} more", { count: hidden - (before || 0) })}</Box>}
             </>
           )}
         </Box>
       )}
       {!!files.length && (
         <Box sx={{ borderTop: `1px dashed ${CATPPUCCIN.surface}`, mt: 0.4, pt: 0.4, display: "flex", flexWrap: "wrap", gap: "3px 4px", alignItems: "center" }}>
-          <Box component="span" sx={{ color: CATPPUCCIN.faint, mr: 0.25 }}>{fin ? "touched" : "holding"}</Box>
+          <Box component="span" sx={{ color: CATPPUCCIN.faint, mr: 0.25 }}>{fin ? t("touched") : t("holding")}</Box>
           {files.map((f) => (
             <Tooltip key={f.path} title={f.path} arrow>
               <Box component="span" sx={{ display: "inline-flex", alignItems: "center", gap: 0.5, px: 0.6, borderRadius: 0.75, lineHeight: 1.5,
@@ -1664,6 +1688,7 @@ export const WorkPane = ({ run, onOpen }) => {
 
 // one line, for a header: ● agent · Edit server.py · 4s  |  ● agent · last line: "…"
 export const WorkLine = ({ work, who = "agent", waiting = false, asking = false, startedAt, promptPending = false, state = "", detail = "" }) => {
+  useLocale();
   const h = workHead(work, who, waiting, asking, startedAt, promptPending, state, detail);
   if (!h.tool && !waiting) return null;
   return (
@@ -1683,8 +1708,9 @@ export const WorkLine = ({ work, who = "agent", waiting = false, asking = false,
    inferred). Provenance pills say where the task came from and who worked it - facts the audit
    chain already held and the card never showed. Polls only while the session is alive. */
 const pillSx = (r) => ({ height: 16, fontSize: 9, fontWeight: 600, bgcolor: ROLES[r].tint, color: ROLES[r].ink, border: `1px solid ${ROLES[r].bd}`, "& .MuiChip-label": { px: 0.75 } });
-const hhmm = (s) => s ? fmtTime(new Date(String(s).replace(" ", "T")), "en-US", { hour: "numeric", minute: "2-digit" }) : "";
+const hhmm = (s) => s ? fmtTime(new Date(String(s).replace(" ", "T")), getLocale() === "zh-CN" ? "zh-CN" : "en-US", { hour: "numeric", minute: "2-digit" }) : "";
 export const WorkStrip = ({ taskId, live, session, provenance, defaultCollapsed = false }) => {
+  useLocale();
   // The terminal list already carries current witness/provenance data. Paint that immediately;
   // the richer /work response (diff counts, exact audit provenance) replaces it in the background.
   // Waiting for that request made the whole strip appear to have vanished above a busy terminal.
@@ -1727,31 +1753,31 @@ export const WorkStrip = ({ taskId, live, session, provenance, defaultCollapsed 
   if (!d) return failed ? (
     <Box sx={{ mb: 0.75, border: `1px solid ${ROLES.you.bd}`, borderRadius: 2, bgcolor: ROLES.you.tint,
       px: 1.5, py: 0.65, display: "flex", alignItems: "center", gap: 1 }}>
-      <Typography sx={{ ...mono, fontSize: 10, fontWeight: 600, color: ROLES.you.ink }}>agent activity unavailable</Typography>
-      <Typography variant="caption" sx={{ color: DIM }}>the terminal is unaffected · {live ? "retrying" : "reload to retry"}</Typography>
+      <Typography sx={{ ...mono, fontSize: 10, fontWeight: 600, color: ROLES.you.ink }}>{t("agent activity unavailable")}</Typography>
+      <Typography variant="caption" sx={{ color: DIM }}>{t("the terminal is unaffected")} · {live ? t("retrying") : t("reload to retry")}</Typography>
     </Box>
   ) : null;
   const todos = w?.todos || [], files = (d.files || []).slice(0, 12);
   const tone = { check: "you", note: "info", ok: "done" };
   const who = d.session?.cli || d.session?.agent || d.prov?.by || "agent";
   const checks = (w?.flags || []).filter((f) => f.level === "check").length;
-  const summary = `said ${todos.length ? `${w.n_done}/${w.n_todos}` : "—"} · touched ${(d.files || []).length}`;
+  const summary = t("said {progress} · touched {count}", { progress: todos.length ? `${w.n_done}/${w.n_todos}` : "—", count: (d.files || []).length });
   return (
     // flexShrink 0: the task page stacks this over a terminal with a fixed height in a flex column,
     // and a shrinkable overflow:hidden box in that column collapsed to nothing - the strip was in
     // the DOM and never on screen
     <Box sx={{ mb: 0.75, border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: PANEL, overflow: "hidden", flexShrink: 0 }}>
-      <Box onClick={toggle} title={open ? "Fold the detail away" : "Open: the agent's list beside the files it wrote"}
+      <Box onClick={toggle} title={open ? t("Fold the detail away") : t("Open: the agent's list beside the files it wrote")}
         sx={{ px: 1.5, py: 0.5, display: "flex", flexWrap: "wrap", gap: 0.5, alignItems: "center", cursor: "pointer", borderBottom: open ? `1px solid ${BORDER}` : 0, "&:hover": { bgcolor: "#faf8f5" } }}>
         <Typography component="span" sx={{ ...mono, fontSize: 10, color: FAINT, width: 12 }}>{open ? "▾" : "▸"}</Typography>
-        <Typography component="span" sx={{ ...mono, fontSize: 9.5, color: DIM, fontWeight: 600, letterSpacing: ".06em", mr: 0.25 }}>AGENT ACTIVITY</Typography>
-        {d.prov?.from && <Chip size="small" label={`from: ${d.prov.from}`} sx={pillSx("muted")} />}
-        {d.prov?.kind && <Chip size="small" label={`kind: ${d.prov.kind}`} sx={pillSx("working")} />}
-        {d.prov?.by && <Chip size="small" label={`by: ${who}`} sx={pillSx("working")} />}
-        {d.prov?.approved && <Chip size="small" label={`approved by you · ${hhmm(d.prov.approved)}`} sx={pillSx("info")} />}
-        {w?.done_at && <Chip size="small" label={`agent said done · ${hhmm(w.done_at)}`} sx={pillSx("done")} />}
+        <Typography component="span" sx={{ ...mono, fontSize: 9.5, color: DIM, fontWeight: 600, letterSpacing: ".06em", mr: 0.25 }}>{t("AGENT ACTIVITY")}</Typography>
+        {d.prov?.from && <Chip size="small" label={t("from: {value}", { value: d.prov.from })} sx={pillSx("muted")} />}
+        {d.prov?.kind && <Chip size="small" label={t("kind: {value}", { value: d.prov.kind })} sx={pillSx("working")} />}
+        {d.prov?.by && <Chip size="small" label={t("by: {value}", { value: who })} sx={pillSx("working")} />}
+        {d.prov?.approved && <Chip size="small" label={t("approved by you · {time}", { time: hhmm(d.prov.approved) })} sx={pillSx("info")} />}
+        {w?.done_at && <Chip size="small" label={t("agent said done · {time}", { time: hhmm(w.done_at) })} sx={pillSx("done")} />}
         <Chip size="small" label={summary} sx={pillSx("muted")} />
-        {checks > 0 && <Chip size="small" label={`${checks} to check`} sx={pillSx("you")} />}
+        {checks > 0 && <Chip size="small" label={t("{count} to check", { count: checks })} sx={pillSx("you")} />}
         <Box sx={{ flex: 1 }} />
         {w && <WorkLine work={w} who={who} waiting={false} startedAt={d.session?.started}
           promptPending={d.session?.promptPending} />}
@@ -1759,8 +1785,8 @@ export const WorkStrip = ({ taskId, live, session, provenance, defaultCollapsed 
       {open && <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", md: "minmax(0, 1fr) minmax(0, 1fr)" } }}>
         <Box sx={{ px: 1.5, py: 1, borderRight: { md: `1px solid ${BORDER}` } }}>
           <Box sx={{ display: "flex", alignItems: "baseline", gap: 1, mb: 0.5 }}>
-            <Typography sx={{ ...mono, fontSize: 9.5, letterSpacing: ".08em", textTransform: "uppercase", color: FAINT, fontWeight: 600 }}>said it would</Typography>
-            <Typography variant="caption" sx={{ color: DIM }}>{todos.length ? `the agent's own list · ${w.n_done} of ${w.n_todos}` : w?.source ? "no list reported by this agent" : "no signal from this CLI - files only"}</Typography>
+            <Typography sx={{ ...mono, fontSize: 9.5, letterSpacing: ".08em", textTransform: "uppercase", color: FAINT, fontWeight: 600 }}>{t("said it would")}</Typography>
+            <Typography variant="caption" sx={{ color: DIM }}>{todos.length ? t("the agent's own list · {done} of {total}", { done: w.n_done, total: w.n_todos }) : w?.source ? t("no list reported by this agent") : t("no signal from this CLI - files only")}</Typography>
           </Box>
           {todos.map((t, i) => (
             <Box key={i} sx={{ display: "flex", gap: 1, alignItems: "flex-start", py: 0.35, borderBottom: i < todos.length - 1 ? `1px dashed ${BORDER}` : 0, color: t.status === "todo" ? FAINT : INK, fontSize: 12.5 }}>
@@ -1770,12 +1796,12 @@ export const WorkStrip = ({ taskId, live, session, provenance, defaultCollapsed 
               <span>{t.text}</span>
             </Box>
           ))}
-          {!todos.length && w?.said && <Typography variant="caption" sx={{ color: DIM, display: "block" }}>last said: “{w.said.slice(0, 200)}”</Typography>}
+          {!todos.length && w?.said && <Typography variant="caption" sx={{ color: DIM, display: "block" }}>{t("last said: “{text}”", { text: w.said.slice(0, 200) })}</Typography>}
         </Box>
         <Box sx={{ px: 1.5, py: 1 }}>
           <Box sx={{ display: "flex", alignItems: "baseline", gap: 1, mb: 0.5 }}>
-            <Typography sx={{ ...mono, fontSize: 9.5, letterSpacing: ".08em", textTransform: "uppercase", color: FAINT, fontWeight: 600 }}>touched</Typography>
-            <Typography variant="caption" sx={{ color: DIM }}>{plural(files.length, "file")}{d.diffstat?.added != null ? ` · +${d.diffstat.added} −${d.diffstat.removed}` : ""}</Typography>
+            <Typography sx={{ ...mono, fontSize: 9.5, letterSpacing: ".08em", textTransform: "uppercase", color: FAINT, fontWeight: 600 }}>{t("touched")}</Typography>
+            <Typography variant="caption" sx={{ color: DIM }}>{t(files.length === 1 ? "{count} file" : "{count} files", { count: files.length })}{d.diffstat?.added != null ? ` · +${d.diffstat.added} −${d.diffstat.removed}` : ""}</Typography>
           </Box>
           {files.map((f) => {
             const top = Math.max(1, ...files.map((x) => x.n || 1));
@@ -1791,14 +1817,14 @@ export const WorkStrip = ({ taskId, live, session, provenance, defaultCollapsed 
               </Box>
             );
           })}
-          {!files.length && <Typography variant="caption" sx={{ color: FAINT }}>nothing written yet</Typography>}
+          {!files.length && <Typography variant="caption" sx={{ color: FAINT }}>{t("nothing written yet")}</Typography>}
         </Box>
       </Box>}
       {open && !!(w?.flags || []).length && (
         <Box sx={{ px: 1.5, py: 0.75, borderTop: `1px solid ${BORDER}`, display: "flex", flexDirection: "column", gap: 0.4 }}>
           {w.flags.map((f, i) => (
             <Box key={i} sx={{ display: "flex", gap: 1, alignItems: "flex-start", fontSize: 12 }}>
-              <Chip size="small" label={f.level} sx={{ ...pillSx(tone[f.level] || "info"), mt: "1px" }} />
+              <Chip size="small" label={t(f.level)} sx={{ ...pillSx(tone[f.level] || "info"), mt: "1px" }} />
               <span>{f.text}</span>
             </Box>
           ))}
@@ -1812,19 +1838,20 @@ export const WorkStrip = ({ taskId, live, session, provenance, defaultCollapsed 
 // Agent tab was a small dark box above 600px of nothing while an agent worked in it. Filling,
 // the tail scrolls inside and the header stays put.
 export const LiveConsole = ({ run, agent, lines = 5, onOpen, fill }) => {
+  useLocale();
   const waiting = run ? (run.kind === "session" && (run.asking || isWaiting(run))) : false;
   const tail = (run?.tail || []).slice(-lines);
   const files = run?.files || [];
   const who = run ? shownAgent(run) : agent || AGENT_SHOWN;
   return (
-    <Box onClick={onOpen} title="Open the task - the real terminal"
+    <Box onClick={onOpen} title={t("Open the task - the real terminal")}
       sx={{ bgcolor: CATPPUCCIN.bg, border: `1px solid ${CATPPUCCIN.surface}`, borderRadius: 1.5, px: 1.25, py: 0.9, cursor: onOpen ? "pointer" : "default",
         ...(fill ? { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" } : {}),
         "&:hover": onOpen ? { borderColor: CATPPUCCIN.overlay } : {} }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: tail.length ? 0.5 : 0, flexShrink: 0 }}>
         <Typography variant="caption" sx={{ ...mono, fontSize: 10.5, fontWeight: 600, color: waiting ? CATPPUCCIN.yellow : CATPPUCCIN.cyan,
           ...(waiting ? {} : { "@keyframes tqBlink2": { "50%": { opacity: 0.25 } }, animation: "tqBlink2 1.1s step-end infinite" }) }}>
-          {waiting ? `⏸ ${says(run?.state || (run?.asking ? "asking" : "parked"), who)}` : `▮ ${who} working${run?.StartedAt ? ` · ${_elapsed(run.StartedAt)}` : ""}`}
+          {waiting ? `⏸ ${says(run?.state || (run?.asking ? "asking" : "parked"), who)}` : `▮ ${t("{agent} working", { agent: who })}${run?.StartedAt ? ` · ${_elapsed(run.StartedAt)}` : ""}`}
         </Typography>
         <Box sx={{ flex: 1 }} />
         {files.slice(0, 4).map((f) => (
@@ -1832,7 +1859,7 @@ export const LiveConsole = ({ run, agent, lines = 5, onOpen, fill }) => {
             {String(f).split(/[\\/]/).pop()}
           </Typography>
         ))}
-        {onOpen && <Typography variant="caption" sx={{ ...mono, fontSize: 9.5, color: CATPPUCCIN.faint }}>open ↗</Typography>}
+        {onOpen && <Typography variant="caption" sx={{ ...mono, fontSize: 9.5, color: CATPPUCCIN.faint }}>{t("open ↗")}</Typography>}
       </Box>
       <Box sx={fill ? { flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", justifyContent: "flex-end" } : {}}>
       {tail.map((l, i, all) => (
@@ -1907,6 +1934,7 @@ export const usePeopleSearch = (q, channel = "email") => {
 // `channel`: a chat's picker offers that channel's chats (their handle is what goes); the address book is email's alone
 export const ContactPicker = ({ value, onChange, onPick, placeholder = "name or email address",
                                people, autoFocus, size = "small", sx, onKeyDown, clearOnPick, channel = "email" }) => {
+  useLocale();
   const rows = String(channel || "email").toLowerCase() === "email" ? people || [] : [];
   const found = usePeopleSearch(value, channel);
   const q = String(value || "").trim().toLowerCase();
@@ -1937,7 +1965,7 @@ export const ContactPicker = ({ value, onChange, onPick, placeholder = "name or 
         );
       }}
       renderInput={(params) => (
-        <TextField {...params} autoFocus={autoFocus} placeholder={placeholder} onKeyDown={onKeyDown}
+        <TextField {...params} autoFocus={autoFocus} placeholder={placeholder === "name or email address" ? t("name or email address") : placeholder} onKeyDown={onKeyDown}
           inputProps={{ ...params.inputProps, style: { ...(params.inputProps || {}).style, fontSize: 12.5 } }} />
       )} />
   );
@@ -1951,19 +1979,20 @@ export const ContactPicker = ({ value, onChange, onPick, placeholder = "name or 
 // ...the line wears the sender's name ("Erin Blake <erin@…>", replyDelivery.deliveryTo); the box and the save carry the addresses alone -
 // saved back as it stood, the name went into the envelope as the address
 export const ToRow = ({ to, onSave, disabled }) => {
+  useLocale();
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
   const [err, setErr] = useState("");
   const people = useContacts();
   const save = async (a) => {
     const v = bareAddresses(a);
-    if (!v.length || !v.every((x) => x.includes("@"))) { setErr("pick a person or type their email address"); return; }
+    if (!v.length || !v.every((x) => x.includes("@"))) { setErr(message("pick a person or type their email address")); return; }
     try { await onSave(v); setText(""); setErr(""); setOpen(false); }
-    catch (e) { setErr(e?.response?.data?.detail || "could not change who it goes to"); }
+    catch (e) { setErr(e?.response?.data?.detail || message("could not change who it goes to")); }
   };
   return (
     <Box sx={{ display: "flex", alignItems: "center", gap: 0.8, mb: 0.75, flexWrap: "wrap", minWidth: 0 }}>
-      <Typography sx={{ ...label, flexShrink: 0 }}>To</Typography>
+      <Typography sx={{ ...label, flexShrink: 0 }}>{t("To")}</Typography>
       {open ? (
         <ContactPicker people={people} value={text} onChange={setText} onPick={save} autoFocus
           placeholder="name or email address" sx={{ width: 300 }}
@@ -1971,19 +2000,20 @@ export const ToRow = ({ to, onSave, disabled }) => {
                               if (e.key === "Escape") { setOpen(false); setErr(""); } }} />
       ) : (
         <>
-          <Typography variant="body2" sx={{ color: INK, fontWeight: 600 }} noWrap>{to || "nobody yet"}</Typography>
+          <Typography variant="body2" sx={{ color: INK, fontWeight: 600 }} noWrap>{to || t("nobody yet")}</Typography>
           {/* ...opened on the address it has: "change" emptied To while the footer still named the old one (the UI audit, 2026-10-21) */}
           {!disabled && <Typography {...pressable(() => { setText(bareAddresses(to).join(", ")); setOpen(true); })} data-tq-to-change
             sx={{ ...FOCUS_RING, fontSize: 11.5, color: "#55697a", cursor: "pointer", fontWeight: 600, "&:hover": { textDecoration: "underline" } }}>
-            change</Typography>}
+            {t("change")}</Typography>}
         </>
       )}
-      {!!err && <Typography variant="caption" sx={{ color: "#6b2733" }}>{err}</Typography>}
+      {!!err && <Typography variant="caption" sx={{ color: "#6b2733" }}>{translateDescriptor(err)}</Typography>}
     </Box>
   );
 };
 
 export const CcRow = ({ cc, setCc, channel }) => {
+  useLocale();
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
   const [err, setErr] = useState("");
@@ -1992,18 +2022,18 @@ export const CcRow = ({ cc, setCc, channel }) => {
   // ...a name nobody matched is said, as To says it (the overnight walk, 2026-10-27: Enter on "gail" did nothing and said nothing)
   const add = (a) => {
     const v = String(a || "").trim();
-    if (!v.includes("@")) { if (v) setErr("pick a person or type their email address"); return; }
+    if (!v.includes("@")) { if (v) setErr(message("pick a person or type their email address")); return; }
     setCc([...(cc || []).filter((x) => x.toLowerCase() !== v.toLowerCase()), v]);
     setText(""); setErr(""); setOpen(false);
   };
   return (
     <Box sx={{ display: "flex", alignItems: "center", gap: 0.8, mb: 0.75, flexWrap: "wrap", minWidth: 0 }}>
-      <Typography sx={{ color: "#6f8a6e", fontSize: 9.5, fontWeight: 600, letterSpacing: "1.5px", flexShrink: 0 }}>CC</Typography>
+      <Typography sx={{ color: "#6f8a6e", fontSize: 9.5, fontWeight: 600, letterSpacing: "1.5px", flexShrink: 0 }}>{t("CC")}</Typography>
       {(cc || []).map((a) => (
         <Box key={a} sx={{ display: "inline-flex", alignItems: "center", gap: 0.5, px: 0.8, py: 0.15,
           borderRadius: 99, bgcolor: "#eef1ec", border: "1px solid #d9e0d6" }}>
           <Typography sx={{ fontSize: 11.5, color: INK }}>{a}</Typography>
-          <Box component="button" type="button" aria-label={`Remove ${a} from CC`}
+          <Box component="button" type="button" aria-label={t("Remove {address} from CC", { address: a })}
             onClick={() => setCc((cc || []).filter((x) => x !== a))}
             sx={{ cursor: "pointer", color: FAINT, fontSize: 12, lineHeight: 1, border: 0, bgcolor: "transparent", p: 0, fontFamily: "inherit", "&:hover": { color: "#6b2733" } }}>✕</Box>
         </Box>
@@ -2017,10 +2047,10 @@ export const CcRow = ({ cc, setCc, channel }) => {
         <Typography {...pressable(() => setOpen(true))}
           sx={{ ...FOCUS_RING, fontSize: 11.5, color: "#55697a", cursor: "pointer", fontWeight: 600,
                 "&:hover": { textDecoration: "underline" } }}>
-          {(cc || []).length ? "+ someone else" : "+ loop someone in"}
+          {(cc || []).length ? t("+ someone else") : t("+ loop someone in")}
         </Typography>
       )}
-      {!!err && open && <Typography variant="caption" sx={{ color: "#6b2733" }}>{err}</Typography>}
+      {!!err && open && <Typography variant="caption" sx={{ color: "#6b2733" }}>{translateDescriptor(err)}</Typography>}
     </Box>
   );
 };

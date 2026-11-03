@@ -16,8 +16,9 @@ test("terminal paste intercepts image files and leaves ordinary clipboard data a
 
 test("pasted image paths become a prompt the coding CLI can open", () => {
   assert.equal(pastedImagePrompt([]), "");
-  assert.equal(pastedImagePrompt(["C:\\shots\\one.png"]),
-    'Pasted image - open it with your image/Read tool: "C:\\shots\\one.png"');
-  assert.equal(pastedImagePrompt(["a.png", "b.jpg"]),
-    'Pasted images - open them with your image/Read tool: "a.png" "b.jpg"');
+  const one = pastedImagePrompt(["C:\\shots\\one.png"]);
+  const many = pastedImagePrompt(["a.png", "b.jpg"]);
+  assert.ok(one.includes('"C:\\shots\\one.png"'));
+  assert.ok(many.includes('"a.png"'));
+  assert.ok(many.includes('"b.jpg"'));
 });

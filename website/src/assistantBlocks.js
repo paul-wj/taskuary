@@ -5,6 +5,8 @@
 // not fire a request per row. Two lists of the same thing drift, so
 // test_assistant_blocks.py::test_the_page_and_the_server_name_the_same_blocks compares them - the
 // settings schema learned this lesson already.
+import { t } from "./i18n.js";
+
 export const BLOCKS = [
   { id: "knowledge", label: "Knowledge base" },
   { id: "system_checks", label: "Configured systems" },
@@ -113,6 +115,10 @@ export const cardsOf = (cfg) => {
 };
 export const knobsOf = (id) => TASKUARY_CARDS.find((c) => c.id === id)?.knobs || [];
 export const cardLabel = (id) => TASKUARY_CARDS.find((c) => c.id === id)?.label || id;
+const shownCardLabel = (id) => {
+  const card = TASKUARY_CARDS.find((c) => c.id === id);
+  return card ? t(card.label) : id;
+};
 // a number the owner is still typing is not a number (see windowPatch)
 export const cardPatch = (cards, id, name, raw) => {
   const s = String(raw ?? "").trim();
@@ -131,9 +137,9 @@ export const tokenOf = (key) => `[${key}]`;
 // every source a report's prompt can name, in the order they sit on the page. A Taskuary card is
 // one source among the others (2026-09-20), named by its card rather than by a label
 export const promptSources = ({ cards = [], sources = [] }) => [
-  ...cards.map((c) => ({ key: `taskuary.${c.card}`, label: `Taskuary · ${cardLabel(c.card)}` })),
+  ...cards.map((c) => ({ key: `taskuary.${c.card}`, label: `Taskuary · ${shownCardLabel(c.card)}` })),
   ...sources.map((s, i) => ({ key: sourceKey(s, i + 1), blank: s.type === "taskuary" && !(s.card || "").trim(),
-    label: s.type === "taskuary" ? `Taskuary · ${cardLabel(s.card)}` : (s.label || "").trim() || `${s.type || "rest"} #${i + 1}` }))
+    label: s.type === "taskuary" ? `Taskuary · ${shownCardLabel(s.card)}` : (s.label || "").trim() || `${s.type || "rest"} #${i + 1}` }))
     .filter((o) => !o.blank).map(({ key, label }) => ({ key, label })),     // the index counts every card, as the server's does
 ];
 
@@ -143,9 +149,12 @@ export const readsLine = (rows) => {
   const on = (rows || []).filter((r) => r.on && r.id !== "system_checks");
   if (!on.length) return "";
   const unit = (w) => (w.unit === "hours" ? `${w.value}h` : `${w.value}d`);
-  return "Taskuary — " + on.map((r) => r.label + (r.window ? ` (${unit(r.window)})` : "")).join(", ");
+  return "Taskuary — " + on.map((r) => {
+    const known = BLOCKS.find((b) => b.id === r.id && b.label === r.label);
+    return (known ? t(known.label) : r.label) + (r.window ? ` (${unit(r.window)})` : "");
+  }).join(", ");
 };
-export const cardsLine = (cards) => (cards?.length ? "Taskuary — " + cards.map((c) => cardLabel(c.card)).join(", ") : "");
+export const cardsLine = (cards) => (cards?.length ? "Taskuary — " + cards.map((c) => shownCardLabel(c.card)).join(", ") : "");
 
 // "~12.5k" reads; "~12500" does not, and "~0.3k" is a lie about precision below a hundred.
 export const kilo = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n || 0));
@@ -153,7 +162,7 @@ export const kilo = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n |
 // The money line appears only when the brain's price is known. A cost we cannot compute is absent,
 // never zero and never a guess.
 export const costLine = (totalTokens, runsPerDay, cost) => {
-  const per = runsPerDay >= 1 ? `${Math.round(runsPerDay)} runs a day`
-    : runsPerDay > 0 ? `${(runsPerDay * 7).toFixed(0)} runs a week` : "when it is run";
-  return `~${kilo(totalTokens)} tokens per run · ${per}` + (cost != null ? ` · ~$${cost.toFixed(2)} a run` : "");
+  const per = runsPerDay >= 1 ? t("{count} runs a day", { count: Math.round(runsPerDay) })
+    : runsPerDay > 0 ? t("{count} runs a week", { count: (runsPerDay * 7).toFixed(0) }) : t("when it is run");
+  return t("~{count} tokens per run · {frequency}", { count: kilo(totalTokens), frequency: per }) + (cost != null ? ` · ${t("~${cost} a run", { cost: cost.toFixed(2) })}` : "");
 };
