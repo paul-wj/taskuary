@@ -631,6 +631,7 @@
   "Trust {name}": "信任 {name}",
   "Use /connect to add a provider, then /models to choose it. Task execution only; choose another provider for triage and reports.": "使用 /connect 添加提供商，然后使用 /models 选择它。仅用于执行任务；请为分流和报告选择其他提供商。",
   "Use /login to connect Kimi or Moonshot. Windows requires Git Bash. Task execution only; choose another provider for triage and reports.": "使用 /login 连接 Kimi 或 Moonshot。Windows 需要 Git Bash。仅用于执行任务；请为分流和报告选择其他提供商。",
+  "Use /login to connect a provider and /model to choose it. Task execution only; triage, reports and stranger-origin work are not supported.": "使用 /login 连接提供商，并使用 /model 选择模型。仅用于执行任务；不支持分流、报告或来自陌生人的工作。",
   "A new message arrived. Review it before sending.": "收到了一条新消息，请在发送前查看。",
   "Advisor": "顾问",
   "See the draft": "查看草稿",

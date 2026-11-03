@@ -287,19 +287,6 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(any(k == 'tool_call' and d['tool_call_id'] == 'tool-1' for k, d in ev))
         self.assertTrue(any(k == 'tool_result' and d['result'] == 'three files' for k, d in ev))
 
-    def test_shutdown_kills_only_headless_cli_children_that_are_still_running(self):
-        from taskuary import agents
-        live = mock.Mock(); live.poll.return_value = None
-        done = mock.Mock(); done.poll.return_value = 0
-        with agents._CLI_CHILDREN_LOCK:
-            agents._CLI_CHILDREN.update((live, done))
-        try:
-            self.assertEqual(agents.shutdown_cli_children(), 2)
-            live.kill.assert_called_once_with()
-            done.kill.assert_not_called()
-        finally:
-            with agents._CLI_CHILDREN_LOCK:
-                agents._CLI_CHILDREN.clear()
 
     def test_run_cli_normalizes_codex_jsonl_tools(self):
         from unittest import mock

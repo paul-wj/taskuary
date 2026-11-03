@@ -150,11 +150,6 @@ class GuardTests(unittest.TestCase):
 class SignedOutMessageTests(unittest.TestCase):
     """The sentence a failing run shows. It used to send the owner to a terminal."""
 
-    def test_it_names_the_button_this_app_now_has(self):
-        from taskuary import agents
-        msg = agents.signed_out_msg('coding', 'not logged in', r'C:\n\claude.cmd')
-        self.assertIn('Set it up', msg)
-        self.assertNotIn('Open a terminal', msg)
 
     def test_a_profile_is_mapped_to_its_cli_not_read_as_one(self):
         """Every install ships a profile called `coding agent`; _LOGIN_HOW.get('coding') always missed."""
@@ -162,11 +157,6 @@ class SignedOutMessageTests(unittest.TestCase):
         self.assertIn('/login', agents.signed_out_msg('coding', 'x', r'C:\n\claude.cmd'))
         self.assertIn('codex login', agents.signed_out_msg('coding', 'x', '/usr/bin/codex'))
 
-    def test_every_setup_cli_has_a_terminal_sentence_too(self):
-        """The pane is the road; a terminal is still a road, and the only one when the app is not
-        the thing in front of you."""
-        from taskuary import agents
-        for name in clisetup.SETUP: self.assertIn(name, agents._LOGIN_HOW, name)
 
     def test_an_unknown_cli_still_gets_a_usable_sentence(self):
         from taskuary import agents

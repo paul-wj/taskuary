@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -555,6 +556,19 @@ class BrainOptionsTests(unittest.TestCase):
                                          'qwen': {'cmd': r'C:\npm\qwen.CMD'}, 'devin': {'cmd': 'devin'}}))
         p = mock.patch.object(agents, 'runs_here', side_effect=lambda prof: agents.cli_of(prof) in ('claude', 'codex', 'qwen'))
         p.start(); self.addCleanup(p.stop)
+    @pytest.mark.usefixtures('real_omp_catalog')
+    def test_general_models_use_the_connected_omp_executable(self):
+        from taskuary import agents
+        self.connected(omp={'cmd': '/custom/omp'})
+        response = mock.Mock(returncode=0, stdout=json.dumps({'models': [{'selector': 'synthetic/chat', 'name': 'Chat'}]}))
+        with mock.patch.object(agents, 'runs_here', return_value=True), \
+             mock.patch('taskuary.agents.pathcache.which', return_value='/custom/omp'), \
+             mock.patch('taskuary.spawn.run', return_value=response) as run:
+            options = general.brain_options(self.store())
+        omp = next(o for o in options if o['pick'] == 'cli:omp')
+        self.assertEqual([m['id'] for m in omp['models']], ['synthetic/chat'])
+        self.assertEqual(run.call_args.args[0][0], '/custom/omp')
+
 
     def test_one_entry_per_cli_not_one_per_profile(self):
         """Three profiles on Claude are ONE brain. The picker listed them as three providers."""

@@ -119,7 +119,7 @@ Qwen Code 使用哪个云端或本地模型，由你配置。见[使用 Qwen Cod
 
 ### 使用你选择的编程 CLI
 
-支持 Qwen Code、OpenCode、Kimi Code、Claude Code、Codex、Gemini、Cursor、Copilot、Muse Code、Devin，
+支持 Qwen Code、OpenCode、Kimi Code、Claude Code、Codex、Gemini、Cursor、Copilot、Muse Code、Devin、Oh My Pi，
 也支持其他能够从标准输入接收提示词的 CLI。配置连接后，为不同智能体设置职责和指令，
 在 Taskuary 中跟进会话、回答问题和审核结果。
 
@@ -127,6 +127,12 @@ Qwen Code 使用哪个云端或本地模型，由你配置。见[使用 Qwen Cod
 在 **Connections → AI CLI agents** 中安装，OpenCode 用 `/connect` 配置服务，Kimi 用 `/login` 登录。
 这两个预设用于执行任务；消息分拣和只读报告请选择 Qwen Code、Ollama 或 API 服务。
 详见[安装步骤和验证范围（英文）](docs/chinese-coding-clis.md)。
+
+Oh My Pi 使用本机的 `omp`，在 **连接** 中搜索 **OMP** 即可找到连接卡片。
+通过设置终端运行 `/login` 配置模型服务，再在 AI 默认设置中选择编程 CLI 和模型；模型留空沿用 OMP 的默认选择。
+它支持任务执行、进度、取消和继续原会话，但不作为消息分拣、报告或陌生人任务的运行工具。
+通用智能体通过 ACP 运行时禁用异步后台工作，不能批准的工具权限请求会明确报错，不会自动放行。
+完整行为和限制见[连接说明（英文）](docs/site/connections.md#coding-clis-and-ai-providers)。
 
 ![Claude、Qwen、OpenCode（支持 DeepSeek）和 Kimi Code 的连接卡片。](https://raw.githubusercontent.com/ldbumble/taskuary/master/docs/readme/07-coding-clis-chinese.png?v=spine)
 

@@ -44,7 +44,7 @@ open_task = aisetup.open_task         # ...and so is reusing the task a dead pan
 # devin belongs here twice over: its installer already tried to run `devin setup` and could not
 # (no terminal), and its sign-in is a browser round trip that falls back to pasting a token back
 # into the CLI - a conversation that needs the pane, not a spawn nobody can see.
-SETUP = frozenset({'claude', 'codex', 'gemini', 'qwen', 'opencode', 'kimi', 'copilot', 'cursor', 'muse', 'devin'})
+SETUP = frozenset({'claude', 'codex', 'gemini', 'qwen', 'opencode', 'kimi', 'copilot', 'cursor', 'muse', 'devin', 'omp'})
 
 
 # ...except the sign-in itself, where the CLI has a command for exactly that: plain Codex led with its own "Update available"

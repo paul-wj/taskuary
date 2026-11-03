@@ -409,16 +409,27 @@ above all work.)
 local server: LM Studio, llama.cpp, vLLM), and the Meta Model API.
 
 **Coding CLIs** — Claude Code, Codex, Qwen Code, OpenCode, Kimi Code, Gemini, Cursor, Copilot,
-Muse Code and Devin, plus any CLI that accepts a prompt on stdin. The connector defines its
+Muse Code, Devin and Oh My Pi, plus any CLI that accepts a prompt on stdin. The connector defines its
 command, arguments, model argument and working-directory behaviour.
 
-Two practical notes. A headless agent needs its noninteractive or auto-approval flag, or it will
-hang waiting for a click that cannot happen — the presets set this for you. And the card's
-**Test** action runs a small prompt through the CLI before it ever receives real work, which is
-the fastest way to find out that a sign-in expired.
+The presets supply each CLI's noninteractive arguments. Some operations may still need an approval;
+for Oh My Pi general-agent ACP sessions, Taskuary declines permission requests rather than approving
+them automatically. The card's **Test** action runs a small prompt through the CLI before it
+receives real work, which can reveal a sign-in problem.
 
-Every CLI card has a **light model** as well as a main one. Naming the same CLI as the brain your coding
-agent runs on and as your triage brain is normal and cheap, and it is the light gear that keeps it cheap.
+Oh My Pi is for task execution, not triage, reports or stranger-origin work. Install it from its
+[official quickstart](https://omp.sh/docs/quickstart), or use the install button, then open its setup
+terminal to configure a provider. In OMP, `/login` connects a provider and `/model` selects a
+model. Taskuary's model choices come from the available models OMP reports; a blank selection uses
+OMP's own default. Configure credentials in OMP, not in Taskuary's connection settings.
+
+General-agent ACP sessions use OMP's default session store for exact continuation. Taskuary rejects
+custom `--session-dir` for these sessions because OMP 18.15.0's ACP session loading does not honor
+it. Taskuary disables asynchronous background work for ACP runs and declines their permission
+requests; interactive coding terminals remain normal.
+
+CLI connections can have a **light model** as well as a main one. For a CLI that supports triage,
+the light gear lets the coding and triage brains share a connection without using the coding model for every message.
 
 ## Voice notes and dictation
 

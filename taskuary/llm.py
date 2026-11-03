@@ -321,8 +321,12 @@ def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, tra
         # chat's second round (a look-up, the gate's retry) went out with no id, which clipool reads as New chat - so it
         # killed the live CLI and started another, 15 s against 2.6 s warm, and the round lost the turn it was answering.
         # A chat already under way did this all along: its rounds resume one session. One-shot brains keep their own id.
-        out, sid, _diff = run_cli(run_prof, prompt, trace or (lambda *a: None),
-                                  resume=llm.session_id if keep else resume, **kwargs)
+        try:
+            out, sid, _diff = run_cli(run_prof, prompt, trace or (lambda *a: None),
+                                      resume=llm.session_id if keep else resume, **kwargs)
+        except hub_agents.OmpTurnError as e:
+            if e.session_id: llm.session_id = e.session_id
+            raise
         # what the caller needs to CONTINUE this conversation instead of starting another one
         llm.session_id = sid or resume
         if stranger_mode in ('auto', 'look') and sid: store.set_setting(f'stranger_sid:{task_id}', sid, 'router')   # born in the stranger's folder
@@ -575,6 +579,9 @@ def _build_llm(store, pick=None, model=None, trace=None, cancel=None, resume=Non
                     brainroute.outcome(*failover.route, f'fallback:{candidate}')
                 return out
             except Exception as e:
+                if getattr(e, 'session_id', ''):
+                    failover.session_id = e.session_id
+                    failover.last_pick = candidate
                 last = e
                 if i == len(brains) - 1 or not availability_failure(e): raise
                 if trace: trace('progress', 'fallback',

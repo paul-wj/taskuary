@@ -2,6 +2,7 @@
 import json, tempfile, unittest
 from pathlib import Path
 from unittest import mock
+import pytest
 from taskuary import climodels, clis, llm
 from taskuary.store import MemoryStore
 
@@ -13,7 +14,74 @@ CACHE = {'models': [
      'supported_reasoning_levels': [{'effort': 'low'}, {'effort': 'medium'}]}]}
 
 
+@pytest.mark.usefixtures('real_omp_catalog')
 class CatalogTests(unittest.TestCase):
+    def test_omp_catalog_uses_qualified_live_selectors_and_never_exposes_extra_fields(self):
+        response = {'models': [
+            {'provider': 'synthetic', 'kind': 'chat', 'id': 'fast-chat', 'selector': 'synthetic/fast-chat',
+             'name': 'Fast Chat', 'contextWindow': 128000, 'maxTokens': 8192, 'reasoning': False,
+             'thinking': None, 'input': ['text'], 'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0},
+             'pricingStatus': 'unknown', 'apiKey': 'private-key'},
+            {'provider': 'other', 'kind': 'chat', 'id': 'fast-chat', 'selector': 'other/fast-chat',
+             'name': 'Fast Chat', 'contextWindow': 128000, 'maxTokens': 8192, 'reasoning': False,
+             'thinking': None, 'input': ['text'], 'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0},
+             'pricingStatus': 'unknown'}]}
+        with mock.patch('taskuary.agents.pathcache.which', return_value='/custom/omp'), \
+             mock.patch('taskuary.spawn.run', return_value=mock.Mock(returncode=0, stdout=json.dumps(response))) as run:
+            cat = climodels.catalog('omp', cmd='/custom/omp')
+        self.assertEqual(cat['choices'], ['synthetic/fast-chat', 'other/fast-chat'])
+        self.assertEqual([m['label'] for m in cat['models']], ['Fast Chat · synthetic', 'Fast Chat · other'])
+        self.assertNotIn('private-key', json.dumps(cat))
+        self.assertEqual(run.call_args.args[0], ['/custom/omp', 'models', '--json', '--no-extensions'])
+
+    def test_omp_catalog_failure_and_malformed_records_are_empty_not_invented(self):
+        for result in [mock.Mock(returncode=1, stdout='{"models": []}'),
+                       mock.Mock(returncode=0, stdout='not json'),
+                       mock.Mock(returncode=0, stdout='{"models":[null, {"id":"missing-selector"}]}')]:
+            with mock.patch('taskuary.agents.pathcache.which', return_value='/custom/omp'), \
+                 mock.patch('taskuary.spawn.run', return_value=result):
+                self.assertEqual(climodels.catalog('omp', cmd='/custom/omp')['choices'], [])
+        with mock.patch('taskuary.agents.pathcache.which', return_value='/custom/omp'), \
+             mock.patch('taskuary.spawn.run', side_effect=RuntimeError('spawn refused')):
+            self.assertEqual(climodels.catalog('omp', cmd='/custom/omp')['choices'], [])
+
+    def test_omp_catalog_refreshes_after_provider_changes(self):
+        responses = [mock.Mock(returncode=0, stdout=json.dumps({'models': [{'selector': selector, 'name': 'Chat'}]}))
+                     for selector in ('synthetic/one', 'synthetic/two')]
+        with mock.patch('taskuary.agents.pathcache.which', return_value='/custom/omp'), \
+             mock.patch('taskuary.spawn.run', side_effect=responses):
+            self.assertEqual(climodels.catalog('omp', cmd='/custom/omp')['choices'], ['synthetic/one'])
+            self.assertEqual(climodels.catalog('omp', cmd='/custom/omp')['choices'], ['synthetic/two'])
+    def test_omp_catalog_resolves_a_bare_windows_command_on_fresh_path(self):
+        response = mock.Mock(returncode=0, stdout=json.dumps({'models': [{'selector': 'synthetic/chat', 'name': 'Chat'}]}))
+        with mock.patch('taskuary.agents.pathcache.which', return_value='C:/tools/omp.exe'), \
+             mock.patch('taskuary.spawn.run', return_value=response) as run:
+            cat = climodels.catalog('omp', cmd='omp.exe')
+        self.assertEqual(cat['choices'], ['synthetic/chat'])
+        self.assertEqual(run.call_args.args[0][0], 'C:/tools/omp.exe')
+    def test_omp_catalog_uses_fresh_path_shim_target(self):
+        response = mock.Mock(returncode=0, stdout=json.dumps({'models': [{'selector': 'synthetic/chat', 'name': 'Chat'}]}))
+        def find(name, path=None):
+            return 'C:/fresh/omp.cmd' if name == 'omp.cmd' and path == 'fresh-path' else None
+        with mock.patch('taskuary.agents.pathcache.which', side_effect=find), \
+             mock.patch('taskuary.agents._fresh_path', return_value='fresh-path'), \
+             mock.patch('taskuary.agents.os.name', 'nt'), \
+             mock.patch('taskuary.agents._shim_target', return_value=['C:/node/node.exe', 'C:/fresh/omp.js']), \
+             mock.patch('taskuary.spawn.run', return_value=response) as run:
+            cat = climodels.catalog('omp', cmd='omp.cmd')
+        self.assertEqual(cat['choices'], ['synthetic/chat'])
+        self.assertEqual(run.call_args.args[0], ['C:/node/node.exe', 'C:/fresh/omp.js', 'models', '--json', '--no-extensions'])
+
+    def test_omp_catalog_does_not_run_when_explicit_executable_is_missing(self):
+        with mock.patch('taskuary.agents.pathcache.which', return_value=None), \
+             mock.patch('taskuary.agents._fresh_path', return_value='fresh-path'), \
+             mock.patch('taskuary.spawn.run') as run:
+            cat = climodels.catalog('omp', cmd='C:/missing/omp.exe')
+        self.assertEqual(cat['choices'], [])
+        run.assert_not_called()
+
+
+
     def test_codex_models_are_read_off_its_cache_visible_ones_by_priority(self):
         with tempfile.TemporaryDirectory() as d:
             Path(d, 'models_cache.json').write_text(json.dumps(CACHE), encoding='utf-8')
@@ -89,7 +157,8 @@ GPT-5.6 Sol (gpt-5.6-sol)
 
     def test_every_shipped_cli_has_a_provider_specific_model_picker(self):
         with mock.patch.object(climodels, 'devin_models', return_value=climodels._items(['adaptive'])), \
-             mock.patch.object(climodels, 'copilot_models', return_value=climodels._items(['auto'])):
+             mock.patch.object(climodels, 'copilot_models', return_value=climodels._items(['auto'])), \
+             mock.patch.object(climodels, 'omp_models', return_value=climodels._items(['synthetic/chat'])):
             missing = [row['name'] for row in clis.KNOWN if not climodels.catalog(row['name'])['choices']]
         self.assertEqual(missing, [])
 

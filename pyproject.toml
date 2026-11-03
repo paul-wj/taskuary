@@ -31,6 +31,7 @@ dependencies = [
     "anthropic>=0.69",
     "tomli>=2; python_version<'3.11'",
     "websockets>=12",                            # uvicorn's ws transport - the terminal streams over it
+    "psutil>=5.9; sys_platform!='win32'",       # identity-aware POSIX process-tree cancellation
     "pywinpty>=2; sys_platform=='win32'",        # ConPTY: the interactive agent terminal
     "tzdata; sys_platform=='win32'",             # Windows ships no IANA tz database: ZoneInfo(TZID) on an invite needs it
     "pyte>=0.8",                                 # a real VT emulator: how a session transcript is read

@@ -92,6 +92,108 @@ def test_missing_native_session_falls_back_to_saved_history_and_says_so():
     assert store.saved_session(tid)['NativeId'] == 'replacement'
 
 
+def test_resumed_omp_permission_failure_never_replays_side_effect(tmp_path):
+    from taskuary import acp, sessionfiles
+    store = MemoryStore(); connect(store, 'omp'); tid = task(store)
+    session = general.GeneralSession(store, tid, pick='cli:omp')
+    session.cli_sid = 'original'; session._remember_session()
+    side_effect = tmp_path / 'actions.txt'
+    native = tmp_path / 'native.jsonl'; native.write_text('{"type":"session","id":"original"}\n', encoding='utf-8')
+    client = mock.MagicMock()
+    client.connect.return_value = {'loadSession': True}
+    client.permission_denied = True
+    def prompt(_):
+        with side_effect.open('a', encoding='utf-8') as f: f.write('once\n')
+        return 'end_turn', 'The operation is done.'
+    client.prompt.side_effect = prompt
+    def brain(*args, **kwargs):
+        return agents.run_acp({'cmd': 'omp', 'acp': ['acp']}, 'act', lambda *a: None, resume='original')[0]
+    with mock.patch.object(llm, 'build_llm', return_value=brain), \
+         mock.patch.object(agents, '_resolve_cmd', return_value=['omp']), \
+         mock.patch.object(agents, '_git', return_value=''), \
+         mock.patch.object(sessionfiles, 'omp_acp_file', return_value=str(native)), \
+         mock.patch.object(acp, 'ACPClient', return_value=client):
+        with pytest.raises(RuntimeError, match='permission'):
+            session.send_prompt('Continue', as_owner=False)
+    assert side_effect.read_text(encoding='utf-8').splitlines() == ['once']
+    assert store.saved_session(tid)['NativeId'] == 'original'
+
+
+def test_first_omp_turn_failure_keeps_its_native_session_id(tmp_path):
+    from taskuary import acp, sessionfiles
+    store = MemoryStore(); connect(store, 'omp'); tid = task(store)
+    session = general.GeneralSession(store, tid, pick='cli:omp')
+    native = tmp_path / 'native.jsonl'; native.write_text('{"type":"session","id":"new-thread"}\n', encoding='utf-8')
+    client = mock.MagicMock()
+    client.connect.return_value = {'loadSession': True}
+    client.session_id, client.permission_denied = 'new-thread', True
+    client.prompt.return_value = ('end_turn', 'Not completed')
+    def brain(*args, **kwargs):
+        return agents.run_acp({'cmd': 'omp', 'acp': ['acp']}, 'act', lambda *a: None)[0]
+    with mock.patch.object(llm, 'build_llm', return_value=brain), \
+         mock.patch.object(agents, '_resolve_cmd', return_value=['omp']), \
+         mock.patch.object(agents, '_git', return_value=''), \
+         mock.patch.object(sessionfiles, 'omp_acp_file', return_value=str(native)), \
+         mock.patch.object(acp, 'ACPClient', return_value=client):
+        with pytest.raises(RuntimeError, match='permission'):
+            session.send_prompt('Start', as_owner=False)
+    assert store.saved_session(tid)['NativeId'] == 'new-thread'
+
+
+def test_cli_brain_keeps_native_identity_when_first_omp_turn_fails():
+    store = MemoryStore(); connect(store, 'omp')
+    failure = agents.OmpTurnError('provider failed after a tool call', 'new-thread')
+    with mock.patch.object(agents, 'run_cli', side_effect=failure):
+        brain = llm.make_cli_llm(store, 'omp', cli_tools=True)
+        with pytest.raises(agents.OmpTurnError): brain('system', 'do the task')
+    assert brain.session_id == 'new-thread'
+
+
+
+def test_first_omp_headless_failure_keeps_session_header_on_task():
+    store = MemoryStore(); connect(store, 'omp'); tid = task(store)
+    session = general.GeneralSession(store, tid, pick='cli:omp')
+    events = [
+        {'type': 'session', 'id': 'headless-thread'},
+        {'type': 'message_end', 'message': {'role': 'assistant', 'stopReason': 'error', 'errorMessage': 'failed', 'content': []}},
+        {'type': 'agent_end', 'messages': [], 'isTerminal': True},
+    ]
+    class Process:
+        stdin, stderr, returncode = io.StringIO(), io.StringIO(), 0
+        stdout = iter([json.dumps(event) + '\n' for event in events])
+        def wait(self): return 0
+        def poll(self): return 0
+    def brain(*args, **kwargs):
+        return agents.run_cli({'cmd': 'omp'}, 'act', lambda *a: None)[0]
+    with mock.patch.object(llm, 'build_llm', return_value=brain), \
+         mock.patch.object(agents, '_resolve_cmd', return_value=['omp']), \
+         mock.patch.object(agents, '_git', return_value=''), \
+         mock.patch('taskuary.spawn.popen', return_value=Process()):
+        with pytest.raises(RuntimeError, match='failed'): session.send_prompt('Start', as_owner=False)
+    assert store.saved_session(tid)['NativeId'] == 'headless-thread'
+
+
+def test_failed_omp_backup_keeps_session_under_its_own_provider():
+    store = MemoryStore(); connect(store, 'claude'); connect(store, 'omp'); tid = task(store)
+    store.set_setting('triage_backup_ai', 'cli:omp', 'owner')
+    session = general.GeneralSession(store, tid, pick='cli:claude')
+    def make(_store, name, *args, **kwargs):
+        if name == 'claude':
+            return mock.Mock(side_effect=RuntimeError('service unavailable'))
+        return mock.Mock(side_effect=agents.OmpTurnError('tool failed', 'omp-thread'))
+    def build(st, **kwargs):
+        return llm._build_llm(st, pick=kwargs.get('pick'), resume=kwargs.get('resume'),
+                              backups=['cli:omp'])
+    with mock.patch.object(llm, 'make_cli_llm', side_effect=make), mock.patch.object(llm, 'build_llm', side_effect=build):
+        with pytest.raises(agents.OmpTurnError): session.send_prompt('Start', as_owner=False)
+    saved = store.saved_session(tid)
+    assert (saved['Pick'], saved['NativeId']) == ('cli:omp', 'omp-thread')
+    continued = general.GeneralSession(store, tid)
+    with mock.patch.object(llm, 'build_llm', return_value=brain()) as build:
+        continued.send_prompt('Continue', as_owner=False)
+    assert build.call_args.kwargs['pick'] == 'cli:omp'
+    assert build.call_args.kwargs['resume'] == 'omp-thread'
+
 def test_backup_provider_receives_history_without_primary_session_id():
     store = MemoryStore(); connect(store); connect(store, 'codex')
     store.set_setting('triage_backup_ai', 'cli:codex', 'owner')

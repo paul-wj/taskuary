@@ -74,6 +74,97 @@ SOURCES = {
 
 def watches(cli: str) -> bool: return cli in SOURCES
 
+def omp_file(directory) -> str:
+    """The one session created in this pane's private directory, never a cwd-wide newest guess."""
+    try:
+        files = list(Path(directory).glob('*.jsonl'))
+        if len(files) != 1: return ''
+        with files[0].open(encoding='utf-8') as f:
+            for _ in range(3):
+                try: row = json.loads(f.readline())
+                except ValueError: continue
+                if row.get('type') == 'session' and row.get('id'):
+                    return str(files[0].resolve())
+    except (OSError, AttributeError): pass
+    return ''
+
+
+def omp_acp_file(session_id: str, env: dict, argv: list, cwd: str = None) -> str:
+    """Find only this ACP session's file, without reading any other conversation."""
+    sid = str(session_id or '')
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', sid): return ''
+    profile = env.get('OMP_PROFILE') if 'OMP_PROFILE' in env else env.get('PI_PROFILE', '')
+    for i, arg in enumerate(argv):
+        if arg == '--profile' and i + 1 < len(argv): profile = argv[i + 1]
+        elif str(arg).startswith('--profile='): profile = str(arg).split('=', 1)[1]
+    profile = str(profile or '').strip()
+    if profile == 'default': profile = ''
+    if profile and not re.fullmatch(r'[a-z0-9][a-z0-9._-]{0,63}', profile): return ''
+    home = Path((env.get('USERPROFILE') if os.name == 'nt' else env.get('HOME')) or str(Path.home()))
+    working = Path(cwd or os.getcwd())
+    def child_path(value):
+        path = Path(value)
+        return path if path.is_absolute() else working / path
+    config = home / (env.get('PI_CONFIG_DIR') or '.omp')
+    if profile:
+        agent = config / 'profiles' / profile / 'agent'
+    else:
+        agent = child_path(env['PI_CODING_AGENT_DIR']) if env.get('PI_CODING_AGENT_DIR') else config / 'agent'
+    data = env.get('XDG_DATA_HOME')
+    if os.name != 'nt' and data and (profile or not env.get('PI_CODING_AGENT_DIR')):
+        xdg = child_path(data) / 'omp'
+        if profile: xdg = xdg / 'profiles' / profile
+        if xdg.is_dir(): agent = xdg
+    try:
+        files = list((agent / 'sessions').glob(f'*/*_{sid}.jsonl'))
+        if len(files) != 1: return ''
+        with files[0].open(encoding='utf-8') as f:
+            for _ in range(3):
+                try: row = json.loads(f.readline())
+                except ValueError: continue
+                if isinstance(row, dict) and row.get('type') == 'session' and row.get('id') == sid:
+                    return str(files[0])
+    except OSError: pass
+    return ''
+
+
+def _omp_session_entries(path: str):
+    with open(path, encoding='utf-8') as f:
+        for line in f:
+            if not line.endswith('\n'): raise ValueError('incomplete session record')
+            row = json.loads(line)
+            if not isinstance(row, dict): raise ValueError('invalid session record')
+            if row.get('type') == 'title': continue
+            entry_id = row.get('id')
+            if not isinstance(entry_id, str) or not entry_id: raise ValueError('session record has no id')
+            yield entry_id, row
+
+
+def omp_acp_checkpoint(path: str) -> str:
+    """Last durable entry before this prompt; an absent anchor must not admit an old success."""
+    last = ''
+    for entry_id, _ in _omp_session_entries(path): last = entry_id
+    if not last: raise ValueError('empty Oh My Pi session')
+    return last
+
+
+def omp_acp_outcome(path: str, previous: str) -> tuple[str, str]:
+    """The newest assistant record after the same durable anchor, including across rewrites."""
+    try:
+        found, last = False, None
+        for entry_id, row in _omp_session_entries(path):
+            if entry_id == previous:
+                if found: return '', ''
+                found = True
+                continue
+            if found and row.get('type') == 'message':
+                msg = row.get('message') or {}
+                if isinstance(msg, dict) and msg.get('role') == 'assistant': last = msg
+        if found and last:
+            return str(last.get('stopReason') or ''), str(last.get('errorMessage') or '')
+    except (OSError, ValueError, UnicodeError): pass
+    return '', ''
+
 
 def find(cli: str, cwd: str, since: float) -> str:
     """The id of the newest session this CLI filed AFTER `since` - '' when there is none yet."""
@@ -94,15 +185,17 @@ def find(cli: str, cwd: str, since: float) -> str:
 class SessionWatch(threading.Thread):
     """Wait for the file this pane is about to write, then name the pane after it. Stops with it."""
 
-    def __init__(self, term, cli):
+    def __init__(self, term, cli, directory=None):
         super().__init__(daemon=True)
-        self.t, self.cli, self.t0 = term, cli, time.time() - 3
+        self.t, self.cli, self.t0, self.directory = term, cli, time.time() - 3, directory
 
     def run(self):
         from .terminal import bind_ext
         try:
-            while self.t.alive and not getattr(self.t, 'ext_id', ''):
-                bind_ext(self.t, find(self.cli, self.t.cwd, self.t0))
+            while not getattr(self.t, 'ext_id', ''):
+                ext = omp_file(self.directory) if self.cli == 'omp' else find(self.cli, self.t.cwd, self.t0)
+                bind_ext(self.t, ext)
+                if not self.t.alive: break
                 time.sleep(2)
         except Exception as e:
             logger.debug(f'session file watch for {getattr(self.t, "sid", "?")} ended: {e}')

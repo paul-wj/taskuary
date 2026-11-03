@@ -75,6 +75,11 @@ RECIPES = {
         {'how': 'npm', 'pkg': '@qwen-code/qwen-code'},
     ],
     'copilot': [{'how': 'npm', 'pkg': '@github/copilot'}],
+    'omp': [
+        {'how': 'script', 'os': 'nt', 'cmd': ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+            '-Command', powershell_installer('https://omp.sh/install.ps1')]},
+        {'how': 'script', 'os': 'posix', 'cmd': ['bash', '-lc', 'curl -fsSL https://omp.sh/install | sh']},
+    ],
     'opencode': [
         {'how': 'script', 'os': 'posix', 'cmd': ['bash', '-lc', 'curl -fsSL https://opencode.ai/install | bash']},
         {'how': 'npm', 'pkg': 'opencode-ai'},
@@ -114,7 +119,7 @@ RECIPES = {
 
 # what to look for once an installer says it is done - the bin name, not the profile's nickname
 BINARY = {'claude': 'claude', 'codex': 'codex', 'gemini': 'gemini', 'copilot': 'copilot', 'cursor': 'cursor-agent',
-          'muse': 'muse', 'devin': 'devin', 'qwen': 'qwen', 'opencode': 'opencode', 'kimi': 'kimi'}
+          'muse': 'muse', 'devin': 'devin', 'qwen': 'qwen', 'opencode': 'opencode', 'kimi': 'kimi', 'omp': 'omp'}
 CMD2NAME = {v: k for k, v in BINARY.items()}       # cursor-agent -> cursor: the bin is not the recipe
 
 # A FILE ON DISK IS NOT A CLI THAT STARTS. codex, claude, gemini and copilot ship on npm as a small
@@ -126,7 +131,7 @@ CMD2NAME = {v: k for k, v in BINARY.items()}       # cursor-agent -> cursor: the
 # (TQ-0726). So these are asked for their version before anything calls them installed.
 # Only CLIs verified to answer `--version` and exit: a probe that hangs or errors on a healthy CLI
 # would turn every install of it into a failure.
-PROBE = {'codex': ['--version'], 'claude': ['--version'], 'gemini': ['--version'], 'copilot': ['--version']}
+PROBE = {'codex': ['--version'], 'claude': ['--version'], 'gemini': ['--version'], 'copilot': ['--version'], 'omp': ['--version']}
 
 
 def broken(name: str, path: str) -> str:
@@ -193,6 +198,7 @@ UPDATES = {
     'opencode': [{'how': 'self', 'args': ['upgrade']}],
     'kimi': [{'how': 'self', 'args': ['upgrade']}],
     'copilot': [{'how': 'npm', 'pkg': '@github/copilot@latest'}],
+    'omp': [{'how': 'self', 'args': ['update']}],
 }
 
 _STATE = {'phase': 'idle', 'name': '', 'verb': 'install', 'detail': '', 'path': '', 'at': 0.0}   # idle|installing|done|failed
@@ -350,6 +356,7 @@ def find(name: str) -> str:
     if WINDOWS: roots += [Path(os.getenv('APPDATA', '')) / 'npm', home / '.local' / 'bin',
                           Path(os.getenv('LOCALAPPDATA', '')) / 'devin' / 'cli' / 'bin',
                           Path(os.getenv('LOCALAPPDATA', '')) / 'qwen-code' / 'bin',
+                          Path(os.getenv('LOCALAPPDATA', '')) / 'omp',
                           Path(os.getenv('LOCALAPPDATA', '')) / 'Programs' / 'muse']
     else: roots += [Path('/usr/local/bin'), Path('/opt/homebrew/bin')]
     for d in roots:

@@ -17,6 +17,28 @@ c = TestClient(server.app)
 
 class PlanTests(unittest.TestCase):
     """`plan` is pure: given a machine, which recipes could run on it, best first."""
+    def test_omp_installer_and_onboarding_are_available_without_node(self):
+        from taskuary import clisetup
+        windows = cliinstall.plan('omp', has_npm=False, system='Windows')
+        posix = cliinstall.plan('omp', has_npm=False, system='Linux')
+        self.assertEqual(len(windows), 1)
+        self.assertIn('https://omp.sh/install.ps1', windows[0]['cmd'][-1])
+        self.assertEqual(len(posix), 1)
+        self.assertIn('https://omp.sh/install', posix[0]['cmd'][-1])
+        with mock.patch.object(cliinstall, 'find', return_value='/custom/omp'), \
+             mock.patch.object(cliinstall, 'broken', return_value=''):
+            self.assertEqual(clisetup.command('omp', login=True), ['/custom/omp'])
+
+    def test_omp_windows_install_is_found_without_a_refreshed_path(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            binary = Path(d) / 'omp' / 'omp.exe'
+            binary.parent.mkdir(); binary.write_text('')
+            with mock.patch.object(cliinstall, 'WINDOWS', True), \
+                 mock.patch('taskuary.clis.which', return_value=''), \
+                 mock.patch.dict(os.environ, {'LOCALAPPDATA': d}):
+                self.assertEqual(cliinstall.find('omp'), str(binary))
+
 
     def test_the_menu_is_closed(self):
         """This runs an installer. An open field would be 'run anything on this machine'."""

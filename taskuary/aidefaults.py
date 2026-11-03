@@ -152,8 +152,8 @@ def _resolve(store, cfg, slot_key: str) -> dict:
         from .agents import default_brain
         key = value or default_brain(store)
         cli = _cli_of(cfg, key) if key else ''
-        cat = climodels.catalog(cli)
-        model, effort = climodels.split_pick(str(_conn(cfg, key).get('model') or ''))
+        cat = climodels.catalog(cli, cmd=_conn(cfg, key).get('cmd'))
+        model, effort = climodels.split_pick(str(_conn(cfg, key).get('model') or ''), cli)
         out.update(value=key, model=model, effort=effort, choices=cat['choices'], efforts=_efforts(cat, model), resolved=_resolved(cat, model),
                    owner=f'the {key} connection' if key else '', owner_link='ai_apps', cli=cli, display=key, default=not value,
                    ready=bool(key))
@@ -198,7 +198,7 @@ def _resolve(store, cfg, slot_key: str) -> dict:
         from .agents import brain_key
         key = brain_key(store, value, cfg)
         conn, cli = _conn(cfg, key), _cli_of(cfg, key)
-        cat = climodels.catalog(cli)
+        cat = climodels.catalog(cli, cmd=conn.get('cmd'))
         light = str(conn.get('light_model') or '')
         if slot_key == 'concierge_ai':
             # what concierge.brain runs: its own model, else the Assistant default - never the brain's light model,
@@ -208,7 +208,7 @@ def _resolve(store, cfg, slot_key: str) -> dict:
             # its own model box, blank = what drafts ran on before: the brain's light gear (shared with triage, never written by this card)
             light, dflt, owner = str(settings.get(s['model_setting']) or ''), light or LIGHT_DEFAULT.get(cli, ''), 'this page'
         else: dflt, owner = LIGHT_DEFAULT.get(cli, ''), f'the {key} connection (light model)'
-        model, effort = ('', light[7:]) if light.startswith('effort:') else climodels.split_pick(light)
+        model, effort = ('', light[7:]) if light.startswith('effort:') else climodels.split_pick(light, cli)
         if slot_key == 'concierge_ai' and not effort:
             from .llm import ASSISTANT_EFFORT
             effort = ASSISTANT_EFFORT.get(cli, '')          # what concierge.brain runs when the pick names no effort

@@ -59,6 +59,68 @@ def test_saved_custom_or_explicitly_empty_arguments_are_preserved():
         assert cli_connections.resolve(cfg, cfg['agents']['coding'])['args'] == args
 
 
+def test_migration_preserves_existing_provider_interactive_command_and_connection_override():
+    from taskuary import terminal
+    for existing, expected in ((None, ['chat']), (['--own'], ['--own']), ([], [])):
+        connection = {'cmd': 'gemini', **({'interactive_args': existing} if existing is not None else {})}
+        cfg = {'agents': {'coding': {'provider': 'cli:gemini', 'interactive_args': ['chat']}},
+               'cli_connections': {'gemini': connection}}
+        store = MemoryStore()
+        cli_connections.migrate(cfg)
+        cli_connections.sync(cfg, store)
+        saved = json.loads(store.get_agent('coding')['Config'])
+        assert saved['interactive_args'] == expected
+        assert 'interactive_args' not in cfg['agents']['coding']
+        with mock.patch.object(agents, '_resolve_cmd', return_value=['gemini']):
+            argv = terminal.agent_argv(saved)
+        if expected: assert argv == ['gemini', *expected]
+        assert not cli_connections.migrate(cfg)
+
+
+def test_migration_preserves_interactive_arguments_for_effective_brain_settings():
+    from taskuary import terminal
+    for role_override in (False, True):
+        for existing, expected in ((None, ['chat']), ([], []), (['--own'], ['--own'])):
+            connection = {'cmd': 'gemini', **({'interactive_args': existing} if existing is not None else {})}
+            cfg = {'agents': {'coding': {'interactive_args': ['chat']}},
+                   'cli_connections': {'gemini': connection, 'omp': {'cmd': 'omp'}}}
+            store = MemoryStore()
+            store.set_setting('default_brain', 'omp' if role_override else 'gemini', 'owner')
+            if role_override:
+                store.set_setting('profile_brains', json.dumps({'coding': 'gemini'}), 'owner')
+            cli_connections.migrate(cfg, store)
+            cli_connections.sync(cfg, store)
+            saved = json.loads(store.get_agent('coding')['Config'])
+            assert saved['interactive_args'] == expected
+            assert 'interactive_args' not in cfg['agents']['coding']
+            assert 'interactive_args' not in cfg['cli_connections']['omp']
+            with mock.patch.object(agents, '_resolve_cmd', return_value=['gemini']):
+                argv = terminal.agent_argv(saved)
+            if expected: assert argv == ['gemini', *expected]
+            assert not cli_connections.migrate(cfg, store)
+
+
+def test_changing_cli_family_rebuilds_omitted_protocol_and_models():
+    from fastapi.testclient import TestClient
+    from taskuary import server
+    cfg = {'server': copy.deepcopy(server.cfg['server']), 'agents': {},
+           'cli_connections': {'custom': {'cmd': 'qwen', 'args': ['--yolo'], 'acp': ['--acp'],
+                               'interactive_args': ['--old'], 'resume_args': ['--old-resume'],
+                               'model_arg': '--old-model', 'model': 'old/model', 'timeout': 300}}}
+    with mock.patch.object(server, 'cfg', cfg), mock.patch.object(server, 'store', MemoryStore()), mock.patch('taskuary.config.save'):
+        client = TestClient(server.app)
+        assert client.put('/api/cli/connections/custom', json={'cmd': 'omp', 'args': ['-p', '--no-title']}).status_code == 200
+        saved = cfg['cli_connections']['custom']
+        assert saved['acp'] == ['acp'] and saved['resume_args'] == ['--resume']
+        assert saved['model_arg'] == '--model' and 'model' not in saved and 'interactive_args' not in saved
+        assert saved['args'] == ['-p', '--no-title'] and saved['timeout'] == 300
+        assert client.put('/api/cli/connections/custom', json={'cmd': 'qwen', 'acp': ['custom-acp'],
+                                                               'model': 'new/model'}).status_code == 200
+        saved = cfg['cli_connections']['custom']
+        assert saved['acp'] == ['custom-acp'] and saved['model'] == 'new/model'
+        assert saved['args'] == ['--yolo', '--output-format', 'stream-json']
+
+
 def test_connection_edits_reach_all_profiles_and_provider_switch_is_independent():
     cfg, store = legacy(), MemoryStore()
     cli_connections.migrate(cfg)

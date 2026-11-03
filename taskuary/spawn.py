@@ -127,6 +127,92 @@ def run(*args, **kw):
     with clean_dll_dir(): return subprocess.run(*args, **flags(**guard(**kw)))
 def popen(*args, **kw):
     with clean_dll_dir(): return subprocess.Popen(*args, **flags(**guard(**kw)))
+
+_TREE_STATE_LOCK = threading.Lock()
+
+
+def _tree_lock(process):
+    with _TREE_STATE_LOCK:
+        lock = getattr(process, '_taskuary_tree_lock', None)
+        if lock is None:
+            lock = process._taskuary_tree_lock = threading.Lock()
+        return lock
+
+
+def track_tree(process):
+    """Capture a new child's identity before another thread can reap it."""
+    if os.name == 'nt': return
+    import psutil
+    with _tree_lock(process):
+        try: process._taskuary_tree_root = psutil.Process(process.pid)
+        except psutil.NoSuchProcess: process._taskuary_tree_root = None
+
+
+def _stop_posix_tree(process):
+    import psutil
+    if not hasattr(process, '_taskuary_tree_root'):
+        raise RuntimeError('process tree identity was not captured at launch')
+    root = process._taskuary_tree_root
+    if root is None: return
+    if process.poll() is not None: return
+    suspended, error = [], None
+    try:
+        root.suspend()
+        suspended.append(root)
+        parents = [root]
+        while parents:
+            children = []
+            for parent in parents:
+                try: found = parent.children()
+                except psutil.NoSuchProcess: continue
+                for child in found:
+                    try: child.suspend()
+                    except psutil.NoSuchProcess: continue
+                    suspended.append(child)
+                    children.append(child)
+            parents = children
+    except psutil.NoSuchProcess:
+        pass
+    except Exception as exc:
+        error = exc
+    finally:
+        for child in reversed(suspended):
+            try: child.kill()
+            except psutil.NoSuchProcess: pass
+            except Exception as exc:
+                if error is None: error = exc
+    if error is not None: raise error
+
+def _process_alive(process):
+    poll = getattr(process, 'poll', None)
+    if callable(poll): return poll() is None
+    return bool(process.isalive())
+
+
+
+def stop_tree(process):
+    """Stop an owned process and its descendants, including separate sessions."""
+    if os.name == 'nt':
+        if not _process_alive(process): return
+        failure = None
+        try:
+            result = run(['taskkill', '/PID', str(process.pid), '/T', '/F'], capture_output=True, timeout=10)
+            if result.returncode and _process_alive(process):
+                failure = f'taskkill exited {result.returncode}'
+        except (OSError, subprocess.SubprocessError, AttributeError) as exc:
+            failure = str(exc)
+        try:
+            if _process_alive(process):
+                if callable(getattr(process, 'kill', None)): process.kill()
+                else: process.terminate(force=True)
+        except (OSError, AttributeError) as exc:
+            failure = failure or str(exc)
+        if failure: raise RuntimeError(f'Could not stop the process tree: {failure}')
+        return
+    with _tree_lock(process):
+        if getattr(process, '_taskuary_tree_stopped', False): return
+        _stop_posix_tree(process)
+        process._taskuary_tree_stopped = True
 def bare(*args, **kw):
     """A child that sets its own creation flags (the WhatsApp bridge, the update helper, a browser): guarded, no console flag."""
     with clean_dll_dir(): return subprocess.Popen(*args, **guard(**kw))

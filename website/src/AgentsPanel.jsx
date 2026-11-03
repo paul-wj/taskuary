@@ -12,16 +12,17 @@ import { useCliInstall, InstallLine, UpdateLine } from "./cliInstall.jsx";
 import { useCliSetup, SetupButton, CliPane } from "./cliSetup.jsx";
 import SkillImport from "./SkillImport.jsx";
 import { openAppLink } from "./appLinks.js";
+import { connectionPayload } from "./cliCard.js";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 
-const lines = (v) => String(v || "").split("\n").map((x) => x.trim()).filter(Boolean);
 const failure = (e) => e?.response?.data?.detail || e?.message || { source: "Could not save changes" };
 const errorText = (error) => typeof error === "string" ? error : error?.source ? t(error.source) : error;
 const BLANK_CONNECTION = { name: "", cmd: "", args: "", resumeArgs: "", timeout: 1500, modelArg: "" };
 const CLI_DESCRIPTIONS = {
   opencode: "Use /connect to add a provider, then /models to choose it. Task execution only; choose another provider for triage and reports.",
   kimi: "Use /login to connect Kimi or Moonshot. Windows requires Git Bash. Task execution only; choose another provider for triage and reports.",
+  omp: "Use /login to connect a provider and /model to choose it. Task execution only; triage, reports and stranger-origin work are not supported.",
 };
 // A PROFILE IS A NAME AND INSTRUCTIONS (the owner, 2026-10-22): no provider, no model - the brain is the AI defaults' answer. A saved
 // profile carrying those keys from before still loads; they are not shown and Save does not send them
@@ -69,10 +70,7 @@ export const CliConnectionsPage = ({ onBack }) => {
   const save = async () => {
     setSaving(true); setErr("");
     try {
-      await api.put(`/api/cli/connections/${encodeURIComponent(draft.name.trim())}`, {
-        cmd: draft.cmd.trim(), args: lines(draft.args), resume_args: lines(draft.resumeArgs),
-        timeout: Number(draft.timeout), ...(draft.modelArg.trim() ? { model_arg: draft.modelArg.trim() } : {}),
-      });
+      await api.put(`/api/cli/connections/${encodeURIComponent(draft.name.trim())}`, connectionPayload(draft));
       setDraft(null); await load();
     } catch (e) { setErr(failure(e)); } finally { setSaving(false); }
   };

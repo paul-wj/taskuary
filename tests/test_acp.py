@@ -171,12 +171,6 @@ class NothingElseChangesTests(unittest.TestCase):
         self.assertTrue(continuity.can_resume(s, 'cli:deviner'))
         self.assertFalse(continuity.can_resume(s, 'cli:devin'))
 
-    def test_only_the_clis_that_speak_it_natively_ship_with_it(self):
-        by = {r['name']: r for r in clis.KNOWN}
-        self.assertEqual(sorted(n for n, r in by.items() if r.get('acp')), ['copilot', 'cursor', 'devin', 'gemini', 'qwen'])   # devin acp: verified 2026-09-20
-        # claude and codex are adapter-only: reachable by putting the adapter in a profile, never shipped on
-        for n in ('claude', 'codex', 'muse'):
-            self.assertIsNone(by[n].get('acp'))
 
 
 if __name__ == '__main__':

@@ -366,6 +366,12 @@ def isolated_runtime_boundaries():
         if args and Path(args[0]).resolve() == Path(__file__).resolve().parent / 'fake_claude.py': return True
         # ...and the stand-in for the owner's own reason-network CLI, never the real internet-facing one (tests/test_reason_network.py)
         if args and Path(args[0]).resolve() == Path(__file__).resolve().parent / 'fake_reason_network.py': return True
+        if args and Path(args[0]).resolve() == Path(__file__).resolve().parent / 'fake_tree_process.py':
+            if len(args) != 5 or args[1] not in ('parent', 'child'): return False
+            try:
+                for path in args[2:]: Path(path).resolve().relative_to(_TEST_ROOT)
+            except ValueError: return False
+            return True
         return len(args) == 1 and Path(args[0]).resolve() in allowed_files
 
     def git_allowed(argv, kwargs) -> bool:
@@ -489,6 +495,23 @@ def isolated_runtime_boundaries():
     # is best effort and never widens to a parent supplied by the environment.
     try: shutil.rmtree(_TEST_ROOT)
     except OSError: pass
+
+
+@pytest.fixture(autouse=True)
+def isolated_omp_catalog():
+    """Unrelated API tests never launch an installed OMP to discover its models."""
+    from taskuary import climodels
+    real = climodels.omp_models
+    def unavailable(cmd=None): return []
+    unavailable.real = real
+    with mock.patch.object(climodels, 'omp_models', unavailable): yield
+
+
+@pytest.fixture
+def real_omp_catalog(isolated_omp_catalog):
+    """Catalog behavior tests opt back in and mock the subprocess themselves."""
+    from taskuary import climodels
+    with mock.patch.object(climodels, 'omp_models', climodels.omp_models.real): yield
 
 
 @pytest.fixture(autouse=True)

@@ -215,10 +215,10 @@ def brain(store, cfg: dict, task: dict = None) -> dict:
     key = hub.brain_key(store, pick, conf) if pick.startswith('cli:') else ''
     cli = _cli_of(conf, key) if key else ''
     tool = _tool(cli) if cli else str(label or '').replace(' (API)', '') or 'no AI connected'
-    dm, de = climodels.split_pick(dflt)
+    dm, de = climodels.split_pick(dflt, cli)
     model, effort, dropped = str(cfg.get('model') or '').strip() or dm, str(cfg.get('effort') or '').strip().lower(), ''
     if effort:
-        ok = efforts_for(cli, climodels.catalog(cli), model) if cli else []
+        ok = efforts_for(cli, climodels.catalog(cli, cmd=((conf.get('cli_connections') or {}).get(key) or {}).get('cmd')), model) if cli else []
         if not cli: dropped = f"{tool} is an AI connection, which takes no effort setting"
         elif not climodels.effort_args(cli, effort): dropped = f"{tool} has no effort setting Taskuary can pass"
         elif ok and effort not in ok: dropped = f"{tool} offers {', '.join(ok)} for {model or 'its default model'}"
@@ -237,9 +237,11 @@ def brain_of_task(store, task) -> dict | None:
 
 def brain_options(store) -> dict:
     """What the editor's Model and Effort offer: the general agents' brain, its models, and per model only the efforts it takes."""
-    from . import climodels, llm
+    from . import climodels, config, llm
     b = brain(store, {})
-    if b['cli']: cat = climodels.catalog(b['cli'])
+    if b['cli']:
+        conn = ((config.load().get('cli_connections') or {}).get(b['key']) or {})
+        cat = climodels.catalog(b['cli'], cmd=conn.get('cmd'))
     else:
         # an AI connection offers what its own key can call - the provider's list, never a typed-in one (llm.connector_models)
         cid = b['pick'][10:] if b['pick'].startswith('connector:') else ''

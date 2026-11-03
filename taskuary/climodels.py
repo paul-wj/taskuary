@@ -227,9 +227,40 @@ def _configured_models(cli: str) -> tuple:
     except (OSError, ValueError, TypeError, AttributeError):
         return [], {}, ''
 
+def omp_models(cmd: str = None) -> list:
+    """Ask the installed CLI for available chat selectors; never return provider configuration."""
+    from . import agents, spawn
+    try:
+        argv = agents._resolve_cmd(cmd or 'omp')
+        p = spawn.run([*argv, 'models', '--json', '--no-extensions'], capture_output=True, text=True,
+                      encoding='utf-8', errors='replace', timeout=20)
+        if p.returncode != 0: return []
+        data = json.loads(p.stdout or '')
+        records = data.get('models') if isinstance(data, dict) else None
+        if not isinstance(records, list): return []
+        models, seen = [], set()
+        for record in records:
+            if not isinstance(record, dict): continue
+            selector = record.get('selector')
+            if not isinstance(selector, str) or not selector.strip() or selector in seen: continue
+            name, provider = record.get('name'), record.get('provider')
+            label = name if isinstance(name, str) and name.strip() else selector
+            if label != selector and isinstance(provider, str) and provider.strip():
+                label = f'{label} · {provider}'
+            seen.add(selector)
+            models.extend(_items([selector], {selector: label}))
+        return models
+    except (OSError, ValueError, TypeError, RuntimeError, subprocess.SubprocessError):
+        return []
 
-def catalog(cli: str) -> dict:
+
+
+def catalog(cli: str, cmd: str = None) -> dict:
     """{models, current, choices} for one CLI. `choices` is the flat id list older pickers use."""
+    if cli == 'omp':
+        models = omp_models(cmd)
+        return {'models': models, 'current': {}, 'source': 'omp models --json' if models else 'unavailable',
+                'choices': [m['id'] for m in models]}
     if cli == 'codex':
         models = codex_models() or CODEX_FALLBACK
         return {'models': models, 'current': codex_current(), 'source': 'codex models_cache.json' if codex_models() else 'built-in',
@@ -270,7 +301,7 @@ def effort_args(cli: str, effort: str) -> list:
     return []
 
 
-def split_pick(pick: str) -> tuple:
-    """'gpt-5.4-mini@low' -> ('gpt-5.4-mini', 'low'); 'gpt-5.4-mini' -> ('gpt-5.4-mini', '')."""
+def split_pick(pick: str, cli: str = '') -> tuple:
+    """Split Taskuary's model@effort syntax, except for OMP's literal selectors."""
     s = str(pick or '').strip()
-    return tuple(s.split('@', 1)) if '@' in s else (s, '')
+    return tuple(s.split('@', 1)) if cli != 'omp' and '@' in s else (s, '')

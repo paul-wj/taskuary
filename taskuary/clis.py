@@ -44,6 +44,10 @@ KNOWN = [
      'description': 'Use /login to connect Kimi or Moonshot. Windows requires Git Bash. Task execution only; choose another provider for triage and reports.',
      'args': ['--output-format', 'stream-json'],
      'resume_args': ['--session'], 'timeout': 1500},
+    {'name': 'omp', 'cmd': 'omp', 'label': 'Oh My Pi',
+     'description': 'Use /login to connect a provider and /model to choose it. Task execution only; triage, reports and stranger-origin work are not supported.',
+     'args': ['-p', '--mode', 'json', '--wait-async'], 'resume_args': ['--resume'],
+     'model_arg': '--model', 'acp': ['acp'], 'timeout': 1500},
     {'name': 'cursor', 'cmd': 'cursor-agent', 'label': 'Cursor CLI',
      'args': ['-p', '--force', '--output-format', 'text'], 'resume_args': ['--resume={id}'],
      'acp': ['acp'], 'timeout': 1500},
@@ -235,6 +239,13 @@ def store_app(path: str) -> bool:
     """
     return '\\windowsapps\\' in str(path or '').lower()
 
+def omp_install(cmd: str) -> str:
+    """The official Windows installer location when the running app has a stale PATH."""
+    import os, re
+    if os.name != 'nt' or re.search(r'[\\/]', str(cmd or '')) or _base(cmd) != 'omp' or not os.environ.get('LOCALAPPDATA'): return ''
+    path = os.path.join(os.environ['LOCALAPPDATA'], 'omp', 'omp.exe')
+    return path if os.path.isfile(path) else ''
+
 
 def which(cmd: str) -> str:
     """Where a CLI is, as the AGENT RUNNER sees it - this process's PATH, then the live one.
@@ -249,8 +260,8 @@ def which(cmd: str) -> str:
     from .pathcache import which as w
     found = w(cmd)
     if found: return found
-    try: return w(cmd, path=_fresh_path()) or ''
-    except OSError: return ''            # a registry we cannot read is not an error worth raising
+    try: return w(cmd, path=_fresh_path()) or omp_install(cmd)
+    except OSError: return omp_install(cmd)
 
 
 def runnable(cmd: str) -> tuple:

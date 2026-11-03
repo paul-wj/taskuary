@@ -29,7 +29,9 @@ def shutdown_cli_children():
         _CLI_CHILDREN.clear()
     for child in children:
         try:
-            if child.poll() is None: child.kill()
+            if child.poll() is None:
+                if getattr(child, '_taskuary_tree', False): spawn.stop_tree(child)
+                else: child.kill()
         except Exception:
             pass
     return len(children)
@@ -128,7 +130,7 @@ def _resolve_cmd(name: str) -> list:
     PATH-resolves via which(). Reaching THROUGH the shim beats running it under cmd /c - see
     _shim_target for why that difference decides whether a prompt arrives whole."""
     path = pathcache.which(name) or pathcache.which(name, path=_fresh_path())
-    if not path and re.search(r'[\\/]', str(name)):
+    if not path and re.search(r'[\\/]', str(name)) and _cli_name(name) != 'omp':
         # A saved ABSOLUTE path that has moved. codex installs itself into
         # ...\Codex\bin\<version hash>\codex.exe, so a profile pinned to one of those breaks on
         # the next update and reads as "the CLI is gone". The NAME is the durable half: ask PATH
@@ -136,6 +138,9 @@ def _resolve_cmd(name: str) -> list:
         base = re.split(r'[\\/]', str(name))[-1]
         path = pathcache.which(base) or pathcache.which(base, path=_fresh_path())
         if path: logger.info(f'{name} has moved; using {path} instead')
+    if not path:
+        from .clis import omp_install
+        path = omp_install(name)
     if not path:
         raise FileNotFoundError(f"'{name}' not found on PATH - is the CLI installed?")
     if os.name == 'nt' and path.lower().endswith(('.cmd', '.bat')):
@@ -262,6 +267,7 @@ _LOGIN_HOW = {'claude': "run `claude` and type `/login`", 'copilot': "run `copil
               'qwen': "run `qwen` and use `/auth` to configure your model provider",
               'opencode': "run `opencode` and use `/connect` to configure your model provider",
               'kimi': "run `kimi` and use `/login` to configure Kimi or Moonshot",
+              'omp': "run `omp` and use `/login` to configure your model provider",
               'muse': "run `muse` once and finish the browser sign-in at dev.meta.ai",
               'devin': "run `devin auth login` and finish the browser sign-in"}
 # Provider/plan exhaustion is different from an agent failing the work. Only this availability
@@ -322,6 +328,15 @@ class RateLimited(RuntimeError):
     """A CLI that refused on its usage allowance. `until` is when it comes back, or None - the router rests the brain till then
     (brainroute.cool) instead of handing it the next call to refuse."""
     def __init__(self, msg: str, info: dict = None): super().__init__(msg); self.until = limit_resets(info)
+
+
+class OmpTurnError(RuntimeError):
+    """A possibly side-effecting OMP turn failed; retain its native continuation ID."""
+    def __init__(self, error, session_id=''):
+        from .clipool import MID_TURN
+        text = str(error)
+        super().__init__(text if MID_TURN in text else f'{text} ({MID_TURN})')
+        self.session_id = session_id if isinstance(session_id, str) else ''
 
 
 def rate_limit_msg(name: str, info: dict) -> str:
@@ -429,7 +444,7 @@ RESUME_ARGS = {'claude': ['--resume', '{id}'], 'codex': ['resume', '{id}'], 'cop
                # gemini and cursor were read from their docs, not from a machine that ran them:
                # each files its conversation and says nothing (sessionfiles.SOURCES finds it).
                'gemini': ['--resume', '{id}'], 'qwen': ['--resume', '{id}'], 'cursor-agent': ['--resume={id}'],
-               'opencode': ['--session', '{id}'], 'kimi': ['--session', '{id}']}
+               'opencode': ['--session', '{id}'], 'kimi': ['--session', '{id}'], 'omp': ['--resume', '{id}']}
 # ...and the CLIs that let the CALLER name a NEW conversation, which beats learning one afterwards:
 # the id exists before the CLI's first byte, so a pane killed in its first second is still
 # resumable and nothing has to be guessed from a working directory (hooks.py) or a log (witness).
@@ -653,6 +668,8 @@ def brain_key(store, pick: str, cfg: dict = None) -> str:
 def availability_failure(error) -> bool:
     """Can the same untouched work safely be retried on a backup provider?"""
     text = str(error or '')
+    from .clipool import MID_TURN
+    if MID_TURN in text: return False
     return isinstance(error, (FileNotFoundError, PermissionError)) or bool(
         _UNAVAILABLE.search(text) or _SIGNED_OUT.search(text) or _DENIED.search(text) or _NO_HOME.search(text))
 
@@ -1235,42 +1252,93 @@ def run_acp(profile: dict, prompt: str, trace, resume: str = None, cancel=None, 
     """
     profile = with_cmd(profile, store); name = profile['cmd']
     cmd = _resolve_cmd(name) + list(profile.get('acp') or [])
+    if _cli_name(name) == 'omp' and any(a == '--session-dir' or str(a).startswith('--session-dir=') for a in cmd[1:]):
+        raise ValueError('Oh My Pi ACP cannot resume sessions from a custom --session-dir. '
+                         'Remove that ACP option to use its normal session store.')
     if profile.get('model'):
         from .climodels import split_pick
-        model, _ = split_pick(profile['model'])
+        model, _ = split_pick(profile['model'], _cli_name(name))
         if model: cmd += [profile.get('model_arg') or '--model', model]
     cwd = profile.get('cwd')
     trace('prompt', 'prompt_sent_to_agent', prompt)
     trace('tool', 'cli', f'{name} over acp cwd={cwd or os.getcwd()}' + (f' resume={resume}' if resume else ''))
     head0 = _git(cwd, 'rev-parse', 'HEAD')
     env = spawn_env(profile, extra_env)
+    overlay = None
+    if _cli_name(name) == 'omp':
+        # ACP returns before running background jobs finish. This one-turn host cannot
+        # receive their later wakeups, so keep its tool work foreground-only.
+        import tempfile
+        fd, overlay = tempfile.mkstemp(prefix='taskuary-omp-acp-', suffix='.yml')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump({'async': {'enabled': False}}, f)
+        except Exception:
+            os.remove(overlay)
+            raise
+        cmd += ['--config', overlay]
 
     try:
+        policy = {'permission_policy': 'deny', 'process_tree': True} if _cli_name(name) == 'omp' else {}
         client = acp_mod.ACPClient(cmd[0], cmd[1:], cwd=cwd, env=env,
-                                   timeout=profile.get('timeout', 1200), on_update=acp_tracer(trace, name))
+                                   timeout=profile.get('timeout', 1200), on_update=acp_tracer(trace, name), **policy)
     except PermissionError as e:
+        if overlay:
+            try: os.remove(overlay)
+            except OSError: pass
         raise FileNotFoundError(denied_msg(name, cmd[0] if cmd else '', e)) from e
+    except Exception:
+        if overlay:
+            try: os.remove(overlay)
+            except OSError: pass
+        raise
     with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.add(client.p)
-    watcher = None
+    finished = threading.Event()
+    cancel_thread = None
     if cancel is not None:
-        # A browser Cancel asks the agent to stop first; killing the process is the backstop for
-        # an agent that does not honour session/cancel.
         def _cancel():
-            cancel.wait()
-            if cancel.is_set(): client.cancel(); client.close()
-        watcher = threading.Thread(target=_cancel, daemon=True); watcher.start()
+            while not finished.is_set():
+                if cancel.wait(.1):
+                    if not finished.is_set():
+                        try: client.cancel(); client.close()
+                        except Exception: pass  # close retains its failure for the owning thread
+                    return
+        cancel_thread = threading.Thread(target=_cancel, daemon=True)
+        cancel_thread.start()
+    prompt_started = False
     try:
         try:
             caps = client.connect()
             if resume and caps.get('loadSession'): client.load_session(resume, cwd)
             else:
+                if resume and _cli_name(name) == 'omp':
+                    raise RuntimeError(f'{name} cannot reload this session')
                 if resume: trace('progress', 'acp', f'{name} cannot reload a session; starting a fresh one')
                 client.new_session(cwd)
+            if _cli_name(name) == 'omp':
+                from . import sessionfiles
+                native_file = sessionfiles.omp_acp_file(client.session_id, env, cmd, spawn.cwd_for(cwd))
+                if not native_file:
+                    raise RuntimeError('Oh My Pi ACP session cannot be verified in its native session store.')
+                native_checkpoint = sessionfiles.omp_acp_checkpoint(native_file)
+            prompt_started = True
             stop, said = client.prompt(prompt)
         except acp_mod.ACPAgentError as e:
             # a CLI that is not signed in answers session/new in its own words: said as a sign-in, not as a broken app (2026-10-25)
             if _SIGNED_OUT.search(str(e)): raise RuntimeError(signed_out_msg(name, str(e), cmd[0] if cmd else '')) from e
             raise
+        if cancel is not None and cancel.is_set() or stop == 'cancelled':
+            raise RuntimeError('cancelled')
+        if _cli_name(name) == 'omp' and client.permission_denied:
+            raise RuntimeError('Oh My Pi requested permission that this unattended session cannot approve. '
+                               'Open an interactive coding terminal to review the request; this turn did not complete.')
+        if _cli_name(name) == 'omp' and (stop != 'end_turn' or not str(said or '').strip() or not client.session_id):
+            raise RuntimeError(f'{name}: incomplete ACP turn ({stop or "missing stop reason"})')
+        if _cli_name(name) == 'omp':
+            reason, detail = sessionfiles.omp_acp_outcome(native_file, native_checkpoint)
+            if reason != 'stop':
+                why = redact.scrub(detail) if detail else f'unverified native turn outcome ({reason or "missing"})'
+                raise RuntimeError(f'{name}: {why}')
         if stop and stop not in ('end_turn', 'cancelled'):
             trace('progress', 'acp', f'the turn ended early: {stop}')
         diff = ''
@@ -1280,9 +1348,27 @@ def run_acp(profile: dict, prompt: str, trace, resume: str = None, cancel=None, 
             unc = _git(cwd, 'diff', 'HEAD')
             if unc: diff = '\n'.join(x for x in (diff, unc) if x).strip()
         return said, client.session_id, (diff[:150000] or None)
+    except Exception as e:
+        if prompt_started and _cli_name(name) == 'omp':
+            raise OmpTurnError(e, client.session_id) from e
+        raise
     finally:
+        finished.set()
         with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.discard(client.p)
-        client.close()
+        try:
+            if _cli_name(name) == 'omp' and cancel_thread:
+                cancel_thread.join(15)
+                if cancel_thread.is_alive():
+                    raise OmpTurnError('Oh My Pi process cleanup did not finish', client.session_id)
+            try: client.close()
+            except Exception as e:
+                if prompt_started and _cli_name(name) == 'omp':
+                    raise OmpTurnError(e, client.session_id) from e
+                raise
+        finally:
+            if overlay:
+                try: os.remove(overlay)
+                except OSError: pass
 
 
 def spawn_env(profile: dict, extra_env: dict = None) -> dict:
@@ -1293,6 +1379,24 @@ def spawn_env(profile: dict, extra_env: dict = None) -> dict:
 
 
 def run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None, extra_env: dict = None, store=None):
+    """Run one CLI turn without replaying OMP work after its process has started."""
+    started, native_sid = False, ''
+    def mark_started():
+        nonlocal started
+        started = True
+    def mark_session(sid):
+        nonlocal native_sid
+        if isinstance(sid, str) and sid: native_sid = sid
+    try:
+        return _run_cli(profile, prompt, trace, resume, cancel, extra_env, store, mark_started, mark_session)
+    except Exception as e:
+        if started and _cli_name(with_cmd(profile, store)['cmd']) == 'omp':
+            if isinstance(e, OmpTurnError): raise
+            raise OmpTurnError(e, native_sid or resume) from e
+        raise
+
+
+def _run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None, extra_env: dict = None, store=None, mark_started=None, mark_session=None):
     """One headless invocation of the configured CLI, output STREAMED line by line into
     the run trace so the Board shows the agent working live. claude's stream-json events
     render as readable tool/text lines; any other CLI's plain stdout streams as-is.
@@ -1309,6 +1413,18 @@ def run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None, 
     profile = with_cmd(profile, store); name = profile['cmd']
     family = _cli_name(name)
     args = list(profile.get('args') or preset_args(name) or ['-p'])
+    if family == 'omp':
+        # A profile may add flags, but this consumer requires JSON and a settled async turn.
+        clean, skip = [], False
+        for arg in args:
+            if skip: skip = False; continue
+            if arg == '--mode': skip = True; continue
+            if str(arg).startswith('--mode='): continue
+            clean.append(arg)
+        args = clean
+        if '-p' not in args and '--print' not in args: args.append('-p')
+        args += ['--mode', 'json']
+        if '--wait-async' not in args: args.append('--wait-async')
     # Codex's normal exec output is human prose with no boundary between commands, searches,
     # edits and the final answer. JSONL is an exec-only presentation flag, so add it here (not
     # to the saved profile, which is also used to open the interactive terminal TUI).
@@ -1352,26 +1468,41 @@ def run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None, 
         # rides here just as it does in a PTY; merge it over the real process environment so PATH,
         # login homes, and every configured CLI keep working.
         env = spawn_env(profile, extra_env)
+        tree = family == 'omp'
         p = spawn.popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             text=True, encoding='utf-8', errors='replace', cwd=cwd, shell=False,
-                             env=env)
+                        text=True, encoding='utf-8', errors='replace', cwd=cwd, shell=False,
+                        env=env, **({'start_new_session': True} if tree and os.name != 'nt' else {}))
+        p._taskuary_tree = tree
+        if tree and isinstance(getattr(p, 'pid', None), int) and p.pid > 0: spawn.track_tree(p)
+        if mark_started: mark_started()
         with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.add(p)
     except PermissionError as e:
         # which() found something that cannot be executed from here. "Not installed" sent people
         # off to reinstall a CLI that was already there; the reason is in denied_msg.
         raise FileNotFoundError(denied_msg(name, cmd[0] if cmd else '', e)) from e
-    timed = threading.Event()
-    killer = threading.Timer(profile.get('timeout', 1200), lambda: (timed.set(), p.kill()))
+    timed, finished, stop_errors = threading.Event(), threading.Event(), []
+    cancel_thread = None
+    def stop():
+        try:
+            if family == 'omp': spawn.stop_tree(p)
+            else: p.kill()
+        except Exception as e:
+            stop_errors.append(e)
+            try: p.kill()
+            except Exception: pass
+    killer = threading.Timer(profile.get('timeout', 1200), lambda: (timed.set(), stop()))
     killer.start()
     # A browser Cancel closes the streaming response. Kill the CLI too; otherwise the UI says
     # stopped while an invisible agent keeps using tools in the background.
     if cancel is not None:
         def _cancel():
-            cancel.wait()
-            if cancel.is_set() and p.poll() is None:
-                try: p.kill()
-                except Exception: pass
-        threading.Thread(target=_cancel, daemon=True).start()
+            while not finished.is_set():
+                if cancel.wait(.1):
+                    if not finished.is_set() and p.poll() is None:
+                        stop()
+                    return
+        cancel_thread = threading.Thread(target=_cancel, daemon=True)
+        cancel_thread.start()
     err_buf = []
     err_t = threading.Thread(target=lambda: err_buf.append(p.stderr.read()), daemon=True)
     err_t.start()
@@ -1385,13 +1516,57 @@ def run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None, 
     threading.Thread(target=_feed, daemon=True).start()
     raw, final, streamed_out, streamed_sid, open_tools = [], None, '', None, set()
     stream_error, structured_stream = None, False
+    omp_terminal, omp_invalid, omp_error = False, False, None
     try:
         for line in p.stdout:
             line = line.rstrip('\n')
             if not line.strip(): continue
             raw.append(line)
             try: j = json.loads(line)
-            except ValueError: trace('live', name, line[:400]); continue
+            except ValueError:
+                if family == 'omp': omp_invalid = True
+                else: trace('live', name, line[:400])
+                continue
+            if family == 'omp':
+                if not isinstance(j, dict):
+                    omp_invalid = True
+                    continue
+                structured_stream = True
+                kind = j.get('type')
+                if kind == 'session':
+                    streamed_sid = j.get('id') or streamed_sid
+                    if mark_session and streamed_sid: mark_session(streamed_sid)
+                elif kind == 'agent_start':
+                    omp_terminal = False
+                elif kind == 'agent_end':
+                    omp_terminal = j.get('isTerminal') is not False and j.get('yielded') is not False
+                elif kind == 'message_update':
+                    event = j.get('assistantMessageEvent') or {}
+                    if event.get('type') in ('text_delta', 'thinking_delta') and event.get('delta'):
+                        trace('progress', 'thinking' if event['type'] == 'thinking_delta' else 'text', str(event['delta']))
+                elif kind == 'message_end':
+                    msg = j.get('message') or {}
+                    if msg.get('role') == 'assistant':
+                        reason = msg.get('stopReason')
+                        if reason in ('error', 'aborted', 'length'):
+                            omp_error = msg.get('errorMessage') or f'turn ended: {reason}'
+                        elif reason == 'stop':
+                            omp_error = None
+                            streamed_out = ''.join(
+                                str(b.get('text') or '') if b.get('type') == 'text' else str(b.get('thinking') or '')
+                                for b in msg.get('content') or [] if isinstance(b, dict) and
+                                (b.get('type') == 'text' or b.get('type') == 'thinking' and b.get('narration') is True)
+                            ).strip()
+                elif kind == 'tool_execution_start':
+                    trace('tool_call', j.get('toolName') or 'tool',
+                          {'tool_call_id': j.get('toolCallId'), 'args': j.get('args') or {}})
+                elif kind == 'tool_execution_end':
+                    result = j.get('result') or {}
+                    text = acp_mod._text_of(result.get('content')) if isinstance(result, dict) else str(result)
+                    trace('tool_result', j.get('toolCallId') or 'tool', {'result': text, 'is_error': bool(j.get('isError'))})
+                elif kind == 'notice' and j.get('level') == 'error':
+                    stream_error = j.get('message') or 'agent error'
+                continue
             if isinstance(j, dict) and family == 'opencode':
                 structured_stream = True
                 streamed_sid = j.get('sessionID') or streamed_sid
@@ -1474,11 +1649,22 @@ def run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None, 
         p.wait()
     finally:
         killer.cancel()
+        finished.set()
+        if family == 'omp':
+            killer.join(15)
+            if cancel_thread: cancel_thread.join(15)
+            if killer.is_alive() or (cancel_thread and cancel_thread.is_alive()):
+                stop_errors.append(RuntimeError('process cleanup did not finish'))
+        if family == 'omp' and p.poll() is None:
+            try: stop()
+            except Exception: pass
         with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.discard(p)
         if prompt_file:                                  # the prompt can carry mail: never left in the temp folder
             try: os.remove(prompt_file)
             except OSError: pass
+        if stop_errors: raise RuntimeError(f'{name}: could not stop all agent processes: {stop_errors[0]}')
     err_t.join(5)      # the exit code can land before the stderr reader has appended - 'boom' read as 'no output' on a fast CI box
+    if cancel is not None and cancel.is_set(): raise RuntimeError('cancelled')
     if p.returncode != 0:
         if cancel is not None and cancel.is_set(): raise RuntimeError('cancelled')
         err = ''.join(err_buf)
@@ -1497,6 +1683,9 @@ def run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None, 
         raise RuntimeError(f'{name} exit {p.returncode}: {why}')
     # OpenCode can report provider errors in JSON while its process exits successfully.
     if stream_error: raise RuntimeError(f'{name}: {redact.scrub(stream_error)[:500]}')
+    if omp_error: raise RuntimeError(f'{name}: {redact.scrub(omp_error)[:500]}')
+    if family == 'omp' and (omp_invalid or not omp_terminal or not streamed_out or not streamed_sid):
+        raise RuntimeError(f'{name}: incomplete or invalid JSON response')
     if final is not None: out, sid = str(final.get('result') or '').strip(), final.get('session_id')
     elif streamed_out: out, sid = streamed_out, streamed_sid
     elif structured_stream: out, sid = '', streamed_sid
@@ -1534,7 +1723,7 @@ def _model_args(profile: dict, name: str) -> list:
     if not profile.get('model'): return []
     # 'gpt-5.4@high' spells a codex model and its reasoning level in one pick (climodels)
     from .climodels import split_pick, effort_args
-    m, eff = split_pick(profile['model'])
+    m, eff = split_pick(profile['model'], _cli_name(name))
     # '@high' is the CLI's own model at that effort (a workflow's effort alone, workflows.brain): no empty model flag
     return ([profile.get('model_arg') or '--model', m] if m else []) + effort_args(_cli_name(name), eff)
 

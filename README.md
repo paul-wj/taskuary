@@ -137,13 +137,14 @@ Work fans out at three levels:
 
 ### Use your coding CLI
 
-Connect Claude Code, Codex, Qwen Code, OpenCode, Kimi Code, Gemini, Cursor, Copilot, Muse Code, or another CLI.
+Connect Claude Code, Codex, Qwen Code, OpenCode, Kimi Code, Gemini, Cursor, Copilot, Muse Code, Oh My Pi, or another CLI.
 Set up the connection once, then give your agents profiles with their own instructions.
 Follow their sessions, answer questions, and review the result from Taskuary.
 
 For Qwen Code, see the [setup and compatibility guide](docs/qwen-code.md).
 Use DeepSeek, GLM, or MiniMax through OpenCode, or connect Moonshot's Kimi Code:
 [setup steps and supported roles](docs/chinese-coding-clis.md).
+Oh My Pi is supported for task execution, not triage, reports or stranger-origin work.
 
 ![AI CLI connections for Claude, Qwen, OpenCode with DeepSeek, and Kimi Code.](https://raw.githubusercontent.com/ldbumble/taskuary/master/docs/readme/07-coding-clis-chinese.png?v=spine)
 

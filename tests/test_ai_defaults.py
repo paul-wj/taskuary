@@ -7,6 +7,7 @@ could not tell you any of them (the owner, 2026-09-10).
 """
 import json, unittest
 from unittest import mock
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -29,6 +30,18 @@ def _cfg(key='claude', **gears):
 
 @mock.patch('taskuary.agents.runs_here', lambda profile: True)       # the hints below are for a CLI that starts
 class ResolveTests(unittest.TestCase):
+    @pytest.mark.usefixtures('real_omp_catalog')
+    def test_omp_model_choices_follow_the_configured_executable(self):
+        s = _store()
+        cfg = {'cli_connections': {'omp': {'cmd': '/custom/omp', 'model': 'synthetic/chat'}}}
+        s.set_setting('default_brain', 'omp', 'o')
+        response = mock.Mock(returncode=0, stdout=json.dumps({'models': [{'selector': 'synthetic/chat', 'name': 'Chat'}]}))
+        with mock.patch('taskuary.agents.pathcache.which', return_value='/custom/omp'), \
+             mock.patch('taskuary.spawn.run', return_value=response) as run:
+            result = aidefaults.resolve(s, cfg, 'default_brain')
+        self.assertEqual((result['model'], result['choices']), ('synthetic/chat', ['synthetic/chat']))
+        self.assertEqual(run.call_args.args[0][0], '/custom/omp')
+
     def test_a_cli_brain_reports_its_LIGHT_gear_not_its_coding_model(self):
         """The whole point of the two gears: triage must not quietly run the coding model."""
         s, cfg = _store(), _cfg(model='opus', light_model='haiku')
@@ -180,6 +193,26 @@ class WhatTheJudgeIsAskedTests(unittest.TestCase):
 
 
 class ApplyTests(unittest.TestCase):
+    def test_omp_revision_model_round_trips_without_becoming_effort(self):
+        s, cfg = _store(), {'cli_connections': {'omp': {'cmd': 'omp'}}}
+        s.set_setting('default_brain', 'omp', 'owner')
+        with mock.patch('taskuary.config.save'), mock.patch('taskuary.agents.runs_here', return_value=True):
+            selected = aidefaults.apply(s, cfg, 'default_brain', model='synthetic/chat@revision')
+            self.assertEqual((selected['model'], selected['effort']), ('synthetic/chat@revision', ''))
+            saved = aidefaults.apply(s, cfg, 'default_brain')
+        self.assertEqual(cfg['cli_connections']['omp']['model'], 'synthetic/chat@revision')
+        self.assertEqual((saved['model'], saved['effort']), ('synthetic/chat@revision', ''))
+    def test_omp_general_light_model_round_trips_as_one_selector(self):
+        s, cfg = _store(), {'cli_connections': {'omp': {'cmd': 'omp'}}}
+        s.set_setting('assistant_ai', 'cli:omp', 'owner')
+        with mock.patch('taskuary.config.save'), mock.patch('taskuary.agents.runs_here', return_value=True):
+            selected = aidefaults.apply(s, cfg, 'assistant_ai', model='synthetic/chat@revision')
+            saved = aidefaults.apply(s, cfg, 'assistant_ai')
+        self.assertEqual(cfg['cli_connections']['omp']['light_model'], 'synthetic/chat@revision')
+        self.assertEqual((selected['model'], selected['effort']), ('synthetic/chat@revision', ''))
+        self.assertEqual((saved['model'], saved['effort']), ('synthetic/chat@revision', ''))
+
+
     def test_setting_a_cli_brains_model_writes_the_light_model_and_leaves_coding_alone(self):
         s, cfg = _store(), {**_cfg(model='opus'), 'agents': {'coding': {'kind': 'coding'}}}
         s.set_setting('default_brain', 'claude', 'o'); s.set_setting('triage_ai', 'cli:claude', 'o')

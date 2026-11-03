@@ -8,7 +8,7 @@ import json
 import re
 from loguru import logger
 
-COMMAND_FIELDS = ('cmd', 'args', 'resume', 'resume_args', 'timeout', 'model_arg', 'acp', 'model', 'light_model', 'strong_model')
+COMMAND_FIELDS = ('cmd', 'args', 'interactive_args', 'resume', 'resume_args', 'timeout', 'model_arg', 'acp', 'model', 'light_model', 'strong_model')
 # The GEARS, which are the half of COMMAND_FIELDS clis.KNOWN ships no preset for: what a brain
 # runs, as opposed to how it is invoked. `strong_model` is the third (the router, 2026-10-25): what
 # hard work steps up to, set by the owner and never guessed from a model's name - blank means this
@@ -39,7 +39,7 @@ def with_defaults(connection):
     return {**{k: copy.deepcopy(v) for k, v in preset.items() if k in COMMAND_FIELDS}, **connection}
 
 
-def migrate(cfg):
+def migrate(cfg, store=None):
     """Split old inline command definitions once. Existing connection settings win."""
     before = copy.deepcopy(cfg)
     connections = cfg.setdefault('cli_connections', {})
@@ -58,6 +58,8 @@ def migrate(cfg):
         # different models is precisely what a brain having its own gears stops being expressible.
         for field in GEAR_FIELDS:
             if profile.get(field) and not connections[key].get(field): connections[key][field] = profile[field]
+        if 'interactive_args' in profile:
+            connections[key].setdefault('interactive_args', copy.deepcopy(profile['interactive_args']))
         profile['provider'] = f'cli:{key}'
         for field in COMMAND_FIELDS: profile.pop(field, None)
     # The GEARS move too, for installs already carrying a provider - which the loop above skips.
@@ -65,13 +67,18 @@ def migrate(cfg):
     # the provider changed), and `model`/`light_model` are COMMAND_FIELDS now, so resolve() would
     # drop them and the owner would silently lose the models they chose. A connection the owner has
     # already set keeps what it has: the profile is the older, weaker copy.
-    for name, profile in profiles.items():
-        key = str(profile.get('provider') or '')[4:]
-        if not key: continue
-        for field in GEAR_FIELDS:
-            if profile.get(field) and not (connections.get(key) or {}).get(field):
-                connections.setdefault(key, {})[field] = profile[field]
-            profile.pop(field, None)
+    for name in ordered:
+        profile = profiles[name]
+        provider = str(profile.get('provider') or '')
+        key = provider[4:] if provider.startswith('cli:') else ''
+        if key:
+            for field in GEAR_FIELDS:
+                if profile.get(field) and not (connections.get(key) or {}).get(field):
+                    connections.setdefault(key, {})[field] = profile[field]
+                profile.pop(field, None)
+        interactive_key = (brain_of(store, cfg, name, profile) if store is not None else '') or key
+        if interactive_key in connections and 'interactive_args' in profile:
+            connections[interactive_key].setdefault('interactive_args', copy.deepcopy(profile.pop('interactive_args')))
     for key, connection in connections.items():
         connections[key] = with_defaults(connection)
     return cfg != before

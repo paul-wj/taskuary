@@ -140,7 +140,7 @@ def brain_options(store, keep: str = '') -> list:
     # once it runs ('gemini' here, 'Gemini CLI' after), and what matters for computer use said with it (2026-10-25): whether its browser
     # acts can be held (llm.HOLDS_CLI) and whether its last test said it isn't signed in
     tests = hub_agents.cli_tests(store)
-    out = [{**o, 'agent': o['pick'][4:], 'models': climodels.catalog(o['cmd'])['models'], 'browser': True,
+    out = [{**o, 'agent': o['pick'][4:], 'models': climodels.catalog(o['cmd'], cmd=brains[o['pick'][4:]].get('cmd'))['models'], 'browser': True,
             'holds': o['cmd'] in llm_mod.HOLDS_CLI, 'signed_out': tests.get(o['pick'][4:]) is False}
            for o in options if o.get('type') == 'cli' and hub_agents.runs_here(brains.get(o['pick'][4:]))]
     options = [{**o, 'browser': False, 'holds': False} if o.get('type') != 'cli' else o for o in options]
@@ -1267,9 +1267,19 @@ class GeneralSession:
             self._remember_session()
             return self._file(reply, paths, t0, browser_tools, browser_offer)
         except Exception as e:
+            from .agents import OmpTurnError
+            if isinstance(e, OmpTurnError) and e.session_id:
+                actual = getattr(locals().get('brain'), 'last_pick', '')
+                if isinstance(actual, str) and actual and actual != self.pick:
+                    choice = next((o for o in provider_options(self.store) if o['pick'] == actual), None)
+                    self.pick = actual
+                    self.provider = choice['label'] if choice else actual
+                    self.model = (choice.get('model') or '') if choice else ''
+                self.cli_sid = e.session_id
+                self._remember_session()
             self._remember_trace('error', 'assistant', {'result': str(e), 'is_error': True})
             self._emit(f'\x1b[1;31merror>\x1b[0m {e}\r\n\r\n')
-            self._unusable(e)
+            if not isinstance(e, OmpTurnError): self._unusable(e)
             # A TURN THAT DIED IS NOT A TURN STILL RUNNING. The turn opened with a `working`
             # event and, on this road, closed with nothing - so `working` stayed the last word
             # and the task wore "Agent is working" over a CLI that had exited two seconds in.

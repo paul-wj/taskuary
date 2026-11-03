@@ -2131,7 +2131,7 @@
   " of {account}": "的账户 {account}",
   "chats": "聊天",
   "mail": "邮件",
-  "Claude / Codex / Qwen Code / OpenCode / Kimi / Gemini — connect a coding CLI. Choose the default and model in {place}": "Claude / Codex / Qwen Code / OpenCode / Kimi / Gemini — 连接编码 CLI。在{place}中选择默认工具和模型。",
+  "Claude / Codex / Qwen Code / OpenCode / Kimi / Gemini / Oh My Pi — connect a coding CLI. Choose the default and model in {place}": "Claude / Codex / Qwen Code / OpenCode / Kimi / Gemini / Oh My Pi — 连接编码 CLI。在{place}中选择默认工具和模型。",
   "Connected: {names}": "已连接：{names}",
   "{count} installed on this computer · none connected - open to connect one": "此计算机上已安装 {count} 个 · 尚未连接 — 打开以连接",
   "None installed - open to install a coding CLI": "尚未安装 — 打开以安装编码 CLI",

@@ -179,10 +179,59 @@ def _gemini(path: Path) -> list:
         if text.strip(): out.append({'k': 'said', 'text': _cut(text, SAID_N), 'at': at})
     return out
 
+def _omp_file(ext: str):
+    p = Path(ext)
+    return p if p.is_absolute() and p.suffix == '.jsonl' and p.is_file() else None
+
+
+def _omp(path: Path) -> list:
+    out = []
+    for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
+        try: entry = json.loads(line)
+        except ValueError: continue
+        if entry.get('type') != 'message': continue
+        msg, at = entry.get('message') or {}, entry.get('timestamp')
+        role = msg.get('role')
+        if role not in ('user', 'assistant'): continue
+        for b in _blocks(msg.get('content')):
+            if not isinstance(b, dict): continue
+            kind = b.get('type')
+            if role == 'user' and kind == 'text' and str(b.get('text') or '').strip():
+                out.append({'k': 'you', 'text': _cut(b['text'], YOU_N), 'at': at})
+            elif role == 'assistant' and kind == 'thinking' and str(b.get('thinking') or '').strip():
+                narration = b.get('narration') is True
+                out.append({'k': 'said' if narration else 'thought',
+                            'text': _cut(b['thinking'], SAID_N if narration else THOUGHT_N), 'at': at})
+            elif role == 'assistant' and kind == 'text' and str(b.get('text') or '').strip():
+                out.append({'k': 'said', 'text': _cut(b['text'], SAID_N), 'at': at})
+            elif role == 'assistant' and kind == 'toolCall':
+                out.append(_tool(b.get('name'), b.get('arguments'), at))
+    return out
+
+
+def _omp_usage(path: Path, since: str) -> dict:
+    counts = {'in': 0, 'cached': 0, 'out': 0}
+    cost = 0.0
+    for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
+        try: entry = json.loads(line)
+        except ValueError: continue
+        if entry.get('type') != 'message' or not _after(entry.get('timestamp'), since): continue
+        msg = entry.get('message') or {}
+        if msg.get('role') != 'assistant' or not isinstance(msg.get('usage'), dict): continue
+        u = msg['usage']
+        counts['in'] += int(u.get('input') or 0) + int(u.get('cacheRead') or 0) + int(u.get('cacheWrite') or 0)
+        counts['cached'] += int(u.get('cacheRead') or 0)
+        counts['out'] += int(u.get('output') or 0)
+        cost += float((u.get('cost') or {}).get('total') or 0)
+    if not (counts['in'] or counts['out']): return {}
+    if cost: counts['cost'] = round(cost, 4)
+    return counts
+
 
 # cli name (terminal.cli_of / transcript.Brain) -> (find the file by conversation id, read it, what to call it)
 READERS = {'claude': (_claude_file, _claude, 'Claude Code log'), 'codex': (_codex_file, _codex, 'Codex rollout'),
-           'copilot': (_copilot_file, _copilot, 'Copilot session log'), 'gemini': (_gemini_file, _gemini, 'Gemini chat file')}
+           'copilot': (_copilot_file, _copilot, 'Copilot session log'), 'gemini': (_gemini_file, _gemini, 'Gemini chat file'),
+           'omp': (_omp_file, _omp, 'Oh My Pi session log')}
 
 
 def cli_steps(cli: str, ext: str) -> tuple[list, str]:
@@ -242,7 +291,7 @@ def _gemini_usage(path: Path, since: str) -> dict:
     return got if got['in'] or got['out'] else {}
 
 
-USAGE = {'claude': _claude_usage, 'codex': _codex_usage, 'gemini': _gemini_usage}
+USAGE = {'claude': _claude_usage, 'codex': _codex_usage, 'gemini': _gemini_usage, 'omp': _omp_usage}
 
 
 def cli_usage(cli: str, ext: str, since: str = '') -> dict:

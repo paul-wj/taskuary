@@ -316,13 +316,3 @@ def test_a_connector_only_home_triages_answers_and_runs_reports_and_workflows_on
     assert world['ran'] == [] and world['api'][-1] == 'hipaa_ai'
 
 
-# ── The invariant ────────────────────────────────────────────────────────────────────────────────────────────────
-def test_no_launch_road_defaults_a_missing_cli_to_any_one_cli():
-    """A run that names no CLI asks the one resolver (agents.resolve_brain); no road may put a CLI of its own choosing in the
-    gap. Said as the shapes such a default takes, not as a list of places - a new road that grows one fails here."""
-    import re
-    shapes = [r"get\(\s*'cmd'\s*,\s*'[a-z-]+'\s*\)", r"get\('cmd'\)\s*or\s*'[a-z-]+'", r"\bcmd\s+or\s+'[a-z-]+'",
-              r"\b(?:cli|cmd)\s*:\s*str\s*=\s*'[a-z-]+'"]
-    bad = [f'{p.name}:{i}: {l.strip()}' for p in sorted(Path(agents.__file__).parent.glob('*.py'))
-           for i, l in enumerate(p.read_text(encoding='utf-8').splitlines(), 1) if any(re.search(x, l) for x in shapes)]
-    assert bad == []

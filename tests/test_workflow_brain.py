@@ -8,6 +8,7 @@ brain on its main model; a set model and effort reach the CLI's own argv (Claude
 """
 import json, tempfile, unittest
 from unittest import mock
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -42,6 +43,25 @@ class Base(unittest.TestCase):
 
 
 class BrainTests(Base):
+    def test_omp_workflow_keeps_the_selected_model_revision(self):
+        cfg = {'cli_connections': {'omp': {'cmd': '/custom/omp', 'model': 'synthetic/chat@revision'}}}
+        with mock.patch.object(config, 'load', return_value=cfg):
+            result = workflows.brain_options(store(assistant_ai='cli:omp'))
+        self.assertEqual((result['base'], result['model'], result['effort']),
+                         ('synthetic/chat@revision', 'synthetic/chat@revision', ''))
+        self.assertIn('synthetic/chat@revision', result['said'])
+
+    @pytest.mark.usefixtures('real_omp_catalog')
+    def test_workflow_editor_uses_the_connected_omp_executable(self):
+        cfg = {'cli_connections': {'omp': {'cmd': '/custom/omp', 'model': 'synthetic/chat'}}}
+        response = mock.Mock(returncode=0, stdout=json.dumps({'models': [{'selector': 'synthetic/chat', 'name': 'Chat'}]}))
+        with mock.patch.object(config, 'load', return_value=cfg), \
+             mock.patch('taskuary.agents.pathcache.which', return_value='/custom/omp'), \
+             mock.patch('taskuary.spawn.run', return_value=response) as run:
+            result = workflows.brain_options(store(assistant_ai='cli:omp'))
+        self.assertEqual([m['id'] for m in result['models']], ['synthetic/chat'])
+        self.assertEqual(run.call_args.args[0][0], '/custom/omp')
+
     def test_blank_is_the_general_agents_brain_on_its_main_model(self):
         b = workflows.brain(store(), {})
         self.assertEqual((b['pick'], b['cli'], b['model'], b['effort'], b['dropped']), ('cli:claude', 'claude', 'claude-opus-5-5', '', ''))

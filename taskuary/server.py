@@ -42,7 +42,7 @@ store = SQLiteStore(config.db_path())
 try:
     from loguru import logger as _log                    # loguru is not bound at module scope yet here
     _added = hub_agents.seed_profiles(cfg)
-    _split_cli = cli_connections.migrate(cfg)
+    _split_cli = cli_connections.migrate(cfg, store)
     if _split_cli:
         import shutil
         _config_file = config.home() / 'config.toml'
@@ -6660,9 +6660,11 @@ def brains():
     # A brain is a CLI TOOL or an AI connection, never a profile: one entry per connected CLI, its value the tool's own key
     # (the owner, 2026-10-15: "it's models or cli tools only"). Its gears live on the connection.
     from . import climodels
+    conns = cfg.get('cli_connections') or {}
     out += [{'value': f"cli:{o['value']}", 'label': words.local(o['label']),
              'kind': 'cli', 'ready': o['ready'],
-             'models': climodels.catalog(o['cli'])['choices']}
+             'models': climodels.catalog(cli_connections.cli_key(conns.get(o['value'], {}).get('cmd')) or o['cli'],
+                                         cmd=conns.get(o['value'], {}).get('cmd'))['choices']}
             for o in hub_agents.cli_agent_options(store, preferred=preferred)]
     # An API provider with no key cannot be picked, and fifteen greyed rows made the menu taller than the page with
     # the CLIs at the bottom (the owner, 2026-09-24: "drop down is too big"). One already in use stays listed.
@@ -8465,7 +8467,7 @@ def list_cli_connections():
         row = {**known.get(base, {}), **known.get(name, {}), 'name': name,
                'label': known.get(name, {}).get('label') or name,
                'config': command, 'configured': name in configured,
-               'models': climodels.catalog(base),
+               'models': climodels.catalog(base, cmd=command.get('cmd')),
                # the profiles on it - Remove names them before it leaves them with no CLI
                'used_by': [n for n, p in cfg.get('agents', {}).items() if p.get('provider') == f'cli:{name}']}
         if name in configured: row['installed'] = hub_agents.runs_here(command)
@@ -8487,7 +8489,12 @@ def put_cli_connection(name: str, body: dict):
     duplicate = next((key for key, c in cfg.get('cli_connections', {}).items()
                       if key != name and cli_connections.cli_key(c.get('cmd')) == base), None)
     if duplicate: raise HTTPException(409, f'This CLI already has a connection: {duplicate}. Edit that connection instead.')
-    connection = cli_connections.with_defaults({k: v for k, v in body.items() if k in cli_connections.COMMAND_FIELDS})
+    old = cfg.get('cli_connections', {}).get(name, {})
+    if old and cli_connections.cli_key(old.get('cmd')) != base:
+        # Invocation flags and model selectors belong to the executable family, not the
+        # connection's display name. Keep the general timeout, then apply explicit edits.
+        old = {k: v for k, v in old.items() if k == 'timeout'}
+    connection = cli_connections.with_defaults({**old, **{k: v for k, v in body.items() if k in cli_connections.COMMAND_FIELDS}})
     cfg.setdefault('cli_connections', {})[name] = connection
     config.save(cfg); pathcache.forget()     # a (re)connected CLI is looked up afresh by every page after it
     cli_connections.sync(cfg, store)
@@ -8641,7 +8648,7 @@ def agents():
     def _models(a):
         prof = json.loads(a.get('Config') or '{}')
         cli = cli_base(prof.get('cmd'))
-        cat = climodels.catalog(cli)                       # codex: its own /model list off disk; others: the built-in aliases
+        cat = climodels.catalog(cli, cmd=prof.get('cmd'))
         return {'cmd': prof.get('cmd'), 'cli': cli, 'default': prof.get('model'), 'choices': cat['choices'],
                 'models': cat['models'], 'current': cat['current'], 'source': cat['source']}
     # the default agent (a setting) comes FIRST: every picker's initial value is the head of
@@ -8656,7 +8663,8 @@ def agents():
     _cats = {}
     def _brain_cat(key):
         """One catalog read per CLI per request: `catalog` goes to disk, and this is asked twice a brain."""
-        if key not in _cats: _cats[key] = climodels.catalog(cli_connections.cli_key(conns[key].get('cmd')) or key)
+        if key not in _cats: _cats[key] = climodels.catalog(cli_connections.cli_key(conns[key].get('cmd')) or key,
+                                                            cmd=conns[key].get('cmd'))
         return _cats[key]
     from . import general as _general
     head = hub_agents.default_agent(store)
@@ -10149,6 +10157,14 @@ def pause_terminal(sid: str, body: WrapBody):
     t = hub_term.get(sid)
     return _pause_task(body.task_id or (t.task_id if t else None), sid)
 
+
+def _close_terminal_or_error(sid: str) -> bool:
+    try:
+        return hub_term.close(sid)
+    except (RuntimeError, OSError) as e:
+        from . import redact
+        raise HTTPException(503, f'Could not stop the agent completely: {redact.scrub(str(e))}') from e
+
 @app.delete('/api/terminals/{sid}')
 def close_terminal(sid: str):
     session = hub_term.get(sid)
@@ -10156,12 +10172,12 @@ def close_terminal(sid: str):
     # X ends the worker, not the task. A deliberate Done/Wrap takes the routes above; a plain
     # close must immediately put abandoned in-progress work back in front of the owner.
     tid = getattr(session, 'task_id', None)
+    if not _close_terminal_or_error(sid): raise HTTPException(404, 'terminal not found')
     if tid:
         hub_term.release_task(store, tid, ACTOR,
                               'Closed the agent session. The task is open again - nobody is working it.')
         from . import funnel as _funnel
         _funnel.invalidate()
-    if not hub_term.close(sid): raise HTTPException(404, 'terminal not found')
     return {'ok': True}
 
 @app.post('/api/tasks/{task_id}/agent/stop')
@@ -10175,7 +10191,7 @@ def stop_task_agent(task_id: int):
         return {'stopped': False, 'taskStatus': task.get('Status')}
     sid = live.sid
     label = getattr(live, 'label', None) or getattr(live, 'agent', None) or 'agent'
-    stopped = bool(hub_term.close(sid))
+    stopped = bool(_close_terminal_or_error(sid))
     if stopped:
         from . import workerstate as ws
         ws.record(store, task_id, sid, 'stopped', text='stopped by the owner', source='owner')   # never a completion (PW-222)

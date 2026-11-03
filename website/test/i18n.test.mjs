@@ -65,6 +65,14 @@ test("translation interpolates without interpreting or translating inserted valu
   locale.setLocale("en");
   assert.equal(locale.t("{tool} (on this computer)", { tool: "codex" }), "codex (on this computer)");
 });
+test("OMP connection guidance switches languages without changing its safety limits", async () => {
+  const locale = await load({ stored: "zh-CN" });
+  const guidance = "Use /login to connect a provider and /model to choose it. Task execution only; triage, reports and stranger-origin work are not supported.";
+  assert.equal(locale.t(guidance), "使用 /login 连接提供商，并使用 /model 选择模型。仅用于执行任务；不支持分流、报告或来自陌生人的工作。");
+  locale.setLocale("en");
+  assert.equal(locale.t(guidance), guidance);
+});
+
 
 test("nested presentation descriptors translate without changing raw data", async () => {
   const locale = await load({ stored: "zh-CN" });

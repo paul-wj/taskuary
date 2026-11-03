@@ -1897,15 +1897,15 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
   }));
   const connectedClis = (clis || []).filter((c) => c.configured && c.installed);
   const installedClis = (clis || []).filter((c) => c.installed);
-  const cliDisplay = !clis ? t("Claude / Codex / Qwen Code / OpenCode / Kimi / Gemini — connect a coding CLI. Choose the default and model in {place}", { place: placeName("sorting") })
+  const cliDisplay = !clis ? t("Claude / Codex / Qwen Code / OpenCode / Kimi / Gemini / Oh My Pi — connect a coding CLI. Choose the default and model in {place}", { place: placeName("sorting") })
     : connectedClis.length ? t("Connected: {names}", { names: connectedClis.map((c) => c.label || c.name).join(", ") })
       : installedClis.length ? t("{count} installed on this computer · none connected - open to connect one", { count: installedClis.length })
         : t("None installed - open to install a coding CLI");
 
   const groups = onceEach([
     { title: "AI — agents & models", cards: [
-      { key: "agents", title: noun("cli_agents"), desc: `Claude / Codex / Qwen Code / OpenCode / Kimi / Gemini — connect a coding CLI. Choose the default and model in ${placeName("sorting")}`,
-        channel: "cli", haystack: "ai cli agents claude codex qwen 通义千问 opencode deepseek 深度求索 kimi moonshot 月之暗面 glm 智谱 minimax gemini command args resume", go: () => setOpen({ kind: "agents" }),
+      { key: "agents", title: noun("cli_agents"), desc: `Claude / Codex / Qwen Code / OpenCode / Kimi / Gemini / Oh My Pi — connect a coding CLI. Choose the default and model in ${placeName("sorting")}`,
+        channel: "cli", haystack: "ai cli agents claude codex qwen 通义千问 opencode deepseek 深度求索 kimi moonshot 月之暗面 glm 智谱 minimax gemini omp oh my pi command args resume", go: () => setOpen({ kind: "agents" }),
         ...cliCardOf(clis), displayDesc: cliDisplay },
       ...channelCards(AI_SHELF),
       ...catalogCards("AI — agents & models"),

@@ -42,13 +42,19 @@ class ACPAgentError(RuntimeError):
 class ACPClient:
     """One connection to one agent process. Not shared between runs: a session is a task's."""
 
-    def __init__(self, cmd, args=None, cwd=None, env=None, timeout=1200, on_update=None):
+    def __init__(self, cmd, args=None, cwd=None, env=None, timeout=1200, on_update=None, permission_policy='allow', process_tree=False):
         self.timeout, self.on_update, self.session_id = timeout, on_update, None
+        self.permission_policy = permission_policy
+        self.permission_denied = False
+        self._close_error = None
         self._id, self._replies, self._alive = 0, queue.Queue(), True
         self._caps, self._write_lock = {}, threading.Lock()
         self.p = spawn.popen([cmd] + list(args or []), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace',
-                             cwd=cwd, env=env, shell=False)
+                             cwd=cwd, env=env, shell=False,
+                             **({'start_new_session': True} if process_tree and os.name != 'nt' else {}))
+        self.p._taskuary_tree = process_tree
+        if process_tree and isinstance(getattr(self.p, 'pid', None), int) and self.p.pid > 0: spawn.track_tree(self.p)
         self._err = []
         threading.Thread(target=self._pump, daemon=True).start()
         threading.Thread(target=lambda: self._err.append(self.p.stderr.read()), daemon=True).start()
@@ -94,10 +100,10 @@ class ACPClient:
                         'error': {'code': -32601, 'message': f'{method} is not supported by this client'}})
 
     def _permit(self, params):
-        """Auto-approve, which is what a headless run already does - every one of them carries
-        --dangerously-skip-permissions, --yolo or --permission-mode dangerous, because there is
-        nobody to click Approve. Surfacing this to the owner is the next version's job, and it is
-        a change HERE rather than a new road."""
+        """Apply the transport's explicit permission policy without leaving a request unanswered."""
+        if self.permission_policy == 'deny':
+            self.permission_denied = True
+            return {'outcome': 'cancelled'}
         opts = params.get('options') or []
         pick = next((o for o in opts if o.get('kind') in ALLOW_KINDS), None) or (opts[0] if opts else None)
         if not pick: return {'outcome': 'cancelled'}
@@ -165,9 +171,21 @@ class ACPClient:
 
     def close(self):
         self._alive = False
+        tree = getattr(self.p, '_taskuary_tree', False)
         try:
-            if self.p.poll() is None: self.p.kill()
-        except Exception: pass
+            if self.p.poll() is None:
+                if tree: spawn.stop_tree(self.p)
+                else: self.p.kill()
+        except Exception as e:
+            if tree:
+                self._close_error = e
+                try: self.p.kill()
+                except Exception: pass
+        if tree:
+            try: self.p.wait(timeout=5)
+            except Exception: pass
+            error = getattr(self, '_close_error', None)
+            if error: raise RuntimeError(f'could not stop all agent processes: {error}') from error
 
 
 def _text_of(content) -> str:

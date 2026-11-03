@@ -84,13 +84,16 @@ SEED_ARGV = {
     'opencode': lambda s: ['--prompt', s],
     'copilot': lambda s: ['--interactive', s],
     'devin': lambda s: ['--', s],
+    'omp': lambda s: ['--', s],
 }
 
 def seed_argv(profile: dict, seed: str):
     """The argv tail that hands the CLI its first prompt directly - None when only typing can."""
     from .agents import with_cmd
-    name = os.path.basename(str(with_cmd(profile)['cmd'])).lower()
-    return next((f(seed) for k, f in SEED_ARGV.items() if k in name), None)
+    from .agents import _cli_name
+    name = _cli_name(with_cmd(profile)['cmd'])
+    if name == 'omp': return SEED_ARGV['omp'](seed)
+    return next((f(seed) for k, f in SEED_ARGV.items() if k != 'omp' and k in name), None)
 
 
 # A terminal must start a FRESH session. Taskuary can itself be launched from inside an
@@ -183,12 +186,13 @@ def terminal_host_env(argv, sid: str = '') -> dict:
 
 
 class _WinPty:
-    def __init__(self, argv, cwd, rows, cols, env=None, strict=False):
+    def __init__(self, argv, cwd, rows, cols, env=None, strict=False, family=''):
         try:
             from winpty import PtyProcess
         except ImportError:
             raise RuntimeError('the interactive terminal needs pywinpty on Windows - pip install pywinpty')
         from . import spawn
+        self._tree = (family or cli_of(argv)) == 'omp'
         # a session outlives nothing of ours, but it must not hold the exe's unpack folder either (spawn's note):
         # ConPTY's host and the CLI it runs inherit our DLL directory, cwd and environment like any other child
         with spawn.clean_dll_dir():
@@ -200,17 +204,24 @@ class _WinPty:
     def resize(self, rows, cols): self.p.setwinsize(rows, cols)
     def alive(self): return self.p.isalive()
     def kill(self):
+        if self._tree:
+            from . import spawn
+            spawn.stop_tree(self.p)
         try: self.p.terminate(force=True)
         except Exception: pass
 
 
 class _UnixPty:
-    def __init__(self, argv, cwd, rows, cols, env=None, strict=False):
+    def __init__(self, argv, cwd, rows, cols, env=None, strict=False, family=''):
         import fcntl, pty, struct, termios
+        self._tree = (family or cli_of(argv)) == 'omp'
         self.fd, slave = pty.openpty()
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
         self.p = subprocess.Popen(argv, cwd=cwd, stdin=slave, stdout=slave, stderr=slave,
                                   close_fds=True, start_new_session=True, env=clean_env(env, strict))
+        if self._tree:
+            from . import spawn
+            spawn.track_tree(self.p)
         os.close(slave)
         import codecs
         self.dec = codecs.getincrementaldecoder('utf-8')(errors='replace')
@@ -225,8 +236,12 @@ class _UnixPty:
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
     def alive(self): return self.p.poll() is None
     def kill(self):
-        try: self.p.kill()
-        except Exception: pass
+        if self._tree:
+            from . import spawn
+            spawn.stop_tree(self.p)
+        else:
+            try: self.p.kill()
+            except Exception: pass
 
 
 class Term:
@@ -287,7 +302,8 @@ class Term:
         # no arguments to know which agent, task and checkout it is speaking for
         self.pty = (_WinPty if os.name == 'nt' else _UnixPty)(
             argv, cwd, rows, cols, {**terminal_host_env(argv, self.sid), **_bv.env(self.sid),
-                                    **session_env(agent or label, task_id, cwd, sid=self.sid, stranger=mode == 'auto')}, mode == 'auto')
+                                    **session_env(agent or label, task_id, cwd, sid=self.sid, stranger=mode == 'auto')},
+            mode == 'auto', **({'family': cli} if cli == 'omp' else {}))
         self.alive = True
         # started LAST, and store comes in through the constructor: a CLI that dies immediately
         # used to reach keep() before the caller had handed the session anywhere to file itself
@@ -566,9 +582,10 @@ class Term:
     def close(self):
         self.keep()                                       # before the bytes go, not after
         self.alive, self.ended = False, time.time()
-        self.pty.kill()
-        self.release_asks()
-        self._emit(None)
+        try: self.pty.kill()
+        finally:
+            self.release_asks()
+            self._emit(None)
     def release_asks(self):
         """Asks held for this task (a stranger's permit, an AskUserQuestion) let go once the process is gone: a dead session is refused, not waited on."""
         if self.task_id:
@@ -913,10 +930,18 @@ def agent_argv(profile: dict, model: str = None) -> list:
     profile = with_cmd(profile)
     argv = _resolve_cmd(profile['cmd'])
     argv += list(profile['interactive_args']) if profile.get('interactive_args') else interactive_args(profile.get('args') or preset_args(profile['cmd']))
+    if cli_named(profile) == 'omp':
+        clean, skip = [], False
+        for arg in argv:
+            if skip: skip = False; continue
+            if arg == '--mode': skip = True; continue
+            if arg == '--wait-async' or arg.startswith('--mode='): continue
+            clean.append(arg)
+        argv = clean
     # 'gpt-5.5@high' is a model and its effort in one pick (climodels), and '@high' the CLI's own model at that effort: the pane
     # takes each in its CLI's own flag, as the headless runner does - `--model opus@high` is a model no CLI has
     from .climodels import effort_args, split_pick
-    m, eff = split_pick(model or profile.get('model'))
+    m, eff = split_pick(model or profile.get('model'), cli_named(profile))
     argv += ([profile.get('model_arg') or '--model', str(m)] if m else []) + effort_args(cli_named(profile), eff)
     return _codex_hook_trust(_codex_windows_auto(_codex_browser_tui(argv)))
 
@@ -1187,6 +1212,19 @@ def open_session(store, agent: str = None, task_id: int = None, repo: str = None
     assigned = str(uuid.uuid4()) if agent and not resume else ''
     named = assign_argv(profile, assigned, store) if assigned else []
     argv, assigned = (list(argv) + named, assigned) if named else (argv, '')
+    omp_dir = None
+    if agent and task_id and not resume and cli_named(profile, argv) == 'omp':
+        from . import config
+        omp_dir = config.home() / 'omp-sessions' / uuid.uuid4().hex
+        omp_dir.mkdir(parents=True, exist_ok=False)
+        # A pane gets a private session directory; cwd-based newest-file guesses cross tasks.
+        clean, skip = [], False
+        for arg in argv:
+            if skip: skip = False; continue
+            if arg == '--session-dir': skip = True; continue
+            if arg.startswith('--session-dir='): continue
+            clean.append(arg)
+        argv = clean + ['--session-dir', str(omp_dir)]
     if agent:
         try: pretrust(cwd, ' '.join(str(a) for a in argv))     # no first-run dialog to park on
         except Exception as e: logger.debug(f'pretrust skipped: {e}')
@@ -1239,6 +1277,9 @@ def open_session(store, agent: str = None, task_id: int = None, repo: str = None
     # unbound hook from ANY claude in the same folder claimed it: the owner's own CLI there did, its questions were drawn
     # on the agent's card as the agent asking, and the agent's own hooks were dropped for being someone else's.
     elif resume and agent: bind_ext(t, resume)
+    if omp_dir:
+        from . import sessionfiles
+        sessionfiles.SessionWatch(t, 'omp', omp_dir).start()
     # ...and it keeps that id as its own for good: Codex FORKS a resumed thread - a new rollout id, `forked_from_id` the
     # one we asked for - so the rollout renames the pane (witness.RolloutTail) while a hook may still say the old one
     t.resumed_from = resume or ''

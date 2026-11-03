@@ -9,3 +9,9 @@ export const cliCardOf = (clis) => {
   return { state: "off", desc: here.length ? `${here.length} installed on this computer · none connected - open to connect one`
     : "None installed - open to install a coding CLI" };
 };
+
+export const connectionPayload = (draft) => {
+  const lines = (v) => String(v || "").split("\n").map((x) => x.trim()).filter(Boolean);
+  return { cmd: draft.cmd.trim(), args: lines(draft.args), resume_args: lines(draft.resumeArgs),
+    timeout: Number(draft.timeout), model_arg: draft.modelArg.trim() };
+};
