@@ -633,7 +633,9 @@ receives real work, which can reveal a sign-in problem.</p>
 <a href="https://omp.sh/docs/quickstart">official quickstart</a>, or use the install button, then open its setup
 terminal to configure a provider. In OMP, <code>/login</code> connects a provider and <code>/model</code> selects a
 model. Taskuary&#39;s model choices come from the available models OMP reports; a blank selection uses
-OMP&#39;s own default. Configure credentials in OMP, not in Taskuary&#39;s connection settings.</p>
+OMP&#39;s own default. Configure credentials in OMP, not in Taskuary&#39;s connection settings.
+During first run, installed task-only tools appear under <strong>If you use a coding tool</strong>.
+Their cards open CLI connection settings; they do not select a sorting brain or complete the AI setup step.</p>
 <p>General-agent ACP sessions use OMP&#39;s default session store for exact continuation. Taskuary rejects
 custom <code>--session-dir</code> for these sessions because OMP 18.15.0&#39;s ACP session loading does not honor
 it. Taskuary disables asynchronous background work for ACP runs and declines their permission

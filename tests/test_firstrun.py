@@ -105,6 +105,25 @@ class ChooseAiTests(unittest.TestCase):
         self.assertEqual([self.s.get_setting(k) for k in ('assistant_ai', 'concierge_ai', 'default_brain')], ['cli:codex', 'cli:codex', 'codex'])
 
 
+def test_task_only_cli_is_visible_without_becoming_a_sorting_brain():
+    store = MemoryStore()
+    cfg = {'agents': {}, 'cli_connections': {'omp': {'cmd': 'omp'}}}
+    with detect(name='omp', cmd='omp', label='Oh My Pi', install='omp', setup='omp'), \
+         mock.patch('taskuary.config.load', return_value=cfg), \
+         mock.patch.object(agents, 'run_cli') as run:
+        state = firstrun.state(store)
+        assert not any(ai['name'] == 'omp' for ai in state['ais'])
+        task_cli = next(ai for ai in state.get('task_clis', []) if ai['name'] == 'omp')
+        assert task_cli['title'] == 'Oh My Pi' and task_cli['connected']
+        assert state['step'] == 'ai' and not state['brain']['ready']
+        assert not firstrun.choose_cli(store, cfg, 'omp')['ok']
+        run.assert_not_called()
+        assert not store.get_setting('triage_ai') and not store.get_setting('default_brain')
+    with detect(name='omp', cmd='omp', label='Oh My Pi', installed=False), \
+         mock.patch('taskuary.config.load', return_value=cfg):
+        assert not any(ai['name'] == 'omp' for ai in firstrun.state(store).get('task_clis', []))
+
+
 class KeyAndMailTests(unittest.TestCase):
     def setUp(self): p = mock.patch.object(firstrun, '_prove', return_value=''); p.start(); self.addCleanup(p.stop)
 

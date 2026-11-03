@@ -162,6 +162,10 @@ def state(store) -> dict:
             'why_not': k.get('why_not') or '', 'more': k['name'] not in OFFERED,
             'connected': k['name'] in linked and bool(k['installed']) and k['name'] not in failed,
             'failed': k['name'] in failed} for k in ais]
+    # Installed task tools remain discoverable without offering them as sorting brains.
+    task_clis = [{'name': k['name'], 'title': k['label'], 'installed': True,
+                  'connected': k['name'] in linked} for k in found
+                 if k['installed'] and k['name'] not in clis.READONLY]
     by = lambda t: (store.get_connector_by_type(t) or {}).get('ConnectorId')
     keys = [{'type': t, 'title': label, 'sub': where, 'cid': by(t)} for t, label, where in KEYS if by(t)]
     mail = [{'type': t, 'title': label, 'sub': sub, 'cid': by(t)} for t, label, sub in MAIL if by(t)]
@@ -205,7 +209,7 @@ def state(store) -> dict:
             else {'ai': 'pick your AI', 'email': 'connect your main source', 'reading': 'reading what came in', 'done': ''}[step])
     out = {'step': step, 'todo': todo, 'brain': {'ready': brain['ready'], 'name': name, 'pick': pick, 'why': brain.get('why') or '',
                                                  'type': brain.get('Type') or ''}, 'fix': fix,
-           'ais': ais, 'keys': keys, 'mail': mail, 'connected': inbound, 'sorting': sorting, 'sorted': len(items), 'first_items': items,
+           'ais': ais, 'task_clis': task_clis, 'keys': keys, 'mail': mail, 'connected': inbound, 'sorting': sorting, 'sorted': len(items), 'first_items': items,
            'empty': empty, 'next': nxt, 'ai_error': ai_error, 'mail_error': mail_err if step == 'email' else '', 'about_done': done_about,
            'more_connected': more_connected(store), 'dismissed': dismissed(store), 'mailboxes': _mailboxes(store),
            'sources': sources(store), 'source_types': source_types(), **developer(store)}

@@ -27,6 +27,7 @@ import { AI_SHELF, AI_WHY, SETUP_AI } from "./aiShelf.js";
 import { label as btnLabel, VERBS } from "./buttons.js";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
+import { openAppLink } from "./appLinks.js";
 
 const CHECK_MS = 200_000;           // its test, then one test email sorted (firstrun._prove, 90s at most): past this we say so
 const INSTALL_MS = 6 * 60_000;
@@ -444,11 +445,16 @@ export default function FirstRun({ onWalk, onFinish, onChanged, revisit = false,
     // connected on the Connections page, just not the one sorting the mail: it read "Not set up" (the owner, 2026-10-16)
     : ai.connected ? ["on", "Connected - pick it to make it your AI"]
     : ["off", ai.installed ? "On this computer - pick it to check it works" : ai.install ? "Not installed - pick it to install" : noInstall]);
-  const cliCards = st.ais.map((ai) => {
+  const cliCards = [...st.ais.map((ai) => {
     const [state, words] = stateOf(ai);
     return { key: `cli-${ai.name}`, title: ai.title, channel: CLI_LOGO[ai.name] || "cli", go: busy ? undefined : () => pick(ai),
       state, plain: true, desc: `${t(words)} · ${CLI_SUBS.has(ai.sub) ? t(ai.sub) : ai.sub}` };
-  });
+  }), ...(st.task_clis || []).map((ai) => ({
+    key: `cli-${ai.name}`, title: ai.title, channel: CLI_LOGO[ai.name] || "cli", taskOnly: true,
+    state: ai.connected ? "on" : "off", plain: true,
+    go: busy ? undefined : () => openAppLink("cli-agents"),
+    desc: `${t(ai.connected ? "Connected" : "Installed")} · ${t("Task execution only. Configure in Connections; choose another AI above for sorting.")}`,
+  }))];
   // ChatGPT: the plan, signed in through the browser (planSignin) - not the Codex CLI's terminal
   const plan = byType(["chatgpt"])[0], planKey = plan && `c${plan.ConnectorId}`;
   const planBusy = busy && busy === planKey;
@@ -574,7 +580,7 @@ ${fix.detail || ""}`, screen: "Setup",
   const canvas = q === "done" || ((q === "ai" || q === "mail" || mailAbout) && !!opened);
   // ...Pick a different AI pressed over a failing one: the owner asked for another, so the failing card is not the move, nor its fix the line
   const fixKey = fix && (fix.key || `cli-${fix.name}`);
-  const shelfShown = q === "mail" ? mail.slice(0, FIRST) : q === "ai" ? [...ai.slice(0, FIRST), ...coding].filter((c) => !browse || c.key !== fixKey) : [];
+  const shelfShown = q === "mail" ? mail.slice(0, FIRST) : q === "ai" ? [...ai.slice(0, FIRST), ...coding.filter((c) => !c.taskOnly)].filter((c) => !browse || c.key !== fixKey) : [];
   // a card standing alone with nothing of its own to press (a failed sign-in: no Try again, no Sign in) is itself the move - it is lit
   const alone = focus && !cliDetail ? [...ai, ...coding].find((c) => c.key === focus && c.go) : null;
   const litCard = canvas || fixRow.length ? null : alone || cardOf(st, q, shelfShown, !!busy || !!signing || !!open || !!focus);

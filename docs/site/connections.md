@@ -422,6 +422,8 @@ Oh My Pi is for task execution, not triage, reports or stranger-origin work. Ins
 terminal to configure a provider. In OMP, `/login` connects a provider and `/model` selects a
 model. Taskuary's model choices come from the available models OMP reports; a blank selection uses
 OMP's own default. Configure credentials in OMP, not in Taskuary's connection settings.
+During first run, installed task-only tools appear under **If you use a coding tool**.
+Their cards open CLI connection settings; they do not select a sorting brain or complete the AI setup step.
 
 General-agent ACP sessions use OMP's default session store for exact continuation. Taskuary rejects
 custom `--session-dir` for these sessions because OMP 18.15.0's ACP session loading does not honor
