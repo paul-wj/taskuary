@@ -248,6 +248,48 @@ class DeskRoutes(unittest.TestCase):
             out, _ = say(s, 'start it', item['key'], 'CALL: {"kind": "regular_agent", "params": {}}')
         self.assertTrue(out['say'].startswith('Not done'), out['say']); self.assertNotIn('on it now', out['say'])
 
+    def test_words_for_a_stopped_general_agent_carry_it_on(self):
+        """The overnight run, 2026-11-03: "carry on with the vendor notes, but skip the mail search" on a general agent the owner had
+        stopped was answered "press Try again or Run another agent". Its saved conversation picks up, the words as the owner's note."""
+        from taskuary import general
+        s = store(); tid, item = on_table(s)
+        s.update_task(tid, {'Kind': 'general'}, 't')
+        s.add_comment(tid, general.BRIEF_ACTOR, general.USER_TYPE, 'Write the vendor notes.')
+        s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Wrote two of five.')
+        self.assertTrue(concierge.continuable(s, tid))
+        for model in ('CALL: {"kind": "agent.tell", "params": {"text": "carry on, but skip the mail search"}}',
+                      'CALL: {"kind": "agent.answer", "params": {"text": "carry on, but skip the mail search"}}'):
+            with mock.patch.object(concierge, '_agent_running', return_value=False), \
+                 mock.patch.object(server, 'continue_work', return_value={'continued': True}) as go:
+                out, _ = say(s, 'carry on with it, but skip the mail search', item['key'], model)
+            go.assert_called_once()
+            self.assertEqual((go.call_args[0][0], go.call_args[0][1].note), (tid, 'carry on, but skip the mail search'), model)
+            self.assertNotIn('nothing would hear', out['say'])
+        # ...and a continue called with no note carries the owner's own words (the re-check: "skip the zip file" was lost)
+        with mock.patch.object(concierge, '_agent_running', return_value=False), \
+             mock.patch.object(server, 'continue_work', return_value={'continued': True}) as go:
+            say(s, 'carry on with this one, and skip the zip file', item['key'], 'CALL: {"kind": "agent.continue", "params": {}}')
+        self.assertEqual(go.call_args[0][1].note, 'carry on with this one, and skip the zip file')
+
+    def test_a_held_step_let_run_is_named_approve_not_send(self):
+        "The overnight run, 2026-11-03: Approve on a held delete came back as \"Done - Send · TQ-0006.\" - nothing was sent."
+        s = store(); tid, _ = on_table(s)
+        held = s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'DraftText': '{"action": "shell_act"}', 'Reason': 'held'})
+        draft = s.add_review({'TaskId': tid, 'Kind': 'draft_reply', 'Status': 'pending', 'DraftText': 'Done.', 'Reason': 'drafted'})
+        label = lambda rid: concierge.describe_op(s, {'kind': 'review.approve', 'targetKind': 'review', 'target': rid, 'params': {}})[0]
+        self.assertEqual((label(held), label(draft)), (buttons.label('approve', 'action'), buttons.label('approve')))
+
+    def test_an_answer_that_went_in_is_said_as_what_happened(self):
+        "The overnight run, 2026-11-03: \"Go with option B\" to an agent that asked came back as \"Done - Answer it · TQ-0004.\" - a button's name."
+        from taskuary import general
+        s = store(); tid, item = on_table(s); dock = general.dock_task(s, 'owner')[0]['TaskId']
+        with mock.patch.object(concierge, 'run_proposal', return_value={'status': 'done', 'outcome': {'delivered': True}}):
+            out = concierge._answer_now(s, dock, None, tid, 'Option B,  three years.', 'owner')
+        self.assertEqual(out['say'], f'Answered the agent on TQ-{tid:04d}: “Option B, three years.”.')
+        with mock.patch.object(concierge, 'run_proposal', return_value={'status': 'error', 'error': 'the agent has gone', 'outcome': {}, 'kind': 'agent.answer', 'id': 'x', 'version': 1}):
+            out = concierge._answer_now(s, dock, None, tid, 'Option B', 'owner')
+        self.assertTrue(out['say'].startswith('Not done'), out['say'])
+
     def test_a_note_for_a_working_agent_reaches_its_session(self):
         """The owner, 2026-11-02: "it should be able to, like send a new prompt into the general/coding agent". With an agent WORKING (not
         asking) on the task, "tell the agent to use the main branch" is the page's Tell the agent (waitroom.add): held while it works,

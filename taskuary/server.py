@@ -2219,7 +2219,7 @@ def _assistant_payload(task_id: int, session=None):
     if not general.handles(task):
         raise HTTPException(422, 'assistant view is available for general, research, marketing, and triage tasks')
     session = session or general.session_for(task_id)
-    messages = general.history(store, task_id)
+    messages = general.shown_history(store, task_id)
     # each page or picture belongs to the answer that made it: the turn files its answer after what it published or showed,
     # so it is the first answer stamped at or after it (both stamps are store._now()); one with none yet waits at the foot
     answers = [(str(m.get('createdAt') or ''), m['id']) for m in messages if m['role'] == 'assistant']
@@ -2732,6 +2732,10 @@ def resume_asking(actor: str = 'startup') -> list:
     return out
 
 
+HANDED_OVER = ("THE OWNER HANDED THIS TO YOU: triage first read it as the owner's to do themselves, and the owner chose an agent instead. "
+               "Do the work - what the summary says about who does it was triage's guess, not the owner's instruction.")
+
+
 class ContinueBody(BaseModel):
     note: str | None = None          # what to tell it as it picks up - optional
     images: list[str] = []           # pictures to go with it (/api/prompt-image)
@@ -2771,6 +2775,7 @@ def continue_work(task_id: int, body: ContinueBody = None):
         turn = '\n\n'.join(x for x in [news, f'FROM THE OWNER: {note}' if note else '', continuity.RESUME_PROMPT] if x)
         def go():
             try: general.start_session(store, task_id, actor=ACTOR).send_prompt(turn, imgs or None, brief=True, kept=True)
+            except general.Stopped: pass       # the owner stopped it again: nothing to say
             except Exception as e: _walk_cannot(task_id, f'The session could not continue: {e}. Your saved conversation is still here.')
             finally: general.OPENING.discard(task_id)
         # marked HERE, as /resume and the walk are: the page reloads the conversation the moment this answers, before the thread has
@@ -4144,7 +4149,7 @@ def _dispatch_one(tid: int, body: DispatchBody, background: BackgroundTasks) -> 
     # regular workspace. Reject stale/deleted agent names instead of silently accepting a typo.
     if body.agent and not store.get_agent(body.agent):
         raise HTTPException(422, f'unknown agent: {body.agent}')
-    task_kind = str(task.get('Kind') or '').lower()
+    task_kind = was = str(task.get('Kind') or '').lower()
     requested = str(body.kind or '').lower()
     if requested and requested not in task_kinds.AGENT:
         raise HTTPException(422, 'kind must be general or coding')
@@ -4195,11 +4200,15 @@ def _dispatch_one(tid: int, body: DispatchBody, background: BackgroundTasks) -> 
         # new conversation the task summary is the first ask; on an existing conversation only
         # an explicit new instruction is sent, so clicking twice cannot duplicate the task.
         history = general.history(store, tid)
-        prompt = str(body.instruction or '').strip()
+        typed = prompt = str(body.instruction or '').strip()
         if not prompt and not history:
             prompt = str(task.get('Summary') or task.get('Title') or '').strip()
+            # ...and a task triage left to the owner is the agent's now: its Summary said "Alex makes both changes by hand", and the agent
+            # the owner sent it to read that as its orders and did nothing (the overnight run, 2026-11-03)
+            if was not in task_kinds.AGENT and prompt: prompt += '\n\n' + HANDED_OVER
+        # ...the Summary is Taskuary's brief, never the owner's words: pressed with nothing typed, the pane drew it under YOU (2026-11-03)
         if prompt:
-            background.add_task(session.send_prompt, prompt)
+            background.add_task(session.send_prompt, prompt, brief=not typed)
         # the same four words every door speaks (PW-209): a reused conversation is not a new start
         return {'dispatch': 'assistant', 'agent': session.provider, 'model': session.model, 'started': not had_session, 'existing': had_session,
                 'taskId': tid, 'ref': task_ref(tid), 'session': session.info(tail=3)}
@@ -10465,6 +10474,18 @@ async def terminal_ws(ws: WebSocket, sid: str):
         redraw_quiet = redraw_cap = None
         await send_frame({'type': 'ready'})
 
+    def begin_redraw():
+        """Output beyond this point is the child's answer to a resize; `ready` follows it once it goes quiet (finish_redraw).
+        EVERY resize, not just the first: Codex and Claude Code clear the screen and print their whole history again on each one,
+        a few lines a frame, and a pane split beside Close out watched that scroll from the top (the owner, 2026-11-03). The pane
+        holds its last frame until this barrier lands (TerminalView hold)."""
+        nonlocal redraw_boundary, redraw_cap, redraw_quiet
+        for k in (redraw_cap, redraw_quiet):
+            if k: k.cancel()
+        redraw_quiet = None
+        redraw_boundary = delivered + inflight + q.qsize() + 1
+        redraw_cap = asyncio.create_task(finish_redraw(.35))
+
     async def to_browser():
         nonlocal delivered, inflight, redraw_quiet, redraw_cap
         while True:
@@ -10573,9 +10594,8 @@ async def terminal_ws(ws: WebSocket, sid: str):
                     # Not ours to change. Tell this pane what the geometry actually is - and lift
                     # its curtain, which the owner's road does through the redraw barrier below.
                     await send_frame(geom_frame(t, False))
-                    if first_resize:
-                        first_resize = False
-                        await send_frame({'type': 'ready'})
+                    first_resize = False
+                    await send_frame({'type': 'ready'})           # ...every time: a pane holding its frame for this answer lets go
                     continue
                 if first_resize:
                     first_resize = False
@@ -10589,12 +10609,13 @@ async def terminal_ws(ws: WebSocket, sid: str):
                         continue
                     # For a real geometry change, request exactly one resize. The child repaints
                     # asynchronously, so output beyond this boundary is the new live screen.
-                    redraw_boundary = delivered + inflight + q.qsize() + 1
-                    redraw_cap = asyncio.create_task(finish_redraw(.35))
+                    begin_redraw()
                 elif (int(rows), int(cols)) == (int(t.rows), int(t.cols)):
                     # a kept pane coming back asks before it fits itself; already the right size, it still needs the answer
                     await send_frame(geom_frame(t, owns_geometry()))
+                    await send_frame({'type': 'ready'})           # nothing will repaint: no frame to hold
                     continue
+                else: begin_redraw()
                 t.resize(rows, cols)
                 # A real pty says it changed size (Term emits RESIZED, and every pane hears it); a general session and the demo's
                 # replay change theirs silently, so the pane that just took the geometry was never told it owns it and went on

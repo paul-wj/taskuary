@@ -1,7 +1,7 @@
 // THE TASK PAGE'S LAYOUT (the redesign, owner-approved 2026-10-21): From | Work, and the work alone - full width - while an agent works
 import test from "node:test";
 import assert from "node:assert/strict";
-import { SECTIONS, advisorAt, agentStatus, agentWord, answeredOutside, outsideLine, reportLine, closeStatus, closeOut, fromStatus, TAB_MOST, focusOf, fromLine, holderName, layoutOf, mainOf, nextInDrawer, sameWords, sectionHere, waitingOn, workPane } from "../src/taskLayout.js";
+import { SECTIONS, advisorAt, cameFrom, agentStatus, agentWord, answeredOutside, outsideLine, reportLine, closeStatus, closeOut, fromStatus, TAB_MOST, focusOf, fromLine, holderName, layoutOf, mainOf, nextInDrawer, sameWords, sectionHere, waitingOn, workPane } from "../src/taskLayout.js";
 
 test("two columns at rest, the whole width while an agent works - coding or general, working or waiting on you", () => {
   assert.equal(layoutOf({ sessionView: false }), "columns");
@@ -163,9 +163,14 @@ test("the three sections come in the flow's order, and each closed tab says wher
   // ...and a long chat gives the spine no more lines than it can hold: the newest, the rest never drawn to be measured and hidden (2026-11-01)
   const chat = fromStatus({ channel: "WhatsApp", count: 1500, msgs: Array.from({ length: 1500 }, (_, i) => ({ who: "Gail Moreno", words: `line ${1500 - i}` })) });
   assert.equal(chat.lines.length, 1 + TAB_MOST); assert.equal(chat.lines[1], "Gail Moreno: “line 1500”");
+  // ...an email's first line is its sender, never the owner's own mailbox it came into; a chat's is its room (the overnight run, 2026-11-03)
+  assert.equal(cameFrom({ Channel: "email", SourceName: "alex@northwind.example", FromName: "Gail Moreno", FromEmail: "gail@northwind.example" }), "Gail Moreno");
+  assert.equal(cameFrom({ Channel: "email", SourceName: "alex@northwind.example", FromEmail: "gail@northwind.example" }), "gail@northwind.example");
+  assert.equal(cameFrom({ Channel: "whatsapp", SourceName: "Finance team", FromName: "Ray Colton" }), "Finance team");
   assert.equal(agentWord({}), "not started");
   assert.equal(agentWord({ live: true, waiting: true }), "needs you");
   assert.equal(agentWord({ failed: true, result: true }), "failed");
+  assert.equal(agentWord({ stopped: true, result: true }), "stopped");
   assert.equal(agentWord({ result: true }), "finished");
   const agent = agentStatus({ profile: "assistant", word: "finished", said: "Wrote a one-page plan.", made: "Plan for a first box", advisor: "Send" });
   assert.ok(agent.lines[0].includes("assistant"));

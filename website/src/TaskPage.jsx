@@ -97,7 +97,7 @@ import { adviceKeyFor, taskNote } from "./advice.js";
 import AdvisorNote from "./AdvisorNote.jsx";
 import { agentWorkspaceMode, barContinues } from "./taskWorkspace.js";
 import { CLOSED, REOPEN_MARKED, takeReopen } from "./reopenFromSearch.js";
-import { CLOSE_BY_HAND, SECTIONS, advisorAt, closeHolds, agentStatus, agentWord, answeredOutside, reportLine, askIsTitle, closeOut, closeStatus, focusOf, fromLine as fromLineOf, fromStatus, layoutOf, outsideLine, sameWords, sectionHere, waitingOn, workPane } from "./taskLayout.js";
+import { CLOSE_BY_HAND, SECTIONS, advisorAt, cameFrom, closeHolds, agentStatus, agentWord, answeredOutside, reportLine, askIsTitle, closeOut, closeStatus, focusOf, fromLine as fromLineOf, fromStatus, layoutOf, outsideLine, sameWords, sectionHere, waitingOn, workPane } from "./taskLayout.js";
 import { mainView, stageOf } from "./stages.js";
 import { taskStatus } from "./railStatus.js";
 import { StatusPill } from "./StatusMark.jsx";
@@ -112,8 +112,8 @@ import MoreDrafts from "./MoreDrafts.jsx";
 import { draftAnswers, otherPendingReplies } from "./pendingDrafts.js";
 import { closeoutRounds, roundReviews } from "./closeoutRounds.js";
 import { diffStat } from "./agentRecord.js";
-import AgentStory, { StoryChip } from "./AgentStory.jsx";
-import { STORY_CHIP, startLabel, storyPlace, storyShown } from "./agentStory.js";
+import AgentStory from "./AgentStory.jsx";
+import { startLabel, storyPlace, storyShown } from "./agentStory.js";
 import PublishedPages, { isPublished } from "./PublishedPages.jsx";
 import EmailSomeone from "./EmailSomeone.jsx";
 import { useShareParts } from "./Share.jsx";
@@ -1649,6 +1649,9 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // ...and a run that FAILED was started, whether or not its first turn got as far as the conversation: with no AI to run on it
   // never did, and the row offered Send to agent as if nothing had been tried (owner-approved, 2026-10-21: Try again)
   const failedRun = !term?.alive && (detail?.runEnded === "failed" || detail?.agentStory?.kind === "failed");
+  // ...and one the OWNER stopped - Stop and save, its story "You stopped it", its run's own last word - reads stopped, never "finished" with
+  // ✓ Done under it (the overnight run, 2026-11-03), whatever the result it left is called
+  const stoppedRun = !term?.alive && (detail?.runEnded === "stopped" || ["saved", "interrupted"].includes(detail?.agentStory?.kind));
   const generalStarted = isGeneral && (!!term?.alive || hasGeneralHistory || failedRun
     || String(t?.Tags || "").split(/[\s,]+/).includes(ASK_TAG));
   // ONE BAR, THE SAME BAR. The Task and Reply cards both open with [ primary ] | [ named ]
@@ -1660,7 +1663,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // ...but a general agent's open card already has its composer under the bar, and what you type there continues the same
   // conversation (/assistant) - a second door to one room (the owner, 2026-09-29: "why do we need continue session if
   // it's still open?"). A coding agent keeps it: that button reopens its own CLI session, which nothing else here does.
-  const barContinue = barContinues({ canContinue, isGeneral, ended: detail?.runEnded, gone: !term });   // ...and a general run that ended under it
+  const barContinue = barContinues({ canContinue, isGeneral, ended: detail?.runEnded });   // ...and a general run that ended under it
   // STOP AND SAVE ONLY WHILE THERE IS SOMETHING TO STOP (owner-approved, 2026-10-20): it stood on the row of an agent that was
   // already stopped (G7), and then of one that had failed, finished or been cut off by a restart. A session that has ENDED offers
   // what applies - Continue, Run another, Mark done, the write-up's own actions - and the live row keeps its Stop and save.
@@ -1766,7 +1769,9 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // ...but NOT WHILE AN AGENT IS ON IT (the owner, 2026-11-03): Approve on a held step brought the Advisor's new pick, and the page
   // jumped to Close out and folded the agent's reply - its pick is read when the agent ends, as the rest of the page is
   const advisedHeld = liveSession || liveRun ? "" : advised;
-  const mainHeld = useRef({ key: null, main: null, sec: null }), mainKey = `${selected}|${detail?.task?.TaskId === selected}|${!!term?.alive}|${sessionView}|${stacked}|${threeUp}|${t?.Status}|${advisedHeld}|${!!writingUp}`;
+  // ...nor the task's status under a live agent (the overnight run, 2026-11-03): Approve on a general agent's held delete moved the task from
+  // waiting to in progress, the page re-read where it was up to with the step still listed, and jumped to an empty Close out over the agent
+  const mainHeld = useRef({ key: null, main: null, sec: null }), mainKey = `${selected}|${detail?.task?.TaskId === selected}|${!!term?.alive}|${sessionView}|${stacked}|${threeUp}|${liveSession ? "live" : t?.Status}|${advisedHeld}|${!!writingUp}`;
   if (mainHeld.current.key !== mainKey) mainHeld.current = { key: mainKey, main: mainNow, sec: writingUp ? "agent" : sectionHere({ stage: taskStage, advised: advisedHeld }) };
   const main = mainHeld.current.main;
   // ...and a section the owner OPENED stays open under them: only another task, an agent starting or stopping, the task closing or
@@ -1878,13 +1883,13 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
     || (detail?.raised && newestFirst((detail?.earlier || []).filter((m) => m.Status !== "context" && m.Direction !== "out"))[0]) || null;
   // ...read when a tab draws (tabFor, in the JSX): the Advisor's note (`warn`) is worked out further down
   const tabLines = () => !threeUp || !t ? {} : {
-    from: fromStatus({ channel: cameIn ? cameIn.SourceName || channelName(cameIn.Channel) : sources[0] ? channelName(sources[0].channel) : "",
+    from: fromStatus({ channel: cameIn ? cameFrom(cameIn) || channelName(cameIn.Channel) : sources[0] ? channelName(sources[0].channel) : "",
       // ...EVERY message of its conversations, newest first - the tab draws as many as it has room for (fitTabLines): who, and their words
       msgs: newestFirst(sources.flatMap((g) => g.msgs)).map((m) => ({ who: m.who || m.FromName || m.FromEmail || (m.Direction === "out" ? tr("You") : ""),
         words: (rowText(m, sourceFiles.get(m.MessageId)) || cleanText(m.ReadText || m.BodyText || "")).slice(0, 200) })),
       count: sourceCount, workflow: fromWorkflow, made: `${detail.ref} · ${made}`, to: toLine(cameIn?.Recipients).short, sorted: sortedLine(facts, t?.Kind || "task", { short: true }) }),
     agent: agentStatus({ profile: runRole || hasRecord || term ? agentName(t) : "",   /* Taskuary, never the profile (kinds.js shownAgent) */
-      word: agentWord({ live: !!term?.alive, waiting: agentState === AGENT.waiting, failed: failedRun, stopped: agentState === AGENT.stopped,
+      word: agentWord({ live: !!term?.alive, waiting: agentState === AGENT.waiting, failed: failedRun, stopped: stoppedRun || agentState === AGENT.stopped,
         result: resultShown, record: hasRecord, codeRun }),
       // ...a path into the task's outputs as the file's name, and no markdown marks mid-line: the folded spine read
       // "**C:\\Users\\<you>\\.taskuary\\scratch\\outputs\\TQ-n\\..." (stress test 2026-11-02). \x60, not a bare backtick:
@@ -3058,12 +3063,9 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                       : answered ? tr("{agent} answered", { agent: agentName(t) })
                       : agentState === AGENT.waiting ? says(subState(term), agentName(t))   /* asked, approval, stuck (T6) */
                         : tr("{agent} is working", { agent: agentName(t) })}</span>}
-                    /* ...and once the agent has acted - its Result, or the run that failed - its "stopped" or "failed" chip is the header's pill
-                       again (the owner, 2026-10-25) */
-                    /* ...and a live agent's state is the task header's pill alone (StatusPill, from the same session): its chip here said it a
-                       second time, one above the other (the desktop stress test, 2026-11-03) */
-                    chip={<>{settled ? null : story && STORY_CHIP[story.kind] ? <StoryChip kind={story.kind} text={STORY_CHIP[story.kind]} />
-                      : agentState && !term?.alive ? <LifecycleChip kind="agent" phase={agentState} compact /> : null}{resultShown && shareBadge}</>} tone={PALETTE.sage} {...stageProps("agent")}
+                    /* ...and the agent's state is the task header's pill alone (StatusPill): its chip here said it a second time, one above
+                       the other, live or stopped (the owner, 2026-11-03) */
+                    chip={resultShown ? shareBadge : null} tone={PALETTE.sage} {...stageProps("agent")}
                     /* ...in the three sections the one way to the full record is its button under the summary (the owner, 2026-10-27: "why are
                        there 2 buttons for full results?"): the heading neither folds nor says "Result" there */
                     {...(threeUp && !sessionView && resultShown ? { onToggle: null, folded: false, sub: "" } : {})}

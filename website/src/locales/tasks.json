@@ -1828,5 +1828,7 @@
   "Local code folder": "本地代码目录",
   "Use this folder": "使用此目录",
   "Use a folder on the computer running Taskuary. No GitHub connection is needed; choosing it does not start an agent.": "填写运行 Taskuary 的电脑上的目录。无需连接 GitHub；选择目录不会启动智能体。",
-  "Choose a local code folder, or connect GitHub if your code is hosted there.": "选择本地代码目录；如果代码托管在 GitHub，也可以连接 GitHub。"
+  "Choose a local code folder, or connect GitHub if your code is hosted there.": "选择本地代码目录；如果代码托管在 GitHub，也可以连接 GitHub。",
+  "browser · an empty tab - show it": "浏览器 · 空白标签页 — 显示",
+  "Read {count} web pages": "读取了 {count} 个网页"
 }

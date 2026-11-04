@@ -46,6 +46,17 @@ def test_several_emails_owed_is_deep():
     from taskuary import slots
     with mock.patch.object(slots, 'all_', return_value=[{'slot': 1}, {'slot': 2}]): assert quickwork.why_deep(s, tid) == 'emails'
 
+def test_a_browser_task_starts_after_its_verdict_is_on_file():
+    "Spawned before the route row, the start read no needs_browser and took the one call; its session then opened a Chrome beside it."
+    s = home(); seen = []
+    said = lambda sy, u, **k: json.dumps({'intent': 'task', 'kind': 'general', 'why': 'w', 'difficulty': 'quick', 'needs_browser': True})
+    def spawn(fn, *a):
+        if fn.__name__ == '_auto_general': seen.append(quickwork.why_deep(a[0], a[1]))
+    with mock.patch('taskuary.ingest._spawn', side_effect=spawn), mock.patch.object(senders, 'wrote_to', return_value=True), \
+         mock.patch.object(general, 'provider_options', return_value=[{'pick': 'cli:claude', 'type': 'cli'}]):
+        ingest.ingest_message(s, mail(), llm=said)
+    assert seen == ['browser']
+
 def test_a_browser_task_is_always_deep():
     s = home(); tid, _ = arrived(s); s.tag_task(tid, browserview.WANTS, actor='triage')
     assert quickwork.why_deep(s, tid) == 'browser'
@@ -164,6 +175,37 @@ def test_a_quick_answer_lands_as_a_general_turn():
     rv = s.pending_review(tid, 'draft_reply', live_only=False) or s.pending_review(tid, 'draft', live_only=False)
     assert rv and 'Yes, let us go.' in rv['DraftText'] and rv['Status'] == 'pending'          # waits for Send - never sent
     assert any(e['Kind'] == 'turn_end' and e['Source'] == 'quick' for e in ws.events(s, tid, ses.sid))
+
+LETTER = "Hi Erin,\n\nYes - let us go on Friday.\n\nBest,\nAlex Doyle"
+def test_a_report_that_writes_the_draft_out_keeps_only_its_own_words():
+    "The overnight run, 2026-11-03: the report carried the whole letter, ruled off, over the same letter in Close out."
+    s = home(); tid, _ = arrived(s)
+    said = "I drafted your yes to Erin.\n\n" + LETTER.replace('\n\nYes', '\n\n---\n\nYes').replace('\n\nBest', '\n\n---\n\nBest') + "\n\nAdd the time if you know it."
+    filed(s, tid, {**ANSWER, 'report': said, 'draft': LETTER})
+    shown = general.history(s, tid)[1]['content'][0]['text']
+    assert shown == 'I drafted your yes to Erin.\n\nAdd the time if you know it.'
+    assert 'Yes - let us go on Friday.' in s.pending_review(tid, 'draft_reply')['DraftText']       # the letter is Close out's, whole
+
+def test_a_report_that_is_only_the_draft_says_where_it_waits():
+    s = home(); tid, _ = arrived(s)
+    filed(s, tid, {**ANSWER, 'report': LETTER, 'draft': LETTER})
+    assert 'Close out' in general.history(s, tid)[1]['content'][0]['text']
+
+def test_without_draft_leaves_an_answer_that_never_quotes_it():
+    from taskuary import selfclose
+    assert selfclose.without_draft('Worth going.\n\n---\n\nSee you.', 'Yes, let us go.') == 'Worth going.\n\n---\n\nSee you.'
+
+def test_a_turn_stored_with_its_letter_reads_without_it():
+    "A turn filed before _file took the letter out still had it, in the owner's voice under Taskuary: it reads back without it everywhere."
+    s = home(); tid, _ = arrived(s)
+    s.add_comment(tid, general.BRIEF_ACTOR, general.USER_TYPE, ASK)
+    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'I drafted your yes to Erin.\n\n' + LETTER + '\n\nShould I add the time?')
+    s.add_review({'TaskId': tid, 'Kind': 'draft_reply', 'DraftText': LETTER, 'Status': 'pending', 'Reason': 'the agent drafted it'})
+    said = general.history(s, tid)[-1]['content'][0]['text']
+    assert said == 'I drafted your yes to Erin.\n\nShould I add the time?'
+    assert general.chat_rows(s, tid)[-1]['Body'] == said                     # ...and the next turn's history, the close-out
+    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, LETTER)
+    assert general.history(s, tid)[-1]['content'][0]['text'] == general.DRAFTED
 
 def test_a_quick_question_waits_on_the_owner_like_a_general_one():
     s = home(); tid, _ = arrived(s)
@@ -481,3 +523,49 @@ def test_a_live_quick_session_does_not_hold_back_a_queued_escalation():
         s.enqueue_dispatch(tid, None, 'assistant', 'full', brief='more'); ses.quick = False      # a real agent working it: the row is cleared
         deep.reset_mock(); bb.drain(s)
         deep.assert_not_called(); assert not s.get_dispatch(tid)
+
+# THE OWNER'S LIVE PANE, 2026-11-03: a quick answer drew `{"report": "...` under Taskuary, its draft - in the owner's own voice - inside
+# Taskuary's turn as though the owner had said it, and a blank browser beside it that the task never used.
+class LiveLineBrain(Brain):
+    "A CLI brain whose trace is its readable `live` lines and its streamed text - no tool call - the way the quick call's CLI ran."
+    def __call__(self, system, user, **k):
+        self.calls.append((system, user, k)); out = json.dumps(self.said)
+        for step in (('live', 'claude', 'session started · model opus'), ('live', 'claude', out[:300]), ('progress', 'text', out)): llm._saw(*step)
+        return out
+
+DRAFT = 'great, tell Gail the first month is free while we set her up - send me her email'
+
+def test_the_answers_live_lines_are_not_its_working():
+    """With its progress text dropped, the turn had no structured step left, so the pane read its `live` lines instead - and one was
+    the object itself, cut at 300 characters, drawn as Taskuary's words."""
+    s = home(); tid, _ = arrived(s)
+    steps, b = [], LiveLineBrain({**ANSWER, 'report': 'Gail Moreno asks what it costs.', 'draft': DRAFT})
+    with mock.patch.object(llm, 'build_llm', return_value=b): out = quickwork.ask(s, tid, ASK, steps)
+    assert out.report.startswith('Gail') and [x[2] for x in steps] == ['session started · model opus']
+
+def test_a_quick_draft_is_not_said_inside_the_agents_turn():
+    """The draft is a reply in the owner's voice; left in the turn it read as the owner's own words in Taskuary's column. It waits in
+    Close out, and the pane's notice says it was drafted (agentDraftAsk.noticeLine)."""
+    s = home(); tid, _ = arrived(s)
+    filed(s, tid, {**ANSWER, 'report': 'Gail Moreno asks what it costs.', 'draft': DRAFT, 'question': 'First month free, or a price now?'})
+    said = general.history(s, tid)[-1]['content'][0]['text']
+    assert said.startswith('Gail Moreno asks') and 'First month free' in said and DRAFT not in said
+    rv = s.pending_review(tid, 'draft_reply', live_only=False) or s.pending_review(tid, 'draft', live_only=False)
+    assert rv and DRAFT in rv['DraftText']
+
+def test_a_raw_answer_stored_as_a_turn_reads_back_as_its_report():
+    "A turn whose body is the object itself - whole, fenced or cut short - is shown, and carried on, as the report it holds."
+    s = home(); tid, _ = arrived(s)
+    raw = json.dumps({**ANSWER, 'report': 'Gail Moreno asks what it costs.\n\nShe wants it.', 'draft': DRAFT})
+    for body in (raw, f'```json\n{raw}\n```', raw[:60]):
+        s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, body)
+        got = general.history(s, tid)[-1]['content'][0]['text']
+        assert '"report"' not in got and got.startswith('Gail Moreno asks what it costs'), got
+    assert '"report"' not in general.conversation_text(s, tid)
+
+def test_a_quick_answer_opens_no_browser():
+    "Its one call never drives a page, but the session it is filed on launched Chrome on about:blank for a task marked as needing one."
+    s = home(); tid, _ = arrived(s); s.tag_task(tid, browserview.WANTS, actor='t')
+    with mock.patch.dict(terminal.SESSIONS, {}, clear=True), mock.patch('taskuary.general.threading.Thread') as th:
+        opened(s, tid, quick=True)
+        assert not any(c.kwargs.get('target') is browserview.start for c in th.call_args_list)

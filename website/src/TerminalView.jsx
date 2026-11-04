@@ -21,7 +21,7 @@ import { terminalOutputBatcher } from "./terminalOutput.js";
 import { createPool, paneCap } from "./terminalPool.js";
 import api from "./api.js";
 import BrowserPane, { LastView } from "./BrowserPane.jsx";
-import { layoutFor, ratioFromPointer, rememberFold, rememberRatio, savedFold, savedRatio, shortUrl, showsBrowser, isLocalPage,
+import { layoutFor, ratioFromPointer, rememberFold, rememberRatio, savedFold, savedRatio, shortUrl, showsBrowser, isLocalPage, isBlankPage,
   splitRatio, viewOnScreen, PHONE_BELOW } from "./browserSplit.js";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
@@ -154,6 +154,7 @@ function liveSession(sid, readOnly) {
   const el = document.createElement("div");
   el.style.cssText = "width:100%;height:100%";
   const { term, fit } = makeTerm(readOnly);
+  el.tqTerm = term;                                  // where the viewport stands, for browser/terminal-split.test.mjs
   // No WebGL renderer here on purpose: it renders nothing at all on software-GL stacks
   // (WebView2 without a GPU, remote desktop, headless), and a blank terminal is a much
   // worse failure than a few dropped frames. The DOM renderer draws the same colors.
@@ -200,7 +201,7 @@ function liveSession(sid, readOnly) {
     const sizeNow = changedTerminalSize(sentSize, term.rows, term.cols);
     if (!sizeNow) return;
     sentSize = sizeNow;
-    send({ type: "resize", rows: term.rows, cols: term.cols });
+    hold(); send({ type: "resize", rows: term.rows, cols: term.cols });   // the child reprints for it: keep the frame (hold)
   };
   // the first size goes out once the server has said the pty's (the first geom frame, below): a pane shorter than the pty
   // at its width keeps the pty's rows instead of shrinking it (holdForPty)
@@ -231,12 +232,49 @@ function liveSession(sid, readOnly) {
   const maybeLift = () => {
     if (canRevealTerminal(readySeen, pendingWrites, lifted) && !revealFrame) revealFrame = requestAnimationFrame(lift);
   };
+  // A RESIZE IS NOT A REPLAY (the owner, 2026-11-03: "when you are using codex when it splits pane it scrolls from the top. stop that").
+  // Codex and Claude Code clear the screen and print their whole history again on every pty resize, a few lines a frame, so a pane
+  // narrowed by the page splitting watched the session scroll from its first line to its bottom. While the child answers a resize of
+  // ours the pane shows the frame it had - a still copy of its rows laid over them - and lets go on the server's redraw barrier (ready)
+  // once xterm has drawn it all, back where the owner was: the bottom, or as far up from it as they had scrolled.
+  let still = null;
+  const unhold = () => {
+    if (!still) return;
+    const { frame, cap, fromBottom } = still; still = null;
+    clearTimeout(cap);
+    if (disposed) { frame.remove(); return; }
+    const b = term.buffer.active;
+    if (fromBottom > 0) term.scrollToLine(Math.max(0, b.baseY - fromBottom)); else term.scrollToBottom();
+    gauge();
+    // ...and the copy goes once xterm has painted the rows where they now stand: removed at once, an owner reading higher up saw one
+    // frame of the history's top, where the reprint had left the viewport
+    requestAnimationFrame(() => requestAnimationFrame(() => frame.remove()));
+  };
+  const hold = () => {
+    if (disposed || readOnly || !lifted || !ui) return;      // a curtained pane is already covered
+    if (still) { still.ready = false; return; }             // a second resize in one gesture: the first frame stays up
+    const rows = el.querySelector(".xterm-rows");
+    if (!rows) return;
+    const frame = rows.cloneNode(true);
+    frame.setAttribute("data-tq-held-frame", "");
+    Object.assign(frame.style, { position: "absolute", top: "0", left: "0", right: "0", bottom: "0", zIndex: "5", pointerEvents: "none",
+      backgroundColor: term.options.theme?.background || "#000" });
+    rows.parentElement.appendChild(frame);
+    const b = term.buffer.active;
+    // an older server sends no ready for a later resize: the frame never outstays a long reprint by more than this
+    still = { frame, ready: false, fromBottom: b.baseY - b.viewportY, cap: setTimeout(unhold, 3000) };
+    el.style.setProperty("--sbar", "0");                    // the slider would race from top to bottom under the still frame
+  };
+  // ...two frames after the last write lands: xterm paints on its own animation frame, so the rows under the copy are the new ones
+  const maybeUnhold = () => {
+    if (still?.ready && pendingWrites === 0) requestAnimationFrame(() => requestAnimationFrame(() => { if (still?.ready && pendingWrites === 0) unhold(); }));
+  };
   const write = (data) => {
     if (revealFrame) { cancelAnimationFrame(revealFrame); revealFrame = null; }
     pendingWrites += 1;
     // behind the curtain the viewport follows the replay; once live, xterm's own follow-output
     // rule applies, so scrolling up to read while the agent works is not yanked back down
-    term.write(data, () => { if (disposed) return; pendingWrites -= 1; if (!lifted) term.scrollToBottom(); maybeLift(); });
+    term.write(data, () => { if (disposed) return; pendingWrites -= 1; if (!lifted) term.scrollToBottom(); maybeLift(); maybeUnhold(); });
   };
   // Codex repaints its full TUI for each key, spread over several websocket frames. Writing
   // every fragment into xterm separately makes rendering fall behind input while the agent is
@@ -280,7 +318,7 @@ function liveSession(sid, readOnly) {
       if (!first && ownsGeometry && !was) { sentSize = ""; sendSize(); }
       else if (first) { sentSize = ""; if (ownsGeometry) sendSize(); else if (!readOnly) send({ type: "resize", rows: m.rows, cols: m.cols }); }
     }
-    else if (m.type === "ready") { output.flush(); readySeen = true; maybeLift(); }
+    else if (m.type === "ready") { output.flush(); readySeen = true; maybeLift(); if (still) { still.ready = true; maybeUnhold(); } }
     else if (m.type === "exit") {
       output.flush(); show.state("exited"); readySeen = true;
       write("\r\n\x1b[90m— process exited —\x1b[0m\r\n"); ui?.onExit(); maybeLift(); gone();
@@ -385,6 +423,7 @@ function liveSession(sid, readOnly) {
   // alternate buffer scrolls ITSELF (the wheel is forwarded to it), so xterm's own bar would be
   // a full-height slider that drags nothing.
   const gauge = () => {
+    if (still) return;                              // a still frame is up: the slider waits with it (unhold)
     const scrollable = term.buffer.active.type === "normal" && term.buffer.active.length > term.rows;
     el.style.setProperty("--sbar", scrollable ? "1" : "0");
   };
@@ -403,7 +442,7 @@ function liveSession(sid, readOnly) {
     if (!d?.cols || !d?.rows) return;
     const rows = safeTerminalRows(d.rows);
     sentSize = `${rows}x${d.cols}`;
-    send({ type: "resize", rows, cols: d.cols });
+    hold(); send({ type: "resize", rows, cols: d.cols });
   };
   s.attach = (host, binding) => {
     ui = binding;
@@ -421,6 +460,7 @@ function liveSession(sid, readOnly) {
     if (!readOnly && binding.autoFocus && !s.restoring) term.focus();
   };
   s.detach = () => {
+    unhold();                                       // a still frame left up would greet the next attach
     unbind();
     send({ type: "release" });                      // out of sight: whatever is on screen sizes the pty
     ownsGeometry = false;
@@ -429,7 +469,7 @@ function liveSession(sid, readOnly) {
   };
   s.dispose = () => {
     if (disposed) return;
-    disposed = true; s.alive = false; unbind();
+    disposed = true; s.alive = false; unbind(); unhold();
     clearTimeout(bail); cancelAnimationFrame(revealFrame); output.dispose();
     el.removeEventListener("wheel", trap); el.removeEventListener("paste", pasteImages, true);
     input?.dispose(); d1.dispose(); d2.dispose(); ws.close(); term.dispose(); el.remove();
@@ -728,7 +768,7 @@ export const SessionPane = ({ sid, height = "70vh", onExit, children, autoFocus 
         const r = await api.get(`/api/terminals/${sid}/browser`);
         if (stop) return;
         setBrowser(r.data || { open: false });
-        if (r.data?.open) setSeen(true);
+        if (r.data?.open && !isBlankPage(r.data.url)) setSeen(true);      // a page it opened - an empty tab was never one (isBlankPage)
         if (r.data?.open && r.data?.url && !/^about:/.test(r.data.url)) lastPage.current = r.data.url;
       } catch { /* server away for a moment: keep showing what we had */ }
       asking = false;
@@ -751,7 +791,9 @@ export const SessionPane = ({ sid, height = "70vh", onExit, children, autoFocus 
   // ...and the agent's canvas keeps the view once seen, on its last frame, while the session lives (`ended`)
   const showingBrowser = !!sid && (showsBrowser(browser.open, expectBrowser, seen) || (stack && seen));
   const ended = stack && seen && !browser.open;
-  const layout = layoutFor(width, showingBrowser, folded || (isLocalPage(browser.url) && !localOk), stack);
+  // ...and an empty tab folds to its chip, as a local file does, until the agent opens a page or something waits on it (isBlankPage)
+  const blank = isBlankPage(browser.url) && !held.length && !turn && !yourTurn && !browser.filling;
+  const layout = layoutFor(width, showingBrowser, folded || ((isLocalPage(browser.url) || blank) && !localOk), stack);
   const onScreen = showingBrowser && viewOnScreen(layout);
   useEffect(() => { onView?.(onScreen); }, [onScreen]);  // eslint-disable-line react-hooks/exhaustive-deps
   const fold = (f) => { setFolded(f); rememberFold(f, sid); if (!f) setLocalOk(true); };
@@ -782,7 +824,8 @@ export const SessionPane = ({ sid, height = "70vh", onExit, children, autoFocus 
       {/* ...and when the agent waits on the owner, the chip says so: at 1024px the agent's "open in the browser beside you" pointed at a
           chip that named only an address (2026-10-25) */}
       {ended ? (lastPage.current ? t("browser · closed · last on {url}", { url: shortUrl(lastPage.current, 28) }) : t("browser · closed")) : !browser.open ? t("browser · starting…")
-        : held.length ? t("browser · waits for your Approve - open it") : yourTurn ? t("browser · your turn - open it") : t("browser · {url}", { url: shortUrl(browser.url, 36) || t("open") })}
+        : held.length ? t("browser · waits for your Approve - open it") : yourTurn ? t("browser · your turn - open it")
+        : isBlankPage(browser.url) ? t("browser · an empty tab - show it") : t("browser · {url}", { url: shortUrl(browser.url, 36) || t("open") })}
     </Box>
   );
   /* A BROWSER THAT WAS OPEN AND CLOSED says so, where its chip or half sat: the pane just vanished, so a crash, a close and a glitch

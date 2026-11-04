@@ -26,6 +26,8 @@ RUN_TYPE = 'assistant_run'
 # the owner had typed it. It is still that turn (the next turn continues the conversation it opened), but filed by Taskuary, and the
 # pane folds it into one grey line, "Taskuary's instructions". The same actor as Taskuary's own notes (sessionrecord.NOTE_ACTOR).
 BRIEF_ACTOR = 'taskuary'
+class Stopped(RuntimeError):
+    "A turn the owner stopped - the start that ran it is done, not failed (ingest._start_general)."
 def is_brief(c) -> bool: return c.get('ActorType') == USER_TYPE and c.get('Actor') == BRIEF_ACTOR
 # ``assistant`` was briefly written by Timeline discussions before those tasks were normalized
 # to ``general``. Keep it as a read-compatible alias so existing discussions still open in the
@@ -276,11 +278,23 @@ def _selected(store, connector_id=None, model=None, pick=None) -> tuple[str, str
 NO_AI = 'No AI is connected'
 
 
+DRAFTED = 'The reply is drafted - it waits in Close out for your yes.'
 def _split(store, tid: int) -> tuple[list, list]:
     "The task's chat as (before the current run, the current run), split at the last RUN_TYPE row if there is one."
+    from . import selfclose
+    from .quickwork import report_of
     rows = store.list_comments(tid)
     at = max((i for i, c in enumerate(rows) if c.get('ActorType') == RUN_TYPE), default=-1)
-    chat = lambda rs: [c for c in rs if c.get('ActorType') in (USER_TYPE, ASSISTANT_TYPE)]
+    # ...an answer filed as a quick call's raw object reads back as its report, wherever the chat is read: the pane, the next turn, the close-out;
+    # and a letter the answer wrote out is Close out's, there too (selfclose.without_draft): a turn stored before _file took it out still had
+    # it, in the owner's voice, under Taskuary (2026-11-03). Every draft the task has had, its words and what was sent
+    letters = [x for r in store._rows("SELECT DraftText, FinalText FROM review WHERE TaskId=? AND Kind IN ('draft_reply', 'draft', 'clarification', 'slot')",
+                                      (tid,)) for x in (r.get('DraftText'), r.get('FinalText')) if x] if any(c.get('ActorType') == ASSISTANT_TYPE for c in rows) else []
+    def own(text):
+        for x in letters: text = selfclose.without_draft(text, x) or DRAFTED
+        return text
+    said = lambda c: {**c, 'Body': own(report_of(c.get('Body')))} if c.get('ActorType') == ASSISTANT_TYPE else c
+    chat = lambda rs: [said(c) for c in rs if c.get('ActorType') in (USER_TYPE, ASSISTANT_TYPE)]
     return chat(rows[:at + 1]), chat(rows[at + 1:])
 
 
@@ -300,6 +314,26 @@ def _as_messages(rows) -> list:
 def history(store, tid: int) -> list:
     "The current run's conversation: what the pane shows and the next turn continues."
     return _as_messages(chat_rows(store, tid, run=True))
+
+
+# WHAT CAME IN IS SAID IN ITS SENDER'S WORDS (the overnight run, 2026-11-03): a turn carried on by new mail is Taskuary's brief - the
+# news, then Resume's words - and the second mail of a thread was readable only inside the folded "Taskuary's instructions". On the
+# pane a brief after the run's first turn carries the mail that JOINED the task between the turn before it and it, each by its sender.
+# Joined, not stored: a mail read in while the agent worked waits for triage, and is put on the task after the turn it arrived during
+JOINED = ("SELECT m.*, MAX(m.CreatedAt, IFNULL((SELECT MAX(r.CreatedAt) FROM route r WHERE r.MessageId=m.MessageId AND r.TaskId=m.TaskId), '')) AS JoinedAt "
+          "FROM message m WHERE m.TaskId=? AND IFNULL(m.Direction,'in')<>'out' AND m.Status NOT IN ('context','history','skipped') "
+          "AND IFNULL(m.Channel,'')<>'report' ORDER BY JoinedAt, m.MessageId")
+def shown_history(store, tid: int) -> list:
+    "history, as the pane draws it: each carried-on brief with the mail that woke it (`mail`: who, channel, at, their own words)."
+    from .triage import own_words
+    rows = chat_rows(store, tid, run=True); msgs = _as_messages(rows)
+    mail = store._rows(JOINED, (tid,)) if any(m.get('brief') for m in msgs[1:]) else []
+    for i, (m, c) in enumerate(zip(msgs, rows)):
+        if not i or not m.get('brief'): continue
+        got = [x for x in mail if str(rows[i - 1].get('CreatedAt')) < str(x['JoinedAt']) <= str(c.get('CreatedAt'))]
+        if got: m['mail'] = [{'who': x.get('FromName') or x.get('FromEmail') or '', 'channel': x.get('Channel') or '', 'at': x.get('SentAt') or x.get('CreatedAt'),
+                              'words': own_words(str(x.get('BodyText') or '')).strip()[:3000] or x.get('Subject') or ''} for x in got[-5:]]
+    return msgs
 
 
 def earlier(store, tid: int) -> list:
@@ -494,11 +528,17 @@ def _show_files(store, tid: int, named: list, paths: list, actor='assistant'):
     from . import session_artifacts
     for raw in named or []:
         p = _own_file(raw, paths)
-        why = 'only a file from the working folder can be shown' if p is None else '' if p.is_file() else 'there is no such file'
+        why = "only a file from the agent's own folder can be shown" if p is None else '' if p.is_file() else 'there is no such file'
         if not why:
             try: session_artifacts.shown(store, tid, p, actor); continue
-            except (OSError, ValueError) as e: why = str(e)
-        store.add_comment(tid, 'assistant', 'agent', f'Not shown - {raw}: {why}')
+            except ValueError as e: why = str(e)          # its type, in words: '.exe cannot be shown - only ...'
+            except OSError: why = 'it could not be read'
+        store.add_comment(tid, 'assistant', 'agent', f'{file_name(raw)} was not shown - {why}.')
+
+
+# A FILE IS SAID BY ITS NAME, never the path the agent wrote (the overnight run, 2026-11-03): "Not attached to the reply - C:\Users\...\files\
+# vendors-2026.txt: only a file from the working folder ..." stood on the task, a machine's line in the owner's view
+def file_name(raw) -> str: return re.split(r'[\\/]', str(raw or '').strip().rstrip('\\/'))[-1] or 'A file'
 
 
 def _files_to_attach(store, tid: int, named: list, paths: list) -> list:
@@ -508,9 +548,10 @@ def _files_to_attach(store, tid: int, named: list, paths: list) -> list:
     for raw in named or []:
         p = _own_file(raw, paths)
         if p is None:
-            store.add_comment(tid, 'assistant', 'agent', f'Not attached to the reply - {raw}: only a file from the working folder or one that came with this task can go'); continue
+            store.add_comment(tid, 'assistant', 'agent', f"{file_name(raw)} was not attached to the reply - only a file from the agent's own folder, "
+                              'or one that came with this task, can go with it.'); continue
         try: out.append((p.name, p.read_bytes()))
-        except OSError as e: store.add_comment(tid, 'assistant', 'agent', f'Not attached to the reply - {raw}: {e.strerror or e}')
+        except OSError: store.add_comment(tid, 'assistant', 'agent', f'{file_name(raw)} was not attached to the reply - it could not be read.')
     return out
 
 
@@ -980,10 +1021,15 @@ class GeneralSession:
         next, not ignored. So: queue. In slices, so a browser that gives up stops waiting too.
         """
         end = time.time() + max(0.0, wait)
-        while True:
-            if self._lock.acquire(timeout=0.25): return True
-            if cancel is not None and cancel.is_set(): return False
-            if time.time() >= end: return False
+        self.waiting_turns = getattr(self, 'waiting_turns', 0) + 1
+        try:
+            while True:
+                if self._lock.acquire(timeout=0.25):
+                    self.turn_no = getattr(self, 'turn_no', 0) + 1
+                    return True
+                if cancel is not None and cancel.is_set(): return False
+                if time.time() >= end: return False
+        finally: self.waiting_turns -= 1
 
     def write(self, data):
         """Make xterm a second composer for the same conversation."""
@@ -1115,6 +1161,10 @@ class GeneralSession:
                 # workbook under a folder of its own choosing and handed the owner a made-up http://127.0.0.1:7787/outputs/... link
                 from . import outputs
                 system = f'{system}\n\n{POST_LINE}\n\n{selfclose.SHOW_LINE}\n\n{outputs.brief(self.task_id)}'      # a CLI has hands to make the file it shows
+                # ...and what its hook holds for the owner, where it can hold (shellgate.HOLD_LINE): asked in words first, it was asked twice
+                if self.holds_browser():
+                    from . import shellgate
+                    system = f'{system}\n\n{shellgate.HOLD_LINE}'
                 from . import handbook as hub
                 if hub.enabled(self.store): system = f'{system}\n\n{HUB_LINE}'
             else:
@@ -1233,6 +1283,9 @@ class GeneralSession:
                     from . import selfclose
                     from . import outputs
                     system = f'{system}\n\n{POST_LINE}\n\n{selfclose.SHOW_LINE}\n\n{outputs.brief(self.task_id)}'
+                    if self.holds_browser():
+                        from . import shellgate
+                        system = f'{system}\n\n{shellgate.HOLD_LINE}'
                     if hub.enabled(self.store): system = f'{system}\n\n{HUB_LINE}'
                 elif hub.enabled(self.store):
                     system = f'{system}\n\n{hub.ASSISTANT_LINE}'
@@ -1288,15 +1341,19 @@ class GeneralSession:
             # (TQ-0496, 2026-09-11: codex refused the model in ~/.codex/config.toml).
             # A background task swallows what it raises, so this is also the only place the
             # reason reaches the log.
+            # ...but a turn the OWNER stopped - Stop, or Stop and save closing the session under it - is stopped, never failed: its CLI
+            # exits mid-turn, and read as a failure the start was put back in the queue and run again (the overnight run, 2026-11-03)
+            stopped = cancel.is_set() or getattr(self, 'closing', False)
             try:
                 from . import workerstate as ws
-                ws.record(self.store, self.task_id, self.sid, 'failed', text=str(e)[:4000], source='api')
+                ws.record(self.store, self.task_id, self.sid, 'stopped' if stopped else 'failed', text=str(e)[:4000], source='api')
             except Exception as skipped: logger.debug(f'api worker event skipped: {skipped}')
             logger.warning(f'assistant turn failed on task {self.task_id}: {e}')
             # ITS CLI DIED PART-WAY THROUGH (clipool.MID_TURN): the turn was not sent again, as it may have done some of the work.
             # The session ends here, its conversation saved - so the task reads stopped and its row offers Continue, which picks the
             # saved conversation back up; a session left open over a dead process offered Stop and save on nothing (2026-10-21)
             from .clipool import MID_TURN
+            if stopped: raise Stopped(str(e)) from e
             if MID_TURN in str(e): threading.Timer(0.1, self.close, kwargs={'learn': False}).start()
             # A FAILED TURN IS SAID AS A FAILURE (owner-approved, 2026-10-21): left open, the session read alive and not busy - "waiting
             # on you" on the card, the rail and the Board over an agent that never ran. It ends here, its conversation kept, so every
@@ -1368,6 +1425,11 @@ class GeneralSession:
             out = wrapup.agent_reply(self.store, self.task_id, drafted or '', 'assistant', files=files, sid=self.sid)
             if not out.get('ok'): logger.info(f"assistant reply draft not saved on task {self.task_id}: {out.get('why')}")
             for w in out.get('not_attached') or []: self.store.add_comment(self.task_id, 'assistant', 'agent', f'Not attached to the reply - {w}')
+        # ...and the letter is Close out's to show: the pane keeps the words around it (selfclose.without_draft) - a draft marked in this
+        # answer, or filed by this session's own `taskuary --reply` mid-turn
+        rv = self.store.pending_review(self.task_id, 'draft_reply') or {}
+        if (mine := drafted or (rv.get('DraftSid') == self.sid and rv.get('DraftText'))):
+            reply = selfclose.without_draft(reply, mine) or DRAFTED
         reply, drafts = selfclose.draft_markers(reply)
         if drafts:
             from . import slots
@@ -1449,13 +1511,18 @@ class GeneralSession:
         # even if a resumed model remembers an older close instruction and emits the marker.
         has_source = bool((self.store.task_detail(self.task_id) or {}).get('messages'))
         if closing is not None and has_source:
-            threading.Timer(0.1, self._close_out, args=(closing,)).start()
+            threading.Timer(0.1, self._close_out, args=(closing,), kwargs={'turn': getattr(self, 'turn_no', 0)}).start()
         return reply
 
-    def _close_out(self, summary: str):
+    def _close_out(self, summary: str, turn: int = None):
         """The chat said the work was done. Same ending as a coding session's: the task closes,
         the conversation stays on the task as its record, and the reply to whoever asked is
-        drafted for the owner to approve."""
+        drafted for the owner to approve. `turn`: the turn that said so - a later one started or waiting means it is not done."""
+        # NEVER OVER A TURN STILL TO COME (the overnight run, 2026-11-03): the sender's second mail was passed in while the first turn worked;
+        # that turn ended saying done, the close ran 0.1s later and wrapped the session up under the second turn - the pane read finished
+        # and paired Close out for the twenty seconds it was still working. The later turn says for itself whether the work is done
+        if turn is not None and (getattr(self, 'turn_no', 0) != turn or getattr(self, 'waiting_turns', 0)):
+            logger.info(f'task {self.task_id}: its agent said done, but another turn is on - the close waits for that one'); return
         from . import selfclose
         try: out = selfclose.declare(self.store, self.task_id, summary, 'assistant', sid=self.sid)
         except Exception as e:
@@ -1481,6 +1548,7 @@ class GeneralSession:
         return True
 
     def close(self, learn=True, report=True):
+        self.closing = True          # a turn running now ends because of this, not on its own (send_prompt: stopped, not failed)
         # Coding sessions already ask this at wrap. General sessions used to bypass that branch,
         # so everything the assistant learned about the business disappeared with the chat even
         # though the Hub explicitly holds more than technical facts. A session boundary is the
@@ -1635,7 +1703,9 @@ def start_session(store, tid: int, connector_id=None, model=None, actor='owner',
     # had started too (2026-10-25). Its first message launches it, once it runs.
     from . import agents as hub_agents
     signed_out = session.pick.startswith('cli:') and hub_agents.cli_tests(store).get(session.pick[4:]) is False
-    if session.browser_wanted and not signed_out and not session.pick.startswith('connector:'):   # an API card can't drive it
+    # ...nor for a quick answer: its one call never drives a page, and a Chrome left on about:blank beside it was the "empty tab, live" with
+    # "your turn" over it on a task that never needed one (the owner, 2026-11-03). A real turn on the session launches its own (send_prompt)
+    if session.browser_wanted and not quick and not signed_out and not session.pick.startswith('connector:'):   # an API card can't drive it
         from . import browserview
         # on the page the task's browser was last on: after a restart the agent's ask ("sign in on the page beside us")
         # still points somewhere real

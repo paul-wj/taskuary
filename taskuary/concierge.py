@@ -449,7 +449,7 @@ def task_now(store, tid: int) -> str:
                  f"{who} is WORKING right now (idle {idle}s) - nothing for the owner until it stops")
     elif t.get('RunStatus') == 'running': state = f"{t.get('RunAgent') or 'an agent'} is running headless - nothing for the owner until it stops"
     # ...and whether its last session can be picked up, so "no agent" comes with the road that is real (2026-10-18)
-    else: state = 'no agent on it right now' + (f" - its last session is saved ({buttons.label('continue')} reopens it)" if store.resumable_session(tid) else '')
+    else: state = 'no agent on it right now' + (f" - its last session is saved ({buttons.label('continue')} reopens it)" if continuable(store, tid) else '')
     rv = store.pending_review(tid)
     last = next((c for c in reversed(store.list_comments(tid)) if c.get('ActorType') in ('agent', 'assistant_agent')), None)
     lines = [f"TASK NOW: {task_ref(tid)} [{t.get('Status')}, {t.get('Kind')}] {t.get('Title') or ''} - {state}"]
@@ -1366,6 +1366,13 @@ def _put_down(store, tid: int, table: dict | None, it: dict, b: str, note: str =
     return {'say': r['say'], 'options': [], 'chips': r['chips'], 'decision': None, 'did': kind, **({'pressed': pressed} if ok else {})}
 
 
+def continuable(store, tid) -> bool:
+    "A stopped agent's work can be picked up: a coding session's own CLI conversation, or a general agent's saved chat with nothing live on it."
+    if store.resumable_session(tid): return True
+    t = store.get_task(tid) or {}
+    return general.handles(t) and not _agent_running(tid) and bool(general.chat_rows(store, tid, run=True))
+
+
 def _did(store, tid: int, said: str, kind: str) -> dict:
     """A write the Assistant ran itself, said in the past tense - and the rail read again (the page's `setting`), since it changed."""
     record(store, tid, 'assistant', said)
@@ -1777,7 +1784,12 @@ def said_started(store, cid, out: dict) -> str:
 def _answer_now(store, tid: int, table: dict | None, target: int, said: str, actor: str) -> dict:
     """Words to the agent that asked ARE its answer - the box's own purpose, as Answer it says (2026-10-02): they go in, with a receipt."""
     op = operations.propose(store, 'agent.answer', int(target), {'text': said}, actor)
-    turn = receipt_turn(store, run_proposal(store, op, actor), actor, table=True)
+    r = run_proposal(store, op, actor)
+    # ...said as what happened, as Tell the agent is: "Done - Answer it · TQ-0004." was the button's name read out (the overnight run, 2026-11-03)
+    if r.get('status') == 'done' and (r.get('outcome') or {}).get('delivered'):
+        return {**_did(store, tid, f"Answered the agent on {task_ref(target)}: “{_title_cut(' '.join(str(said or '').split()), 120)}”.", 'agent.answer'),
+                'chips': chips_for(store, table)}
+    turn = receipt_turn(store, r, actor, table=True)
     return {'say': turn['say'], 'options': [], 'chips': turn['chips'] or chips_for(store, table), 'decision': None}
 
 
@@ -3527,7 +3539,7 @@ def call_turn(store, tid: int, call: dict, item: dict | None, text: str, actor: 
         # ...but CONTINUING is not attaching: it reopens the task's OWN saved session (the owner, 2026-09-30: "continue session
         # and tell the coding agent to merge it in" on a close-out card was refused for want of a ref, and the retry
         # fell to the close-out itself). On the table, with a session to reopen, the table's task is what they mean.
-        resumes = kind == 'agent.continue' and not ref and it.get('tid') and store.resumable_session(it['tid'])
+        resumes = kind == 'agent.continue' and not ref and it.get('tid') and continuable(store, it['tid'])
         # ...and "continue the agent" over a task with NO saved session was told to name the task it had named (the one on the table) - its
         # retry then missed again. The fact goes back: nothing to pick up, and Send to agent is what starts one (the task-page audit, 2026-11-02)
         if kind == 'agent.continue' and not ref and it.get('tid') and not resumes:
@@ -3575,10 +3587,13 @@ def call_turn(store, tid: int, call: dict, item: dict | None, text: str, actor: 
         # came back as a card, and on the next try as a coding agent nobody asked for. The fact goes back, with the real roads
         # (an agent's own card on the table was built from its live session: it is the run that asked)
         live = kind in ('agent.answer', 'agent.tell') and (_agent_running(t) or (store.get_task(t) or {}).get('RunStatus') == 'running')
-        if (kind in ('agent.answer', 'agent.tell') and not live
+        # ...but words for an agent the owner stopped, or a restart cut off, ARE "carry on" (the overnight run, 2026-11-03: "carry on with the
+        # vendor notes" was answered "press Try again or Run another agent"): its saved conversation picks up with them as the owner's note
+        if kind in ('agent.answer', 'agent.tell') and not live and continuable(store, t):
+            kind, params = 'agent.continue', {**params, 'note': str(params.pop('text', '') or '')}
+        elif (kind in ('agent.answer', 'agent.tell') and not live
                 and not (kind == 'agent.answer' and it.get('kind') == 'agent' and int(it.get('tid') or 0) == int(t))):
-            again = f"{buttons.label('continue')} (agent.continue) reopens its last session, or " if store.resumable_session(t) else ''
-            raise CallMiss(f"No agent is on {named} - nothing would hear that. Say so in plain words and offer what is real: {again}"
+            raise CallMiss(f"No agent is on {named} - nothing would hear that. Say so in plain words and offer what is real: "
                            "starting an agent on it (dispatch.prepare) - CALL that only if they asked for one. Nothing was sent.")
         # ...and words for an agent still WORKING are its next prompt (agent.tell), never an answer to a question it did not ask: "tell the
         # agent to use the main branch" was refused "nothing on it is waiting for an answer" over a live session (the owner, 2026-11-02)
@@ -3673,7 +3688,7 @@ def call_turn(store, tid: int, call: dict, item: dict | None, text: str, actor: 
         from .memoryedit import find
         _r, _l, _own = find(store.get_doc('learned') or '', str(params.get('key') or ''))
         named = named or str((_l or {}).get('text') or (store._one('SELECT Text FROM learned_line WHERE Key=?', (str(params.get('key') or ''),)) or {}).get('Text') or '')[:120].rstrip('.')
-    if tk == 'task' and (wrote := _task_writes(store, tid, kind, int(target or 0), params, named, actor)) is not None: return wrote
+    if tk == 'task' and (wrote := _task_writes(store, tid, kind, int(target or 0), params, named, actor, said=text)) is not None: return wrote
     if routes(): return _route(store, tid, kind, int(target or 0), params, named, it, item, text, actor)
     # A PHONE ASKS YES OR NO ONLY FOR WHAT THE ROW CAN DO (2026-11-02): the desk refuses a tool whose button the row cannot carry (cannot) or
     # does not draw (_label_on); the phone skipped both, so "keep going" over an agent with no saved session asked "Continue: TQ-0006?",
@@ -3777,7 +3792,7 @@ CONN_SAYS = {'connection.pause': 'switch it off', 'connection.resume': 'switch i
 ON_TASK = {'task.check': 'tick it on its checklist', 'task.checklist': 'its checklist is on it'}
 
 
-def _task_writes(store, tid: int, kind: str, target: int, params: dict, named: str, actor: str) -> dict | None:
+def _task_writes(store, tid: int, kind: str, target: int, params: dict, named: str, actor: str, said: str = '') -> dict | None:
     """THE TASK PAGE'S OWN WRITES, run by the Assistant and said - on the desk and on a phone alike (the owner, 2026-10-20: "anything you can do,
     you can do via the Assistant"; the phone keeps its yes/no only for what goes out or closes). None when the call is not one of them."""
     # A NOTE AND A DUE DAY RUN HERE, said (the owner, 2026-10-20): neither has a button on the row - a note is typed on the task page and the
@@ -3790,6 +3805,17 @@ def _task_writes(store, tid: int, kind: str, target: int, params: dict, named: s
     # ...and THE OWNER'S NEXT PROMPT TO THE AGENT AT WORK, delivered and said (the owner, 2026-11-02) - the page's Tell the agent, typed by
     # nobody else: it reaches no one outside, so the phone runs it at once as well
     if kind == 'agent.tell' and target: return _tell_now(store, tid, target, str(params.get('text') or ''), actor)
+    # ...and A GENERAL AGENT THE OWNER STOPPED, or a restart cut off, carried on by their words (the overnight run, 2026-11-03: "carry on with
+    # the vendor notes" was answered "press Try again or Run another agent"): its row draws no Continue - its own box is the way on, and these
+    # are the same owner's words - so it is the page's Continue with them as the note, run and said
+    if kind == 'agent.continue' and target and general.handles(store.get_task(target) or {}) and continuable(store, target):
+        # ...with what they said: a call that left its note out lost "skip the zip file" from "carry on, and skip the zip file" - the owner's
+        # own words go with it then, as the page's Continue box would carry them
+        note = ' '.join(str(params.get('note') or params.get('text') or said or '').split())
+        r = run_proposal(store, operations.propose(store, 'agent.continue', target, {'note': note}, actor), actor)
+        if r.get('status') != 'done': raise CallMiss(f"{r.get('error') or 'it did not pick up'} - say so in plain words. Nothing was started.")
+        return _did(store, tid, f"Picked up {task_ref(target)} again" + (f" with your note: “{_title_cut(note, 120)}”." if note else '.'),
+                    'agent.continue')
     # ...and WHERE WORK LIKE THIS GOES, taught and said (2026-11-01): a lesson for triage that moves nothing - "bugs like this go to
     # northwind/importers" was refused as having no button, on the desk where the owner said it
     if kind == 'routing.remember' and target:
@@ -5263,6 +5289,8 @@ def describe_op(store, op: dict) -> tuple:
         elif tk == 'review' and target:
             rv = store.get_review(int(target)) or {}
             ref = task_ref(rv['TaskId']) if rv.get('TaskId') else f'rv{target}'
+            # ...a held step the owner let run is Approve, never "Send": "Done - Send · TQ-0006." over a delete nothing sent (2026-11-03)
+            if kind == 'review.approve' and rv.get('Kind') == 'action': label = buttons.label('approve', 'action')
         elif tk == 'item': ref = task_ref(int(p['tid'])) if p.get('tid') else str(p.get('key') or '')
         elif tk == 'source' and target: ref = f'report {target}'
         elif tk == 'report': ref = str(p.get('title') or '')

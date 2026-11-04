@@ -34,6 +34,12 @@ test("a folder the shell fills in ($d) is never shown as its name: the agent's o
   assert.equal(describeCall("Bash", { command: "ls -la ~/Downloads/notes.zip", description: "Locate the zip in Downloads" }).summary, "Locate the zip in Downloads");
 });
 
+test("browser looks the agent described in its own words never read as 'Read 2 pages ()' (the browser-agent walk, 2026-11-03)", () => {
+  const call = (id, description) => ({ type: "tool_call", name: "Bash", detail: { tool_call_id: id, args: { command: "agent-browser snapshot -i", description } } });
+  const said = stepsOf([call("b1", "Look at the sign-in page"), call("b2", "Check the page again")], { keepStart: false }).filter(isWork).map((s) => s.summary);
+  assert.ok(said.length && said.every((s) => !/\(\s*\)/.test(s)), JSON.stringify(said));
+});
+
 const DIR = new URL("../../tests/fixtures/agent_steps/", import.meta.url);
 const trace = (b) => JSON.parse(fs.readFileSync(new URL(`${b}.trace.json`, DIR), "utf8"));
 const ANSWER = "The budget review is waiting on Gail Moreno's sign-off: TQ-1142 holds the thread, and the status board reads approvedTotal "
@@ -165,6 +171,10 @@ test("a look whose non-zero exit is its answer reads 'found none'; a look that b
   assert.equal(st("PowerShell", "Get-ChildItem C:/Users/alex/Downloads/notes", "Get-ChildItem : Cannot find path 'C:\\Users\\alex\\Downloads\\notes' because it does not exist."), "none");
   assert.equal(st("Bash", "ls --frobnicate notes*", "Exit code 2\nls: unrecognized option '--frobnicate'\nTry 'ls --help' for more information."), "error");
   assert.equal(st("Bash", "npm test", "Exit code 1"), "error");
+  // ...and a refusal on the very path it was asked for is an error, never "found none" (the owner, 2026-11-03)
+  assert.equal(st("Bash", "ls /srv/notes", "Exit code 2\nls: cannot open directory '/srv/notes': Permission denied"), "error");
+  assert.equal(st("PowerShell", "Get-ChildItem C:/Users/alex/Downloads/notes", "Get-ChildItem : Access to the path 'C:\\Users\\alex\\Downloads\\notes' is denied."), "error");
+  assert.equal(st("Bash", "grep -r invoice-4471 docs", "Exit code 2\ngrep: docs: Permission denied"), "error");
 });
 
 test("a turn whose answer carries its reply draft is not shown twice - the stream had the draft taken out, the filed answer keeps it", () => {
@@ -175,4 +185,13 @@ test("a turn whose answer carries its reply draft is not shown twice - the strea
   assert.deepEqual(stepsOf(streamed, { answer: `${report}\n\n${draft}\n\n${after}`, keepStart: false }).filter((s) => s.kind === "said"), []);
   // ...while words the answer does not say stay the agent's own
   assert.equal(stepsOf(streamed, { answer: `${report}\n\n${draft}`, keepStart: false }).filter((s) => s.kind === "said").length, 1);
+});
+
+test("a quick answer's raw object is never the agent's words, whichever line of the trace carries it", () => {
+  // the owner's pane, 2026-11-03: a CLI's readable `live` line was the object itself, cut at 300 characters, drawn under Taskuary
+  const raw = JSON.stringify({ report: "Gail Moreno asks what it costs.", draft: "Tell Gail the first month is free.", question: null }).slice(0, 60);
+  for (const trace of [[{ type: "live", name: "claude", detail: raw }], [{ type: "progress", name: "text", detail: "```json\n" + raw }]]) {
+    assert.deepEqual(stepsOf(trace, { keepStart: false }).filter((s) => s.kind === "said"), []);
+  }
+  assert.equal(stepsOf([{ type: "live", name: "claude", detail: "Looking up the price list." }], { keepStart: false })[0].summary, "Looking up the price list.");
 });

@@ -236,17 +236,22 @@ const rawOf = (name, args) => {
 };
 
 // A LOOK THAT FOUND NOTHING ANSWERED (the desktop stress test, 2026-11-03): `ls notes*` with no match exits non-zero, and red "failed"
-// read as something gone wrong. A list or search step that says nothing past its exit code, or speaks only of the very thing it was
-// asked to look for, found none; a line about anything else - a flag it did not take, a folder it was not asked about - is a failure
+// read as something gone wrong. A list or search step that says nothing past its exit code, or whose every line is the OS saying the
+// very thing it was asked for is not there, found none. Any other line - a flag it did not take, a folder it was not asked about, and
+// a refusal like Permission denied even on the path it was asked for (the owner, 2026-11-03) - is a failure
+const NOT_THERE = /no such file or directory|cannot find (the )?(path|file)|does not exist|file not found|no matches found/i;
 const foundNone = (s) => {
   if (!["list", "search"].includes(s.kind)) return false;
   const lines = s.output.split(/\r?\n| ⏎ /).map((l) => l.trim()).filter((l) => l && !/^exit code -?\d+$/i.test(l));
   const asked = (s.asked || []).map((a) => String(a).replace(/^['"]|['"]$/g, "")).filter((a) => a.length > 1);
-  return lines.every((l) => asked.some((a) => l.includes(a) || l.includes(baseName(a))));
+  return lines.every((l) => NOT_THERE.test(l) && asked.some((a) => l.includes(a) || l.includes(baseName(a))));
 };
 
 // ── the trace, as steps ──────────────────────────────────────────────────────────────────────────
 const ECHO = /^(→ |· |✗ |session started\b)/;            // agents._live_line's own rows for a tool call, its result, the init line
+// A QUICK ANSWER'S RAW OBJECT (quickwork.RAW) is its fields, filed as the answer - never words of its working, whichever line carries it: a
+// CLI's readable `live` line was the object cut at 300 characters, drawn under Taskuary (the owner, 2026-11-03)
+const QUICK_RAW = /^\s*(?:```(?:json)?\s*)?\{\s*"(?:report|draft|question|done|escalate|why)"\s*:/i;
 export function stepsOf(trace, { answer = "", keepStart = true } = {}) {
   const events = trace || [];
   // A structured backend says everything twice: its tool call and text as events, and the same again as readable `live` lines for
@@ -256,7 +261,7 @@ export function stepsOf(trace, { answer = "", keepStart = true } = {}) {
   const steps = [], byId = new Map();
   const say = (kind, text) => {
     const t = forScreen(text);
-    if (!t) return;
+    if (!t || QUICK_RAW.test(t)) return;
     const last = steps[steps.length - 1];
     if (kind === "said" && last?.kind === "said" && last.live) { last.summary += `\n${t}`; return; }
     steps.push({ id: `${kind}-${steps.length}`, kind, summary: t, detail: "", status: "done", live: kind === "said" && !structured });
@@ -315,7 +320,7 @@ const together = (run) => {
   }
   if (k === "search") return t("Searched files for {pattern}", { pattern: listOf(run.map((s) => s.pattern && quoted(s.pattern))) });
   if (k === "web") return t("Searched the web for {query}", { query: listOf(run.map((s) => s.q && quoted(s.q))) });
-  if (k === "page") { const h = [...new Set(run.map((s) => s.host).filter(Boolean))]; return h.length === 1 ? t("Read {count} pages on {host}", { count: n, host: h[0] }) : t("Read {count} pages ({hosts})", { count: n, hosts: listOf(h) }); }
+  if (k === "page") { const h = [...new Set(run.map((s) => s.host).filter(Boolean))]; return h.length === 1 ? t("Read {count} pages on {host}", { count: n, host: h[0] }) : h.length ? t("Read {count} pages ({hosts})", { count: n, hosts: listOf(h) }) : t("Read {count} web pages", { count: n }); }
   if (k === "mail" && run.every((s) => s.q !== undefined)) return t("Searched your mail for {query}", { query: listOf(run.map((s) => s.q && !s.q.includes("$") && quoted(s.q))) });
   if (k === "edit") return t("Changed {count} files", { count: n });
   return run.every((s) => s.summary === run[0].summary) ? t("{summary} ({count} times)", { summary: run[0].summary, count: n }) : null;
