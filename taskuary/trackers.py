@@ -16,6 +16,7 @@ agent that read other people's mail.
 import json, re
 import requests
 from loguru import logger
+from . import jiraapi
 
 NAMES = {'jira': 'Jira', 'monday': 'Monday', 'linear': 'Linear'}
 VERBS = ('comment', 'move', 'assign', 'close')
@@ -64,6 +65,7 @@ def card(store, t: str, connector_id=None) -> dict:
     if not c or c.get('Type') != t: raise RuntimeError(f'no {NAMES[t]} connection')
     if not c.get('Active'): raise RuntimeError(f'the {NAMES[t]} connection is off - turn it on under Connections')
     if not c.get('Secret'): raise RuntimeError(f'the {NAMES[t]} connection has no token saved')
+    if t == 'jira': jiraapi.require_write(c)
     return c
 
 
@@ -72,20 +74,7 @@ def _cfg(c) -> dict:
     except ValueError: return {}
 
 
-def _said(r) -> str:
-    try: j = r.json()
-    except ValueError: return (r.text or '')[:200]
-    return '; '.join([*(j.get('errorMessages') or []), *[f'{k}: {v}' for k, v in (j.get('errors') or {}).items()]])[:300] if isinstance(j, dict) else str(j)[:200]
-
-
 # ── the wire: one function per API, so a test fakes the upstream in one place ────────────────────────────────────────────────────────
-def _jira(c, method: str, path: str, body=None):
-    from .pm import _jira_base
-    r = requests.request(method, f'{_jira_base(c)}{path}', json=body, timeout=30, auth=(_cfg(c).get('email') or '', c.get('Secret') or ''),
-                         headers={'Accept': 'application/json'}, allow_redirects=False)
-    if r.status_code in (401, 403): raise RuntimeError(f'Jira said {r.status_code} - check the account email and API token ({_said(r)})')
-    if r.status_code >= 300: raise RuntimeError(f'Jira said {r.status_code}: {_said(r) or r.reason}')
-    return r.json() if r.content else {}
 
 
 def _gql(t: str, c, query: str, variables: dict) -> dict:
@@ -113,9 +102,9 @@ def _adf(text: str) -> dict:
 
 # ── reading where an item stands: {item, title, status, done, to: {id, name} | None, why, statuses, url} ─────────────────────────────
 def _jira_state(c, key):
-    i = _jira(c, 'GET', f'/rest/api/3/issue/{key}?fields=status,summary')
+    i = jiraapi.request(c, 'GET', f'/issue/{key}?fields=status,summary', api_version=3)
     st = (i.get('fields') or {}).get('status') or {}
-    tr = _jira(c, 'GET', f'/rest/api/3/issue/{key}/transitions').get('transitions') or []
+    tr = jiraapi.request(c, 'GET', f'/issue/{key}/transitions', api_version=3).get('transitions') or []
     done = ((st.get('statusCategory') or {}).get('key')) == 'done'
     to = next(({'id': x['id'], 'name': (x.get('to') or {}).get('name') or x.get('name')} for x in tr
                if (((x.get('to') or {}).get('statusCategory') or {}).get('key')) == 'done'), None)
@@ -190,7 +179,7 @@ def state(store, t: str, item, connector_id=None) -> dict: return STATE[t](card(
 # ── the four acts, per tracker ───────────────────────────────────────────────────────────────────────────────────────────────────
 def _comment(t, c, s, body: str) -> str:
     if t == 'jira':
-        j = _jira(c, 'POST', f"/rest/api/3/issue/{s['item']}/comment", {'body': _adf(body)})
+        j = jiraapi.request(c, 'POST', f"/issue/{s['item']}/comment", {'body': _adf(body)}, api_version=3)
         return str(j.get('id') or '')
     if t == 'monday':
         return str(((_gql('monday', c, 'mutation($i:ID!,$b:String!){ create_update(item_id:$i, body:$b){ id } }',
@@ -202,7 +191,7 @@ def _comment(t, c, s, body: str) -> str:
 
 
 def _move(t, c, s, to: dict) -> None:
-    if t == 'jira': _jira(c, 'POST', f"/rest/api/3/issue/{s['item']}/transitions", {'transition': {'id': to['id']}}); return
+    if t == 'jira': jiraapi.request(c, 'POST', f"/issue/{s['item']}/transitions", {'transition': {'id': to['id']}}, api_version=3); return
     if t == 'monday':
         _gql('monday', c, 'mutation($b:ID!,$i:ID!,$c:String!,$v:String){ change_simple_column_value(board_id:$b, item_id:$i, column_id:$c, '
                           'value:$v){ id } }', {'b': to['board'], 'i': s['item'], 'c': to['id'], 'v': to['name']}); return
@@ -224,7 +213,7 @@ def _person(t, c, s, who: str) -> dict:
     "ONE person the tracker knows by this name or address - two or none is a refusal, never a guess at which."
     who = str(who or '').strip()
     if t == 'jira':
-        hits = _jira(c, 'GET', f"/rest/api/3/user/assignable/search?issueKey={s['item']}&query={requests.utils.quote(who)}") or []
+        hits = jiraapi.request(c, 'GET', f"/user/assignable/search?issueKey={s['item']}&query={requests.utils.quote(who)}", api_version=3) or []
         exact = [u for u in hits if who.lower() in (str(u.get('displayName') or '').lower(), str(u.get('emailAddress') or '').lower())]
         got = exact or hits
         rows = [{'id': u.get('accountId'), 'name': u.get('displayName')} for u in got]
@@ -244,7 +233,7 @@ def _person(t, c, s, who: str) -> dict:
 
 def _assign(t, c, s, item, who: str) -> str:
     u = _person(t, c, s, who)
-    if t == 'jira': _jira(c, 'PUT', f"/rest/api/3/issue/{s['item']}/assignee", {'accountId': u['id']})
+    if t == 'jira': jiraapi.request(c, 'PUT', f"/issue/{s['item']}/assignee", {'accountId': u['id']}, api_version=3)
     elif t == 'monday':
         it = _monday_item(c, item)
         col = _monday_col(c, it, 'people')
@@ -265,6 +254,7 @@ def run(type_: str):
         if why := check({**{k: x for k, x in cfg.items() if k not in ('_card', 'token')}, 'type': type_}): raise RuntimeError(why)
         c = cfg.get('_card') or {}
         if c.get('Type') != t: raise RuntimeError(f'no {NAMES[t]} connection')
+        if t == 'jira': jiraapi.require_write(c)
         item = str(cfg['item']).strip()
         s = STATE[t](c, item)
         if v == 'comment':

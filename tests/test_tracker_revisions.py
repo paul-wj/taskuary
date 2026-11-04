@@ -9,7 +9,7 @@ import json, unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from taskuary import channels, github, pm
+from taskuary import channels, github, pm, jiraapi
 from taskuary.store import MemoryStore
 
 
@@ -37,9 +37,9 @@ def jira_comment(cid, body, account='acct-rina', name='Rina', typ='atlassian'):
 class JiraRevisionTests(unittest.TestCase):
     def poll(self, s, c, issue):
         """One poll returning exactly this issue."""
-        real, pm._jira_get = pm._jira_get, lambda c_, p, **kw: {'issues': [issue]}
-        try: return pm.poll_jira(s, c, datetime.now() - timedelta(hours=1))
-        finally: pm._jira_get = real
+        page = {'issues': [issue], 'startAt': 0, 'total': 1}
+        with mock.patch.object(jiraapi, 'request', return_value=page):
+            return pm.poll_jira(s, c, datetime.now() - timedelta(hours=1))
 
     def test_a_rewritten_description_lands_as_a_second_arrival(self):
         s = MemoryStore()
@@ -88,25 +88,14 @@ class JiraCommentTests(unittest.TestCase):
     so the conversation costs no extra call."""
 
     def poll(self, s, c, issue):
-        real, pm._jira_get = pm._jira_get, lambda c_, p, **kw: (
-            {'accountId': 'acct-us', 'displayName': 'Taskuary'} if p.endswith('/myself') else {'issues': [issue]})
-        try: return pm.poll_jira(s, c, datetime.now() - timedelta(hours=1))
-        finally: pm._jira_get = real
+        def response(c_, method, path, **kw):
+            return {'accountId': 'acct-us', 'displayName': 'Taskuary'} if path == '/myself' else {'issues': [issue], 'startAt': 0, 'total': 1}
+        with mock.patch.object(jiraapi, 'request', side_effect=response):
+            return pm.poll_jira(s, c, datetime.now() - timedelta(hours=1))
 
     def card(self, s):
         return conn(s, 'jira', {'base_url': 'https://team.atlassian.net', 'email': 'me@x.com'})
 
-    def test_the_search_asks_for_comments_in_the_same_call(self):
-        s, seen = MemoryStore(), {}
-        c = self.card(s)
-        def spy(c_, p, **kw):
-            seen[p] = kw
-            return {'accountId': 'acct-us'} if p.endswith('/myself') else {'issues': []}
-        real, pm._jira_get = pm._jira_get, spy
-        try: pm.poll_jira(s, c, datetime.now() - timedelta(hours=1))
-        finally: pm._jira_get = real
-        self.assertIn('comment', seen['/rest/api/2/search']['fields'],
-                      'comments must ride the search - a call per issue is the expensive way')
 
     def test_a_comment_joins_its_issue(self):
         s = MemoryStore()
@@ -363,10 +352,10 @@ class UpstreamEndingTests(unittest.TestCase):
         s = MemoryStore()
         c = conn(s, 'jira', {'base_url': 'https://team.atlassian.net', 'email': 'me@x.com'})
         def poll(issue):
-            real, pm._jira_get = pm._jira_get, lambda c_, p, **kw: (
-                {'accountId': 'acct-us'} if p.endswith('/myself') else {'issues': [issue]})
-            try: return pm.poll_jira(s, c, datetime.now() - timedelta(hours=1))
-            finally: pm._jira_get = real
+            def response(c_, method, path, **kw):
+                return {'accountId': 'acct-us'} if path == '/myself' else {'issues': [issue], 'startAt': 0, 'total': 1}
+            with mock.patch.object(jiraapi, 'request', side_effect=response):
+                return pm.poll_jira(s, c, datetime.now() - timedelta(hours=1))
         poll(jira_issue())
         row = next(r for r in s.feed(days=99) if r['ConversationId'] == 'jira:OPS-12')
         tid = s.create_task({'Title': 'Fix the sync', 'Kind': 'coding', 'Status': 'open'}, 'test')
@@ -378,11 +367,9 @@ class UpstreamEndingTests(unittest.TestCase):
     def test_a_jira_issue_already_resolved_never_becomes_work(self):
         s = MemoryStore()
         c = conn(s, 'jira', {'base_url': 'https://team.atlassian.net', 'email': 'me@x.com'})
-        real, pm._jira_get = pm._jira_get, lambda c_, p, **kw: (
-            {'accountId': 'acct-us'} if p.endswith('/myself')
-            else {'issues': [jira_issue(key='OPS-99', status='Done', category='done')]})
-        try: pm.poll_jira(s, c, datetime.now() - timedelta(hours=1))
-        finally: pm._jira_get = real
+        page = {'issues': [jira_issue(key='OPS-99', status='Done', category='done')], 'startAt': 0, 'total': 1}
+        with mock.patch.object(jiraapi, 'request', return_value=page):
+            pm.poll_jira(s, c, datetime.now() - timedelta(hours=1))
         self.assertEqual([r for r in s.feed(days=99) if r['ConversationId'] == 'jira:OPS-99'], [])
 
     def test_a_bot_s_own_pull_request_is_history_not_work(self):

@@ -2,8 +2,9 @@
 (Jira/Asana/Monday/ClickUp/Todoist)."""
 import json, unittest
 from datetime import datetime, timedelta
+from unittest import mock
 
-from taskuary import messengers, pm
+from taskuary import messengers, pm, jiraapi
 from taskuary.ingest import source_rules, PR_RULES, ISSUE_RULES
 from taskuary.store import MemoryStore
 
@@ -87,13 +88,12 @@ class PmPollTests(unittest.TestCase):
     def test_jira_assigned_issue_lands_once(self):
         s = MemoryStore()
         c = conn(s, 'jira', {'base_url': 'https://team.atlassian.net', 'email': 'me@x.com'})
-        real, pm._jira_get = pm._jira_get, lambda c_, p, **kw: {'issues': [{'key': 'OPS-12', 'fields': {
+        page = {'startAt': 0, 'total': 1, 'issues': [{'key': 'OPS-12', 'fields': {
             'summary': 'Fix the sync', 'description': 'it double-books', 'updated': '2026-08-23T09:00:00.000+0000',
             'status': {'name': 'To Do'}, 'priority': {'name': 'High'}, 'reporter': {'displayName': 'Rina'}}}]}
-        try:
+        with mock.patch.object(jiraapi, 'request', return_value=page):
             n1 = pm.poll_jira(s, c, datetime.now() - timedelta(hours=1))
             n2 = pm.poll_jira(s, c, datetime.now() - timedelta(hours=1))
-        finally: pm._jira_get = real
         self.assertEqual((n1, n2), (1, 0))                    # dedupe by issue key
         row = s.feed()[0]
         self.assertEqual(row['Channel'], 'jira')

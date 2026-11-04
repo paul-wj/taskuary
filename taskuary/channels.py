@@ -236,6 +236,9 @@ class DraftStore:
         if int(cid) != self._cid: return self._store.touch_connector(cid, *a, **k)
     def set_connector_config(self, cid, *a, **k):
         if int(cid) != self._cid: return self._store.set_connector_config(cid, *a, **k)
+    def save_source(self, fields, actor):
+        if fields.get('ConnectorId') != self._cid: return self._store.save_source(fields, actor)
+
 
 
 def test_connector(store, cid: int, draft: dict | None = None) -> dict:

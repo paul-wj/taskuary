@@ -342,7 +342,7 @@ held until the ask it opens arrives.</p>
 </tr>
 <tr>
 <td><strong>Jira, Asana, Monday.com, ClickUp, Todoist</strong></td>
-<td>Assigned work items reach the rail through triage</td>
+<td>Assigned work items reach the rail through triage. Jira supports Cloud and read-only Data Center API-token connections</td>
 </tr>
 <tr>
 <td><strong>Linear, Trello</strong></td>
@@ -359,6 +359,37 @@ held until the ask it opens arrives.</p>
 </tbody></table>
 <p>A tracker is the clearest case for <code>trigger</code>: an issue assigned to you is, by definition, work
 addressed to you, and triage settles most of them without an AI call at all.</p>
+<h3 id="jira-data-center-account-username-and-api-token">Jira Data Center: account username and API token<a class="anchor" href="#jira-data-center-account-username-and-api-token" aria-label="Link to this section">#</a></h3>
+<p>In the Jira card&#39;s <strong>Credentials</strong> step, choose <strong>Data Center</strong>. Enter the site&#39;s URL, your
+account username and an API token from that site&#39;s API-token-auth plugin. Taskuary sends
+HTTP <strong>Basic authentication</strong> with the token as the password; it does not send a Bearer token
+and requires no new OAuth application. Missing deployment settings preserve existing Cloud connections.</p>
+<p>Create or replace the token on your Jira site&#39;s plugin page:
+<code>/plugins/servlet/de.resolution.apitokenauth/admin</code>. The plugin must already be enabled by
+your company; the connector does not grant permissions or bypass company policy. Use the
+account username required by that installation, which may be your work email.</p>
+<p>The site URL can include a context path, such as <code>https://jira.example.com/jira</code>, or a trailing
+<code>/rest/api/2</code>; Taskuary normalizes it while keeping links back to the correct Jira site.
+The account needs REST read access and Browse Projects permission for the relevant issues.</p>
+<p><strong>Test</strong> verifies both your identity and a minimal assigned-to-me issue search. An empty
+successful search is valid but does not prove access to every project. A denied search is a
+failed connection test, not an empty inbox. <strong>Test</strong> can try unsaved values without changing
+stored credentials, identity or sources. <strong>Save &amp; continue</strong>, then run <strong>Test</strong> on the saved
+card to create its source; enable it and use <strong>Sync now</strong> to ingest assigned issues.</p>
+<p>Sync reads REST v2, follows all search pages and keeps existing task/triage behavior. It does
+not automatically include reporter/watcher issues or other projects. Repeated sync deduplicates
+unchanged issues; a later-page failure stays visible and leaves the source window pending.</p>
+<p>In <strong>Feed — shows, never assigns</strong> mode, every sync includes all unresolved issues assigned
+to your account, even if they were last updated long before this connection was configured.
+Recent updates are also read so resolution changes still arrive. This mode creates no local
+tasks and runs no AI triage; existing Jira work is displayed in the Timeline/FYI. Trigger mode
+retains its incremental task-creation behavior.</p>
+<p><strong>Data Center is read-only.</strong> No comments, assignments, transitions or upstream close-outs
+are offered. Server and transport guards reject writes and REST v3 calls even when an old
+scope or proposal allowed Cloud writes. You can still finish work locally in Taskuary.</p>
+<p>The token is sealed in the existing vault and never returned by connector APIs. Replace a
+rotated token by typing it in the same box, saving and testing again. No personal <code>.env</code> file
+is automatically imported. Cloud retains its existing owner-approved write-back below.</p>
 <h3 id="github-what-close-out-does">GitHub: what Close out does<a class="anchor" href="#github-what-close-out-does" aria-label="Link to this section">#</a></h3>
 <p>The GitHub connection has a <strong>Close out</strong> step: what finishing a task does on GitHub when you press
 <strong>Close out</strong>. These are your choices - what each repository <em>requires</em> (branch protection, required checks
@@ -415,14 +446,14 @@ and reviews) is read from GitHub for every pull request, and the card only offer
 <p>A repository you follow can override the pull-request choice, the merge method and Close out anyway.
 <strong>Check the token</strong> asks GitHub, per repository, whether the token may do what these settings turn on.</p>
 <h3 id="jira-monday-com-and-linear-what-goes-back">Jira, Monday.com and Linear: what goes back<a class="anchor" href="#jira-monday-com-and-linear-what-goes-back" aria-label="Link to this section">#</a></h3>
-<p>These three trackers can be written to as well as read. Every write waits for your press, because
-each one reaches people: everyone on an item reads a comment, and the tracker tells the people
-following an item when it moves or changes hands.</p>
+<p>Jira Cloud, Monday.com and Linear can be written to as well as read. Every write waits for your
+press, because each reaches people: everyone on an item reads a comment, and the tracker tells
+the people following an item when it moves or changes hands. Jira Data Center is read-only.</p>
 <table>
 <thead>
 <tr>
 <th>Act</th>
-<th>Jira (REST v3)</th>
+<th>Jira Cloud (REST v3)</th>
 <th>Monday.com</th>
 <th>Linear</th>
 </tr>
@@ -630,6 +661,12 @@ local server: LM Studio, llama.cpp, vLLM), and the Meta Model API.</p>
 <p><strong>Coding CLIs</strong> — Claude Code, Codex, Qwen Code, OpenCode, Kimi Code, Gemini, Cursor, Copilot,
 Muse Code, Devin and Oh My Pi, plus any CLI that accepts a prompt on stdin. The connector defines its
 command, arguments, model argument and working-directory behaviour.</p>
+<p><strong>Local code folders</strong> do not require GitHub or a Git remote. On a task, open <strong>Choose where
+the code is</strong>, select <strong>Add local code folder</strong>, enter the folder&#39;s full path on the computer
+running Taskuary, and press <strong>Use this folder</strong>. The directory must exist. Invalid paths leave
+the current selection unchanged. Binding only saves the code location; it does not start or
+restart an agent, edit files, or approve permissions. Start the coding agent separately when
+ready. Existing GitHub repository choices remain available alongside local folders.</p>
 <p>The presets supply each CLI&#39;s noninteractive arguments. Some operations may still need an approval;
 for Oh My Pi general-agent ACP sessions, Taskuary declines permission requests rather than approving
 them automatically. The card&#39;s <strong>Test</strong> action runs a small prompt through the CLI before it

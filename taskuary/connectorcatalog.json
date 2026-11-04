@@ -361,7 +361,7 @@
       "title": "Jira",
       "group": "Project management",
       "planned": false,
-      "desc": "Jira issues ASSIGNED TO YOU land on your work rail through triage — 'assigned in Jira' and 'asked by email' end up in the one funnel.",
+      "desc": "Jira issues ASSIGNED TO YOU land on your work rail through triage — 'assigned in Jira' and 'asked by email' end up in the one funnel. Atlassian Cloud keeps its approved write-back; a team's own Jira Data Center connects read-only with the account username and an API token.",
       "match": [
         "jira"
       ]

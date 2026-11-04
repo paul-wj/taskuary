@@ -170,13 +170,53 @@ held until the ask it opens arrives.
 | **GitHub** | Repository discovery, issues and pull requests as triggers, task-specific standing prompts |
 | **GitLab** | Assigned issues and merge requests, GitLab.com or self-hosted |
 | **Azure DevOps** | Work items assigned to the connected user, through WIQL `@Me` |
-| **Jira, Asana, Monday.com, ClickUp, Todoist** | Assigned work items reach the rail through triage |
+| **Jira, Asana, Monday.com, ClickUp, Todoist** | Assigned work items reach the rail through triage. Jira supports Cloud and read-only Data Center API-token connections |
 | **Linear, Trello** | Assigned issues and cards |
 | **Notion** | Pages shared with the integration appear as a feed when they change |
 | **Sentry, PagerDuty** | New unresolved errors and open incidents join the same funnel |
 
 A tracker is the clearest case for `trigger`: an issue assigned to you is, by definition, work
 addressed to you, and triage settles most of them without an AI call at all.
+
+### Jira Data Center: account username and API token
+
+In the Jira card's **Credentials** step, choose **Data Center**. Enter the site's URL, your
+account username and an API token from that site's API-token-auth plugin. Taskuary sends
+HTTP **Basic authentication** with the token as the password; it does not send a Bearer token
+and requires no new OAuth application. Missing deployment settings preserve existing Cloud connections.
+
+Create or replace the token on your Jira site's plugin page:
+`/plugins/servlet/de.resolution.apitokenauth/admin`. The plugin must already be enabled by
+your company; the connector does not grant permissions or bypass company policy. Use the
+account username required by that installation, which may be your work email.
+
+The site URL can include a context path, such as `https://jira.example.com/jira`, or a trailing
+`/rest/api/2`; Taskuary normalizes it while keeping links back to the correct Jira site.
+The account needs REST read access and Browse Projects permission for the relevant issues.
+
+**Test** verifies both your identity and a minimal assigned-to-me issue search. An empty
+successful search is valid but does not prove access to every project. A denied search is a
+failed connection test, not an empty inbox. **Test** can try unsaved values without changing
+stored credentials, identity or sources. **Save & continue**, then run **Test** on the saved
+card to create its source; enable it and use **Sync now** to ingest assigned issues.
+
+Sync reads REST v2, follows all search pages and keeps existing task/triage behavior. It does
+not automatically include reporter/watcher issues or other projects. Repeated sync deduplicates
+unchanged issues; a later-page failure stays visible and leaves the source window pending.
+
+In **Feed — shows, never assigns** mode, every sync includes all unresolved issues assigned
+to your account, even if they were last updated long before this connection was configured.
+Recent updates are also read so resolution changes still arrive. This mode creates no local
+tasks and runs no AI triage; existing Jira work is displayed in the Timeline/FYI. Trigger mode
+retains its incremental task-creation behavior.
+
+**Data Center is read-only.** No comments, assignments, transitions or upstream close-outs
+are offered. Server and transport guards reject writes and REST v3 calls even when an old
+scope or proposal allowed Cloud writes. You can still finish work locally in Taskuary.
+
+The token is sealed in the existing vault and never returned by connector APIs. Replace a
+rotated token by typing it in the same box, saving and testing again. No personal `.env` file
+is automatically imported. Cloud retains its existing owner-approved write-back below.
 
 ### GitHub: what Close out does
 
@@ -200,11 +240,11 @@ A repository you follow can override the pull-request choice, the merge method a
 
 ### Jira, Monday.com and Linear: what goes back
 
-These three trackers can be written to as well as read. Every write waits for your press, because
-each one reaches people: everyone on an item reads a comment, and the tracker tells the people
-following an item when it moves or changes hands.
+Jira Cloud, Monday.com and Linear can be written to as well as read. Every write waits for your
+press, because each reaches people: everyone on an item reads a comment, and the tracker tells
+the people following an item when it moves or changes hands. Jira Data Center is read-only.
 
-| Act | Jira (REST v3) | Monday.com | Linear |
+| Act | Jira Cloud (REST v3) | Monday.com | Linear |
 |---|---|---|---|
 | Comment | A comment on the issue | An update on the item | A comment on the issue |
 | Move | A transition the workflow offers from where the issue stands | A label of the item's status column | A state of the team's workflow |
@@ -416,6 +456,13 @@ local server: LM Studio, llama.cpp, vLLM), and the Meta Model API.
 **Coding CLIs** — Claude Code, Codex, Qwen Code, OpenCode, Kimi Code, Gemini, Cursor, Copilot,
 Muse Code, Devin and Oh My Pi, plus any CLI that accepts a prompt on stdin. The connector defines its
 command, arguments, model argument and working-directory behaviour.
+
+**Local code folders** do not require GitHub or a Git remote. On a task, open **Choose where
+the code is**, select **Add local code folder**, enter the folder's full path on the computer
+running Taskuary, and press **Use this folder**. The directory must exist. Invalid paths leave
+the current selection unchanged. Binding only saves the code location; it does not start or
+restart an agent, edit files, or approve permissions. Start the coding agent separately when
+ready. Existing GitHub repository choices remain available alongside local folders.
 
 The presets supply each CLI's noninteractive arguments. Some operations may still need an approval;
 for Oh My Pi general-agent ACP sessions, Taskuary declines permission requests rather than approving

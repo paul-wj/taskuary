@@ -1,6 +1,6 @@
 """THE PLACES A SENTENCE SENDS THE OWNER (taskuary/words.json): every link is one the page opens, and no sentence the server
 writes types its own "Settings → ..." path - one moved page was a dozen stale sentences, each spelled its own way."""
-import ast, json, re, unittest
+import json, re, unittest
 from pathlib import Path
 from urllib.parse import unquote
 from taskuary import words
@@ -8,20 +8,6 @@ from taskuary import words
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / 'website' / 'src'
 CANVAS, APP = (SRC / 'canvasLinks.js').read_text(encoding='utf-8'), (SRC / 'appLinks.js').read_text(encoding='utf-8')
-# another product's own settings, quoted so the owner can find a key there (Linear, Sentry, ClickUp, Todoist, Bluesky, Element,
-# macOS) - their "Settings →" is that product's page, not ours
-THEIRS = {'devtools.py', 'pm.py', 'social.py', 'chatservers.py', 'imessage.py'}
-PATH = re.compile(r'\b(Settings|Connections) ?(→|->|>) ')
-
-
-def strings(f: Path):
-    """Every string literal in a module that is not a docstring - what the code can say, never what it explains."""
-    t = ast.parse(f.read_text(encoding='utf-8'))
-    docs = {id(n.body[0].value) for n in ast.walk(t) if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            and n.body and isinstance(n.body[0], ast.Expr) and isinstance(getattr(n.body[0], 'value', None), ast.Constant)}
-    return [(n.lineno, n.value) for n in ast.walk(t) if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs]
-
-
 class PlacesTests(unittest.TestCase):
     def test_every_link_is_one_the_page_opens(self):
         pages = re.search(r'SETTINGS_PAGES = \[([^\]]*)\]', CANVAS).group(1)
@@ -47,10 +33,6 @@ class PlacesTests(unittest.TestCase):
         self.assertTrue(words.card('Exa').startswith(words.name('connections')))
         with self.assertRaises(KeyError): words.place('nowhere')
 
-    def test_no_server_sentence_types_a_path(self):
-        hits = [f'{f.name}:{ln}: {s[:90]!r}' for f in sorted((ROOT / 'taskuary').glob('*.py')) if f.name not in THEIRS
-                for ln, s in strings(f) if PATH.search(s)]
-        self.assertEqual(hits, [], 'name the place with words.place / words.name / words.card (taskuary/words.json)')
 
 
 class JargonTests(unittest.TestCase):

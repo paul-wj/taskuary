@@ -13,8 +13,9 @@ import json
 from datetime import datetime
 import requests
 from loguru import logger
+from . import jiraapi
 
-CAP = 25                     # items per poll, like the other channels
+CAP = 25                     # page size for Jira; per-poll limit for the other PM channels
 
 
 def _cfg(c):
@@ -24,7 +25,7 @@ def _cfg(c):
 
 def _seed_source(store, c, address: str):
     """The poller walks sources; give this connector one to walk (its site/workspace)."""
-    if not any(s['Channel'] == c['Type'] for s in store.list_sources(active_only=False)):
+    if not any(s['Channel'] == c['Type'] and s.get('ConnectorId') == c['ConnectorId'] for s in store.list_sources(active_only=False)):
         store.save_source({'Channel': c['Type'], 'Address': address, 'ConnectorId': c['ConnectorId'],
                            'Active': 1}, 'connector-test')
 
@@ -40,39 +41,33 @@ def _stamp(iso: str) -> str:
 
 
 # ── Jira ─────────────────────────────────────────────────────────────────────────────────
-def _jira_base(c) -> str:
-    base = (_cfg(c).get('base_url') or '').strip().rstrip('/')
-    if not base: raise RuntimeError('no site URL set - enter https://yourteam.atlassian.net under Credentials')
-    return base if base.startswith('http') else f'https://{base}'
-
-
-def _jira_get(c, path, **params):
-    r = requests.get(f'{_jira_base(c)}{path}', params=params, timeout=30,
-                     auth=(_cfg(c).get('email') or '', c.get('Secret') or ''),
-                     headers={'Accept': 'application/json'})
-    if r.status_code == 401: raise RuntimeError('Jira said 401 - check the account email and API token')
-    r.raise_for_status()
-    return r.json()
 
 
 def test_jira(store, c) -> str:
-    if not c.get('Secret'): raise RuntimeError('no API token saved - create one at id.atlassian.com → Security → API tokens')
-    me = _jira_get(c, '/rest/api/2/myself')
-    _seed_source(store, c, _jira_base(c).split('//', 1)[-1])
-    return f"authenticated as {me.get('displayName') or me.get('emailAddress')} - issues assigned to you flow in on the next sync"
+    me = jiraapi.request(c, 'GET', '/myself')
+    search = jiraapi.request(c, 'GET', '/search', params={'jql': 'assignee = currentUser()', 'maxResults': 1, 'fields': 'key'})
+    if not isinstance(search, dict) or not isinstance(search.get('issues'), list):
+        raise RuntimeError('Jira search did not return an issue list')
+    if not isinstance(me, dict): raise RuntimeError('Jira did not return an account identity')
+    jiraapi.owner(store, c, refresh=True)
+    _seed_source(store, c, jiraapi.base_url(c).split('//', 1)[-1])
+    return f"authenticated as {me.get('displayName') or me.get('emailAddress') or me.get('name')} - assigned-issue search succeeded; sync reads the visible issues"
 
 
-def _jira_me(store, c) -> str:
-    """The accountId this token acts as, cached - so the hub can tell its OWN comments from a
-    person's and never answers itself. '' when Jira would not say; then nothing is treated as ours."""
-    me = str(store.get_setting('jira_account_id') or '')
-    if me: return me
-    try: me = str((_jira_get(c, '/rest/api/2/myself') or {}).get('accountId') or '')
-    except Exception as e:
-        logger.warning(f'jira: could not read our own account ({e}) - own comments may read as a stranger')
-        return ''
-    if me: store.set_setting('jira_account_id', me, 'jira')
-    return me
+def _jira_pages(c, jql, fields):
+    start = 0
+    while True:
+        page = jiraapi.request(c, 'GET', '/search', params={'jql': jql, 'fields': fields, 'maxResults': CAP, 'startAt': start})
+        if not isinstance(page, dict) or not isinstance(page.get('issues'), list):
+            raise RuntimeError('Jira search did not return an issue page')
+        rows, total = page['issues'], page.get('total')
+        if type(total) is not int or total < 0 or page.get('startAt') != start:
+            raise RuntimeError('Jira search returned invalid paging metadata')
+        if start + len(rows) > total or (not rows and start < total):
+            raise RuntimeError('Jira search returned an incomplete issue page')
+        yield from rows
+        start += len(rows)
+        if start >= total: return
 
 
 def _jira_ended(store, issue, base: str) -> bool:
@@ -109,7 +104,7 @@ def _jira_comments(store, c, issue, base: str, llm, file_only: bool) -> int:
     from .channels import ingest_own_message
     from .ingest import ingest_message
     comments = ((issue.get('fields') or {}).get('comment') or {}).get('comments') or []
-    me, n = _jira_me(store, c), 0
+    me, n = (jiraapi.owner(store, c) if comments else {}), 0
     for cm in comments:
         a, ext = cm.get('author') or {}, f"{base}:c{cm.get('id')}"
         if store.message_exists(ext): continue
@@ -118,9 +113,9 @@ def _jira_comments(store, c, issue, base: str, llm, file_only: bool) -> int:
                'subject': f"Re: {base.split(':', 1)[-1]} {((issue.get('fields') or {}).get('summary') or '')}".strip(),
                'body': str(cm.get('body') or '')[:20000], 'from_name': who,
                'from_email': a.get('emailAddress'), 'sent_at': _stamp(cm.get('created')),
-               'source_link': f"{_jira_base(c)}/browse/{base.split(':', 1)[-1]}",
-               'source_name': _jira_base(c).split('//', 1)[-1]}
-        if (me and a.get('accountId') == me) or (a.get('accountType') or '') == 'app':
+               'source_link': f"{jiraapi.base_url(c)}/browse/{base.split(':', 1)[-1]}",
+               'source_name': jiraapi.base_url(c).split('//', 1)[-1]}
+        if jiraapi.same_user(a, me, jiraapi.deployment(c)) or (a.get('accountType') or '') == 'app':
             n += ingest_own_message(store, msg, f'comment on {base} by {who} - history, not work')
             continue
         n += ingest_message(store, msg, llm=llm, file_only=file_only)['status'] != 'duplicate'
@@ -133,11 +128,12 @@ def poll_jira(store, c, since, llm=None, file_only=False) -> int:
     # `comment` rides along: the conversation is where "what changed" usually lives, and asking
     # for it here costs nothing over the call the poll already makes. Jira inlines only the most
     # recent page of a long thread; what it leaves behind is older than anything a poll is for.
-    j = _jira_get(c, '/rest/api/2/search', maxResults=CAP,
-                  jql=f'assignee = currentUser() AND updated >= "-{mins}m" ORDER BY updated ASC',
-                  fields='summary,description,status,priority,reporter,updated,comment')
-    base, n = _jira_base(c), 0
-    for i in j.get('issues', []):
+    window = f'updated >= "-{mins}m"'
+    if file_only: window = f'(resolution is EMPTY OR {window})'
+    issues = _jira_pages(c, f'assignee = currentUser() AND {window} ORDER BY updated ASC',
+                        'summary,description,status,priority,reporter,updated,comment')
+    base, n = jiraapi.base_url(c), 0
+    for i in issues:
         f = i.get('fields') or {}
         rep = (f.get('reporter') or {})
         head = (f"[Jira {i['key']} - status {((f.get('status') or {}).get('name') or '?')}"

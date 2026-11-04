@@ -29,10 +29,12 @@ export const RepoPicker = ({ taskId, agent = "", hasSession, onDone }) => {
   const [path, setPath] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [localOpen, setLocalOpen] = useState(false);
+  const [localPath, setLocalPath] = useState("");
   const load = () => api.get(`/api/tasks/${taskId}/repos`, { params: agent ? { agent } : {} })
     .then(({ data }) => { setRows(data.data || []); setPicked(data.picked); setWhy(data.why || ""); })
     .catch(() => setRows([]));
-  useEffect(() => { setRows(null); setOpen(null); setPath(""); setErr(""); load(); }, [taskId, agent]);
+  useEffect(() => { setRows(null); setOpen(null); setPath(""); setErr(""); setLocalOpen(false); setLocalPath(""); load(); }, [taskId, agent]);
 
   const choose = async (r, withPath) => {
     // a repo Taskuary knows about but has no path for cannot be opened at all - but the search
@@ -46,6 +48,40 @@ export const RepoPicker = ({ taskId, agent = "", hasSession, onDone }) => {
     } catch (e) { setErr(e?.response?.data?.detail ? { text: e.response.data.detail } : { key: "Could not choose that code" }); }
     setBusy(false);
   };
+
+  const bindLocal = async () => {
+    const folder = localPath.trim();
+    if (!folder || busy) return;
+    const repo = `local:${encodeURIComponent(folder.replace(/\\/g, "/").replace(/\/+$/, ""))}`;
+    setBusy(true); setErr("");
+    try {
+      await api.put(`/api/tasks/${taskId}/repo`, { repo, path: folder, restart: false, ...(agent ? { agent } : {}) });
+      setLocalOpen(false); setLocalPath(""); load();
+      // Binding is not a start request: refresh callers without triggering their pending dispatch.
+      onDone?.({});
+    } catch (e) { setErr(e?.response?.data?.detail ? { text: e.response.data.detail } : { key: "Could not choose that code" }); }
+    finally { setBusy(false); }
+  };
+
+  const localCode = (
+    <Box data-tq-local-code="" sx={{ mb: 1 }}>
+      <Button size="small" variant="outlined" disabled={busy} onClick={() => { setLocalOpen((v) => !v); setErr(""); }}>
+        {t("Add local code folder")}
+      </Button>
+      {localOpen && <Box sx={{ mt: 1 }}>
+        <Typography variant="caption" sx={{ color: DIM, display: "block", mb: 0.75 }}>
+          {t("Use a folder on the computer running Taskuary. No GitHub connection is needed; choosing it does not start an agent.")}
+        </Typography>
+        <TextField size="small" fullWidth autoFocus label={t("Local code folder")} value={localPath}
+          placeholder="C:\\project\\my-app" inputProps={{ "data-tq-local-code-path": "" }}
+          onChange={(e) => setLocalPath(e.target.value)} />
+        <Box sx={{ display: "flex", gap: 1, mt: 0.75 }}>
+          <Button size="small" variant="contained" disabled={busy || !localPath.trim()} onClick={bindLocal} data-tq-local-code-save="">{t("Use this folder")}</Button>
+          <Button size="small" disabled={busy} onClick={() => { setLocalOpen(false); setErr(""); }}>{t("Cancel")}</Button>
+        </Box>
+      </Box>}
+    </Box>
+  );
 
   if (rows === null) return <CircularProgress size={14} />;
   const general = why === "a general question - no repository";
@@ -69,10 +105,12 @@ export const RepoPicker = ({ taskId, agent = "", hasSession, onDone }) => {
   if (!rows.length) return (
     <Box>
       <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 0.75 }}>
-        {t("No code is connected yet. Connect GitHub and the agent can work in your code - or, if this isn't code work, choose it below.")}
+        {t("Choose a local code folder, or connect GitHub if your code is hosted there.")}
       </Typography>
       {/* THE PLACE THAT CONNECTS IT, as a button (the rebuilt walk, 2026-10-18): the words named a place with nothing to press */}
       <Button size="small" variant="outlined" sx={{ mb: 0.75 }} onClick={() => openAppLink(place("code").href)}>{t("Connect GitHub")}</Button>
+      {localCode}
+      {err && <Typography variant="caption" role="alert" sx={{ color: "#6b2733", display: "block" }}>{err.text || t(err.key)}</Typography>}
       {noRepoRow}
     </Box>
   );
@@ -80,7 +118,7 @@ export const RepoPicker = ({ taskId, agent = "", hasSession, onDone }) => {
     <Box>
       <Typography variant="caption" sx={{ color: DIM, display: "block", mb: 0.75 }}>
         {general ? t("Not code work — this one is a question, and the agent is told so.")
-          : picked ? <>{t("Working in")} <b style={mono}>{picked}</b>{why ? ` — ${why}` : ""}.</>
+          : picked ? <>{t("Working in")} <b style={mono}>{picked.startsWith("local:") ? decodeURIComponent(picked.slice(6)) : picked}</b>{why ? ` — ${why}` : ""}.</>
             : t("No code chosen yet — the agent works in its own folder until you pick one.")}
         {" "}{t("Pick another and the agent starts again there, told where it is.")}
       </Typography>
@@ -92,7 +130,7 @@ export const RepoPicker = ({ taskId, agent = "", hasSession, onDone }) => {
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
               <AccountTreeIcon sx={{ fontSize: 14, color: on ? "#55697a" : FAINT }} />
               <Typography variant="caption" sx={{ ...mono, fontWeight: 600, color: on ? "#55697a" : INK,
-                flex: 1, minWidth: 0 }} noWrap>{r.repo}</Typography>
+                flex: 1, minWidth: 0 }} noWrap>{r.repo.startsWith("local:") ? r.path || decodeURIComponent(r.repo.slice(6)) : r.repo}</Typography>
               {r.tagged && <Chip size="small" label={t("pinned")} sx={{ height: 16, fontSize: 9, bgcolor: "#eae4d8", color: "#55697a" }} />}
               {!r.has_path && (
                 <Chip size="small" icon={<WarningAmberIcon sx={{ fontSize: 11 }} />} label={t("not {local}", { local: t(LOCAL) })}
@@ -136,6 +174,7 @@ export const RepoPicker = ({ taskId, agent = "", hasSession, onDone }) => {
           </Box>
         );
       })}
+      {localCode}
       {noRepoRow}
       {err && <Typography variant="caption" sx={{ color: "#6b2733", display: "block" }}>{err.text || t(err.key)}</Typography>}
       <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.5 }}>
@@ -181,7 +220,7 @@ export const RepoSelect = ({ taskId, agent = "", instruction = "", value, onChan
       <select className="tq-start-repo" aria-label={t("which code")} value={value || ""} onChange={(e) => { setManual(true); onChange?.(e.target.value); }}
         style={{ fontSize: 12.5, padding: "4px 6px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", color: INK, minWidth: 220 }}>
         {!value && <option value="">{t("choose the code…")}</option>}
-        {rows.map((r) => <option key={r.repo} value={r.repo}>{r.repo}{r.has_path ? "" : t(" (not {local})", { local: t(LOCAL) })}</option>)}
+        {rows.map((r) => <option key={r.repo} value={r.repo}>{r.repo.startsWith("local:") ? r.path || decodeURIComponent(r.repo.slice(6)) : r.repo}{r.has_path ? "" : t(" (not {local})", { local: t(LOCAL) })}</option>)}
       </select>
       <Typography variant="caption" sx={{ color: FAINT }}>
         {!value ? t("not clear from the task - choose one to start")

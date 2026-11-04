@@ -280,7 +280,19 @@ const META = {
       "Enter the site URL and the account email under Credentials, paste the token (write-only).",
       "Test authenticates as you and adds the site under Sources.",
       "From then on every sync brings in issues assigned to you (updated since the last poll) — each shows its status, priority and reporter, and links back to Jira.",
-      "Nothing is written back to Jira; Taskuary only reads."] },
+      "Cloud stays as it is: approved writes (a comment, a move, an assignment) still go back to Jira on your press. Data Center is read-only: issues come in, nothing is written back."],
+    // the Data Center road, chosen from the card's deployment selector (Cloud is the default): the API-token plugin lives ON the
+    // user's own site, and the account username is what Basic auth needs - the token stands in for the password
+    howtoDC: ["Pick Data Center in the deployment selector. The token is created on YOUR site: an admin installs the API-token-auth plugin and issues a token from its page - on your site that is /plugins/servlet/de.resolution.apitokenauth/admin (resolve it against the site URL you will type here).",
+      "Enter the site URL (with any context path, e.g. https://jira.example.com/jira), your account username and the token under Credentials. The token is the Basic password; your username is the account it acts as.",
+      "Test checks the identity and a minimal assigned-to-me search - a search your project permissions refuse says so, it does not read as connected-and-empty.",
+      "Every sync then brings in issues assigned to you (updated since the last poll), paging through all of them.",
+      "Data Center is read-only: no comments, moves, assignments or close-outs are offered - the connection only reads, and a saved write scope never changes that."],
+    agent: ["The card's deployment selector is Cloud: the token is id.atlassian.com → Security → Create API token, for the Atlassian account the issues come from. Ask for the site URL (theirteam.atlassian.net) and the account email; save base_url + email in ConfigJson, the token as Secret, and leave deployment absent (absent = Cloud).",
+      "Run Test (POST {base}/api/connectors/{cid}/test{hdr}) - it does the identity check plus a minimal assigned-to-me search. A denied search (403) is a permissions failure - report it, do not retry. Turn the connector on, SETUP DONE."],
+    // the Data Center agent road (chosen from the card's draft deployment): the token is on the owner's own site, the connection is read-only
+    agentDC: ["The card's deployment selector is Data Center: the Jira is the team's own, and the token comes from the API-token-auth plugin ON the Jira site itself - its admin page is the path /plugins/servlet/de.resolution.apitokenauth/admin on THAT site (the site URL saved as base_url on the card; a context path like /jira is part of it), never Atlassian's. Ask for the site URL (a context path like /jira is fine), their account username, and the token; save base_url + email in ConfigJson AND set deployment to data_center, the token as Secret.",
+      "Data Center is READ-ONLY: it reads REST v2 with the username and token as Basic auth. Never write to it, never offer a close-out, and do not raise its scope past read - the server refuses any upstream write or v3 call for this mode, and a saved write scope never changes that. Issues come in through the normal assigned-to-me poll; Test does the identity check plus a minimal assigned-to-me search (a denied search is a permissions failure, not an empty success). Turn the connector on, SETUP DONE."] },
   asana: { group: "Project management", channel: "asana", srcLabel: "Workspace", srcPh: "added by Test",
     fields: [],
     secretLabel: "Personal Access Token",
@@ -1392,8 +1404,8 @@ export function ConfigField({ conn, field: [label, key, ph, help], cfg, setCfg, 
   useLocale();
   const onChange = (e) => setCfg({ ...cfg, [key]: e.target.value });
   if (!(conn?.WriteOnlyKeys || []).includes(key))
-    return <TextField label={t(label)} placeholder={ph || ""} helperText={help ? t(help) : help} value={cfg[key] || ""} sx={{ bgcolor: "#fff" }} onChange={onChange} {...rest} />;
-  return <TextField type="password" data-tq-write-only={key} autoComplete="new-password" sx={{ bgcolor: "#fff" }} {...rest}
+    return <TextField data-tq-conn-field={key} label={t(label)} placeholder={ph || ""} helperText={help ? t(help) : help} value={cfg[key] || ""} sx={{ bgcolor: "#fff" }} onChange={onChange} {...rest} />;
+  return <TextField type="password" data-tq-conn-field={key} data-tq-write-only={key} autoComplete="new-password" sx={{ bgcolor: "#fff" }} {...rest}
     label={(conn.ConfigSaved || []).includes(key) ? t("{label} — saved, type to replace", { label: t(label) }) : t(label)} placeholder={ph || ""}
     helperText={help ? `${t(help)} ${t("Never shown again once saved.")}` : t("Never shown again once saved.")}
     value={cfg[key] || ""} onChange={onChange} />;
@@ -2339,6 +2351,40 @@ const SIMPLE_HINT = {
   hipaa_ai: "The code is yours alone - usage is counted against it.",
 };
 
+// THE JIRA DEPLOYMENT (2026-11-04): which Jira this is. Cloud is Atlassian's hosted Jira (the id.atlassian.com token road); Data Center
+// is the team's own Jira, read with the account username and an API token as the Basic password. The pick is a card box - it rides in
+// the ConfigJson `deployment` (absent = Cloud, so saved connections keep working), it joins the dirty calculation, and the card's help
+// and the AI walk choose their words from it. Data Center is read-only at every layer; this only says where the token comes from.
+const JIRA_DEPLOYMENTS = [
+  ["cloud", "Cloud", "Atlassian's hosted Jira - the token is created at id.atlassian.com."],
+  ["data_center", "Data Center", "Your team's own Jira. Read-only: the API token (from the plugin on your site) stands in for the password; issues come in, nothing is written back."],
+];
+const JiraDeployment = ({ cfg, setCfg }) => {
+  useLocale();
+  // the saved pick (absent = Cloud): the radio says what is stored, not what is typed
+  const saved = (cfg && cfg.deployment) || "cloud";
+  return (
+    <Box data-tq-jira-deployment="" sx={{ bgcolor: "#fff", borderRadius: 1.5, p: 1, display: "flex", flexDirection: "column", gap: 0.75 }}>
+      <Typography sx={{ color: INK, fontWeight: 600, fontSize: 12.5 }}>{t("Jira deployment")}</Typography>
+      {JIRA_DEPLOYMENTS.map(([value, label, desc]) => (
+        <Box key={value} data-tq-jira-deploy={value} sx={{ display: "flex", gap: 1, alignItems: "flex-start", cursor: "pointer" }}
+          onClick={() => setCfg({ ...cfg, deployment: value })}>
+          <Radio checked={saved === value} sx={{ mt: -0.25, pointerEvents: "none" }} />
+          <Box sx={{ minWidth: 0 }}>
+            <Typography sx={{ color: INK, fontSize: 13, fontWeight: saved === value ? 600 : 400 }}>{t(label)}</Typography>
+            <Typography variant="body2" sx={{ color: DIM, fontSize: 12 }}>{t(desc)}</Typography>
+          </Box>
+        </Box>
+      ))}
+      {saved === "data_center" && (
+        <Typography variant="caption" data-tq-jira-dc-help="" sx={{ color: FAINT, fontSize: 11.5, display: "block" }}>
+          {t("The token is issued on your own site by the API-token-auth plugin - its page there is /plugins/servlet/de.resolution.apitokenauth/admin (resolve it against the site URL below). Your username acts as the Basic account; the token is the password.")}
+        </Typography>
+      )}
+    </Box>
+  );
+};
+
 export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, onBack: leave, onCreated, onNavigate, simple = false, onConnected, chatsAsk = null }) {
   useLocale();
   // ONE SAVE FOR THE CARD (ConnectorDraft.jsx): every control below draws from the draft and stages into it
@@ -2419,7 +2465,16 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
   // owner, 2026-10-26: "don't want to create my own google client, want to use their own"), so a client of one's own is an admin's road
   const [gOwn, setGOwn] = useState(!!cfg.google_client_id);
   const appKeys = MS_SIGNIN.includes(conn.Type) ? MS_APP_KEYS : conn.Type === "gmail" && !gOwn ? G_APP_KEYS : [];
-  const ownFields = m.fields.filter(([, key]) => !appKeys.includes(key));
+  // the Jira field labels read the UNSAVED deployment: Cloud says "site URL (atlassian.net)" and "account email (the token's)",
+  // Data Center says the instance URL and the account username (Basic auth) - the config KEYS stay base_url / email, so the
+  // dirty calculation and the saved card never change shape when the mode flips
+  const jiraFields = conn.Type === "jira" && (cfg.deployment || "cloud") === "data_center"
+    ? m.fields.map(([label, key, ...rest]) => key === "base_url"
+        ? ["Jira instance URL (https://jira.example.com, or with its context path)", "base_url", ...rest]
+        : key === "email" ? ["account username (it acts as the Basic account)", "email", ...rest]
+          : [label, key, ...rest])
+    : m.fields;
+  const ownFields = jiraFields.filter(([, key]) => !appKeys.includes(key));
   // REQUIRED FIRST, THEN THE KEY, THEN WHAT HAS A DEFAULT (the setup sweep, 2026-10-28): optional model and language boxes stood
   // before the one key the card cannot run without; a chat card's fast clock folds under Advanced, after the token
   const shownFields = adminFields && MS_SIGNIN.includes(conn.Type) ? m.fields : ownFields;
@@ -2440,15 +2495,21 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
   const openPicker = () => { if (m.srcLabel) setStep(2); };
   useEffect(() => { if (chatsAsk) openPicker(); }, [chatsAsk?.at]);   // eslint-disable-line react-hooks/exhaustive-deps
   // Sync now reads what is saved: there once the server has the card on, greyed while a box or the bar holds an unsaved edit.
-  // The boxes are measured against what they last saved, not the row: a sign-in that rewrites the config is not the owner's typing
-  const sync = syncState(savedConn, draft.pending, editedBoxes(m.fields.map((f) => f[1]), cfg, cfgSaved, secret));
+  // The boxes are measured against what they last saved, not the row: a sign-in that rewrites the config is not the owner's typing.
+  // The Jira deployment selector is a card box too: changing it without saving greys Sync, exactly like typing a new site
+  const dirtyKeys = conn.Type === "jira" ? [...m.fields.map((f) => f[1]), "deployment"] : m.fields.map((f) => f[1]);
+  const sync = syncState(savedConn, draft.pending, editedBoxes(dirtyKeys, cfg, cfgSaved, secret));
+  // Jira Data Center, read from the UNSAVED draft: the card renders the DC road (help, ceiling, and no write authority) the
+  // moment the owner picks it - not after Save. The server is the authority, but the card must not OFFER a write ceiling it
+  // will refuse (the 2026-11-04 requirement: DC feed/trigger only, no usable write operations)
+  const jiraDc = conn.Type === "jira" && (cfg.deployment || "cloud") === "data_center";
 
   // ...and the steps after it are not ticked before it is: Inbound and More roles stood ticked over empty Credentials (the setup sweep,
   // 2026-10-28)
   const creds = credsDone(conn, cfg, m);
   const steps = [
     // ticked once a Test has PASSED on them: "saved" ticked a key the service had just refused (the 2026-10-19 UI walk)
-    { label: "Credentials", done: creds, body: (
+    { id: "credentials", label: "Credentials", done: creds, body: (
       <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, maxWidth: 460, mt: 1 }}>
         {MS_SIGNIN.includes(conn.Type) && !adminFields && (
           <Button size="small" variant="text" onClick={() => setAdminFields(true)}
@@ -2468,10 +2529,16 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
         )}
         {(adminFields || ownFields.length > 0) && (
           <>
+            {conn.Type === "jira" && <JiraDeployment cfg={cfg} setCfg={setCfg} />}
+            {conn.Type === "jira" && (cfg.deployment || "cloud") === "data_center" && (
+              <Typography variant="caption" data-tq-jira-dc-readonly="" sx={{ color: FAINT, fontSize: 11.5, display: "block", maxWidth: 420 }}>
+                {t("Read-only by design: this Data Center connection brings issues in and nothing goes back - no comments, moves, assignments or close-outs are offered, and a saved write scope never raises that ceiling. Cloud keeps its approved writes.")}
+              </Typography>
+            )}
             {need.map((f) => <ConfigField key={f[1]} conn={conn} field={f} cfg={cfg} setCfg={setCfg} />)}
             {/* WhatsApp has no secret at all - the bridge holds the pairing, not us */}
             {adminFields && m.secretLabel && (
-              <TextField label={conn.HasSecret ? t("{label} (saved — type to replace)", { label: t(m.secretLabel) }) : t(m.secretLabel)} type="password"
+              <TextField data-tq-secret="secret" label={conn.HasSecret ? t("{label} (saved — type to replace)", { label: t(m.secretLabel) }) : t(m.secretLabel)} type="password"
                 value={secret} onChange={(e) => setSecret(e.target.value)} sx={{ bgcolor: "#fff" }}
                 helperText={t(SECRET_HELP)} />
             )}
@@ -2485,7 +2552,7 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
                 {late.map((f) => <ConfigField key={f[1]} conn={conn} field={f} cfg={cfg} setCfg={setCfg} />)}</Box></Collapse>
             </>}
             <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
-              <Button variant="contained" disableElevation disabled={busy === "save"} onClick={saveCreds}>
+              <Button variant="contained" disableElevation disabled={busy === "save"} onClick={saveCreds} data-tq-save-conn="">
                 {busy === "save" ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : t("Save & continue")}</Button>
               {msg && <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>{displayMessage(msg)}</Typography>}
             </Box>
@@ -2494,12 +2561,12 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
         )}
       </Box>
     )},
-    { label: "Test", done: !!conn.LastSyncAt && !conn.LastError, body: conn.Type === "imessage" ? (
+    { id: "test", label: "Test", done: !!conn.LastSyncAt && !conn.LastError, body: conn.Type === "imessage" ? (
       <MacPermissions conn={conn} test={test} busy={busy} runTest={runTest} />
     ) : (
       <Box sx={{ mt: 1 }}>
         <Typography variant="body2" sx={{ color: DIM, mb: 1 }}>{t("Live probe — token / model / channel read, for real.")}</Typography>
-        <Button variant="contained" disableElevation disabled={busy === "test"} onClick={runTest}
+        <Button variant="contained" disableElevation disabled={busy === "test"} onClick={runTest} data-tq-test-btn=""
           startIcon={busy === "test" ? <CircularProgress size={12} sx={{ color: "#fff" }} /> : <BoltIcon sx={{ fontSize: 15 }} />}>{t("Test")}</Button>
         <TestLine test={test} mt={1} cid={conn.ConnectorId} />
         {!test && (fresh ? <Typography variant="body2" data-tq-saved-test="" sx={{ mt: 1, color: DIM }}>{t("Saved - press Test to check it.")}</Typography>
@@ -2565,12 +2632,20 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
     ...(isAI ? [] : [
       { label: "Inbound — what becomes work", done: creds && inboundDone(conn, mine),
         body: <InboundStep conn={conn} m={m} mine={mine} reload={reload} /> },
+      // Data Center is read-only: the More-roles step must not OFFER the write/full authority (the RoleStep's tool role draws the
+      // Scope ceiling), so a DC draft renders the read-only ceiling alone. The Inbound step above keeps the trigger/feed roles.
       { label: "More roles — reports, agents", done: creds,
-        body: <RoleStep conn={conn} reload={reload} only={["report", "tool"]} /> },
+        body: jiraDc ? (
+          <Box sx={{ mt: 1, maxWidth: 560 }}>
+            <Typography variant="body2" data-tq-jira-dc-readonly="" sx={{ color: DIM }}>
+              {t("Read-only by design: this Data Center connection brings issues in and nothing goes back - no comments, moves, assignments or close-outs are offered, and a saved write scope never raises that ceiling. Cloud keeps its approved writes.")}
+            </Typography>
+          </Box>
+        ) : <RoleStep conn={conn} reload={reload} only={["report", "tool"]} /> },
     ]),
     ...(conn.Type === "github" ? [{ label: "Agent permissions", done: creds, body: <GithubPerms conn={conn} reload={reload} /> },
       { label: "Close out — what finishing a task does on GitHub", done: creds, body: <GithubCloseout conn={conn} mine={mine} reload={reload} /> }] : []),
-    { label: "Enable", done: !!conn.Active, body: (
+    { id: "enable", label: "Enable", done: !!conn.Active, body: (
       <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, mt: 1, flexWrap: "wrap" }}>
         <Switch data-tq-card-on="" checked={!!conn.Active} disabled={draft.flipping} onChange={(e) => setActive(e.target.checked)} />
         {conn.Active && conn.Type === "whatsapp" && waSt ? <WaStatusLine st={waSt} cid={conn.ConnectorId} onTurnedAway={openPicker} /> : (
@@ -2583,7 +2658,7 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
             card on (syncState), and greyed - the reason in its hover - while a box or the Save bar holds an edit it would not read */}
         {sync.show && !isAI && (
           <Box component="span" title={sync.why ? t(sync.why) : ""} data-tq-sync-why={sync.why || undefined} sx={{ display: "inline-flex" }}>
-            <Button size="small" variant="contained" disableElevation onClick={syncHere} disabled={srcSync || !sync.ok}
+            <Button size="small" variant="contained" disableElevation onClick={syncHere} disabled={srcSync || !sync.ok} data-tq-sync-now=""
               startIcon={srcSync ? <CircularProgress size={11} sx={{ color: "#fff" }} /> : <SyncIcon sx={{ fontSize: 14 }} />}
               sx={{ background: sync.ok ? "linear-gradient(90deg, #55697a, #7d9a7c)" : undefined }}>{srcSync ? t("Syncing…") : btnLabel("sync_now")}</Button>
           </Box>
@@ -2665,7 +2740,7 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
   }
   return (
     <DraftProvider value={draft.ctx}>
-    <Box sx={{ maxWidth: 980, mx: "auto" }}>
+    <Box sx={{ maxWidth: 980, mx: "auto" }} data-tq-test-state={test ? (test.ok ? "ok" : "error") : "none"}>
       {note}
       <Crumb section={t("Connections")} onBack={onBack} title={conn.Name} />
       <ConnectorIdentity conn={conn} reload={reload} onCreated={onCreated} />
@@ -2682,21 +2757,26 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
       {conn.Type === "whatsapp" && <Box sx={{ mb: 2 }}><WaPair conn={conn} reload={reload} onStatus={setWaSt} onTurnedAway={openPicker} /></Box>}
       <Typography variant="body2" sx={{ color: DIM, mb: 1.5 }}>{m.desc ? t(m.desc) : ""}</Typography>
       <LocalTabs tabs={conn.Type === "whatsapp" ? ["Setup", "Guide"] : ["Setup", "Guide", "Agent"]} value={tab} onChange={setTab} />
-      {tab === "Agent" && <AgentTab steps={m.agent} />}
+      {tab === "Agent" && <AgentTab steps={jiraDc ? (m.agentDC || m.agent) : m.agent} />}
       {tab === "Setup" && (
         <Stepper nonLinear activeStep={step} orientation="vertical" sx={{ "& .MuiStepLabel-label": { fontSize: 13.5, fontWeight: 600 } }}>
           {steps.map((s, i) => (
             <Step key={s.label} completed={s.done}>
-              <StepButton onClick={() => setStep(i)}>{t(s.label)}</StepButton>
+              <StepButton data-tq-step-btn={s.id || undefined} onClick={() => setStep(i)}>{t(s.label)}</StepButton>
               <StepContent>{s.body}</StepContent>
             </Step>
           ))}
         </Stepper>
       )}
-      {tab === "Guide" && <Steps steps={m.howto || []} />}
+      {tab === "Guide" && <Steps steps={conn.Type === "jira" && (cfg.deployment || "cloud") === "data_center" ? (m.howtoDC || m.howto || []) : (m.howto || [])} />}
       {/* ...nor a sign-in card (Outlook, Teams, Gmail): under its one-button sign-in, a greyed Get AI to set it up and its Connect an AI
           were two more things to read for nothing (the setup sweep, 2026-10-28) */}
-      {!NO_AI_WALK.includes(conn.Type) && <AiSetup conn={conn} steps={m.howto || []} fields={m.fields || []} secretLabel={m.secretLabel} agentSteps={m.agent || []} reload={reload} />}
+      {!NO_AI_WALK.includes(conn.Type) && <AiSetup conn={conn}
+        steps={jiraDc ? (m.howtoDC || m.howto || []) : (m.howto || [])}
+        fields={conn.Type === "jira" ? [...(m.fields || []), ["Jira deployment (Cloud or Data Center)", "deployment"]] : (m.fields || [])}
+        secretLabel={m.secretLabel}
+        agentSteps={jiraDc ? (m.agentDC || m.agent || []) : (m.agent || [])}
+        reload={reload} />}
       <SaveBar draft={draft} labels={Object.fromEntries(Object.entries(DRAFT_LABELS).map(([key, label]) => [key, t(label)]))}
         words={Object.fromEntries(Object.entries(DRAFT_WORDS).map(([key, values]) => [key, Object.fromEntries(Object.entries(values).map(([value, label]) => [value, t(label)]))]))} />
       <CardPlaybooks type={conn.Type} />

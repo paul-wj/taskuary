@@ -3021,6 +3021,11 @@ def set_task_repo(task_id: int, body: RepoBody, background: BackgroundTasks = No
     the wrong tree, `restart` closes it and opens a fresh one whose prompt names the new repo."""
     t = store.get_task(task_id)
     if not t: raise HTTPException(404, 'task not found')
+    if body.repo and body.path:
+        body.agent = _profile(body.agent)
+        row = store.get_agent(body.agent)
+        if not row: raise HTTPException(422, f'unknown agent: {body.agent}' if body.agent else 'no coding profile is set up to hold that path')
+        if not Path(body.path).is_dir(): raise HTTPException(422, f'not a directory: {body.path}')
     # Replacing a choice replaces what that task taught. Otherwise correcting repo A to repo B
     # would leave the same task as positive evidence for both projects forever.
     store.clear_project_evidence(task_id)
@@ -3030,10 +3035,6 @@ def set_task_repo(task_id: int, body: RepoBody, background: BackgroundTasks = No
     store.update_task(task_id, {'Tags': ' '.join(tags)}, ACTOR)
     # a repo Taskuary knows about but has no path for cannot be opened - take the path here
     if body.repo and body.path:
-        body.agent = _profile(body.agent)
-        row = store.get_agent(body.agent)
-        if not row: raise HTTPException(422, f'unknown agent: {body.agent}' if body.agent else 'no coding profile is set up to hold that path')
-        if not Path(body.path).is_dir(): raise HTTPException(422, f'not a directory: {body.path}')
         prof = copy.deepcopy(cfg.get('agents', {}).get(body.agent) or json.loads(row.get('Config') or '{}'))
         prof.setdefault('cwd_map', {})[body.repo] = body.path
         cfg.setdefault('agents', {})[body.agent] = prof

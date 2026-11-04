@@ -1823,5 +1823,10 @@
   "task-action::Dismiss": "忽略",
   "task-kind::Note": "笔记",
   "task-meeting::with {people}": "与 {people} 一起",
-  "task-closeout::Nothing owed": "没有待回复内容"
+  "task-closeout::Nothing owed": "没有待回复内容",
+  "Add local code folder": "添加本地代码目录",
+  "Local code folder": "本地代码目录",
+  "Use this folder": "使用此目录",
+  "Use a folder on the computer running Taskuary. No GitHub connection is needed; choosing it does not start an agent.": "填写运行 Taskuary 的电脑上的目录。无需连接 GitHub；选择目录不会启动智能体。",
+  "Choose a local code folder, or connect GitHub if your code is hosted there.": "选择本地代码目录；如果代码托管在 GitHub，也可以连接 GitHub。"
 }

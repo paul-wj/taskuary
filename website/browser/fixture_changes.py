@@ -21,6 +21,7 @@ def install_processing_changes(app, store):
         '/api/fixture/processing/sync-phase',
         '/api/fixture/task/agent-closed',
         '/api/fixture/task/tracker-closeout',
+        '/api/fixture/jira/dc/seed', '/api/fixture/jira/dc/wire',
         '/api/fixture/task/pr-closeout',
         '/api/fixture/task/coding-saved',
         '/api/fixture/task/coding-live', '/api/fixture/task/coding-live/end',
@@ -54,11 +55,24 @@ def install_processing_changes(app, store):
         '/api/fixture/day/away',
     })
 
+    # the armed Data Center world: while armed, the REAL Test / Save / Sync routes run for the seeded Jira connector, so the
+    # browser drives the actual UI buttons (the real backend reaches the fictional Jira through the intercepted requests boundary)
+    _JIRA_ARMED = {'on': False, 'cid': None, 'host': '', 'config': {}}
+
     def fixture_refuse(method, path):
         # Only these test-installed, bounded database edits are extra allowances.
         # Every production route retains the original demo guard and socket guard.
         if method == 'POST' and path in fixture_paths:
             return ''
+        # the armed DC world lets the real connector routes through for the seeded Jira card only: Test (identity+search),
+        # Save (the card's own config) and Sync (the real poll). Every other connector stays demo-refused.
+        if _JIRA_ARMED['on']:
+            if method == 'POST' and re.fullmatch(r'/api/connectors/\d+/test', path):
+                return '' if int(re.search(r'(\d+)', path).group(1)) == _JIRA_ARMED['cid'] else refuse(method, path)
+            if method == 'POST' and path == '/api/connectors':
+                return ''
+            if method == 'POST' and path == '/api/ingest/poll':
+                return ''
         # ...and a reply recorded as sent by a test's own channel (review_sent below): one numbered review, nothing more
         if method == 'POST' and re.fullmatch(r'/api/fixture/review/\d+/sent', path):
             return ''
@@ -109,19 +123,168 @@ def install_processing_changes(app, store):
 
     tracker_writes = []
 
+    # ── JIRA DATA CENTER (2026-11-04): a fictional DC Jira upstream that the REAL backend reaches ──────────────────────────────
+    # The demo's network guard fails every outbound socket, so this fixture intercepts Jira's HTTP at the `requests` MODULE boundary -
+    # the one shared transport both the current pm/trackers wire and the new taskuary.jiraapi use (per the approved contract,
+    # jiraapi.request issues a requests call with allow_redirects=False, so it is caught here). The real functions run for real:
+    # pm.test_jira (identity + a minimal search) and pm.poll_jira (the full assigned-to-me poll). What is recorded is the WIRE
+    # (method, path, REST version, Basic-auth flag, params) - never the token value, the Authorization header, or the auth HTML.
+    # Invented site, account and issues: a reserved example domain, never a company host.
+    import json as _json
+    import requests as _requests
+    _JIRA_WIRE = {'reads': [], 'writes': [], 'denied': [], 'auth': {'token_present': False}}
+    _JIRA_MODE = {'name': 'dc-success'}          # 'closeout' (Cloud v3 NW-12) | 'dc-success' | 'dc-denied'
+    _JIRA_DC = {'config': None, 'secret': None}
+
+    def _jira_issue(n):
+        # a Data Center shape: the owner is named by key (no accountId), comments carry the author's key/name, not an accountId
+        author_key = 'alex.vance' if n % 3 else 'paula.vance'
+        return {'key': f'NW-{n:02d}', 'fields': {
+            'summary': f'Synthetic Jira update {n:02d}', 'description': f'Assigned issue {n:02d} from the fictional Data Center site.',
+            'updated': (datetime.now() - timedelta(minutes=n)).strftime('%Y-%m-%dT%H:%M:%S.000%z'),
+            'status': {'name': 'To Do' if n % 2 else 'In Progress', 'statusCategory': {'key': 'inprogress'}},
+            'priority': {'name': 'High' if n % 5 == 0 else 'Normal'},
+            'reporter': {'displayName': 'Paula Vance', 'key': 'paula.vance', 'name': 'paula.vance'},
+            'comment': {'comments': [{'id': n * 10 + 1, 'created': (datetime.now() - timedelta(minutes=n)).isoformat(),
+                                      'author': {'displayName': 'Alex Vance' if author_key == 'alex.vance' else 'Paula Vance',
+                                                 'key': author_key, 'name': author_key, 'accountType': 'user'},
+                                      'body': f'A comment on NW-{n:02d}.'}]}}}
+
+    def _jira_search_body(params):
+        # 27 assigned issues across two pages of 25 - more than one page, so a poll that stops at one page is the bug under test
+        issues = [_jira_issue(n) for n in range(1, 28)]
+        start, limit = int((params or {}).get('startAt') or 0), int((params or {}).get('maxResults') or 50)
+        return {'issues': issues[start:start + limit], 'total': len(issues), 'startAt': start, 'maxResults': limit,
+                'isLast': start + limit >= len(issues)}
+
+    def _jira_http(method, url, headers=None, auth=None, allow_redirects=False, **kw):
+        """Every Jira call lands here, whatever the application's REST version or transport is. It answers the fictional upstream
+        for the current mode and records the wire (never the token value)."""
+        # context paths (…/jira/rest/api/2/…) and query strings are both possible; split the API path from any query
+        m = re.search(r'/rest/api/(\d+)(/.*)?', url)
+        if not m:
+            raise RuntimeError(f'the fixture only answers the fictional Jira site, not {url!r}')
+        version = int(m.group(1))
+        path = (m.group(2) or '').split('?', 1)[0]
+        params = dict(kw.get('params') or {})
+        qs = (path or '').split('?', 1)[1] if '?' in (path or '') else (url.split('?', 1)[1] if '?' in url else '')
+        for part in qs.split('&'):
+            if '=' in part:
+                k, v = part.split('=', 1); params[k] = v
+        # the Basic credentials the real transport sent (jiraapi.request passes auth=(username, token)); a malformed tuple is not
+        # this connection's identity, and the username must be the one the card carries (not any string at all)
+        basic = isinstance(auth, (tuple, list)) and len(auth) == 2 and all(isinstance(x, str) for x in auth)
+
+        class _R:
+            def __init__(self, status_code=0, _payload=None): self.status_code, self._payload = status_code, _payload
+            def json(self): return self._payload if isinstance(self._payload, (dict, list)) else _json.loads(self._payload)
+            @property
+            def content(self):
+                # jiraapi.request returns {} when the body is empty, so a JSON payload must present real bytes; only None is empty
+                return b'' if self._payload is None else _json.dumps(self._payload).encode()
+            @property
+            def text(self): return self._payload if isinstance(self._payload, str) else _json.dumps(self._payload)
+            @property
+            def reason(self): return {401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 405: 'Method Not Allowed'}.get(self.status_code, 'OK')
+
+        if basic:
+            expected_user = (_JIRA_DC['config'] or {}).get('email')
+            if _JIRA_MODE['name'] != 'closeout' and expected_user and auth[0] != expected_user:
+                _JIRA_WIRE['denied'].append({'method': method, 'path': path, 'api_version': version, 'status': 401,
+                                             'reason': 'the Basic username is not this connection''s account'})
+                return _R(status_code=401, _payload={'errorMessages': ['bad credentials']})
+            _JIRA_WIRE['auth']['token_present'] = bool(auth[1])
+
+        def answer(status, payload, bucket=None):
+            r = _R(); r.status_code, r._payload = status, payload
+            rec = {'method': method, 'path': path, 'api_version': version, 'auth': 'basic' if basic else 'none',
+                   'status': status, 'params': sorted(params) if isinstance(params, dict) else None}
+            (bucket if bucket else (_JIRA_WIRE['denied'] if status >= 400 else _JIRA_WIRE['reads'])).append(rec)
+            return r
+        def refuse_write():
+            _JIRA_WIRE['writes'].append({'method': method, 'path': path, 'api_version': version, 'body': kw.get('json')})
+            return _JIRA_WIRE['writes'][-1]
+
+        # ── the tracker close-out fixture drives this same boundary (Cloud, v3, the NW-12 item) ──
+        if _JIRA_MODE['name'] == 'closeout':
+            if method != 'GET': refuse_write(); return _R(status_code=200, _payload={})
+            if path.endswith('/transitions'):
+                return answer(200, {'transitions': [{'id': '31', 'name': 'Ship it',
+                                                       'to': {'name': 'Done', 'statusCategory': {'key': 'done'}}}]})
+            return answer(200, {'key': 'NW-12', 'fields': {'summary': 'Nightly export is empty',
+                                                          'status': {'name': 'In Review', 'statusCategory': {'key': 'indeterminate'}}}})
+        # ── the Data Center upstream (v2, Basic auth, read-only) ──
+        if method != 'GET':      # a write is a recorded outbound mutation, then refused (DC is read-only)
+            refuse_write(); return _R(status_code=405, _payload={'errorMessages': ['the fixture is read-only: no upstream write']})
+        if version != 2:         # a Data Center read that asks for v3 is the bug the browser test must catch
+            _JIRA_WIRE['denied'].append({'method': method, 'path': path, 'api_version': version, 'status': 404,
+                                         'params': None, 'reason': 'v3 is not served to Data Center'})
+            return _R(status_code=404, _payload={'errors': {'rest/api/3': 'not found for Data Center'}})
+        if path.endswith('/myself'):
+            return answer(200, {'name': 'alex.vance', 'displayName': 'Alex Vance',
+                                'emailAddress': (_JIRA_DC['config'] or {}).get('email') or 'alex@northwind.example',
+                                'key': 'alex.vance', 'active': True})
+        if path.endswith('/search'):
+            if _JIRA_MODE['name'] == 'dc-denied':
+                return answer(403, {'errorMessages': ['You do not have permission to see the issues in this project']})
+            return answer(200, _jira_search_body(params))
+        return answer(404, {'errors': {path: 'not a fictional endpoint'}})
+
+    _JIRA_HOSTS = ('https://jira.northwind.example', 'https://northwind.example')
+    def _is_fictional_jira(url):
+        # only the invented sites are answered here; everything else goes to the real requests (local backend sockets fail anyway)
+        return isinstance(url, str) and any(url.startswith(h) for h in _JIRA_HOSTS)
+    real_request, real_get = _requests.request, _requests.get
+    def _request(method, url, *a, **kw):
+        return _jira_http(method, url, *a, **kw) if _is_fictional_jira(url) else real_request(method, url, *a, **kw)
+    def _get(url, *a, **kw):
+        return _jira_http('GET', url, *a, **kw) if _is_fictional_jira(url) else real_get(url, *a, **kw)
+    _requests.request, _requests.get = _request, _get
+
+    @app.post('/api/fixture/jira/dc/seed')
+    def dc_seed(body: dict):
+        """Arm the fictional DC Jira behind the intercepted wire and reset the Jira card, so the browser can drive the REAL
+        UI buttons: the card's Test (pm.test_jira: identity + a minimal search), Save (the card's own config) and Sync (the real
+        poll). The seed does NOT save the card's config - that is the Save button's job - and it switches off every other
+        connector so the real poll touches only the fictional Jira.
+        mode: success (identity ok + 27 issues) | search-denied (identity ok, /search is a 403)."""
+        mode = (body or {}).get('mode') or 'success'
+        if mode not in ('success', 'search-denied'): raise HTTPException(422, 'mode is success or search-denied')
+        cfg = body.get('config') or {'base_url': 'https://jira.northwind.example', 'email': 'alex@northwind.example',
+                                     'deployment': 'data_center'}
+        _JIRA_DC.update(config=cfg, secret=body.get('secret') or 'fixture-dc-token-not-real')
+        _JIRA_WIRE.update(reads=[], writes=[], denied=[], auth={'token_present': False})
+        _JIRA_MODE['name'] = 'dc-denied' if mode == 'search-denied' else 'dc-success'
+        c = store.get_connector_by_type('jira')
+        # reset the Jira card to a fresh card (no secret, no config) but leave it ON with the trigger role, so the card's
+        # own buttons do the real setup - deployment selector, fields, token, Test (unsaved), Save - and the real Sync now is
+        # reachable in its Enable step (a saved-on card the owner is configuring). The browser does every write.
+        store.reset_connector(c['ConnectorId'])
+        store.save_connector({'ConnectorId': c['ConnectorId'], 'Active': 1, 'Roles': 'trigger'}, 'fixture')
+        # every other connector off: the real Sync must reach only the fictional Jira
+        for other in store.list_connectors():
+            if other['ConnectorId'] != c['ConnectorId'] and other.get('Active'):
+                store.save_connector({'ConnectorId': other['ConnectorId'], 'Active': 0}, 'fixture')
+        _JIRA_ARMED.update(on=True, cid=c['ConnectorId'], host=(cfg.get('base_url') or '').split('//', 1)[-1], config=cfg)
+        return {'ok': True, 'connectorId': c['ConnectorId']}
+
+    @app.get('/api/fixture/jira/dc/wire')
+    def dc_wire():
+        """The recorded wire: what the real backend sent to the (fictional) Jira - reads, writes and refusals, each with its REST
+        version. The token value is never recorded. The browser reads this after it has pressed the actual Test / Sync buttons."""
+        return {'reads': _JIRA_WIRE['reads'], 'writes': _JIRA_WIRE['writes'], 'denied': _JIRA_WIRE['denied'],
+                'auth': _JIRA_WIRE['auth'],
+                'armed': _JIRA_ARMED['on'], 'host': _JIRA_ARMED['host']}
+
     @app.post('/api/fixture/task/tracker-closeout')
     def tracker_closeout(body: dict):
         """A task from a Jira item whose agent finished: its close-out proposes "comment and move to Done", read from a Jira that lives in
-        this process (no socket leaves the fixture). Invented site, item and people. GET /api/fixture/tracker/writes is what reached it."""
+        this process (no socket leaves the fixture). Invented site, item and people. GET /api/fixture/tracker/writes is what reached it.
+        The Jira HTTP is faked at the shared transport boundary (the _jira_http above, driving the Cloud v3 close-out reads) rather than
+        by patching a private module function, so it stays true when the tracker wire moves to the shared jiraapi transport."""
         if set(body) != {'comment'} or not isinstance(body['comment'], str) or len(body['comment']) > 2000:
             raise HTTPException(422, 'exactly a comment is required')
         from taskuary import proposals, trackers
-        def jira(c, method, path, payload=None):
-            if method != 'GET': tracker_writes.append({'method': method, 'path': path, 'body': payload}); return {}
-            if path.endswith('/transitions'):
-                return {'transitions': [{'id': '31', 'name': 'Ship it', 'to': {'name': 'Done', 'statusCategory': {'key': 'done'}}}]}
-            return {'key': 'NW-12', 'fields': {'summary': 'Nightly export is empty', 'status': {'name': 'In Review', 'statusCategory': {'key': 'indeterminate'}}}}
-        trackers._jira = jira
         c = store.get_connector_by_type('jira')
         store.save_connector({'ConnectorId': c['ConnectorId'], 'Active': 1, 'Secret': 'fixture-not-a-token',
                               'ConfigJson': '{"base_url": "https://northwind.example", "email": "alex@northwind.example"}'}, 'fixture')
@@ -131,8 +294,17 @@ def install_processing_changes(app, store):
                            'BodyText': '[Jira NW-12 - status In Review - assigned to you]\nThe nightly export came back empty.', 'Status': 'routed'})
         store.add_comment(tid, 'general', 'agent', 'AGENT REPORT\nDetermination: the export read a renamed view.\n'
                           f"Actions: pointed it at the new view.\nSummary: {body['comment']}")
+        # drive the shared HTTP boundary (Cloud v3, the NW-12 item) and record what the close-out READ and would write.
+        # The mode STAYS 'closeout': the close-out card re-reads the Jira item (status + the move to Done) when it is drawn and
+        # when it enables Approve - all after this route returns - so those reads must still answer the Cloud close-out upstream.
+        # Each browser test gets its own fixture server, and the Data Center test re-arms its own mode in dc_seed, so nothing
+        # later in this process depends on the mode having reverted.
+        _JIRA_WIRE.update(reads=[], writes=[], denied=[], auth={'token_present': False})
+        _JIRA_MODE['name'] = 'closeout'
         due = trackers.closeout_due(store, tid)
         if not due or not proposals.closeout(store, tid, due, body['comment'], 'router'): raise HTTPException(409, 'no close-out was raised')
+        tracker_writes.clear()
+        tracker_writes.extend({'method': w['method'], 'path': w['path'], 'body': w.get('body')} for w in _JIRA_WIRE['writes'])
         return {'taskId': tid}
 
     @app.post('/api/fixture/task/pr-closeout')
