@@ -618,6 +618,10 @@ def judge(store, msg: dict, llm, mine=(), me=(), home=None) -> tuple[dict, dict]
     thread = others_on_thread(store, msg, mine)
     if (put_to := addressed_to(store, msg, me)): thread = {**thread, 'addressed_to': put_to}
     if (cc := copied(store, msg, me)): thread = {**thread, 'copied': cc}
+    # ...and who answered the like of it before, with these same colleagues on the mail (2026-11-03: theirs, not the owner's)
+    try:
+        if (ab := answered_before(store, msg, me)): thread = {**thread, 'answered_before': ab}
+    except Exception as e: logger.debug(f'answered_before skipped: {e}')
     # ...and who the sender IS to the owner - their manager, someone reporting to them, the person who owns payroll (orgchart.py): a
     # request from the owner's own manager read exactly like anybody's on the To line (the org-chart gap, 2026-10-22)
     try:
@@ -740,6 +744,9 @@ def judge(store, msg: dict, llm, mine=(), me=(), home=None) -> tuple[dict, dict]
     if intent.get('workstream'): msg['_workstream'] = intent['workstream']
     personal_fyi(store, msg, intent)
     return intent, fail
+
+
+QUIET = ('fyi', 'watch')     # the verdicts that ask nothing of the owner now: a line that joins existing work on either is kept for the chain
 
 
 def _stored_verdict(intent: dict | None) -> dict | None:
@@ -954,10 +961,11 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
         # nothing to do, and filed it would leave the task waiting on an answer it already has
         from . import waiton
         awaited = waiton.is_them(waiton.waiting(store.get_task(tid)), msg)
-        if follow and (follow.get('intent') == 'fyi' or kept) and not follow.get('degraded') and not awaited:
+        # ...and a WATCH on a line that joins its thread (the owner, 2026-11-03) asks nothing of the owner either: kept for the chain like an fyi
+        if follow and (follow.get('intent') in QUIET or kept) and not follow.get('degraded') and not awaited:
             mid = _land(store, msg, tid, 'filed')
             said = (f"{follow.get('intent')} on {task_ref(tid)}, which is closed - nothing new to do on it, so it stays closed" if kept
-                    else f"fyi - {follow.get('why') or 'nothing to do'} · kept on {task_ref(tid)} for the chain")
+                    else f"{route_head('watch') if follow['intent'] == 'watch' else 'fyi'} - {follow.get('why') or 'nothing to do'} · kept on {task_ref(tid)} for the chain")
             store.add_route(mid, tid, 'attach', r.get('score'), f"triage: {said}", [], 'triage', verdict=_stored_verdict(follow))
             store.add_comment(tid, actor, 'agent', f"New {msg.get('channel')} from {msg.get('from_email') or 'unknown'}: {msg.get('subject') or ''} - "
                               + ('no new work, it stays closed' if kept else 'fyi, nothing to do'))
@@ -1140,6 +1148,9 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
                             f"triage: {route_head('fyi')} - {intent.get('why') or 'informational'}" + _notes_note(), [], 'triage',
                             verdict=_stored_verdict(intent))
             return {'status': 'filed', 'task_id': None, 'message_id': mid}
+        # WATCH (the owner, 2026-11-03: "a task you care about but you don't have to take care of"): a task on the owner's list with
+        # nothing working it, put straight under Watching (watch.py) - walked after Tasks, back when its thread moves
+        watching = intent['intent'] == 'watch'
         # A MAIL THAT STARTS A WORKFLOW (the owner, 2026-10-21): triage named a workflow whose "start when a mail like this arrives"
         # this is - its run IS the mail's task, by the one road every run takes (workflows.run), approvals as they always are
         if intent['intent'] == 'task' and intent.get('workflow'):
@@ -1198,6 +1209,9 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
                                      **({'Tags': _pb.tag(intent['playbook'])} if intent.get('playbook') else {}),
                                      **({'Assignee': f'agent:{role}'} if role else {})}, actor)
             store.audit('task', tid, 'create', actor, 'agent', {'from': msg.get('from_email'), 'reason': r['reason']})
+            if watching:
+                watch.watch(store, tid, 'triage')
+                store.add_comment(tid, 'triage', 'agent', f"Watching for you - {intent.get('why') or 'somebody else is expected to handle it'}")
             # ...and why it is important, said where the owner reads the task (the verdict text says why - the owner, 2026-10-25)
             if f['priority'] == 'important': store.add_comment(tid, actor, 'agent', f"Marked important - triage: {_priority_why(intent)}")
             if msg.get('_workflow_held'): store.add_comment(tid, 'triage', 'agent', msg['_workflow_held'] + '. It was not started on its own.')
@@ -1295,6 +1309,7 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
         # ...and the tail says what is TRUE when it is written: the start was only spawned, so it says the agent was set
         # going, never that it started - a queued or a failed start writes its own line on the task
         act = (('a reply draft goes to the task for you' + (f' - {unsendable}, so it cannot be sent from here' if unsendable else '')) if f['kind'] == 'reply'
+               else f"under {words.name('watching')} - nothing asked of you until the thread moves" if watching
                else 'on your list - no agent works it' if f['kind'] == 'task'
                else f'{HELD} {gh_hold_why(store, msg)}' if msg.get('no_auto') and msg.get('channel') == 'github'
                else f'{HELD} items from {senders.channel_name(msg.get("channel")) or "this channel"} wait for you to start them.' if msg.get('no_auto')
@@ -1541,7 +1556,7 @@ def _join_same(store, msg: dict, tid: int, intent: dict, actor: str, notes_note:
     closed = t.get('Status') == 'done'
     ref = task_ref(tid)
     # a closed task comes back only with new work or a question to the owner (see ingest_message): a comment on it is kept, it stays closed
-    if intent.get('intent') == 'fyi' or (closed and not owes_owner(intent)):
+    if intent.get('intent') in QUIET or (closed and not owes_owner(intent)):
         mid = _land(store, msg, tid, 'filed')
         store.add_route(mid, tid, 'attach', 1.0, f"triage: {route_head(intent.get('intent'), t.get('Kind') or '')}, the same as {ref} - {intent.get('why') or 'nothing new'} · kept on it"
                         + (', which stays closed' if closed else '') + notes_note,
@@ -1579,7 +1594,7 @@ def _serve_step(store, msg: dict, sv: dict, intent: dict, actor: str, notes_note
     tid, ref, k = (step or {}).get('tid') or sv['task'], task_ref(sv['task']), [x['id'] for x in store.goal_steps(sv['task'])].index(sv['step']) + 1
     # a finished step comes back only with new work for it or a question to the owner; a comment is kept on it (see ingest_message)
     shut = tid != sv['task'] and (store.get_task(tid) or {}).get('Status') in ('done', 'dropped')
-    work = owes_owner(intent) if shut else intent.get('intent') != 'fyi'
+    work = owes_owner(intent) if shut else intent.get('intent') not in QUIET
     mid = _land(store, msg, tid, 'routed' if work else 'filed')
     # ...and what same_as does for the task it joins (the review, 2026-10-12): the sender's escalation, triage's urgency, and - on the
     # step's own task only - the day it names; a step's day never moves the goal's date. A follow-up on a finished step reopens it.
@@ -1814,15 +1829,108 @@ def lines_by_name(store, msg: dict, addrs, me=()) -> list:
     return (['you'] if len(rest) < len(xs) else []) + names_on_thread(store, msg, rest)
 
 
-def names_on_thread(store, msg: dict, addrs) -> list:
-    """Each address as the name this thread knows it by, else "someone at <domain>" - what a prompt is told instead of the
-    address itself. Shared by triage's `addressed_to` and the reply writer's To/Cc lines."""
+def names_on_thread(store, msg: dict, addrs, memo=None) -> list:
+    """Each address as the name this thread knows it by, else the name their own mail carries anywhere (known_names), else
+    "someone at <domain>" - what a prompt is told instead of the address itself. Shared by triage's `addressed_to`, the reply
+    writer's To/Cc lines and Came from's "to ... · cc ..." line. `memo` keeps each thread's names across calls: a task's page asks
+    for every message on it, and a read per message is what made a long task slow to open (test_big_task_opens_fast)."""
     addrs = [str(a).strip().lower() for a in addrs or [] if a]
-    names = {}
-    for m in store.thread_messages(msg.get('conversation_id'), msg.get('subject')) or []:
-        a = str(m.get('FromEmail') or '').lower()
-        if a in addrs and m.get('FromName'): names[a] = ' '.join(str(m['FromName']).split())
-    return [names.get(a) or f"someone at {a.rsplit('@', 1)[-1]}" for a in addrs]
+    conv = msg.get('conversation_id')
+    key, memo = (conv, None if conv else msg.get('subject')), {} if memo is None else memo     # a thread's "RE:" rows are one thread
+    if key not in memo:
+        memo[key] = {str(m.get('FromEmail') or '').lower(): ' '.join(str(m['FromName']).split())
+                     for m in store.thread_messages(conv, msg.get('subject')) or [] if m.get('FromName')}
+    names = memo[key]
+    # ...a colleague who never wrote on THIS thread was "someone at <domain>", though their own mail names them (2026-11-03)
+    known = known_names(store) if set(addrs) - set(names) else {}
+    return [names.get(a) or known.get(a) or f"someone at {a.rsplit('@', 1)[-1]}" for a in addrs]
+
+
+def known_names(store) -> dict:
+    """{address: the name their newest mail carries} over everyone who ever wrote in - kept on the store and read again only when
+    a message arrives (people.written_to's way). Most stored addresses are mixed case, so lower() rules out idx_message_from."""
+    with store.lock: newest = store.cx.execute('SELECT MAX(MessageId) FROM message').fetchone()[0]
+    held = getattr(store, '_known_names', None)
+    if held and held[0] == newest: return held[1]
+    rows = store._rows("SELECT lower(trim(FromEmail)) a, FromName n, MAX(SentAt) FROM message WHERE IFNULL(Direction,'in')<>'out' "
+                       "AND Status<>'context' AND FromEmail LIKE '%@%' AND trim(IFNULL(FromName,''))<>'' GROUP BY 1")
+    names = {r['a']: ' '.join(str(r['n']).split()) for r in rows if '@' not in str(r['n'])}
+    store._known_names = (newest, names)
+    return names
+
+
+def recipients_by_name(store, msg: dict, me=(), cap=12, memo=None) -> dict:
+    """{'to': [...], 'cc': [...], 'n': how many in all} by name, the owner "you" first and each line cut to `cap` - {} when nobody but
+    the owner is on them. Came from showed only who SENT it (the owner, 2026-11-03: "there are 2 people on this email (though you
+    don't see recipients of the email in came from) and the other person will take care of it")."""
+    xs = lambda f: list(dict.fromkeys(str(a).strip().lower() for a in msg.get(f) or [] if a))
+    to, cc, mine = xs('to'), xs('cc'), {str(a).strip().lower() for a in me if a}
+    if not set(to + cc) - mine: return {}
+    line = lambda ys: (['you'] if set(ys) & mine else []) + names_on_thread(store, msg, [y for y in ys if y not in mine][:cap], memo)
+    return {**{k: line(ys) for k, ys in (('to', to), ('cc', cc)) if ys}, 'n': len(set(to + cc))}
+
+
+def row_recipients(store, m: dict, me=None, memo=None) -> dict:
+    """recipients_by_name for a stored message row (RecipientsJson); {} for a chat, or a mail stored without its lines."""
+    try: r = json.loads((m or {}).get('RecipientsJson') or 'null') or {}
+    except (TypeError, ValueError): r = {}
+    if not isinstance(r, dict) or not (r.get('to') or r.get('cc')): return {}
+    msg = {'to': r.get('to'), 'cc': r.get('cc'), 'conversation_id': m.get('ConversationId'), 'subject': m.get('Subject')}
+    return recipients_by_name(store, msg, own_addresses(store) if me is None else me, memo=memo)
+
+
+def recipients_said(rec: dict) -> str:
+    """"to you, Gail Moreno · cc Ray Colton" - one line of recipients_by_name, for a prompt."""
+    return ' · '.join(f"{k} {', '.join(rec[k])}" for k in ('to', 'cc') if rec.get(k)) if rec else ''
+
+
+def answered_before(store, msg: dict, me=(), days=365, n=6, crowd=8) -> list:
+    """WHO TOOK IT LAST TIME, when a mail reaches the owner beside colleagues (the owner, 2026-11-03: an ask to the owner and one
+    colleague to change a role in an app became the owner's coding task - "the other person will take care of it. it's basically
+    not our task"). The mail cannot say who usually handles it; the mail before it can. Earlier mail (not this thread) that had one
+    of these same colleagues on it, this sender's first, then the newest, each with who answered it first: "you", a colleague by
+    name, or None when no reply reached the owner. Its subject is there so the model can tell a like ask from an unlike one - the
+    facts, never a rule; a mail put to more than `crowd` others is a broadcast, which `recipients` already says."""
+    if is_chat(msg): return []
+    mine, frm = {str(a).strip().lower() for a in me if a}, str(msg.get('from_email') or '').strip().lower()
+    co = list(dict.fromkeys(a for a in (str(x).strip().lower() for x in (msg.get('to') or []) + (msg.get('cc') or []) if x)
+                            if '@' in a and a not in mine and a != frm))
+    if not co or len(co) > crowd: return []
+    from .store import norm_stamp
+    at = norm_stamp(msg.get('sent_at'))[:19]
+    try: since = str(datetime.fromisoformat(at) - timedelta(days=days))[:19]
+    except ValueError: return []
+    rows = store._rows("SELECT MessageId, ConversationId, Subject, FromEmail, FromName, SentAt, RecipientsJson FROM message "
+                       "WHERE Channel='email' AND IFNULL(Direction,'in')='in' AND Status<>'context' AND SentAt>=? AND SentAt<? "
+                       "AND IFNULL(ConversationId,'')<>'' AND ConversationId<>? AND (" + ' OR '.join(['lower(RecipientsJson) LIKE ?'] * len(co))
+                       + ') ORDER BY SentAt DESC LIMIT 300',
+                       (since, at, str(msg.get('conversation_id') or ''), *[f'%"{a}"%' for a in co]))
+    first = {}                                              # each thread by the ask that opened it among these, from someone else
+    for r in rows:
+        a = str(r.get('FromEmail') or '').strip().lower()
+        if a and a not in mine and a not in co: first[r['ConversationId']] = r      # newest first, so the last write is the earliest
+    asks = sorted(first.values(), key=lambda r: (str(r.get('FromEmail') or '').lower() == frm, str(r.get('SentAt') or '')), reverse=True)[:n]
+    if not asks: return []
+    convs = [r['ConversationId'] for r in asks]
+    after = {}
+    for m in store._rows(f"SELECT ConversationId, FromEmail, FromName, SentAt, Status, Direction FROM message WHERE ConversationId IN "
+                         f"({','.join('?' * len(convs))}) ORDER BY SentAt", tuple(convs)): after.setdefault(m['ConversationId'], []).append(m)
+    known, out = known_names(store), []
+    for r in asks:
+        asker = str(r.get('FromEmail') or '').strip().lower()
+        def who(m):
+            a = str(m.get('FromEmail') or '').strip().lower()
+            if m.get('Direction') == 'out' or m.get('Status') == 'context' or a in mine: return 'you'
+            return known.get(a) or ' '.join(str(m.get('FromName') or '').split()) or f"someone at {a.rsplit('@', 1)[-1]}"
+        reply = next((m for m in after.get(r['ConversationId']) or [] if str(m.get('SentAt') or '') > str(r.get('SentAt') or '')
+                      and str(m.get('FromEmail') or '').strip().lower() != asker), None)
+        try: on = json.loads(r.get('RecipientsJson') or '{}') or {}
+        except ValueError: on = {}
+        there = {str(x).strip().lower() for x in (on.get('to') or []) + (on.get('cc') or [])}
+        out.append({'sent_on': str(r.get('SentAt') or '')[:10], 'from': known.get(asker) or ' '.join(str(r.get('FromName') or '').split()) or 'someone',
+                    'subject': ' '.join(str(r.get('Subject') or '').split())[:120],
+                    'with': names_on_thread(store, {}, [a for a in co if a in there]), 'answered_by': who(reply) if reply else None})
+    return out
 
 
 # ── a chat room is not a task ────────────────────────────────────────────────────────────
@@ -1980,8 +2088,9 @@ def _carry_on(store, tid, msg: dict, mid, follow: dict | None, actor: str) -> bo
     store.add_comment(tid, 'router', 'agent', f'{_who_said(msg)} wrote again with new work - the '
                       + ('coding agent reopens its own session' if coding else 'assistant carries on its conversation') + ' here by itself.')
     store.audit('task', tid, 'auto_continue', actor, 'agent', {'message_id': mid, 'kind': 'coding' if coding else 'general', 'quick': quick})
-    if quick: _spawn(quickwork.start, store, tid, _pass_turn(msg), False)
-    else: _spawn(_continue_coding if coding else _continue_general, store, tid)
+    if quick: _spawn(quickwork.start, store, tid, _pass_turn(msg))         # filed as Taskuary's brief: the chat shows what it was handed
+    elif coding: _spawn(_continue_coding, store, tid)
+    else: _spawn(_continue_general, store, tid, msg, mid)
     return True
 
 
@@ -2186,7 +2295,7 @@ def _pass_general(store, tid, msg: dict):
     try:
         # a session of quick answers re-decides on the task's depth now: still quick, one more call on it; else the turn runs the agent
         if ses.quick and quickwork.takes(store, tid): quickwork.again(store, tid, ses, _pass_turn(msg))
-        else: ses.send_prompt(_pass_turn(msg), as_owner=False, echo=False)
+        else: ses.send_prompt(_pass_turn(msg), brief=True)      # Taskuary's brief, shown in the chat as coding's typed line is
     except Exception as e:
         logger.warning(f'passing a line to the assistant failed for task {tid}: {e}')
         store.add_comment(tid, 'router', 'agent', f"The assistant couldn't take {_who_said(msg)}'s new message: {' '.join(str(e).split())[:200]} - Continue picks it up.")
@@ -2209,12 +2318,22 @@ def _pass_coding(store, tid, msg: dict):
         store.add_comment(tid, 'router', 'agent', f"{_who_said(msg)}'s new message could not be passed in: the coding session ended - Continue picks it up.")
 
 
-def _continue_general(store, tid):
-    from . import continuity, general
+# THE NEW ASK IS THE TURN, NOT A NOTE BEHIND IT (the owner, 2026-11-03: "I don't see it gets the most recent question. coding does").
+# A resumed CLI is handed the turn alone, so the news rode only as instructions appended to its system prompt, under a turn that said
+# "the owner chose Resume ... restate that one question and wait" - and nothing on the task showed it had been told. Now the turn
+# leads with what came in, as coding's seed does (terminal.resume_seed), filed as Taskuary's brief so the chat shows the line it got.
+def carry_on_turn(store, tid, msg: dict = None, mid=None) -> str:
+    "A carried-on turn: the mail since its last turn, the line that woke it when that read missed it, then Resume's own words."
+    from . import continuity
+    news = continuity.news_block(store, tid)
+    missed = msg and mid not in {m['MessageId'] for m in continuity.mail_since(store, tid)}
+    return '\n\n'.join(x for x in [news, _pass_turn(msg) if missed else '', continuity.RESUME_PROMPT] if x)
+
+
+def _continue_general(store, tid, msg: dict = None, mid=None):
+    from . import general
     try:
-        news = continuity.news_block(store, tid)
-        general.start_session(store, tid, actor='router').send_prompt(
-            continuity.RESUME_PROMPT, as_owner=False, echo=False, **({'delivery_instructions': news} if news else {}))
+        general.start_session(store, tid, actor='router').send_prompt(carry_on_turn(store, tid, msg, mid), brief=True)
     except Exception as e:
         # said, not retried: the start queue's retry opens a conversation without a turn (_start_general prompts a fresh one only)
         logger.warning(f'assistant carry-on failed for task {tid}: {e}')

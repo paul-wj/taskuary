@@ -232,7 +232,7 @@ class TurnTests(unittest.TestCase):
         with mock.patch.object(concierge, 'brain', return_value=None), concierge.delivering(concierge.PHONE):
             out = concierge.surface(s)
         self.assertIn('Dana wrote on email', out['say']); self.assertIn('"Export still broken"', out['say'])
-        self.assertIn('Since then: I read it as needing a reply', out['say']); self.assertIn('From you: Send, Redraft, or move on', out['say'])
+        self.assertIn('Since then: I read it as needing a reply', out['say']); self.assertIn('From you: Send and close, Send, or move on', out['say'])
         self.assertEqual(out['options'], [])
 
     def test_a_model_that_fails_still_leaves_a_line(self):
@@ -262,7 +262,7 @@ class TurnTests(unittest.TestCase):
         self.assertEqual([c['verb'] for c in again['chips']], ['walk', 'open'])
         self.assertTrue(again['chips'][1]['label'].startswith('Open TQ-'))
         gone = concierge.surface(s, key='msg:999', llm=lambda *a, **k: 'never')
-        self.assertIsNone(gone['item']); self.assertIn("can't find that one", gone['say'])
+        self.assertIsNone(gone['item']); self.assertEqual(gone['say'], "That message is no longer in Taskuary, so it can't be opened.")
         # ...a task REMOVED says so, and nothing is left on the table (trust audit S4, 2026-10-28)
         from taskuary import recentlydeleted
         lunch = s.create_task({'Title': 'Lunch on Friday?', 'Status': 'open'}, 'owner')

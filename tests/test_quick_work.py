@@ -180,9 +180,11 @@ def test_done_closes_through_the_agents_own_close():
         ses = opened(s, tid); ses.quick = True
         ses.file_quick(ASK, quickwork.read({**ANSWER, 'draft': None, 'done': True, 'why': 'Answered: worth going.'}), [])
         end = time.time() + 10
-        while time.time() < end and s.get_task(tid)['Status'] not in ('done', 'waiting'): time.sleep(.05)
+        said = lambda: any('The agent closed this itself: Answered: worth going.' in c['Body'] for c in s.list_comments(tid))
+        # ...the note is filed AFTER the close (selfclose.declare), so a loaded run read the status before the note was written
+        while time.time() < end and not (s.get_task(tid)['Status'] in ('done', 'waiting') and said()): time.sleep(.05)
     assert s.get_task(tid)['Status'] == 'waiting'          # closed, as wrapup closes one whose sender is owed a reply: it waits on the draft
-    assert any('The agent closed this itself: Answered: worth going.' in c['Body'] for c in s.list_comments(tid))
+    assert said()
 
 def test_markers_in_the_models_fields_do_nothing():
     s = home(); tid, _ = arrived(s)
@@ -197,6 +199,30 @@ def test_read_takes_every_marker_out_of_every_field():
         assert all('TASKUARY' not in f.upper() and f.startswith('Go') and 'Friday' in f for f in (a.report, a.draft, a.question, a.why)), a
     assert quickwork._unmark('Plain [[link]] text') == 'Plain [[link]] text'        # only Taskuary's own tags come out
     assert quickwork._unmark('Go <TASKUARY-HUB>{"title": "t",\n "x": 1}</TASKUARY-HUB> Friday') == 'Go  Friday'   # the Hub's JSON goes with its tags
+
+class StreamingBrain(Brain):
+    "A CLI brain: what it writes streams to the trace as text before it returns - narration, a web search, then the JSON in a fence."
+    def __call__(self, system, user, **k):
+        self.calls.append((system, user, k)); out = f'```json\n{json.dumps(self.said, indent=2)}\n```'
+        for step in (('progress', 'text', 'Checking the partner day agenda.'), ('tool_call', 'WebSearch', {'args': {'query': 'partner day'}}),
+                     ('progress', 'thinking', 'Erin presents at 10.'), ('progress', 'text', out)): llm._saw(*step)
+        return out
+
+def test_the_answers_json_is_not_kept_as_its_working():
+    """The agent pane drew the quick answer's raw object - `{ "report": "...\\n\\n1) **...", "draft": ...` - above the report it was filed as
+    (the owner, 2026-11-03): the CLI's streamed text was kept as a step. Its tool calls, thinking and narration stay; the object does not."""
+    s = home(); tid, _ = arrived(s)
+    steps, b = [], StreamingBrain({**ANSWER, 'report': 'Worth going:\n\n1) **Erin** presents at 10.'})
+    with mock.patch.object(llm, 'build_llm', return_value=b): out = quickwork.ask(s, tid, ASK, steps)     # llm.watching hands _saw the steps
+    assert out.report.startswith('Worth going') and [x[:2] for x in steps] == [('progress', 'text'), ('tool_call', 'WebSearch'), ('progress', 'thinking')]
+    assert not any('"report"' in str(x[2]) for x in steps)
+    with mock.patch.dict(terminal.SESSIONS, {}, clear=True):
+        ses = opened(s, tid); ses.file_quick(ASK, out, steps)
+        assert not any('"report"' in str(e.get('detail')) for e in ses.info()['trace'])
+
+def test_raw_answers_are_told_from_text():
+    assert all(quickwork.is_raw(t) for t in ('{"report": "x"}', '```json\n{\n  "report": "Worth', '  { "draft": null, "report": "x"'))
+    assert not any(quickwork.is_raw(t) for t in ('Worth going.', '{"title": "t"}', 'The report says {"report": 1}'))
 
 def test_a_quick_session_takes_no_desk():
     from taskuary import blackboard as bb
@@ -405,7 +431,7 @@ def test_more_mail_after_a_quick_session_ended_is_answered_quick():
             assert ingest._carry_on(s, tid, new, mid, {'intent': 'task', 'kind': 'general'}, 'triage')
         general.OPENING.discard(tid)
     fn, *args = spawn.call_args[0]
-    assert fn is quickwork.start and args[:2] == [s, tid] and 'can Gail Moreno come' in args[2] and args[3] is False
+    assert fn is quickwork.start and args[:2] == [s, tid] and 'can Gail Moreno come' in args[2] and args[3:] == []    # filed as Taskuary's brief (as_owner default): the chat shows it
 
 def test_a_depth_that_cannot_be_read_starts_the_agent():
     s = home(); tid, _ = arrived(s)

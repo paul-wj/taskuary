@@ -25,6 +25,20 @@ export const byLine = (...parts) => parts.filter((p, i) => p && parts.findIndex(
 // ...and WHERE is the sender's address on mail: a mail's SourceName is the owner's own mailbox it arrived in, and "Omar Keller ·
 // alex@northwind.example" read as Omar's address (the email walk, 2026-10-29). A chat or a report keeps its own name.
 export const cameFromWhere = (m) => String(m?.SourceName || "").includes("@") ? (m?.FromEmail || channelName(m?.Channel)) : (m?.SourceName || channelName(m?.Channel));
+// ...and WHOM IT WENT TO, by name (the server's message.Recipients, the owner "you"): Came from showed only the sender, and a mail to the
+// owner and a colleague who would take it read as the owner's alone (the owner, 2026-11-03: "we should be able to see who else was on
+// email"). "to you, Gail Moreno · cc Ray Colton" - `short` the first `max` names and how many more, `full` all of them; "" for nobody else.
+export const toLine = (rec, max = 4) => {
+  const lines = [["to", rec?.to || []], ["cc", rec?.cc || []]].filter(([, xs]) => xs.length);
+  const all = lines.reduce((n, [, xs]) => n + xs.length, 0), rest = Math.max(0, (rec?.n || 0) - all);
+  const said = (cut) => {
+    let left = cut;
+    return lines.map(([k, xs]) => { const ys = xs.slice(0, Math.max(left, 0)); left -= ys.length; return ys.length ? `${k} ${ys.join(", ")}` : ""; })
+      .filter(Boolean).join(" · ");
+  };
+  const more = (n) => (n > 0 ? ` and ${n} more` : "");
+  return all ? { short: said(max) + more(rest + Math.max(0, all - max)), full: said(all) + more(rest) } : { short: "", full: "" };
+};
 // "RE: Fwd: the export" and "the export" are one email thread when the mail carries no thread id
 const bareSubject = (s) => oneLine(s).replace(/^((re|fw|fwd|aw|sv)\s*:\s*)+/i, "").toLowerCase();
 
@@ -150,7 +164,7 @@ export function askLine(text, max = 220) {
 // WHAT TRIAGE DECIDED, as facts you read - never a control (the owner, 2026-10-16: "why are there dropdowns by the triage results?
 // you can't change it"). The task row is the live answer for who, profile, repository and priority; the verdict names the intent.
 // in plain words: "Who does it: an agent · general" was the app's own bookkeeping read out to a finance user (2026-10-17 audit)
-const INTENT = { task: "task", reply_only: "reply", fyi: "fyi" };   // TaskPage.sortedLine reads these ids into its own words
+const INTENT = { task: "task", reply_only: "reply", watch: "watch", fyi: "fyi" };   // TaskPage.sortedLine reads these ids into its own words
 const WHO = { general: "an agent", coding: "a coding agent" };
 export const repoTag = (tags, name = "repo") => (String(tags || "").match(new RegExp(`(?:^|[\\s,])${name}:([^\\s,]+)`)) || [])[1] || "";
 // A WORKFLOW RUN has no message behind it and nobody triaged it (workflows.run): what started it is on the task as a tag, and the
@@ -217,6 +231,7 @@ export function headerFacts({ verdict = null, route = null, task = {}, workflow 
 const factOf = (facts, k) => facts.pills.find((p) => p.key === k && p.tone !== "alert")?.value || "";
 const whatOf = (facts, kind) => { const intent = factOf(facts, "intent");
   return intent === "reply" || kind === "reply" ? "a reply to send" : intent === "fyi" ? "for your information"
+    : intent === "watch" ? "someone else's to handle - watching"
     : `a task ${{ general: "for an assistant", coding: "for your coding tool" }[kind] || "for you"}`; };
 export const sortedLine = (facts, kind, { prefix = true, short = false } = {}) => {
   const what = t(whatOf(facts, kind)), repo = factOf(facts, "repo");
@@ -233,9 +248,10 @@ export const triageSays = (facts, kind, why = "") => [sortedLine(facts, kind), o
 export function routeHead(reason, { intent = "", kind = "", repo = "" } = {}) {
   const m = /^triage:\s*([^·]*?)\s-\s/.exec(String(reason || ""));
   const said = m ? m[1].trim() : "";
-  if (/^(yours to do|work for |needs a reply|nothing to do)/i.test(said)) return said;
+  if (/^(yours to do|work for |needs a reply|nothing to do|watching)/i.test(said)) return said;
   const i = intent || routeIntent(reason);
   if (i === "fyi") return "nothing to do";
+  if (i === "watch") return "watching";
   if (i === "reply_only") return "needs a reply";
   if (kind === "coding") return `work for a coding agent${repo ? ` in ${repo}` : ""}`;
   if (kind === "general") return "work for an agent";

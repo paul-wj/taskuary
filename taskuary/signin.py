@@ -116,6 +116,14 @@ def on_site(url, site) -> bool:
     return bool(s) and s == str(site or '').lower()
 
 
+def site_from(typed) -> str:
+    """The site an owner TYPED, to keep a sign-in for: an address or a bare name ("portal.example.com", "https://login.portal.example/x"),
+    as its registrable domain - '' for anything else (plain http, a bare suffix, words)."""
+    t = str(typed or '').strip()
+    if not t or ' ' in t: return ''
+    return site_of(t if re.match(r'^[a-z][a-z0-9+.-]*://', t, re.I) else f'https://{t}')
+
+
 def clean_claim(text) -> str:
     """What the agent NAMED, as words to show and nothing more: a domain's own characters, or ''."""
     m = re.search(r'[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?\.[a-z]{2,63}', str(text or '').lower())
@@ -249,7 +257,8 @@ def for_line(store, tid) -> str:
     if not tid: return ''
     t, sess = store.get_task(tid) or {}, ws._live(tid)
     who = str(getattr(sess, 'provider', '') or getattr(sess, 'label', '') or '') if sess else ''
-    return f"for {task_ref(tid)} · {t.get('Title') or 'a task'}" + (f' ({who})' if who else '')
+    # ...the agent's name after a dash: "(Claude Code (on this computer))" read as a typo on the one page about a password (2026-11-03)
+    return f"for {task_ref(tid)} · {t.get('Title') or 'a task'}" + (f' - {who}' if who else '')
 
 
 def gone_why(store, tok) -> tuple:
@@ -303,10 +312,11 @@ def _chat(sid) -> bool:
     return hasattr(term.SESSIONS.get(str(sid)), 'send_prompt')
 
 
-def needs(store, tid: int, sid: str, claimed: str = '', fill=None) -> dict:
+def needs(store, tid: int, sid: str, claimed: str = '', fill=None, watch=...) -> dict:
     """The agent ended its turn asking to be signed in. Record the ask on the existing road and, when the owner keeps a sign-in for
     the site the browser is actually on, fill it at once on its own thread. `fill`: the filler (tests stand one in)."""
     from . import browserview, workerstate as ws
+    if watch is ...: watch = globals()['watch']
     st = browserview.state(sid, fresh=True)
     site, said = (site_of(st.get('url')) if st.get('open') else ''), clean_claim(claimed)
     if not site:
@@ -322,7 +332,10 @@ def needs(store, tid: int, sid: str, claimed: str = '', fill=None) -> dict:
     # "Signed in" as a CHOICE only where an answer arrives as words (the chat's own agent): a pty's choices are a chooser, answered
     # by number (workerstate.answer). A pty's ask still has the press - the card draws it for every `signin:` ask, and its answer goes
     # through signed_in, never the chooser (2026-10-25)
-    ws.record(store, tid, sid, 'input_needed', request_id=rid, text=text, choices=[DONE] if _chat(sid) else None, source='api')
+    # NO PRESSES ON IT (the owner, 2026-11-03: "remove that stupid box again ... just have the question and link to fill it out securely"):
+    # the ask is its words; Taskuary sees the sign-in happen on the page itself (watch), and "done" typed in the chat's box still tells it
+    ws.record(store, tid, sid, 'input_needed', request_id=rid, text=text, choices=None, source='api')
+    if watch: threading.Thread(target=watch, args=(store, tid, sid, site, rid), daemon=True, name=f'signin-watch-{tid}').start()
     row, last = saved(store, site), _TRIED.get((tid, site), 0)
     if row and _now() - last < AGAIN:
         store.add_comment(tid, 'taskuary', 'agent', f'{site} asked to sign in again within minutes of the saved sign-in - it may be out '
@@ -424,9 +437,12 @@ def _continue(store, tid, rid, site, actor, code=False):
     return True
 
 
+SAID_DONE = frozenset(('signed in', 'done', "i'm signed in", 'i am signed in', 'i signed in', 'logged in', "i'm in", 'im in'))
+
+
 def said_done(rid, text) -> bool:
-    "Is this the owner's own Signed in, pressed or typed, to a sign-in ask?"
-    return str(rid or '').startswith(PREFIX) and ' '.join(str(text or '').split()).rstrip('.!').lower() == DONE.lower()
+    "Is this the owner saying they signed in - \"Signed in\", or \"done\" typed in the chat's box - to a sign-in ask?"
+    return str(rid or '').startswith(PREFIX) and ' '.join(str(text or '').split()).rstrip('.!').lower() in SAID_DONE
 
 
 def signed_in(store, tid: int, rid: str) -> dict:
@@ -443,38 +459,149 @@ def _audit(store, tid, site, how, ok, why='', saved=None, code=None):
     store.audit('task', tid, 'signin_fill', 'taskuary' if how == 'vault' else 'owner', 'system' if how == 'vault' else 'human', d)
 
 
+# ── the owner signs in on the page itself: seen, and what they typed kept ─────────────────────────────────────────────────────
+# THE OWNER SIGNS IN IN THE LIVE VIEW, and nothing needs pressing after (the owner, 2026-11-03: "when we have browser it should just save
+# what i type in"). While a sign-in ask is open Taskuary holds its own DevTools connection to the task's tab:
+# - A SCRIPT IN THE TOP PAGE hears the form being sent (the submit, Enter in a box, a press on a button) and hands Taskuary - over that
+#   connection, never the agent's - the user name and, when the form has one, the password. A two-step sign-in sends the user name on its
+#   own page first: that is kept in memory (it is not the secret) until the password page is sent.
+# - SIGNED IN is the page past the sign-in: on the site, no password box and no user box, at another address than the ask's. Then the
+#   agent is told as a fill tells it, and a password typed on the way is SEALED to the vault for that site (save) - the one store - with
+#   one line on the task saying so and where to remove it. A password the site refused is never kept: it is only kept once past.
+# Nothing typed is logged, put in an event, a comment or the audit; captures while Taskuary itself types a sign-in (FILLING) are ignored.
+CAPTURE = r'''(() => {
+  if (window !== window.top || window.__tqSigninHooked) return;
+  window.__tqSigninHooked = true;
+  const vis = (e) => { const r = e.getBoundingClientRect(); return !e.disabled && r.width > 2 && r.height > 2; };
+  const texty = (e) => ['text', 'email', 'tel', ''].includes(e.type);
+  const deepAll = (sel) => { const out = []; const walk = (r) => { r.querySelectorAll('*').forEach((e) => {
+    if (e.matches(sel)) out.push(e); if (e.shadowRoot) walk(e.shadowRoot); }); }; walk(document); return out; };
+  const grab = () => {
+    const ins = deepAll('input').filter(vis);
+    const pw = ins.find((e) => e.type === 'password' && e.value);
+    const before = pw ? ins.slice(0, ins.indexOf(pw)) : ins;
+    const user = before.filter((e) => texty(e) && e.value).pop();
+    if ((!pw && !user) || typeof __tqSignin !== 'function') return;
+    try { __tqSignin(JSON.stringify({ u: user ? user.value : '', p: pw ? pw.value : '', href: location.href })); } catch (_) {}
+  };
+  document.addEventListener('submit', grab, true);
+  // composedPath: a key or a press inside a component's shadow root reaches the document retargeted to its host
+  document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.composedPath().some((x) => x.tagName === 'INPUT')) grab(); }, true);
+  document.addEventListener('pointerdown', (e) => { if (e.composedPath().some((x) => x.matches && x.matches('button, [type=submit], [role=button], a'))) grab(); }, true);
+})()'''
+WATCH_FOR = 30 * 60             # a sign-in ask is watched this long, then left to the owner's word
+WATCH_EVERY = 1.5
+_TYPED = {}                     # tid -> {'user', 'pw', 'site'}: what the owner sent on the page, until the sign-in is past - memory only
+SAVED_LINE = 'Saved your {site} sign-in to the vault - remove it under Settings > Agent permissions > Saved sign-ins.'
+
+
+def heard(tid, site: str, raw) -> bool:
+    """One capture from the page: kept for the task when it came from the pinned site's top page. Never logged."""
+    from . import browserview
+    try: d = json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+    except (ValueError, TypeError): return False
+    if not on_site(d.get('href'), site): return False
+    cur = _TYPED.setdefault(tid, {'site': site, 'user': '', 'pw': ''})
+    if cur.get('site') != site: cur.update(site=site, user='', pw='')
+    if d.get('u'): cur['user'] = str(d['u'])[:256]
+    if d.get('p'): cur['pw'] = str(d['p'])[:512]
+    return True
+
+
+def past(f: dict, site: str, start: str) -> bool:
+    "Is the page past the sign-in: on the site, no password or user box, and not the page the ask was made on?"
+    if not f or not f.get('top') or not on_site(f.get('href'), site): return False
+    return not f.get('password') and not f.get('user') and not f.get('otp') and str(f.get('href') or '').split('#')[0] != str(start or '').split('#')[0]
+
+
+def keep_typed(store, tid, site) -> bool:
+    "The sign-in is past: seal what the owner typed for the site, and say so in one line. False when no password was typed."
+    t = _TYPED.pop(tid, None) or {}
+    if t.get('site') != site or not t.get('pw'): return False
+    try: save(store, site, t.get('user') or '', t['pw'], by='owner')
+    except ValueError as e:
+        store.add_comment(tid, 'taskuary', 'agent', f'Your {site} sign-in was not saved: {e}.'); return False
+    store.add_comment(tid, 'taskuary', 'agent', SAVED_LINE.format(site=site))
+    return True
+
+
+def _asked(store, tid, rid) -> bool: return (pending(store, tid) or {}).get('request_id') == rid
+
+
+def watch(store, tid: int, sid: str, site: str, rid: str, conn=None, every: float = WATCH_EVERY, until: float = WATCH_FOR):
+    """While the ask is open: hear what the owner sends on the page, and when the page is past the sign-in, keep it and tell the agent.
+    `conn`: the DevTools connection (tests stand one in)."""
+    from . import browserview
+    try: c = conn or connect(sid)
+    except Exception as e: logger.debug(f'signin: task {tid} is not watched for its {site} sign-in - {e}'); return False
+    try:
+        try:
+            c.call('Runtime.enable'); c.call('Page.enable'); c.call('Runtime.addBinding', {'name': '__tqSignin'})
+            c.call('Page.addScriptToEvaluateOnNewDocument', {'source': CAPTURE})
+            c.js(CAPTURE)
+        except SignInError as e: logger.debug(f'signin: the {site} page of task {tid} could not be listened to - {e}')
+        start, end = (c.fields('') or {}).get('href') or '', time.time() + until
+        while time.time() < end and _asked(store, tid, rid):
+            time.sleep(every)
+            for ev in c.drain():
+                if ev.get('method') == 'Runtime.bindingCalled' and (ev.get('params') or {}).get('name') == '__tqSignin' and sid not in browserview.FILLING:
+                    heard(tid, site, (ev.get('params') or {}).get('payload'))
+            if sid in browserview.FILLING: continue
+            try: f = c.fields('')
+            except SignInError: continue                         # mid-navigation: the page cannot be read for a moment
+            if past(f, site, start) and _asked(store, tid, rid):
+                kept = keep_typed(store, tid, site)
+                _audit(store, tid, site, 'page', True, saved=kept)
+                _continue(store, tid, rid, site, 'owner')
+                return True
+        return False
+    finally:
+        _TYPED.pop(tid, None)
+        if conn is None: c.close()
+
+
 # ── typing it: the browser's own DevTools socket, top document only ─────────────────────────────────────────────────────────
 _QUIET = logging.getLogger('taskuary.signin.cdp')      # websockets logs frames at DEBUG: never to anything, whatever the root says
 _QUIET.addHandler(logging.NullHandler()); _QUIET.propagate = False; _QUIET.disabled = True
 
 # Every field is looked for in THIS document - never a frame's, so a sign-in box another site framed into the page is not one
 # Taskuary types into. Visible, enabled and writable only; the user-name box is the text field before the password box.
+# ...AND INSIDE ITS COMPONENTS' OPEN SHADOW ROOTS (the browser-agent walk, 2026-11-03): a portal built of web components keeps its User
+# ID box in one, querySelectorAll never saw it, and the page read as "no sign-in form" - so the fill page could not type into it.
+# A box in a shadow root is named by its host's words too, and the focused box is the one at the bottom of the shadow roots' focus.
+DEEP = r'''const deepAll = (sel) => { const out = []; const walk = (r) => { r.querySelectorAll('*').forEach((e) => {
+    if (e.matches(sel)) out.push(e); if (e.shadowRoot) walk(e.shadowRoot); }); }; walk(document); return out; };
+  const deepActive = () => { let a = document.activeElement; while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement; return a; };
+  const hostOf = (e) => { const r = e.getRootNode(); return r && r.host ? r.host : null; };'''
 FIELDS = r'''(want) => {
+  ''' + DEEP + r'''
   const vis = (e) => { const s = getComputedStyle(e), r = e.getBoundingClientRect();
     return !e.disabled && !e.readOnly && s.visibility !== 'hidden' && s.display !== 'none' && +s.opacity > 0.05 && r.width > 4 && r.height > 4; };
-  const ins = [...document.querySelectorAll('input')].filter(vis);
+  const ins = deepAll('input').filter(vis);
   const pw = ins.find((e) => e.type === 'password');
   const texty = (e) => ['text', 'email', 'tel', ''].includes(e.type);
-  const named = (e) => /user|mail|login|account|ident|member|customer/i
-    .test([e.name, e.id, e.autocomplete, e.getAttribute('aria-label'), e.placeholder].join(' '));
+  const words = (e) => { const h = hostOf(e); return [e.name, e.id, e.autocomplete, e.getAttribute('aria-label'), e.placeholder,
+    h && h.id, h && h.getAttribute('name'), h && h.getAttribute('label'), h && h.getAttribute('aria-label')].join(' '); };
+  const named = (e) => /user|mail|login|account|ident|member|customer/i.test(words(e));
   const before = pw ? ins.slice(0, ins.indexOf(pw)).filter(texty) : [];
-  const user = before.reverse().find(named) || before[0] || (!pw && (ins.find((e) => texty(e) && named(e)) || null));
+  const alone = ins.filter(texty);
+  const user = before.reverse().find(named) || before[0] || (!pw && (ins.find((e) => texty(e) && named(e)) || (alone.length === 1 ? alone[0] : null)));
   const frames = [...document.querySelectorAll('iframe')].filter(vis).map((e) => e.src || '');
   // THE CODE BOX (2026-10-25): the one the page itself marks as a one-time code, else a short numeric-looking box that names a
   // code - never the user name or password box. A page of six one-digit boxes is not one this types into (not built).
   const coded = (e) => /otp|one.?time|totp|2fa|mfa|passcode|verif|auth.*code|security.?code|^code$/i
-    .test([e.name, e.id, e.getAttribute('aria-label'), e.placeholder].join(' ').trim());
+    .test(words(e).trim());
   const otp = ins.find((e) => e.autocomplete === 'one-time-code') || (!pw && ins.find((e) => e !== user
     && ['text', 'tel', 'number', ''].includes(e.type) && !(e.maxLength > 0 && e.maxLength < 4) && coded(e))) || null;
   const el = want === 'password' ? pw : want === 'user' ? user : want === 'otp' ? otp : null;
   if (el) { el.focus(); try { el.select(); } catch (_) { el.value = ''; } }
   if (el && want === 'otp') el.setAttribute('data-tq-code', '');
   return { origin: location.origin, href: location.href, top: window === window.top, password: !!pw, user: !!user, otp: !!otp, frames,
-           focused: !!el && document.activeElement === el };
+           focused: !!el && deepActive() === el };
 }'''
-CLEAR = "document.querySelectorAll('input[type=password], input[data-tq-code]').forEach((e) => { e.value = ''; })"
+CLEAR = "(() => { " + DEEP + " deepAll('input[type=password], input[data-tq-code]').forEach((e) => { e.value = ''; }); })()"
 SETTLE = 2.0                    # after the submit, before the boxes are emptied and the agent hears: the page's own post goes first
-STILL = "(() => ({ href: location.href, password: !!document.activeElement && document.activeElement.type === 'password' }))()"
+STILL = "(() => { " + DEEP + " const a = deepActive(); return { href: location.href, password: !!a && a.type === 'password' }; })()"
 
 
 class Cdp:
@@ -485,8 +612,18 @@ class Cdp:
         kw = dict(open_timeout=5, max_size=8 * 1024 * 1024, logger=_QUIET)   # no Origin: Chrome refuses a browser-looking client
         try: self.ws = connect(ws_url, proxy=None, **kw)
         except TypeError: self.ws = connect(ws_url, **kw)              # websockets before 15 has no proxy setting
-        self.n, self.session = 0, None
-        self.session = self.call('Target.attachToTarget', {'targetId': target, 'flatten': True}, top=True)['sessionId']
+        self.n, self.session, self.events = 0, None, []
+        self.session = self.call('Target.attachToTarget', {'targetId': self.tab(target), 'flatten': True}, top=True)['sessionId']
+
+    def tab(self, target: str) -> str:
+        """The tab to attach to: agent-browser's own word for it when that tab is still there - its .target file is not rewritten every
+        time the tab is, and a stale id attached to nothing, so neither a fill nor a watch reached the page (the browser-agent walk,
+        2026-11-03) - else the one web page the browser holds, else the first."""
+        try: pages = [t for t in self.call('Target.getTargets', top=True).get('targetInfos') or [] if t.get('type') == 'page']
+        except SignInError: return target
+        if not pages or any(t.get('targetId') == target for t in pages): return target
+        web = [t for t in pages if str(t.get('url') or '').startswith(('http://', 'https://'))]
+        return (web or pages)[0]['targetId']
 
     def call(self, method, params=None, top=False, timeout=10.0) -> dict:
         self.n += 1; i = self.n
@@ -498,6 +635,7 @@ class Cdp:
             left = end - time.time()
             if left <= 0: raise SignInError('the browser did not answer in time')
             r = json.loads(self.ws.recv(timeout=left))
+            if r.get('method') == 'Runtime.bindingCalled' and len(self.events) < 200: self.events.append(r)   # the page's own events are not kept
             if r.get('id') == i:
                 if 'error' in r: raise SignInError(f'the browser refused {method.split(".")[0]}')
                 return r.get('result') or {}
@@ -508,6 +646,14 @@ class Cdp:
         return (r.get('result') or {}).get('value')
 
     def fields(self, want=''): return self.js(f'({FIELDS})({json.dumps(want)})') or {}
+    def drain(self) -> list:
+        "The page's events read so far (a binding's call among them) - and the ones waiting on the socket - each once."
+        while True:
+            try: r = json.loads(self.ws.recv(timeout=0))
+            except Exception: break
+            if r.get('method') == 'Runtime.bindingCalled' and len(self.events) < 200: self.events.append(r)
+        out, self.events = self.events, []
+        return out
     def type(self, text: str): self.call('Input.insertText', {'text': text})
     def forget(self, site: str) -> int:
         """Delete the site's cookies from this LIVE browser - its kept file is cleaned on disk, but a running browser writes its own
@@ -528,7 +674,7 @@ class Cdp:
 def _cdp_url(sid: str) -> str:
     """The session's Chrome DevTools address, from agent-browser itself. Output to a FILE, not a pipe: see browserview.navigate."""
     from . import browserview, spawn
-    exe = shutil.which('agent-browser')
+    exe = browserview.program()
     if not exe: raise SignInError('agent-browser is not installed')
     log = Path(tempfile.gettempdir()) / f'{browserview.session_name(sid)}-cdp.log'
     with open(log, 'wb') as f:

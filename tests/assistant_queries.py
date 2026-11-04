@@ -41,12 +41,20 @@ class Q:
         self.tools = tuple(kinds[:1]) if tools is None else tuple(tools)
 
 
+def find(query, title_hint=''):
+    """The good answer to "bring X up": app.find, then the candidate it lists first, linked - the deterministic part is the index's ranking."""
+    def pick(user):
+        m = re.search(r'link it as (\[[^\]]+\]\(#[^)]+\))', user)
+        return f'Here: {m.group(1)}' if m else 'I could not find it.'
+    return [c('app.find', query=query), pick]
+
+
 T1, T4, T6, T12 = 'TQ-0001', 'TQ-0004', 'TQ-0006', 'TQ-0012'
 CASES = [
     # ── navigation: a page, a report, a task by ref or by name ──
     Q('navigation', 'open settings', None, 'Here: [Settings](#settings=config).', 'link:#settings', tools=('pages',), freq=4),
     Q('navigation', 'show me my connections', None, 'They are here: [Connections](#connector=).', 'link:#connector', tools=('connections.list', 'pages'), freq=3),
-    Q('navigation', 'take me to the AP ageing report', None, 'Here it is: [AP ageing over 30 days, weekly](#report=5).', 'link:#report', tools=('pages',), freq=3),
+    Q('navigation', 'take me to the AP ageing report', None, find('AP ageing report'), 'link:#msg=10', freq=3),
     Q('navigation', f'open {T4}', 'todo', f'Here: [{T4}](#task=4).', 'link:#task=4', tools=('pages',), freq=5),
     Q('navigation', 'open the invoice 88213 task', 'todo', [c('tasks.list', contains='invoice 88213'), f'That is [{T4}](#task=4).'], 'read:tasks.list', freq=4),
     Q('navigation', "pull up Marcus's month-end close", None, [c('tasks.list', contains='month-end close'), f'That is [{T1}](#task=1).'], 'read:tasks.list', freq=4),
@@ -103,6 +111,17 @@ CASES = [
     Q('item', 'close it, the bank feed reconciled', 'todo', c('task.complete', note='the bank feed reconciled'), 'pressed:close_note', freq=3),
     Q('item', 'assign it to me', 'todo', c('task.update', assignee='owner'), 'words', freq=2),
     Q('item', 'forward this to Priya', 'todo', c('task.handoff', who='Priya Shah'), 'light:forward', freq=3),
+    # SENT ON TO A PERSON, IN WORDS (the owner, 2026-11-03: "This should be sent to <an address>" right after Should be a task did nothing and
+    # said to forward it from their own mail): Hand it to a person comes up with the address in its To - on a task, and on an FYI, whose
+    # task it makes first. An address nobody here has written from is still an address
+    Q('item', 'send this to gail@vendor.example', 'todo', c('task.handoff', who='gail@vendor.example'), 'hand:gail@vendor.example', freq=4),
+    Q('item', 'send this to gail@vendor.example', 'fyi', c('task.handoff', who='gail@vendor.example'), 'hand:gail@vendor.example', freq=4),
+    Q('item', 'forward this to Gail', 'todo', c('task.handoff', who='Gail Moreno'), 'hand:Gail Moreno', freq=4),
+    Q('item', 'forward this to Gail', 'fyi', c('task.handoff', who='Gail Moreno'), 'hand:Gail Moreno', freq=4),
+    Q('item', 'this should go to Ray', 'todo', c('task.handoff', who='Ray Colton', note='Yours to take from here.'), 'hand:Ray Colton', freq=3),
+    Q('item', 'this should go to Ray', 'fyi', c('task.handoff', who='Ray Colton'), 'hand:Ray Colton', freq=3),
+    # ...and the row's own id, which the canvas lists it by: forward was no tool, and the turn dropped it with nothing said
+    Q('item', 'hand it to gail@vendor.example', 'todo', c('forward', who='gail@vendor.example'), 'hand:gail@vendor.example', freq=2),
     Q('item', 'ask Marcus which account it is', 'todo', c('task.clarify', text='Which account is short?'), 'light:reply', freq=3),
     Q('item', 'put it on my list', 'fyi', c('mine'), 'light:mine', freq=3),
     Q('item', 'next', 'todo', c('next'), 'next', freq=5),
@@ -232,14 +251,6 @@ CASES = [
     Q('short', 'done.', 'todo', c('close'), 'pressed:close', freq=4),
 ]
 
-def find(query, title_hint=''):
-    """The good answer to "bring X up": app.find, then the candidate it lists first, linked - the deterministic part is the index's ranking."""
-    def pick(user):
-        m = re.search(r'link it as (\[[^\]]+\]\(#[^)]+\))', user)
-        return f'Here: {m.group(1)}' if m else 'I could not find it.'
-    return [c('app.find', query=query), pick]
-
-
 BRING_UP = [
     ('turn off the sound', 'sound', '#settings=config&group=Notifications&key=hand_sound'),
     ('where do I change my signature', 'signature', '#settings=config&group=Replies&key=email_signature'),
@@ -260,9 +271,12 @@ BRING_UP = [
     ('the Jira card', 'jira', '#connector=jira'),
     ('the voice AI section', 'voice', '#connections=AI%20%E2%80%94%20voice'),
     ('my email connections', 'email connections', '#connections=Email'),
-    ('the AP ageing report', 'AP ageing', '#report=5'),
+    # ...a report by its newest run, as a Search pick opens it - read or not (the owner, 2026-11-03: "open the report should open the report like
+    # search"); one that never ran, by its page
+    ('the AP ageing report', 'AP ageing', '#msg=10'),
     ('the end of day report', 'end of day', '#report=2'),
-    ('the headcount report', 'headcount', '#report=4'),
+    ('the headcount report', 'headcount', '#msg=9'),
+    ('open the report about Kesler Medical', 'Kesler Medical', '#msg=10'),
     ('my routines', 'routines', '#report=workflows'),   # the shelf's name since 2026-10-29
     ('my SOUL doc', 'soul', '#settings=docs&doc=soul'),
     ('what it learned', 'learned', '#settings=docs&doc=learned'),
@@ -609,7 +623,7 @@ AREA_RAIL = [
     Q('rail', 'why is this one at the top?', 'todo', [c('docs.search', query='work rail'), 'Rows sit in the order they arrived.'], 'read:docs.search', freq=2),
     Q('rail', 'what is the habits row', None, [c('docs.search', query='habits row'), 'One row for every habit the Advisor learned.'], 'read:docs.search', freq=1),
     Q('rail', 'my rail is empty, where did everything go?', None, [c('activity.list', days=1), 'You cleared them this morning.'], 'read:activity.list', freq=2),
-    Q('rail', 'open the headcount report', None, 'Here: [Headcount by site](#report=9).', 'link:#report=', tools=('pages',), freq=2),
+    Q('rail', 'open the headcount report', None, find('headcount report'), 'link:#msg=9', freq=2),
     Q('rail', 'collapse the FYI section', None, 'The FYI heading folds with its own arrow - that press is yours.', 'words', tools=('words',), freq=1,
       note='folding a section is the page\'s own press; said honestly'),
 ]
@@ -968,6 +982,9 @@ AREA_NEW = [
     Q('new', 'write to the Northwind team WhatsApp group that the installer is ready to go', None,
       c('task.create_from_text', kind='send', channel='whatsapp', to='Northwind team', text='I have updated everything and the installer is ready to go'),
       'new:send', freq=3, seed=wa_group),
+    Q('new', 'send this on WhatsApp to the Northwind team: the ledger is closed for October', None,
+      c('task.create_from_text', kind='send', channel='whatsapp', to='Northwind team', text='the ledger is closed for October'),
+      f'to:whatsapp:{TEAM_GROUP}', freq=3, seed=wa_group, note='New, filled in, for their Send (2026-11-03) - nothing pasted, nothing sent'),
     Q('new', 'set a goal: books closed by the 5th', None, c('task.create_from_text', kind='goal', text='books closed by the 5th'), 'new:goal', freq=2),
     Q('new', 'note to self: call the bank', None, c('task.create_from_text', kind='task', text='call the bank'), 'new:note', freq=3),
     Q('new', 'new dashbaord of open tasks by person', None, c('task.create_from_text', kind='dashboard', text='open tasks by person'), 'new:dashboard', freq=2,
@@ -1242,6 +1259,10 @@ AREA_LIVE = [
     Q('task', 'send it', None, c('approve'), 'light:approve', view=TASK4V, freq=4, note='lit, never sent'),
     Q('reports', 'run the end of day report', None, c('report.run', name='End of day checkup'), 'open:#report=', freq=4),
     Q('reports', 'delete the headcount report', None, c('report.delete', ref='Headcount by site, nightly'), 'open:#report=', freq=1),
+    # ...the Advisor's job-ideas pass, NOW (lookout.start, the owner 2026-11-03): started off the chat's thread and said - here no AI, said so
+    Q('reports', 'look for ideas for my job now', None, c('advisor.ideas'), 'did:advisor.ideas', freq=2),
+    Q('reports', 'run the advisor ideas', None, c('advisor.ideas'), 'did:advisor.ideas', freq=2),
+    Q('phone', 'any ideas for my job? run the advisor now', None, c('advisor.ideas'), 'did:advisor.ideas', freq=1, phone=True),
     Q('help', "what's new in this version?", None,
       ['<invoke name="docs.search">\n<parameter name="query">what changed</parameter>\n</invoke>', 'The newest release adds the Watch it button.'],
       'read:docs.search', tools=('docs.search',), freq=3, note="a CLI brain's own tool markup is its CALL, and never shown"),
@@ -1303,11 +1324,14 @@ def _guards(stack, sort=None, live=None, agenda=None):
     # a running session on one task, where the case says so - what Stop and save is drawn by (concierge._agent_running)
     stack.enter_context(mock.patch.object(terminal, 'for_task', lambda tid, **k: {'sid': f's{tid}'} if live and int(tid) == int(live) else None))
     stack.enter_context(mock.patch.object(ingest, '_spawn'))
+    stack.enter_context(mock.patch.object(ingest, 'ask_later'))     # ...nor the model reading a promoted mail's ask (a hand-off makes its task)
     # ...and no agent starts, nothing is typed into a session: the dispatch door answers as a start would (concierge._start_agent, 2026-11-02),
     # and the waiting room holds every note as for an agent at work (concierge._tell_now)
     from taskuary import server, waitroom
     stack.enter_context(mock.patch.object(server, '_dispatch_task_to_its_agent', lambda tid, body, bg: {'dispatch': 'session', 'started': True, 'existing': False,
                                                                                                         'taskId': tid, 'ref': f'TQ-{int(tid):04d}'}))
+    # ...so the AI that would run it counts as connected (server._brainless): run_all runs in setUpClass, outside conftest's an_ai_is_connected
+    stack.enter_context(mock.patch.object(server, '_brainless', lambda coding: ''))
     stack.enter_context(mock.patch.object(waitroom, 'state', lambda store, tid: ('working', None)))
     sorted_ = json.dumps(sort or {'kind': 'report', 'why': 'scripted'})
     stack.enter_context(mock.patch.object(concierge, '_compose_llm', return_value=lambda *a, **k: sorted_))
@@ -1317,7 +1341,7 @@ def _guards(stack, sort=None, live=None, agenda=None):
 # bare word. A proposal on a phone is its question; a look-up's answer and a link are the model's own words.
 ACTS = ('Opened ', 'Marked ', 'Wrote ', 'Put down ', 'Drafting ', 'Rewriting ', 'Snoozed ', 'Closed ', 'Added ', 'Set ', 'Noted ',
         'Ticked ', 'Unticked ', 'Took ', 'Renamed ', 'Brought up ', 'Remembered ', 'Filed ', 'Put on ', 'Blocked', 'Stopped ', 'Triage already ', 'Org chart: ',
-        'Nothing went', 'Saved ', 'Adopted ', 'Kept ', 'Told ', 'Pressed ')
+        'Nothing went', 'Saved ', 'Adopted ', 'Kept ', 'Told ', 'Pressed ', 'Started ', 'Nothing started')
 def said_what(say: str, got: list, q) -> bool:
     acted = [g for g in got if g.split(':')[0] in ('open', 'new', 'next', 'draft', 'cleared', 'did')]
     # ...and a lit button or a press speaks for itself - the filled button, the card's badge - and says no line (the owner, 2026-10-23)
@@ -1332,6 +1356,7 @@ def outcomes(out: dict, reads: list) -> list:
     """What the turn did, as words a case can expect."""
     o = []
     if (l := out.get('light')) is not None: o.append(f"light:{l.get('verb') or ''}")
+    if (l or {}).get('hand'): o.append(f"hand:{l['hand'].get('to') or ''}")      # ...Hand it to a person's To, filled in
     if (p := out.get('pressed')) is not None: o.append(f"pressed:{p.get('verb') or ''}")
     if out.get('open'): o.append(f"open:{out['open']}")
     if out.get('new'): o.append(f"new:{out['new'].get('kind')}" + (f":{out['new'].get('how')}" if out['new'].get('how') else ''))

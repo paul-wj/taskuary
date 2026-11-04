@@ -2362,9 +2362,12 @@ NO_CODING_TOOL = 'Pick a coding tool first - connect one under Connections, then
 
 def start_on_task(store, tid: int, agent: str = '', model: str = None, instruction: str = None,
                   actor: str = 'owner', cwd: str = None, _chain: list = None, resume: str = None,
-                  brain: str = None, instruction_theirs: bool = False) -> dict:
+                  brain: str = None, instruction_theirs: bool = False, quiet: bool = False) -> dict:
     """Put a CLI on a task, in a REAL terminal - the only way an agent starts work here. An
-    agent you cannot watch, interrupt or answer is the thing this app exists to replace."""
+    agent you cannot watch, interrupt or answer is the thing this app exists to replace.
+
+    `quiet` reopens a `resume`d conversation with nothing typed into it: the agent is back where it stopped, at its prompt
+    (server.resume_asking - an agent a restart cut off while it asked the owner gets back to waiting, and does nothing new)."""
     import json
     t = store.get_task(tid)
     if not t: raise ValueError(f'no task {tid}')
@@ -2440,7 +2443,7 @@ def start_on_task(store, tid: int, agent: str = '', model: str = None, instructi
             term = open_session(store, agent, tid, repo, continued_cwd, 0, 0, actor,
                                 model if i == 0 else None, resume=resume,
                                 brain=candidate or None,
-                                seed_fn=(lambda here: resume_seed(instruction, store, tid)) if resume else
+                                seed_fn=(None if quiet else lambda here: resume_seed(instruction, store, tid)) if resume else
                                         (lambda here, r=repo, c=candidate: seed_text(store, tid, instruction, r, here, instruction_theirs,
                                                                             cli=c or cli_named(json.loads(row.get('Config') or '{}')))))
             chosen = candidate or cli_named(json.loads(row.get('Config') or '{}'))
@@ -2949,14 +2952,21 @@ def release_held(store, task_id, actor='terminal') -> int:
     """A reply held while the agent worked (open_session) comes back when the session is over, whatever ended it -
     it stayed held and invisible for good after a stop, a crash or a restart (A6, 2026-09-25). Unless the agent wrote a
     newer reply meanwhile: that one is the answer, and the old draft is closed as superseded."""
-    rows = store._rows('SELECT ReviewId, Status FROM review WHERE TaskId=?', (task_id,))
+    rows = store._rows('SELECT * FROM review WHERE TaskId=?', (task_id,))
     held = [r for r in rows if r.get('Status') == 'held']
     if not held: return 0
+    n = len(held)
+    # ...but an EARLIER agent session's draft, held while a newer one worked, is not brought back over it: closed as superseded, its words
+    # kept to read and bring back (wrapup.stale_draft, the owner 2026-11-03)
+    from . import wrapup, workerstate as ws
+    if (sid := ws.current_sid(store, task_id)):
+        for h in [h for h in held if wrapup.stale_draft(store, h, sid)]: wrapup.supersede(store, h, actor); held.remove(h)
+    if not held: return n
     newer = [r for r in rows if r.get('Status') == 'pending' and r['ReviewId'] > max(h['ReviewId'] for h in held)]
     for h in held:
         if newer: store.decide_review(h['ReviewId'], 'closed_unsent', None, actor, note="superseded by the agent's newer reply")
         else: store.unhold_review(h['ReviewId'], 'the agent session ended - the reply is back for your yes')
-    return len(held)
+    return n
 
 
 INTERRUPTED = 'interrupted'      # Taskuary closed (or restarted) while a worker had this; the owner decides what continues (PW-262)

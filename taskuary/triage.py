@@ -29,6 +29,9 @@ FIELDS = {
     'addressed_to': "addressed_to is the To line by name, the owner as \"you\" - who the mail is put to; copied is the Cc line the "
                     "same way. A name the message opens with or puts its question to is matched against them.",
     'copied': "copied is the Cc line by name, the owner as \"you\" - who is only watching.",
+    'answered_before': "answered_before is earlier mail (other threads) that had one of this mail's other recipients on it, this "
+                       "sender's first: when, from whom, its subject, which of these colleagues were on it (with), and who answered it "
+                       "first (answered_by: \"you\", a colleague, or null when no reply reached the owner).",
     'last_on_thread_is_you': "last_on_thread_is_you is true when the owner's own reply was the last thing said on the thread before "
                              "this message - what they said is their \"you\" line in the exchange.",
     'others_replied': "others_replied names people other than the owner and the sender who have SENT a message on this thread; "
@@ -182,8 +185,10 @@ OFFER = _bullet('offer')         # what an agent could do for the owner about th
 NEEDS_BROWSER = _bullet('needs_browser')   # the work is done on a web page: the agent gets Taskuary's browser, wherever it starts (2026-10-29)
 NEEDS_DESKTOP = _bullet('needs_desktop')   # ...in a desktop app: the task is marked "needs desktop" when Agent Desktop is on (agentdesktop, 2026-10-31)
 WRAPPER = _bullet('wrapper')     # the text its sender did not write, for a screen to leave out (2026-10-28)
+WATCH = _bullet('watch')       # the fourth verdict, for a document written before it (the owner, 2026-11-03)
 HANDLED = _bullet('handled_elsewhere')   # a watched task's new line: does it show somebody else dealt with it (watch.py, 2026-11-01)
 DATA_CLASSES = ('ordinary', 'sensitive')
+INTENTS = ('task', 'reply_only', 'watch', 'fyi')
 DIFFICULTIES = ('quick', 'standard', 'hard')
 
 
@@ -235,7 +240,8 @@ def verdict_schema(repos=None, candidates=None, playbooks=None, profiles=None, s
     nullable one instead, and nothing outside the list may be answered. And ours: it names only
     the fields the prompt EXPLAINED. Given a wider schema on a plain mail, the model dutifully
     filled in a `relationship` and a `repo_reason` for a thread that had neither (TQ-0665)."""
-    p = {'intent': {'type': 'string', 'enum': ['task', 'reply_only', 'fyi']},
+    # WATCH (the owner, 2026-11-03): a thread the owner cares about that somebody else will handle - a task already under Watching (watch.py)
+    p = {'intent': {'type': 'string', 'enum': list(INTENTS)},
          'why': {'type': 'string'}, 'title': {'type': 'string'}, 'summary': {'type': 'string'},
          # no coding tool connected: the answer cannot say coding (agents.coding_ready)
          'kind': {'type': ['string', 'null'], 'enum': (['coding'] if coding else []) + ['general', 'task', None]},
@@ -714,6 +720,10 @@ def relationship_of(j: dict, candidates: list, room=()) -> dict:
     return {'relationship': rel, 'related_message_ids': related, 'existing_task_id': task, 'same_problem': same}
 
 
+class Unreadable(ValueError):
+    "An answer with no JSON object in it: its message is llm.unreadable's plain words, kept as they are."
+
+
 def classify_intent(msg: dict, llm=None, soul: str = None, notes: list = None, images=None,
                     learned: str = None, system: str = None, notes_left: int = 0, mine=(),
                     thread: dict = None, watch: str = None, playbooks: str = None,
@@ -891,6 +901,7 @@ def classify_intent(msg: dict, llm=None, soul: str = None, notes: list = None, i
             if not shape and '**needs_browser**' not in base: system += '\n\n' + NEEDS_BROWSER   # ...and whether it is done on a web page (2026-10-29)
             if not shape and '**needs_desktop**' not in base: system += '\n\n' + NEEDS_DESKTOP   # ...or in a desktop app (2026-10-31)
             if not shape and '**wrapper**' not in base: system += '\n\n' + WRAPPER    # ...and what its sender did not write (2026-10-28)
+            if '**watch**' not in base: system += '\n\n' + WATCH     # ...and the fourth verdict, someone else's to handle (2026-11-03)
             if watched and '**handled_elsewhere**' not in base: system += '\n\n' + HANDLED   # ...and whether a watched task looks handled (2026-11-01)
             # the last thing asked for, after every block that says how to JUDGE: the output shape
             if shape: system += '\n\n' + TASK_FIELDS
@@ -905,8 +916,8 @@ def classify_intent(msg: dict, llm=None, soul: str = None, notes: list = None, i
                               need=('title', 'summary'), **({'max_tokens': TRIAGE_TOKENS} if takes_tokens(llm) else {}),
                               **({'images': images} if images else {}))
             raw_answer, j = answer.raw, answer.data
-            if j is None: raise ValueError(answer.error or 'the response was not JSON')
-            if j.get('intent') in ('task', 'reply_only', 'fyi'):
+            if j is None: raise Unreadable(answer.error or 'the response was not JSON')
+            if j.get('intent') in INTENTS:
                 # `kind` is the model's SECOND verdict and it ROUTES the task to one of three
                 # places: coding starts an agent, general opens the assistant's chat, task goes on
                 # the owner's own list with nothing working it (ingest.auto_start_ok decides who may
@@ -1020,7 +1031,8 @@ def classify_intent(msg: dict, llm=None, soul: str = None, notes: list = None, i
                 wr = wrapper_in(j, f"{msg.get('body') or ''}\n{msg.get('own_text') or ''}")
                 if wr: out['wrapper'] = wr
                 return out
-            parse_error = f"invalid intent {j.get('intent')!r}; expected task, reply_only, or fyi"
+            parse_error = f"invalid intent {j.get('intent')!r}; expected task, reply_only, watch, or fyi"
+        except Unreadable as e: parse_error = str(e)          # already says what came back, in plain words (llm.unreadable)
         except Exception as e:
             parse_error = f'{type(e).__name__}: {e}'
     # No model, or a model whose answer was not usable (bad JSON, an intent outside the contract): either way

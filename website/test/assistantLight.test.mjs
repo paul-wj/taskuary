@@ -58,3 +58,14 @@ test("the day typed with Remind me rides the light into the picker as its first 
   assert.equal(lightOf({ verb: "defer", key: "task:4", tid: 4 }).day, undefined, "no day said, none carried");
   assert.equal(litPick(lightOf({ verb: "defer", key: "task:4", tid: 4 }), { key: "task:4" }).day, undefined);
 });
+
+// HAND IT TO A PERSON, ASKED FOR IN WORDS (the owner, 2026-11-03: "This should be sent to <an address>" did nothing): the light carries who
+// and a note, the task view opens the form with them in it, and the form drafts the forward at once - Send is still the owner's press.
+test("the person and note typed with Hand it to a person ride the light into its form", () => {
+  const hand = { to: "gail@vendor.example", note: "Yours from here." };
+  const l = lightOf({ verb: "forward", label: "Hand it to a person", key: "msg:5", tid: 31, hand });
+  assert.deepEqual(l.hand, hand);
+  assert.deepEqual(litPick(l, { key: "msg:5", tid: 31 }).hand, hand, "the row's pick carries it");
+  assert.equal(lightOf({ verb: "close", key: "msg:5", tid: 31, hand }).hand, undefined, "only Hand it to a person carries one");
+  assert.equal(lightOf({ verb: "forward", key: "msg:5", tid: 31, hand: { note: "x" } }).hand, undefined, "no person, nothing to fill");
+});

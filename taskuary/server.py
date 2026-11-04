@@ -189,6 +189,8 @@ async def _lifespan(_app):
     # No interactive or headless worker survives into this process. Repair any persisted
     # in-progress/running flags before the Board and funnel get their first read.
     hub_term.recover_after_restart(store)
+    # ...and an agent the restart cut off while it asked the owner is back at its question (resume_asking) - off the window's path
+    threading.Thread(target=resume_asking, daemon=True, name='resume-asking').start()
     # ...and a batch whose close waited on a turn the restart ended (batch.TAG) closes now, its report from the saved transcript
     from . import batch as _batch
     try: _batch.recover_later(store)
@@ -679,6 +681,27 @@ def signin_remove(site: str, request: Request):
 
 class SigninKeyBody(BaseModel):
     key: str = ''
+
+
+class SigninAddBody(BaseModel):
+    site: str
+    user: str = ''
+    password: str
+    key: str = ''
+
+
+# A SIGN-IN SAVED AHEAD OF TIME (the owner, 2026-11-03: "we probably should have space on connector to fill out what the system requires"):
+# the same sealed row a fill page's Save to vault keeps (signin.save), for the site named - a bare name or an address, pinned to its
+# registrable domain. Write-only: the answer says the site, never what was typed
+@app.post('/api/signins')
+def signin_add(body: SigninAddBody, request: Request):
+    from . import signin
+    _owner_only(request, "the saved sign-ins are the owner's")
+    site = signin.site_from(body.site)
+    if not site: raise HTTPException(400, 'that is not a site a sign-in can be kept for - type its address, like portal.example.com')
+    try: signin.save(store, site, body.user.strip(), body.password, ACTOR, key=body.key.strip() or None)
+    except ValueError as e: raise HTTPException(400, str(e))
+    return {'ok': True, 'site': site}
 
 
 # A SAVED SIGN-IN'S AUTHENTICATOR KEY (2026-10-25): kept, or (empty) dropped. Write-only: no route ever reads a key back
@@ -1680,6 +1703,11 @@ def _run_kind(op: dict, background: BackgroundTasks):
             raise operations.Halt(out['send_error'], {'delivery': out.get('delivery') or 'failed', 'unsent': True, 'rid': tid}
                                   | ({'fix': out['send_fix']} if out.get('send_fix') else {}))
         if out.get('send_error'): out = {**out, 'reply_error': out['send_error']}
+        # SEND AND CLOSE (the owner, 2026-11-03: "button send and close and send without closing"): `close` closes the task once the reply
+        # went, through the one gate (concierge.close_after_send) - kept open, and said why, while an agent or anything else on it waits
+        if p.get('close') and rv.get('TaskId') and not out.get('reply_error'):
+            from . import concierge
+            out = {**out, **concierge.close_after_send(store, int(rv['TaskId']), ACTOR)}
         return out
     if kind == 'agent.answer':
         # the exact outstanding request of the run that asked (PW-138/139); nothing asked = the waiting room (PW-140)
@@ -2002,19 +2030,25 @@ def task_detail(task_id: int):
     # ...and whether its channel can carry a reply, as /api/reviews says: without it a Teams draft offered Send, and
     # the press came back "not sent" instead of the card offering Copy & close from the start
     memo, sigs = {}, {}
+    from .ingest import DRAFTING
     for r in d.get('reviews') or []:
         r['CanSend'], r['SendBlock'] = _review_send_state(memo, r)
         r['Signature'] = signatures.for_review(store, r, memo=sigs)     # what goes under it: the reply box shows it
+        r['Drafting'] = r['ReviewId'] in DRAFTING                         # its draft is being written: the box waits, never "nothing yet"
     # the owner's own mail has nobody behind it to answer (wrapup.from_owner): the page's Reply doors read this, never a guess
-    from .ingest import own_addresses
+    from .ingest import own_addresses, row_recipients
     from .wrapup import from_owner
-    me = own_addresses(store)
-    for m in d.get('messages') or []: m['FromOwner'] = from_owner(store, m, me)
+    me, memo = own_addresses(store), {}
+    for m in d.get('messages') or []:
+        m['FromOwner'] = from_owner(store, m, me)
+        # ...and whom it went to, by name - Came from showed only the sender (the owner, 2026-11-03: "we should be able to see who else was on email")
+        if (rc := row_recipients(store, m, me, memo)): m['Recipients'] = rc
     from . import batch as _batch
     batch_rows = store.batch_items(task_id)
     batch_outside = bool(batch_rows) and _batch.outside(store, task_id)
     session = hub_term.for_task(task_id, tail=3, details=False)
     judged, ran, story = _brainroute().judged(store, task_id), _workerstate().ended(store, task_id), _agent_story(task_id)
+    left = _workerstate().left_asking(store, task_id) if ran else []         # what a run that is over was still asking the owner
     # "Run again on the strong model" is offered only on an open task whose agent failed or whose reader was unsure (TaskPage's
     # ▾): asking the router on every other open cost ~11 ms a task, 2.7x what an open cost in 0.3.9.34 (2026-10-26)
     strong = _brainroute().strong_offered(d['task'], judged, ran, story)
@@ -2061,6 +2095,12 @@ def task_detail(task_id: int):
             'closedWhy': taskstate.closed_why(store, d['task'], d.get('comments')),
             # ...and how its last run ENDED, in the run's own word (finished / failed / stopped / disconnected) - what taskstate read
             'runEnded': ran,
+            # ...and the question it was still asking the owner when it ended (workerstate.left_asking): its Continue is the answer, and
+            # says so (the owner, 2026-11-03: "it's asking me question but the ai closed the agent why?")
+            # ...but a SIGN-IN it was waiting on is not answered in words (the owner, 2026-11-03: "agent is closed but it shows answer it??"):
+            # its Continue opens the session and its browser again, and the agent asks for the sign-in there - `leftSignin` names the site
+            'leftAsking': [r['text'] for r in left if not str(r.get('request_id') or '').startswith('signin:')],
+            'leftSignin': next((str(r['request_id'])[7:] for r in left if str(r.get('request_id') or '').startswith('signin:')), ''),
             'transcript': {'sid': tr['Sid'], 'agent': tr['Agent'], 'cwd': tr['Cwd'], 'brain': tr['Brain'],
                            'at': tr['CreatedAt'], 'chars': len(tr['Text'] or '')} if tr else None,
             # ...and WHICH BRAIN ACTUALLY RAN IT, for a session that has ended (_ran_on)
@@ -2578,6 +2618,7 @@ def continue_task(task_id: int, body: CodeBody):
     if not task: raise HTTPException(404, 'task not found')
     instruction = str(body.instruction or '').strip()
     if not instruction: raise HTTPException(422, 'say what code changes you want next')
+    if why := _brainless(True): raise HTTPException(422, why)
     _refresh_chat_context(task_id=task_id)
     previous = store.last_transcript(task_id) or {}
     if hub_term.for_task(task_id): raise HTTPException(409, 'this task already has a live coding session')
@@ -2622,6 +2663,7 @@ def continue_session(task_id: int, body: CodeBody = None):
     # ...a Stop and save still writing up closes its session only once the result is saved (wrapup._wrap_session): the page offers
     # Continue from the Result, and a press in that gap was refused "this task already has a live session" (browser/agent-presses).
     # It waits for that write-up - the session it is about to close is not a live one
+    if why := _brainless(True): raise HTTPException(422, why)
     _after_writeup(task_id)
     if hub_term.for_task(task_id): raise HTTPException(409, 'this task already has a live session')
     row, why = _resumable(task_id)
@@ -2630,19 +2672,64 @@ def continue_session(task_id: int, body: CodeBody = None):
     # tab rather than having an agent run invisibly behind a done row (the owner, 2026-09-15)
     if task.get('Status') not in ('open', 'waiting', 'in_progress'):
         store.update_task(task_id, {'Status': 'in_progress'}, ACTOR)
-    try:
-        session = hub_term.start_on_task(store, task_id, row['Agent'], (body.model if body else None),
-                                         (body.instruction if body else None), ACTOR,
-                                         cwd=row['Cwd'], resume=row['ExtId'],
-                                         # the id belongs to the CLI that made it: resuming a codex conversation on the default
-                                         # brain ran `claude --resume <codex id>` - "No conversation found with session ID"
-                                         brain=row.get('Brain') or None)
+    try: session = _reopen(task_id, row, (body.model if body else None), (body.instruction if body else None))
     except (ValueError, RuntimeError, FileNotFoundError) as e:
         raise HTTPException(422, str(e))
     store.audit('task', task_id, 'continue-session', ACTOR, detail={'agent': row['Agent'], 'fromSid': row['Sid']})
     from . import outcomes                           # the ledger: the owner's next move after a stop, in their words
     outcomes.record(store, 'agent.continued', 'task', task_id, ACTOR, next_move=(body.instruction if body else None) or '', facts={'door': 'continue-session'})
     return {'resumed': row['ExtId'], 'agent': row['Agent'], 'fromSession': row['Sid'], 'session': session}
+
+
+def _reopen(task_id: int, row: dict, model=None, instruction=None, actor=ACTOR, quiet=False) -> dict:
+    "The agent's own conversation (`_resumable`'s row) reopened in a pane - Continue's road, and a restart's (resume_asking)."
+    return hub_term.start_on_task(store, task_id, row['Agent'], model, instruction, actor, cwd=row['Cwd'], resume=row['ExtId'],
+                                  # the id belongs to the CLI that made it: resuming a codex conversation on the default
+                                  # brain ran `claude --resume <codex id>` - "No conversation found with session ID"
+                                  brain=row.get('Brain') or None, quiet=quiet)
+
+
+# AN AGENT WAITING ON THE OWNER IS STILL WAITING AFTER A RESTART (the owner, 2026-11-03): an update or a quit and start cut off an agent
+# that had asked "go ahead?", and nothing restarts by itself (PW-262), so the question sat on a dead run. Such an agent - and only such an
+# one: its run's last word the restart's cut, a question of its own open (workerstate.left_asking), the task still open - gets its own
+# conversation back, with NOTHING typed or sent: a coding agent's CLI reopened on its id (Continue's road, `quiet`), a general agent's
+# chat opened on its saved turns. Its questions are carried onto the new run, so it reads live and asking and an answer reaches it.
+# ONCE: a question carried over is marked (workerstate.RESUMED) and never brought back again; a resume that fails leaves the task
+# interrupted, its ended run offering Answer it as before. An agent that was WORKING stays interrupted - that one is the owner's call.
+RESTARTED = 'Taskuary restarted while the agent was waiting on you. Its conversation is back - still waiting on your answer.'
+
+def resume_asking(actor: str = 'startup') -> list:
+    "Every agent a restart cut off while it asked the owner, back at its question - [task ids resumed]."
+    from . import general, workerstate as ws
+    out = []
+    for t in store.list_tasks(active_only=True):
+        tid = int(t['TaskId'])
+        if hub_term.INTERRUPTED not in re.split(r'[\s,]+', str(t.get('Tags') or '')) or t.get('Status') not in ('open', 'waiting'): continue
+        last, qs = store.last_worker_event(tid, skip=ws.NOTES), ws.left_asking(store, tid)
+        # cut by the restart, not stopped by the owner; asking, not answered; never one already brought back
+        if not (qs and last and last['Kind'] == 'disconnected' and last.get('Source') in hub_term.INTERRUPTING): continue
+        if any(q['source'] == ws.RESUMED for q in qs): continue
+        is_gen = general.handles(t)
+        try:
+            if why := _brainless(not is_gen): raise RuntimeError(why)
+            if is_gen:
+                if not general.provider_options(store): raise RuntimeError(f"no AI connected under {words.name('ai')}")
+                sid = general.start_session(store, tid, actor=actor).sid
+            else:
+                row, why = _resumable(tid)
+                if not row: raise RuntimeError(why)
+                sid = _reopen(tid, row, actor=actor, quiet=True)['sid']
+            # a coding pane is answered in words: its chooser did not survive the restart, so its options ride the question
+            for q in qs: ws.record(store, tid, sid, 'input_needed', request_id=q['request_id'], source=ws.RESUMED, choices=q['choices'] if is_gen else None,
+                                   text=q['text'] if is_gen or not q['choices'] else f"{q['text']} ({' / '.join(q['choices'])})")
+            store.add_comment(tid, actor, 'agent', RESTARTED)
+            store.audit('task', tid, 'resume-asking', actor, 'system', detail={'sid': sid, 'fromSid': last['Sid'], 'questions': [q['request_id'] for q in qs]})
+            out.append(tid)
+        except Exception as e:
+            logger.warning(f'task {tid}: the agent waiting on the owner was not brought back after the restart - {e}')
+            store.tag_task(tid, hub_term.INTERRUPTED, True, actor)        # a start that got as far as clearing it: still interrupted
+            store.audit('task', tid, 'resume-asking', actor, 'system', detail={'fromSid': last['Sid'], 'failed': str(e)[:300]})
+    return out
 
 
 class ContinueBody(BaseModel):
@@ -2656,6 +2743,8 @@ def continue_work(task_id: int, body: ContinueBody = None):
     agents? Maybe add a new prompt inside that continue session"). A regular agent resumes its saved conversation; a
     coding agent reopens its own CLI session by the id its CLI gave it, or - where there is none to reopen - a fresh
     one seeded with the handover. The owner's note, when there is one, is the first thing it hears."""
+    from . import general as _g
+    if (t := store.get_task(task_id)) and (why := _brainless(not _g.handles(t))): raise HTTPException(422, why)
     from . import asks
     asks.mark(store, task_id)          # the owner picked it up again: it reports back like an ask
     from . import continuity, general
@@ -2673,17 +2762,26 @@ def continue_work(task_id: int, body: ContinueBody = None):
         # ...and the owner's words are on the conversation BEFORE this answers (the owner, 0.3.9.51: "I did Continue, filled it out and
         # nothing happened"): written by the turn once its CLI had started, the page's read at the answer missed them, and they showed
         # only on a poll seconds later, under an agent already "working"
-        said = (note or continuity.RESUME_PROMPT) if (note or imgs) else ''
-        if said: store.add_comment(task_id, 'owner', general.USER_TYPE, said)
+        # THE TURN LEADS WITH WHAT CAME IN (2026-11-03, as ingest.carry_on_turn): the news, then the owner's note, then Resume's words. A resumed
+        # CLI is handed the turn alone, so the news behind it in the instructions sat under "restate that one question and wait", shown nowhere.
+        # Taskuary's part is filed as its brief (the chat's grey line) and the note as the owner's own, in that order
+        brief = '\n\n'.join(x for x in [news, '' if note else continuity.RESUME_PROMPT] if x)
+        if brief: store.add_comment(task_id, general.BRIEF_ACTOR, general.USER_TYPE, brief)
+        if note: store.add_comment(task_id, 'owner', general.USER_TYPE, note)
+        turn = '\n\n'.join(x for x in [news, f'FROM THE OWNER: {note}' if note else '', continuity.RESUME_PROMPT] if x)
         def go():
-            try: general.start_session(store, task_id, actor=ACTOR).send_prompt(note or continuity.RESUME_PROMPT, imgs or None, as_owner=bool(note or imgs), echo=bool(note),
-                                                                              delivery_instructions=news or None, kept=bool(said))
+            try: general.start_session(store, task_id, actor=ACTOR).send_prompt(turn, imgs or None, brief=True, kept=True)
             except Exception as e: _walk_cannot(task_id, f'The session could not continue: {e}. Your saved conversation is still here.')
             finally: general.OPENING.discard(task_id)
         # marked HERE, as /resume and the walk are: the page reloads the conversation the moment this answers, before the thread has
         # a session, read "nothing running" and never looked again - Continue and Try again left the new turn unseen (the agents walk,
         # 2026-10-26)
         general.OPENING.add(task_id)
+        # ...and a reply an earlier session drafted is out of sight from this answer on, not from the new session's start a beat later - the
+        # page reloads at once (wrapup.stale_draft, the owner 2026-11-03). A live session carries on: its own draft is still the latest
+        if not general.session_for(task_id):
+            from . import wrapup
+            wrapup.hold_stale(store, task_id)
         threading.Thread(target=go, daemon=True, name=f'continue-{task_id}').start()
         store.audit('task', task_id, 'continue-work', ACTOR, detail={'kind': 'general', 'note': bool(note)})
         from . import outcomes
@@ -2811,6 +2909,7 @@ def dispatch_task(task_id: int, body: DispatchBody, background: BackgroundTasks)
         from . import general
         return {'dispatch': 'assistant' if general.handles(task) else 'session', 'started': False, 'existing': True, 'taskId': task_id,
                 'ref': task_ref(task_id)}
+    if why := _no_brain(task, body): raise HTTPException(422, why)
     from . import asks
     asks.mark(store, task_id)          # the owner started it - the button or the assistant: it reports back like an ask
     try:
@@ -3276,8 +3375,16 @@ def _readable(m: dict, verdict=False) -> dict:
     from .triage import read_text, wrapper_of
     try:
         v = store.message_verdict(m['MessageId']) if m and verdict is False else verdict
-        return m | {'ReadText': read_text(m.get('BodyText') or '', m.get('OwnText'), wrapper_of(v))} if m else m
+        return m | {'ReadText': read_text(m.get('BodyText') or '', m.get('OwnText'), wrapper_of(v)), 'Links': _links(m)} if m else m
     except Exception: return m
+
+
+def _links(m: dict) -> list:
+    """The mail's own links behind words ([[words, address]], channels.mail_links) for the screens to draw as links - web and mail
+    addresses only, read again here so nothing else stored there ever becomes one (mailLinks.js opens them in the system browser)."""
+    try: got = (json.loads(m.get('MailMetaJson') or '{}') or {}).get('links') or []
+    except (ValueError, TypeError, AttributeError): return []
+    return [[str(w), str(h)] for w, h in (x for x in got if isinstance(x, list) and len(x) == 2) if re.match(r'(?i)(https?://|mailto:)', str(h))]
 
 
 @app.get('/api/messages/{mid}')
@@ -3618,25 +3725,8 @@ class OpenReplyBody(BaseModel):
     cc: list[str] | None = None
     # the instruction is the app's own (a chase's brief), not the owner's words: it rides into the draft and is not kept as theirs
     app_words: bool = False
-    # DRAFT WITH AI was pressed: the owner asked for the AI's draft, so it is written even where no agent has worked (_blank_reply)
+    # DRAFT WITH AI was pressed: every press that asks for a draft gets one now (open_reply), so it says no more than `draft`
     ai: bool = False
-
-
-def _agent_worked(tid) -> bool:
-    """Has an agent worked this task - a session's report, a filed transcript, or the assistant's own turns? What a reply drafts from."""
-    from . import general
-    try: return bool(responder.resolution_of(store, tid) or store.last_transcript(tid) or general.history(store, tid))
-    except Exception as e: logger.debug(f'agent work on task {tid} not read: {e}'); return False
-
-
-def _blank_reply(tid, body) -> bool:
-    """REPLY WITH NOTHING TO SAY OPENS EMPTY (the owner, 2026-10-28: "if you hit Reply on a task with no agent work, the reply is drafted
-    with AI but it has nothing to respond with since it knows nothing. Without an agent run, Reply should just leave it open with no
-    draft"). Reply on a task no agent has worked opens the box with its envelope and no AI draft; Draft with AI (`ai`), Redraft and the
-    owner's own words for it still draft, and a draft triage already wrote stays. A message with no task keeps drafting from itself."""
-    if not tid: return False
-    if body is not None and (body.ai or body.redraft or (body.instruction or '').strip()): return False
-    return not _agent_worked(tid)
 
 
 @app.post('/api/messages/{mid}/reply')
@@ -3690,7 +3780,11 @@ def open_reply(mid: int, body: OpenReplyBody = None):
         draft = ''
         # ...and kept, not thrown away once the model has read them (2026-10-23) - the owner's own, never a chase's brief
         if not body.app_words: _keep_instruction(rid, body.instruction)
-    owed = not draft and (body is None or body.draft) and not (not promise and _blank_reply(tid, body))
+    # REPLY DRAFTS, AGENT OR NOT (the owner, 2026-11-03: "drafting reply is broken ... if its still working stay spinning until done"):
+    # Reply on a task no agent had worked opened a signature-only box under Draft with AI, nothing coming (2026-10-28) - and when the
+    # arrival's own draft was still being written (ingest.DRAFTING) it landed in that box seconds later, unannounced. Every press that
+    # asks for a draft is owed one; the page's /draft waits on a draft already under way, and a writer with nothing to go on says so.
+    owed = not draft and (body is None or body.draft)
     if owed and not later:
         try:
             draft = (responder.write_draft(store, tid, rid, actor=ACTOR, nudge=_reply_nudge(body and body.instruction), pressed=True) if tid
@@ -3998,6 +4092,26 @@ def start_session(store_, tid: int, agent: str = None, model: str = None, instru
 _STARTING, _STARTED, _STARTING_LOCK = {}, {}, threading.Lock()
 
 
+# NO AI, NO START (the owner, 2026-11-03): a coding start with no coding tool connected opened a session with nothing to run it. Every road -
+# Start, Send to agent, Run another agent, Continue, the Assistant, the phone - is refused here, BEFORE the task, its kind or a session
+# changes, with what is missing and where to connect it. A general agent needs any AI (capabilities.has_ai); a coding one a CLI here.
+def _brainless(coding: bool) -> str:
+    from . import demo, capabilities
+    if demo.enabled(): return ''
+    where = words.name('ai')
+    if coding and not hub_agents.cli_ready(store):
+        return f'{hub_agents.NO_AI} that can run a coding agent - connect a command-line AI (Claude Code, Codex) under {where}, then start it again'
+    if not coding and not capabilities.has_ai(store): return f'{hub_agents.NO_AI} to run this agent - connect one under {where}, then start it again'
+    return ''
+
+def _no_brain(task: dict | None, body: DispatchBody, kind: str = '') -> str:
+    "The refusal for a dispatch of `body` on `task` (None: a message not yet a task, going to `kind`) - the kind _dispatch_one would start."
+    from . import general
+    req = str(body.kind or kind or '').lower()
+    if req == 'coding' and str((task or {}).get('Kind') or '').lower() != 'coding' and not hub_agents.developer_mode(store): req = 'general'
+    return _brainless(req == 'coding' if req else not (task and general.handles(task)))
+
+
 def _dispatch_task_to_its_agent(tid: int, body: DispatchBody, background: BackgroundTasks) -> dict:
     with _STARTING_LOCK: gate = _STARTING.setdefault(int(tid), threading.Lock())
     waited = not gate.acquire(blocking=False)
@@ -4035,6 +4149,7 @@ def _dispatch_one(tid: int, body: DispatchBody, background: BackgroundTasks) -> 
         raise HTTPException(422, 'kind must be general or coding')
     # DEVELOPER MODE OFF, a coding hand-off is a general agent's (the owner, 2026-11-02) - a task already coding keeps its kind
     if requested == 'coding' and task_kind != 'coding' and not hub_agents.developer_mode(store): requested = 'general'
+    if why := _no_brain(task, body): raise HTTPException(422, why)
 
     # NO SECOND HAND-OFF WHILE AN AGENT RUNS (the owner, 2026-10-01: Send to agent is not offered then - Continue
     # instead). Another dispatch on a live session either started a second worker or typed into the first unasked; every
@@ -4114,6 +4229,7 @@ def dispatch_message(mid: int, body: DispatchBody, background: BackgroundTasks):
     # ...a coding one with developer mode off is a general agent's (_dispatch_one says the same for a task that is not already coding)
     want = requested if requested in task_kinds.AGENT else 'coding'
     if want == 'coding' and not hub_agents.developer_mode(store): want = 'general'
+    if why := _no_brain(store.get_task(m['TaskId']) if m.get('TaskId') else None, body, want): raise HTTPException(422, why)
     tid = m.get('TaskId') or task_from_message(store, mid, ACTOR, want)
     try:
         out = _dispatch_task_to_its_agent(tid, body, background)
@@ -4496,11 +4612,13 @@ def get_run(run_id: int):
 @app.get('/api/reviews')
 def reviews(status: str = None):
     from .verdicts import context_moved
+    from .ingest import DRAFTING
     rows = store.list_reviews(status)
     memo, sigs = {}, {}
     for r in rows:
         r['CanSend'], r['SendBlock'] = _review_send_state(memo, r)
         r['Signature'] = signatures.for_review(store, r, memo=sigs)
+        r['Drafting'] = r['ReviewId'] in DRAFTING
         moved, latest = context_moved(store, r)          # material change only (PW-240), never a polling timestamp
         r['Stale'] = bool(moved)
         if r['Stale'] and latest:
@@ -4515,14 +4633,16 @@ async def review_attach(rid: int, request: Request, name: str = ''):
     waiting room's images); `name` is what the recipient will see it called."""
     from . import verdicts
     data = await request.body()
-    try: return await run_in_threadpool(verdicts.attach, store, rid, name or 'attachment', data, ACTOR)      # it writes: off the loop
+    try: out = await run_in_threadpool(verdicts.attach, store, rid, name or 'attachment', data, ACTOR)      # it writes: off the loop
     except ValueError as e: raise HTTPException(422, str(e))
+    _owners(rid); return out
 
 @app.delete('/api/reviews/{rid}/attachment')
 def review_detach(rid: int, name: str):
     from . import verdicts
-    try: return verdicts.detach(store, rid, name, ACTOR)
+    try: out = verdicts.detach(store, rid, name, ACTOR)
     except ValueError as e: raise HTTPException(422, str(e))
+    _owners(rid); return out
 
 @app.post('/api/reviews/{rid}/decide')
 def decide(rid: int, body: DecideBody, background: BackgroundTasks = None):
@@ -4533,6 +4653,10 @@ def decide(rid: int, body: DecideBody, background: BackgroundTasks = None):
     from .verdicts import VERB2STATUS, context_moved, decide as land
     if body.verb not in VERB2STATUS: raise HTTPException(422, 'bad verb')
     if body.verb == 'close_unsent' and rv.get('Kind') == 'action': raise HTTPException(422, 'a proposal is rejected, not closed without sending')
+    # ...and an earlier agent session's draft, held out of sight while a newer one works, never goes out on a press made before it was held
+    from .wrapup import STALE_HOLD
+    if body.verb in ('approve', 'edit') and rv.get('Status') == 'held' and rv.get('Reason') == STALE_HOLD:
+        raise HTTPException(409, "That draft is from an earlier session of the agent - the session working now writes the reply.")
     # An uncertain attempt must be reconciled using its saved payload first. Refreshing
     # the draft here would prevent that check (or replace text that may already be sent).
     if (body.verb in ('approve', 'edit') and rv.get('Kind') != 'action'
@@ -5954,6 +6078,16 @@ def concierge_say(body: ConciergeSayBody):
                              view=body.view, react=body.react)
     except ValueError as e: raise HTTPException(422, str(e))
 
+class ConciergeLineBody(BaseModel): text: str = ''; status: str = ''; steps: list[dict] = []
+
+@app.post('/api/concierge/line')
+def concierge_line(body: ConciergeLineBody):
+    """A line the page drew once the act it names had happened - a receipt, or an answer's steps on the page - kept in the conversation
+    (concierge.keep_line), so a reload draws it again and the next turn reads it."""
+    from . import concierge
+    try: return concierge.keep_line(store, body.text, body.status, body.steps, ACTOR)
+    except ValueError as e: raise HTTPException(422, str(e))
+
 @app.get('/api/concierge/chips')
 def concierge_chips(key: str):
     """The action words one item carries - chips_for, read only. The Assistant Game offers an item the same
@@ -6217,7 +6351,11 @@ def draft_review(rid: int, body: DraftBody = None):
     # ...and a plain ask while the arrival's own draft is being written is that draft: one model call, not a second over it
     from .ingest import DRAFTING
     running = None if body and (body.instruction or '').strip() else DRAFTING.get(rid)
-    if running and running.wait(180) and (got := (store.get_review(rid) or {}).get('DraftText')): return {'ok': True, 'draft': got}
+    if running and running.wait(180):
+        got = store.get_review(rid) or {}
+        if got.get('DraftText'): return {'ok': True, 'draft': got['DraftText']}
+        # ...and what that writer said it needs is the answer too: a second call would only say it again (ingest._auto_draft)
+        if got.get('DraftNeeds'): return {'ok': False, 'draft': '', 'needs': by_sentence(str(got['DraftNeeds']), 2000)}
     try:
         if rv.get('Kind') == 'slot':
             from . import outbox as ob
@@ -6283,9 +6421,14 @@ def set_review_envelope(rid: int, body: EnvelopeBody):
     # ...and whoever moved up to To leaves CC: the back office readdressed to stayed copied as well (2026-10-29)
     env['cc'] = [a for a in (clean(body.cc) if body.cc is not None else env.get('cc') or []) if a not in env.get('to', [])]
     if not env.get('to'): raise HTTPException(422, 'a reply needs at least one recipient')
-    store.set_review_envelope(rid, env)
+    store.set_review_envelope(rid, env); _owners(rid)
     store.audit('review', rid, 'envelope', ACTOR, detail={'mode': env.get('mode'), 'to': env.get('to'), 'cc': env.get('cc')})
     return env
+
+def _owners(rid: int):
+    "The owner's hand is on this draft (an edit, a readdress, a file): theirs now, never held as an earlier agent session's (wrapup.stale_draft)."
+    from .wrapup import OWNER_SID
+    store.set_review_sid(rid, OWNER_SID)
 
 @app.patch('/api/reviews/{rid}')
 def save_review_text(rid: int, body: TextBody):
@@ -6299,7 +6442,7 @@ def save_review_text(rid: int, body: TextBody):
     m = store.get_message(rv.get('MessageId')) if rv.get('MessageId') else None
     if m and str(m.get('Channel') or '').lower() == 'email' and text.strip():
         text = responder.with_signature(text, responder.signature_for(store, outbound.sending_mailbox(store, rv, m)))
-    store.save_review_draft(rid, text)
+    store.save_review_draft(rid, text); _owners(rid)
     store.audit('review', rid, 'edit_draft', ACTOR, detail={'characters': len(text)})
     return {'ok': True, 'draft': text}
 
@@ -6575,7 +6718,9 @@ def report_run(rid: int):
 def report_types():
     legacy = {'handbook_search', 'handbook_write', 'handbook_vote'}
     from .flow import writes          # a workflow step of this type changes something (the editor's "this only reads" check)
-    return {'data': [{'type': t, 'status': 'legacy' if t in legacy else ('planned' if t in PLANNED else 'builtin'), 'writes': writes(t)}
+    from .reports import own_default, STORE_BACKED  # the card's "my own system" switch starts here (origin.report_rests_on)
+    return {'data': [{'type': t, 'status': 'legacy' if t in legacy else ('planned' if t in PLANNED else 'builtin'), 'writes': writes(t), 'own': own_default(t),
+                      'ownable': t not in STORE_BACKED}
                      for t in REGISTRY]}
 
 @app.get('/api/problems')
@@ -6916,6 +7061,14 @@ def voice_listen(request: Request):
     voice = _live_voice(request)
     try: return {'id': voice.listen_start()}
     except (RuntimeError, OSError) as e: raise HTTPException(409, str(e))
+
+@app.post('/api/voice/speech-on')
+def voice_speech_on(request: Request):
+    """The owner's yes at the mic (TQ-1283): Online speech recognition on for this Windows user, so voice typing can hear them."""
+    voice = _live_voice(request)
+    if not voice.turn_on_speech(): raise HTTPException(409, "Windows would not turn on speech recognition - turn on Online speech recognition in Windows' speech privacy settings, then press the mic again")
+    store.audit('setting', 0, 'voice_online_speech', ACTOR, detail={'on': True})
+    return voice.ready(store)
 
 @app.get('/api/voice/listen/{sid}')
 def voice_listen_poll(sid: str, request: Request, since: int = 0):
@@ -7266,12 +7419,18 @@ def _is_loopback(host) -> bool:
     except ValueError: return str(host or '').lower() == 'localhost'
 
 @app.get('/api/ms/callback', response_class=HTMLResponse)
-def ms_callback(request: Request, code: str = None, state: str = '', error: str = None, error_description: str = None):
+def ms_callback(request: Request, code: str = None, state: str = '', error: str = None, error_description: str = None,
+                admin_consent: str = None):
     """Microsoft sends the browser back here with the code. Outside the token gate like every OAuth return: it answers only a state
     ms_signin issued and nobody has used, within MS_TTL, from this machine; the code is redeemed with the round's own PKCE verifier,
     and the tab is told only whether it worked - never a token (escaped, under a CSP, no-store)."""
     import hmac
     from . import msauth
+    # AN ADMIN'S APPROVAL comes back here too (msauth.admin_consent_url): admin_consent=True, or an error, and no code. It carries no
+    # secret and starts no sign-in, so it is answered first, from any browser, as the plain page an admin who may never run Taskuary reads
+    if admin_consent is not None or (state == msauth.ADMIN_STATE and not code):
+        ok, head, line = msauth.admin_return(admin_consent, error, error_description or '')
+        return _oauth_tab(ok, line, head=head, tail='')
     if not _is_loopback(request.client.host if request.client else ''):
         return _oauth_tab(False, 'This sign-in only finishes on the computer Taskuary runs on.')
     f = next((v for v in list(_MSFLOWS.values()) if v.get('state') and hmac.compare_digest(str(v['state']), str(state or ''))), None)
@@ -7372,10 +7531,11 @@ def google_files_callback(code: str = None, state: str = '', error: str = None):
     return _oauth_tab(ok, msg)
 
 
-def _oauth_tab(ok: bool, msg: str, head: str = '') -> HTMLResponse:
+def _oauth_tab(ok: bool, msg: str, head: str = '', tail: str = 'You can close this tab and go back to Taskuary.') -> HTMLResponse:
     from html import escape as _esc
     return HTMLResponse(f'<!doctype html><meta charset=utf-8><title>Taskuary</title><body style="font:15px system-ui;padding:40px;color:#262521;background:#f6f4f1">'
-                        f'<p style="font-weight:700">{_esc(head or ("Done" if ok else "Not changed"))}</p><p>{_esc(str(msg))}</p><p style="color:#6e685f">You can close this tab and go back to Taskuary.</p>',
+                        f'<p style="font-weight:700">{_esc(head or ("Done" if ok else "Not changed"))}</p><p>{_esc(str(msg))}</p>'
+                        + (f'<p style="color:#6e685f">{_esc(tail)}</p>' if tail else ''),
                         headers={'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'", 'Cache-Control': 'no-store'})
 
 
@@ -8692,6 +8852,8 @@ def agents():
             'brain_list': brains_here,
             # ...and whether a coding agent can start at all - the fact terminal.start_on_task refuses on, so the pickers say the same
             'coding_ready': hub_agents.coding_ready(store),
+            # ...and Developer mode itself: off, the New sheet draws no coding door at all, whatever CLI is connected
+            'developer_mode': hub_agents.developer_mode(store),
             # every connection keeps its models, installed or not: a task still pinned to a CLI that
             # has since gone has to be able to SAY so, and the picker renders it from this.
             'brain_models': {k: {'choices': _brain_cat(k)['choices'], 'models': _brain_cat(k)['models'],
@@ -9826,6 +9988,27 @@ def report_pass(startup: bool = False) -> int | None:
     finally: _REPORTS_BUSY.release()
 
 
+ADVISOR_TICK = 15 * 60          # seconds between looks at the Advisor's own passes - each is daily or weekly and says when it is due
+_ADVISOR_BUSY, _ADVISOR_AT = threading.Lock(), [0.0]
+
+
+def advisor_pass(now: float = None) -> bool:
+    """The Advisor's own passes - the job ideas (lookout.tick) and the workstreams kept current (wsboot.tick) - on the reports' clock,
+    on a thread of their own: two model calls must never hold the reports' lock. They lived in a branch of assistant.run the scheduler
+    never takes, and the job-ideas pass had never run on a live home (2026-11-03). True when a pass started."""
+    now = time.monotonic() if now is None else now
+    if demo.enabled() or now - _ADVISOR_AT[0] < ADVISOR_TICK or not _ADVISOR_BUSY.acquire(blocking=False): return False
+    _ADVISOR_AT[0] = now
+    def go():
+        try:
+            from . import assistant
+            assistant.clock(store)
+        except Exception as e: logger.warning(f"the Advisor's own pass failed: {e}")
+        finally: _ADVISOR_BUSY.release()
+    threading.Thread(target=go, daemon=True, name='advisor-clock').start()
+    return True
+
+
 def reports_forever():
     """The reports' clock. The first pass is the startup one (catch_up_on_startup runs it behind the
     mail), so this waits a tick before its first look."""
@@ -9833,6 +10016,8 @@ def reports_forever():
         time.sleep(REPORT_TICK)
         try: report_pass()
         except Exception as e: logger.warning(f'scheduled report pass failed: {e}')   # a bad pass must not end the loop
+        try: advisor_pass()
+        except Exception as e: logger.warning(f"the Advisor's clock failed: {e}")
 
 
 @app.post('/api/reports/due')

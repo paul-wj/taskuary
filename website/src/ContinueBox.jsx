@@ -15,13 +15,15 @@ import { useLocale } from "./LocaleProvider.jsx";
 // `onPress` fires AT THE PRESS, before the server answers, so the rail can ring the row's icon at once;
 // `onFail(error)` if it could not continue
 // `initial`: words the box opens holding - the owner's notes when the Assistant lit Continue with them ("rerun it with these notes: ...")
-export default function ContinueBox({ task, anchor, onClose, onDone, inline = false, taskRef = "", onPress, onFail, initial = "" }) {
+// `asked`: the question the run was still asking when it ended (workerstate.left_asking) - the box is its answer, and says so
+export default function ContinueBox({ task, anchor, onClose, onDone, inline = false, taskRef = "", onPress, onFail, initial = "", asked = "", signin = "" }) {
   useLocale();
   const [note, setNote] = useState(initial || "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const pics = usePromptImages();
   const said = note.trim() || pics.imgs.length;
+  const word = label(asked ? "answer_agent" : "continue");
   // ...once: a double press (or Ctrl+Enter then a click) posted /continue-work twice before `busy` was drawn (the agents walk, 2026-10-26)
   const flight = useRef(false);
   const go = async () => {
@@ -37,8 +39,12 @@ export default function ContinueBox({ task, anchor, onClose, onDone, inline = fa
   };
   const body = (
     <Box sx={{ p: 1.5, display: "grid", gap: 1, ...(inline ? {} : { width: 320 }) }}>
-      <Typography sx={{ fontSize: 12, fontWeight: 600, color: "#41525f" }}>{label("continue")}{taskRef ? ` · ${taskRef}` : ""}</Typography>
-      <TextField size="small" multiline minRows={inline ? 3 : 2} autoFocus placeholder={t("Anything to tell it as it picks up? (optional) - paste or drop a picture too")}
+      <Typography sx={{ fontSize: 12, fontWeight: 600, color: "#41525f" }}>{word}{taskRef ? ` · ${taskRef}` : ""}</Typography>
+      {/* a run that ended WAITING ON A SIGN-IN (2026-11-03): no answer in words - Continue opens its browser again, and the sign-in is asked there */}
+      {!asked && signin && <Typography data-tq-left-signin={signin} sx={{ fontSize: 12.5, color: "#2b3a45", overflowWrap: "anywhere" }}>
+        {t("Sign in to {site} to continue. Continue opens the agent browser on that page again - sign in there, or fill it in securely from the link it shows.", { site: signin })}</Typography>}
+      {asked && <Typography data-tq-left-asking sx={{ fontSize: 12.5, color: "#2b3a45", overflowWrap: "anywhere" }}>{asked}</Typography>}
+      <TextField size="small" multiline minRows={inline ? 3 : 2} autoFocus placeholder={asked ? t("Your answer - it goes to the agent as it picks up") : t("Anything to tell it as it picks up? (optional) - paste or drop a picture too")}
         value={note} onChange={(e) => setNote(e.target.value)} disabled={busy} {...pics.drop}
         onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) go(); }}
         InputProps={{ endAdornment: (
@@ -50,7 +56,7 @@ export default function ContinueBox({ task, anchor, onClose, onDone, inline = fa
       <ImageTray pics={pics} />
       <Box sx={{ display: "flex", gap: 0.75 }}>
         <Button size="small" variant="contained" disableElevation disabled={busy || pics.busy} onClick={go}>
-          {busy ? t("Continuing…") : label("continue")}</Button>
+          {busy ? t("Continuing…") : word}</Button>
         <Button size="small" disabled={busy} onClick={onClose}>{t("Cancel")}</Button>
       </Box>
       {err && <Typography sx={{ fontSize: 11.5, color: "#7a2f3c" }}>{err?.local ? t(err.local) : err}</Typography>}

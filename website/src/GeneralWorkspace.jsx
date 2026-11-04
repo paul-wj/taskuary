@@ -49,6 +49,7 @@ import { openAppLink } from "./appLinks.js";
 import ConnectAi from "./ConnectAi.jsx";
 import { withoutAsked } from "./askOnce.js";
 import ReviewDecision from "./ReviewDecision.jsx";
+import { heldActsLine } from "./reviewProposal.js";
 import BriefLine from "./BriefLine.jsx";
 
 const errText = (e) => e?.response?.data?.detail || e?.message || { source: "The assistant could not respond." };
@@ -381,19 +382,22 @@ export function DockActions({ messages, expanded = false, onNavigate, onChanged 
   );
 }
 
-// WHAT THE AGENT ASKED, AND THE BOX THAT ANSWERS IT (the UI audit's W6): the question in its own words, the answers it named as one
-// press each, and a box for anything else. `onAnswer(text)` delivers it - a reply in this conversation, or the worker's own answer road -
-// and throws with the reason when it could not; the card stays with the words still in it.
-// A SIGN-IN it waits on (request id `signin:<site>`, signin.py) also offers the one-time fill page: Taskuary types it into the browser,
-// the agent never sees it. Taking over the browser beside it and pressing Signed in is the other way, as before.
+// WHAT THE AGENT ASKED (the UI audit's W6): the question in its own words, and a press for each answer its CLI's own question tool or
+// on-screen chooser offered - a general agent's question is plain words and carries none (the owner, 2026-11-03: chips only for those
+// two; general.py records its ask with no choices), plus Taskuary's own Signed in and Done. ONE BOX TYPES AN ANSWER (the owner, 2026-11-03: "i hate this
+// double ui. we don't need question box if we have way to answer on the bottom"): the card's own field and Answer button went - what is
+// typed in the composer while a question is open is its answer (AssistantThread's answerTyped). `onAnswer(text)` delivers either - a
+// reply in this conversation, or the worker's own answer road - and throws with the reason when it could not.
+// A SIGN-IN it waits on (request id `signin:<site>`, signin.py) is NO CARD (the owner, 2026-11-03: "remove that stupid box again as we did
+// with the questions ... just have the question and link to fill it out securely"): the question as a line of the conversation, and a
+// link to the one-time fill page (Taskuary types it, the agent never sees it). Signing in on the page beside it needs no press: Taskuary
+// sees the page go past the sign-in (signin.watch), and "done" typed in the box below says so too.
 export function AgentAsks({ asking, name, onAnswer, taskId }) {
-  useLocale();
-  const [text, setText] = useState(""), [going, setGoing] = useState(false), [err, setErr] = useState("");
+  const [going, setGoing] = useState(false), [err, setErr] = useState("");
   const site = String(asking.request_id || "").startsWith("signin:") ? asking.request_id.slice(7) : "";
-  // ...and its Signed in is a press on EVERY agent's ask (2026-10-25): a terminal CLI's had only the box and a line saying to type it.
-  // The server tells either kind the same words (signin.signed_in), never a chooser's number.
-  const choices = site && !(asking.choices || []).includes("Signed in") ? [...(asking.choices || []), "Signed in"] : asking.choices || [];
-  const fillPage = async () => {
+  const choices = site ? [] : asking.choices || [];
+  const fillPage = async (e) => {
+    e?.preventDefault?.();
     setErr("");
     try {
       const app = howToOpen(window) === "app";
@@ -401,33 +405,31 @@ export function AgentAsks({ asking, name, onAnswer, taskId }) {
       if (!app) window.open(data.url, "_blank", "noopener");
     } catch (e) { setErr(errText(e)); }
   };
-  useEffect(() => { setText(""); setErr(""); setGoing(false); }, [asking?.request_id]);
-  const send = async (words) => {
-    const w = String(words || "").trim();
-    if (!w || going) return;
+  useEffect(() => { setErr(""); setGoing(false); }, [asking?.request_id]);
+  const send = async (w) => {
+    if (going) return;
     setGoing(true); setErr("");
-    try { await onAnswer?.(w); setText(""); } catch (e) { setErr(errText(e)); } finally { setGoing(false); }
+    try { await onAnswer?.(w); } catch (e) { setErr(errText(e)); } finally { setGoing(false); }
   };
+  if (site) return (
+    <p className="tq-aui-signin" data-tq-asking={asking.request_id} data-tq-signin-ask={site}>
+      {String(asking.text || t("Sign in to {site} to continue", { site })).replace(/\.?\s*$/, "")}
+      {taskId ? <> - <a href="#" onClick={fillPage} data-tq-signin-link=""
+        title={t("A one-time page to type the {site} sign-in - Taskuary types it into the browser and the agent never sees it", { site })}>{t("fill it in securely")}</a>
+        , {t("or sign in on the page.")}</> : t(", on the page.")}
+      {err && <span className="tq-aui-asking-err" role="alert"> {err}</span>}
+    </p>
+  );
   return (
     <div className="tq-aui-asking" data-tq-asking={asking.request_id}>
       <b>{says(subState({ request: asking }), name)}</b>
       <span className="tq-aui-asking-q">{asking.text}</span>
       {/* WHAT EACH WAY DOES, said on the card (2026-10-25): "Sign in to X ... Type your answer" read as "type the password here", and
           the agent-never-sees-it line lived only in a hover. Words only - the presses are the ones it had. */}
-      {site && <span className="tq-aui-asking-hint" data-tq-signin-hint="">
-        {taskId ? t("Sign in here opens a page Taskuary types from - the agent never sees it. ") : ""}
-        {t("Or sign in yourself in the browser, then press Signed in.")}</span>}
-      {(!!choices.length || (site && taskId)) && <div className="tq-aui-asking-choices">
-        {site && taskId && <Button size="small" variant="outlined" onClick={fillPage}
-          title={t("A one-time page to type the {site} sign-in - Taskuary fills it into the browser and the agent never sees it", { site })}>{t("Sign in here")}</Button>}
+      {!!choices.length && <div className="tq-aui-asking-choices">
         {choices.map((c) => <Button key={c} size="small" variant="outlined" disabled={going} onClick={() => send(c)}>{site && c === "Signed in" ? t("Signed in") : c}</Button>)}
       </div>}
-      <form className="tq-aui-asking-box" onSubmit={(e) => { e.preventDefault(); send(text); }}>
-        <TextField size="small" fullWidth value={text} disabled={going} onChange={(e) => setText(e.target.value)}
-          placeholder={site ? t("Message the agent - never your password") : t("Type your answer")} inputProps={{ "aria-label": t("Your answer to {name}", { name }) }} />
-        <Button type="submit" size="small" variant="contained" disableElevation disabled={going || !text.trim()}>{going ? t("Sending…") : t("Answer")}</Button>
-      </form>
-      {err && <span className="tq-aui-asking-err" role="alert">{shownErr(err)}</span>}
+      {err && <span className="tq-aui-asking-err" role="alert">{err}</span>}
     </div>
   );
 }
@@ -453,7 +455,10 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
         attachments: attachmentsRef.current.map((a) => a.path),
       };
       const events = [];
-      const content = (reply) => [...stepsPart(events, { answer: reply || "" }), ...(reply ? [{ type: "text", text: reply }] : [])];
+      // ..."Started Claude Code (on this computer)" only on the conversation's first turn: it opened every follow-up the owner typed
+      // (the desktop stress test, 2026-11-03)
+      const keepStart = !runMessages.some((m) => m.role === "assistant");
+      const content = (reply) => [...stepsPart(events, { answer: reply || "", keepStart }), ...(reply ? [{ type: "text", text: reply }] : [])];
       // A run that fails has to SAY so, here, under the question. Thrown out of the adapter it
       // is swallowed: the owner sees their own message and nothing after it, which is
       // indistinguishable from an agent that is still thinking (the wall, 2026-08-31). The
@@ -554,6 +559,20 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
     return () => { ids.forEach(clearTimeout); own.forEach((e) => v?.removeEventListener(e, mine)); };
   }, [dock, said, serverBusy, runtime]);
   const closedChat = !dock && ["done", "dropped"].includes(String(task?.Status || ""));
+  /* WHILE A QUESTION IS OPEN THE COMPOSER ANSWERS IT (the owner, 2026-11-03: the card had a box of its own, and the answer was typed here
+     anyway): its words take the road the card's Answer took (onAnswer) - this conversation's next message, or the asking terminal's answer -
+     so the card and the "waiting on you" chip clear the same way. A typed answer to a multiple-choice question goes as typed. */
+  const [askErr, setAskErr] = useState(""), answering = useRef(false);
+  useEffect(() => { setAskErr(""); }, [asking?.request_id]);
+  const answerTyped = (e) => {
+    if (dock || !asking) return;
+    e.preventDefault();
+    const c = runtime.thread.composer, w = c.getState().text.trim();
+    if (!w || answering.current) return;
+    answering.current = true; setAskErr(""); c.setText("");
+    Promise.resolve(onAnswer?.(w)).catch((x) => { c.setText(w); setAskErr(errText(x)); }).finally(() => { answering.current = false; });
+  };
+  const askWords = dock || !asking ? "" : String(asking.request_id || "").startsWith("signin:") ? t("Message the agent - never your password") : t("Answer {name}'s question…", { name });
   const atWork = dock || work?.steps?.length ? <Thinking provider={dock ? provider : name} />
     : <AgentBand name={name} provider={provider} work={work} since={since} starting={starting} />;
   return (
@@ -583,10 +602,10 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
               reopened - and the poll is what tells us so */}
           {serverBusy && atWork}
           {dock && <DockActions messages={messages} expanded={dockExpanded} onNavigate={onDockNavigate} onChanged={onDockChanged} />}
-          {/* THE QUESTION IS ON THE AGENT'S OWN CANVAS, with its answer box (owner-approved, the UI audit's W6, 2026-10-21): the
+          {/* THE QUESTION IS ON THE AGENT'S OWN CANVAS (owner-approved, the UI audit's W6, 2026-10-21): the
               card said "Agent asked you something" over a pane that never showed what - the question lived only in the rail row's
               hover. It was taken out on 2026-10-19 as a repeat of the answer above; an agent asking from a terminal has no answer
-              above at all, and an answer needs a box beside the question it answers. */}
+              above at all. Its answer is typed in the composer below (2026-11-03), its own presses on the card. */}
           {!dock && asking && <AgentAsks asking={asking} name={name} onAnswer={onAnswer} taskId={task.TaskId} />}
           {!dock && <PublishedPages pages={published} deliver />}
           {/* not while it waits on your call: a run that stopped to ask is not one to schedule yet, and the offer took the room
@@ -604,8 +623,7 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
               only road to it, closed the very browser Approve runs in. The same card, where the owner already looks. */}
           {!dock && !!acts?.length && (
             <Box data-tq-browser-acts="" sx={{ mt: 1.5, mx: { xs: 1, sm: 2 }, p: 1.5, border: `1px solid ${BORDER}`, borderRadius: 1.5, bgcolor: "#fff" }}>
-              <Typography variant="caption" sx={{ display: "block", color: DIM, mb: 0.75 }}>
-                {t("The agent's browser waits for your yes. Approve runs exactly this in its browser; Dismiss tells the agent it was not done.")}</Typography>
+              <Typography variant="caption" sx={{ display: "block", color: DIM, mb: 0.75 }}>{heldActsLine(acts)}</Typography>
               {acts.map((r) => <ReviewDecision key={r.ReviewId} review={r} onChanged={onDraftDecided} />)}
             </Box>
           )}
@@ -630,14 +648,14 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
                 continue it has a space to type into the agent? coding agents don't have that"). `noComposer` is that Continue (TaskPage). */}
             {closedChat ? <div className="tq-aui-hint" role="status" style={{ padding: "10px 4px" }}>
               {t("This task is closed. Press {reopen}, then {continue}, to pick the conversation back up.", { reopen: btn("reopen"), continue: btn("continue") })}</div> : noComposer ? null : <>
-            <ComposerPrimitive.Root className="tq-aui-composer">
+            <ComposerPrimitive.Root className="tq-aui-composer" onSubmit={answerTyped}>
               <IconButton size="small" onClick={onAttach} title={t("Attach an image")} className="tq-aui-attach">
                 <AttachFileIcon sx={{ fontSize: 18 }} />
               </IconButton>
               <ComposerPrimitive.Input
                 className="tq-aui-input"
                 /* ...by the name the pane shows (kinds.json `shown`): an analyst's box said "the assistant" (the email walk, 2026-10-29) */
-                placeholder={working ? t("Add something for it to pick up…") : t("Tell {name} what to do next…", { name: dock ? "Taskuary" : name })}
+                placeholder={askWords || (working ? t("Add something for it to pick up…") : t("Tell {name} what to do next…", { name: dock ? "Taskuary" : name }))}
               />
               {/* the one mic, dictating into the box - every other composer had it and this one did not (the owner,
                   2026-09-29: "where is mic to ask it question?") */}
@@ -649,8 +667,9 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
                   to stop the run; abandoning the tab just detaches from it (server.py). */}
               <ComposerPrimitive.Cancel className="tq-aui-cancel" aria-label={t("Stop response")}
                 onClick={onStop}><CloseIcon fontSize="small" /></ComposerPrimitive.Cancel>
-              <ComposerPrimitive.Send className="tq-aui-send" aria-label={t("Send")}><SendIcon fontSize="small" /></ComposerPrimitive.Send>
+              <ComposerPrimitive.Send className="tq-aui-send" aria-label={!dock && asking ? t("Send your answer") : t("Send")} onClick={answerTyped}><SendIcon fontSize="small" /></ComposerPrimitive.Send>
             </ComposerPrimitive.Root>
+            {askErr && <div className="tq-aui-asking-err" role="alert" style={{ padding: "4px 4px 0" }}>{askErr}</div>}
             <div className="tq-aui-hint">{t("Enter sends · Shift+Enter adds a line · paste or attach an image")}</div></>}
           </div>
       </ThreadPrimitive.Root>
@@ -874,21 +893,32 @@ export function GeneralWorkspace({ task, onSession, onAnswered, compact = false,
     </OutputsCtx.Provider>
     </ShownCtx.Provider></AgentNameCtx.Provider>
   );
+  /* CHIP-SIZED, AND THEY GIVE WAY (the owner, 2026-11-03, Agent beside Close out: "this ui looks weird when split? make the model choice
+     smaller"): a 220px brain picker and a 150px model box that never shrank sat on the heading's title - "Tasku… / answ…" - in a ~500px
+     half. Each is a small chip now that ends in … before the title does, the model the CLI's own list (as the dock's) where it has one,
+     and Full screen keeps its icon alone where its word has no room (TaskPage's agent heading) */
+  const brainNow = (data?.providers || []).find((p) => String(p.id) === String(connectorId));
+  const chipSx = { height: 24, fontSize: 11, bgcolor: PANEL2, minWidth: 64, flexShrink: 1, "& .MuiSelect-select": { py: 0, pl: 1, pr: "22px !important" },
+    "& .MuiSelect-icon": { fontSize: 17, right: 2 } };
   const tools = (<>
-    <Select size="small" value={connectorId} displayEmpty onChange={(e) => {
+    <Select size="small" value={connectorId} displayEmpty inputProps={{ "aria-label": "Agent" }} title={brainNow?.label || undefined} onChange={(e) => {
       const provider = data?.providers?.find((p) => String(p.id) === String(e.target.value));
       updateProvider(e.target.value, provider?.model || "");
     }}
-      sx={{ height: 27, fontSize: 11.5, minWidth: 96, maxWidth: 220, bgcolor: PANEL2, flexShrink: 1 }}>
+      sx={{ ...chipSx, maxWidth: 150 }}>
       {!data?.providers?.length && <MenuItem value="">{t("No agent connected")}</MenuItem>}
       {(data?.providers || []).map((p) => <MenuItem key={p.id} value={String(p.id)}>{p.label}</MenuItem>)}
     </Select>
-    <TextField size="small" value={model} placeholder={t("provider default")} onChange={(e) => setModel(e.target.value)}
-      onBlur={() => connectorId && updateProvider(connectorId, model)} sx={{ width: 150, flexShrink: 0, "& input": { py: 0.55, fontSize: 11.5 } }} />
-    <Button size="small" onClick={toggleFull} sx={{ minWidth: 0, fontSize: 11, flexShrink: 0 }}
+    {brainNow?.models?.length
+      ? <ModelSelect model={model} size={24} empty={t("provider default")} info={{ models: brainNow.models }} sx={{ ...chipSx, maxWidth: 120 }}
+          onModel={(m) => { setModel(m); if (connectorId) updateProvider(connectorId, m); }} />
+      : <TextField size="small" value={model} placeholder={t("provider default")} inputProps={{ "aria-label": t("Model") }} onChange={(e) => setModel(e.target.value)}
+          onBlur={() => connectorId && updateProvider(connectorId, model)}
+          sx={{ width: 110, minWidth: 64, flexShrink: 1, "& .MuiInputBase-root": { height: 24, bgcolor: PANEL2 }, "& input": { py: 0, px: 1, fontSize: 11, textOverflow: "ellipsis" } }} />}
+    <Button size="small" onClick={toggleFull} aria-label={full ? t("Exit full screen") : t("Full screen")} sx={{ minWidth: 0, fontSize: 11, flexShrink: 0, whiteSpace: "nowrap" }}
       title={full ? t("Back to the page (Esc)") : t("Give this conversation and its browser the whole window")}
       startIcon={full ? <CloseFullscreenIcon sx={{ fontSize: 13 }} /> : <OpenInFullIcon sx={{ fontSize: 13 }} />}>
-      {full ? t("Exit full screen") : t("Full screen")}
+      <span data-tq-full-word="">{full ? t("Exit full screen") : t("Full screen")}</span>
     </Button>
   </>);
   return (

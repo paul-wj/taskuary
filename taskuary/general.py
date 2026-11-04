@@ -753,6 +753,7 @@ def _prompt(store, tid: int) -> tuple[str, str]:
     # closing the task and drafting a reply to a sender there is not
     owed = sources and task.get('SourceRef') != 'connector:setup'
     if owed and selfclose.mode(store) != 'off' and not selfclose.stays_open(store, tid): system = system + '\n\n' + selfclose.CHAT_LINE
+    elif not dock and task.get('SourceRef') not in ('connector:setup', SETUP_REF): system = system + '\n\n' + selfclose.owner_closes_line()
     if owed: system = system + '\n\n' + selfclose.REPLY_LINE
     from . import slots
     if slots.all_(store, tid): system = system + '\n\n' + selfclose.DRAFT_LINE
@@ -1200,7 +1201,7 @@ class GeneralSession:
             if not brain: raise RuntimeError('the AI chosen for this is not available - pick another, or connect it again')
             if self.cli_sid:
                 # an opening turn's 'turn' IS the instruction, which the history never saw
-                user = _turn_only(self.store, self.task_id, text) if as_owner else text
+                user = _turn_only(self.store, self.task_id, text) if as_owner and not brief else text     # a brief is Taskuary's, never "the owner says"
                 if is_dock(self.store.get_task(self.task_id)):
                     user += f'\n\n{dock_snapshot(self.store)}'
             # Paths are harmless context to an API brain and essential if its CLI backup takes
@@ -1364,7 +1365,7 @@ class GeneralSession:
         _show_files(self.store, self.task_id, showing, paths)
         files = _files_to_attach(self.store, self.task_id, named, paths)
         if drafted or files:
-            out = wrapup.agent_reply(self.store, self.task_id, drafted or '', 'assistant', files=files)
+            out = wrapup.agent_reply(self.store, self.task_id, drafted or '', 'assistant', files=files, sid=self.sid)
             if not out.get('ok'): logger.info(f"assistant reply draft not saved on task {self.task_id}: {out.get('why')}")
             for w in out.get('not_attached') or []: self.store.add_comment(self.task_id, 'assistant', 'agent', f'Not attached to the reply - {w}')
         reply, drafts = selfclose.draft_markers(reply)
@@ -1412,11 +1413,12 @@ class GeneralSession:
         try:
             from . import workerstate as ws
             ws.record(self.store, self.task_id, self.sid, 'turn_end', text=reply[:4000], source=src)
-            # ...each question of the reply as one group, so the owner answers them together (workerstate.answer_group)
+            # ...each question of the reply as one group, so the owner answers them together (workerstate.answer_group). Plain
+            # questions, no choices (the owner, 2026-11-03): chips are a CLI question tool's or chooser's, answered in the box here
             g = ws.group_key(f'{self.sid}:' + '|'.join(q for q, _ in asks)) if len(asks) > 1 else None
-            for i, (q, choices) in enumerate(asks, 1):
+            for i, (q, _) in enumerate(asks, 1):
                 ws.record(self.store, self.task_id, self.sid, 'input_needed', request_id=ws.question_id(g, i) if g else ws.request_id_for(q),
-                          text=q, choices=choices, source=src)
+                          text=q, source=src)
         except Exception as e: logger.debug(f'api worker event skipped: {e}')
         if signing is not None:
             from . import signin
@@ -1502,6 +1504,12 @@ class GeneralSession:
                 except Exception as e:
                     logger.debug(f'hub: assistant conversation {self.task_id} learned nothing - {e}')
         if was_alive and report and not is_dock(task): report_note(self.store, self.task_id)     # a failed turn files no result
+        # ...and a reply held while it worked is settled, as a pty session's is (terminal.release_held): an earlier session's closed as
+        # superseded, any other back for your yes - held for good otherwise
+        if was_alive and self.store is not None:
+            from . import terminal
+            try: terminal.release_held(self.store, self.task_id, 'assistant')
+            except Exception as e: logger.debug(f'the held reply on task {self.task_id} stayed held: {e}')
         self.alive, self.ended = False, time.time()
         if was_alive:
             from . import browserview
@@ -1611,6 +1619,9 @@ def start_session(store, tid: int, connector_id=None, model=None, actor='owner',
     # (ingest.agent_load) then held back the quick calls and agent starts that read it in that instant
     session.quick = quick
     terminal.SESSIONS[session.sid] = session
+    # ...and a reply an EARLIER session drafted is out of sight while this one works - this session's own takes its place (wrapup.stale_draft,
+    # the owner 2026-11-03). Not on a restart's resume of the agent that was asking: that is the same conversation brought back
+    if actor not in terminal.INTERRUPTING: wrapup.hold_stale(store, tid, session.sid)
     # ...and a saved session is live again, as every terminal door says (terminal.open_session, A22): Continue on a general task kept
     # "You stopped it and its report is written" over the new run, so a turn that then died read as stopped, not failed (2026-10-26)
     store.tag_task(tid, terminal.SAVED, False, actor)

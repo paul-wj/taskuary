@@ -2,6 +2,54 @@
 
 What each release changed, newest first. Ask the Assistant "what changed in the last update?" and it reads this page.
 
+## 0.3.10.25 - 2026-11-03
+
+- A run cut off while asking the owner reads as still asking, not stopped
+- Continue on a run that ended asking reads Answer it and shows the question
+- An agent a restart cut off while it asked the owner is back at its question
+- Triage is told who answered the like of an ask before, when colleagues share the mail
+- Came from shows whom a mail went to
+- A chat read never puts an item's old walk line after the table's own
+- A press on the grown chat pill's middle opens it
+- Draft reply spins until its draft lands, and always drafts
+- Triage gets a fourth verdict, watch: a thread the owner cares about that someone else will handle
+- An FYI batch reads the thread under every row, not only the first
+
+## 0.3.10.24 - 2026-11-03
+
+- Send's hover says what it does where it is: Close out's Send closes the task, a Send anywhere else leaves it open
+- An Advisor idea sent to an agent is briefed as the owner's ask, not a proposal for the agent to grade
+- Advisor job ideas come daily, never repeat what was raised, and an Advisor idea needs a high bar to become a task
+- Advisor job ideas check that a person they name still works there, and that a process they name still runs
+- Stage moves stay on the spine at every desk width; the bar is Back and Next alone
+- The chat pop-up shuts when the owner moves to another task, and keeps its conversation
+- No AI, no start: every road that starts an agent refuses when no AI can run it
+- An Advisor idea's task is as trusted as the least trusted thing it cites
+- Security page: an Advisor idea's task is trusted through what it cites
+- Stage moves stay on the spine from 601px up, and a squeezed bar's batch Next says All read
+- A report from the owner's own systems is trusted, and so is a memory line in their own words
+- A report or dashboard source card has a "my own system" switch
+- Security and Reports pages: a report is as trusted as what it read
+- The Assistant's history search says when it cut the list
+- A sweep of the FYI leaves the Advisor's ideas
+- A page the Assistant opens is named in its step without the model's note
+- A bare web address in a chat answer is a link
+- Docs: the Reports page links Security by its slug, and the docs site is rebuilt
+- One walk move at a time: Next and Back grey while a move is out, nothing is held
+- Next from the last task into FYI draws the batch at its press
+- A press the table moved off while it ran does not read the Advisor again
+- Browser and walk tests follow no AI, no start and the squeezed bar's All read
+
+## 0.3.10.23 - 2026-11-03
+
+- A double or triple click is one press, and never presses what the first click drew
+- The demo's refusal of Hand it to a person is said as the demo, not in red
+- A walk press is never lost: Back and Next pressed fast, over a move or a typed ask, are held, not dropped
+- A Next pressed just after a typed "next" is the second move, not lost behind it
+- An Advisor idea's Put it on my list and Not ours run again
+- An Advisor idea's Put it on my list keeps the task it made on the table, as a report's does
+- Back held over a Back that drew the top row goes up, instead of snapping back down
+
 ## 0.3.10.22 - 2026-11-02
 
 - Send something written by the Assistant opens on the channel asked, to the chat named

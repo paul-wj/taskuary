@@ -56,41 +56,41 @@ test("the FYI batch on the table is 6 on a big window, and the next one 4 once i
     const batch = await page.$$eval("[data-tq-rail] .tq-pile-row.inbatch, [data-tq-rail] .tq-pile-row.current", (e) => e.length);
     if (batch !== n) await shot(page, `fyi-batch-${sz.join("x")}`);
     assert.equal(batch, n, `${sz.join("x")}: the FYI batch is ${batch}, not ${n}`);
-    oneLine(await rowLook(page), `fyi batch @${sz.join("x")}`);
+    // ...its Next whole on the bar: "All read" on the 900px bar the ask bar squeezes (the owner, 2026-11-03), "All read, next" with room
+    const word = await page.$eval("[data-tq-row] [data-tq-next]", (b) => b.textContent.trim());
+    assert.equal(word, sz[0] < 960 ? "All read" : "All read, next", `${sz.join("x")}: the batch's Next says ${word}`);
+    try { oneLine(await rowLook(page), `fyi batch @${sz.join("x")}`); } catch (e) { await shot(page, `fyi-line-${sz.join("x")}`); throw e; }
     clean(errors, `fyi @${sz.join("x")}`);
   }
 });
 
-/* THE BAR SQUEEZED BETWEEN THE RAIL AND THE ASK BAR (found 2026-11-02): from 900 to ~1100 wide the ask bar keeps its fixed width (--tq-ask-w,
-   360px at least) and a task on the table in one column puts its moves back on the bar - ~120px at 900, ~245 at 1024. The bar was centred past
-   both its ends and Back was cut off whole; now it holds its left edge and takes the phone's short Nav (actionRow.navShort), so Back and Next are
-   always whole. What still does not fit past them is cut at the bar's end (the todo below: the owner's call on that band's layout). */
+/* THE BAR IS BACK AND NEXT AT EVERY DESK WIDTH, THE STAGE MOVES ON THE SPINE (the owner, 2026-11-03: "stage moves belong on the task's spine,
+   never on the bottom bar"). From 900 to ~1100 wide the rail and the canvas left a task under 760px and it stacked, its Mark done and Reply back
+   on a bar of ~120-250px squeezed against the ask bar (found 2026-11-02, then a todo here). On a desk window the task keeps its three sections
+   (TaskPage.useStackBelow), and so does a window from 601 up with no rail: Mark done on Close out's spine, the bar Back and Next alone and both whole, nothing over anything. */
 const onTable = async (page, api, title) => {
   const t = (await api("/api/tasks")).data.find((x) => x.Title.startsWith(title));
   const key = await page.evaluate((title) => [...document.querySelectorAll("[data-tq-rail] .tq-pile-row")].find((r) => r.innerText.includes(title))?.getAttribute("data-tq-key"), title);
   await page.evaluate((k) => document.querySelector(`[data-tq-rail] .tq-pile-row[data-tq-key="${k}"] .card`)?.click(), key);
   await still(page); return t;
 };
-test("a squeezed desk bar keeps Back and Next whole at 900 and 1024 wide", { timeout: 240000 }, async (t) => {
+const spineMoves = (page) => page.$$eval("[data-tq-spine-moves] button, [data-tq-pane-moves] button", (bs) => bs.filter((b) => b.offsetParent).map((b) => b.textContent.trim()));
+test("the bar is Back and Next alone and the stage moves stay on the spine from 640 to 1440 wide", { timeout: 420000 }, async (t) => {
   const { page, errors, api } = await bootMixed(t, { width: 1440, height: 900 });
   await onTable(page, api, "New starter on Monday");
-  for (const sz of [[1024, 768], [1100, 800], [1280, 800]]) {
+  // ...the 601-810 band with no rail too (the owner, 2026-11-03): only a phone (600 and under) keeps its stacked page and its own row
+  for (const sz of [[900, 700], [640, 800], [760, 800], [810, 800], [1024, 768], [1100, 800], [1280, 800], [1440, 900], [900, 700]]) {
     await size(page, sz); await settled(page); await sleep(900);
-    const rows = await rowLook(page), at = `New starter @${sz.join("x")}`;
-    console.log(at, JSON.stringify(rows.map((r) => ({ labels: r.labels, cut: r.cut }))));
-    if (rows.some((r) => r.navCut.length)) await shot(page, `squeezed-${sz.join("x")}`);
-    assert.ok(rows.some((r) => r.next), `${at}: Next is on the bar`);
-    for (const r of rows) assert.deepEqual(r.navCut, [], `${at}: Back or Next cut off ${JSON.stringify(r)}`);
-    clean(errors, at);
+    const rows = await rowLook(page), at = `New starter @${sz.join("x")}`, spine = await spineMoves(page);
+    try {
+      assert.ok(rows.some((r) => r.next), `${at}: Next is on the bar`);
+      for (const r of rows) assert.deepEqual(r.labels.filter((l) => !["Back", "Next"].includes(l)), [], `${at}: a move on the bar ${JSON.stringify(r)}`);
+      for (const r of rows) assert.deepEqual([...r.navCut, ...r.cut], [], `${at}: Back or Next cut off ${JSON.stringify(r)}`);
+      assert.ok(spine.includes("Mark done"), `${at}: Mark done is not on the spine ${JSON.stringify(spine)}`);
+      assert.deepEqual(await overlaps(page), [], `${at}: a box drawn over another`);
+      clean(errors, at);
+    } catch (e) { await shot(page, `spine-${sz.join("x")}`); throw e; }
   }
-  // ...at 900 Back is whole and Next all but its last few px (the todo below)
-  await size(page, [900, 700]); await settled(page); await sleep(900);
-  for (const r of await rowLook(page)) assert.ok(!r.navCut.includes("Back") && r.labels.includes("Next") || !r.next, `900: Back cut off ${JSON.stringify(r)}`);
-});
-test("a squeezed desk bar keeps Next and the lit move whole too", { timeout: 240000, todo: "ASK OWNER: 900-1100 wide with the rail, the fixed ask bar leaves the bar less than Back, Next and the lit move" }, async (t) => {
-  const { page, api } = await bootMixed(t, { width: 900, height: 700 });
-  await onTable(page, api, "New starter on Monday"); await sleep(900);
-  for (const r of await rowLook(page)) assert.deepEqual([...r.navCut, ...r.cut], [], `cut at the bar's end ${JSON.stringify(r)}`);
 });
 
 for (const mode of ["three", "pair", "full"]) {

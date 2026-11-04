@@ -138,7 +138,8 @@ export const press = (id, e, anchor, of = null) => {
   const k = `${by || ""}|${id}`;
   if (Date.now() - (flying.get(k) ?? -Infinity) < FLIGHT_MS) return undefined;
   // ...a hand's click only (isTrusted): the page's and a test's own click() of a verb are presses each
-  const hand = !!e?.isTrusted && !(v?.group === "next" || v?.group === "back");
+  // ...setup's Back and Next keep the double-click guard: they sit in the Nav pill now, but a second click there would skip a step
+  const hand = !!e?.isTrusted && (!(v?.group === "next" || v?.group === "back") || /^(setup|about):/.test(String(id)));
   if (hand && Date.now() - (lastAt.get(k) ?? -Infinity) < REPEAT_MS) return undefined;
   if (hand) lastAt.set(k, Date.now());
   announce(id);
@@ -224,9 +225,11 @@ const sameAct = (v, pick) => {
   const canonical = catalogueWords.get(want);
   // ADVISED SEND IS A SEND: the draft's button keeps its `approve` id while it reads Redraft, Mark done or Checking delivery…,
   // and the line said "Send" over the one that was not (the Advisor audit, 2026-10-15)
-  const sends = [VERBS.approve.label, VERBS.approve.states.action, label("approve"), label("approve", "action"), label("approve", "unknown")].map(normalWord);
-  if (verb === "approve" && !sends.includes(l) && !l.startsWith("send") && !l.startsWith(normalWord(label("approve")))) return false;
-  return id === verb || id.endsWith(`:${verb}`) || verbOfRow(id) === verb || (!!want && (l === want || (!!canonical && l === normalWord(t(canonical)))));
+  const coClose = label("send_close", "closeout").toLowerCase();
+  if (verb === "approve" && ![label("approve"), label("approve", "action")].some((w) => l === w.toLowerCase()) && !l.startsWith("send") && l !== coClose) return false;
+  return id === verb || id.endsWith(`:${verb}`) || verbOfRow(id) === verb || (!!want && (l === want || (!!canonical && l === normalWord(t(canonical)))))
+    // ...and A CLOSE-OUT'S YES IS ITS APPROVE AND CLOSE where Close out draws the pair (the owner, 2026-11-03), as a draft's is Send and close there
+    || (verb === "approve" && id.endsWith(":send_close") && l === coClose);
 };
 // ...the one on the bar before the card's own of the same act - the card's main move (it holds the bar's first slot, rowOf), then the
 // row's own, then one only the card draws: the draft's Mark done (`<rid>:done`) was found first and lit on the card, a screen down,
@@ -234,10 +237,14 @@ const sameAct = (v, pick) => {
 export const advisedIn = (list, pick) => {
   if (pick?.id) return list.find((v) => v.id === pick.id && !v.disabled) || null;     // a move named by its id (setup's own)
   const ok = (v) => !v.disabled && v.group !== "next" && v.group !== "back" && sameAct(v, pick), main = (v) => v.card && v.group === "decide" && v.tone === "p";
-  return pick?.verb ? list.find((v) => ok(v) && main(v)) || list.find((v) => ok(v) && !v.card) || list.find(ok) || null : null;
+  const got = pick?.verb ? list.find((v) => ok(v) && main(v)) || list.find((v) => ok(v) && !v.card) || list.find(ok) || null : null;
+  // SEND AND CLOSE IS CLOSE OUT'S (the owner, 2026-11-03): where the draft stands without it - outside Close out, or a send frozen on Check
+  // delivery - the same yes is the draft's Send
+  return got || (liveVerb(pick?.verb) === "send_close" ? advisedIn(list, { verb: "approve", label: label("approve") }) : null);
 };
 // the row's button for the advised act, greyed or not - a greyed one hides the line; none at all gives the line its own button
-export const advisedAny = (list, pick) => (pick?.verb ? list.find((v) => v.group !== "next" && v.group !== "back" && sameAct(v, pick)) || null : null);
+export const advisedAny = (list, pick) => (pick?.verb ? list.find((v) => v.group !== "next" && v.group !== "back" && sameAct(v, pick))
+  || (liveVerb(pick.verb) === "send_close" ? advisedAny(list, { verb: "approve", label: label("approve") }) : null) : null);
 // THE STRIP'S "<X> is off" LINE (AdvisorNext): a move the row has and has greyed says why, in the row's own words - but NOT while a press is in
 // flight. The owner's own Send, Reply or Redraft greys the row's draft verbs while it runs (its label "Sending…", "Drafting…"), and the strip
 // read that as the advised move being unavailable: "Drafting… is off - it cannot be pressed right now." for half a second after every
@@ -316,13 +323,15 @@ export function rowOf({ list, ref, end: last = false, off = "" }, pick = null) {
   // ...on the last item the walk's Next stays LIVE (the owner, 2026-11-02: "You can't mark read on the final FYI?"): greyed there (2026-10-30)
   // it read nothing and ended nothing. Next does there what it does on any row - reads a report or an FYI, leaves a task on the rail - and the
   // walk ends; only its hover says so. Back still greys on the first; setup's Back and Next, and the floor's, are not the walk's
-  const greyed = (v) => (v && off ? { ...v, disabled: true, steady: false, title: off, why: off } : v);
+  const greyed = (v) => (v && off ? { ...v, disabled: true, title: off, why: off } : v);
   const nx = by("next").find((v) => !(last && v.id === "next")) || by("next").find((v) => v.id === "next");
   const next = greyed(nx && last && nx.id === "next" ? { ...nx, title: t("The last one - Next ends the walk") } : nx || null),
     back = greyed(by("back")[0] || null);
   if (decide.length > ROOM) { more = [...decide.slice(ROOM), ...more]; decide = decide.slice(0, ROOM); }   // the row stays a short line of chips; the rest wait behind More
   // a greyed decision says why it is greyed - the advised one never is (advisedIn skips greyed verbs), so the card's own move speaks
-  return { ref, decide, agent, more, primary, lit: advised?.card ? advised.id : "", next: next && { ...next, tone: pick?.verb === "next" && (!next.disabled || next.steady) ? "p" : "s" },
+  // ...and setup's own Next or All ready named by its id (setupLit) fills where it stands, in the Nav pill
+  return { ref, decide, agent, more, primary, lit: advised?.card ? advised.id : "",
+    next: next && { ...next, tone: (pick?.verb === "next" || (!!pick?.id && pick.id === next.id)) && !next.disabled ? "p" : "s" },
     back: back && { ...back, tone: "s" },
     why: head?.disabled && head.why ? t("{label} is off - {reason}", { label: head.label, reason: head.why }) : "" };
 }
@@ -336,7 +345,7 @@ export function rowOf({ list, ref, end: last = false, off = "" }, pick = null) {
 export const TYPES = [["move", ""], ["change", "Change"]];
 export const NAV = "Nav";                 // the pill Back and Next share, labelled like the types
 const TYPE_OF = {
-  reply: "reply", approve: "reply", redraft: "reply", palt: "reply", reject: "reply", email: "reply", hand: "reply", attach: "reply", "email-file": "reply", copy: "reply",
+  reply: "reply", approve: "reply", send_close: "reply", redraft: "reply", palt: "reply", reject: "reply", email: "reply", hand: "reply", attach: "reply", "email-file": "reply", copy: "reply",
   "start-agent": "agent", "run-another": "agent", "strong-again": "agent", continue: "agent", "send-general": "agent", diff: "agent", "save-end": "agent",
   done: "close", "close-note": "close", reopen: "close",
   remind: "task", watch: "task", nat: "task", reshape: "task",
@@ -453,7 +462,7 @@ const MOVE_MIN = 72;   // a few words and the ellipsis: less reads as a stray le
 // the bar ~120-250px, and even its narrowest layout with the Nav pill's label and a worded Back ran past it - Back was cut off whole. Where that
 // layout would not fit, the bar takes the phone's short Nav: no label, Back its arrow alone (`backShort`, measured off the same hidden copy)
 export const navShort = (row, m, avail) => !!m && avail > 0 && rowWidth(foldsOf(row).at(-1), navOf(row), m) > avail;
-export const shortParts = (m) => ({ ...m, back: m.backShort ?? m.back, label: { ...m.label, nav: 0 } });
+export const shortParts = (m) => ({ ...m, back: m.backShort ?? m.back, next: m.nextShort ?? m.next, label: { ...m.label, nav: 0 } });
 
 // THE STAGE MOVES RIDE ON THEIR PANE (the owner, 2026-10-29, after three mockups). The bar keeps what acts on the whole task - Back and
 // Next, Mark done, Change, Share, Close with a note, Attach a file. The moves that take the task a STAGE on belong to their pane: Send to

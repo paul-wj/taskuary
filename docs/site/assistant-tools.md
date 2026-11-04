@@ -9,12 +9,12 @@ the button that does it, lit, or the page that holds it. On a phone it asks yes 
 
 | Bucket | What it is for | Tools, and what each needs |
 |---|---|---|
-| **table** | decide about the item on the table | reply(text, cc?), approve, redraft(text), mine, regular_agent(text, as?, new?), coding_agent(text, as?, new?), not_ours, not_ours_sender, block_sender, not_ours_kind, close, next, answer_agent(text), stop_agent, rerun, report_off, remember(text), setup(text), confirm, cancel, chase, let_go, accept_invite, decline_invite, propose_time, find_time, prepare, elsewhere |
-| **task** | change any task - the table's, or one named by ref | task.update(priority/title/assignee/due), task.set_kind(kind), task.set_repo(repo), task.check(item, done?, note?), task.checklist(add?, items?, emails?, drop?), task.watch(what?), task.comment(text), task.split(text), task.merge(into), task.reopen, task.not_a_task, task.complete(note?), task.defer(until), task.handoff(who, note?), task.clarify(text), task.share(who, about?), review.approve, review.reject |
+| **table** | decide about the item on the table | reply(text, cc?), approve, send_close, redraft(text), mine, regular_agent(text, as?, new?), coding_agent(text, as?, new?), not_ours, not_ours_sender, block_sender, not_ours_kind, close, next, answer_agent(text), stop_agent, rerun, report_off, remember(text), setup(text), confirm, cancel, chase, let_go, accept_invite, decline_invite, propose_time, find_time, prepare, elsewhere |
+| **task** | change any task - the table's or one by ref | task.update(priority/title/assignee/due), task.set_kind(kind), task.set_repo(repo), task.check(item, done?, note?), task.checklist(add?, items?, emails?, drop?), task.watch(what?), task.comment(text), task.split(text), task.merge(into), task.reopen, task.not_a_task, task.complete(note?), task.defer(until), task.handoff(who, note?), task.clarify(text), task.share(who, about?), review.approve, review.reject |
 | **agents** | a task's agent; where work belongs | dispatch.prepare(kind, instructions?), agent.continue, agent.answer(text), agent.tell(text), agent.stop, agents.stop(refs/all), routing.remember(field, value), task.ask_agent(who, text) |
-| **new** | new work with no task yet | task.create_from_text(kind, text), task.create_from_message(kind), meeting.new(who?, about?, when?, minutes?), task.setup(text) |
+| **new** | new work with no task yet | task.create_from_text(kind, text, channel?, to?), task.create_from_message(kind), meeting.new(who?, about?, when?, minutes?), task.setup(text) |
 | **pipe** | the walk and sets of items, and filing mail | pipe.clear(select, scope?), pipe.defer(select, until), pipe.close(select), pipe.remove(select, learn?), pipe.block(select, how?), pipe.mine(select), review.each, button.light(button, ref?, note?), item.settle(verb), message.file, message.archive, preference.exclude_sender(scope), preference.sender_rule, message.retriage |
-| **reports** | reports and workflows | report.create(config), report.run, report.rerun, report.pause, report.resume, report.route(line, how, to?), report.edit(config), report.delete |
+| **reports** | reports and workflows | report.create(config), report.run, report.rerun, report.pause, report.resume, report.route(line, how, to?), report.edit(config), report.delete, advisor.ideas |
 | **app** | settings, connections, scripts, memory, rules, bell, Hub, Board, Search | setting.set(setting, value), connection.create(type), role.apply(role, portal?, route_mail?), connection.test, connection.pause, connection.resume, app.repair(name, how), issue.draft(kind, trying, happened), script.start(name), memory.remember(note, about?, section?, replaces?), memory.wrong(key, how?), people.relate(who), rule.change(about, how?), deleted.restore(what), hub.publish(title, body, topic?, kind?, why_earned?), hub.comment(post, text), hub.vote(post, up?), page.open(page, query?), problems.dismiss |
 | **look** | look-ups - they run at once and change nothing | app.find, task.read, timeline.search, tasks.list, asks.list, message.read, sender.read, docs.search, agents.now, approvals.list, pipe.list, pipe.read, calendar.read, activity.list, errors.list, memory.about, memory.list, outputs.find, deleted.list, rules.list, missed.check, report.read, reports.list, settings.list, setting.read, connections.list, connection.read, app.health, agents.list, repos.list, tools.list, tools.describe, knowledge.search |
 
@@ -35,7 +35,13 @@ The "Reply" button ("Draft reply" when nothing is drafted yet): write a reply to
 
 ### `approve`
 
-The "Send" button ("Approve" on an agent's proposal or a task's close-out): the owner's yes to what is drafted on the item: sends the reply as it stands - on a task's close-out it merges the pull request or closes the issue FIRST, then sends the reply; on an agent's proposal it runs that action and only that. It never closes the task - that is close, the owner's own Mark done, a separate step - and never continues an agent's session - that is agent.continue.
+The "Send" button ("Approve" on an agent's proposal or a task's close-out): the owner's yes to what is drafted on the item: sends the reply as it stands - on a task's close-out it merges the pull request or closes the issue FIRST, then sends the reply; on an agent's proposal it runs that action and only that. It never closes the task - that is send_close, or close, the owner's own Mark done - and never continues an agent's session - that is agent.continue.
+
+<p class="runs">Brings up its button for you to press.</p>
+
+### `send_close`
+
+The "Send and close" button ("Approve and close" on a task's close-out with its reply): the same send, then the task closes - unless an agent or anything else on it still waits.
 
 <p class="runs">Brings up its button for you to press.</p>
 
@@ -219,7 +225,7 @@ The "They answered elsewhere" button: they answered elsewhere; the step somebody
 
 ## Task
 
-Change any task - the table's, or one named by ref.
+Change any task - the table's or one by ref.
 
 ### `task.update`
 
@@ -344,10 +350,10 @@ Remind me: put an open task away until a day and bring it back then - calendar o
 
 ### `task.handoff`
 
-Hand a task to a PERSON.
+Hand a task to a PERSON (send, forward or pass it on) - Hand it to a person comes up filled in for the owner's Send, nothing is sent from the chat.
 
-- `who` - a name or address that has written here
-- `note` (optional) - writes the forward for the owner's yes, nothing is sent from this card
+- `who` - any email address, or the name of someone who has written here
+- `note` (optional) - a line for them
 - `ref` (optional) - the task (TQ-0123), when it is not the one on the table
 
 <p class="runs">Brings up its button for you to press.</p>
@@ -472,6 +478,8 @@ A new job with no message behind it. MAKING something - a picture, a flyer, a do
 
 - `kind` - task (a to-do or reminder the owner does themselves, no agent) | general (a regular agent) | coding | send (a new message the owner starts, to someone - `channel`: email | whatsapp | telegram | teams | slack, the one they said; `to`: the name of the person, chat or group as they said it (never the channel word), or an address; drafted in their voice for their Send, never sent from here) | goal (an outcome with a date, its steps tasks) | dashboard (a page of numbers kept up to date)
 - `text`
+- `channel` (optional)
+- `to` (optional)
 - `recurs` - {schedule (when
 - `title`
 
@@ -690,6 +698,12 @@ Remove a report or workflow.
 - `title` - kept 30 days under Recently deleted
 
 <p class="runs">Brings up its button for you to press.</p>
+
+### `advisor.ideas`
+
+The Advisor's pass for ideas for the owner's job, run now instead of waiting for its day - "look for ideas for my job now", "run the advisor ideas". It starts at once and says here how many ideas it raised, under Advisor. With two of its ideas already waiting, or no AI connected, nothing starts and the line says why.
+
+<p class="runs">Runs at once and says what it changed.</p>
 
 ## App
 

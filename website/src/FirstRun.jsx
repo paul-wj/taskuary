@@ -13,7 +13,7 @@ import { Box, Button, CircularProgress, FormControlLabel, Switch, Typography } f
 import api from "./api";
 import { readFirstRun } from "./firstRunState.js";
 import { DIM, FAINT, INK } from "./theme.jsx";
-import { CardGrid, ChannelDetail, ConnCard, connCardOf } from "./ConnectorsView.jsx";
+import { ChannelDetail, ConnCard, connCardOf } from "./ConnectorsView.jsx";
 import { CliPane, useCliSetup } from "./cliSetup.jsx";
 import { focusOf, signinUrl } from "./firstRunFocus.js";
 import FirstRunAbout from "./FirstRunAbout.jsx";
@@ -107,23 +107,45 @@ function Light({ root, card, canvas, onShown }) {
 // one shelf: the first four cards, and More for the rest of it - the catalogue's card, never one of our own. A card that is
 // open stands alone with its setup under it: under all twenty-one, the form landed a screen away from the card that opened it
 // `group`: {label, cards} drawn under the shelf with a heading of its own - the coding tools, after the AI most people have
+// THE SHELF'S GRID FITS ITS OWN WIDTH, NOT THE WINDOW'S (the owner, 2026-11-03: "the cards are laid out really weird. fix it depending on the
+// screen size"): Connections' CardGrid steps by viewport, so the canvas's narrower column got two 480px cards at 1440 and three at 1920. Here as
+// many ~240px columns as the shelf holds (three in its 980px, one on a phone), every row as tall as the tallest card
+const SetupGrid = React.forwardRef(({ children }, ref) => (
+  <Box ref={ref} data-tq-setup-grid="" sx={{ display: "grid", gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${COL}px), 1fr))`, gridAutoRows: "1fr", gap: `${GAP}px` }}>
+    {children}</Box>
+));
+// the columns the grid's width holds (its 240px tracks and 12px gap), read again as it resizes - CSS cannot span "what is left of this row",
+// and the drawn tracks cannot be read back: a span of two makes a second track of its own on a phone
+const COL = 240, GAP = 12;
+function useCols(ref) {
+  const [n, setN] = useState(1);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return undefined;
+    const f = () => setN(Math.max(1, Math.floor((el.clientWidth + GAP) / (COL + GAP))));
+    f(); const ro = new ResizeObserver(f); ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+  return n;
+}
+
 function Shelf({ cards, more, opened, detail, onAll, allLabel = "Show all", group = null }) {
   useLocale();
   const [all, setAll] = useState(false);
   const every = group ? [...cards, ...group.cards] : cards;
   const one = opened && every.find((c) => c.key === opened);
   const shown = one ? [one] : all ? cards : cards.slice(0, FIRST);
-  const small = { color: DIM, fontSize: 12.5 };
+  const small = { color: DIM, fontSize: 12.5 }, folded = !one && !all && cards.length > FIRST;
+  const grid = useRef(null), cols = useCols(grid), left = cols - (shown.length % cols);
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
-      <CardGrid>{shown.map((c) => <ConnCard key={c.key} c={c} />)}</CardGrid>
-      {one ? <>{detail}{onAll && <Box><Button size="small" onClick={onAll} sx={small}>{t(allLabel)}</Button></Box>}</>
-        : cards.length > FIRST && (all ? <Box><Button size="small" onClick={() => setAll(false)} sx={small}>{t("Show fewer")}</Button></Box>
-          // MORE IS A CARD'S WEIGHT (the owner, 2026-10-20: "More AI options does not stand out enough"): the same frame, size and
-          // logo slot as the cards beside it, in the same place and doing the same thing - so the rest of the choices are seen
-          : <CardGrid><Box role="button" tabIndex={0} data-tq-shelf-more="" onClick={() => setAll(true)}
+      <SetupGrid ref={grid}>{shown.map((c) => <ConnCard key={c.key} c={c} />)}
+        {/* MORE IS A CARD'S WEIGHT (the owner, 2026-10-20: "More AI options does not stand out enough"): the same frame and logo slot as
+            the cards beside it, in the same grid - it stood alone on a row of its own - and it fills what its row has left, so no row is
+            ragged */}
+        {folded && <Box role="button" tabIndex={0} data-tq-shelf-more="" onClick={() => setAll(true)}
               onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setAll(true); } }}
-              sx={{ bgcolor: "#fbfaf7", border: "1px solid #ddd6ca", borderRadius: 2.5, p: 1.6, boxSizing: "border-box", cursor: "pointer",
+              sx={{ gridColumn: `span ${left}`, bgcolor: "#fbfaf7", border: "1px solid #ddd6ca", borderRadius: 2.5, p: 1.6, boxSizing: "border-box", cursor: "pointer",
                 transition: "box-shadow .15s", "&:hover": { boxShadow: "0 2px 8px rgba(47,107,79,.12)" },
                 "&:focus-visible": { outline: "2px solid #55697a", outlineOffset: 2 } }}>
               <Box sx={{ display: "flex", alignItems: "center", gap: 1.1 }}>
@@ -133,10 +155,13 @@ function Shelf({ cards, more, opened, detail, onAll, allLabel = "Show all", grou
               </Box>
               <Typography sx={{ color: FAINT, fontSize: 11.5, lineHeight: 1.5, pt: 1, minHeight: "3em" }}>
                 {t("{count} more to choose from - open to see them all", { count: cards.length - FIRST })}</Typography>
-            </Box></CardGrid>)}
+            </Box>}</SetupGrid>
+      {one ? <>{detail}{onAll && <Box><Button size="small" onClick={onAll} sx={small}>{t(allLabel)}</Button></Box>}</>
+        : all && cards.length > FIRST && <Box><Button size="small" onClick={() => setAll(false)} sx={small}>{t("Show fewer")}</Button></Box>}
+      {/* a group of its own: more room above its heading than below it */}
       {!one && group?.cards.length > 0 && <>
-        <Typography sx={{ fontSize: 12.5, fontWeight: 600, color: DIM, mt: 1 }} data-tq-firstrun-group="">{t(group.label)}</Typography>
-        <CardGrid>{group.cards.map((c) => <ConnCard key={c.key} c={c} />)}</CardGrid>
+        <Typography sx={{ fontSize: 12.5, fontWeight: 600, color: DIM, mt: 2 }} data-tq-firstrun-group="">{group.label}</Typography>
+        <SetupGrid>{group.cards.map((c) => <ConnCard key={c.key} c={c} />)}</SetupGrid>
       </>}
     </Box>
   );
@@ -240,12 +265,10 @@ export default function FirstRun({ onWalk, onFinish, onChanged, revisit = false,
     // ...past the optional steps, a first run lands on Setup complete before More connections (afterAbout)
     next: { label: t("Next"), tone: "p", run: () => { const n = nextOf(view, st); go(firstPass.current && n === "other" ? "done" : n); }, title: t("The next step") },
     walk: { label: t(btnLabel("walk")), tone: "p", run: finishThen(onWalk), title: t("Everything waiting, most important first") },
-    finish: { label: t(reopened ? "Back to my day" : "Finish setup"), tone: "p", run: finishThen(onFinish),
+    finish: { label: t("All ready"), tone: "p", run: finishThen(onFinish),
       title: t("Setup is done - the canvas shows your day. Setup on the top bar opens this again.") },
   };
-  // Back takes the row's leading slot (the one Next takes on a card): the row shows two moves of a kind and folds the rest behind a
-  // ▾, and Back, Walk and Finish as one kind put Finish setup behind it on the last step
-  // ...and ADVICE COMES WITH ITS BUTTON (the owner, 2026-10-15: "making buttons available when necessary"): each connection the
+  // ADVICE COMES WITH ITS BUTTON (the owner, 2026-10-15: "making buttons available when necessary"): each connection the
   // Advisor names opens its section on the Connections page below; one Taskuary cannot connect yet gets no button
   // every one it names that can be connected - it named five and gave three buttons (the Advisor audit, 2026-10-15)
   // ...and NOT AS BUTTONS IN THE ROW: the row keeps its own moves (the owner, 2026-10-16: "No such buttons. If it suggest systems
@@ -273,10 +296,12 @@ export default function FirstRun({ onWalk, onFinish, onChanged, revisit = false,
   ];
   // ONE filled move, and only when the lit move is on the row (rowLit): a card or the open setup's button lit leaves the row outlined
   const toneOf = (id) => (id === rowLit ? "p" : "s");
-  // ABOUT YOUR WORK MOVES ITS OWN QUESTIONS (FirstRunAbout's Back and Next, one question a screen): only the way back to the day stays
-  // ...and SETUP COMPLETE has its one big button on the canvas (SetupDone), nothing in the row
-  const navShown = view === "done" ? [] : view === "about" ? nav.filter((m) => m.id === "finish") : nav;
-  useVerbs("setup", [...navShown.map((m) => ({ id: `setup:${m.id}`, group: m.id === "back" ? "next" : "decide", disabled: !!m.disabled, why: m.why ? t(m.why) : "",
+  // ABOUT YOUR WORK MOVES ITS OWN QUESTIONS (FirstRunAbout's Back and Next, one question a screen), and SETUP COMPLETE has its one big
+  // button on the canvas (SetupDone): nothing of setup's in the row there
+  // ...and BACK AND NEXT ARE THE WALK'S NAV PILL, in the bar's corner (the owner, 2026-11-03: "back, all ready, next in corner like in actual
+  // app"): Back in its Back slot, Next - All ready on the last step - in Next's
+  const navShown = ["done", "about"].includes(view) ? [] : nav;
+  useVerbs("setup", [...navShown.map((m) => ({ id: `setup:${m.id}`, group: m.id === "back" ? "back" : "next", disabled: !!m.disabled, why: m.why ? t(m.why) : "",
     ...VERB[m.id], tone: toneOf(`setup:${m.id}`) })), ...fixRow.map((v) => ({ ...v, tone: toneOf(v.id) }))], !hidden && navShown.length + fixRow.length > 0);
   // an error is about the step it happened on: it followed the owner to the next one (the Advisor audit, 2026-10-15)
   useEffect(() => { setErr(""); }, [view]);
@@ -639,11 +664,11 @@ ${fix.detail || ""}`, screen: "Setup",
     go(!s ? "other" : !requiredDone(s) ? frontierOf(s) : first ? "dev" : "other");
   };
   return (
-    <Box ref={rootRef} data-tq-firstrun={st.step} sx={{ display: "flex", flexDirection: "column", gap: 1.75, maxWidth: 980 }}>
+    <Box ref={rootRef} data-tq-firstrun={st.step} sx={{ display: "flex", flexDirection: "column", gap: 1.75, maxWidth: 980, width: "100%", mx: "auto", boxSizing: "border-box" }}>
       <Light root={rootRef} card={litCard?.key || ""} canvas={canvas} onShown={onShown} />
       {shelf("ai", ai, "More AI", { label: "If you use a coding tool", cards: coding })}
       {shelf("mail", mail, "More chat and task")}
-      {q === "dev" && <Box data-tq-setup-dev="" sx={{ display: "flex", flexDirection: "column", gap: 1, maxWidth: 680 }}>
+      {q === "dev" && <Box data-tq-setup-dev="" sx={{ display: "flex", flexDirection: "column", gap: 1, maxWidth: 720, width: "100%", mx: "auto" }}>
         <Typography sx={{ fontSize: 16, fontWeight: 600, color: INK }}>{t("Are you a developer?")}</Typography>
         <Typography sx={{ fontSize: 13.5, color: DIM }}>{t("Turn this on only if you write code and use a coding tool such as Claude Code or Codex. Then work that changes code goes to a coding agent in your code. Off, every job goes to a general agent - most people leave it off. You can change it any time in Settings.")}</Typography>
         <FormControlLabel control={<Switch checked={!!st.developer_mode} disabled={devBusy} onChange={(e) => setDev(e.target.checked)} />}

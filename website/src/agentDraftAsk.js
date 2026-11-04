@@ -14,6 +14,13 @@ export const isAgentDraft = (r) => !!r && r.Status === "pending" && isReply(r) &
 export const draftKey = (r) => `${r.ReviewId}|${String(r.DraftText || "")}`;
 // the drafts the agent pane says, in the order the task holds them
 export const agentAsks = (reviews = []) => (reviews || []).filter(isAgentDraft);
+// AN EARLIER SESSION'S DRAFT IS NOT THE REPLY (the owner, 2026-11-03: "when you continue on general agent it shows the prior reply on bottom that
+// the agent generated. Don't show that reply if it was based off another general session not the latest one"). A draft keeps the session that
+// wrote it (DraftSid; "owner" once the owner edited it); while another session is live (`sid`) its pending draft is not the page's - the server
+// holds it the same way (wrapup.stale_draft) and this keeps a read from before the hold from drawing it, its notice or its Send
+export const earlierSession = (r, sid) => !!sid && r?.Status === "pending" && String(r.DraftBy || "").startsWith("agent:")
+  && !!r.DraftSid && r.DraftSid !== "owner" && r.DraftSid !== sid;
+export const latestDrafts = (reviews = [], sid = "") => (reviews || []).filter((r) => !earlierSession(r, sid));
 // where it is said: over a terminal (a CLI agent) in its corner, at the foot of a general agent's conversation - nowhere else
 export const askWhere = (mode) => (mode === "live" ? "popup" : mode === "general" ? "chat" : null);
 // the notice's words: the agent by the name it wrote under, the person by name ("Erin Blake", not "Erin Blake <erin@...>")
@@ -42,8 +49,11 @@ export function alreadyAnswered({ draft, sent = [], against = null, ms = (s) => 
 export const answeredLine = (a, when = (s) => s) => (a ? t("You already answered {who} at {time}: \"{words}\"", { who: a.who, time: when(a.at), words: a.words }) : "");
 
 // THE REPLY BESIDE THE AGENT (the owner, 2026-11-02: "if the agent makes a reply, bring out the reply (Close out) tab side by side"): the task
-// view pairs Agent | Close out on its own for the agent's draft - once the agent is not working (a working terminal is never squeezed: its
-// notice's press pairs them), where the work area holds two halves, and once per draft and view (`done`: `${draftKey}|${view}`); never again
-// for a draft whose pair the owner closed (`shut`: draftKeys)
-export const autoPair = ({ draft, working = false, canPair = false, paired = false, shut = new Set(), done = new Set(), view = "" } = {}) =>
-  !!draft && !working && canPair && !paired && !shut.has(draftKey(draft)) && !done.has(`${draftKey(draft)}|${view}`);
+// view pairs Agent | Close out on its own for the agent's draft - once the agent has STOPPED RUNNING, where the work area holds two halves,
+// and once per draft (`done`: draftKeys); never again for a draft whose pair the owner closed (`shut`: draftKeys). `running`: a live session,
+// working or waiting on you, or a run in flight - its notice's press pairs them (a general agent's chat that answered is not running). It
+// was "not working", once per draft AND view: a live agent's word flips between working and waiting as it goes, and a re-read that read it
+// waiting opened Close out over it (the owner, 2026-11-03: "every 10 seconds it opens the response tab ??? stop opening that until the agent
+// stopped running")
+export const autoPair = ({ draft, running = false, canPair = false, paired = false, shut = new Set(), done = new Set() } = {}) =>
+  !!draft && !running && canPair && !paired && !shut.has(draftKey(draft)) && !done.has(draftKey(draft));

@@ -110,7 +110,7 @@ def test_what_the_owner_and_the_check_turned_down_comes_back_as_evidence():
     assert '[early_warning] Gail went quiet - held by the check: one message, no pattern' in user
 
 
-def test_the_cost_is_two_calls_a_week_capped_at_three_and_never_more_than_two_ideas_waiting():
+def test_the_cost_is_two_calls_a_day_capped_at_three_and_never_more_than_two_ideas_waiting():
     s, ids = world()
     a, b = ids['dup']
     llm = brain({'ideas': [idea('money', f'Idea {n}', [f'msg{a}']) for n in range(5)]}, {'keep': [1, 2, 3, 4]})
@@ -118,13 +118,13 @@ def test_the_cost_is_two_calls_a_week_capped_at_three_and_never_more_than_two_id
     assert out['calls'] == 2 and len(out['raised']) == lookout.MAX_IDEAS == 2, 'at most two proposed, checked in one call'
     assert lookout.due(s) is False and lookout.tick(s, brain())['ran'] is False, 'two waiting: no pass, no call'
     for r in lookout.open_ideas(s): s.set_idea_status(r['IdeaId'], 'done', 'owner')
-    assert lookout.due(s) is False, 'and a week between passes'
-    s.set_setting(lookout.LAST_KEY, ago(days=8), 't'); s.set_setting(lookout.TRIED_KEY, ago(days=8), 't')
+    assert lookout.due(s) is False, 'and a day between passes'
+    s.set_setting(lookout.LAST_KEY, ago(days=2), 't'); s.set_setting(lookout.TRIED_KEY, ago(days=2), 't')
     assert lookout.due(s) is True
-    # a check whose answer is not the shape raises nothing
+    # a check whose answer is not an object raises nothing - ask_json re-asks it once (llm.json_of), the third and last call
     odd = brain({'ideas': [idea('pitch', 'Fix the export again', [f'msg{b}'])]}, 'not an object')
     out = lookout.tick(s, odd, force=True)
-    assert out['raised'] == [] and out['calls'] == 2 and out['held'] == ['Fix the export again']
+    assert out['raised'] == [] and out['calls'] == lookout.CALLS == 3 and out['held'] == ['Fix the export again']
     # ...and a brain that never answers in JSON is asked three times at most, whatever ask_json would try next
     calls = []
     def prose(system, user, **k): calls.append(1); return 'I would rather chat'
@@ -138,12 +138,12 @@ def test_the_cost_is_two_calls_a_week_capped_at_three_and_never_more_than_two_id
     assert len(calls) == out['calls'] == 3 and out['raised'] == [] and out['held'] == ['Invoice 4471 twice'], 'the check would be a fourth call: held'
 
 
-def test_a_model_that_did_not_answer_is_tried_again_in_a_day_not_a_week():
+def test_a_model_that_did_not_answer_is_tried_again_within_hours_not_a_day():
     s, _ = world()
     out = lookout.tick(s, lambda system, user, **k: 'I cannot help with that')
     assert out == {'ran': True, 'raised': [], 'held': [], 'calls': 2}, 'asked, and re-asked once for the JSON'
     assert not s.get_setting(lookout.LAST_KEY) and s.get_setting(lookout.TRIED_KEY) and lookout.due(s) is False
-    s.set_setting(lookout.TRIED_KEY, ago(hours=25), 't')
+    s.set_setting(lookout.TRIED_KEY, ago(hours=7), 't')
     assert lookout.due(s) is True
 
 
@@ -180,3 +180,96 @@ def test_an_idea_lands_under_the_advisor_never_in_fyi_and_says_its_family(canoni
                                                               'early_warning': 'early warning', 'leverage': 'leverage'}
     assert all(lanes.idea_section(f) == 'ideas' for f in lookout.FAMILIES)
     assert json.loads(s.get_idea(iid)['ActionJson'])['suggest'].endswith('\nPitch: "I caught a double invoice"')
+
+
+def test_a_daily_pass_never_says_yesterdays_idea_again_the_check_reads_what_was_raised():
+    s, ids = world()
+    a, _b = ids['dup']
+    lookout.tick(s, brain({'ideas': [idea('money', 'Invoice 4471 billed twice', [f'msg{a}'])]}, {'keep': [1]}), force=True)
+    llm = brain({'ideas': [idea('money', 'Payworth charged invoice 4471 two times', [f'msg{a}'])]}, {'keep': [], 'why': {'1': 'already raised'}})
+    out = lookout.tick(s, llm, force=True)
+    assert out['raised'] == [] and 'ALREADY RAISED' in llm.seen[1][1] and 'Invoice 4471 billed twice' in llm.seen[1][1], 'the check sees it'
+    assert lookout.EVERY_DAYS == 1, 'once a day (the owner, 2026-11-03)'
+
+
+# ── ITS OWN CLOCK, AND NOW WHEN ASKED (2026-11-03) ────────────────────────────────────────────────────────────────────────────────────
+def test_the_pass_runs_on_the_advisors_own_clock_never_inside_a_report_run(monkeypatch):
+    """The root cause: the pass sat in assistant.run under `if report_id is None:`, and the scheduler always runs the Advisor with its
+    report_id - so it had never run on a live home. It is the clock's now (assistant.clock), and the Advisor report's off switch stops it."""
+    import inspect
+    from taskuary import wsboot
+    assert 'lookout' not in inspect.getsource(assistant.run) and 'wsboot' not in inspect.getsource(assistant.run)
+    s, _ = world()
+    ran = []
+    monkeypatch.setattr(lookout, 'tick', lambda store, *a, **k: ran.append('lookout'))
+    monkeypatch.setattr(wsboot, 'tick', lambda store, *a, **k: ran.append('wsboot'))
+    monkeypatch.setattr(lookout, 'CLOCK', True)
+    src = assistant.source(s)
+    assert src and src.get('Active'), 'the seeded Advisor report is on'
+    assistant.clock(s)
+    assert ran == ['wsboot', 'lookout']
+    s.save_source({**{k: v for k, v in src.items() if k != 'cfg'}, 'Active': 0}, 'owner')
+    ran.clear(); assistant.clock(s)
+    assert ran == [], 'the Advisor switched off: neither pass'
+
+
+def test_the_server_clock_runs_it_off_the_reports_lock_at_most_every_fifteen_minutes(monkeypatch):
+    import threading
+    from taskuary import demo, server
+    done, calls = threading.Event(), []
+    monkeypatch.setattr(assistant, 'clock', lambda store: (calls.append(1), done.set()))
+    monkeypatch.setattr(demo, 'enabled', lambda: False)
+    monkeypatch.setattr(server, '_ADVISOR_AT', [0.0])
+    t0 = 10_000.0
+    assert server.advisor_pass(t0) is True and done.wait(5)
+    assert server.advisor_pass(t0 + 60) is False, 'a tick a minute later does not look again'
+    assert server._ADVISOR_BUSY.acquire(timeout=5); server._ADVISOR_BUSY.release()
+    done.clear(); assert server.advisor_pass(t0 + server.ADVISOR_TICK) is True and done.wait(5) and calls == [1, 1]
+    monkeypatch.setattr(demo, 'enabled', lambda: True)
+    assert server.advisor_pass(t0 + 3 * server.ADVISOR_TICK) is False, 'the demo world runs nothing on a clock'
+
+
+def asked(s, monkeypatch, llm):
+    """The Assistant's advisor.ideas through the chat's own road: (the line said at once, the line said when the pass ends or None)."""
+    import threading
+    from taskuary import concierge
+    monkeypatch.setattr(lookout, 'brain', lambda store: llm)
+    got, done = [], threading.Event()
+    real = concierge.record
+    def record(store, tid, role, text, *a, **k):
+        if text.startswith('The pass for ideas'): got.append(text); done.set()
+        return real(store, tid, role, text, *a, **k)
+    monkeypatch.setattr(concierge, 'record', record)
+    out = concierge.call_turn(s, 0, {'kind': 'advisor.ideas', 'params': {}}, None, 'look for ideas for my job now')
+    assert out['did'] == 'advisor.ideas'
+    if out['started']: assert done.wait(10)
+    return out['say'], (got or [None])[0]
+
+
+def test_asking_the_assistant_starts_a_pass_now_and_says_how_many_ideas_it_raised(monkeypatch):
+    from taskuary import toolcatalog
+    assert 'advisor.ideas' in {k for _, _, ks in toolcatalog.BUCKETS for k in ks} and 'runs at once, said' in toolcatalog.describe('advisor.ideas')
+    assert toolcatalog.valid('advisor.ideas', {}) == '' and len(toolcatalog.block()) < 7950
+    s, ids = world()
+    a, b = ids['dup']
+    s.set_setting(lookout.LAST_KEY, ago(hours=1), 't')                  # it ran an hour ago: the day is not up, the owner's ask still runs it
+    llm = brain({'ideas': [idea('money', 'Vendor billing sent invoice 4471 twice', [f'msg{a}', f'msg{b}']),
+                           idea('pitch', 'Communicate more with the approvers', [f"msg{ids['backlog'][0]}"])]},
+                {'keep': [1], 'why': {'2': 'generic'}})
+    now, later = asked(s, monkeypatch, llm)
+    assert now.startswith('Started a pass for ideas for your job'), now
+    assert later == 'The pass for ideas for your job raised 1 idea, 1 held back by the second look - under Advisor.', later
+    assert [r['Key'] for r in lookout.open_ideas(s)] == ['idea:lookout-vendor-billing-sent-invoice-4471-twice'], 'an ordinary Advisor idea row'
+
+
+def test_an_asked_pass_still_keeps_two_waiting_at_most_and_needs_an_ai(monkeypatch):
+    s, ids = world()
+    for n in range(lookout.MAX_OPEN): s.upsert_idea({'key': f'{lookout.KEY}old-{n}', 'kind': 'money', 'text': f'Old {n}', 'action': {'type': 'lookout'}}, ago(days=1))
+    never = brain()                                                         # any call would fail: nothing may be asked
+    now, later = asked(s, monkeypatch, never)
+    assert now.startswith('Nothing started: 2 ideas for your job already wait under Advisor') and later is None and not never.seen
+    s2, _ = world()
+    now, later = asked(s2, monkeypatch, None)
+    assert now.startswith('Nothing started: no AI is connected') and later is None and not s2.get_setting(lookout.TRIED_KEY)
+    now, later = asked(s2, monkeypatch, lambda system, user, **k: 'I would rather chat')
+    assert later == 'The pass for ideas for your job got no answer from the AI - nothing raised. Ask again in a while.'

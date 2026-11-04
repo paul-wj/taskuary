@@ -48,6 +48,7 @@ import { progressLine } from "./checklist.js";
 import { RepoPicker } from "./RepoPicker.jsx";
 import { AgentAsk } from "./RunForm.jsx";
 import { Attachments, mentionsPicture } from "./Attachments.jsx";
+import { remotePicture } from "./mailLinks.js";
 import { useCliSetup, SetupButton, CliPane, canSetup } from "./cliSetup.jsx";
 import OwnerForm from "./OwnerForm.jsx";
 import { FirstSync } from "./SetupWizard.jsx";
@@ -415,7 +416,8 @@ export function Foot({ verb, then, where, covers = [], close, onDone, more, prom
     // a Foot's move acts on the WHOLE item on the table - a batch's "All read, next", a report's, a message's - so it rides the row with
     // the task's verbs (the owner, 2026-10-06: "all read next should be on bottom no as it relates to the whole lot?"); what acts on a
     // PIECE of it (a draft under a task, YourMove's send) stays on the piece. Mark done is never behind More.
-    ...movesOf(verb, moves ? "next" : "decide", "v"),
+    // ...greyed, as the walk's Next is, while a move is out (one move at a time, 2026-11-03)
+    ...movesOf(verb, moves ? "next" : "decide", "v").map((v) => (moves && nav.busy ? { ...v, disabled: true } : v)),
     ...(lifted ? [{ ...asVerb(lifted, "decide"), tone: "p" }] : []),
     // ...save Pause this report, which waits behind More for the Advisor to light it - a lit button is always in view (rowOf)
     ...words.map((a, i) => asVerb(a, (i < 3 && !QUIET.has(a.verb)) || a.verb === "close" ? "decide" : "more")),
@@ -505,11 +507,13 @@ function FullText({ mid, revision, report = null }) {
   // ...a report's table sits in a panel its own width (the owner, 2026-10-28): full width, a two-column table left it 3/4 empty
   const rows = !morning && jsonRows(text);
   if (report && rows) return <ReportRows rows={rows} name={report.name} mid={none ? null : mid} />;
+  // ...and a message with no words of its own (a picture-only mail) is said by its pictures and files, never "(empty)" (Attachments `bare`)
+  const bare = !none && !morning && !text.trim() ? { remote: remotePicture(raw) } : null;
   return (
     <div className={rows ? "tq-card-full fit" : report && !morning ? "tq-card-full report" : "tq-card-full"}>
-      {morning ? <DigestText text={text} sourceId={/^report:(\d+)/.exec(doc.ConversationId || "")?.[1] ?? null} /> : rows ? <RowsTable rows={rows} /> : looksMd(text) ? <Md text={text} /> : text ? <LinkedText text={text} /> : t("(empty)")}
+      {morning ? <DigestText text={text} sourceId={/^report:(\d+)/.exec(doc.ConversationId || "")?.[1] ?? null} /> : rows ? <RowsTable rows={rows} /> : looksMd(text) ? <Md text={text} /> : text.trim() ? <LinkedText text={text} links={doc.Links} /> : bare ? null : t("(empty)")}
       {/* ...and the pictures pasted into it, drawn - the screenshot is often the whole ask */}
-      {!none && !morning && <Attachments messageId={mid} canFetch={String(doc.Channel || "") === "email" && mentionsPicture(doc.BodyText)} dense />}
+      {!none && !morning && <Attachments messageId={mid} canFetch={String(doc.Channel || "") === "email" && mentionsPicture(doc.BodyText)} dense bare={bare} />}
       {read !== raw && <button type="button" className="tq-card-more" onClick={() => setWhole((v) => !v)}>{whole ? t("Just what they wrote") : t("Show the whole email")}</button>}
       {doc.SourceLink && <div className="tq-card-note"><a href={doc.SourceLink} target="_blank" rel="noreferrer" style={{ color: "#55697a" }}>{t("open the original")}</a></div>}
     </div>
@@ -529,7 +533,7 @@ function FullText({ mid, revision, report = null }) {
 export const noImages = (text) => String(text || "")
   .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
   .replace(/<img\b[^>]*>/gi, "")
-  .replace(/\[(?:image|cid|inline image)[^\]]*\]/gi, "")
+  .replace(/\[(?:remote image|image|cid|inline image)[^\]]*\]/gi, "")
   .replace(/\n{3,}/g, "\n\n");
 
 function CombinedTaskText({ card, list = true }) {
@@ -597,8 +601,9 @@ function CombinedTaskText({ card, list = true }) {
             <div className="tq-card-note" style={{ marginBottom: 3 }}>
               {m.Direction === "out" ? t("You") : (m.FromName || m.FromEmail || t("Someone"))}{m.SentAt ? ` · ${fmtDateTime(m.SentAt)}` : ""}
             </div>
-            {looksMd(body) ? <Md text={body} /> : body ? <LinkedText text={body} /> : t("(empty)")}
-            {m.MessageId && <Attachments messageId={m.MessageId} canFetch={String(m.Channel || "") === "email" && mentionsPicture(m.BodyText)} dense />}
+            {looksMd(body) ? <Md text={body} /> : body.trim() ? <LinkedText text={body} links={m.Links} /> : m.MessageId ? null : t("(empty)")}
+            {m.MessageId && <Attachments messageId={m.MessageId} canFetch={String(m.Channel || "") === "email" && mentionsPicture(m.BodyText)} dense
+              bare={body.trim() ? null : { remote: remotePicture(m.BodyText) }} />}
           </div>
         );
       })}
@@ -1566,7 +1571,12 @@ export const shownSubject = (item) => (item?.subject && item.subject !== item.ti
 // on the owner said as one, its reason on hover (`aim`, the owner 2026-10-30)
 const DangerNote = ({ danger, aim = null }) => (danger ? <div className="tq-card-note" data-tq-danger="" title={aim === "owner" ? danger : undefined}
   style={{ color: ALERT, overflowWrap: "anywhere" }}>{dangerLine(danger, aim)}</div> : null);
-export function FyiMessage({ item, onHead = null, open: held = null, children }) {
+// ...a line Should be a task made a task stays, wearing where it went - its ref the way to the task (movedFyi.js, the owner 2026-11-03)
+export const MovedLine = ({ moved, onRef, className = "tq-item-msg-g" }) => !moved ? null : (
+  <div className={`${className} tq-moved`} data-tq-moved={moved.ref}>{t("Moved to Tasks")} · <button type="button" className="tq-ref-link"
+    onClick={() => onRef?.(moved.tid)} title={t("Open {ref}", { ref: moved.ref })}>{moved.ref}</button></div>);
+
+export function FyiMessage({ item, onHead = null, open: held = null, moved = null, onRef = null, children }) {
   useLocale();
   const [mine, setMine] = useState(false);
   const open = held ?? mine, gist = gistFor(item);
@@ -1580,6 +1590,7 @@ export function FyiMessage({ item, onHead = null, open: held = null, children })
         <span className="chev" aria-hidden="true">{open ? "▾" : "▸"}</span>
       </button>
       <DangerNote danger={item.danger} aim={item.danger_aim} />
+      <MovedLine moved={moved} onRef={onRef} />
       {!open && gist && <div className="tq-item-msg-g">{gist}</div>}
       {open && item.title && <div className="tq-item-msg-t">{item.title}</div>}
       {open && shownSubject(item) && <div className="tq-item-msg-g" data-tq-subject="">{t("Subject: {subject}", { subject: shownSubject(item) })}</div>}
@@ -1622,7 +1633,7 @@ function FyiSections({ card, table, items, msgs, foot, err, next }) {
 // how many fyi a card can show whole before every line folds to one (FyisCard)
 const FOLD_AT = 6;
 
-export function FyisCard({ card, onDone, onSurface, onTimeline, onPropose, onAgent, table = null }) {
+export function FyisCard({ card, onDone, onSurface, onTimeline, onPropose, onAgent, table = null, movedTo = {}, onOpenRef = null }) {
   useLocale();
   const caps = useCapabilities(), canCode = caps.coding;      // no coding tool connected: no Coding agent (capabilities.js)
   const noAi = cannotStart(caps);                              // ...and no AI: Send to agent greyed, saying why (trust audit F3)
@@ -1633,7 +1644,7 @@ export function FyisCard({ card, onDone, onSurface, onTimeline, onPropose, onAge
   // SEND TO AGENT ON ONE LINE opens the agent box under that line (RunForm.AgentAsk) - what about it is the issue, which agent - and
   // only its Start hands it over (the owner, 2026-10-23); { key, coding }
   const [asking, setAsking] = useState(null);
-  const items = card.items || [];
+  const items = (card.items || []).map((i) => (movedTo[i.key] && !i.tid ? { ...i, tid: movedTo[i.key].tid } : i));
   // A batch of four is read whole: every line carries its gist and its two doors, and you never
   // open anything. A batch of ten drawn the same way is a card you scroll past, with twenty doors
   // on the one thing whose whole point is that none of it needs you (the owner, 2026-09-16: "when
@@ -1687,9 +1698,10 @@ export function FyisCard({ card, onDone, onSurface, onTimeline, onPropose, onAge
   if (table != null) return (
     <FyiSections card={card} table={table} items={items} err={err} foot={foot} next={{ label: btn("next", "batch"), title: btnHint("next", "batch") }}
       msgs={items.map((i) => (
-        <FyiMessage key={i.key} item={i} open={open === i.key} onHead={() => setOpen((o) => (o === i.key ? null : i.key))}>
+        <FyiMessage key={i.key} item={i} open={open === i.key} onHead={() => setOpen((o) => (o === i.key ? null : i.key))} moved={movedTo[i.key]} onRef={onOpenRef}>
           {i.mid ? <FullText mid={i.mid} revision={i.presentation_revision || card.presentation_revision} /> : gistFor(i) && <div className="tq-card-full">{gistFor(i)}</div>}
-          {open === i.key && actsOf(i)}
+          {/* ...a line made a task belongs to the task now: its moves are the task's, its link the way there (the owner, 2026-11-03) */}
+          {open === i.key && !movedTo[i.key] && actsOf(i)}
         </FyiMessage>))} />
   );
   return (
@@ -1712,12 +1724,13 @@ export function FyisCard({ card, onDone, onSurface, onTimeline, onPropose, onAge
             {(i.since || i.when) && <span className="at">{fmtDateTime(i.since || i.when)}</span>}
             <span className="chev">{open === i.key ? "\u25be" : "\u25b8"}</span>
           </button>
+          <MovedLine moved={movedTo[i.key]} onRef={onOpenRef} className="tq-fyi-gist" />
           {open !== i.key && !folded && gistFor(i) && <div className="tq-fyi-gist">{gistFor(i)}</div>}
           {open === i.key && i.mid && <FullText mid={i.mid} revision={i.presentation_revision || card.presentation_revision} />}
           {/* ...and acting on it belongs to the ONE you opened, through the same proposal road the words
               take (PW-151) - never on the handful, never marking its siblings; and an entry already filed under a
               task is never offered to be made one (the owner, 2026-10-01) */}
-          {open === i.key && actsOf(i)}
+          {open === i.key && !movedTo[i.key] && actsOf(i)}
         </div>
       ))}
       </div>

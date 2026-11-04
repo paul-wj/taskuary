@@ -7,14 +7,14 @@
 // EVERY SOURCE BEFORE THE JOB (the owner, 2026-10-20; any source, 2026-10-21): the job is read out of what comes in, so a step lists the
 // sources connected so far - mailboxes, chats, task systems (firstrun.sources) - and adds the rest with the main source step's own
 // cards (FirstRun hands its shelf in as `mailShelf`). It is never skipped - Skip on a question before it lands on it - and
-// "That's all my sources" moves on once one is connected.
+// Next moves on once one is connected.
 // ...AND THREE DRAFTS, each written from the mail, edited, then accepted: the job (JOB.md), how you write (STYLE.md - it was written
 // silently after the job and its failure only logged) and who you are (SOUL.md). Each says its state, and a failure is said with
 // Write it again.
 import React, { useEffect, useRef, useState } from "react";
-import { Box, Button, Chip, CircularProgress, TextField, Typography } from "@mui/material";
+import { Box, Button, Checkbox, Chip, CircularProgress, FormControlLabel, TextField, Typography } from "@mui/material";
 import api from "./api";
-import { DIM } from "./theme.jsx";
+import { DIM, FAINT, INK } from "./theme.jsx";
 import { useVerbs } from "./actionRow.js";
 import { Md } from "./md.jsx";
 import { t } from "./i18n.js";
@@ -44,21 +44,21 @@ const ASK = {
 const SAYS = {
   job: { running: "Reading three months of your email to write your job description - about a minute.",
     failed: (why) => t("I couldn't write it from your email ({why}). Press Write it again, or say it in your own words.", { why }),
-    ready: "This is your job as your email describes it. Is it right? Edit anything that's wrong, then press Looks right.",
+    ready: "This is your job as your email describes it. Is it right? Edit anything that's wrong, then press Next.",
     none: "Press Write it - I read your email and describe your job.", busy: "Writing your job description from your email…" },
   // HERE'S WHAT I THINK YOU WORK ON (the owner, 2026-11-01): six months of mail grouped into workstreams - rename one, mark it personal,
   // or leave it out; a personal one is never learned from
   workstreams: { running: "Reading six months of your mail to see what you work on - about a minute.",
     failed: (why) => t("I couldn't tell what you work on from your mail ({why}). Press Write it again, or skip this step.", { why }),
-    ready: "Here's what I think you work on. Rename any, mark the personal one, untick any that's wrong, then press Looks right.",
+    ready: "Here's what I think you work on. Rename any, mark the personal one, untick any that's wrong, then press Next.",
     none: "Press Write it - I read six months of your mail and list what you work on.", busy: "Grouping your mail into what you work on…" },
   style: { running: "Reading your sent mail to describe how you write - about a minute.",
     failed: (why) => t("I couldn't write it from your sent mail ({why}). Press Write it again, or describe it in your own words.", { why }),
-    ready: "This is how you write, as your sent mail shows it. Edit anything that's off, then press Looks right.",
+    ready: "This is how you write, as your sent mail shows it. Edit anything that's off, then press Next.",
     none: "Press Write it - I read your sent mail and describe how you write.", busy: "Describing how you write from your sent mail…" },
   soul: { running: "Reading your mail and your answers to describe how you like to work - about a minute.",
     failed: (why) => t("I couldn't write it from your mail ({why}). Press Write it again, or say it in your own words.", { why }),
-    ready: "This is how you like to work, from your mail and your answers. Edit anything that's off, then press Looks right.",
+    ready: "This is how you like to work, from your mail and your answers. Edit anything that's off, then press Next.",
     none: "Press Write it - I describe how you like to work from your mail and your answers.", busy: "Describing how you like to work…" },
 };
 const NONE = { state: "none", why: "", text: "" };
@@ -164,11 +164,13 @@ export default function FirstRunAbout({ onSaved, onBack, onLine, onStep, again =
   // THE ONE LIT MOVE (FirstRun.jsx, the owner 2026-10-19): Write it while there is no draft to look at, else the row's Next - and the
   // line names it by its label
   const writeLit = !!draft && ["none", "failed"].includes(draft.state);
-  const nextLabel = t(busy === "save" ? "Saving…" : draft ? (draft.state === "ready" ? "Looks right" : last ? "Save" : "Next")
-    : step === "mailboxes" ? "That's all my sources" : "Next");
+  // ...and it says Next on every step (the owner, 2026-11-03): "Looks right", "That's all my sources" and "Save" named what each press did,
+  // and a word that changes per step is one more thing to read before the same press. What it does is said on the line and in its hover
+  const nextLabel = busy === "save" ? t("Saving…") : t("Next");
   useVerbs("setup-about", a ? [
-    { id: "about:back", group: "next", tone: "s", label: t("Back"), title: t(at ? "The question before" : "Your main source"), run: back },
-    { id: "about:next", group: "decide", tone: writeLit ? "s" : "p", disabled: !ready || !!busy,
+    // ...in the walk's Nav pill, Back and Next in their own slots, as every setup step's (FirstRun, the owner 2026-11-03)
+    { id: "about:back", group: "back", tone: "s", label: t("Back"), title: t(at ? "The question before" : "Your main source"), run: back },
+    { id: "about:next", group: "next", tone: writeLit ? "s" : "p", disabled: !ready || !!busy,
       why: draft ? t("{draft} is still being written", { draft: t(LABEL[step]).toLowerCase() }) : step === "mailboxes" ? t("connect a source first") : "",
       label: nextLabel,
       title: t(last ? "Saved to what Taskuary knows about you - change it any time in Settings" : step === "mailboxes" ? "Every place your work comes in is connected"
@@ -199,10 +201,25 @@ export default function FirstRunAbout({ onSaved, onBack, onLine, onStep, again =
   const enter = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); next(); } };
   const shown = all ? [...new Set([...seen, ...offered])] : seen;
   const text = draft ? texts[step] : "";
+  // ONE SHAPE FOR ALL TEN (the owner, 2026-11-03: a lone card, a bare "Write it again" and no way forward on "What you work on"): the question's
+  // name with where it stands beside it, what to answer, then one quiet line of the step's own small moves - Skip at its far end. The way on
+  // is always the bar's Next in the corner
+  const quiet = { color: DIM, fontSize: 12.5, minWidth: 0, px: 1 };
+  const moves = [
+    ...(step === "systems" ? [<Button key="all" size="small" sx={quiet} onClick={() => setAll((v) => !v)}>{t(all ? "Show only mine" : "Show the full list")}</Button>] : []),
+    ...(draft && draft.state !== "running" ? [
+      ...(text.trim() && step !== "workstreams" ? [<Button key="edit" size="small" sx={quiet} onClick={() => setEditing((v) => (v === step ? "" : step))}>
+        {t(editing === step ? "Done editing" : "Edit")}</Button>] : []),
+      <Button key="write" size="small" sx={quiet} onClick={() => { setEditing(""); learn([step]); }} disabled={!!busy}
+        data-tq-setup-lit={writeLit ? "about" : undefined}>{t(draft.state === "none" ? "Write it" : "Write it again")}</Button>] : []),
+  ];
+  const skipper = !again && canSkip(step);
   return (
-    <Box data-tq-firstrun-about={step} sx={{ display: "flex", flexDirection: "column", gap: 1.25, maxWidth: 760 }}>
-      <Typography sx={{ color: DIM, fontSize: 12 }}>{t("About your work · {current} of {total}", { current: at + 1, total: STEPS.length })}</Typography>
-      <Typography sx={{ fontSize: 15, fontWeight: 600 }}>{t(LABEL[step])}</Typography>
+    <Box data-tq-firstrun-about={step} sx={{ display: "flex", flexDirection: "column", gap: 1.5, maxWidth: 720, width: "100%", mx: "auto" }}>
+      <Box sx={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 2, flexWrap: "wrap" }}>
+        <Typography component="h2" sx={{ fontSize: 17, fontWeight: 600, color: INK, m: 0 }}>{t(LABEL[step])}</Typography>
+        <Typography sx={{ color: FAINT, fontSize: 12, whiteSpace: "nowrap" }}>{t("About your work · {current} of {total}", { current: at + 1, total: STEPS.length })}</Typography>
+      </Box>
       {["name", "org", "role"].includes(step) && <>
         <TextField key={step} size="small" fullWidth autoFocus value={a[step]} onChange={set(step)} onKeyDown={enter} sx={field}
           inputProps={{ "aria-label": t(LABEL[step]) }} />
@@ -230,10 +247,8 @@ export default function FirstRunAbout({ onSaved, onBack, onLine, onStep, again =
         <Box sx={{ display: "flex", gap: 1, maxWidth: 460, alignItems: "center" }}>
           <TextField size="small" fullWidth value={other} onChange={(e) => setOther(e.target.value)} sx={field}
             inputProps={{ "aria-label": t("Another system") }} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addOther(); } }} />
-          <Button size="small" onClick={addOther} disabled={!other.trim()} sx={{ whiteSpace: "nowrap" }}>{t("Add a system")}</Button>
+          <Button size="small" variant="outlined" onClick={addOther} disabled={!other.trim()} sx={{ whiteSpace: "nowrap", flexShrink: 0 }}>{t("Add a system")}</Button>
         </Box>
-        <Box><Button size="small" sx={{ color: DIM, fontSize: 12.5 }} onClick={() => setAll((v) => !v)}>
-          {t(all ? "Show only mine" : "Show the full list")}</Button></Box>
       </>}
       {step === "mailboxes" && <>
         <Box data-tq-mailboxes="" sx={{ display: "flex", flexDirection: "column", gap: 0.4 }}>
@@ -259,15 +274,13 @@ export default function FirstRunAbout({ onSaved, onBack, onLine, onStep, again =
               "& h2": { fontSize: 15.5, fontWeight: 700, mt: 2, mb: 0.5, borderBottom: "1px solid #ece6db" }, "& h2:first-of-type": { mt: 0.5 },
               "& h3": { fontSize: 14.5, fontWeight: 700, mt: 1.5, mb: 0.5 }, "& h3:first-of-type": { mt: 0.5 }, "& ul": { pl: 2.5, my: 0.5 },
               "& li": { fontSize: 14, lineHeight: 1.55, mb: 0.4 } }}><Md text={text} /></Box>}
-        <Box sx={{ display: "flex", gap: 1 }}>
-          {text.trim() && step !== "workstreams" && <Button size="small" onClick={() => setEditing((v) => (v === step ? "" : step))}>{t(editing === step ? "Done editing" : "Edit")}</Button>}
-          <Button size="small" onClick={() => { setEditing(""); learn([step]); }} disabled={!!busy}
-            data-tq-setup-lit={writeLit ? "about" : undefined}>{t(draft.state === "none" ? "Write it" : "Write it again")}</Button>
-        </Box>
       </>}</Box>}
       {note && !draft && <Typography sx={{ color: DIM, fontSize: 13 }}>{t("I couldn't fill these in from your email ({why}) - type them in.", { why: note })}</Typography>}
       {err && <Typography sx={{ color: "#9b2c2c", fontSize: 13 }}>{err}</Typography>}
-      {!again && canSkip(step) && <Box><Button size="small" disabled={!!busy} onClick={skip} sx={{ color: DIM, fontSize: 12.5 }}>{t("Skip these questions")}</Button></Box>}
+      {(moves.length > 0 || skipper) && <Box data-tq-about-moves="" sx={{ display: "flex", alignItems: "center", gap: 0.5, ml: -1, flexWrap: "wrap" }}>
+        {moves}
+        {skipper && <Button size="small" disabled={!!busy} onClick={skip} sx={{ ...quiet, ml: "auto" }}>{t("Skip these questions")}</Button>}
+      </Box>}
     </Box>
   );
 }
@@ -280,21 +293,31 @@ export function WorkstreamsConfirm({ text, onChange }) {
   const rows = parseWorkstreams(text);
   const put = (i, patch) => onChange(JSON.stringify(rows.map((r, j) => (j === i ? { ...r, ...patch } : r))));
   if (!rows.length) return <Typography sx={{ color: DIM, fontSize: 13.5 }}>{t("Your mail did not show separate workstreams yet.")}</Typography>;
+  // ONE LIST, EACH LINE READ AT A GLANCE (the owner, 2026-11-03: "Personal" and "Keep" ticked on a lone card said nothing): the box at the
+  // start keeps a workstream, the name is the field beside it, and "Personal" is spelled out once above and again on the line it marks
   return (
     <Box data-tq-workstreams-confirm="" sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
-      {rows.map((r, i) => (
-        <Box key={r.slug} data-tq-workstream-row={r.slug} sx={{ border: "1px solid #ddd5c6", borderRadius: 1.5, bgcolor: "#fff", px: 1.5, py: 1,
-          opacity: r.keep === false ? 0.55 : 1 }}>
-          <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
-            <TextField size="small" value={r.name} onChange={(e) => put(i, { name: e.target.value })} sx={{ minWidth: 240, "& .MuiInputBase-root": { fontSize: 14.5 } }}
-              inputProps={{ "aria-label": t("Workstream name") }} />
-            <label style={{ fontSize: 13, color: DIM }}><input type="checkbox" checked={!!r.personal} onChange={(e) => put(i, { personal: e.target.checked })} /> {t("Personal")}</label>
-            <label style={{ fontSize: 13, color: DIM }}><input type="checkbox" checked={r.keep !== false} onChange={(e) => put(i, { keep: e.target.checked })} /> {t("Keep")}</label>
-          </Box>
-          {r.about && <Typography sx={{ fontSize: 13, color: DIM, mt: 0.5 }}>{r.about}</Typography>}
-          {r.section && !r.personal && <Box sx={{ mt: 0.5, "& ul": { pl: 2.5, my: 0.25 }, "& li": { fontSize: 13.5, lineHeight: 1.5 } }}><Md text={r.section} /></Box>}
-          {r.personal && <Typography sx={{ fontSize: 12.5, color: DIM, mt: 0.5 }}>{t("Personal: an ask here is an FYI, and nothing here is learned from.")}</Typography>}
-        </Box>))}
+      <Typography sx={{ fontSize: 13, color: DIM }}>{t("Untick any that isn't yours to leave it out. Tick Personal for life outside work - asks there are FYIs, and nothing there is learned from.")}</Typography>
+      <Box sx={{ border: "1px solid #ddd5c6", borderRadius: 1.5, bgcolor: "#fff" }}>
+        {rows.map((r, i) => { const kept = r.keep !== false; return (
+          <Box key={r.slug} data-tq-workstream-row={r.slug} sx={{ px: 1.5, py: 1.25, "& + &": { borderTop: "1px solid #ece6db" } }}>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+              <Checkbox size="small" checked={kept} onChange={(e) => put(i, { keep: e.target.checked })} sx={{ p: 0.5, ml: -0.5 }}
+                inputProps={{ "aria-label": t("Keep {name}", { name: r.name || t("this workstream") }) }} />
+              <TextField size="small" value={r.name} onChange={(e) => put(i, { name: e.target.value })} disabled={!kept}
+                sx={{ flex: 1, minWidth: 0, "& .MuiInputBase-root": { fontSize: 14.5 } }} inputProps={{ "aria-label": t("Workstream name") }} />
+              <FormControlLabel disabled={!kept} control={<Checkbox size="small" checked={!!r.personal} onChange={(e) => put(i, { personal: e.target.checked })} sx={{ p: 0.5 }} />}
+                label={t("Personal")} sx={{ m: 0, flexShrink: 0, gap: 0.25, "& .MuiFormControlLabel-label": { fontSize: 13, color: DIM } }} />
+            </Box>
+            <Box sx={{ pl: 4, pt: 0.5, opacity: kept ? 1 : 0.55 }}>
+              {!kept ? <Typography sx={{ fontSize: 12.5, color: DIM }}>{t("Left out - Taskuary won't treat this as part of your work.")}</Typography> : <>
+                {r.about && <Typography sx={{ fontSize: 13, color: DIM }}>{r.about}</Typography>}
+                {r.section && !r.personal && <Box sx={{ mt: 0.25, "& ul": { pl: 2.5, my: 0.25 }, "& li": { fontSize: 13.5, lineHeight: 1.5 } }}><Md text={r.section} /></Box>}
+                {r.personal && <Typography sx={{ fontSize: 12.5, color: DIM, mt: 0.25 }}>{t("Personal - asks here are FYIs, and nothing here is learned from.")}</Typography>}
+              </>}
+            </Box>
+          </Box>); })}
+      </Box>
     </Box>
   );
 }

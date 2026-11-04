@@ -21,6 +21,7 @@ def install_processing_changes(app, store):
         '/api/fixture/processing/sync-phase',
         '/api/fixture/task/agent-closed',
         '/api/fixture/task/tracker-closeout',
+        '/api/fixture/task/pr-closeout',
         '/api/fixture/task/coding-saved',
         '/api/fixture/task/coding-live', '/api/fixture/task/coding-live/end',
         '/api/fixture/task/chat-burst',
@@ -33,16 +34,17 @@ def install_processing_changes(app, store):
         '/api/fixture/signin/link',
         '/api/fixture/signin/terminal-ask',
         '/api/fixture/browser/last-frame',
-        '/api/fixture/browser/view',
+        '/api/fixture/browser/view', '/api/fixture/browser/paint',
         '/api/fixture/processing/arrive-during-next', '/api/fixture/processing/rerun',
         '/api/fixture/task/closed-elsewhere', '/api/fixture/task/live-agent',
-        '/api/fixture/task/agent-draft',
+        '/api/fixture/task/agent-draft', '/api/fixture/task/agent-word',
         '/api/fixture/advisor/world',
         '/api/fixture/advisor/say',
         '/api/fixture/intake/arrive',
         '/api/fixture/task/matrix',
         '/api/fixture/task/advisor-raised',
         '/api/fixture/task/long-chat',
+        '/api/fixture/task/picture-mail',
         '/api/fixture/task/big-chat',
         '/api/fixture/task/group-chat',
         '/api/fixture/task/workstreams',
@@ -132,6 +134,23 @@ def install_processing_changes(app, store):
         due = trackers.closeout_due(store, tid)
         if not due or not proposals.closeout(store, tid, due, body['comment'], 'router'): raise HTTPException(409, 'no close-out was raised')
         return {'taskId': tid}
+
+    @app.post('/api/fixture/task/pr-closeout')
+    def pr_closeout(body: dict):
+        """A task whose coding agent opened a pull request and finished: its close-out (merge northwind/ledger#42) waits beside the reply to the
+        person who asked, one decision on Close out's card. Nothing reaches GitHub - the test answers the card's read and its press. Invented people."""
+        if body: raise HTTPException(422, 'no fields')
+        import json
+        tid = store.create_task({'Title': 'Ledger export drops the 4100 accounts', 'Kind': 'coding', 'Status': 'open', 'Source': 'github'}, 'router')
+        conv = f'github:northwind/ledger#42@{tid}'
+        mid = store.add_message({'TaskId': tid, 'Channel': 'github', 'ExternalId': conv, 'ConversationId': conv, 'FromName': 'Gail Moreno',
+                                 'Subject': 'Ledger export drops the 4100 accounts', 'Status': 'routed',
+                                 'BodyText': 'The nightly ledger export is missing the 4100 accounts - can you have a look?'})
+        reply = store.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'reply', 'Status': 'pending',
+                                  'DraftText': 'Fixed - the export reads the 4100 accounts from the new chart again.'})
+        co = store.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'DraftText': json.dumps(
+            {'action': 'merge_pr', 'repo': 'northwind/ledger', 'number': 42, 'closeout': True, 'text': 'Read the 4100 accounts from the new chart'})})
+        return {'taskId': tid, 'reply': reply, 'closeout': co}
 
     @app.get('/api/fixture/tracker/writes')
     def tracker_writes_seen(): return {'writes': tracker_writes}
@@ -284,6 +303,34 @@ def install_processing_changes(app, store):
         todo = [{'id': f't{i}', 'text': f'Move step {i + 1}: ' + ('label the crates' if i % 2 else 'book the lift'), 'done': i < 6} for i in range(22)]
         store._exec('UPDATE task SET Checklist=? WHERE TaskId=?', (json.dumps(todo), tid))
         return {'taskId': tid}
+
+    @app.post('/api/fixture/task/picture-mail')
+    def picture_mail(body: dict):
+        """Three mails on one task: one that is only a pasted picture (cid:, a tiny PNG made here), one that is only a picture on the
+        sender's site, and one whose "View report" button is a link (the owner, 2026-11-03: "entire email was a image it showed nothing",
+        "hyper links in fyi email like view report are not coming thru"). Invented sender and addresses."""
+        if body: raise HTTPException(422, 'this fixed fixture accepts only an empty object')
+        import json, struct, zlib
+        from taskuary.artifacts import attachment_dir
+        chunk = lambda t, d: struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+        png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', 2, 2, 8, 2, 0, 0, 0)) + \
+            chunk(b'IDAT', zlib.compress(b'\x00' + b'\xff\x00\x00' * 2 + b'\x00' + b'\x00\x00\xff' * 2)) + chunk(b'IEND', b'')
+        tid = store.create_task({'Title': 'October numbers from Vendor', 'Kind': 'task', 'Status': 'open', 'Source': 'email',
+                                 'Summary': 'The October numbers came in.'}, 'router')
+        start, mids = datetime.now() - timedelta(hours=1), []
+        for i, (subj, text, meta) in enumerate([('October numbers', '[image: October numbers]', None),
+                                                ('October banner', '[remote image: banner.png]', None),
+                                                ('October report', 'Your October report is ready.\nView report',
+                                                 {'links': [['View report', 'https://reports.vendor.example/r/9?u=alex']]})]):
+            mids.append(store.add_message({'TaskId': tid, 'Channel': 'email', 'ExternalId': f'fixture-pic-{tid}-{i}', 'FromName': 'Reports at Vendor',
+                                           'FromEmail': 'reports@vendor.example', 'Subject': subj, 'BodyText': text, 'Status': 'routed',
+                                           'MailMetaJson': json.dumps(meta) if meta else None,
+                                           'SentAt': (start + timedelta(minutes=5 * i)).isoformat(' ', 'seconds')}))
+        f = attachment_dir(mids[0]) / '0-image001.png'
+        f.write_bytes(png)
+        store.add_attachment({'MessageId': mids[0], 'ExternalId': f'fixture-pic-att-{tid}', 'Name': 'image001.png', 'ContentType': 'image/png',
+                              'Size': len(png), 'ContentId': 'image001.png@01DB', 'Inline': 1, 'Path': str(f)})
+        return {'taskId': tid, 'mids': mids}
 
     @app.post('/api/fixture/task/big-chat')
     def big_chat(body: dict):
@@ -795,6 +842,26 @@ def install_processing_changes(app, store):
         funnel.invalidate()
         return {'reviewId': out['review_id']}
 
+    @app.post('/api/fixture/task/agent-word')
+    def agent_word(body: dict):
+        """The live agent's own word changes mid-run (agent-draft-popup): `working` again, a pause the run reports as `input_needed`, or `ended` -
+        and the task-changed poke a running agent's page re-reads on, as the server sends it every few seconds while an agent works."""
+        if set(body) != {'task_id', 'word'} or type(body['task_id']) is not int or body['word'] not in ('working', 'input_needed', 'ended'):
+            raise HTTPException(422, 'exact task_id and word (working | input_needed | ended) are required')
+        from taskuary import funnel, live, terminal, workerstate as ws
+        tid = body['task_id']
+        pane = next((p for p in terminal.SESSIONS.values() if getattr(p, 'task_id', None) == tid and p.alive), None)
+        if pane is None: raise HTTPException(404, 'no live agent on that task')
+        if body['word'] == 'ended':                                         # ...or the agent stops: the session closes, as a CLI that exits
+            pane.close()
+            for loop, q in list(getattr(pane, 'subs', [])): loop.call_soon_threadsafe(q.put_nowait, None)
+            funnel.invalidate(); live.emit('task-changed', task_id=tid)
+            return {'taskId': tid, 'word': 'ended'}
+        if hasattr(pane, 'busy'): pane.busy = body['word'] == 'working'   # a general agent's conversation: its turn in flight, or answered
+        ws.record(store, tid, str(pane.sid), body['word'], text='Should I also file the receipt?' if body['word'] == 'input_needed' else '', source='hook')
+        funnel.invalidate(); live.emit('task-changed', task_id=tid)
+        return {'taskId': tid, 'word': body['word']}
+
     @app.post('/api/fixture/processing/ordering')
     def ordering_arrivals(body: dict):
         if body:
@@ -986,9 +1053,33 @@ def install_processing_changes(app, store):
         _bv.remember(str(sid), frame)
         for m in (json.dumps({'type': 'status', 'connected': True, 'screencasting': True}), json.dumps({'type': 'url', 'url': v['url']}), frame):
             await ws.send_text(m)
+        v.setdefault('sockets', []).append(ws)
         try:
-            while True: v['input'].append(json.loads(await ws.receive_text()).get('type'))
+            while True:
+                m = json.loads(await ws.receive_text())
+                v['input'].append(m.get('type'))
+                # THE PAGE'S FOCUSED BOX, as Chrome's Input.dispatchKeyEvent edits it: text goes in on a keyDown that carries it; Backspace
+                # and Delete act only with their Windows key code - without it they do nothing (measured on agent-browser 0.38.2)
+                if m.get('type') == 'input_keyboard' and m.get('eventType') in ('keyDown', 'rawKeyDown'):
+                    f, vk = v.setdefault('field', ''), m.get('windowsVirtualKeyCode')
+                    if vk == 8: v['field'] = f[:-1]
+                    elif vk == 65 and m.get('modifiers') == 2: v['all'] = True
+                    elif m.get('text') and m.get('text') != '\r': v['field'] = ('' if v.pop('all', False) else f) + m['text']
+                    if vk == 8 and v.pop('all', False): v['field'] = ''
+                if m.get('type') == 'ack': v.setdefault('acks', []).append(m.get('seq'))
         except Exception: pass
+        finally: v['sockets'].remove(ws)
+
+    @app.post('/api/fixture/browser/paint')
+    async def browser_paint(body: dict):
+        """{taskId, frame}: the page moves on - one more frame down every open view's socket, the newest seq, as a screencast sends it."""
+        import json
+        v = VIEW.get(view_sid.get(int(body.get('taskId') or 0)) or '')
+        if not v or not body.get('frame'): raise HTTPException(404, 'no fixture browser on that task')
+        v['seq'] = v.get('seq', 1) + 1
+        m = json.dumps({'type': 'frame', 'seq': v['seq'], 'data': body['frame'], 'metadata': {'deviceWidth': 1200, 'deviceHeight': 760}})
+        for ws in list(v.get('sockets', [])): await ws.send_text(m)
+        return {'seq': v['seq'], 'sent': len(v.get('sockets', []))}
 
     def view_run(sid, args, wait, tag):
         v = VIEW.get(str(sid))
@@ -1061,7 +1152,7 @@ def install_processing_changes(app, store):
     def browser_view_seen(tid: int):
         "What the agent was told, what its browser ran, and what the owner's mouse and keys sent the page."
         v = VIEW.get(view_sid.get(tid)) or {}
-        return {'told': told.get(tid, []), 'ran': v.get('ran', []), 'input': v.get('input', [])}
+        return {'told': told.get(tid, []), 'ran': v.get('ran', []), 'input': v.get('input', []), 'acks': v.get('acks', []), 'field': v.get('field', '')}
 
     # ── THE STATE MATRIX (browser/state-matrix, 2026-10-28): the task states the demo world lacks, each one task, invented people ──────────
     MATRIX = ('sent', 'working', 'coding_working', 'asked', 'stopped', 'finished', 'done', 'note', 'deferred', 'todo', 'idea', 'news',

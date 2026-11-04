@@ -46,6 +46,7 @@ import { DraftProvider, SaveBar, useCardDraft, useSaveConnector, useSaveSource }
 import { editedBoxes, syncState } from "./connectorDraft.js";
 import { AI_SHELF, needsGateway } from "./aiShelf.js";
 import { cliCardOf } from "./cliCard.js";
+import SavedSignins from "./SavedSignins.jsx";
 import { hint as btnHint, label as btnLabel } from "./buttons.js";
 import { noun, placeName, PLACES } from "./words.js";
 import { plural } from "./timeWords.js";
@@ -142,8 +143,8 @@ const META = {
     secretLabel: "client secret (tenant app only)",
     desc: "Your Microsoft mailbox, read and sorted for you. Sign in with your own account - no Azure portal - or register your own app if you prefer.",
     howto: ["Sign in with Microsoft (anyone): Credentials → Sign in with Microsoft → Microsoft's sign-in page opens in your browser; sign in with your own account and accept, and the tab hands you back to Taskuary. No code to type. (Taskuary on another computer, or a browser that cannot reach it? \"Sign in with a code instead\" shows a code for microsoft.com/devicelogin - some organisations block that one.) That is mail, sending and calendar for your mailbox - work or personal (Outlook.com). Nobody registers anything.",
-      "\"Need admin approval\": some organisations let only an admin say yes to a new app. The card then shows an approval link - forward it to your Microsoft 365 admin. They sign in, click Accept once, and everyone in the organisation can sign in from then on. It is a consent grant on Taskuary's app id, not an app registration on their side; the yellow \"unverified publisher\" note on their screen is expected.",
-      "Register your own Microsoft app (optional - if your organisation only approves apps it registered itself, or you want your own name on the consent screen). portal.azure.com → Microsoft Entra ID → App registrations → New registration: name it Taskuary; Supported account types: \"Accounts in any organizational directory and personal Microsoft accounts\" (or just your organisation); Redirect URI: platform \"Mobile and desktop applications\", enter http://localhost/api/ms/callback (the browser sign-in comes back to Taskuary on whatever port it runs; Entra ignores the port of a localhost redirect) and tick https://login.microsoftonline.com/common/oauth2/nativeclient (the admin-approval link) → Register.",
+      "\"Need admin approval\": some organisations let only an admin say yes to a new app. The card then shows an approval link - forward it to your Microsoft 365 admin. They open it, sign in and click Accept once, and everyone in the organisation can sign in from then on. If the page after Accept says it can't connect (localhost), that is expected - the approval is done. It is a consent grant on Taskuary's app id: nothing to set up in Azure; the yellow \"unverified publisher\" note on their screen is expected.",
+      "Register your own Microsoft app (optional - if your organisation only approves apps it registered itself, or you want your own name on the consent screen). portal.azure.com → Microsoft Entra ID → App registrations → New registration: name it Taskuary; Supported account types: \"Accounts in any organizational directory and personal Microsoft accounts\" (or just your organisation); Redirect URI: platform \"Mobile and desktop applications\", enter http://localhost/api/ms/callback (the browser sign-in comes back to Taskuary on whatever port it runs; Entra ignores the port of a localhost redirect - the admin-approval link returns to the same address) → Register.",
       "Then: Authentication → Advanced settings → Allow public client flows = Yes → Save (needed only for the \"Sign in with a code instead\" fallback). API permissions → Add a permission → Microsoft Graph → Delegated permissions: offline_access, User.Read, Mail.ReadWrite, Mail.Send, Calendars.ReadWrite (reads the calendar and answers invites) → Add. No client secret - a sign-in app is public by design. Copy the Application (client) ID into client_id here (under Admin?) and sign in above - or set TASKUARY_MS_CLIENT_ID on the server so every install uses it. No Partner Center and no publisher verification: those only remove the \"unverified\" label on the consent screen.",
       "Tenant app (admins - required for Teams chat reading and for mailboxes other than your own): the same App registrations → New registration, then API permissions → APPLICATION permissions Mail.Read (Mail.ReadWrite for Outlook drafts on approve or 'Handled mail, at the source') and Calendars.Read (Calendars.ReadWrite to answer invites and book meetings from Taskuary) → Grant admin consent; Certificates & secrets → New client secret. Enter tenant_id + client_id and paste the secret under Admin?; blank = the server's AZURE_* env vars.",
       "Mailboxes: signing in adds your own automatically. A tenant app reads every mailbox you add as a UPN under Sources.",
@@ -1582,7 +1583,7 @@ export const CardGrid = ({ children }) => (
 
 // The catalog's sections, named once: the rail reads them before `groups` is built (groups
 // needs the loaded connectors), and they must stay in step.
-const GROUP_TITLES = ["AI — agents & models", "AI — voice", "Email", "Messaging", "Social", "Agent tools", "Developer", "Project management",
+const GROUP_TITLES = ["AI — agents & models", "AI — voice", "Email", "Messaging", "Social", "Agent tools", "Sign-ins", "Developer", "Project management",
   "Databases", "Cloud & infrastructure", "Corporate systems", "Markets & finance", "Wallets & onchain", "Observability", "Agentic web", "Files & sheets", "Everything else"];
 // planned types read as raw identifiers on a card ("sharepoint_list"), which looks unfinished
 // in a way the feature is not. Named here; anything unnamed falls back to a de-underscored key.
@@ -1846,6 +1847,7 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
   const shared = conn ? { conn, reload: load, onBack: back, onCreated: (id) => setOpen({ kind: "connector", id }) } : null;
   const page = open?.kind === "agents" ? <CliConnectionsPage onBack={back} />
     : open?.kind === "voice-vocabulary" ? <VoiceVocabulary onBack={back} />
+    : open?.kind === "signins" ? <SavedSignins />
     : open?.kind === "alchemy-wallet" ? <AlchemyWalletGuide onBack={back}
       onData={() => { const c = byType.alchemy; if (c) setOpen({ kind: "connector", id: c.ConnectorId }); }} />
     : !conn ? null
@@ -1950,6 +1952,12 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
       ...specialCards("agent_desktop", "Agent Desktop", "", "agent desktop agent-desktop vercel desktop apps windows computer use accessibility",
         (c) => (c.Active ? "on · your agents can operate desktop apps; what can't be undone waits for you" : "off · your agents leave desktop apps alone")),
       ...catalogCards("Agent tools")] },
+    /* THE SIGN-INS A SYSTEM NEEDS, kept ahead of time (the owner, 2026-11-03): one place for every site an agent signs into in its browser -
+       the vault's own list and form (SavedSignins), the same one Settings > Agent permissions shows */
+    { title: "Sign-ins", note: "Sites an agent signs into in its browser. Taskuary types a saved sign-in into the site's own page; the agent never sees it.",
+      cards: [{ key: "signins", title: "Saved sign-ins", guide: true, desc: "Add or remove the sign-ins Taskuary types for your agents",
+        haystack: "sign in signin sign-in login log in password vault saved credentials user name site portal",
+        go: () => setOpen({ kind: "signins" }) }] },
     { title: "Developer", cards: [...channelCards(["github", "gitlab", "azdo", "sentry", "pagerduty"]), ...catalogCards("Developer")] },
     { title: "Project management", cards: [...channelCards(["jira", "asana", "monday", "clickup", "todoist", "linear", "trello", "notion"]), ...catalogCards("Project management")] },
     /* One "Data connections" bucket held eleven cards that have nothing to do with each
@@ -4087,6 +4095,11 @@ const ChatGptSignIn = ({ conn, cfg, reload }) => {
   );
 };
 
+// AADSTS900971 "No reply address provided": Microsoft's page stopped at the organisation's approval step - for a person signing in, or
+// for an admin who opened an approval link from before it returned to http://localhost/api/ms/callback (msauth.admin_consent_url)
+const NO_REPLY = /AADSTS900971/;
+export const msSays = (d) => NO_REPLY.test(d || "") ? "Microsoft stopped at your organisation's approval step (error AADSTS900971, \"No reply address provided\") - "
+  + "your IT admin approves Taskuary once with the link below, then sign in again." : d;
 const STALL_MS = 90 * 1000;   // a browser sign-in this long without coming back: say what a tenant's admin approval looks like
 // shared with the first-run card on the canvas (FirstRun.jsx) - one Microsoft sign-in, wherever it is drawn
 export const MsSignIn = ({ conn, cfg, reload, onSignedIn, plain = false }) => {
@@ -4130,7 +4143,10 @@ export const MsSignIn = ({ conn, cfg, reload, onSignedIn, plain = false }) => {
           setState("ok"); setDetail(message("Signed in as {name} — {account} is under {section} below and the first sync is running; what needs you shows up in the Assistant in a minute.", { name: data.name || data.account, account: data.account, section: message(chats ? "Users / chat ids" : "Mailboxes") }));
           reload(); onSignedIn?.();
         }
-        else { setState("error"); setDetail(data.detail || message("the sign-in did not complete")); if (data.admin_consent_url) setAdminUrl(data.admin_consent_url); }
+        else {
+          setState("error"); setDetail(data.detail ? msSays(data.detail) : message("the sign-in did not complete"));
+          if (data.admin_consent_url) setAdminUrl(data.admin_consent_url); else if (NO_REPLY.test(data.detail || "")) adminLink();
+        }
       } catch (e) { if (!alive) return; setFlow(null); setState("error"); setDetail(e?.response?.data?.detail || message("the sign-in did not complete")); }
     };
     const id = setTimeout(tick, wait);
@@ -4255,7 +4271,10 @@ export const MsSignIn = ({ conn, cfg, reload, onSignedIn, plain = false }) => {
         <Box sx={{ p: 1.25, border: `1px dashed ${BORDER}`, borderRadius: 1.5, bgcolor: "#fff", display: "flex", flexDirection: "column", gap: 0.5 }}>
           <Typography variant="body2" sx={{ fontWeight: 600, color: INK }}>{t("Approval link for your Microsoft 365 admin")}</Typography>
           <Typography variant="caption" sx={{ color: DIM, lineHeight: 1.5 }}>
-            {t("Forward this to whoever runs your Microsoft 365. They sign in, click Accept once, and everyone in your organisation can sign in above. It is a consent grant, not an app registration - nothing to build on their side. Then click Sign in with Microsoft again.")}
+            {t("Forward this to whoever runs your Microsoft 365. They open the link, sign in, and click Accept - once, for everyone in your organisation. If the page after Accept says it can't connect, that's expected: the approval is done. Nothing to set up in Azure. Then click Sign in with Microsoft again.")}
+          </Typography>
+          <Typography variant="caption" data-tq-ms-no-reply="" sx={{ color: DIM, lineHeight: 1.5 }}>
+            {t("Your admin saw error AADSTS900971 (\u201cNo reply address provided\u201d)? Their link came from an older Taskuary - send them this one.")}
           </Typography>
           <Box sx={{ display: "flex", gap: 0.5, alignItems: "center" }}>
             <Typography sx={{ ...mono, fontSize: 11, color: INK, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{adminUrl}</Typography>

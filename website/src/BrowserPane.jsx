@@ -9,7 +9,7 @@ import { label } from "./buttons.js";
 import { BORDER, CATPPUCCIN, FAINT, PANEL, mono } from "./theme.jsx";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
-import { fitFrame, keyMessage, mayShape, mouseMessage, parseMessage, shortUrl, viewportFor, viewportMoved,
+import { fitFrame, isPaste, keyMessage, mayShape, pasteMessages, mouseMessage, parseMessage, shortUrl, viewportFor, viewportMoved,
   wheelMessage } from "./browserSplit.js";
 
 const wsUrl = (sid) => {
@@ -45,7 +45,7 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
   const [asked, setAsked] = useState(false);
   const drivingRef = useRef(false);
   drivingRef.current = driving;
-  const held = useRef(0);       // the newest frame's seq while this tab is hidden: acked on return
+  const held = useRef(null);    // the newest frame while this tab is hidden: drawn and acked on return
   // null until the daemon says; false = it is up but holding no page, so no frame is coming
   const [attached, setAttached] = useState(null);
   const shape = useRef(null), shapeTimer = useRef(null);
@@ -81,6 +81,18 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
     ctx.drawImage(im, f.x, f.y, f.w, f.h);
   };
 
+  const draw = (m, send) => {
+    const im = new Image();
+    im.onload = () => {
+      /* LIVE IS THE SOCKET, NOT THE CLOCK. This went grey four seconds after the last frame -
+         and an ack-paced stream sends no frame at all while a page sits still, so a sign-in
+         form the agent was waiting on read as a dead pane (2026-09-15). It is live until the
+         relay closes; a page that is not moving is a page that is not moving. */
+      img.current = im; paint(); setLive(true);
+      send?.({ type: "ack", seq: m.seq });       // ack AFTER drawing: the next frame is the page now, not history
+    };
+    im.src = m.src;
+  };
   useEffect(() => {
     if (!open) { setLive(false); return undefined; }
     let ws, closed = false, retry = null, tries = 0;
@@ -96,17 +108,8 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
              every 80ms, and an ack asking for the next one. The stream is ack-paced end to end
              (browserview.py), so holding the ack stops it at the source - Chrome stops capturing -
              and the frame it stopped on is acked the moment the tab comes back. */
-          if (document.hidden) { held.current = m.seq; return; }
-          const im = new Image();
-          im.onload = () => {
-            /* LIVE IS THE SOCKET, NOT THE CLOCK. This went grey four seconds after the last frame -
-               and an ack-paced stream sends no frame at all while a page sits still, so a sign-in
-               form the agent was waiting on read as a dead pane (2026-09-15). It is live until the
-               relay closes; a page that is not moving is a page that is not moving. */
-            img.current = im; paint(); setLive(true);
-            send({ type: "ack", seq: m.seq });       // ack AFTER drawing: the next frame is the page now, not history
-          };
-          im.src = m.src;
+          if (document.hidden) { held.current = m; return; }
+          draw(m, send);
         } else if (m.type === "url" && m.url) setUrl(m.url);
         /* THE STREAM SAYS WHEN IT HAS NOTHING, and we used to drop that on the floor. An
            agent-browser daemon answers its screencast port the moment it launches, whether or not
@@ -133,9 +136,12 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
     const wake = () => {
       if (document.hidden) return;
       fitViewport(true);                       // back at this tab: it is the one being watched again
-      if (!held.current) return;
-      sendRef.current?.({ type: "ack", seq: held.current });
-      held.current = 0;
+      /* THE FRAME THAT CAME WHILE NOBODY LOOKED IS DRAWN, then acked. Only its seq was kept, and the ack asks for a NEWER frame - which
+         a page sitting still never makes. So a sign-in page that finished painting while the owner was in another window (the fill
+         page, the mail) stayed on the white of its loading for good: "still looks like white browser hand off page" (2026-11-03). */
+      const m = held.current;
+      held.current = null;
+      if (m) draw(m, sendRef.current);
     };
     const focus = () => fitViewport(true);
     document.addEventListener("visibilitychange", wake); window.addEventListener("focus", focus);
@@ -187,7 +193,21 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
   const onWheel = (e) => { if (!drivingRef.current) return; e.preventDefault(); forward(wheelMessage(e.nativeEvent, fit.current)); };
   // the page asked for a password, the agent said to type it here, and the keystroke went nowhere
   // and said nothing (the owner, 2026-09-14). Dropping it is right; dropping it in silence is not.
-  const onKey = (e) => { if (!drivingRef.current) return void setAsked(true); e.preventDefault(); e.stopPropagation(); forward(keyMessage(e.type, e.nativeEvent)); };
+  const onKey = (e) => {
+    if (!drivingRef.current) return void setAsked(true);
+    e.stopPropagation();
+    // Ctrl+V is the owner's clipboard, not the page's (empty): the default is let through so the paste event brings it (onPaste)
+    if (isPaste(e)) { if (e.type === "keydown") pasteSoon(); return; }
+    e.preventDefault(); forward(keyMessage(e.type, e.nativeEvent));
+  };
+  // the owner's clipboard typed in. A canvas is not an editable box, so where the browser sends it no paste event the clipboard is read
+  const pasted = useRef(0);
+  const typeIn = (text) => { for (const m of pasteMessages(text)) forward(m); };
+  const pasteSoon = () => {
+    const n = ++pasted.current;
+    setTimeout(() => { if (pasted.current === n) navigator.clipboard?.readText?.().then(typeIn).catch(() => say("Paste was not allowed - type it instead", true)); }, 150);
+  };
+  const onPaste = (e) => { if (!drivingRef.current) return; e.preventDefault(); pasted.current++; typeIn(e.clipboardData?.getData("text/plain")); };
 
   const snapshot = async () => {
     try {
@@ -238,10 +258,12 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
       </Box>
       {/* the page. tabIndex so keystrokes land here while driving; the canvas swallows the wheel
           the same way the terminal does, so scrolling the page never scrolls the app */}
-      <Box ref={box} onPointerDown={() => fitViewport(true)}
+      {/* a click on the page is not a claim on its shape: re-sending it reshaped the page under the owner's first click, and the box they
+          clicked could lose its caret before the first keys arrived (2026-11-03) */}
+      <Box ref={box} onPointerDown={() => fitViewport()}
         sx={{ flex: 1, minHeight: 0, position: "relative", cursor: driving ? "default" : "not-allowed" }}>
         <Box component="canvas" ref={canvas} tabIndex={0} onMouseDown={onMouse} onMouseUp={onMouse} onMouseMove={onMouse}
-          onWheel={onWheel} onKeyDown={onKey} onKeyUp={onKey} onContextMenu={(e) => e.preventDefault()}
+          onWheel={onWheel} onKeyDown={onKey} onKeyUp={onKey} onPaste={onPaste} onContextMenu={(e) => e.preventDefault()}
           sx={{ display: "block", outline: "none", position: "absolute", inset: 0 }} />
         {/* BEFORE ANYTHING ARRIVES, it says it is starting: a black box marked "…" is how the owner has described a broken pane
             ("freezes and is just black") - the chip already said "browser · starting…" (2026-10-25) */}

@@ -252,6 +252,15 @@ def thread_speaker(rows: list) -> dict:
     return {group: mid for group, (_rank, mid) in best.items()}
 
 
+def _preview(store, r: dict):
+    """A row's line of words - and a mail with none says what came with it ("Attached: October.xlsx"), never an empty line on its card
+    (the owner, 2026-11-03: a picture-only mail "showed nothing"). Asked only of a wordless row, so a day of mail costs no extra read."""
+    if str(r.get('Preview') or '').strip() or not r.get('MessageId'): return r.get('Preview')
+    try: names = [a['Name'] for a in store.list_attachments(r['MessageId']) if a.get('Name')]
+    except Exception: names = []
+    return f"Attached: {', '.join(names[:3])}{f' and {len(names) - 3} more' if len(names) > 3 else ''}" if names else r.get('Preview')
+
+
 def from_feed(store, rows: list, *, canonical=False) -> list:
     out, agents, reviews, threads = [], set(), set(), {}
     speaks, more = thread_speaker(rows), {}
@@ -276,7 +285,7 @@ def from_feed(store, rows: list, *, canonical=False) -> list:
         # (timelineState.roadOf; the owner, 2026-09-07: "once the ai decides it should show what the
         # ai decided. Same in work and timeline tabs")
         base = dict(who=who, when=r.get('SentAt'), mid=r['MessageId'], tid=r.get('TaskId'), channel=r.get('Channel') or '',
-                    category=r.get('Category') or '', preview=r.get('Preview'), cid=cid, email=r.get('FromEmail') or '',
+                    category=r.get('Category') or '', preview=_preview(store, r), cid=cid, email=r.get('FromEmail') or '',
                     priority=r.get('Priority'), route=r.get('RouteReason') or '', task_kind=r.get('TaskKind') or '',
                     # the mail's own subject beside triage's title, and the danger triage read in it (message.Danger) - shown, never a gate
                     subject=_short(r.get('Subject') or '', 140), danger=_short(r.get('Danger') or '', 200) or None,
@@ -1935,11 +1944,30 @@ def item_for_key(store, key: str) -> dict | None:
     if not m: return None
     mid = int(m.group(2))
     row = next(iter(store.feed(limit=1, days=3650, ids=[mid])), None)   # any age: a Recent row older than a week is still that row
-    if not row: return None
+    if not row:                                  # a message the feed hides opens its thread's row, or its task (TQ-1293)
+        shown, tid = store.shown_message_of(mid), (store.get_message(mid) or {}).get('TaskId')
+        return item_for_key(store, f'msg:{shown}') if shown and shown != mid else item_for_key(store, f'task:{tid}') if tid else None
     items = from_feed(store, [row | {'Category': 'info' if row.get('Category') in _QUIET else row.get('Category')}])
     it = next((i for i in items if i.get('mid') == mid), None)
     if it and it['kind'] == 'fyi': it = it | {'lane': 'fyi', 'why': row.get('RouteReason') or it['why']}
     return shut(_present_one(store, it))
+
+
+def message_item(store, key: str) -> dict | None:
+    """A MESSAGE NAMED BY ITS OWN ID IS THAT MESSAGE (a colleague, 2026-11-03: a Search hit clicked put "…" on the canvas, then nothing, and
+    "I can't find that one" in the chat): Search lists every message whatever became of it - skipped at the first sync, ignored, answered,
+    sent, on a closed task - and item_for_key knows only the rows a Timeline would show. Those first, as they are; past them, the row read
+    whatever its status and worded as itself, never judged against the rail's rules for what is news."""
+    if (it := item_for_key(store, key)) or not (m := re.match(r'^(msg|report):(\d+)$', key or '')): return it
+    mid = int(m[2])
+    row = next(iter(store.feed(limit=1, days=36500, ids=[mid], every=True)), None)
+    if not row: return None
+    it = next((i for i in from_feed(store, [row], canonical=True) if i.get('mid') == mid), None)
+    if it is None: return None
+    if row.get('Direction') == 'out': it = it | {'lane': 'fyi', 'why': 'you sent this'}
+    elif it['kind'] == 'fyi': it = it | {'lane': 'fyi', 'why': row.get('RouteReason') or it['why']}
+    if row.get('TaskStatus') in ('done', 'dropped'): it = it | {'closed': True}
+    return _present_one(store, it)
 
 
 VERBS = ('surfaced', 'done', 'later', 'skip', 'ack')
@@ -1990,21 +2018,26 @@ SETTLE_TRIES = 3          # a settle the census lag refused, reconciled and trie
 
 
 def settle(store, key: str, verb: str, by: str = 'owner', hours: float = None, note: str = None, *, expected_context=None, read: bool = False,
-           shown=None) -> dict:
+           shown=None, thread=None) -> dict:
     """The owner's word on one item. done: gone for good. later: back in `hours` (LATER_HOURS by
     default). skip: back tomorrow morning. surfaced: shown in this walk - and, with `read`, READ: once
     it has been put in the chat it leaves Unread (the owner, 2026-09-06). ack: an alert was seen.
 
     `shown` ({key: view_revision}) is the card the press was made on: its receipts cover what that card showed, and a
-    message that landed after it was drawn stays unread. Without it, the card the rail last drew."""
+    message that landed after it was drawn stays unread. Without it, the card the rail last drew. `thread`: the mails folded under the row
+    (its `thread`), from a caller holding it - else the rail's cache, which every settle empties (thread_of)."""
     if shown is None: shown = _SHOWING.get()
     if verb not in VERBS: raise ValueError(f'unknown verb: {verb}')
     if key.startswith('fyis:'):                                   # a batch: the verb lands on every member
         # ...and wakes the tabs ONCE. Each settle empties the pile cache and fires the live event
         # every open Assistant answers with a forced rebuild, so four fyi settled together set four
         # rebuilds of a 60-item pile racing each other in front of the Next that follows.
+        # ...each member's folded thread taken BEFORE the first settle empties the cache it is read from: from the second row on, the mails
+        # under it stayed unread and a "+3" row came back after the walk said it was done (2026-11-03)
+        ks = [k for k in key[5:].split(',') if k]
+        threads = {k: thread_of(store, k) for k in ks}
         with store.one_poke():
-            out = [settle(store, k, verb, by, hours, note, expected_context=expected_context, read=read, shown=shown) for k in key[5:].split(',') if k]
+            out = [settle(store, k, verb, by, hours, note, expected_context=expected_context, read=read, shown=shown, thread=threads[k]) for k in ks]
         return {'key': key, 'verb': verb, 'until': (out[0] if out else {}).get('until')}
     # A MEETING IS WALKED LIKE A TASK (Q3, 2026-10-30): Next on it writes nothing and it leaves the rail by itself after its grace
     # minutes - it was held `later` until its start (2026-09-28), a row the walk skipped
@@ -2034,7 +2067,7 @@ def settle(store, key: str, verb: str, by: str = 'owner', hours: float = None, n
             store.reconcile_processing_membership()
     if verb == 'done': _idea_done(store, key, by)
     # ...and an FYI row that speaks for its whole email thread settles the mails folded under it (processing_unread.fold_fyi_threads)
-    for k in thread_of(store, key):
+    for k in (thread_of(store, key) if thread is None else thread):
         try: settle(store, k, verb, by, hours, note, read=read)
         except Exception as e: logger.debug(f'funnel: {k} under {key} not settled - {e}')
     invalidate()

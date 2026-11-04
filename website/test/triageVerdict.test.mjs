@@ -58,3 +58,11 @@ test("a route's verdict reads the same in the new head and the old label", () =>
   assert.equal(routeWhy("triage: work for the coding agent in org/app - the export breaks · new task"), "the export breaks · new task");
   assert.equal(routeWhy("triage: task - old words"), "old words");
 });
+
+// triage's fourth verdict (the owner, 2026-11-03): someone else's to handle, kept under Watching - read back in the route's own words
+test("a watch verdict reads back as watch in saved and structured routes", async () => {
+  const { routeHead } = await import("../src/taskSources.js");
+  assert.equal(routeIntent("triage: watching - Gail Moreno usually answers these"), "watch");
+  assert.equal(routeHead("triage: watching - Gail Moreno usually answers these"), "watching");
+  assert.equal(routeHead("", { intent: "watch" }), "watching");
+});

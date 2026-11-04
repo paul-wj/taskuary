@@ -21,7 +21,10 @@ export function outcomeOf(data) {
     const accepted = d.accepted;
     const text = accepted === false
       ? t("{who} is opening on {ref} - the ask is still being typed in", { who, ref: ref || t("it") })
-      : ref ? t("{who} is on it in a live session - {ref}", { who, ref }) : t("{who} is on it in a live session", { who });
+      // a general agent is a chat, not a session at a keyboard: "in a live session" read as coding talk on one (2026-11-03)
+      : d.dispatch === "assistant"
+        ? t(ref ? "{who} is on it - {ref}" : "{who} is on it", { who, ref })
+        : t(ref ? "{who} is on it in a live session - {ref}" : "{who} is on it in a live session", { who, ref });
     return { state: "started", text, taskId: d.taskId, accepted };
   }
   return { state: "unknown", text: t("no start was reported"), taskId: d.taskId };

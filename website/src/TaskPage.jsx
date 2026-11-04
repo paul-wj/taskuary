@@ -16,7 +16,7 @@ import { useLocale } from "./LocaleProvider.jsx";
 import { canSend, cannotStart, draftCanSend, useCapabilities } from "./capabilities.js";
 import {
   Alert, Autocomplete, Box, Button, Checkbox, Chip, CircularProgress,
-  Drawer, IconButton, InputAdornment, Link, Menu, MenuItem, TextField, Tooltip, Typography,
+  Drawer, IconButton, InputAdornment, Link, Menu, MenuItem, TextField, Tooltip, Typography, useMediaQuery,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import CloseIcon from "@mui/icons-material/Close";
@@ -59,13 +59,14 @@ import { onLive, touches } from "./live.js";
 import { pollWhileActive } from "./visible.js";
 import { PANEL, PANEL2, BORDER, DIM, FAINT, INK, card, frame, frameInner, label, step, PALETTE, hoverable, mono, ACCENT, ACCENT2, PILL_COLORS, ALERT, ALERT_BD, ALERT_INK, ALERT_TINT, BRAND } from "./theme.jsx";
 import RunSteps from "./RunSteps.jsx";
-import { askLine, byLine, cameFromLabel, cameFromWhere, channelName, filesByMessage, fromExpands, fromRows, groupConversations, groupMeta, headerFacts, isIdeaLine, isChat, madeLine, rowText, sortedLine, todoSources, triageLine, triageSays, workflowOrigin } from "./taskSources.js";
+import { askLine, byLine, cameFromLabel, cameFromWhere, channelName, filesByMessage, fromExpands, fromRows, groupConversations, groupMeta, headerFacts, isIdeaLine, isChat, madeLine, rowText, sortedLine, todoSources, toLine, triageLine, triageSays, workflowOrigin } from "./taskSources.js";
 import { latestTriageVerdict, legacyTriageVerdict, parseTriageVerdict, routeIntent } from "./triageVerdict.js";
 import { Handoff } from "./Handoff.jsx";
 import { Reshape } from "./Reshape.jsx";
 import { RepoPicker, RepoSelect } from "./RepoPicker.jsx";
 import { WorkstreamSelect } from "./Workstream.jsx";
 import { Attachments, mentionsPicture } from "./Attachments.jsx";
+import { remotePicture, wordsOnly } from "./mailLinks.js";
 import ChatThread from "./ChatThread.jsx";
 import { ChannelIcon, LifecycleChip, StateChip, stateOf, TASK_STATES, asUtc, tsMs, AgentPicker, useAgents, codingProfile, RunTrace, DiffBlock, DiffFiles, timeAgo, fmtDateTime, cleanText, LinkedText, Empty, FilterPills, Confirm, WorkStrip, isWaiting, TaskuaryMark, DraftField, assignedAgent } from "./ui.jsx";
 import { Md, looksMd } from "./md.jsx";
@@ -82,7 +83,7 @@ import SendIcon from "@mui/icons-material/Send";
 import { Divider, ListItemText } from "@mui/material";
 import { TerminalPane } from "./TerminalView.jsx";
 import AgentDraftNotice from "./AgentDraftNotice.jsx";
-import { agentAsks, alreadyAnswered, answeredLine, askWhere, autoPair, draftKey } from "./agentDraftAsk.js";
+import { agentAsks, alreadyAnswered, answeredLine, askWhere, autoPair, draftKey, latestDrafts } from "./agentDraftAsk.js";
 import { LastView } from "./BrowserPane.jsx";
 import OpenInFullIcon from "@mui/icons-material/OpenInFull";
 import CloseFullscreenIcon from "@mui/icons-material/CloseFullscreen";
@@ -176,6 +177,8 @@ const CONV_KEEP = 5;
 // again in full under it, its subject under the conversation's own): the row keeps who and when, the letter keeps the words, and a
 // subject that is the conversation's (`subject`) is not said again
 // ...and `newest`: the row Came from's conversation ends on, marked - it is what came in (the one flow, 2026-10-28)
+// ...and a letter's words leave its pictures' stand-ins out (mailLinks.STANDIN): a picture-only mail is said by Attachments `bare`, never blank
+const letterText = (m) => wordsOnly(cleanText(m.Channel === "report" ? m.BodyText : (m.ReadText ?? m.BodyText)));
 function ConversationRows({ rows, open, onOpen, onExpand, files = new Map(), fetchFor = null, narrow = false, subject = "", newest = null }) {
   useLocale();
   return rows.map((r, ri) => r.older ? (
@@ -229,10 +232,11 @@ function ConversationRows({ rows, open, onOpen, onExpand, files = new Map(), fet
               scrollbar (the owner, 2026-10-26, three in one column on a laptop: "you can't see anything") */}
           <Box data-tq-letter-body="" sx={{ mt: 0.5, minWidth: 0, overflowWrap: "anywhere" }}>
             {r.m.Channel === "report" && looksMd(r.m.BodyText) ? <Md text={cleanText(r.m.BodyText)} />
-              : <Typography variant="body2" sx={{ color: DIM, lineHeight: 1.55, whiteSpace: "pre-wrap" }}>
-                  <LinkedText text={cleanText(r.m.Channel === "report" ? r.m.BodyText : (r.m.ReadText ?? r.m.BodyText))} /></Typography>}
+              : letterText(r.m) && <Typography variant="body2" sx={{ color: DIM, lineHeight: 1.55, whiteSpace: "pre-wrap" }}>
+                  <LinkedText text={letterText(r.m)} links={r.m.Links} /></Typography>}
           </Box>
-          <Attachments messageId={r.m.MessageId} canFetch={r.m.Channel === "email" && mentionsPicture(r.m.BodyText)} dense original={r.m.SourceLink} />
+          <Attachments messageId={r.m.MessageId} canFetch={r.m.Channel === "email" && mentionsPicture(r.m.BodyText)} dense original={r.m.SourceLink}
+            bare={r.m.Channel !== "report" && !letterText(r.m) ? { remote: remotePicture(r.m.BodyText) } : null} />
         </Box>
       )}
     </React.Fragment>
@@ -269,6 +273,12 @@ const FROM_SIDE = { position: "absolute", top: 0, left: 0, bottom: 0, width: "mi
 // one on the right, each laid OVER the main view behind a tab, so nothing under it reflows. Two columns cut the owner's 1600x810 laptop
 // to a ~700px work column whose failure reason sat out of sight. A phone (the body under 760px) keeps its stacked page.
 export const STACK_BELOW = 760;
+// ...BUT NEVER ON THE DESK (the owner, 2026-11-03: "stage moves belong on the task's spine, never on the bottom bar"): from 900 to ~1100 wide the
+// rail and the canvas left a task ~490-700px, under 760, and it stacked - its moves went back on the bar. Any window wider than a phone's
+// (DESK_W: 601px up - the 601-810 band with no rail too, the owner the same day) keeps the table's three sections, spines and all, down to
+// DESK_STACK_BELOW; a phone (ActionRow's 600px) keeps its stacked page and its own row
+export const DESK_W = 601, DESK_STACK_BELOW = 440, OPEN_MIN = 180;
+export const useStackBelow = (table = true) => (useMediaQuery(`(min-width:${DESK_W}px)`) && table ? DESK_STACK_BELOW : STACK_BELOW);
 const TODO_SHOWN = 6;   // open to-dos shown before "Show N more"
 const REOPEN_ROW_MS = 2500;     // the longest the row says "Reopening…" past the server's yes, waiting on the re-read to draw from
 // ...the main view the whole width, as a live agent's is (the owner, 2026-10-26: "no main view should fill the screen. why waste space?" -
@@ -307,6 +317,8 @@ export const tabW = (w) => (w > 0 ? Math.round(Math.min(TAB_W, Math.max(TAB_MIN,
 // and the email it drafted), Came from beside Agent (the ask and the work). Only where two halves stay readable - a work area of 960px leaves
 // each about 400 beside the closed spine; a 1440 screen's is ~1014 - and never over a live agent: it keeps the most room
 export const PAIR_OF = { from: "agent", agent: "close", close: "agent" }, PAIR_MIN = 960;
+// ...the agent drafts the pair was opened for on their own (autoPair `done`), and those whose pair the owner closed (`shut`): draftKeys
+const PAIR_DONE = new Set(), PAIR_SHUT = new Set();
 // ...which section a press belongs to, by its verb id (a draft's own are "<review>:<verb>", all Close out's)
 const VERB_SECTION = { close: new Set(["reply", "done", "close-note", "hand", "accept_invite", "decline_invite", "propose_time", "find_time"]),
   agent: new Set(["continue", "run-another", "send-general", "start-agent", "save-end", "diff", "fix", "strong-again"]) };
@@ -571,7 +583,8 @@ export function PaneMoves({ sec, skip = () => false, name = SEC_NAME[sec] }) {
   const box = useRef(null), [n, setN] = useState(99), [, refit] = useState(0), [at, setAt] = useState(null);
   const sig = items.map((x) => `${x.key}:${x.v?.label || ""}:${x.v?.tone || ""}`).join("|");
   useLayoutEffect(() => { setN(99); }, [sig]);
-  const keep = 1 + items.reduce((k, x, i) => (x.v && (isDoneMove(x.v) || x.v.tone === "p") ? i : k), 0);
+  // ...and with neither, everything may go: a ~240px Came from on a 900px desk had room for its ▾ alone, and Remind me pushed it off the end
+  const keep = 1 + items.findLastIndex((x) => x.v && (isDoneMove(x.v) || x.v.tone === "p"));
   useLayoutEffect(() => { const b = box.current; if (b && n > keep && b.scrollWidth > b.clientWidth + 1) setN((k) => Math.max(keep, Math.min(k, items.length) - 1)); });
   // ...and a width change measures again even when nothing was folded: setN(99) on an n already 99 drew nothing, so a pane narrowing into
   // a half (side by side) left its last move cut off at the edge until some unrelated draw folded it seconds later
@@ -617,9 +630,11 @@ export function PaneStrip({ sec, live = false, skip, onFold, fold = (to) => to, 
   const pairWord = pair?.on ? tr("One pane") : tr("Side by side");
   return (
     <Box data-tq-pane-strip={sec} data-tq-live={live ? "" : undefined} sx={{ position: "absolute", top: 0, left: 0, right: 0, height: live ? STRIP_LIVE_H : STRIP_H, zIndex: 2,
-      boxSizing: "border-box", display: "flex", alignItems: "center", gap: 1, px: live ? 1 : 1.5, bgcolor: "#fff", borderBottom: `1px solid ${FOCUS_EDGE}` }}>
+      boxSizing: "border-box", display: "flex", alignItems: "center", gap: 1, px: live ? 1 : 1.5, bgcolor: "#fff", borderBottom: `1px solid ${FOCUS_EDGE}`,
+      // ...a pane ~240px wide (a 900px desk, useStackBelow) gives its name's room to its moves: Mark done and the ▾ whole, the name still read out
+      containerType: "inline-size", "@container (max-width: 280px)": { "& [data-tq-strip-name]": HIDDEN_WORDS } }}>
       {arrows.filter((a) => a.side === "left").map(arrow)}
-      {!live && <Typography sx={{ ...SECTION_NAME, flexShrink: 0 }}>{tr(name)}</Typography>}
+      {!live && <Typography data-tq-strip-name="" sx={{ ...SECTION_NAME, flexShrink: 0 }}>{tr(name)}</Typography>}
       <Box sx={{ flex: 1, minWidth: 0, display: "flex", justifyContent: live ? "flex-end" : "flex-start" }}>
         {live ? <Box sx={{ display: "flex", gap: 0.5 }}>
             {onStop && liveMoves.some((v) => !v.disabled) && <Tooltip title={btn("stop_agent")}><IconButton size="small" data-tq-strip-stop="" data-tq-verb="save-end" aria-label={btn("stop_agent")} onClick={onStop}
@@ -747,7 +762,7 @@ function GoalSteps({ task, onOpenTask, onChanged }) {
 
 export default function TaskPage({ taskId: selected, listRow = null, onListChanged, onSelect, onClose, onFinish, walkLeave = null, onReminded, onLeave, onStay, onOpenTask,
   onChanged, autostart, onAutostarted, active = true, openAct, onActOpened, canvas = false,
-  onNext = null, nextBusy = false, expanded = false, onExpand = null, backArrow = false, title = "", rail = null, note = null, saidDay = null, litMove = "" }) {
+  onNext = null, nextBusy = false, expanded = false, onExpand = null, backArrow = false, title = "", rail = null, note = null, saidDay = null, saidHand = null, litMove = "" }) {
   useLocale();
   const PICK_CODE = btn("pick_repo");
   const caps = useCapabilities(), canCode = caps.coding;     // no coding tool connected: coding is not offered (capabilities.js)
@@ -1127,7 +1142,11 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // was pushed below the fold (the owner, 2026-10-13: "the coding agent should be the main view"). One click opens them.
   const [itemsOpen, setItemsOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
-  useEffect(() => { setHandoff(false); setReshape(false); setRepoPick(false); setResumeAfterRepo(null); setDiffOpen(false); setShowAll(false); setOpenMsg(undefined); setPick(null); setReportOpen(false); setPeek(false); }, [selected]);
+  // HAND IT TO A PERSON, ASKED FOR IN WORDS (the owner, 2026-11-03: "This should be sent to <an address>" did nothing): the Assistant's light
+  // carries who and a note, and the form comes up with them in it - kept while it is open, so the light going out never empties what is typed
+  const [handSaid, setHandSaid] = useState(null);
+  useEffect(() => { setHandoff(false); setHandSaid(null); setReshape(false); setRepoPick(false); setResumeAfterRepo(null); setDiffOpen(false); setShowAll(false); setOpenMsg(undefined); setPick(null); setReportOpen(false); setPeek(false); }, [selected]);
+  useEffect(() => { if (saidHand?.to) { setHandSaid({ to: saidHand.to, note: saidHand.note || "" }); setHandoff(true); } }, [saidHand?.to, saidHand?.note]);
   // asked when the drawer opens, and only then: shelling out to git on every task poll would
   // spend a subprocess a second on an answer nobody is looking at
   // ...in the scope ON SCREEN: with no dependencies this kept the first render's scope, so Refresh always went back to
@@ -1298,6 +1317,8 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // goes through the server's one gate (concierge.close_after_send): kept open, said on the task, while anything on it still waits on
   // you - a held agent step, a proposal, an email it owes, a session still open (a held `git push` was closed under, 2026-10-29).
   // Anything else (an Approve, one of its emails) reads the task again and stays on it; closed by something else meanwhile means walk on
+  // ...and only Close out's Send and close says `closes` (the owner, 2026-11-03: "send and close and send without closing"): its plain Send
+  // reads the task again and stays on it, as Send does everywhere else
   // ...and NOTHING STILL WORKING IS PUT DOWN (the owner, 2026-11-01: "if agent screen is still open and you hit send message it should
   // not close the tasks"): with work live the press puts nothing down, and a close the server kept open picks the row back up - put
   // down at the press, it stayed off the rail with its agent still drawn on the canvas
@@ -1400,7 +1421,8 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   const sentOutsideAll = sentElsewhere(detail?.messages || [], detail?.reviews || []);
   const rounds = closeoutRounds({ messages: (detail?.messages || []).filter((m) => !isIdeaLine(m)), reviews: allReviews, outside: sentOutsideAll,
     closeouts: detail?.closeouts || [], open: !["done", "dropped"].includes(t?.Status), ms: tsMs });
-  const round = rounds.at(-1), reviews = roundReviews(allReviews, rounds);
+  // ...and a draft an earlier agent session wrote is not this one's while a newer session is live (agentDraftAsk.latestDrafts, 2026-11-03)
+  const round = rounds.at(-1), reviews = latestDrafts(roundReviews(allReviews, rounds), liveSession ? term.sid : "");
   const pendingReview = pendingReplyReview(reviews);
   // ...and any other reply waiting, to someone else on the task - each drawn under it with its own To and Send (MoreDrafts)
   const moreDrafts = otherPendingReplies(reviews, pendingReview);
@@ -1472,7 +1494,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
     setOpenStage("reply");
     try {
       // the box at once and the AI's draft behind it, "Drafting…" in the decision meanwhile (replyDraft.js, 2026-10-01)
-      // ...and Reply on a task no agent has worked opens it EMPTY - only Draft with AI ("ai") asks for the AI's draft (2026-10-28)
+      // ...agent work or not: Draft reply drafts and spins until the draft lands (2026-11-03); a press in the empty box is writing it yourself
       const got = await (generate ? draftReply(api, replyMessage.MessageId, null, null, generate === "ai") : api.post(`/api/messages/${replyMessage.MessageId}/reply`, { draft: false }).then((r) => r.data));
       if (stale(id)) return;
       await loadDetail(id);
@@ -1638,7 +1660,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // ...but a general agent's open card already has its composer under the bar, and what you type there continues the same
   // conversation (/assistant) - a second door to one room (the owner, 2026-09-29: "why do we need continue session if
   // it's still open?"). A coding agent keeps it: that button reopens its own CLI session, which nothing else here does.
-  const barContinue = barContinues({ canContinue, isGeneral, ended: detail?.runEnded });   // ...and a general run that ended under it
+  const barContinue = barContinues({ canContinue, isGeneral, ended: detail?.runEnded, gone: !term });   // ...and a general run that ended under it
   // STOP AND SAVE ONLY WHILE THERE IS SOMETHING TO STOP (owner-approved, 2026-10-20): it stood on the row of an agent that was
   // already stopped (G7), and then of one that had failed, finished or been cut off by a restart. A session that has ENDED offers
   // what applies - Continue, Run another, Mark done, the write-up's own actions - and the live row keeps its Stop and save.
@@ -1719,7 +1741,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   const list = !!(detail?.batch || t?.DoneWhen || (!t?.DoneWhen && todo.length));
   // THE MAIN VIEW: a phone's narrow body stays one stacked page (a live session there the work, Came from its left drawer); on the desk the
   // three sections in a row (SECTIONS), opening on the one the task is up to - a live agent's too, Came from and Close out its slim tabs
-  const narrow = bodyW > 0 && bodyW < STACK_BELOW;
+  const stackBelow = useStackBelow(canvas), narrow = bodyW > 0 && bodyW < stackBelow;
   const stacked = !sessionView && narrow;
   const threeUp = !narrow;
   const flow = threeUp && timeline.length > 1;
@@ -1741,8 +1763,11 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // ...AND THE ADVISOR'S PICK NAMES THE SECTION ITS MOVE IS IN (advice `section`, taskLayout.sectionHere): a reply that already went opens
   // on Close out, its Mark done lit - read once its decision lands, as the detail is (the canvas hands its decision in with its line, `note`)
   const advised = String((canvas ? note?.advice : taskAdvice)?.section || "");
-  const mainHeld = useRef({ key: null, main: null, sec: null }), mainKey = `${selected}|${detail?.task?.TaskId === selected}|${!!term?.alive}|${sessionView}|${stacked}|${threeUp}|${t?.Status}|${advised}|${!!writingUp}`;
-  if (mainHeld.current.key !== mainKey) mainHeld.current = { key: mainKey, main: mainNow, sec: writingUp ? "agent" : sectionHere({ stage: taskStage, advised }) };
+  // ...but NOT WHILE AN AGENT IS ON IT (the owner, 2026-11-03): Approve on a held step brought the Advisor's new pick, and the page
+  // jumped to Close out and folded the agent's reply - its pick is read when the agent ends, as the rest of the page is
+  const advisedHeld = liveSession || liveRun ? "" : advised;
+  const mainHeld = useRef({ key: null, main: null, sec: null }), mainKey = `${selected}|${detail?.task?.TaskId === selected}|${!!term?.alive}|${sessionView}|${stacked}|${threeUp}|${t?.Status}|${advisedHeld}|${!!writingUp}`;
+  if (mainHeld.current.key !== mainKey) mainHeld.current = { key: mainKey, main: mainNow, sec: writingUp ? "agent" : sectionHere({ stage: taskStage, advised: advisedHeld }) };
   const main = mainHeld.current.main;
   // ...and a section the owner OPENED stays open under them: only another task, an agent starting or stopping, the task closing or
   // reopening or the width folds it - not the detail landing, the Advisor's late pick, the write-up ending, or the status catching up
@@ -1765,19 +1790,20 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   const isOpen = (k) => section === k || (paired && PAIR_OF[section] === k);
   // ...a press that opens a section already open beside the other keeps the pair as it stands
   const openSection = (s) => { if (!(paired && isOpen(s))) setSecPick({ key: pickKey, sec: s }); };
-  // ...and the pair the owner closes over the agent's draft stays closed for that draft (autoPair's `shut`)
-  const pairShut = useRef(new Set()), pairDone = useRef(new Set());
-  const pairFlip = (k) => () => { if (paired && agentDraft) pairShut.current.add(draftKey(agentDraft)); setSecPick({ key: pickKey, sec: k }); setPairPick({ key: pickKey, on: !paired, draft: pairPick.key === pickKey && pairPick.draft }); };
+  // ...and the pair the owner closes over the agent's draft stays closed for that draft (autoPair's `shut`) - held for the app's life, not the
+  // page's, so a page drawn again over the same task never opens it a second time
+  const pairFlip = (k) => () => { if (paired && agentDraft) PAIR_SHUT.add(draftKey(agentDraft)); setSecPick({ key: pickKey, sec: k }); setPairPick({ key: pickKey, on: !paired, draft: pairPick.key === pickKey && pairPick.draft }); };
   const seeDraft = () => requestAnimationFrame(() => requestAnimationFrame(() => closeOutRef.current?.querySelector("[data-tq-draft-box]")?.scrollIntoView({ block: "nearest", behavior: "smooth" })));
-  const pairDraft = (r) => { pairDone.current.add(`${draftKey(r)}|${pickKey}`); setSecPick({ key: pickKey, sec: "agent" }); setPairPick({ key: pickKey, on: true, draft: true }); seeDraft(); };
-  useEffect(() => { if (autoPair({ draft: agentDraft, working: agentState === AGENT.working, canPair: pairRoom, paired, shut: pairShut.current, done: pairDone.current, view: pickKey })) pairDraft(agentDraft); });
+  const pairDraft = (r) => { PAIR_DONE.add(draftKey(r)); setSecPick({ key: pickKey, sec: "agent" }); setPairPick({ key: pickKey, on: true, draft: true }); seeDraft(); };
+  useEffect(() => { if (autoPair({ draft: agentDraft, running: (liveSession && !answered) || !!liveRun, canPair: pairRoom, paired, shut: PAIR_SHUT, done: PAIR_DONE })) pairDraft(agentDraft); });
   // ...each section's slot: a closed one its tab's width (slim beside a live agent), the open one the rest - and its body laid at that
   // open width whether it is open or not, so the move never reflows it and a hidden terminal keeps its size
   const closedW = (k) => (sessionView && k !== "agent" ? MINI_W : tabW(bodyW));
   // ...less its slot's own 1px rule on the left (Agent and Close out), so the body lies inside it
   // ...side by side, half of what the closed tab and the two slots' rules leave
+  // ...never laid wider than its slot: a 320px floor ran a 900px desk's ~240px Came from under the Agent spine (useStackBelow)
   const openW = (k) => (paired ? Math.max(320, Math.floor((bodyW - SECTIONS.filter((s) => !isOpen(s.key)).reduce((n, s) => n + closedW(s.key), 0) - 2) / 2))
-    : Math.max(320, bodyW - SECTIONS.filter((s) => s.key !== k).reduce((n, s) => n + closedW(s.key), 0) - (k === "from" ? 0 : 1)));
+    : Math.max(OPEN_MIN, bodyW - SECTIONS.filter((s) => s.key !== k).reduce((n, s) => n + closedW(s.key), 0) - (k === "from" ? 0 : 1)));
   // ...and on the canvas the open one wears its white strip (PaneStrip): the body under it, its own name head given to the strip
   const stripOn = (k) => inRow && isOpen(k);
   const stripH = (k) => (sessionView && k === "agent" ? STRIP_LIVE_H : STRIP_H);
@@ -1856,7 +1882,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
       // ...EVERY message of its conversations, newest first - the tab draws as many as it has room for (fitTabLines): who, and their words
       msgs: newestFirst(sources.flatMap((g) => g.msgs)).map((m) => ({ who: m.who || m.FromName || m.FromEmail || (m.Direction === "out" ? tr("You") : ""),
         words: (rowText(m, sourceFiles.get(m.MessageId)) || cleanText(m.ReadText || m.BodyText || "")).slice(0, 200) })),
-      count: sourceCount, workflow: fromWorkflow, made: `${detail.ref} · ${made}`, sorted: sortedLine(facts, t?.Kind || "task", { short: true }) }),
+      count: sourceCount, workflow: fromWorkflow, made: `${detail.ref} · ${made}`, to: toLine(cameIn?.Recipients).short, sorted: sortedLine(facts, t?.Kind || "task", { short: true }) }),
     agent: agentStatus({ profile: runRole || hasRecord || term ? agentName(t) : "",   /* Taskuary, never the profile (kinds.js shownAgent) */
       word: agentWord({ live: !!term?.alive, waiting: agentState === AGENT.waiting, failed: failedRun, stopped: agentState === AGENT.stopped,
         result: resultShown, record: hasRecord, codeRun }),
@@ -1883,7 +1909,11 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // CAME FROM'S PARTS, drawn once and arranged by the layout: a phone's stacked page (and a live agent's left drawer there) keeps them as
   // they were - the facts and the conversations in one Came from part, what triage made of it at the foot - and the three sections set
   // them out as the owner's mockup does (2026-10-27): What came in | What triage made of it, the ask, then Full message history (N)
+  // ...WHOM IT WENT TO under who sent it, a plain line: its first few names, all of them with the whole email (the owner, 2026-11-03)
+  const toWent = () => { const w = toLine(cameIn?.Recipients); return w.short && (
+    <Typography data-tq-came-in-to="" title={w.full} sx={{ fontSize: 12.5, color: DIM, overflowWrap: "anywhere" }}>{cameInFull ? w.full : w.short}</Typography>); };
   const fromFacts = () => (<>
+                        {!threeUp && toWent()}
                         <Box sx={{ display: "flex", alignItems: "baseline", gap: 1, flexWrap: "wrap", "&:empty": { display: "none" } }}>
                           {!!(detail.attachments?.length || detail.links?.length) && <Chip size="small" icon={<AttachFileIcon sx={{ fontSize: 13 }} />}
                             label={filesLine(detail.attachments?.length || 0, detail.links?.length || 0)} data-tq-files-pill="" title={tr("Open the message they came with")}
@@ -2038,6 +2068,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
         {cameIn ? <>
           <Typography sx={{ fontSize: 13, color: DIM }}>{byLine(cameIn.who || cameIn.FromName || cameIn.FromEmail, cameFromWhere(cameIn),
             cameIn.SentAt ? whenShort(cameIn.SentAt) : "")}</Typography>
+          {toWent()}
           {flow ? <Typography data-tq-came-in-newest="" sx={{ fontSize: 13, color: FAINT }}>{tr("The newest of {count} messages - the conversation is below", { count: timeline.length })}</Typography>
             : <Typography data-tq-came-in-words="" title={cameInFull ? undefined : tr("Read it all")} onClick={() => setCameInFull((v) => !v)}
             sx={{ fontSize: 15, lineHeight: 1.5, color: INK, overflowWrap: "anywhere", whiteSpace: "pre-wrap", cursor: "pointer",
@@ -2247,7 +2278,11 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
       if (!stale(id)) { const msg = e?.response?.data?.detail || e?.message || uiMessage("It could not start again."); setErr(msg); setStartFail({ ...failOf(e), text: msg, again: tryAgain }); }
     } finally { endStart(id); }
   };
-  const continueWord = startingAgent === "resume" ? (failedRun ? tr("Trying again…") : tr("Continuing…")) : failedRun ? btn("try_again") : labelOfRow("continue");
+  // A RUN THAT ENDED ASKING THE OWNER (workerstate.left_asking - a restart cut it off at "go ahead?"): Its Continue IS the answer - the box
+  // shows the question and what is typed goes to the agent as it picks up (the owner, 2026-11-03: "it's asking me question but the ai closed
+  // the agent why?"). The same button and box, said as what they are
+  const leftAsking = (!term?.alive && detail?.leftAsking?.[0]) || "";
+  const continueWord = startingAgent === "resume" ? (failedRun ? tr("Trying again…") : tr("Continuing…")) : failedRun ? btn("try_again") : leftAsking ? btn("answer_agent") : labelOfRow("continue");
   // WHAT THE OPEN AGENT PANE ALREADY DRAWS, so its heading's stage moves (PaneMoves) never say a press twice: the start box stands open
   // (RunForm) and its own button is the start; a failed general run's Try again stands under its reason (data-tq-failed-fix) - unless
   // its fix (Connect an AI) stands there instead
@@ -2265,7 +2300,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
     {runFormOpen
       && <Box data-tq-run-form="">{nextRunForm}</Box>}
     {continueCard && !runFormOpen && !sessionView && <Box data-tq-continue-pane="" sx={{ mt: 1.25 }}>
-      <ContinueBox inline task={t} taskRef={detail?.ref || ""} initial={continueCard.note || ""} onClose={() => setContinueCard(null)}
+      <ContinueBox inline task={t} taskRef={detail?.ref || ""} initial={continueCard.note || ""} asked={leftAsking} signin={(!term?.alive && detail?.leftSignin) || ""} onClose={() => setContinueCard(null)}
         onPress={() => window.dispatchEvent(new CustomEvent("tq-continuing", { detail: { tid: selected } }))}
         onFail={() => window.dispatchEvent(new CustomEvent("tq-continuing", { detail: { tid: null } }))}
         onDone={() => { setContinueCard(null); continued(); }} /></Box>}
@@ -2683,7 +2718,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // ...and no notice while Close out is open beside it, the draft in plain sight
   const askAt = askWhere(workspaceMode), noticeOn = agentDrafts.length > 0 && !(threeUp && isOpen("close"));
   const openDraft = (r) => {
-    if (pairRoom && r) { pairShut.current.delete(draftKey(r)); return pairDraft(r); }
+    if (pairRoom && r) { PAIR_SHUT.delete(draftKey(r)); return pairDraft(r); }
     setOpenStage("reply"); if (threeUp) openSection("close"); else if (sessionView) setPeek(true);
     requestAnimationFrame(() => requestAnimationFrame(() => (threeUp ? closeOutRef : workBox).current?.querySelector("[data-tq-draft-box]")?.scrollIntoView({ block: "center", behavior: "smooth" })));
   };
@@ -2998,12 +3033,16 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                 {!liveSession && listRow?.State === "queued" && listRow?.Queued && <Box sx={{ mb: 1 }}>
                   <QueuedStart taskId={t.TaskId} queued={listRow.Queued} onChanged={() => { loadTasks(); loadDetail(t.TaskId); }} />
                 </Box>}
-                {!codeRun && <Box ref={agentHead} data-tq-focus={focus === "agent" ? "" : undefined} sx={{ ...card, ...step, mb: liveSession ? 0.55 : 0,
+                {!codeRun && <Box ref={agentHead} data-tq-agent-head="" data-tq-focus={focus === "agent" ? "" : undefined} sx={{ ...card, ...step, mb: liveSession ? 0.55 : 0,
                   px: liveSession ? 1 : sessionView ? 1.5 : 0, py: liveSession ? 0.55 : shows("agent") ? (agentBar ? 0.8 : 1.5) : 1.1,
                   ...(sessionView ? {} : { borderTop: 0, pt: 0 }),
                   flexShrink: 0,
                   display: liveSession ? "flex" : "block", alignItems: "center",
                   gap: liveSession ? 1 : 0, flexWrap: "wrap",
+                  /* ...the chat's Full screen keeps its icon alone where the heading has no room for its word (a half beside Close out, the owner
+                     2026-11-03): the title is read first; the press, its tooltip and its name stay */
+                  ...(liveSession && inRow ? { containerType: "inline-size", "@container (max-width: 620px)": { "& [data-tq-full-word]": HIDDEN_WORDS,
+                    "& [data-tq-head-tools] .MuiButton-startIcon": { mr: 0 } } } : {}),
                   ...(focus === "agent" ? { ...FOCUS, ...(chatBelow ? { borderBottom: 0, borderRadius: "10px 10px 0 0", pb: 0.5 } : {}) } : {}) }}>
                   <Box sx={{ minWidth: 0, flex: liveSession ? "0 1 auto" : "initial" }}>
                     {/* the agent by NAME, not by which binary is running: "Agent running · <CLI>
@@ -3020,14 +3059,16 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                       : agentState === AGENT.waiting ? says(subState(term), agentName(t))   /* asked, approval, stuck (T6) */
                         : tr("{agent} is working", { agent: agentName(t) })}</span>}
                     /* ...and once the agent has acted - its Result, or the run that failed - its "stopped" or "failed" chip is the header's pill
-                       again (the owner, 2026-10-25); a working agent's chip stays where it is */
+                       again (the owner, 2026-10-25) */
+                    /* ...and a live agent's state is the task header's pill alone (StatusPill, from the same session): its chip here said it a
+                       second time, one above the other (the desktop stress test, 2026-11-03) */
                     chip={<>{settled ? null : story && STORY_CHIP[story.kind] ? <StoryChip kind={story.kind} text={STORY_CHIP[story.kind]} />
-                      : agentState ? <LifecycleChip kind="agent" phase={agentState} compact /> : null}{resultShown && shareBadge}</>} tone={PALETTE.sage} {...stageProps("agent")}
+                      : agentState && !term?.alive ? <LifecycleChip kind="agent" phase={agentState} compact /> : null}{resultShown && shareBadge}</>} tone={PALETTE.sage} {...stageProps("agent")}
                     /* ...in the three sections the one way to the full record is its button under the summary (the owner, 2026-10-27: "why are
                        there 2 buttons for full results?"): the heading neither folds nor says "Result" there */
                     {...(threeUp && !sessionView && resultShown ? { onToggle: null, folded: false, sub: "" } : {})}
                     tools={inRow && workspaceMode === "general" && liveSession
-                      ? <Box ref={setChatTools} sx={{ display: "flex", alignItems: "center", gap: 0.8, flexWrap: "wrap" }} /> : null}
+                      ? <Box ref={setChatTools} data-tq-head-tools="" sx={{ display: "flex", alignItems: "center", gap: 0.8, flexWrap: "nowrap", minWidth: 0 }} /> : null}
                     /* folded, this heading carried NOTHING - it passed no action at all, so the one
                        card that can actually be picked back up was the one row you could not act on.
                        It gets the move that matches its state, the way the Task strip does. */
@@ -3220,11 +3261,13 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                      VIEW'S: the chat body is a size container (assistantView.css .tq-chat-body) and the view is 100cqh + 14px tall,
                      so the agent takes all of it under the title and its own heading (the Task strip is scrolled above - agentUp):
                      its input on screen, Close out one scroll below. A fixed 420px floor in a shorter view put the input and the last
-                     lines out of sight. 78px = the title strip + this step's heading + 8px under the chat, less the 26px the view gained. */
+                     lines out of sight. 113px = the title strip + the sections' row under it (‹ ⏺ ›) + this step's heading + its padding + 8px under the
+                     chat, less the 26px the view gained. It was 78px from before that row: a live agent's input sat 40px under the
+                     card's edge, behind a second scrollbar (the browser-agent walk, 2026-11-03). */
                   /* ...A LIVE ONE (the owner, 2026-10-25: "when agent is open we want to maximize space to agent working"). Finished, failed or
                      closed, the room is as tall as what is in it, so the card fits its content and the canvas is not ~350px of empty chat
                      well (CanvasItem keeps the whole height only for data-tq-agent-room="live") */
-                  <Box data-tq-agent-room={liveSession ? "live" : "rest"} sx={liveSession ? { flex: "1 1 0", minHeight: canvas ? "max(240px, calc(100cqh - 78px))" : { xs: 360, md: 420 }, mb: canvas ? 1 : 0,
+                  <Box data-tq-agent-room={liveSession ? "live" : "rest"} sx={liveSession ? { flex: "1 1 0", minHeight: canvas ? "max(240px, calc(100cqh - 113px))" : { xs: 360, md: 420 }, mb: canvas ? 1 : 0,
                     display: "flex", flexDirection: "column", "& > *": { flex: 1, minHeight: 0 },
                     // ...except while its agent is starting and has said nothing: the room is that one line (GeneralWorkspace `quiet`)
                     "&:has([data-tq-starting])": { flex: "0 0 auto", minHeight: 0, "& > *": { flex: "0 0 auto" } } }
@@ -3371,7 +3414,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                       <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13.5, flex: 1 }}>{tr("Hand this to a person")}</Typography>
                       <IconButton aria-label={tr("Close handoff")} size="small" onClick={() => setHandoff(false)}><CloseIcon sx={{ fontSize: 16 }} /></IconButton>
                     </Box>
-                    <Handoff taskId={selected} onLeave={() => { setHandoff("sending"); onLeave?.(); }}
+                    <Handoff key={handSaid ? `${handSaid.to}|${handSaid.note}` : "h"} taskId={selected} said={handSaid} onLeave={() => { setHandoff("sending"); onLeave?.(); }}
                       onStay={(msg) => { setHandoff(true); onStay?.(msg); }} onSent={handedOff} />
                   </Box>}
                   {/* WHAT CLOSED IT, where it was closed (the owner, 2026-10-19: "i hit mark done on close out but agent work tab opened up
@@ -3713,7 +3756,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
         <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 1.5 }}>
           {detail?.ref} · {t?.Title}
         </Typography>
-        {handoff && !handInPane && <Handoff taskId={selected} onLeave={() => { setHandoff("sending"); onLeave?.(); }}
+        {handoff && !handInPane && <Handoff key={handSaid ? `${handSaid.to}|${handSaid.note}` : "h"} taskId={selected} said={handSaid} onLeave={() => { setHandoff("sending"); onLeave?.(); }}
           onStay={(msg) => { setHandoff(true); onStay?.(msg); }} onSent={handedOff} />}
       </Drawer>
 
@@ -3738,7 +3781,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
       {shareMenu}
       {t && <EmailSomeone open={emailOpen} task={t} detail={detail} onClose={() => setEmailOpen(false)}
         onDrafted={() => { setEmailOpen(false); loadDetail(selected); loadTasks(); onChanged?.(); setOpenStage("reply"); }} />}
-      {t && <ContinueBox task={t} anchor={continueAt} onClose={() => setContinueAt(null)} onDone={continued} />}
+      {t && <ContinueBox task={t} anchor={continueAt} asked={leftAsking} signin={(!term?.alive && detail?.leftSignin) || ""} onClose={() => setContinueAt(null)} onDone={continued} />}
       {t && <CloseNote anchor={noteAt} taskRef={t.ref || ""} onClose={() => setNoteAtRaw(null)} onSubmit={closeWithNote} />}
       {t && inRow && <RemindPicker task={t} anchor={remindAt} onClose={() => setRemindAt(null)} onDone={reminded} act={remindAct} onLeave={onLeave} onStay={onStay} live={liveSession}
         said={remindSaid} />}
@@ -3783,11 +3826,14 @@ const WorkflowHeading = ({ number, title, description, chip, tone, folded, onTog
         {tr(sec.name)}
         {onToggle && <ExpandMoreIcon data-tq-fold-mark="" sx={{ fontSize: 16, color: FAINT, flexShrink: 0, transform: folded ? "rotate(-90deg)" : "none", transition: "transform .15s, color .15s" }} />}
       </Typography>
-    </Box> : <Box sx={{ minWidth: 0, flex: 1 }}>
+    </Box> : <Box sx={{ minWidth: tools ? 72 : 0, flex: tools ? "1 1 auto" : 1 }}>
       {/* A FOLDED SECTION IS A HEADING OF THE WORK, not a row to press (the owner, 2026-10-27: "on the task there is a Close out button, but
           I thought it's a sidebar thing that pulls out?"): faded, with its arrow at the far edge, folded Close out read as a stray button
           under the Result. It wears the open heading's own weight now, its fold mark beside its name */}
-      <Typography sx={{ color: quiet ? DIM : INK, fontSize: quiet ? 12.5 : 14, fontWeight: 600, lineHeight: 1.3, display: "flex", alignItems: "center", gap: 0.25 }}>
+      {/* ...beside the chat's own controls it is one line that ends in … (the owner, 2026-11-03: "Tasku… / answ…" under the brain picker): the
+          controls give way first (GeneralWorkspace), and nothing beside it folds */}
+      <Typography data-tq-head-title="" sx={{ color: quiet ? DIM : INK, fontSize: quiet ? 12.5 : 14, fontWeight: 600, lineHeight: 1.3, display: "flex", alignItems: "center", gap: 0.25,
+        ...(tools ? { display: "block", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } : {}) }}>
         {title}
         {onToggle && <ExpandMoreIcon data-tq-fold-mark="" sx={{ fontSize: 18, color: FAINT, flexShrink: 0, transform: folded ? "rotate(-90deg)" : "none", transition: "transform .15s, color .15s" }} />}
       </Typography>
@@ -3796,7 +3842,7 @@ const WorkflowHeading = ({ number, title, description, chip, tone, folded, onTog
     {/* the one action a stage cannot afford to hide when it folds. Its click is its own, not the fold's. */}
     {action && <Box onClick={(e) => e.stopPropagation()} sx={{ display: "flex", flexShrink: 0, flexBasis: { xs: "100%", sm: "auto" }, order: { xs: 9, sm: 0 } }}>{action}</Box>}
     {tools && <Box onClick={(e) => e.stopPropagation()} sx={{ display: "flex", flexShrink: 1, minWidth: 0 }}>{tools}</Box>}
-    {chip}
+    {chip && <Box data-tq-head-chip="" sx={{ display: "flex", flexShrink: 0 }}>{chip}</Box>}
   </Box>
   );
 };

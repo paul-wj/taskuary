@@ -83,23 +83,6 @@ export const refreshPilePresentation = (current, fresh) => {
 // grey its buttons and mark the rail, and draws only what a move answers.
 export const walkOf = (pile) => pile?.walk || null;
 export const nextMarkerKey = (pile) => { const b = walkOf(pile)?.below; return b ? (b.startsWith("fyis:") ? b.slice(5).split(",")[0] : b) : null; };
-// A NEXT PRESSED ON THE ROW A PRESS DREW, while that press is still out (the owner, 2026-11-02: "when you hit next the one you are on, task
-// or report, does not disappear right away"): it was held until the first answer landed, the row sitting there for seconds. The walk
-// says one step further (railwalk.peek `then`, `below_reads`) - so when the row on the table is the walk's `below`, the second press puts it
-// down, takes it off the rail if Next reads it, and draws the row after it, at its press. `gone`: the rail keys it reads; any other row: none
-// BACK THE SAME WAY (the owner, 2026-11-02: "the Back button takes way too long, not like the Next button"), `back`: from the row a Back
-// drew, the row above that (walk.above_then); from the row a Next drew, the row that Next left - or the one above it when Next reads it.
-// Back reads nothing, so `gone` is empty. `out`: the press still out - "next", "back", or another (a close, a pick), which this cannot see past.
-// ...and a Next on the row a Back drew comes back down to the row that Back left (walk.on), reading it when Next reads it (walk.above_reads)
-export const heldStep = (walk, from, back = false, out = "next") => {
-  const up = !!walk && !!from && out === "back" && walk.above === from;
-  if (back) {
-    const then = up ? walk.above_then || null : walk && from && out === "next" && walk.below === from ? (walk.reads ? walk.above : walk.on) || null : null;
-    return { known: !!then, reads: false, gone: [], then };
-  }
-  const known = !!walk && !!from && (walk.below === from || up), reads = known && !!(up ? walk.above_reads : walk.below_reads);
-  return { known, reads, gone: reads ? [from, ...(from.startsWith("fyis:") ? from.slice(5).split(",") : [])] : [], then: known ? (up ? walk.on : walk.then) || null : null };
-};
 // can Next go on from here: the walk says what is below; before any walk was read, anything on the rail
 export const canAdvance = (pile, ready) => walkOf(pile) ? !!walkOf(pile).below : (ready || []).length > 0;
 
@@ -528,8 +511,9 @@ export function fillCaps(avail, bands, { row = ROW_PX, head = HEAD_PX, more = MO
 // HOW FAR FROM CLEAR is the rail's headings added up - the FYI not paged in yet with theirs - and what is on the table counts until it is
 // put down. It counted the pile alone, and shown is read: a batch of 4 fyi on the table under "FYI 13", beside two other rows, said "11 away
 // from clear" (the owner, 2026-10-26: "the 11 away which is wrong?"). A row being read away (`settling`) is already going.
+// ...an FYI Should be a task made a task is counted once, as the task it became (movedFyi.js)
 export const awayFromClear = (bands, tail = 0) =>
-  (bands || []).reduce((n, b) => n + b.items.filter((i) => !i.settling).length + (b.level === "fyi" ? tail : 0), 0);
+  (bands || []).reduce((n, b) => n + b.items.filter((i) => !i.settling && !i.moved).length + (b.level === "fyi" ? tail : 0), 0);
 // THE FYI BAND FILLS THE ROOM IT HAS (the owner, 2026-10-26: "why does the fyi items not scroll out? meaning why does it say 9 more
 // fyi"): rows of it the page has not asked for yet (`total` past its rows, pileRows' tail) were only fetched once the band was opened by
 // hand, so a tall rail drew a few rows, "N more fyi" and empty space under them. True while every row here is drawn and one more would fit.

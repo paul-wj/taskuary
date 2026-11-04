@@ -184,7 +184,7 @@ def _join_store_readers(budget=10):
     end = time.monotonic() + budget
     for _ in range(3):
         ts = [t for t in threading.enumerate() if t is not threading.current_thread()
-              and t.name in ('taskuary-agenda', 'refresh-after', 'taskuary-new-walk', 'account-signature')]
+              and t.name in ('taskuary-agenda', 'refresh-after', 'taskuary-new-walk', 'account-signature', 'resume-asking')]
         if not ts: return
         for t in ts:
             while time.monotonic() < end:
@@ -452,6 +452,7 @@ def isolated_runtime_boundaries():
                  mock.patch.object(server, 'quick_forever', stopped('chat poll scheduler')), \
                  mock.patch.object(server, 'doorway_forever', stopped('assistant doorway')), \
                  mock.patch.object(server, 'share_start', stopped('share port')), \
+                 mock.patch.object(server, 'resume_asking', stopped('asking agents resumed')), \
                  mock.patch.object(blackboard, 'schedule_due', stopped('dispatch retry scheduler')), \
                  mock.patch.object(waitroom, 'watch', stopped('waitroom watcher')), \
                  mock.patch.object(asks, 'watch', stopped('asks watcher')), \
@@ -565,8 +566,8 @@ def agents_can_start():
 
 @pytest.fixture(autouse=True, scope='session')
 def no_lookout_on_the_advisors_clock():
-    """The Advisor's run calls the weekly looking-out-for-you pass (lookout.tick) - two more model calls a scripted brain counting its calls
-    would see. tests/test_lookout.py calls the pass itself."""
+    """The Advisor's clock (assistant.clock) calls the daily looking-out-for-you pass (lookout.tick) - two more model calls a scripted brain
+    counting its calls would see. tests/test_lookout.py calls the pass itself."""
     from taskuary import lookout
     lookout.CLOCK = False; yield; lookout.CLOCK = True
 
@@ -617,11 +618,40 @@ def no_token_carryover():
 
 
 @pytest.fixture(autouse=True)
+def no_ended_session_carryover():
+    """terminal.SESSIONS is process-wide and keeps a session after it ends (terminal.session_for reads one for wrapping up): a test
+    that closed its task's conversation left it there, and the next file's task of the same id read as having a session (2026-11-03)."""
+    from taskuary import terminal
+    had = set(terminal.SESSIONS); yield
+    for k, t in list(terminal.SESSIONS.items()):
+        if k not in had and not getattr(t, 'alive', True): terminal.SESSIONS.pop(k, None)
+
+
+@pytest.fixture(autouse=True)
+def no_browser_page_carryover():
+    """browserview keeps the page each task's browser was last on in the home, by task id: a test whose task 1 was on a page left
+    every later file's task 1 opening its fresh browser there instead of about:blank (test_general's setup walkthrough)."""
+    from taskuary import browserview
+    yield
+    try: browserview._pages_file().unlink(missing_ok=True)
+    except OSError: pass
+
+
+@pytest.fixture(autouse=True)
 def no_stop_carryover():
     """workerstate.STOP is process-wide and set by a server told to exit (desktop.Server): a test that started and stopped
     a real one left every later held wait letting go at once, as if Taskuary were closing."""
     from taskuary import workerstate
     workerstate.STOP.clear(); yield; workerstate.STOP.clear()
+
+
+@pytest.fixture(autouse=True)
+def an_ai_is_connected(request):
+    """The suite's agent starts mock the session, not a connected AI - server._brainless (no AI, no start) would refuse every one.
+    A module that tests the refusal itself sets REAL_BRAIN_GATE = True."""
+    srv = sys.modules.get('taskuary.server')
+    if getattr(request.module, 'REAL_BRAIN_GATE', False) or srv is None: yield; return
+    with mock.patch.object(srv, '_brainless', lambda coding: ''): yield
 
 
 @pytest.fixture

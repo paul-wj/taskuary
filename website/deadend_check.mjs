@@ -117,6 +117,9 @@ const WALK_SKIP = {
   "elsewhere": "as Chase them: a slipped follow-up's answer",
   "test_connection": "on a connection's own card, not an item's row - the connection cards are walked by the browser setup tests",
   "next:batch": "shows only on a run of notices read together - the demo's fyi fold away under 'more fyi' instead",
+  "send_close": "Close out's Send and close sends then closes the task - the walk's demo drafts are pressed with Send so the walk can go on; send-and-close.test.mjs presses it and checks the task closes",
+  "send_close:closeout": "a close-out card's Approve and close (merge or close, then the reply, then the task closes) - the demo has no pull request close-out; closeout-pair.test.mjs presses it and checks the task closes",
+  "next:batch_short": "next:batch's word on a desk bar squeezed to ~120px (900-960 with the ask bar, the owner, 2026-11-03) - the walk never runs at that width; press-runs-once.test.mjs reads it",
   "next:read": "the badge a Next press leaves on a report, a dashboard or an fyi it walked past (✓ Read) - a word on the card, not a button; the press is Next's own",
   "split": "opens the split-or-merge drawer; its own press is walked, the reshape itself is the task tests'",
   "review_changes": "opens the agent's diff drawer - walked when an agent row carries it",
@@ -440,6 +443,11 @@ const readPage = (page) => page.evaluate(() => {
   const lr = litEl?.getBoundingClientRect(), hit = lr && document.elementFromPoint(lr.left + lr.width / 2, lr.top + lr.height / 2);
   const lit = litEl ? { word: litEl.innerText.trim(), inView: lr.top >= 0 && lr.left >= 0 && lr.bottom <= innerHeight && lr.right <= innerWidth,
     covered: !(hit && (hit === litEl || litEl.contains(hit))) } : null;
+  // ...unless the owner just opened a box of their own over the table - Hand it to a person's card, Close with a note's, Continue's or the
+  // agent box under the item - which scrolls itself into view as "where the owner is now" (AssistantView, TaskPage): a lit move it scrolls
+  // away is behind the owner's own box, as it is behind a menu (`pops`), not a dead end. Reply drafts on every press now (2026-11-03), so a
+  // drafted reply's Send stays lit under the draft while the sweep presses on, and those boxes pushed it out of sight
+  const opened = [...document.querySelectorAll("[data-tq-handoff-card], .tq-chat-inner > .tq-browse-line:not([data-tq-browse-line])")].some((e) => vis(e) && e.children.length);
   // From is the sender's own words, quoted (the two-column page, 0.3.9.21): a mail that says "Traceback ... null" is the ask, not
   // our jargon - so the words check reads the card without it, and everything Taskuary writes stays held to the list
   // ...and a closed section's tab (the three sections, 2026-10-27) quotes the latest message and the draft in its lines, marked “...”
@@ -450,7 +458,7 @@ const readPage = (page) => page.evaluate(() => {
   const pops = [...document.querySelectorAll('.MuiPopover-paper, [role="dialog"], .MuiDrawer-paper')].filter(vis).map((p) => p.innerText.replace(/\s+/g, " ").slice(0, 80));
   const msgs = chat ? [...chat.querySelectorAll(".tq-msg")] : [];
   const tail = msgs.slice(-8);                       // a receipt stays a few lines up once the walk has brought the next item
-  return { verbs, moves, cardBtns, advice: !!adviceEl, decided, adv: adviceEl?.innerText || "", errs, rail, ref, read, chat: chat?.innerText || "", pops, lit,
+  return { verbs, moves, cardBtns, advice: !!adviceEl, decided, adv: adviceEl?.innerText || "", errs, rail, ref, read, chat: chat?.innerText || "", pops, lit, opened,
     swap: (window.__swap || []).splice(0),
     strip: strip ? { empty: !strip.querySelector(".tq-next"), busy: strip.getAttribute("data-tq-strip") === "busy", unlit: !!strip.querySelector("[data-tq-unlit]") } : null,
     undoSaid: tail.some((m) => /Undo: |confirm below/i.test(m.innerText || "")),
@@ -477,7 +485,7 @@ const judge = (s, at) => {
     if (s.advice && dark.length > 1) note("DARK", at, `the Advisor spoke and ${dark.length} buttons are dark - ${JSON.stringify(s.verbs.map((v) => v.word))} / "${s.adv.slice(0, 80)}"`);
   }
   if (s.strip?.empty && !s.strip.busy && !s.strip.unlit && !s.lit) note("STRIP", at, "the Advisor's strip under the item says nothing and nothing on the row is lit");
-  if (s.advice && s.lit && !s.pops.length && (!s.lit.inView || s.lit.covered)) note("LIT", at, `the Advisor's lit "${s.lit.word}" is ${s.lit.inView ? "covered" : "off the screen"}`);
+  if (s.advice && s.lit && !s.pops.length && !s.opened && (!s.lit.inView || s.lit.covered)) note("LIT", at, `the Advisor's lit "${s.lit.word}" is ${s.lit.inView ? "covered" : "off the screen"}`);
   if (s.card && s.card.shown < 120) note("SEEN", at, `only ${Math.round(s.card.shown)}px of the card on the table is in view`);
   if (s.errs.length && !s.verbs.some((v) => !v.next && !v.off) && !s.cardBtns.some((b) => !b.off && NAMED.has(b.word)))
     note("FIX", at, `"${s.errs[0].slice(0, 90)}" and nothing on the row but Next`);

@@ -19,7 +19,7 @@ const ROOTS = "[data-tq-browse], [data-tq-task-page], [data-tq-view]";
 const SKIP = ".tq-chat-pop, .tq-dock, [data-tq-view-skip]";
 const MAX_FIELDS = 40, MAX_BUTTONS = 40;
 // the same words the server checks again (pageview.py): a send by its verb or its label, a secret by its key or the words on its box
-export const SEND_VERBS = new Set(["approve", "send", "accept_invite", "decline_invite", "propose_time", "share", "forward", "send-handoff", "email"]);
+export const SEND_VERBS = new Set(["approve", "send_close", "send", "accept_invite", "decline_invite", "propose_time", "share", "forward", "send-handoff", "email"]);
 // ..."Send to agent" starts work here and sends nothing out: it is the owner's kind of press, like Mark done - "Send to coding agent" too
 const SEND_WORDS = /^\s*(send(?! to (an? )?((coding|general) )?agent)|approve|post|forward|reply all|email (it|them|him|her)|share by email)\b/i;
 const SECRET_WORDS = /(password|passphrase|secret|token|api[ _-]?key|private key|access key|client key|xox[bp]-)/i;
@@ -277,6 +277,9 @@ const uiStep = (n, source, values = {}, status = "done", kind = "run") => {
   const summary_i18n = ui(source, values);
   return { ...step(n, english(summary_i18n), status, kind), summary_i18n };
 };
+// ...a page's frame label is written for the model (CanvasBrowse: "the Reports page - nothing opened on it yet"); the owner's step names the
+// page only - "Opened the Reports page, Reports section - nothing opened on it yet" was a step in the chat (the Assistant stress run, 2026-11-03)
+export const shownTitle = (t) => String(t || "").replace(/ - nothing opened on it yet$/, "");
 const cut = (s, n = 60) => { s = String(s ?? ""); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
 
 // one op, on the live page, checked again here: still there, still enabled, a send never pressed, a secret never set
@@ -291,7 +294,7 @@ async function runOne(op, n) {
     // ...Search's hits land a beat after its words: what follows presses one, so wait for the answer to those words
     for (let i = 0; area === "search" && state.query && i < 40 && !r?.querySelector('[data-tq-search-settled="true"]'); i++) await wait(100);
     await wait(150);                              // ...its frame names what is open once the card has drawn
-    return uiStep(n, "Opened {page}", { page: (r && readView(r)?.title) || area }, "done", "read");
+    return uiStep(n, "Opened {page}", { page: shownTitle((r && readView(r)?.title) || area) }, "done", "read");
   }
   const v = readView();
   if (!v) return uiStep(n, "Nothing is open to work on", {}, "error");

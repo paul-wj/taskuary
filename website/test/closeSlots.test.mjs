@@ -39,11 +39,11 @@ test("the English footer distinguishes completion by reply, emails, and agent", 
   const previous = getLocale();
   setLocale("en");
   try {
-    assert.match(completionLine(true, false), /sending the reply.*Mark done closes it/);
-    assert.match(completionLine(true, true), /sending its emails.*Mark done closes it/);
-    assert.match(completionLine(false, false), /sending it leaves the task open.*Mark done closes it/);
-    assert.match(completionLine(false, false, true), /agent.*done.*closes it/);
-    assert.match(completionLine(true, false, true), /Mark done/);
+    assert.match(completionLine(true, false), /so does Send - Send and close or Mark done closes it/);   // Send never closes (2026-10-18); Send and close does (2026-11-03)
+    assert.match(completionLine(false, false), /Send leaves the task open - Send and close or Mark done closes it/);
+    assert.match(completionLine(true, true), /so does sending its emails - Mark done closes it/);   // the last email closes nothing (slots._left)
+    assert.match(completionLine(false, false), /Automatic task/);
+    assert.match(completionLine(true, false, true), /press Mark done/);       // nobody to answer: no reply to send
   } finally { setLocale(previous); }
 });
 

@@ -11,7 +11,9 @@ import { stepsOf } from "./agentSteps.js";
 // A step is one line. What it did is a row whose raw call - the command, its output - waits behind the row's own disclosure, for
 // debugging; what it SAID is its own words, in the type the answer is in.
 // ...a failure the agent made good by trying again (`recovered`, agentSteps.stepsOf) says so quietly; red is for one it did not
-const STATUS_WORD = { running: "working", recovered: "retried - worked", error: "failed" };
+// ...and one Taskuary held for the owner's yes (`held`) waits, quietly - its card below says what Approve runs
+// ...and a look whose non-zero exit was its answer (`none`: `ls notes*`, nothing there) found none - plainly, no red
+const STATUS_WORD = { running: "working", recovered: "retried - worked", held: "waits for your yes", none: "found none", error: "failed" };
 export const StepRow = ({ step }) => {
   useLocale();
   const summary = step.summary_i18n ? translateDescriptor(step.summary_i18n) : step.summary;

@@ -481,10 +481,11 @@ def _events(t, p: dict) -> None:
                 if outcomes.stopped(st, tid, f'agent:{agent}', facts={'pr': bool(ci.pr_of(st, tid)), 'agent': agent}) and not asks and signing is None and turn is None:
                     advisor.notice(st, 'agent.stopped', 'task', tid)
             except Exception as e: logger.debug(f'task {tid}: the stop was not ledgered - {e}')
+            # ...as plain questions: a marker's words are no chooser, so they carry no chips (the owner, 2026-11-03)
             g = ws.group_key('|'.join(q for q, _ in asks)) if len(asks) > 1 else None
-            for i, (q, choices) in enumerate(asks, 1):
+            for i, (q, _) in enumerate(asks, 1):
                 ws.record(st, tid, sid, 'input_needed', request_id=ws.question_id(g, i) if g else ws.request_id_for(q),
-                          text=q, choices=choices, source='hook')
+                          text=q, source='hook')
             # ...and a turn that asked only in PROSE is the model's to read, in the background - never a word list's
             if not asks and signing is None and turn is None and said.strip() and not ws.open_requests(ws.events(st, tid, sid)): judge_turn(st, tid, sid, said)
             # the response ended, the WORK did not: a shell, a monitor or a subagent it left running and will be woken by
@@ -564,7 +565,9 @@ ENDED_SYSTEM = ('You read the last message an agent wrote before its turn ended.
                 'writes to it. Decide one thing: did it END WITHOUT DELIVERING what it was asked for, because it says it is still waiting '
                 'on work of its own - something it started in the background, a sub-agent, a job still running - or promises to come '
                 'back with the result later? An answer that delivers the work, a question to the owner, or a plain statement that '
-                'something cannot be done is not that. Reply with JSON only: {"unfinished": true or false, "why": "what it is still '
+                'something cannot be done is not that - and neither is waiting on a PERSON: the owner, the sender, or someone a reply '
+                'it drafted asks for more (their output, their notes, their answer). That turn delivered its step; the next one comes '
+                'when they write back. Reply with JSON only: {"unfinished": true or false, "why": "what it is still '
                 'waiting on, in a few plain words; empty when unfinished is false"}')
 ENDED_WANT = {'type': 'object', 'properties': {'unfinished': {'type': 'boolean'}, 'why': {'type': 'string'}}, 'required': ['unfinished']}
 _ENDED = {}
@@ -573,6 +576,7 @@ BACKGROUND = True          # the suite turns the read off its own thread (tests/
 
 def ended_short(why: str) -> str:
     "The failure's reason, as R2's step reads it: \"Failed - It ended its turn still waiting on ...\" (funnel.run_failed), Try again under it."
+    why = re.sub(r'^\s*(still\s+)?waiting\s+(on|for)\s+', '', str(why or ''), flags=re.I)   # the model's why may begin "waiting for ..." itself
     return f"it ended its turn still waiting on {why or 'work of its own'}"
 
 
@@ -770,7 +774,8 @@ def browser(payload: dict, brain=None, sid: str = '') -> dict:
     # the cheap tests first: this hook sees every shell command - ...and A STEP THAT LEAVES THE MACHINE (a push, a merge, a public post, a
     # publish, a mail) waits for the owner too (shellgate.py, the Advisor's risky-step hold, the owner 2026-10-28), and so does a desktop
     # act that can't be undone (agentdesktop.py, 2026-10-31)
-    browse, out, desk = browsergate.EXE in cmd.lower(), shellgate.acts(cmd), agentdesktop.EXE in cmd.lower()
+    # ...and a delete outside the agent's own folder, read against the folder it runs in (shellgate.deletes, 2026-11-03)
+    browse, out, desk = browsergate.EXE in cmd.lower(), shellgate.acts(cmd, str(payload.get('cwd') or '')), agentdesktop.EXE in cmd.lower()
     if not browse and not out and not desk: return {}
     t = _pane(payload, 'claude') or _general(payload, sid)
     st = getattr(t, 'store', None) if t else None

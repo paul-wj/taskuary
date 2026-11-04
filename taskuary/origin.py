@@ -5,19 +5,24 @@ Computed ON READ from the task's messages, worst wins - so a road that attaches 
 it has seen: a stranger who writes afterwards lowers it again."""
 import functools, json, os, re, subprocess
 from . import senders
+from .store import cited_mids
 
 ORDER = ('stranger', 'trusted', 'owner')
+OURS = ('assistant', 'report')       # Taskuary's own voice
 def worse(a, b): return a if ORDER.index(a) <= ORDER.index(b) else b
 
 def _own(row): return row.get('Direction') == 'out' or row.get('Status') == 'context'
 
-def of_message(store, row: dict, memo: dict = None) -> tuple:
+def of_message(store, row: dict, memo: dict = None, seen: dict = None) -> tuple:
     "(origin, why) for one stored message row. No network: senders.known is never asked to look deeper. `memo`: senders.known's."
     if _own(row): return 'owner', 'your own words'
     ch = row.get('Channel') or ''
-    # the assistant and reports speak in Taskuary's voice, but carry what they read - mail, the web - so they are not
-    # vouched for here (senders.known still trusts them for the separate auto-start question)
-    if ch in ('assistant', 'report'): return 'stranger', f"written by Taskuary's {ch} from what it read"
+    # an Advisor idea's line is as trusted as the least trusted thing it cites (idea_rests_on), a report's as the sources its run read
+    # (report_rests_on). Every other line in Taskuary's voice - a digest, the Advisor's post - summarises what it read and names no
+    # message it rests on, so it is not vouched for here (senders.known still trusts them for the separate auto-start question)
+    if ch == 'assistant' and (i := _idea(store, str(row.get('ExternalId') or ''), 'idea:')): return idea_rests_on(store, i, row.get('TaskId'), memo, seen)
+    if ch == 'report': return report_rests_on(store, row)
+    if ch in OURS: return 'stranger', f"written by Taskuary's {ch} from what it read"
     if ch == 'github':
         from .batch import outside_row
         return ('stranger', 'a public repository, by someone without write access') if outside_row(store, row) \
@@ -37,27 +42,152 @@ OWNER_REFS = ('assistant:setup', 'assistant:handoff', 'assistant:agent')
 
 def of_task(store, tid: int, msgs=None) -> tuple:
     "(origin, why) for a task, refreshing the card's cache. `msgs`: its messages when already read, in list_messages' order."
-    t = store.get_task(tid) or {}
-    o, why = t.get('OriginBase') or 'trusted', 'you made it' if t.get('OriginBase') == 'owner' else 'no stranger wrote on it'
-    # an idea the Advisor or a report wrote carries what it read; promoting it to a task is not the owner vouching for it
-    # ...except the owner's own guide chat (general.is_dock) and what the owner asked the assistant to set up or hand off
-    # (concierge.setup_task) - assistant-sourced too, and made before OriginBase was stored: their base is the owner's (R15)
-    from .general import is_dock
-    if not t.get('OriginBase') and is_dock(t): o, why = 'owner', 'your own guide chat'
-    elif not t.get('OriginBase') and t.get('SourceRef') in OWNER_REFS: o, why = 'owner', 'you asked the assistant for it'
-    elif not t.get('OriginBase') and t.get('Source') in ('assistant', 'report'): o, why = 'stranger', f"written by Taskuary's {t['Source']} from what it read"
-    through, memo = int(t.get('TrustedThrough') or 0), {}
-    # ...every task page reads this, so a long group chat is judged per PERSON (memo), and its first stranger ends it: nothing is worse
-    # (the owner, 2026-11-01: a 1,500-line chat held its page behind a spinner while each line asked again)
-    for m in store.list_messages(tid) if msgs is None else msgs:
-        if m['MessageId'] <= through: continue
-        mo, mwhy = of_message(store, m, memo)
-        if worse(mo, o) != o: o, why = mo, mwhy
-        if o == 'stranger': break
+    o, why, t = _judge(store, tid, msgs, {}, {})
     # a bare UPDATE: a read must not move UpdatedAt/UpdatedBy and reorder the lists
     if (t.get('Origin'), t.get('OriginWhy')) != (o, why): store._exec('UPDATE task SET Origin=?, OriginWhy=? WHERE TaskId=?', (o, why, tid))
     if o != 'stranger': _drop_stale_hold(store, t, why)
     return o, why
+
+def _judge(store, tid: int, msgs, memo: dict, seen: dict) -> tuple:
+    "(origin, why, task row), read only: of_task's, and an idea's that cites this task (ref_origin). None: a cycle (idea_rests_on)."
+    t, msgs = store.get_task(tid) or {}, store.list_messages(tid) if msgs is None else msgs
+    o, why = t.get('OriginBase') or 'trusted', 'you made it' if t.get('OriginBase') == 'owner' else 'no stranger wrote on it'
+    # what the owner asked the assistant for is the owner's: their own guide chat (general.is_dock) and what they asked it to set up or
+    # hand off (concierge.setup_task) - assistant-sourced too, and made before OriginBase was stored: their base is the owner's (R15)
+    from .general import is_dock
+    if not t.get('OriginBase') and is_dock(t): o, why = 'owner', 'your own guide chat'
+    elif not t.get('OriginBase') and t.get('SourceRef') in OWNER_REFS: o, why = 'owner', 'you asked the assistant for it'
+    elif not t.get('OriginBase') and t.get('Source') in OURS:
+        # ...an Advisor idea's task is as trusted as what the idea cites - promoting it is not the owner vouching for it; a report's is
+        # as trusted as its report lines, judged below (report_rests_on); one with neither carries what it read and is a stranger's
+        i = _idea(store, str(t.get('SourceRef') or ''), 'assistant:idea:')
+        r = idea_rests_on(store, i, tid, memo, seen) if i else ('trusted', REPORT_OK) if t['Source'] == 'report' and any(
+            m.get('Channel') == 'report' for m in msgs) else ('stranger', f"written by Taskuary's {t['Source']} from what it read")
+        if r is None: return None                     # a task this same idea made, met again while it is judged: a cycle, not evidence
+        o, why = r
+    through = int(t.get('TrustedThrough') or 0)
+    # ...every task page reads this, so a long group chat is judged per PERSON (memo), and its first stranger ends it: nothing is worse
+    # (the owner, 2026-11-01: a 1,500-line chat held its page behind a spinner while each line asked again)
+    for m in msgs:
+        if o == 'stranger': break
+        if m['MessageId'] <= through: continue
+        if (r := of_message(store, m, memo, seen)) and worse(r[0], o) != o: o, why = r
+    return o, why, t
+
+def _idea(store, ref: str, pre: str):
+    "The idea a ref names ('idea:<n>' on its line, 'assistant:idea:<n>' on its task), else None."
+    n = ref[len(pre):] if ref.startswith(pre) else ''
+    return store.get_idea(int(n)) if n.isdigit() else None
+
+
+# ── AN IDEA IS AS TRUSTED AS WHAT IT CITES (the owner, 2026-11-03) ─────────────────────────────────────────────────────────────────
+# An early warning the Advisor built from the owner's own process-check report and the morning digest ran as a stranger's, and its agent
+# could not open the run log it needed. A task Taskuary wrote is as trusted as the least trusted thing it was built from - judged through
+# the messages it names, never through the summary it read them in: a digest mixes everyone's mail, so only its cited lines count.
+OURS_WHY = "written by Taskuary's assistant from what it read"
+_REF = re.compile(r'^(msg|task)(\d+)$')          # lookout's evidence ids
+
+def cites(i: dict) -> list:
+    """What an Advisor idea rests on, as (kind, id): the mail it names (`mid`), the task it is about (`tid`), every mail its why names, the
+    ids its evidence lists (lookout) and the memory line it rests on. Never idea.MessageId - that is the Advisor's own post that SAID it.
+    An evidence id of no known shape stays as ('?', it), so it counts as unresolved."""
+    try: a = json.loads(i.get('ActionJson') or '{}') or {}
+    except (ValueError, TypeError): a = {}
+    ev = [str(e.get('ref') if isinstance(e, dict) else e).strip().lower() for e in a.get('evidence') or []]
+    ev = [m.groups() if (m := _REF.match(e)) else ('?', e) for e in ev]
+    return ([('msg', a['mid'])] if a.get('mid') else []) + ([('task', a['tid'])] if a.get('tid') else []) \
+        + [('msg', n) for n in cited_mids(a.get('why'))] + ev + ([('memory', a['memory'])] if a.get('memory') else [])
+
+def idea_rests_on(store, i: dict, tid=None, memo: dict = None, seen: dict = None) -> tuple:
+    """(origin, why) of a task or a line an Advisor idea wrote: the worst of what it cites, and never more than trusted - Taskuary's words
+    are not the owner's ask. Fails closed: no citation at all, an id that is no stored message or task, a memory line, or a report it cites
+    as a whole is a stranger's. `seen`: what this one read has judged, so an idea citing its own task ends instead of looping."""
+    memo, seen = {} if memo is None else memo, {} if seen is None else seen
+    k = ('idea', i['IdeaId'])
+    if k in seen: return seen[k]                       # None while it is still being judged up this read: the caller skips it
+    seen[k] = None
+    o, why, n = 'trusted', "Taskuary's assistant wrote it only from what you trust", 0
+    for kind, x in cites(i):
+        if kind == 'task' and str(x) == str(tid or ''): continue         # the task the idea made or joined is not what it rests on
+        r = ref_origin(store, kind, x, memo, seen)
+        if r is None: continue                                            # a cycle back into this same read
+        n += 1
+        if worse(r[0], o) != o: o, why = r[0], f"{OURS_WHY}, and it rests on this: {r[1]}"
+        if o == 'stranger': break
+    if not n: o, why = 'stranger', f'{OURS_WHY}, and it cites no message you can check'
+    seen[k] = (o, why)
+    return o, why
+
+def ref_origin(store, kind: str, x, memo: dict, seen: dict):
+    "(origin, why) of one thing an idea cites; None while it is still being judged further up this read (a cycle)."
+    if kind == 'memory': return memory_rests_on(store, str(x))
+    if kind not in ('msg', 'task') or not str(x).isdigit(): return 'stranger', f'{str(x)[:40]!r}, which is no message here'
+    k = (kind, int(x))
+    if k in seen: return seen[k]
+    seen[k] = None
+    if kind == 'msg': r = of_message(store, m, memo, seen) if (m := store.get_message(int(x))) else ('stranger', f'message {x}, which is not here')
+    else: r = ((j := _judge(store, int(x), None, memo, seen)) and j[:2]) if store.get_task(int(x)) else ('stranger', f'task {x}, which is not here')
+    if r is None: seen.pop(k)                          # ...a cycle is nothing to remember: read again once what it loops into is judged
+    else: seen[k] = r
+    return r
+
+# ── A REPORT IS AS TRUSTED AS WHAT IT READ (the owner, 2026-11-03) ──────────────────────────────────────────────────────────────────
+# A report whose every source is marked as the owner's own system (reports.is_own: their database, their books) is trusted - never the
+# owner's, it is still Taskuary's summary. The run records on its row the sources it read (reports.built_from), so this is provenance,
+# not a guess from the title: a row with no record (written before 2026-11-03) is a stranger's.
+REPORT_OK = 'a report built only from your own systems'
+
+def report_rests_on(store, row: dict) -> tuple:
+    "(origin, why) of a report's row: trusted when every source its run read was marked your own system and still is, else a stranger's."
+    try: bf = (json.loads(row.get('MailMetaJson') or 'null') or {}).get('built_from')
+    except (ValueError, TypeError, AttributeError): bf = None
+    if not isinstance(bf, list) or not bf or not all(isinstance(s, dict) for s in bf):
+        return 'stranger', "written by Taskuary's report, which kept no record of what it read"
+    # ...and a source the owner has since switched off counts as off: the switch is their word now, not when the report ran
+    from .reports import built_from
+    sid = str(row.get('ConversationId') or '').removeprefix('report:')
+    src = store.get_source(int(sid)) if sid.isdigit() else None
+    try: now = built_from(json.loads(src.get('ConfigJson') or '{}')) if src else []
+    except (ValueError, TypeError, AttributeError): now = [{'label': 'its settings, which could not be read', 'own': False}]
+    if out := [s for s in bf + now if s.get('own') is not True]:
+        return 'stranger', f"written by Taskuary's report from {str(out[0].get('label') or out[0].get('type') or 'a source')[:60]!r}, which is not marked as your own system"
+    return 'trusted', f"{REPORT_OK}: {', '.join(dict.fromkeys(str(s.get('label') or s.get('type'))[:40] for s in bf))}"[:300]
+
+
+# ── A MEMORY LINE IS AS TRUSTED AS WHOSE WORDS IT CAME FROM (the owner, 2026-11-03) ──────────────────────────────────────────────────
+# A line of LEARNED.md the owner said or reworded, or one learned only from their own sent mail, is the owner's; a line learned from
+# anyone else's mail - or with no record of where it came from - is a stranger's. Read from what the memory writers already keep:
+# the line's tag (`ev:` ids, learn.py) and its history (learned_history: Actor 'owner' when they said it, 'verdict:<kind>' + Ev when
+# a verdict taught it, memorylines.teach).
+MEM_NONE = 'a line of what Taskuary learned, with no record of whose words it came from'
+
+def _ev_origin(store, e: str) -> tuple:
+    "(origin, why) of one id a memory line was learned from: the owner's own sent mail is theirs, anything else is not."
+    m = re.match(r'^(sv|msg)(\d+)$', str(e or '').strip())
+    # sv<n> is a promise read in sent mail n (sentjudge.py), msg<n> a message: either counts only when that row is the owner's own
+    if m and (r := store.get_message(int(m[2]))) and _own(r): return 'owner', 'your own words'
+    return 'stranger', f'a line of what Taskuary learned from {str(e)[:30]!r}, which is not your own words'
+
+def memory_rests_on(store, key: str) -> tuple:
+    "(origin, why) of the LEARNED.md line an idea rests on, by its key: the worst of what it was learned from; no record, a stranger's."
+    from .memoryedit import find, DOC
+    raw, l, untagged = find(store.get_doc(DOC) or '', key)
+    if not raw: return 'stranger', f'{MEM_NONE} - it is no longer in the memory'
+    said = [h for h in store.learned_history(key) if h.get('Action') in ('said', 'edited')]
+    who = str(said[-1].get('Actor') or '') if said else ''
+    # a machine line (tagged) is judged by its own ev ids; an untagged one by who last said it - the owner, or a verdict on an item
+    if not untagged: evs = l['ev']
+    elif who and not who.startswith('verdict:') and who not in _machine(): return 'owner', 'a line of what Taskuary learned, in your own words'
+    else: evs = [said[-1].get('Ev')] if who.startswith('verdict:') and said[-1].get('Ev') else []
+    if not evs: return 'stranger', MEM_NONE
+    o, why = 'owner', 'a line of what Taskuary learned from your own words'
+    for e in evs:
+        if worse((r := _ev_origin(store, e))[0], o) != o: o, why = r; break
+    return o, why
+
+def _machine():
+    from .learnedlines import MACHINE
+    return MACHINE
 
 def _drop_stale_hold(store, t: dict, why: str):
     """A task held as a stranger's whose every sender is trusted since (a Teams colleague resolved after the fact) is no

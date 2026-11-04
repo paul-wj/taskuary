@@ -17,14 +17,15 @@ const cardOf = (m) => (m?.card?.key && !NOT_ITEM.has(m.card.kind) ? m.card.key :
 const sameTurn = (a, b) => (a?.role === b?.role || (a?.role === "receipt" && b?.role === "assistant" && (!b?.card || b.card.kind === "words")))
   && words(a?.text) === words(b?.text) && (!cardOf(a) || !cardOf(b) || cardOf(a) === cardOf(b));
 
-export function mergeDurableTurns(local = [], durable = []) {
+// `append`: false over a walk move - a line the page has not drawn yet waits for the next read (AssistantView readChat); known ones still update
+export function mergeDurableTurns(local = [], durable = [], { append = true } = {}) {
   const messages = [...local];
   // A reconciled bubble answers to BOTH names: the optimistic id it is keyed by on screen, and the
   // comment id the server gave it. Tracking only the visible one made every freshness read re-match
   // a turn that had already been reconciled.
   const ids = new Set(messages.flatMap((m) => [m.id, m.commentId, ...(m.alias || [])]).filter((v) => v != null));
   const claimed = new Set();
-  const added = [];
+  const added = [], held = [];
   let at2 = -1;
   for (const turn of durable || []) {
     if (ids.has(turn.id)) {
@@ -70,11 +71,23 @@ export function mergeDurableTurns(local = [], durable = []) {
       // The older line claimed the bubble just now; the newer is the same bubble too - pushed at the end, it stood a live card over the
       // page opened since (the search walk: Enter on Gmail, the reopened task back over its card a read later, 2026-10-31)
       messages[at2] = { ...messages[at2], alias: [...new Set([...(messages[at2].alias || []), turn.id])] };
-    } else {
+    } else if (cardOf(turn) && messages.some((m) => itemKey(m) === cardOf(turn))) { held.push(turn); continue; }
+    else if (!append) continue;
+    else {
       messages.push(turn);
       added.push(turn);
     }
     ids.add(turn.id);
+  }
+  // ...AND AN ITEM'S LINE THE PAGE DREW AGAIN BEFORE ANY READ MATCHED IT (placeLine: Back opened it, Next came back over it, both between two
+  // 30 s reads): its server id was never learned, and pushed at the end a read later, oneCopy kept that old turn as the item's newest line -
+  // after the fyi batch on the table, the bar offering the task's Back and Next over it and at the walk's end (flow-walk, 2026-11-03). Older
+  // than a turn the page holds, it is that line's past; newer (the phone opened it again), it still comes to the end
+  const newest = Math.max(0, ...[...ids].filter(Number.isInteger));
+  for (const turn of held) {
+    const at = turn.id < newest ? messages.findLastIndex((m) => itemKey(m) === cardOf(turn)) : -1;
+    if (at >= 0) messages[at] = { ...messages[at], alias: [...new Set([...(messages[at].alias || []), turn.id])] };
+    else if (append) { messages.push(turn); added.push(turn); }
   }
   return { messages: oneCopy(messages), added };
 }
@@ -89,7 +102,9 @@ export const itemKey = (m) => (m?.role === "assistant" && m.card?.key && !m.prop
 const ids = (m) => [m.id, m.commentId, ...(m.alias || [])].filter((v) => v != null);
 export function placeLine(messages = [], line) {
   const key = itemKey(line);
-  const at = key ? messages.map(itemKey).lastIndexOf(key) : -1;
+  // ...and a card-less line said again straight after itself is that line (a miss said once - concierge.missing_turn)
+  const last = messages[messages.length - 1], again = !key && line?.role === "assistant" && !line.card && last?.role === "assistant" && !last.card && last.text === line.text;
+  const at = key ? messages.map(itemKey).lastIndexOf(key) : again ? messages.length - 1 : -1;
   if (at < 0) return [...messages, line];
   const old = messages[at];
   return [...messages.slice(0, at), ...messages.slice(at + 1), { ...line, alias: [...new Set([...ids(old).filter((v) => v !== line.id), ...(line.alias || [])])] }];
@@ -132,8 +147,8 @@ export function actReceipt(data = {}, tableKey = null) {
     text_i18n: { source: "No answer came back on that - nothing was changed.", values: {} } };
   const whereUi = where === "this task" && (!act.ref || (act.key && act.key === tableKey))
     ? { source: "this task", values: {} } : where;
-  if (!act.label) return { text: `Brought up ${where}.`, status: "warn",
-    text_i18n: { source: "Brought up {where}.", values: { where: whereUi } } };
+  if (!act.label) return { text: `Opened ${where}.`, status: "warn",
+    text_i18n: { source: "Opened {where}.", values: { where: whereUi } } };
   const verb = VERBS[act.verb], knownLabel = verb ? [verb.label, ...Object.values(verb.states || {})].includes(act.label) : ALL_LABELS.includes(act.label);
   const label = knownLabel ? { source: act.label, values: {} } : act.label;
   return data.pressed ? { text: `${act.label} - ${where}${act.note ? `: ${act.note}` : ""}.`, status: "done",

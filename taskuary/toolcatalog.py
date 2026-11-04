@@ -68,6 +68,10 @@ PURPOSE = {
                                  'agent at work nobody hears it: say so'),
     'agent.stop':               "save and end an agent's session - the one on the table, or the task `ref` names; never a guess at which. Several at once is agents.stop",
     'report.rerun':             'run that report again',
+    # THE JOB-IDEAS PASS, NOW (the owner, 2026-11-03: "how do I trigger it now"): the daily pass, started at once off the chat's thread
+    'advisor.ideas':            ("the Advisor's pass for ideas for the owner's job, run now instead of waiting for its day - \"look for ideas for "
+                                 'my job now", "run the advisor ideas". It starts at once and says here how many ideas it raised, under Advisor. '
+                                 'With two of its ideas already waiting, or no AI connected, nothing starts and the line says why'),
     # THE ASSISTANT EDITS THE MEMORY (slice 7, approved by the owner 2026-10-25): "Gail moved to Ops" is a fact about how the owner works,
     # written into LEARNED.md where every reader of its section has it, and the line it makes untrue is closed - kept as history
     # ...and EVERY fact, said in the owner's words, lands in LEARNED.md where triage, the report gate, the Advisor and agents read it - a
@@ -134,8 +138,11 @@ PURPOSE = {
                                  '"tell me when Paula answers"): it moves under Watching, still walked after Tasks, and goes back to Tasks when '
                                  'the thread moves or after 7 quiet days; nothing is sent - `what`: off stops it; `ref`'),
     'task.comment':             'file a note on a task - `text`; `ref`',
-    'task.handoff':             ('hand a task to a PERSON - `who` (a name or address that has written here), `note` optional: '
-                                 "writes the forward for the owner's yes, nothing is sent from this card; `ref`"),
+    # ...ANY ADDRESS (the owner, 2026-11-03): "a name or address that has written here" read as no road for an outside address, and the
+    # Assistant sent the owner to forward it from their own mail - the form takes any address (person), and a name only one that wrote here
+    'task.handoff':             ('hand a task to a PERSON (send, forward or pass it on) - `who` (any email address, or the name of someone who has '
+                                 "written here), `note` optional: a line for them - Hand it to a person comes up filled in for the owner's Send, "
+                                 'nothing is sent from the chat; `ref`'),
     'task.merge':               "fold a task into the one it duplicates - `into`: the survivor's ref (TQ-0123); `ref` is the one folded away",
     'task.ask_agent':           ("ask a trusted teammate's coding agent over Reason Network - `who`: their name or person/session, `text`: "
                                  'the question; the reply is noted on the task; `ref`'),
@@ -248,7 +255,7 @@ PURPOSE = {
 # (the tiers, 2026-09-18) until the owner ruled out undo and the chat's own acts (2026-10-19): each is its page's button now (concierge._route).
 # ...and a fact about the owner's own world with no button and no page to bring up: kept at once and said (concierge._relate)
 # ...and how the owner works with them (slice 7, 2026-10-25): a line taken out of the memory is kept and said the same way (concierge._memory)
-KEPT = frozenset({'people.relate', 'memory.wrong', 'memory.remember', 'problems.dismiss', 'agent.tell'})
+KEPT = frozenset({'people.relate', 'memory.wrong', 'memory.remember', 'problems.dismiss', 'agent.tell', 'advisor.ideas'})
 # ...and a SET named in the owner's words, whose words are the press (pipe.clear's ruling, 2026-10-20; bulk.py 2026-10-28) - a phone asks yes or no
 SETS = frozenset({'pipe.clear', 'pipe.defer', 'pipe.close', 'pipe.remove', 'pipe.block', 'pipe.mine', 'agents.stop'})
 # ...and a tool whose press is not one thing: an agent's job written into New is started by the card's own Send to agent at once (concierge._new
@@ -331,15 +338,15 @@ def selector(store=None, live: bool = True) -> str:
         lines.append('  category   one of these, exactly: ' + ', '.join(v['category']))
         if v['kind']: lines.append('  kind       ' + ' | '.join(v['kind']))
         lines.append('  lane       ' + ' | '.join(v['lane']))
-    else: lines += ['  category   exactly one of the categories SELECT VALUES IN THE PIPE NOW names (with the owner\'s words)',
+    else: lines += ['  category   exactly one of the categories SELECT VALUES IN THE PIPE NOW names',
                     '  kind       one of the kinds it names', '  lane       one of the lanes it names']
     lines += ['  keys       the rows you chose: the TQ refs and m-numbers pipe.read printed',
               '  sender     an address or a name, matched on the sender only',
               '  contains   words that must appear in the subject',
               '  older_than_hours  a number',
-              '  everything true - every item in the pipe except an agent waiting or working; only when the owner means all',
-              'Use SELECT when the owner describes a SET ("all the reports", "everything from Marketing").',
-              'A category is not a word in the subject: say category: report, never contains: report.']
+              '  everything true - every item in the pipe but an agent waiting or working; only when the owner means all',
+              'SELECT is for a SET the owner describes ("all the reports").',
+              'A category is no word of the subject: category: report, never contains: report.']
     return '\n'.join(lines)
 
 
@@ -353,27 +360,29 @@ def block(store=None) -> str:
         # the owner, 2026-10-21: "free text should almost never be used in the assistant - it should be bringing up UI components"
         'BRINGING SOMETHING UP IS THE ANSWER: a task, a page, a card or a button the owner asked for comes up with a few words',
         '(under 12) - never what it shows: no sender, story or summary beside it. Longer words only answer a real question.',
+        # ...and never as a promise (the owner, 2026-11-03: "if it opens it, it should say open"): the page says "Opened ..." once it is up
+        'Never "Opening" or a promise: the page says "Opened" once it is up.',
         # the owner, 2026-10-27: the words before a press were written, then thrown away - the lit button says nothing (2026-10-23)
-        'A CALL that presses or lights a button - an action word for the item on the table, a put-down, a reminder - is the CALL line',
-        'alone, no words before it: the button is the whole answer.',
-        'Answer in plain words. To look something up or to do anything, end with ONE line:',
+        'A CALL that presses or lights a button - an action word, a put-down, a reminder - is the CALL line',
+        'alone, no words before it: the button is the answer.',
+        'Answer in plain words. To look something up or do anything, end with ONE line:',
         '  CALL: {"kind": "<tool>", "params": {...}}',
         # ...save the one press made for them: New's card presses its own Send to agent (concierge._new `start`), and "where is it?" was
         # answered "waiting in New, not started" over an agent at work on its own task (2026-11-02)
         'A look-up runs at once and answers you. A change is the owner\'s to press: Taskuary brings up its button, lit, or',
         "its page - never say it is done. Only an agent's job in New starts at once (YOUR OPEN ASKS). When two different",
         'things fit and you cannot tell which, ask one short question and end with OPTIONS: first | second instead.',
-        'Never both, never a tool that is not listed. A task the owner names goes in params.ref ("TQ-0123"); otherwise',
+        'Never both, never an unlisted tool. A task the owner names goes in params.ref ("TQ-0123"); otherwise',
         "the item on the table is the target. A decision about a DIFFERENT item than the table's puts the",
         'words that name it in params.on. A SET of items goes in params.select (SELECT below).',
         '',
-        'WHERE THINGS ARE - look before you guess (tool, params):',
+        'WHERE THINGS ARE - look before you guess:',
     ]
     # ...as the tool and its params, not a whole CALL line apiece: the same wrapper seventeen times was 500 characters of the index (2026-10-28)
     for said, kind, params in WHERE:
         if _offered(store, kind): lines.append(f'  {said} -> "{kind}" {json.dumps(params)}')
-    lines += ['', """TOOLS, IN BUCKETS. CALL tools.list with {"bucket": "<name>"} for a bucket's tools,""",
-              'or tools.describe with {"kind": "<tool>"}. A tool you know, CALL directly.']
+    lines += ['', 'TOOLS, IN BUCKETS - tools.list {"bucket": "<name>"} lists one, tools.describe {"kind": "<tool>"} one tool;',
+              'a tool you know, CALL directly.']
     for name, what, kinds in BUCKETS:
         lines.append(f'  {name} - {what}: {", ".join(signature(k) for k in kinds if _offered(store, k))}')
     # ...and every look-up WHERE does not already show, by name: "what is the agent doing?" and "what drafts wait for my yes?" had their
@@ -382,20 +391,21 @@ def block(store=None) -> str:
     lines.append('  look - more look-ups: ' + ', '.join(k for k in READS if k not in shown and _offered(store, k)))
     # ...ONE LABEL PER BUTTON: the names it wears in a state ("Send anyway", "All read, next") are in tools.describe - the line was a
     # seventh of the index (the owner, 2026-10-28: "keep the index at 7950 by trimming")
-    lines += ['', 'THE BUTTONS BY NAME (tool "name"; tools.describe has its other names) - use only these names:',
+    lines += ['', 'THE BUTTONS BY NAME (tool "name"; other names: tools.describe), only these:',
               '  ' + ', '.join([f'{k} "{L(k)}"' for k in DECISIONS if k in buttons.VERBS and _has(store, k)]
                                + [f'{t} "{L(v)}"' for v, t in CHIP_TOOL.items()]),
               '', selector(store, live=False), '',
         'WHICH ONE, in this order:',
         '  1. the owner means one of the action words under your line - do that (bucket table).',
-        '  2. they want detail, history or a summary - LOOK IT UP and answer from it. Search the period',
-        '     THEY mean: six months ago is days: 200.',
+        '  2. they want detail, history or a summary - LOOK IT UP and answer from it, over the period THEY',
+        '     mean (six months ago is days: 200).',
         '  3. they want something DONE and it says what - CALL it now; its button is their confirmation. A reminder or',
-        '     a to-do they will do themselves is task.create_from_text kind task, a meeting meeting.new; a task that',
+        # ...and a message to send (the owner, 2026-11-03: "send this on WhatsApp" pasted the words into the chat): New, filled in, for their Send
+        '     a to-do they will do themselves is task.create_from_text kind task, a message to send kind send (channel,',
+        '     to, the words in text, never pasted here), a meeting meeting.new; a task that',
         '     exists is never a new one - change it with the task bucket.',
-        '  4. it is not clear which - LOOK first; then, if two things still fit, ASK one short question',
-        '     naming both. A question about this app itself - its settings, reports, connections, agents - is',
-        '     answered from the look-ups, never handed to an agent.']
+        '  4. it is not clear which - LOOK first; then, if two things still fit, ASK naming both. A question about',
+        '     this app itself - its settings, reports, connections, agents - is answered from the look-ups, never an agent.']
     return '\n'.join(lines)
 
 
@@ -407,8 +417,10 @@ _DECIDE = {
                         "or address (\"loop Gail in and ask her\" is a reply with Gail copied, never an agent). Nothing is sent"),
     'approve':         ("the owner's yes to what is drafted on the item: sends the reply as it stands - on a task's close-out it merges "
                         "the pull request or closes the issue FIRST, then sends the reply; on an agent's proposal it runs that action and only "
-                        "that. It never closes the task - that is close, the owner's own Mark done, a separate step - and never continues an "
+                        "that. It never closes the task - that is send_close, or close, the owner's own Mark done - and never continues an "
                         "agent's session - that is agent.continue"),
+    # ...and Close out's other send (the owner, 2026-11-03): "send it" is approve, "send it and close it" this
+    'send_close':      'the same send, then the task closes - unless an agent or anything else on it still waits',
     'redraft':         'write the draft again - `text`: the change',
     'mine':            "make it a task on the owner's own list - no agent",
     'regular_agent':   ('send it to an agent that does not write code - `text`: the job; `as`: a profile from agents.list, only when one fits; '
@@ -454,7 +466,7 @@ _DECIDE = {
     'elsewhere':       "they answered elsewhere - `text`: where (a call, a meeting); the step somebody owed closes as done, or the follow-up is put down",
 }
 # ...each decision that IS a button says the button's name, read from buttons.json, so the model is told exactly today's buttons
-_STATES = {'action': "on an agent's proposal or a task's close-out", 'none': 'when nothing is drafted yet'}
+_STATES = {'action': "on an agent's proposal or a task's close-out", 'closeout': "on a task's close-out with its reply", 'none': 'when nothing is drafted yet'}
 def button_words(v: str) -> str:
     """'the "Send" button ("Approve" on an agent's proposal...)' - '' for a decision that is no button."""
     if v not in buttons.VERBS: return ''
@@ -507,23 +519,23 @@ def _has(store, v: str) -> bool:
 
 # WHERE THINGS ARE: the owner's question, and the look-up that answers it - an example CALL each.
 WHERE = (
-    ('anything in the app to BRING UP - a setting, a connector card, a page, a report', 'app.find', {'query': 'signature'}),
+    ('anything to BRING UP - a setting, a connector card, a page, a report', 'app.find', {'query': 'signature'}),
     ('what is waiting on the owner', 'pipe.list', {}),
     ("a task's story - messages, notes, agent and draft", 'task.read', {'ref': 'TQ-0123'}),
     ('mail or chat about something, however old', 'timeline.search', {'contains': 'invoice', 'days': 60}),
     ('one message in full', 'message.read', {'mid': 4321}),
     ('a person - how often they write, their open tasks', 'sender.read', {'who': 'Erin'}),
     ('open work', 'tasks.list', {'contains': 'export'}),
-    ('a file an agent made - give its link, never a disk path', 'outputs.find', {'query': 'vendor pricing', 'kind': 'xlsx'}),
+    ('a file an agent made (link it, never a disk path)', 'outputs.find', {'query': 'vendor pricing', 'kind': 'xlsx'}),
     ('how something is done here - a policy, a system, a site', 'knowledge.search', {'query': 'PO limit'}),
     ('how Taskuary itself works', 'docs.search', {'query': 'remind me'}),
     ('reports and workflows', 'reports.list', {}),
-    ('agents, profiles and which brain does what', 'agents.list', {}),
+    ('agents, profiles, which brain does what', 'agents.list', {}),
     ('the repositories a coding agent works in', 'repos.list', {}),
     ("the owner's meetings", 'calendar.read', {'from': 'tomorrow'}),
     ('what is failing, or failed', 'errors.list', {}),
-    ('a part of Taskuary NOT WORKING - a connection, a bridge, a sync', 'app.health', {'name': 'whatsapp'}),
-    ('what you remember about the owner', 'memory.list', {}),
+    ('a part of Taskuary NOT WORKING - a connection, a sync', 'app.health', {'name': 'whatsapp'}),
+    ('what you remember of the owner', 'memory.list', {}),
     ('whether the owner missed anything', 'missed.check', {}),
 )
 
@@ -531,7 +543,7 @@ WHERE = (
 # detail rides the turn.
 BUCKETS = (
     ('table', 'decide about the item on the table', tuple(DECISIONS)),
-    ('task', "change any task - the table's, or one named by ref",
+    ('task', "change any task - the table's or one by ref",
      ('task.update', 'task.set_kind', 'task.set_repo', 'task.check', 'task.checklist', 'task.watch', 'task.comment', 'task.split', 'task.merge', 'task.reopen',
       'task.not_a_task', 'task.complete', 'task.defer', 'task.handoff', 'task.clarify', 'task.share', 'review.approve', 'review.reject')),
     ('agents', "a task's agent; where work belongs",
@@ -540,7 +552,7 @@ BUCKETS = (
     ('pipe', 'the walk and sets of items, and filing mail', ('pipe.clear', 'pipe.defer', 'pipe.close', 'pipe.remove', 'pipe.block', 'pipe.mine', 'review.each', 'button.light', 'item.settle', 'message.file', 'message.archive',
                                                             'preference.exclude_sender', 'preference.sender_rule', 'message.retriage')),
     ('reports', 'reports and workflows', ('report.create', 'report.run', 'report.rerun', 'report.pause', 'report.resume',
-                                          'report.route', 'report.edit', 'report.delete')),
+                                          'report.route', 'report.edit', 'report.delete', 'advisor.ideas')),
     ('app', 'settings, connections, scripts, memory, rules, bell, Hub, Board, Search', ('setting.set', 'connection.create', 'role.apply', 'connection.test', 'connection.pause',
                                                              'connection.resume', 'app.repair', 'issue.draft', 'script.start', 'memory.remember', 'memory.wrong', 'people.relate',
                                                              'rule.change', 'deleted.restore', 'hub.publish', 'hub.comment', 'hub.vote', 'page.open', 'problems.dismiss')),
@@ -548,7 +560,7 @@ BUCKETS = (
 
 
 # what a tool takes, when its registry entry cannot say it: a tool that needs one of several, or takes its words as `text`
-HINTS = {'report.route': 'line, how, to?', 'pipe.remove': 'select, learn?','agents.stop': 'refs|all', 'page.open': 'page, query?', 'pipe.block': 'select, how?', 'pipe.mine': 'select', 'rule.change': 'about, how?', 'hub.vote': 'post, up?', 'memory.remember': 'note, about?, section?, replaces?', 'memory.wrong': 'key, how?', 'button.light': 'button, ref?, note?', 'app.repair': 'name, how', 'issue.draft': 'kind, trying, happened', 'pipe.clear': 'select, scope?', 'pipe.defer': 'select, until', 'pipe.close': 'select', 'hub.publish': 'title, body, topic?, kind?, why_earned?', 'task.update': 'priority|title|assignee|due', 'reply': 'text, cc?', 'redraft': 'text', 'regular_agent': 'text, as?, new?', 'coding_agent': 'text, as?, new?',
+HINTS = {'task.create_from_text': 'kind, text, channel?, to?', 'report.route': 'line, how, to?', 'pipe.remove': 'select, learn?','agents.stop': 'refs|all', 'page.open': 'page, query?', 'pipe.block': 'select, how?', 'pipe.mine': 'select', 'rule.change': 'about, how?', 'hub.vote': 'post, up?', 'memory.remember': 'note, about?, section?, replaces?', 'memory.wrong': 'key, how?', 'button.light': 'button, ref?, note?', 'app.repair': 'name, how', 'issue.draft': 'kind, trying, happened', 'pipe.clear': 'select, scope?', 'pipe.defer': 'select, until', 'pipe.close': 'select', 'hub.publish': 'title, body, topic?, kind?, why_earned?', 'task.update': 'priority|title|assignee|due', 'reply': 'text, cc?', 'redraft': 'text', 'regular_agent': 'text, as?, new?', 'coding_agent': 'text, as?, new?',
          'answer_agent': 'text', 'remember': 'text', 'setup': 'text', 'task.handoff': 'who, note?', 'task.share': 'who, about?', 'task.complete': 'note?',
          'dispatch.prepare': 'kind, instructions?', 'role.apply': 'role, portal?, route_mail?', 'task.check': 'item, done?, note?', 'task.checklist': 'add?, items?, emails?, drop?', 'task.watch': 'what?', 'task.defer': 'until', 'meeting.new': 'who?, about?, when?, minutes?'}
 

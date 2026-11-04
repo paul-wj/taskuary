@@ -44,7 +44,12 @@ test("the open setup's button to light is its filled one, else its outlined one 
 test("the dock fills the setup verb it is told and nothing else", async () => {
   const { rowOf } = await import("../src/actionRow.js");
   const v = (id, extra = {}) => ({ id, group: "decide", tone: "s", label: id, ...extra });
-  const list = [v("setup:back", { group: "next" }), v("setup:next", { tone: "p", label: "Next" })];
-  assert.deepEqual([...rowOf({ ref: "", list }, { id: "setup:next" }).decide].filter((x) => x.tone === "p").map((x) => x.id), ["setup:next"]);
-  assert.deepEqual([...rowOf({ ref: "", list }).decide].filter((x) => x.tone === "p"), [], "nothing named: nothing lit");
+  // ...in the Nav pill now: Back and Next in their own slots (the owner, 2026-11-03), and a fix (Install) on the row beside it
+  const list = [v("setup:back", { group: "back" }), v("setup:next", { group: "next", tone: "p", label: "Next" }), v("setup:install", { tone: "p" })];
+  const named = rowOf({ ref: "", list }, { id: "setup:next" });
+  assert.equal(named.next.tone, "p"); assert.equal(named.back.tone, "s"); assert.deepEqual(named.decide.filter((x) => x.tone === "p"), []);
+  assert.deepEqual(rowOf({ ref: "", list }, { id: "setup:install" }).decide.filter((x) => x.tone === "p").map((x) => x.id), ["setup:install"]);
+  assert.equal(rowOf({ ref: "", list }, { id: "setup:install" }).next.tone, "s");
+  const none = rowOf({ ref: "", list });
+  assert.deepEqual([...none.decide, none.next].filter((x) => x.tone === "p"), [], "nothing named: nothing lit");
 });

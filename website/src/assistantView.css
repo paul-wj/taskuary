@@ -160,6 +160,13 @@
 .tq-pile-word { flex: 0 0 auto; font: 400 11.5px 'IBM Plex Sans', system-ui, sans-serif; color: #6e685f; white-space: nowrap; }
 /* the lane's own mark, at the size it is READ at rather than the size the loud pill shouts at */
 .tq-pile-word i { font-style: normal; font-size: 11px; line-height: 1; margin-right: 4px; filter: saturate(.9); }
+/* an FYI Should be a task made a task (movedFyi.js): its row stays in FYI, quieter, saying where it went - the ref the way to the task */
+.tq-pile-row.moved .t b { color: #8a8478; }
+.tq-pile-moved { flex: 0 1 auto; min-width: 0; display: inline-flex; gap: 4px; font: 400 11.5px 'IBM Plex Sans', system-ui, sans-serif; color: #746e64; white-space: nowrap; }
+.tq-pile-moved .w { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tq-pile-moved .ref { flex: 0 0 auto; color: #55697a; font-variant-numeric: tabular-nums; border-bottom: 1px solid #c9d2d9; cursor: pointer; }
+.tq-pile-moved .ref:hover { border-bottom-color: #55697a; }
+.tq-moved .tq-ref-link { font: inherit; font-weight: 600; padding: 0; background: none; border: 0; border-bottom: 1px solid #c9d2d9; }
 .tq-pile-tag { flex: 0 0 auto; display: inline-block; padding: 0 6px; border-radius: 99px; border: 1px solid #ddd6cb; background: #eee9e1; color: #6f6960; font: 600 9px/15px 'IBM Plex Sans', system-ui, sans-serif; letter-spacing: .01em; white-space: nowrap; }
 /* the current one opens up: the second line says why it is here */
 .tq-pile-row .sub { font-size: 11.5px; line-height: 1.5; padding: 2px 0 0 25px; color: #6e685f; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -204,6 +211,10 @@
 @keyframes tqTyping { 0%, 100% { opacity: .35; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-3px); } }
 /* the day's opener is a LINE of the chat: the avatar column is the speaker, the body is left-aligned */
 .tq-welcome-msg { margin: 4px 0 16px; }   /* full width: the mark sits at the left edge, like every line of the chat */
+/* ...but SETUP is no line of the chat - its words are the Advisor's, in the dock: the mark's column only pushed the cards off-centre and
+   took 38px of a phone's width (2026-11-03) */
+.tq-welcome-msg:has([data-tq-firstrun]) { grid-template-columns: minmax(0, 1fr); }
+.tq-welcome-msg:has([data-tq-firstrun]) > .avatar { display: none; }
 .tq-welcome > span, .tq-welcome > .tq-day-hold > span { display: block; }
 .tq-welcome { color: #6e685f; padding-top: 2px; }
 .tq-welcome > b { display: block; font-size: 20px; font-weight: 600; color: #262521; margin: 0 0 4px; line-height: 1.3; }
@@ -856,6 +867,9 @@
 /* ...but ALONE ON THE ROW it is centred (the owner, 2026-10-28: "nav should be in middle if nothing else" - an FYI batch's Back and All read,
    next sat at the far left of an empty row), and the unseen Back room goes with the pin: centred, it would only push the pill off-centre */
 .tq-arow-verbs > .tq-cl-next:only-child { margin-right: 0; }
+/* ...except SETUP'S, which is the walk's corner pill (the owner, 2026-11-03: "back, all ready, next in corner like in actual app"): alone or
+   beside a fix (Install, Change AI), Back and Next hold the bar's start, where the walk's Nav stands */
+.tq-setup-dock .tq-arow-verbs > .tq-cl-next:only-child { margin-right: auto; }
 .tq-arow-verbs.tight > .tq-cl:not(.tq-cl-next) { flex-shrink: 1; }
 /* the unseen copy ActionRow measures: every part in the row's own classes, at its natural width, taking no room */
 .tq-arow-ghost { position: absolute; left: 0; top: 0; width: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
@@ -912,14 +926,12 @@
 .tq-ab:disabled { opacity: .5; cursor: default; }
 /* the draft's Send keeps its place on the bar, empty: its button is under the draft (the owner, 2026-10-22), and the row must not shift */
 .tq-ab.p:disabled { background: #b9c1c8; border-color: #b9c1c8; opacity: 1; }   /* a greyed decision reads as off, not as a fainter blue */
-/* ...but NEXT, held while its own press is in flight, is drawn as it was: it flashed grey on every switch (the owner, 2026-10-26) */
-.tq-ab.next[data-tq-steady]:disabled { opacity: 1; cursor: progress; }
-.tq-ab.p.next[data-tq-steady]:disabled { background: #55697a; border-color: #55697a; }
 .tq-ab.next::after { content: "\2192"; margin-left: 6px; }   /* the arrow is drawn, so the button's text stays exactly "Next" */
 /* setup's Back takes the same slot and points the way it goes (FirstRun: setup:back) */
 .tq-ab.next[data-tq-back]::after { content: none; }
 .tq-ab.next[data-tq-back]::before { content: "\2190"; margin-right: 6px; }
 .tq-ab.next[data-tq-short]::before { margin-right: 0; }   /* the walk's Back on a phone: its arrow alone (ActionRow) */
+.tq-ab.next[data-tq-bare]::after { content: none; }   /* a squeezed desk bar's "All read": its words say it walks on (ActionRow shortNext) */
 .tq-arow.inline { width: 100%; margin: 0; padding: 6px 4px 2px; }
 /* a phone's line and the row it lights, one unit at the view's foot; the strip holds its height from Thinking to the answer */
 .tq-docked { flex: 0 0 auto; display: flex; flex-direction: column; position: sticky; bottom: 0; z-index: 2; background: #f6f4f1; }
@@ -964,6 +976,13 @@
 .tq-compose[data-tq-desk-chat] .tq-dock .tq-dock-line > .tq-arow .tq-arow-verbs { justify-content: flex-start; width: auto; }
 /* ...held at the bar's left edge, never centred past both of its ends: a line wider than the bar (2026-11-02, a 900px window) hid Back whole */
 .tq-compose[data-tq-desk-chat] .tq-dock .tq-dock-line > .tq-arow { align-items: flex-start; }
+/* ...and BACK AND NEXT WHOLE AT 900 (the owner, 2026-11-03: the bar is Back and Next alone at every desk width): beside the rail the ask bar's
+   floor (360px) leaves the bar ~120px, and the short Nav ran ~16px past its end - Next cut under the dock's edge. A tighter gap and bar padding */
+@media (max-width: 1099.95px) {
+  .tq-compose[data-tq-desk-chat] { gap: 8px; }
+  .tq-compose[data-tq-desk-chat] .tq-dock { max-width: calc(100% - var(--tq-ask-w) - 8px); }
+  .tq-compose[data-tq-desk-chat] .tq-dock .tq-dock-line > .tq-arow { padding-left: 6px; padding-right: 4px; }
+}
 /* ...a bar with nothing on it (the day's opener) is no bar at all: the pill stands alone */
 .tq-compose[data-tq-desk-chat] .tq-dock:not(:has(.tq-arow)):not(:has(> :not(.tq-dock-line, [hidden]))) { display: none; }
 .tq-chat-unit { position: relative; z-index: 7; flex: 0 0 var(--tq-ask-w); width: var(--tq-ask-w); min-width: 0; margin-left: auto; display: flex; flex-direction: column; align-items: stretch; }

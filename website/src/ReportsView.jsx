@@ -38,6 +38,7 @@ import { onDraftHanded, takeDraft } from "./draftHandoff.js";
 import { label as btnLabel } from "./buttons.js";
 import { ideaCounted, ideaWord } from "./lanes.js";   // an Advisor line's kind, in lanes.json's words
 import { DASH, placeName } from "./words.js";
+import { useCapabilities } from "./capabilities.js";
 import DashboardEditor from "./DashboardEditor.jsx";
 import { plural } from "./timeWords.js";
 import { openAppLink } from "./appLinks.js";
@@ -1315,7 +1316,8 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
   const mssqlOk = mssqlConn?.LastSyncAt && !mssqlConn?.LastError;
   const winrmConn = connectors.find((c) => c.Type === "winrm");
   const winrmOk = winrmConn?.LastSyncAt && !winrmConn?.LastError;
-  const aiActive = connectors.some((c) => ["anthropic", "openai", "azure_openai"].includes(c.Type) && c.Active && c.HasSecret);
+  // any AI that answers - a CLI, ChatGPT, an OpenAI-compatible card - not three vendors' keys: the server's one answer (capabilities.js)
+  const aiActive = useCapabilities().ai !== false;
 
   const bodyCfg = () => {
     const c = { ...cfg };
@@ -1557,7 +1559,7 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
                 the column has one right edge instead of three */}
             <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap", alignItems: "stretch", maxWidth: 720 }}>
               {srcs.map((src, i) => (
-                <SourceCard key={i} src={src} index={i} count={srcs.length} writeEnabled={workflow}
+                <SourceCard key={i} src={src} index={i} count={srcs.length} writeEnabled={workflow} ownSwitch={!workflow}
                   typeOptions={typeOptions} connectors={connectors}
                   dragging={drag === i}
                   onDragStart={() => setDrag(i)} onDragEnd={() => setDrag(null)}
@@ -2028,7 +2030,7 @@ const FILE_FIELD_FOR = { tail: ['', '.log', '.txt', '.md', '.out', '.err'], shee
    `test` is its Test this step in place of the card's own preview. */
 export function SourceCard({ src, index, count, typeOptions, connectors, dragging, onDragStart, onDragEnd,
                       onDropHere, onChange, onRetype, onCopy, onRemove, onFill, removable = count > 1,
-                      writeEnabled = false, bare = false, test = null, extra = null, renames = {} }) {
+                      writeEnabled = false, bare = false, test = null, extra = null, renames = {}, ownSwitch = false }) {
   useLocale();
   const fields = (FIELDS[src.type] || []).filter(([, key]) => {
     if (key === "ai_prompt") return false;
@@ -2048,6 +2050,10 @@ export function SourceCard({ src, index, count, typeOptions, connectors, draggin
   const needsConn = ["mssql", "winrm", "database", "aws", "azure", "prometheus", "datadog",
     "exa", "tavily", "firecrawl", "alchemy"].includes(cardType);   // reader works with no key at all
   const connOk = conn?.LastSyncAt && !conn?.LastError;
+  // MY OWN SYSTEM (the owner, 2026-11-03): a report that reads only the owner's own systems is trusted (origin.report_rests_on). The
+  // card's default is the server's (report-types `own`: databases and the books on, the rest off); Taskuary's own tables never are
+  const opt = (typeOptions || []).find((t) => t.type === src.type);
+  const own = typeof src.own_system === "boolean" ? src.own_system : !!opt?.own;
   return (
     <Box draggable={!!onDragStart} onDragStart={onDragStart} onDragEnd={onDragEnd}
       onDragOver={(e) => e.preventDefault()} onDrop={onDropHere}
@@ -2204,6 +2210,13 @@ export function SourceCard({ src, index, count, typeOptions, connectors, draggin
           nothing at all when it comes back as one object - which the Test below makes obvious. */}
       {/* width:300 on a 300-wide card with padding on both sides: it hung out over the edge.
           Full width of whatever the card gives it, and a one-line hint instead of three. */}
+      {ownSwitch && opt && opt.ownable !== false && (
+        <Box component="label" sx={{ display: "flex", alignItems: "center", gap: 0.5, cursor: "pointer" }}
+          title="A report that reads only your own systems is trusted, and so are the tasks it opens. Turn this off for anything from outside: news, web pages, timelines.">
+          <Switch size="small" checked={own} onChange={(e) => onChange({ own_system: e.target.checked })} inputProps={{ "aria-label": "my own system" }} />
+          <Typography variant="caption" sx={{ color: DIM }}>my own system</Typography>
+        </Box>
+      )}
       {extra}
       {src.type !== "taskuary" && <TextField size="small" label={t("max rows")} type="number" placeholder="200" value={src.max_rows ?? ""}
         helperText={t("blank = 200, and only for list results")}

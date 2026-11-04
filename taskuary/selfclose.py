@@ -103,7 +103,7 @@ def blocked(store, tid: int, term=None) -> str:
         # 2026-10-30: "it should be able to close task" - two --done refused by a hold the agent had already moved on from). It lets go
         # here, and the close goes on; a question asked in an API agent's own answer can ride the same turn as its close, and still refuses
         if ws.held_for(tid): ws.release(tid)
-        if req and req['kind'] == 'input_needed' and req.get('source') == 'api':
+        if req and req['kind'] == 'input_needed' and req.get('source') in ('api', ws.RESUMED):
             return f'a question to you is still open: {req["text"][:160]}'
     return ''
 
@@ -291,6 +291,14 @@ CHAT_LINE = (
     f'question, offered options, or still need something; a conversation that is still going is '
     f'not an ending, and neither is an answer the owner may want to push back on.')
 
+# ...and WHERE THE OWNER CLOSES IT (no CHAT_LINE: nobody wrote in, or the owner keeps the task to finish): the agent said "I couldn't
+# close the task from here", a failure over finished work (the desktop stress test, 2026-11-03). It is told whose press the close is
+def owner_closes_line() -> str:
+    from .buttons import label
+    return (f'ENDING THE TASK: closing this task is the owner\'s, not yours - they close it with {label("close")} once they have what they '
+            f'need. When the work is complete, say so plainly and that it is ready for {label("close")}. Never say you could not close it '
+            f'or tried to: that is not something you do here, so nothing failed.')
+
 
 # ...and its reply. The chat writes the answer the sender gets inside a marked block; the words between
 # the markers become the task's pending reply as written (wrapup.agent_reply) and stay in the chat too.
@@ -379,10 +387,12 @@ def tick_markers(text: str) -> tuple:
 # A regular worker has no AskUserQuestion tool and no hook: when it cannot go on without the owner it says
 # so with a marker, and Taskuary records the exact question as an Input-needed request - the one the
 # owner's answer is bound to (workerstate.answer). A marker, again, not a judge reading prose for a '?'.
+# ...and the question is plain words, answered in the box under it (the owner, 2026-11-03): option chips are only for a CLI's own
+# question tool or its on-screen chooser, so the line no longer offers `| choice | choice` - and one written anyway stays text.
 ASK_MARKER = '[[TASKUARY-ASK]]'
 _ASK_RE = re.compile(r'\[\[\s*TASKUARY[-_ ]?ASK\s*\]\]\s*:?\s*(.*)', re.I | re.S)
 ASK_LINE = (f'ASKING THE OWNER: when you cannot continue without their answer, end your reply with a final line: '
-            f'{ASK_MARKER} <the exact question> | <choice> | <choice> (choices optional). Several questions: one such line each, '
+            f'{ASK_MARKER} <the exact question>. The owner answers it in their own words. Several questions: one such line each, '
             f'at the end. Taskuary shows them as questions waiting for them and brings their answers back to you together. '
             f'Only for a real blocker, never for a rhetorical question - and never after you have answered: a part you could not '
             f'do is said in the answer (what you could not check and what would let you), not asked as a question.')

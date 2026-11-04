@@ -144,7 +144,8 @@ def place_of(store, key: str, st: dict = None, rows: list = None):
 def _lookup(store, key: str) -> dict | None:
     """The item a key names, read or not, on the rail or not - never the whole rail rebuilt for it (funnel.next_item's keyed build)."""
     if str(key).startswith('fyis:'): return funnel.batch_item(store, key)
-    try: return funnel.next_item(store, key, include_surfaced=True) or funnel.item_for_key(store, key)
+    # ...and a message by its own id whatever became of it: a Search pick, a #msg= link (funnel.message_item)
+    try: return funnel.next_item(store, key, include_surfaced=True) or funnel.message_item(store, key)
     except Exception as e:
         logger.debug(f'railwalk: {key} could not be looked up - {e}'); return None
 
@@ -232,8 +233,7 @@ def answer_hash(out: dict) -> str:
     return hashlib.sha256(json.dumps(shown, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def _walk(store, st: dict, rows: list, at: bool = False) -> dict:
-    """`at`: the line index of `above` rides along as `_above`, for peek's step further up."""
+def _walk(store, st: dict, rows: list) -> dict:
     ln = line(rows)
     first = _tuple(st.get('first'))
     if st.get('ended') and st.get('last'):
@@ -242,7 +242,7 @@ def _walk(store, st: dict, rows: list, at: bool = False) -> dict:
     # `reads`: Next on the row on screen reads it and it leaves the rail (rule 4, its kind as it was put up) - so the page takes it off at
     # the press, not when the answer lands: a slow answer held a read FYI batch in its heading's count, an idea passed on the rail (2026-11-01)
     return {'on': st.get('on'), 'members': st.get('members') or [], 'ended': bool(st.get('ended')), 'reads': st.get('kind') == 'reads',
-            'above': (as_key(store, ln, n, down=False) if n is not None else None), **({'_above': n} if at else {})}
+            'above': (as_key(store, ln, n, down=False) if n is not None else None)}
 
 
 def as_key(store, ln, n, down=True) -> str:
@@ -315,13 +315,15 @@ def _effect(store, st, rows, frm, actor, dock):
     held = frm == st.get('on') or frm in (st.get('members') or ())
     keys = (st.get('members') or members_of(frm)) if held else members_of(frm)
     kind = st.get('kind') if held else kind_of(find(rows, frm))
-    read = []
+    read, batch = [], len(keys) > 1 or str(frm).startswith('fyis:')
     if kind == 'reads':
         with store.one_poke() if hasattr(store, 'one_poke') else _null():
             for k in keys:
                 row = find(rows, k)
-                if row is None: continue
-                try: funnel.settle(store, row['key'], 'surfaced', actor, note=row.get('sig'), read=True); read.append(row['key'])
+                # ...a member made a task by Should be a task is that task now, under Tasks: the batch's read is not its read (2026-11-03)
+                if row is None or (batch and not batchable(row)): continue
+                # ...with the mails folded under it, from the row in hand: the rail's cache is gone after the first member's settle
+                try: funnel.settle(store, row['key'], 'surfaced', actor, note=row.get('sig'), read=True, thread=row.get('thread') or []); read.append(row['key'])
                 except Exception as e: logger.debug(f'railwalk: {k} was not read - {e}')
     try: concierge._stamp_next(store, dock, st.get('on') if held else frm)
     except Exception as e: logger.debug(f'railwalk: no badge for {frm} - {e}')
@@ -353,7 +355,7 @@ def next(store, from_key: str = None, actor: str = 'owner', press: str = None, r
         for k in read or ():
             row = find(rows, k)
             if row is not None:
-                try: funnel.settle(store, row['key'], 'surfaced', actor, read=True); gone.append(row['key'])
+                try: funnel.settle(store, row['key'], 'surfaced', actor, read=True, thread=row.get('thread') or []); gone.append(row['key'])
                 except Exception as e: logger.debug(f'railwalk: {k} on the page over the table was not read - {e}')
         # ...what was read has left the rail: taken off the rows in hand, never the whole rail rebuilt to see it gone
         if gone: rows = [r for r in rows if r['key'] not in set(gone)]
@@ -450,6 +452,14 @@ def _badge(store, op, actor):
     except Exception as e: logger.debug(f'railwalk: no badge for {op.get("id")} - {e}')
 
 
+def _settle_unmoved(store, item: dict, actor: str):
+    """A card's Done on the row on screen. On an FYI batch, only the members still in FYI: one made a task since by Should be a task is that
+    task now, under Tasks (the owner, 2026-11-03) - the batch's All read never marks it a second time."""
+    if item.get('kind') != 'fyis': return funnel.settle(store, item['key'], 'done', actor)
+    moved = {k for i in item.get('items') or () if not batchable(i) for k in (i['key'], *(i.get('aliases') or ()))}
+    if ks := [k for k in members_of(item['key']) if k not in moved]: funnel.settle(store, 'fyis:' + ','.join(ks), 'done', actor)
+
+
 def _act(store, item: dict, how: str, actor: str, note: str = None, until: str = None) -> dict:
     """The act `how` names, through the existing operation (3.6) - the same road the page's buttons take, so the demo runs it locally."""
     from . import concierge, operations
@@ -462,7 +472,7 @@ def _act(store, item: dict, how: str, actor: str, note: str = None, until: str =
     # and the row closed exactly when it has left the line - so a kept-open row is re-presented, never walked past
     if how == 'left': return {'closed': not find(line(_rows(store)), item['key'])}
     # ...a card's own Done (an FYI batch's All read, a reply sent from its card): the row settled, nothing behind it closed
-    if how == 'settle': funnel.settle(store, item['key'], 'done', actor); return {'closed': True}
+    if how == 'settle': _settle_unmoved(store, item, actor); return {'closed': True}
     # ...Remind me through the picker's own road (remind.set_reminder): its agent-open refusal and its receipt stay the same
     if how == 'remind' and item.get('tid'):
         from . import remind
@@ -470,7 +480,7 @@ def _act(store, item: dict, how: str, actor: str, note: str = None, until: str =
         _badge(store, operations.record_direct(store, 'task.defer', int(item['tid']), {'until': until or 'none'}, actor, out), actor)
         return {'closed': True, 'outcome': out}
     if how == 'done' and item.get('kind') in ('agentdone', 'report', 'fyis') or (how == 'done' and not item.get('tid')):
-        funnel.settle(store, item['key'], 'done', actor); return {'closed': True}
+        _settle_unmoved(store, item, actor); return {'closed': True}
     kind = HOW.get(how)
     if not kind: raise ValueError(f'unknown leave: {how}')
     target = item.get('mid') if kind in ('message.file', 'task.create_from_message') else item.get('tid')
@@ -520,28 +530,13 @@ def leave(store, key: str, how: str, actor: str = 'owner', press: str = None, no
 
 
 def peek(store, actor: str = 'owner') -> dict:
-    """Pure: {on, ended, below, above, then, above_then} for the row on screen - `below` the key `next` would bring, `above` the key `back` would. Keys,
+    """Pure: {on, ended, below, above} for the row on screen - `below` the key `next` would bring, `above` the key `back` would. Keys,
     never Answers: the page draws only what a move answers, and reads these to grey Back and Next (one pass over the line, spec 7.3)."""
     with _LOCK:
         st, rows = state(store), _rows(store)
-        walk, ln = _walk(store, st, rows, at=True), line(rows)
-        # ...and ONE STEP UP the same way (the owner, 2026-11-02: "the Back button takes way too long, not like the Next button"): the row
-        # Back would bring from the row above, and whether Next reads that row - a Back, or a Next, pressed on the row a Back drew while it is
-        # still out draws its own row at once. Back reads nothing, so the line is the same one
-        a = walk.pop('_above')
-        rows_a = _batch(store, ln, a, False) if a is not None else []
-        u = _above(ln, funnel.order_key(rows_a[0])) if rows_a else None
-        walk.update(above_then=as_key(store, ln, u, down=False) if u is not None else None,
-                    above_reads=len(rows_a) > 1 or (bool(rows_a) and kind_of(rows_a[0]) == 'reads'))
+        walk, ln = _walk(store, st, rows), line(rows)
         if st.get('on') or st.get('ended'):
             last = _tuple(st.get('last'))
             n = (0 if ln else None) if last is None else _below(ln, last, skip=st.get('members') or ())
         else: n = 0 if ln else None
-        if n is None: return {**walk, 'below': None, 'below_reads': False, 'then': None}
-        # ...and ONE STEP FURTHER: whether Next reads the row below and what comes after it - a Next pressed on the row a press drew, while
-        # that press is still out, puts it down and draws the next at once (the owner, 2026-11-02: "the one you are on ... does not disappear
-        # right away"). Rows Next reads are all above the row after, so the line needs no rebuilding for them
-        rows_b = _batch(store, ln, n, True)
-        m = _below(ln, funnel.order_key(rows_b[-1]), skip=[r['key'] for r in rows_b])
-        return {**walk, 'below': as_key(store, ln, n), 'below_reads': len(rows_b) > 1 or kind_of(rows_b[0]) == 'reads',
-                'then': as_key(store, ln, m) if m is not None else None}
+        return {**walk, 'below': as_key(store, ln, n) if n is not None else None}

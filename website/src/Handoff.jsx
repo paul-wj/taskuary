@@ -21,9 +21,10 @@ const errorState = (e, fallback) => e?.response?.status === 404 ? { key: "This n
   : e?.response?.data?.detail || { key: fallback };
 
 // `onLeave` / `onStay`: the page puts the task down at the press and takes it back with the reason if the send fails
-export const Handoff = ({ taskId, onSent, onLeave, onStay }) => {
+// `said`: {to, note} the owner typed to the Assistant ("send this to gail@...") - To filled, and the forward drafted with their note at once
+export const Handoff = ({ taskId, onSent, onLeave, onStay, said = null }) => {
   useLocale();
-  const [to, setTo] = useState("");
+  const [to, setTo] = useState(said?.to || "");
   const [channel, setChannel] = useState("email");
   // the channels with a connection behind them - the same list + New offers
   const [targets, setTargets] = useState([]);
@@ -49,12 +50,14 @@ export const Handoff = ({ taskId, onSent, onLeave, onStay }) => {
     return () => { on = false; };
   }, [taskId]);
   const call = async (body) => (await api.post(`/api/tasks/${taskId}/handoff`, body)).data;
-  const draft = async () => {
+  const draft = async (who = to) => {
     setBusy("draft"); setErr("");
-    try { setText((await call({ to, channel, draft_only: true })).draft); }
-    catch (e) { setErr(errorState(e, "Could not write the message")); }
+    try { setText((await call({ to: who, channel, draft_only: true, note: said?.note || null })).draft); }
+    catch (e) { setText((v) => v || said?.note || ""); setErr(errorState(e, "Could not write the message")); }
     setBusy("");
   };
+  // ...asked for in words, it is ready for Send when it opens: nothing goes before the owner presses it
+  useEffect(() => { if (said?.to) draft(said.to); }, []);   // eslint-disable-line react-hooks/exhaustive-deps
   const send = async () => {
     setBusy("send"); setErr("");
     // PUT DOWN AT THE PRESS, like every close (the owner, 2026-10-01): the task leaves while the forward goes out - the server
@@ -84,7 +87,7 @@ export const Handoff = ({ taskId, onSent, onLeave, onStay }) => {
         {/* the press opens on the one thing to type first (the 2026-10-28 flow walk: a name typed after Hand it to a person went nowhere) */}
         <ContactPicker people={people} value={to} onChange={setTo} onPick={setTo} channel={channel} autoFocus
           placeholder={t("who should own this — name or email")} sx={{ flex: 1, minWidth: 220 }} />
-        <Button size="small" onClick={draft} disabled={!!busy}>
+        <Button size="small" onClick={() => draft()} disabled={!!busy}>
           {busy === "draft" ? <CircularProgress size={12} /> : text ? label("redraft") : label("redraft", "none")}
         </Button>
       </Box>

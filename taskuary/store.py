@@ -256,6 +256,10 @@ def retoken_doc(text: str, old_name: str, old_email: str = '') -> str:
 # numbering read as skipping.
 INTERNAL_TASK_BASE = 1_000_000_000
 def task_ref(task_id): return f'TQ-{int(task_id):04d}'
+# the mails an Advisor line names in its words ("Erin mid 41 vs Gail mid 42"): Came from (idea_sources) and what its trust rests on
+# (origin.idea_rests_on) read them the same way - every one, uncapped, for the trust
+MID_CITE = re.compile(r'\bmids?[\s#:=]*(\d+(?:\s*(?:,|/|&|and)\s*#?\d+)*)')
+def cited_mids(text) -> list: return [int(n) for g in MID_CITE.findall(str(text or '')) for n in re.findall(r'\d+', g)]
 def by_sentence(s, n: int = 1200) -> str:
     """`s` whole when it fits, else cut after its last full sentence inside `n` - a reason cut at a character count ended mid-word
     on the card (walk 2026-10-29). No sentence end inside: the words up to `n`, never a broken one."""
@@ -1095,6 +1099,9 @@ class SQLiteStore:
             # who wrote the draft: 'agent:<name>' when the agent that did the work wrote it itself
             # (wrapup.agent_reply), NULL when the responder did - the end of the run keeps the former
             if 'DraftBy' not in rvcols: self.cx.execute('ALTER TABLE review ADD COLUMN DraftBy TEXT')
+            # ...and the agent SESSION that wrote it (its sid), or 'owner' once the owner edited or readdressed it: a newer session holds
+            # an earlier one's draft out of sight and takes its place (wrapup.stale_draft, the owner 2026-11-03)
+            if 'DraftSid' not in rvcols: self.cx.execute('ALTER TABLE review ADD COLUMN DraftSid TEXT')
             # THE FILES THE DRAFT SAYS RIDE WITH IT, in the writer's own words (responder.FILES): JSON {"named": [...]}, NULL when it
             # promises none or nobody judged. The card's "this mentions a file" line reads this, never a word list over the text (2026-10-28)
             if 'FilesPromised' not in rvcols: self.cx.execute('ALTER TABLE review ADD COLUMN FilesPromised TEXT')
@@ -2720,8 +2727,7 @@ class SQLiteStore:
         if not i: return []
         try: a = json.loads(i.get('ActionJson') or '{}') or {}
         except (ValueError, TypeError): a = {}
-        cited = [int(n) for g in re.findall(r'\bmids?[\s#:=]*(\d+(?:\s*(?:,|/|&|and)\s*#?\d+)*)', str(a.get('why') or ''))
-                 for n in re.findall(r'\d+', g)]
+        cited = cited_mids(a.get('why'))
         out = []
         for x in [a.get('mid'), *cited[:4], i.get('MessageId')]:
             try: x = int(x)
@@ -2801,6 +2807,17 @@ class SQLiteStore:
     def last_inbound_in(self, conversation_id):
         return self._one("SELECT * FROM message WHERE ConversationId=? AND Status NOT IN ('context','history','skipped') AND IFNULL(Direction,'in')<>'out' "
                          'ORDER BY SentAt DESC LIMIT 1', (conversation_id,))
+    def shown_message_of(self, mid):
+        """The newest message the feed SHOWS on the thread of one it hides (the owner's own sent mail, a back-filled `history` start):
+        its task's, else its conversation's - None when nothing of that thread is shown. A hidden row is no row of its own, but its
+        thread is, and "I can't find that one" over a thread active that week is the wrong answer (TQ-1293)."""
+        m = self.get_message(mid)
+        for col in ('TaskId', 'ConversationId'):
+            if not m or m.get(col) is None: continue
+            r = self._one(f"SELECT MessageId FROM message WHERE {col}=? AND Status NOT IN ('context','history','skipped') "
+                          'ORDER BY SentAt DESC, MessageId DESC LIMIT 1', (m[col],))
+            if r: return r['MessageId']
+        return None
     def task_for_conversation(self, conversation_id, subject=None):
         """The task this thread already belongs to - OPEN OR CLOSED. The router matches a reply
         against open tasks only (snapshots), which is right for inbound work and wrong for the
@@ -5431,6 +5448,8 @@ class SQLiteStore:
         """
         self._exec("UPDATE review SET MessageId=? WHERE ReviewId=? AND DeliveryClaim IS NULL AND IFNULL(DeliveryState,'') NOT IN ('sending','unknown','sent')", (mid, rid))
         self._review_changed(rid)
+    def set_review_sid(self, rid, sid):
+        self._exec('UPDATE review SET DraftSid=? WHERE ReviewId=?', (sid, rid)); self._review_changed(rid)
     def save_review_draft(self, rid, draft):
         """Persist the owner's editor without erasing which agent run originally produced it."""
         self._exec("UPDATE review SET DraftText=? WHERE ReviewId=? AND DeliveryClaim IS NULL AND IFNULL(DeliveryState,'') NOT IN ('sending','unknown','sent')", (draft, rid))
@@ -6081,7 +6100,7 @@ class SQLiteStore:
     NEEDS_YOU = NEEDS_YOU_T.replace('{answered}', ANSWERED_AT).replace('{theirs}', THEIR_TURN)
 
     def feed(self, limit=100, days=14, pending_only=False, channel=None, offset=0, source=None,
-             live_state=_LIVE_UNSET, ids=None, task_id=None, sent=False):
+             live_state=_LIVE_UNSET, ids=None, task_id=None, sent=False, every=False):
         # The newest route/review, the attachment count and the chain size are looked up per output row on their
         # indexes. They were derived tables over the WHOLE route/review/attachment/message tables (GROUP BY, then
         # `RouteId IN (12k MAXes)`), which every output row walked: ~1-2 ms a row, 1.5 s for 500, 14 s for the
@@ -6108,7 +6127,8 @@ class SQLiteStore:
                 WHERE m.CreatedAt >= datetime('now', 'localtime', ?) AND (m.Status NOT IN ('context', 'history', 'skipped')'''
         # `sent`: the owner's own mail too - read in from Sent as thread context ('context', Direction out), so no list shows it,
         # but a SEARCH must find it: "did I answer the invite" had no row to land on (2026-10-26)
-        q += " OR (m.Direction='out' AND m.Status='context')) " if sent else ') '
+        # `every`: whatever its status - a message asked for by its own id (a Search pick) is that message, skipped at the first sync or not
+        q += " OR (m.Direction='out' AND m.Status='context')) " if sent else ' OR 1) ' if every else ') '
         p = [f'-{int(days)} days']
         if pending_only: q += f' AND {self.NEEDS_YOU}=1'
         # channel accepts a csv so the UI can filter by a CATEGORY (messages = email,

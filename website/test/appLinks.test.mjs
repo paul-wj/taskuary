@@ -2,7 +2,7 @@
 // Intacct settings page; "if it needs to know setting for x, bring the settings view up").
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appLink, firstAppLink, inApp, linkRoad, ownPath } from "../src/appLinks.js";
+import { appLink, firstAppLink, inApp, linkName, linkRoad, ownPath } from "../src/appLinks.js";
 
 test("our pages are app links; the web and unknown hashes are not", () => {
   for (const h of ["#connector=intacct", "#cli-agents", "#settings=policies", "#report=new-agent", "#report=12", "#profiles", "#setup"])
@@ -86,4 +86,13 @@ test("a link's road: the web leaves for the system browser; the app's pages, tas
   for (const h of ["/", "http://127.0.0.1:8765/?view=board", "http://127.0.0.1:8765"]) assert.equal(road(h), "app", h);
   assert.equal(road("//vendor.example/x"), "outside", "a scheme-relative address is another site");
   assert.equal(ownPath("http://127.0.0.1:8765/api/task-artifacts/3/7?x=1", here), "/api/task-artifacts/3/7?x=1");
+});
+
+test("a report's run linked by an answer opens on the table as a Search pick does, and is named by the words it was linked with", () => {
+  // the owner, 2026-11-03: "open the report should open the report like search" - search.places links a report's newest run as #msg=N
+  assert.equal(firstAppLink("Here: [AP ageing over 30 days, weekly](#msg=10)."), "#msg=10");
+  assert.equal(firstAppLink("[AP ageing](#msg=10) or [Headcount](#msg=9)?"), null, "two runs: the owner picks");
+  assert.equal(firstAppLink("That is [TQ-0012](#task=12), from [the run](#msg=10)."), "#task=12", "a task named still opens");
+  assert.equal(linkName("Here: [AP ageing over 30 days, weekly](#msg=10).", "#msg=10"), "AP ageing over 30 days, weekly");
+  assert.equal(linkName("Here: [Settings](#settings=config).", "#msg=10"), "");
 });

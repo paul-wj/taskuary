@@ -62,3 +62,9 @@ test("a dialog open over the page is the view, the one opened last on top; with 
   } finally { Object.assign(globalThis, was); }
 });
 
+test("a page opened for the owner is named in the step without the model's note on what is open", async () => {
+  const { shownTitle } = await import("../src/pageView.js");
+  assert.equal(shownTitle("the Reports page, Reports section - nothing opened on it yet"), "the Reports page, Reports section");
+  assert.equal(shownTitle("Badge swipes by site 9"), "Badge swipes by site 9");
+  assert.equal(shownTitle(undefined), "");
+});
