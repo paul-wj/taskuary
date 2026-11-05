@@ -5,6 +5,9 @@ One state per task, decided on the server (`taskuary/taskstate.py`) with the wor
 decided with the owner on 2026-09-25 (T1-T19): "everything should be the task list and the board just follows
 whatever is going on there".
 
+Pane action toolbars use compact 28px buttons inside their fixed 44px headers, including on
+touch-capable desktops. The global 44px coarse-pointer minimum still applies outside these toolbars.
+
 ```mermaid
 flowchart LR
   T["A task"] --> L{"A live session?"}

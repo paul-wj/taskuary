@@ -604,7 +604,8 @@ export function PaneMoves({ sec, skip = () => false, name = SEC_NAME[sec], home 
   if (!items.length && !tucked.length) return null;
   const shown = items.slice(0, n), rest = [...items.slice(n).flatMap((x) => (x.change ? x.change : [x.v])), ...tucked];
   return <Box ref={box} data-tq-pane-moves={sec} role="group" aria-label={tr("{name} moves", { name: tr(name) })} sx={{ ...MOVE_LOOK, display: "flex", gap: 0.75, flexWrap: "nowrap", minWidth: 0, overflow: "hidden",
-    "& .tq-ab": { flexShrink: 0 } }}>
+    // The fixed-height pane strip must not inherit the global 44px coarse-pointer button minimum.
+    "& .tq-ab": { flexShrink: 0, minHeight: 28, height: 28, px: 1.25, py: 0, fontSize: 11.5 } }}>
     {shown.map((x) => (x.change ? <ChangeMoves key="change" change={x.change} /> : stageBtn(x.v, x.v.label, !!x.head)))}
     {rest.length > 0 && <button type="button" className="tq-ab s task" aria-label={tr("More")} aria-haspopup="menu" data-tq-more={sec} onClick={(e) => setAt(e.currentTarget)}>▾</button>}
     <Menu open={!!at} anchorEl={at} onClose={() => setAt(null)}>
