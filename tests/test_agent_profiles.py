@@ -7,8 +7,8 @@ CHANGE") rather than by not sending the wrong document. On the owner's own store
 against 98 coding ones, and 27 agent sessions on general work against 10 on coding.
 
 The model, minimal: a profile IS an agent row, and its rules document is the `doc` row of the same
-name. `coding` already was exactly that. Triage is shown the roster and names one, validated against
-the menu it was offered - the same shape playbooks already use.
+name. `coding` already was exactly that. Triage names none for a task (the owner, 2026-11-04): a routine or
+workflow names the profile it runs on.
 """
 import json, re, unittest
 from unittest import mock
@@ -71,17 +71,6 @@ class TheRosterTests(unittest.TestCase):
         self.assertIn('analyst', tpl.joinpath('researcher.md').read_text(encoding='utf-8'))
         self.assertIn('researcher', tpl.joinpath('analyst.md').read_text(encoding='utf-8'))
 
-    def test_the_roster_is_a_menu_of_name_and_purpose(self):
-        s = store()
-        seeded(s)
-        menu = hub_agents.roster(s)
-        self.assertIn('- researcher: ', menu)
-        # ...and the coding profile is NOT: a coding task has one role and triage does not choose
-        # it (agents.routed_role). Offering it here is how `copilot` was named on TQ-0588.
-        self.assertNotIn('- coding: ', menu)
-        for line in menu.splitlines():
-            self.assertRegex(line, r'^- [a-z0-9-]+: .+')      # what triage validates against
-
     def test_seeding_never_clobbers_a_profile_the_owner_changed(self):
         """It goes in config.toml, which is what the Agents page reads and writes."""
         cfg = {'agents': {'coding': {'cmd': 'claude', 'args': ['-p'], 'kind': 'coding'}}}
@@ -106,47 +95,6 @@ class TheRosterTests(unittest.TestCase):
         cfg = {}
         self.assertEqual(set(hub_agents.seed_profiles(cfg)), set(hub_agents.DEFAULT_PROFILES))
         self.assertFalse(any('cmd' in p for p in cfg['agents'].values()))
-
-
-class WhyAWorkerIsNotOnTheRosterTests(unittest.TestCase):
-    """"Not routed" was one word for four different situations, and for the commonest of them it was
-    the opposite of the truth: every coding task goes to CODING.md, the ROUTER just does not pick it
-    (the owner, 2026-09-17: the coding document is not "not routed" - it is the default for every coding task).
-
-    The reason prose already distinguished them. The chip could not read prose, so the code says it.
-    """
-
-    def _code(self, s, name):
-        return hub_agents.roster_line(s, next(a for a in s.list_agents() if a['Name'] == name))[2]
-
-    def test_a_worker_the_router_can_pick_carries_no_code_at_all(self):
-        s = seeded(store())
-        line, reason, code = hub_agents.roster_line(s, next(a for a in s.list_agents() if a['Name'] == 'researcher'))
-        self.assertTrue(line)
-        self.assertEqual((reason, code), ('', ''))
-
-    def test_a_coding_worker_is_routed_by_kind_and_says_so(self):
-        """The one that read as an accusation. It is not off anything - it takes every coding task."""
-        self.assertEqual(self._code(store(), 'coding'), 'coding')
-
-    def test_a_worker_switched_off_is_its_own_case(self):
-        s = seeded(store())
-        row = next(a for a in s.list_agents() if a['Name'] == 'researcher')
-        self.assertEqual(hub_agents.roster_line(s, {**row, 'Active': 0})[2], 'off')
-
-    def test_a_worker_held_back_from_the_router_is_its_own_case(self):
-        s = seeded(store())
-        s.upsert_agent('researcher', 'research', 'cli',
-                       json.dumps({'cmd': 'claude', 'purpose': 'x', 'triage_enabled': False}))
-        self.assertEqual(self._code(s, 'researcher'), 'not_offered')
-
-    def test_a_worker_with_nothing_to_choose_it_by_is_its_own_case(self):
-        s = store()
-        s.upsert_agent('vague', 'general', 'cli', json.dumps({'cmd': 'claude', 'purpose': ''}))
-        self.assertEqual(self._code(s, 'vague'), 'no_purpose')
-
-    def test_the_four_codes_are_distinct_so_a_chip_can_say_four_things(self):
-        self.assertEqual(len({'coding', 'off', 'not_offered', 'no_purpose'}), 4)
 
 
 class ProfileEditingTests(unittest.TestCase):
@@ -196,22 +144,19 @@ class ProfileEditingTests(unittest.TestCase):
         self.assertEqual(terminal.rules_text(self.s, profile='codex'), terminal.rules_text(self.s, profile='coding'))
         self.assertFalse(self.s.get_doc('codex'))
 
-    def test_new_profile_gets_starter_rules_and_is_immediately_in_triage(self):
+    def test_new_profile_gets_starter_rules_and_triage_still_names_no_worker(self):
         result = self.client.put('/api/agents/procurement', json={
             'cmd': 'claude', 'args': ['-p'], 'kind': 'general', 'purpose': 'Compare vendor quotes and explain costs.',
             'rules_doc': 'procurement', 'triage_enabled': True})
         self.assertEqual(result.status_code, 200, result.text)
-        self.assertTrue(result.json()['triage_available'])
         self.assertEqual(result.json()['rules_doc'], 'procurement')
         doc = self.client.get('/api/doc/procurement').json()['content']
         self.assertIn('Compare vendor quotes', doc)
         self.assertIn('AGENT.md', doc)
-        roster = hub_agents.roster(self.s)
-        self.assertIn('- procurement: Compare vendor quotes', roster)
+        # a profile is for routines (the owner, 2026-11-04): a task's verdict never carries one, even when the brain names it
         decision = triage.classify_intent({'Subject': 'Compare these vendors', 'Body': 'Find the best quote'},
-            lambda *args, **kwargs: json.dumps({'intent': 'task', 'kind': 'general', 'profile': 'procurement'}),
-            profiles=roster)
-        self.assertEqual(decision['profile'], 'procurement')
+            lambda *args, **kwargs: json.dumps({'intent': 'task', 'kind': 'general', 'profile': 'procurement'}))
+        self.assertNotIn('profile', decision)
 
     def test_a_profile_is_a_name_and_instructions_and_saves_with_no_ai_connected(self):
         """The owner, 2026-10-22: no provider or model on a profile. "Choose a configured CLI provider" refused every save on a box with
@@ -220,13 +165,12 @@ class ProfileEditingTests(unittest.TestCase):
             result = self.client.put('/api/agents/scout', json={'kind': 'research', 'purpose': 'Compare vendors and cite public sources.',
                                                                  'rules_doc': 'scout', 'triage_enabled': True})
             self.assertEqual(result.status_code, 200, result.text)
-            self.assertIn('- scout: Compare vendors', hub_agents.roster(self.s))
             self.assertNotIn('provider', self.server.cfg['agents']['scout'])
             self.assertEqual(self.client.put('/api/agents/bad', json={'provider': 'cli:not-connected', 'purpose': 'x'}).status_code, 422)
         self.server.cfg['agents']['legacy'] = {'provider': 'cli:claude', 'model': 'sonnet', 'kind': 'research', 'purpose': 'Old one'}
         self.assertEqual(self.client.get('/api/agents').json()['config']['legacy']['model'], 'sonnet')
 
-    def test_changing_the_cli_keeps_routing_metadata_and_manual_profiles_stay_out_of_triage(self):
+    def test_changing_the_cli_keeps_routing_metadata(self):
         original = hub_agents.profiles(self.s)['researcher']
         self.s.save_doc('researcher', 'Custom research instructions.', 'owner')
         result = self.client.put('/api/agents/researcher', json={'cmd': 'codex'})
@@ -235,9 +179,6 @@ class ProfileEditingTests(unittest.TestCase):
         self.assertEqual(updated['kind'], original['kind'])
         self.assertEqual(updated['purpose'], original['purpose'])
         self.assertEqual(self.s.get_doc('researcher'), 'Custom research instructions.')
-        result = self.client.put('/api/agents/researcher', json={'triage_enabled': False})
-        self.assertEqual(result.status_code, 200)
-        self.assertNotIn('- researcher:', hub_agents.roster(self.s))
         self.assertIsNotNone(self.s.get_agent('researcher'))
 
     def test_a_routed_general_task_uses_the_named_workers_instructions(self):
@@ -258,38 +199,41 @@ class ProfileEditingTests(unittest.TestCase):
         self.assertNotIn('CODE-ONLY SENTINEL', system)
 
 
-class TriageNamesTheProfileTests(unittest.TestCase):
-    def test_the_contract_asks_for_a_profile_and_explains_it(self):
-        # the guide asks for it (section 4, "Which worker") and its answer line names the field
-        self.assertIn('**Which worker.**', triage.INTENT_SYSTEM)
-        self.assertIn('`profile`', triage.INTENT_SYSTEM)
+class TriageNamesNoProfileTests(unittest.TestCase):
+    """A general agent working a TASK has one goal, to walk the owner through their work (the owner, 2026-11-04):
+    triage stops choosing a worker, and every general task runs on the assistant. Routines keep theirs."""
+    def test_the_contract_neither_asks_for_a_profile_nor_explains_one(self):
+        self.assertNotIn('**Which worker.**', triage.INTENT_SYSTEM)
+        self.assertNotIn('`profile`', triage.INTENT_SYSTEM)
 
-    def _classify(self, answer, profiles):
+    def _classify(self, answer):
         msg = {'Subject': 'Look into the vendor', 'BodyText': 'Can you find out who they are?',
                'FromEmail': 'a@b.test', 'FromName': 'A'}
-        return triage.classify_intent(msg, llm=lambda *a, **k: json.dumps(answer), profiles=profiles)
+        return triage.classify_intent(msg, llm=lambda *a, **k: json.dumps(answer))
 
-    def test_a_profile_from_the_menu_rides_on_the_verdict(self):
-        out = self._classify({'intent': 'task', 'kind': 'coding', 'profile': 'researcher', 'why': 'a look-up'},
-                             profiles='- researcher: find out and report\n- coding: code')
-        self.assertEqual(out['profile'], 'researcher')
-        self.assertEqual(out['kind'], 'coding')               # profile does not disturb the three-way route
-
-    def test_a_profile_that_was_never_offered_is_refused(self):
-        out = self._classify({'intent': 'task', 'kind': 'coding', 'profile': 'lawyer', 'why': 'a look-up'},
-                             profiles='- researcher: find out and report')
+    def test_a_profile_the_brain_names_never_rides_on_the_verdict(self):
+        out = self._classify({'intent': 'task', 'kind': 'general', 'profile': 'researcher', 'why': 'a look-up'})
         self.assertNotIn('profile', out)
-
-    def test_no_roster_means_no_profile_field_at_all(self):
-        out = self._classify({'intent': 'task', 'kind': 'coding', 'profile': 'researcher', 'why': 'a look-up'},
-                             profiles=None)
-        self.assertNotIn('profile', out)
+        self.assertEqual(out['kind'], 'general')
 
     def test_a_reply_only_message_gets_no_profile(self):
-        """Nothing works a reply_only message, so naming a worker for it is meaningless."""
-        out = self._classify({'intent': 'reply_only', 'profile': 'researcher', 'why': 'just answer them'},
-                             profiles='- researcher: find out and report')
+        out = self._classify({'intent': 'reply_only', 'profile': 'researcher', 'why': 'just answer them'})
         self.assertNotIn('profile', out)
+
+    def test_a_workflow_still_names_its_worker(self):
+        """Profiles are for routines and workflows: one whose definition names `analyst` is stamped with it
+        (workflows.run) and its session is seeded ANALYST.md (general._prompt)."""
+        from taskuary import general, ingest, workflows
+        s = seeded(store())
+        s.save_doc('analyst', 'ANALYST RULES: our own figures only.', 'test')
+        sid = s.save_source({'Channel': 'report', 'Address': 'Spend', 'Owner': 'o', 'Active': 1,
+                             'ConfigJson': json.dumps({'type': 'agent', 'title': 'Spend', 'agent': 'analyst', 'prompt': 'sum the month'})}, 'o')
+        with mock.patch.object(ingest, '_auto_general'), mock.patch.object(ingest, '_auto_code'):
+            tid = workflows.run(s, s.get_source(sid))['task_id']
+        self.assertEqual(s.get_task(tid)['Assignee'], 'agent:analyst')
+        system, _ = general._prompt(s, tid)
+        self.assertIn('PROFILE RULES (ANALYST.md)', system)
+        self.assertIn('our own figures only', system)
 
 
 class TheSessionGetsItsOwnRulesTests(unittest.TestCase):

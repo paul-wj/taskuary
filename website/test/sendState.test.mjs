@@ -93,6 +93,7 @@ test("what the writer needs is a plain line, whole, never a failure - and the re
   assert.deepEqual(draftState({ HasDraft: 0, DraftNeeds: why }),
     { state: "needs", line: "Not drafted - it needs the October invoice run. An agent can work it out and draft the reply, or Redraft with it", retry: true });
   assert.equal(draftState({ HasDraft: 1, DraftNeeds: why }).state, "drafted");
+
 });
 
 test("a failed send keeps the place that fixes it - from the answer, and after a reload from the envelope", () => {

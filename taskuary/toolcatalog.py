@@ -124,7 +124,7 @@ PURPOSE = {
     # THE TASK PAGE, as tools (2026-09-25). A task tool acts on the task on the table, or on the one `ref` names
     # (TQ-0123) - never a guess. Each is the page's own button.
     'task.update':              ("change a task's priority, title, owner or due day - any of `priority`: regular | important | urgent, "
-                                 "`title`, `assignee`: exactly `owner` (the owner takes it) or `agent:<profile>` (a worker on the roster), "
+                                 "`title`, `assignee`: exactly `owner` (the owner takes it) or `agent:<profile>` (one of the saved profiles), "
                                  "`due`: the day the work is due (2026-10-30, \"friday\", \"2 weeks\", or \"none\" to clear it); `ref` when "
                                  "it is not the one on the table. Any other value is refused with the allowed ones"),
     'task.set_kind':            'say what kind of work a task is - `kind`: task (the owner does it) | general (a non-coding agent) | coding; `ref`',
@@ -211,12 +211,10 @@ PURPOSE = {
                                  # a system with no card was "said so" and left there (the Connections audit, 2026-11-02)
                                  'A system the catalogue has no card for is a feature request: issue.draft'),
     # A ROLE IS A WALK, NOT A GUESS (the owner, 2026-10-08: "the assistant should be able to walk a user through setting up
-    # new role and work"): the chat asks the two questions a role needs, then puts the whole set-up on one card.
+    # new role and work"): the chat asks what a role needs, then puts the whole set-up on one card.
     'role.apply':               ("set Taskuary up for the owner's job in one go - its worker, playbooks and daily workflow. `role`: "
-                                 + _ROLES + ". Before calling, ASK the owner, one question at a time: the address of their "
-                                 "bill-approval portal (`portal`; fine to leave out), and whether their own non-coding mail "
-                                 "should go to that worker (`route_mail`: true or false - when they are only trying it out, "
-                                 "false). The workflow is created OFF: after the yes, offer to run it once (report.run), and say "
+                                 + _ROLES + ". Before calling, ASK the owner the address of their "
+                                 "bill-approval portal (`portal`; fine to leave out). The workflow is created OFF: after the yes, offer to run it once (report.run), and say "
                                  "they sign in to the portal themselves in the browser pane"),
     # THE APP ITSELF, by name. A report is named by `title` (part of its name) or `source_id`; a
     # connection by `name` or `connector_id`; a setting by `key` or `label`. Each opens its page, the knob or button to press on it.
@@ -423,7 +421,7 @@ _DECIDE = {
     'send_close':      'the same send, then the task closes - unless an agent or anything else on it still waits',
     'redraft':         'write the draft again - `text`: the change',
     'mine':            "make it a task on the owner's own list - no agent",
-    'regular_agent':   ('send it to an agent that does not write code - `text`: the job; `as`: a profile from agents.list, only when one fits; '
+    'regular_agent':   ('send it to an agent that does not write code - `text`: the job; '
                         '`new`: true when the job is NOT about the item on the table - it becomes a task of its own. Never for Taskuary\'s own '
                         'settings, connections or update: those are its own screens (app.find), nor for setting up a meeting: meeting.new'),
     'coding_agent':    ('send it to a coding agent - `text`: what is wanted; `as`: the repository (repos.list), only when sure. '
@@ -560,9 +558,9 @@ BUCKETS = (
 
 
 # what a tool takes, when its registry entry cannot say it: a tool that needs one of several, or takes its words as `text`
-HINTS = {'task.create_from_text': 'kind, text, channel?, to?', 'report.route': 'line, how, to?', 'pipe.remove': 'select, learn?','agents.stop': 'refs|all', 'page.open': 'page, query?', 'pipe.block': 'select, how?', 'pipe.mine': 'select', 'rule.change': 'about, how?', 'hub.vote': 'post, up?', 'memory.remember': 'note, about?, section?, replaces?', 'memory.wrong': 'key, how?', 'button.light': 'button, ref?, note?', 'app.repair': 'name, how', 'issue.draft': 'kind, trying, happened', 'pipe.clear': 'select, scope?', 'pipe.defer': 'select, until', 'pipe.close': 'select', 'hub.publish': 'title, body, topic?, kind?, why_earned?', 'task.update': 'priority|title|assignee|due', 'reply': 'text, cc?', 'redraft': 'text', 'regular_agent': 'text, as?, new?', 'coding_agent': 'text, as?, new?',
+HINTS = {'task.create_from_text': 'kind, text, channel?, to?', 'report.route': 'line, how, to?', 'pipe.remove': 'select, learn?','agents.stop': 'refs|all', 'page.open': 'page, query?', 'pipe.block': 'select, how?', 'pipe.mine': 'select', 'rule.change': 'about, how?', 'hub.vote': 'post, up?', 'memory.remember': 'note, about?, section?, replaces?', 'memory.wrong': 'key, how?', 'button.light': 'button, ref?, note?', 'app.repair': 'name, how', 'issue.draft': 'kind, trying, happened', 'pipe.clear': 'select, scope?', 'pipe.defer': 'select, until', 'pipe.close': 'select', 'hub.publish': 'title, body, topic?, kind?, why_earned?', 'task.update': 'priority|title|assignee|due', 'reply': 'text, cc?', 'redraft': 'text', 'regular_agent': 'text, new?', 'coding_agent': 'text, as?, new?',
          'answer_agent': 'text', 'remember': 'text', 'setup': 'text', 'task.handoff': 'who, note?', 'task.share': 'who, about?', 'task.complete': 'note?',
-         'dispatch.prepare': 'kind, instructions?', 'role.apply': 'role, portal?, route_mail?', 'task.check': 'item, done?, note?', 'task.checklist': 'add?, items?, emails?, drop?', 'task.watch': 'what?', 'task.defer': 'until', 'meeting.new': 'who?, about?, when?, minutes?'}
+         'dispatch.prepare': 'kind, instructions?', 'role.apply': 'role, portal?', 'task.check': 'item, done?, note?', 'task.checklist': 'add?, items?, emails?, drop?', 'task.watch': 'what?', 'task.defer': 'until', 'meeting.new': 'who?, about?, when?, minutes?'}
 
 
 def signature(kind: str) -> str:

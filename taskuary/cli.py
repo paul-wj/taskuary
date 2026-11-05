@@ -105,9 +105,10 @@ def _open_keyed(url):
 # moment a session unsets its own. An owner's session already has full permissions, so this buys nothing there and stays
 # as it was. A stranger's session runs only the agent commands that go over HTTP with its own task-bound token, where the
 # server's STRANGER scope decides.
-AGENT_ACTS = ('reply', 'reply_file', 'draft', 'draft_file', 'attach', 'item', 'tick', 'untick', 'done', 'note', 'waiting_on', 'board', 'learned', 'upvote', 'downvote', 'comment',
-              'search', 'message', 'memory')        # ...and the owner's mail history and memory, which a stranger's task never reads
-STRANGER_ACTS = AGENT_ACTS[:11]                     # ...the Hub, and the wall's other sessions' words, are not a stranger's to read or write
+AGENT_ACTS = ('reply', 'reply_file', 'draft', 'draft_file', 'attach', 'item', 'tick', 'untick', 'done', 'note', 'waiting_on', 'reply_not_needed', 'board', 'learned', 'upvote', 'downvote', 'comment',
+              'search', 'message', 'memory',        # ...and the owner's mail history and memory, which a stranger's task never reads
+              'sign_form')                          # ...and the owner's signature, which never goes on a stranger's form
+STRANGER_ACTS = AGENT_ACTS[:12]                     # ...the Hub, and the wall's other sessions' words, are not a stranger's to read or write
 OWNER_ACTS = ('prompts', 'reroute_held', 'backfill_asks', 'evalset', 'demo', 'link')
 NO_TOKEN = ("not sent: this session has no token of its own (TASKUARY_TOKEN) - Taskuary's own is the owner's, and a "
             "session never borrows it. Restart the session from its task.")
@@ -222,6 +223,29 @@ def _memory(args, stranger):
     print(out.get('says') or '' if r.status_code == 200 else f"not read: {out.get('detail') or r.text[:200]}")
 
 
+def _sign_form(args, stranger):
+    """`taskuary --sign-form FILE|ATTACHMENT_ID [--form JSON]`: the sign_form tool for a CLI with no MCP - a PDF filled and signed with
+    the owner's saved signature (handsign), into this task's folder and shown in the chat. This process reads a FILE and sends its
+    bytes; the server never opens a path it is handed. Nothing is sent: --reply ... --attach the signed copy for the owner's Send."""
+    import base64, json, os, sys
+    try: sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, OSError): pass
+    tid = os.environ.get('TASKUARY_TASK')
+    if not str(tid).isdigit(): print('not in a Taskuary session - TASKUARY_TASK is not set, so there is no task to sign for'); return
+    try: spec = json.loads(args.form or '{}')
+    except ValueError as e: print(f'not signed: --form is not JSON ({e})'); return
+    body = {'task_id': int(tid), 'agent': os.environ.get('TASKUARY_AGENT') or 'agent', **{k: spec[k] for k in ('fields', 'sign', 'date') if k in spec}}
+    src = str(args.sign_form).strip()
+    if src.isdigit() and not os.path.isfile(src): body['attachment'] = int(src)
+    else:
+        try: body.update(name=os.path.basename(src), data=base64.b64encode(open(src, 'rb').read()).decode())
+        except OSError as e: print(f'not signed: cannot read {src}: {e.strerror or e}'); return
+    got = _post('/api/agent/sign-form', body, stranger, timeout=120)
+    if not got: return
+    r, out = got
+    print(out.get('says') or out if r.status_code == 200 else f"not signed: {out.get('detail') or r.text[:200]}")
+
+
 def main():
     ap = argparse.ArgumentParser(prog='taskuary', description='Your work manager. Locally. Securely. In control.')
     ap.add_argument('--host', help='override [server].host (0.0.0.0 to listen on all interfaces)')
@@ -314,6 +338,9 @@ def main():
                          "to approve (you are not sending it), and finishing keeps it instead of redrafting. Say who it is to with --to "
                          "(their name or address) - without it, it answers the newest mail on the task. Use - to read it from stdin.")
     ap.add_argument('--reply-file', metavar='PATH', help='--reply, read from a file (for a long or multi-line reply)')
+    ap.add_argument('--reply-not-needed', metavar='WHY', help='the reply waiting on this task is no longer needed (someone else answered, '
+                                                             'the owner already did) - say why in one line. The draft stays, marked, with '
+                                                             "the owner's Send still on it; nothing is sent, deleted or closed.")
     ap.add_argument('--follow-up', action='store_true',
                     help='with --reply: the owner asked you for ANOTHER message after your reply already went - it is saved as a '
                          'follow-up to it. Without this, a second reply to a message already answered (nothing new from them) is refused.')
@@ -327,6 +354,7 @@ def main():
     ap.add_argument('--slot', default='', help='the checklist slot this email fills (the id after --slot in your checklist)')
     ap.add_argument('--to', default='', help='who it goes to: with --draft, when no slot names them; with --reply, the person on this '
                                              'task you are answering or asking (a name or address)')
+    ap.add_argument('--answers', type=int, metavar='N', help='with --reply: the message number (#N) of the mail that holds the ask, when it is not the one triage picked')
     ap.add_argument('--subject', default='', help='the subject line')
     # ...and a BATCH's items (batch.py): one finding per item, as the agent finishes each
     ap.add_argument('--item', type=int, metavar='N', help='in a batch: report on item N (with --result, and --overlap/--settled)')
@@ -345,6 +373,12 @@ def main():
     ap.add_argument('--until', default='', metavar='YYYY-MM-DD', help='with --search: sent on or before this day')
     ap.add_argument('--limit', type=int, default=20, help='with --search: how many hits at most')
     ap.add_argument('--message', metavar='ID', help='print one message from --search in full, with its thread (m1073 or 1073)')
+    # ...and a form a mail brought (handsign.py): filled and signed with the owner's saved signature, for their Send
+    ap.add_argument('--sign-form', metavar='PDF', help="fill and sign a PDF form with the owner's saved signature - a PDF file, or the id of an "
+                                                       "attachment on this task; with --form. The signed copy lands in your task folder and shows in "
+                                                       "the chat: attach it to --reply for the owner's Send, never send it yourself.")
+    ap.add_argument('--form', metavar='JSON', help='with --sign-form: {"fields": {name: value}, "sign": {"field": name} or {"near": "Parent '
+                                                   'signature"} or {"page": 1, "box": [x, y, width, height]}, "date": true or a field name}')
     ap.add_argument('--memory', metavar='SECTION', nargs='?', const='',
                     help="print what Taskuary has learned about the owner (LEARNED.md) - all of it, or one section: people, care, work, promises, bring")
     args = ap.parse_args()
@@ -397,7 +431,7 @@ def main():
         got = (_post('/api/agent/draft', {'task_id': int(tid), 'text': text, 'to': args.to, 'subject': args.subject, 'slot': args.slot,
                                           'agent': who, 'files': files}, stranger) if drafting
                else _post('/api/agent/reply', {'task_id': int(tid), 'text': text, 'agent': who, 'files': files, 'follow_up': args.follow_up,
-                                                'to': args.to}, stranger))
+                                                'to': args.to, 'answers': args.answers}, stranger))
         if not got: return
         r, out = got
         # ...saying to WHOM it was saved: "reply saved" alone let a question meant for one requester sit as an answer to another (2026-11-02)
@@ -409,6 +443,7 @@ def main():
             print(f"this task has more than one person on it ({', '.join(out['people'])}) - if it is meant for someone else, save it again with --to <name or address>")
         if out.get('attached'): print('attached: ' + ', '.join(out['attached']))
         for w in out.get('not_attached') or []: print(f'NOT attached - {w}')
+        if out.get('tell'): print(out['tell'])
         return
     if args.item is not None:
         import os, sys
@@ -424,6 +459,18 @@ def main():
         r, out = got
         print(f"item {args.item}: {'settled' if out.get('state') == 'done' else 'waiting on the owner'}" if out.get('ok')
               else f"not saved: {out.get('why') or out.get('detail') or r.text[:200]}")
+        return
+    if args.reply_not_needed:
+        import os, sys
+        try: sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, OSError): pass
+        tid = os.environ.get('TASKUARY_TASK')
+        if not str(tid).isdigit(): print('not in a Taskuary session - TASKUARY_TASK is not set, so there is no reply to mark'); return
+        got = _post('/api/agent/not-needed', {'task_id': int(tid), 'why': args.reply_not_needed, 'agent': os.environ.get('TASKUARY_AGENT') or 'agent'}, stranger)
+        if not got: return
+        r, out = got
+        print("marked not needed - the draft stays for the owner, Send still sends it." if out.get('ok')
+              else f"not marked: {out.get('why') or out.get('detail') or r.text[:200]}")
         return
     if args.tick or args.untick:
         import os, sys
@@ -462,6 +509,7 @@ def main():
         return
     if args.search is not None or args.message is not None: return _history(args, stranger)
     if args.memory is not None: return _memory(args, stranger)
+    if args.sign_form: return _sign_form(args, stranger)
     if args.note and stranger is not None:
         # a stranger's note: through the board door, which pins it to the token's own task (B2 keeps it off the others' seeds)
         import os, sys

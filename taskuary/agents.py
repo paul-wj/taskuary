@@ -12,6 +12,7 @@ from loguru import logger
 from . import acp as acp_mod, pathcache, redact, spawn
 from .store import task_ref
 from .clis import preset_args
+from .clipool import TimedOut
 
 _CLI_CHILDREN = set()
 _CLI_CHILDREN_LOCK = threading.Lock()
@@ -193,8 +194,11 @@ def child_env(base: dict = None, home: str = None, windows: bool = None) -> dict
     return env
 
 
-def _fmt_input(inp) -> str:
-    """The one field a human wants to see per tool call - command, path, pattern…"""
+def _fmt_input(inp, name: str = '') -> str:
+    """The one field a human wants to see per tool call - command, path, pattern… - and a draft by what it is, never its body
+    (sessionrecord.hide_draft: a login the thread asked for goes in the draft, not on the pane)."""
+    from .sessionrecord import DRAFT_SHOWN, drafting
+    if drafting(name, inp): return DRAFT_SHOWN
     if not isinstance(inp, dict): return str(inp)[:140]
     for k in ('command', 'file_path', 'path', 'pattern', 'url', 'query', 'description', 'prompt'):
         if inp.get(k): return str(inp[k])[:140]
@@ -237,13 +241,18 @@ def _live_line(j):
     if t == 'system':
         # only the real session init is news; the other system events (hooks, compaction,
         # subagent starts) repeated 'session started' forever and said nothing
+        # ...except Claude's own retries when it cannot reach its servers (the desktop run, 2026-11-04: the network down, the pane said
+        # "Starting Taskuary on Claude Code… 3m" for the ten tries it made before it gave up, and nothing said why it was slow)
+        if j.get('subtype') == 'api_retry':
+            n, of = j.get('attempt'), j.get('max_retries')
+            return f"Can't reach Claude's servers right now - trying again" + (f' ({n} of {of})' if n and of else '')
         if j.get('subtype') not in (None, 'init'): return None
         m = j.get('model') or (j.get('modelInfo') or {}).get('name') or ''
         return 'session started' + (f' · model {m}' if m else '')
     if t == 'assistant':
         out = []
         for c in (j.get('message') or {}).get('content') or []:
-            if c.get('type') == 'tool_use': out.append(f"→ {c.get('name')}: {_fmt_input(c.get('input'))}")
+            if c.get('type') == 'tool_use': out.append(f"→ {c.get('name')}: {_fmt_input(c.get('input'), c.get('name'))}")
             elif c.get('type') == 'text' and (c.get('text') or '').strip(): out.append(c['text'].strip()[:300])
         return '\n'.join(out) or None
     if t == 'user':
@@ -826,55 +835,11 @@ def ensure_profile_document(store, name: str) -> str:
     return doc
 
 
-# One worker's purpose, on the roster line. Bounded HERE, not where it is saved: the 2000-char cap
-# on the whole roster (triage.py) is a budget shared by every worker in the loop, and only the code
-# assembling that shared list knows how many lines are competing for it. An imported skill's raw
-# `description` can be a multi-sentence folded block (skillimport.py) that would otherwise crowd
-# every other worker off the end of a prompt that just truncates.
-ROSTER_PURPOSE_MAX = 200
-
 # The kinds that mean "works a repository". `cli` is the legacy spelling older databases use.
 CODING_KINDS = ('coding', 'cli')
 # Work that can still be dispatched. An allowlist rather than a list of endings, so a status added
 # later cannot quietly make a repair start rewriting finished tasks (the store also has `dropped`).
 LIVE_STATUSES = ('open', 'in_progress')
-
-
-def roster(store) -> str:
-    """The workers triage may choose between: one line each, name and purpose. Same shape as the
-    playbook menu (playbooks.menu) because triage validates the answer against these very lines -
-    the roster is DATA the owner controls, never a vocabulary baked into the prompt.
-
-    GENERAL roles only. A coding task has exactly one role and triage does not choose it
-    (routed_role), so offering the coding profiles here is what let `copilot` - a CLI, not a
-    worker - be named on TQ-0588's coding work."""
-    return '\n'.join(l for l, *_ in (roster_line(store, a) for a in store.list_agents()) if l)
-
-
-def roster_line(store, a: dict) -> tuple:
-    """(line, reason, code) for one agent row: the EXACT line triage reads for it, or '' plus why
-    there is none. roster() is assembled from this and the Docs page shows it per profile, so "does
-    triage see this worker" has one implementation. It used to have two - this rule here and a count
-    of `triage_enabled` in JSX - and the JSX one said "on the roster" for CODING.md, which triage can
-    never choose. The router reads this ONE LINE per worker; the session it picks gets the document.
-
-    `code` is the same answer in a word a UI can switch on, because the four of these are NOT one
-    situation and a chip that called them all "not routed" said the opposite of the truth for the
-    commonest: every coding task goes to CODING.md, the router simply is not what sends it there
-    (the owner, 2026-09-17: the coding document is not routed - it is the default for every coding task).
-    Reading the prose to tell them apart would be a second implementation of this rule.
-    """
-    if not a.get('Active', 1): return '', 'switched off', 'off'
-    if str(a.get('Kind') or '').lower() in CODING_KINDS:
-        return '', 'a coding worker - coding tasks have one role and triage does not choose it', 'coding'
-    try: prof = json.loads(a.get('Config') or '{}')
-    except ValueError: prof = {}
-    if prof.get('triage_enabled') is False:
-        return '', 'not offered new work - "Can be given new work from what comes in" is off', 'not_offered'
-    purpose = profile_purpose(a['Name'], prof, a.get('Kind') or 'coding')
-    if not purpose: return '', 'no purpose set - triage has nothing to choose it by', 'no_purpose'
-    if len(purpose) > ROSTER_PURPOSE_MAX: purpose = purpose[:ROSTER_PURPOSE_MAX - 1].rstrip() + '…'
-    return f"- {a['Name']}: {purpose}", '', ''
 
 
 def coding_role(store) -> str:
@@ -1163,22 +1128,11 @@ def routed_role(store, kind: str, profile: str) -> str:
     `queued` lane - "handed to an agent, not started yet" (processing_unread, processing_all). An
     unstamped coding task reads as one that needs the owner.
 
-    General takes the specialist triage named, if it names a general one that exists. Naming none
-    falls to `default_profile` - the worker the owner said their mail is for (an AP rep's `ap`,
-    roles.py) - and with that blank, leaves the task unassigned for the owner to pick at start.
-    `kind: task` leaves the job on the owner's list, so no worker at all."""
-    if str(kind or '') == 'coding': return coding_role(store)
-    if str(kind or '') != 'general': return ''
-    # the two groups never mix: a coding role reaching general work means triage invented a name
-    # the roster could not have offered, and an invented worker must not route anything
-    def general(n):
-        row = store.get_agent(n) if n else None
-        return n if row and str(row.get('Kind') or '').lower() not in CODING_KINDS else ''
-    named = general(str(profile or '').strip())
-    if named: return named
-    # the default is the owner's standing choice, so a worker they have since switched off is not it
-    fallback = str(store.get_setting('default_profile') or '').strip()
-    return fallback if general(fallback) and (store.get_agent(fallback) or {}).get('Active', 1) else ''
+    General is nobody's: a general agent working a TASK has one goal, to walk the owner through their work, so the
+    task is left unassigned and runs on the assistant (general._prompt) - whatever profile was named, and whatever
+    `default_profile` an older version saved (the owner, 2026-11-04). Profiles are for routines and workflows, which
+    stamp their own (workflows.run, flow.py). `kind: task` leaves the job on the owner's list, so no worker at all."""
+    return coding_role(store) if str(kind or '') == 'coding' else ''
 
 
 def repair_role_assignees(store) -> int:
@@ -1281,7 +1235,7 @@ def run_acp(profile: dict, prompt: str, trace, resume: str = None, cancel=None, 
     try:
         policy = {'permission_policy': 'deny', 'process_tree': True} if _cli_name(name) == 'omp' else {}
         client = acp_mod.ACPClient(cmd[0], cmd[1:], cwd=cwd, env=env,
-                                   timeout=profile.get('timeout', 1200), on_update=acp_tracer(trace, name), **policy)
+                                   timeout=profile.get('timeout'), on_update=acp_tracer(trace, name), **policy)
     except PermissionError as e:
         if overlay:
             try: os.remove(overlay)
@@ -1480,7 +1434,9 @@ def _run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None,
         # which() found something that cannot be executed from here. "Not installed" sent people
         # off to reinstall a CLI that was already there; the reason is in denied_msg.
         raise FileNotFoundError(denied_msg(name, cmd[0] if cmd else '', e)) from e
+    # Agent runs have no time limit unless the caller explicitly supplies one.
     timed, finished, stop_errors = threading.Event(), threading.Event(), []
+    limit = profile.get('timeout')
     cancel_thread = None
     def stop():
         try:
@@ -1490,8 +1446,8 @@ def _run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None,
             stop_errors.append(e)
             try: p.kill()
             except Exception: pass
-    killer = threading.Timer(profile.get('timeout', 1200), lambda: (timed.set(), stop()))
-    killer.start()
+    killer = threading.Timer(limit or 0, lambda: (timed.set(), stop()))
+    if limit: killer.start()
     # A browser Cancel closes the streaming response. Kill the CLI too; otherwise the UI says
     # stopped while an invisible agent keeps using tools in the background.
     if cancel is not None:
@@ -1651,7 +1607,7 @@ def _run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None,
         killer.cancel()
         finished.set()
         if family == 'omp':
-            killer.join(15)
+            if limit: killer.join(15)
             if cancel_thread: cancel_thread.join(15)
             if killer.is_alive() or (cancel_thread and cancel_thread.is_alive()):
                 stop_errors.append(RuntimeError('process cleanup did not finish'))
@@ -1669,7 +1625,7 @@ def _run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None,
         if cancel is not None and cancel.is_set(): raise RuntimeError('cancelled')
         err = ''.join(err_buf)
         said = cli_failure(raw, err)
-        why = (f'timed out after {profile.get("timeout", 1200)}s' if timed.is_set() else said)[:500]
+        why = (f'timed out after {limit}s' if timed.is_set() else said)[:500]
         # the CLASSIFYING patterns read both streams: a sign-in refusal or a Windows launch
         # refusal lands on stderr, while the reason the owner reads now comes off stdout
         hay = f'{said}\n{err}'
@@ -1680,6 +1636,7 @@ def _run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None,
         # only thing on stderr is the refusal
         if _DENIED.search(hay) and not raw: raise RuntimeError(denied_msg(name, cmd[0] if cmd else '', said))
         if _NO_HOME.search(hay): raise RuntimeError(no_home_msg(_cli_name(name) or name))
+        if timed.is_set(): raise TimedOut(f'{name} exit {p.returncode}: {why}', streamed_sid or (final or {}).get('session_id'))
         raise RuntimeError(f'{name} exit {p.returncode}: {why}')
     # OpenCode can report provider errors in JSON while its process exits successfully.
     if stream_error: raise RuntimeError(f'{name}: {redact.scrub(stream_error)[:500]}')
@@ -1812,12 +1769,13 @@ def _run_live(profile: dict, name: str, cmd: list, prompt: str, trace, keep: str
         # turn again after any end; one with tools may have done work mid-turn, and never is
         bare = '--tools' in cmd and cmd.index('--tools') + 1 < len(cmd) and cmd[cmd.index('--tools') + 1] == ''
         final, raw = clipool.run(keep, cmd, prompt, on, cwd=cwd, env=spawn_env(profile, extra_env),
-                                 resume=resume, cancel=cancel, timeout=profile.get('timeout', 1200), resend=bare)
+                                 resume=resume, cancel=cancel, timeout=profile.get('timeout'), resend=bare)
     except PermissionError as e:
         raise FileNotFoundError(denied_msg(name, cmd[0] if cmd else '', e)) from e
     except RuntimeError as e:
         said = str(e)
         if said == 'cancelled': raise
+        if isinstance(e, clipool.TimedOut): raise clipool.TimedOut(f'{name}: {said[:500]}', e.session_id) from e
         limit = rate_limited(said)
         if limit: raise RateLimited(rate_limit_msg(name, limit), limit)
         if _SIGNED_OUT.search(said): raise RuntimeError(signed_out_msg(name, said, cmd[0] if cmd else ''))

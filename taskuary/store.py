@@ -122,17 +122,21 @@ GENESIS = '0' * 64
 # the channels Taskuary writes itself - its reports and the Advisor's ideas - which carry no sender address
 OWN_CHANNELS = ('report', 'assistant')
 TASK_COLS = ('Title', 'Summary', 'Kind', 'Status', 'Priority', 'Assignee', 'Source', 'SourceRef', 'Tags', 'RemindAt', 'AskedVia', 'DueAt',
-             'DoneWhen', 'ParentId', 'OriginBase', 'TrustedThrough', 'Origin', 'OriginWhy', 'WatchedAt', 'WatchBack')
+             'DoneWhen', 'ParentId', 'OriginBase', 'TrustedThrough', 'Origin', 'OriginWhy', 'WatchedAt', 'WatchBack', 'ThreadJson')
 MSG_COLS = ('TaskId', 'ExternalId', 'ConversationId', 'Channel', 'SourceName', 'Subject',
             'FromName', 'FromEmail', 'SentAt', 'BodyText', 'SourceLink', 'Status', 'Direction', 'RecipientsJson',
             'MailMetaJson', 'OwnText', 'TriageTitle', 'RankValue', 'RankWhy', 'SenderClass', 'MeetJson')
 RUN_COLS = ('Status', 'TraceJson', 'Result', 'LastError', 'SessionId', 'DiffText')
+def thread_pinned(thread, mid):
+    # triage writes mid 0 for "the mail being judged"; a stored reading names the real message
+    return {k: [{**o, 'mid': mid} if isinstance(o, dict) and o.get('mid') == 0 else o for o in v] if isinstance(v, list) else v for k, v in thread.items()}
 def _fold(value):
     """Case-fold for search. casefold() beats lower() on the pairs that differ (German ss)."""
     return str(value or '').casefold()
 
 
 REVIEW_COLS = ('TaskId', 'MessageId', 'RunId', 'Kind', 'DraftText', 'FinalText', 'Status', 'Reason', 'Deliver')
+EMPTY_DRAFT = 'the draft came back empty'     # update_review_draft's refusal: the card's plain line reads it (sendState.draftState)
 POLICY_COLS = ('Name', 'Kind', 'Pattern', 'Action', 'Reason', 'SortOrder', 'Active', 'Mailbox')
 SOURCE_COLS = ('Channel', 'Address', 'Owner', 'ConnectorId', 'Active', 'ConfigJson')
 # The reports this app seeds, as (sentinel setting, the Address the seeder writes, the config type).
@@ -340,6 +344,25 @@ _FANOUT_NOW = ('\n## Several to-dos at once\n'
 _PROMISE_AT = '- "Nothing to do here" is also an ending'
 _PROMISE_NOW = ('- A reply goes when what it says is true. Never promise a later step ("I\'ll let you know when it\'s live"): do\n'
                 '  it, or ask for the go-ahead and wait. If something is genuinely left, say plainly what, and who does it.\n')
+# THE LOGIN RULE LIVES IN CODE (the owner, 2026-11-04, and the Task 3.4 review): a login the thread asks for and the owner's own files hold
+# goes in the drafted reply - the owner's Send is the decision - never the conversation. AGENT.md and ASSISTANT.md ride on a STRANGER's task
+# too, so neither carries it: general.GOAL_LINE, on the owner's own tasks only, is its one home. An edited copy stops tracking its template,
+# so the login lines an earlier wording put in it come out where they still read word for word (login_rule_in_code). {name: (froms, to)}
+_LOGIN_RULES = {
+    'agent': (('- Money, legal, HR, credentials, permissions, production configuration, deletions and anything\n'
+               '  irreversible are theirs to decide. Say what you would do and wait. A login or key the thread asks\n'
+               '  {{owner_first}} to supply, kept in their own files, is decided by their Send: find it and put it in the\n'
+               '  reply you draft, never in the conversation, your steps, a summary, a comment or a log.\n',),
+              '- Money, legal, HR, credentials, permissions, production configuration, deletions and anything\n'
+              '  irreversible are theirs to decide. Say what you would do and wait.\n'),
+    # ...and the wording before it, whose "never paste a secret into the conversation or a draft" forbids the draft the ruling asks for
+    'assistant': (('  searching the disk. A file such as an .env holds settings: read the value the job needs.\n'
+                   '- When the thread asks {{owner}} to supply a login, a key or other details their own files hold, find\n'
+                   "  it and put it in the reply you draft: {{owner}}'s Send is their decision to share it. Never paste a\n"
+                   '  secret into the conversation, your steps, your summary, a comment or a log.\n',
+                   '  searching the disk. A file such as an .env holds settings: read the value the job needs, never paste\n'
+                   '  a secret into the conversation or a draft.\n'),
+                  '  searching the disk.\n')}
 _CODING_NOW = "`coding` is for a CHANGE inside a system this install holds the code or the credentials for: code changed in one of the owner's repositories, data changed in one of their systems, an account created or granted on a system they run. Reading from those systems - a query, a report, a look-up - changes nothing and is `general`."
 _SHAPE_WAS = ('Classify one inbound work message. Answer JSON only: {"intent": "task|reply_only|fyi", '
               '"kind": "coding|general|task", "why": "<one concrete sentence: what you saw in the message '
@@ -1112,6 +1135,12 @@ class SQLiteStore:
             # attempted payload separate from the UI's pending/approved review status.
             for col in ('DeliveryState', 'DeliveryClaim', 'DeliveryAttemptedAt', 'DeliveryEnvelope', 'DeliveryReceipt'):
                 if col not in rvcols: self.cx.execute(f'ALTER TABLE review ADD COLUMN {col} TEXT')
+            # WHICH MAIL THE DRAFT ANSWERS (the delivery target), kept apart from MessageId, the newest mail it saw (freshness); and the drafter's one line on why
+            if 'AnswersMid' not in rvcols: self.cx.execute('ALTER TABLE review ADD COLUMN AnswersMid INTEGER')
+            if 'DraftWhy' not in rvcols: self.cx.execute('ALTER TABLE review ADD COLUMN DraftWhy TEXT')
+            # ...and the agent's word that the reply is NO LONGER NEEDED (someone else answered, the owner already did): the card says so
+            # with Send still on it - never deleted, never sent, nothing closed; a redraft clears it (Task 4.5, 2026-11-04)
+            if 'NotNeeded' not in rvcols: self.cx.execute('ALTER TABLE review ADD COLUMN NotNeeded TEXT')
             # the triage-generated checklist (PW-075): JSON items with stable ids, separate from Status
             tcols = {r[1] for r in self.cx.execute('PRAGMA table_info(task)')}
             if 'Checklist' not in tcols:
@@ -1146,6 +1175,8 @@ class SQLiteStore:
             for col in ('WaitingOn', 'WaitingSince', 'WokeMid'):
                 if col not in tcols: self.cx.execute(f'ALTER TABLE task ADD COLUMN {col} TEXT')
             if 'TrustedThrough' not in tcols: self.cx.execute('ALTER TABLE task ADD COLUMN TrustedThrough INTEGER')
+            # triage's newest reading of the conversation (triage.thread_of), its mid 0 already the mail's own id
+            if 'ThreadJson' not in tcols: self.cx.execute('ALTER TABLE task ADD COLUMN ThreadJson TEXT')
             # an email slot an agent addressed as "Name <address>" handed the provider the whole string (TQ-0957): the
             # recipient is the address, the name rides beside it (slots.split) - repaired once, on start
             from .slots import split
@@ -1610,6 +1641,16 @@ class SQLiteStore:
                 if body.count(at) == 1 and '## Several to-dos at once' not in body:
                     self.cx.execute("UPDATE doc SET Content=?, UpdatedAt=? WHERE Name='coding'", (body.replace(at, at + now), _now()))
                 self.cx.execute("INSERT INTO setting (Name, Value, UpdatedBy) VALUES ('coding_fans_out_todos', '1', 'migration')")
+            # ...and THE LOGIN RULE LIVES IN CODE (_LOGIN_RULES): out of an edited AGENT.md / ASSISTANT.md that still reads it as shipped, once
+            if not self.cx.execute("SELECT 1 FROM setting WHERE Name='login_rule_in_code'").fetchone():
+                for name, (froms, to) in _LOGIN_RULES.items():
+                    row = self.cx.execute('SELECT Content FROM doc WHERE Name=?', (name,)).fetchone()
+                    body = (row['Content'] or '') if row else ''
+                    nl = '\r\n' if '\r\n' in body else '\n'
+                    was = next((f.replace('\n', nl) for f in froms if body.count(f.replace('\n', nl)) == 1), None)
+                    if was:
+                        self.cx.execute('UPDATE doc SET Content=?, UpdatedAt=? WHERE Name=?', (body.replace(was, to.replace('\n', nl)), _now(), name))
+                self.cx.execute("INSERT INTO setting (Name, Value, UpdatedBy) VALUES ('login_rule_in_code', '1', 'migration')")
             # ...and THE GUIDE REPLACES THE PATCHWORK (the owner, 2026-10-09: "make it clear how to triage things, what to
             # look for, signs that would suggest things"). The sentence swaps above each fixed one rule; the template is now
             # one guide written as questions and signs, and the judgement code used to append lives in it. A document only
@@ -2232,7 +2273,7 @@ class SQLiteStore:
                                 if digest[:n] not in used_ids), digest)
             used_ids.add(item_id)
             items.append({'id': item_id, 'text': text, 'done': bool(prior.get('done')),
-                          **{k: prior[k] for k in ('out', 'rid', 'tid', 'note', 'src') if k in prior}})     # a slot keeps what it sends and its draft; a step its child; a box its note and its message
+                          **{k: prior[k] for k in ('out', 'rid', 'tid', 'note', 'src', 'on_you') if k in prior}})     # a slot keeps what it sends and its draft; a step its child; a box its note and its message
         self._write_checklist(task_id, items, actor)
         return items
     def merge_task_checklist(self, task_id, texts, actor: str, src=None) -> list:
@@ -2282,12 +2323,30 @@ class SQLiteStore:
         else: hit[0].pop('note', None)
         self._write_checklist(task_id, items, actor)
         return True
+    def set_on_you(self, task_id, texts, actor: str) -> list:
+        """The steps left on the owner (`on_you` items) as these words - from an agent's turn summary or, where no agent works, triage's
+        reading (Task 3.5). Every other box stays, and so does an On you step the owner ticked; the unticked ones are replaced - a step
+        said again keeps its place, id, note and source, a new one goes at the end. Returns the list as written.
+        Read and written under the writer's lock, as tick_checklist_item is: an owner's tick landing between the two was lost."""
+        clean = self.clean_checklist(texts)
+        with self.lock:
+            items, want = self.task_checklist(task_id), set(clean)
+            out = [i for i in items if not (i.get('on_you') and not i.get('done') and i['text'] not in want)]
+            have, used_ids = {i['text'] for i in out}, {i.get('id') for i in out}
+            for text in clean:
+                if text in have: continue
+                digest = hashlib.sha1(text.encode()).hexdigest()
+                item_id = next((digest[:n] for n in range(8, len(digest) + 1) if digest[:n] not in used_ids), digest)
+                out.append({'id': item_id, 'text': text, 'done': False, 'on_you': True}); have.add(text); used_ids.add(item_id)
+            if out != items: self._write_checklist(task_id, out, actor)
+        return out
     def tick_checklist_item(self, task_id, item_id: str, done: bool, actor: str) -> bool:
-        items = self.task_checklist(task_id)
-        hit = [i for i in items if i['id'] == item_id]
-        if not hit: return False
-        hit[0]['done'] = bool(done)
-        self._write_checklist(task_id, items, actor)
+        with self.lock:          # one read-and-write: a set_on_you between them lost the tick, or the tick its steps
+            items = self.task_checklist(task_id)
+            hit = [i for i in items if i['id'] == item_id]
+            if not hit: return False
+            hit[0]['done'] = bool(done)
+            self._write_checklist(task_id, items, actor)
         return True
     def checklist_markdown(self, task_id, ids: bool = False) -> str:
         """`ids`: the agent's copy - each box an agent may tick carries its id, for `taskuary --tick <id>` (the owner, 2026-10-22:
@@ -2798,12 +2857,14 @@ class SQLiteStore:
         return self._one("SELECT * FROM message WHERE TaskId=? AND Status NOT IN ('context','history','skipped') "
                          "AND IFNULL(Direction,'in')<>'out' AND IFNULL(Channel,'')<>'report' "
                          'ORDER BY SentAt DESC, MessageId DESC LIMIT 1', (task_id,))
-    def last_material_inbound_on_task(self, task_id):
+    def last_material_inbound_on_task(self, task_id, skip=()):
         """last_inbound_on_task minus the FYIs triage filed with nothing to do (PW-240): the line that can make a
-        drafted reply stale is one somebody sent that changed the ask."""
+        drafted reply stale is one somebody sent that changed the ask. `skip`: message ids passed over (triage's asides)."""
+        skip = tuple(skip)
         return self._one("SELECT * FROM message WHERE TaskId=? AND Status NOT IN ('context','history','skipped','filed') "
                          "AND IFNULL(Direction,'in')<>'out' AND IFNULL(Channel,'')<>'report' "
-                         'ORDER BY SentAt DESC, MessageId DESC LIMIT 1', (task_id,))
+                         + (f"AND MessageId NOT IN ({','.join('?' * len(skip))}) " if skip else '')
+                         + 'ORDER BY SentAt DESC, MessageId DESC LIMIT 1', (task_id, *skip))
     def last_inbound_in(self, conversation_id):
         return self._one("SELECT * FROM message WHERE ConversationId=? AND Status NOT IN ('context','history','skipped') AND IFNULL(Direction,'in')<>'out' "
                          'ORDER BY SentAt DESC LIMIT 1', (conversation_id,))
@@ -2905,6 +2966,14 @@ class SQLiteStore:
             "  FROM task t LEFT JOIN message m ON m.TaskId=t.TaskId "
             " WHERE t.Status NOT IN ('done','dropped') "
             " GROUP BY t.TaskId ORDER BY IFNULL(t.UpdatedAt, t.CreatedAt) DESC LIMIT ?", (limit,))
+    def tasks_open_brief(self, limit=40):
+        """The OPEN tasks and Watching items, newest activity first, each with what triage read it to ask (ThreadJson), the channel and the
+        name it first came from - one line each of the list every arrival is shown (context.open_items)."""
+        first = "(SELECT m.{} FROM message m WHERE m.TaskId=t.TaskId AND IFNULL(m.Direction,'')<>'out' ORDER BY m.MessageId LIMIT 1)"
+        return self._rows(
+            "SELECT t.TaskId, t.Title, t.Summary, t.ThreadJson, t.WatchedAt, t.Source, t.OriginBase, t.CreatedAt, "
+            f"       IFNULL(t.UpdatedAt, t.CreatedAt) Touched, {first.format('Channel')} Channel, {first.format('FromName')} FromName "
+            "  FROM task t WHERE t.Status NOT IN ('done','dropped') ORDER BY IFNULL(t.UpdatedAt, t.CreatedAt) DESC, t.TaskId DESC LIMIT ?", (limit,))
     def task_people(self, tids) -> dict:
         """{TaskId: [{name, email, channel}]} - who wrote on each task, by display name, never the owner's own lines: what a name on
         another channel is compared against (context.same_name)."""
@@ -2914,6 +2983,17 @@ class SQLiteStore:
         for r in self._rows(f"SELECT DISTINCT TaskId, FromName, FromEmail, Channel FROM message WHERE TaskId IN ({','.join('?' * len(tids))}) "
                             "AND IFNULL(FromName,'')<>'' AND IFNULL(Status,'')<>'context' AND IFNULL(Direction,'')<>'out'", tuple(tids)):
             out.setdefault(r['TaskId'], []).append({'name': r['FromName'], 'email': r['FromEmail'] or '', 'channel': r['Channel'] or ''})
+        return out
+    def task_recipients(self, tids) -> dict:
+        """{TaskId: {address}} - who each task's mail was written TO (its To and Cc lines), lower-cased: with task_people's senders,
+        what says an arrival is written between the same people (context.recent_open)."""
+        tids = [int(t) for t in tids if t][:200]
+        if not tids: return {}
+        out, rj = {}, "CASE WHEN json_valid(m.RecipientsJson) THEN m.RecipientsJson ELSE '{}' END"
+        for r in self._rows(f"SELECT DISTINCT m.TaskId, lower(trim(j.value)) a FROM message m, json_each({rj}, '$.to') j WHERE m.TaskId IN ({','.join('?' * len(tids))}) "
+                            f"UNION SELECT m.TaskId, lower(trim(j.value)) FROM message m, json_each({rj}, '$.cc') j WHERE m.TaskId IN ({','.join('?' * len(tids))})",
+                            tuple(tids) * 2):
+            if r['a']: out.setdefault(r['TaskId'], set()).add(r['a'])
         return out
     def tasks_owner_worked(self, since: str, before: str, limit=3):
         """The OPEN tasks the owner acted on (an audit row of theirs) between two stamps, last touched first, with when.
@@ -4901,6 +4981,9 @@ class SQLiteStore:
         if isinstance(verdict, dict) and 'danger' in verdict and mid: self.set_message_danger(mid, verdict.get('danger'), verdict.get('danger_aim'))
         if isinstance(verdict, dict) and isinstance(verdict.get('meet'), dict) and mid:
             self._exec('UPDATE message SET MeetJson=? WHERE MessageId=?', (json.dumps(verdict['meet']), mid))
+        if isinstance(verdict, dict) and isinstance(verdict.get('thread'), dict) and mid:
+            verdict = {**verdict, 'thread': thread_pinned(verdict['thread'], mid)}
+            if tid: self._exec('UPDATE task SET ThreadJson=? WHERE TaskId=?', (json.dumps(verdict['thread'], default=str), tid))
         if isinstance(verdict, dict) and tid: self.judge_task(tid, verdict, 'triage')     # how hard, how sure, what data (the router)
         return self._exec('''INSERT INTO route
             (MessageId,TaskId,Decision,Score,Reason,CandidatesJson,RoutedBy,CreatedAt,RawOutput,ParseError,VerdictJson)
@@ -4917,6 +5000,26 @@ class SQLiteStore:
                         "AND Decision<>'attach' ORDER BY RouteId DESC LIMIT 1", (task_id,))
         try: return json.loads(row['VerdictJson']) if row else None
         except Exception: return None
+    def message_thread(self, mid):
+        """Triage's newest reading of a message no task holds (a filed FYI, a report): off its own routes, the newest that has one -
+        a later verdict without it (a CLI brain, an older TRIAGE.md) leaves the last reading standing. None when there never was one."""
+        for r in self._rows('SELECT VerdictJson FROM route WHERE MessageId=? AND VerdictJson IS NOT NULL ORDER BY RouteId DESC', (mid,)):
+            try: t = json.loads(r['VerdictJson']).get('thread')
+            except Exception: continue
+            if isinstance(t, dict): return t
+        return None
+    def task_thread(self, task_id):
+        row = self._one('SELECT ThreadJson FROM task WHERE TaskId=?', (task_id,))
+        try: t = json.loads(row['ThreadJson']) if row and row['ThreadJson'] else None
+        except Exception: return None
+        return t if isinstance(t, dict) else None
+    def aside_mids(self, task_id):
+        # every mail triage ever called aside on this task, across its verdicts
+        out = set()
+        for r in self._rows('SELECT VerdictJson FROM route WHERE TaskId=? AND VerdictJson IS NOT NULL', (task_id,)):
+            try: out |= {o['mid'] for o in json.loads(r['VerdictJson'])['thread']['aside'] if isinstance(o['mid'], int) and o['mid']}
+            except Exception: continue
+        return out
     def list_routes(self, task_id): return self._rows('SELECT * FROM route WHERE TaskId=? ORDER BY RouteId', (task_id,))
     def add_comment(self, task_id, actor, actor_type, body):
         return self._exec('INSERT INTO comment (TaskId,Actor,ActorType,Body,CreatedAt) VALUES (?,?,?,?,?)',
@@ -5382,12 +5485,18 @@ class SQLiteStore:
         self._review_changed(rid)
     def update_review_draft(self, rid, draft, run_id, by=None, files=...):
         """`files`: the names the writer said ride with this draft ([] = a file promised, unnamed; None = it promised none). Left out,
-        the same text keeps what its writer said and new text from anyone else drops it - a word about other words is no word on these."""
+        the same text keeps what its writer said and new text from anyone else drops it - a word about other words is no word on these.
+        AN EMPTY DRAFT IS NO DRAFT: nothing (or only blanks) never replaces the text there - the review keeps it and says the draft came back
+        empty (DraftError), so the card says so instead of a blank box under Send (2026-11-04). False when refused."""
+        if not str(draft or '').strip():
+            self.set_review_draft_error(rid, EMPTY_DRAFT)
+            return False
         fp = None if files in (None, ...) else json.dumps({'named': [str(f) for f in files]})
-        self._exec("UPDATE review SET FilesPromised=CASE WHEN ? THEN ? WHEN DraftText IS ? THEN FilesPromised END, DraftText=?, RunId=?, DraftError=NULL, DraftNeeds=NULL, "
+        self._exec("UPDATE review SET FilesPromised=CASE WHEN ? THEN ? WHEN DraftText IS ? THEN FilesPromised END, DraftText=?, RunId=?, DraftError=NULL, DraftNeeds=NULL, NotNeeded=NULL, "
                    "DraftBy=? WHERE ReviewId=? AND DeliveryClaim IS NULL AND IFNULL(DeliveryState,'') NOT IN ('sending','unknown','sent')",
                    (files is not ..., fp, draft, draft, run_id, by, rid))
         self._review_changed(rid)
+        return True
     def add_review_instruction(self, rid, text: str):
         """Keep the owner's instruction for this draft beside the ones before it - never replaced, never cleared by a redraft."""
         said = ' '.join(str(text or '').split())[:1000]
@@ -5447,6 +5556,16 @@ class SQLiteStore:
         the draft predates the conversation and refuse to send it unchanged.
         """
         self._exec("UPDATE review SET MessageId=? WHERE ReviewId=? AND DeliveryClaim IS NULL AND IFNULL(DeliveryState,'') NOT IN ('sending','unknown','sent')", (mid, rid))
+        self._review_changed(rid)
+    def set_review_answers(self, rid, mid):
+        """The mail this draft answers; MessageId stays the freshness marker (update_review_message)."""
+        self._exec("UPDATE review SET AnswersMid=? WHERE ReviewId=? AND DeliveryClaim IS NULL AND IFNULL(DeliveryState,'') NOT IN ('sending','unknown','sent')", (mid, rid))
+        self._review_changed(rid)
+    def set_review_why(self, rid, why):
+        self._exec("UPDATE review SET DraftWhy=? WHERE ReviewId=? AND DeliveryClaim IS NULL AND IFNULL(DeliveryState,'') NOT IN ('sending','unknown','sent')", (by_sentence(why, 400) or None, rid))
+        self._review_changed(rid)
+    def set_review_not_needed(self, rid, why):
+        self._exec("UPDATE review SET NotNeeded=? WHERE ReviewId=? AND Status='pending'", (by_sentence(why, 300) or None, rid))
         self._review_changed(rid)
     def set_review_sid(self, rid, sid):
         self._exec('UPDATE review SET DraftSid=? WHERE ReviewId=?', (sid, rid)); self._review_changed(rid)

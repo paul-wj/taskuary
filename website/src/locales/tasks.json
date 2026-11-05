@@ -214,6 +214,8 @@
   "read": "已读取",
   "opens where it lives": "在原位置打开",
   "open it": "打开表单",
+  "attachment::open it": "打开",
+  "attachment::read it here": "在此查看",
   "{reason} — {location}": "{reason} — {location}",
   "opens in the original message": "在原始消息中打开",
   "open it from the mail in your mailbox": "从邮箱中的邮件打开",

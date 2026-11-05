@@ -8,7 +8,7 @@ import { Alert, Box, Button, Typography, CircularProgress, Menu, MenuItem } from
 import api from "./api";
 import ReplyFiles from "./ReplyFiles.jsx";
 import { holdInView } from "./inView.js";
-import { filesPromised } from "./replyFiles.js";
+import { filesPromised, filesShort } from "./replyFiles.js";
 import { proposalPresentation, reviewText } from "./reviewProposal.js";
 import { withoutSignature } from "./signature.js";
 import { OFFER_HINT, OFFER_LABEL, useCloseoutState } from "./closeoutState.js";
@@ -17,7 +17,7 @@ import { CcRow, DraftField, ToRow, timeAgo, cleanText, splitQuoted } from "./ui.
 import { deliveryCc, deliveryFiles, deliveryMeta, replyContext } from "./replyDelivery.js";
 import { acted, announce, repeatClick, useLit, useVerbs } from "./actionRow.js";
 import { hint as btnHint, label as btn } from "./buttons.js";   // theme.jsx owns `label`
-import { boxText, followDraft, useDraftJob } from "./replyDraft.js";
+import { boxText, editAfterRefile, followDraft, useDraftJob } from "./replyDraft.js";
 import ApprovalInterrupt from "./ApprovalInterrupt.jsx";
 import { interruptOf, resolveInterrupt } from "./approvalInterrupt.js";
 import { DECIDE_TIMEOUT, draftState, failureHead, replySendFailure, reviewDeliveryState, sendFix, timedOut } from "./sendState.js";
@@ -138,6 +138,17 @@ export default function ReviewDecision({ review: r, closeout, onChanged, onOpenT
   const [sendErr, setSendErr] = useState("");       // approved, but the channel refused it
   const [interrupt, setInterrupt] = useState(null); // PW-239: the click that did not send
   const [compare, setCompare] = useState(null);     // the refreshed draft, shown beside the owner's edit
+  // A NEW DRAFT UNDER THE OPEN CARD IS SHOWN (editAfterRefile, 2026-11-04): the Assistant's rewrite landed and an emptied box stayed empty,
+  // Send grey, under "✓ Rewritten" - the edit followed the card, not the draft it was made on. Another review in the same card starts from its own.
+  const filed = reviewText(r), was = useRef({ rid: r.ReviewId, filed });
+  useEffect(() => {
+    const w = was.current; was.current = { rid: r.ReviewId, filed };
+    if (w.rid !== r.ReviewId) { const e = heldOf(r); setTextNow(e?.text ?? null); setCcNow(e?.cc ?? null); return; }
+    if (w.filed === filed) return;
+    const keep = !!interrupt || compare?.reviewId === r.ReviewId;
+    if (keep && text != null) hold(r, { text });           // the owner's edit beside the refreshed draft stays theirs, held for the new one
+    setTextNow(editAfterRefile({ text, held: heldOf(r), keep }));
+  }, [r.ReviewId, filed]);   // eslint-disable-line react-hooks/exhaustive-deps
   // A BLANK LEFT IN IT (the owner, 2026-10-30): Send pressed over a "[REASON]" says "Fill in [REASON] first" under the button, and the
   // line follows the box - it names what is still blank as the owner types, and is gone once nothing is
   const [fillIn, setFillIn] = useState(false);
@@ -517,6 +528,10 @@ export default function ReviewDecision({ review: r, closeout, onChanged, onOpenT
       ) : r.Reason && (r.DraftText || !/draft/i.test(r.Reason)) && (
         <Typography variant="caption" sx={{ color: "#6f8a6e", display: "block", mb: 0.5 }}>{r.Reason}</Typography>
       )}
+      {/* the agent re-planned on a change and found no reply needed (Task 4.5): said plainly, the draft and its Send kept - the owner decides */}
+      {!!r.NotNeeded && (
+        <Typography variant="body2" data-tq-not-needed="" sx={{ color: DIM, mb: 1 }}>Not needed - {r.NotNeeded}</Typography>
+      )}
       {meta.kind === "zoho_invoice" && <InvoiceLine meta={meta} />}
       {/* !!: the task detail carries the raw row, where Stale is the NUMBER 0 - and React draws a 0 */}
       {!!r.Stale && !delivery.frozen && <Alert severity="warning" sx={{ mb: 1 }}>
@@ -526,7 +541,8 @@ export default function ReviewDecision({ review: r, closeout, onChanged, onOpenT
       {/* the writer said what it needs: a plain line, never a red failure - its way on is Send to agent / Continue, lit by the Advisor */}
       {/* ...and a draft that FAILED says so the same plain way, Draft with AI under it to try again (the owner, 2026-11-03) - the arrival's
           failure was written on the review and shown nowhere, so its empty box read as a reply nobody had tried */}
-      {!proposal && !drafting && !err && ["needs", "failed"].includes(draftState(r).state) && (
+      {/* ...and an EMPTY one, or a rewrite that came back with nothing over the draft that stands (2026-11-04): a blank box read as a draft */}
+      {!proposal && !drafting && !err && ["needs", "failed", "empty", "kept"].includes(draftState(r).state) && (
         <Typography variant="body2" data-tq-draft-needs="" sx={{ color: DIM, mb: 1 }}>{draftState(r).line}</Typography>
       )}
       {!proposal && <Inbound r={r} />}
@@ -551,7 +567,7 @@ export default function ReviewDecision({ review: r, closeout, onChanged, onOpenT
         </Box>
       )}
       {!proposal && !isCal && <ReplyFiles reviewId={r.ReviewId} files={deliveryFiles(filedDelivery)}
-        promised={filesPromised(r)} channel={r.Channel} onChanged={onChanged} toRow={toRow} disabled={off || delivery.frozen} />}
+        promised={filesPromised(r)} short={filesShort(filedDelivery, deliveryFiles(filedDelivery))} channel={r.Channel} onChanged={onChanged} toRow={toRow} disabled={off || delivery.frozen} />}
       {isCal ? null : !proposal && (busy || delivery.frozen) ? String(r.Channel || "").toLowerCase() === "email" && (
         <Typography variant="caption" data-tq-delivery-cc sx={{ display: "block", color: DIM, mb: 0.75 }}>
           CC: {ccNow.length ? ccNow.join(", ") : t("none")}

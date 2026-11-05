@@ -33,11 +33,19 @@ def context_moved(store, rv: dict):
         # ...and a reply moves only with ITS conversation: a line on another thread of the task, from somebody it does not go to, is
         # theirs - Send on an agent's question to one requester redrafted it as an answer to a second one's "Perfect!" (2026-11-02)
         seen = operations.seen_upto(store, tid, rv['ContextRevision']) if rv.get('ContextRevision') else None
-        later = [m for m in mine if m['MessageId'] > max(rv['MessageId'], seen or 0)]
+        # ...and a line triage read as an aside - a "thanks", a "got it" - is no news the draft is behind (2026-11-04)
+        aside = store.aside_mids(tid)
+        later = [m for m in mine if m['MessageId'] > max(rv['MessageId'], seen or 0) and m['MessageId'] not in aside]
         latest, moved = (later[-1] if later else None), bool(later)
     elif tid:
-        latest = store.last_material_inbound_on_task(tid)
-        if rv.get('ContextRevision'): moved = operations.message_revision(store, tid) != rv['ContextRevision']
+        # ...an aside here is no news either: the newest line that is not one, and a revision that moved only by asides has not moved
+        aside = store.aside_mids(tid); latest = store.last_material_inbound_on_task(tid, skip=aside)
+        if rv.get('ContextRevision'):
+            moved = operations.message_revision(store, tid) != rv['ContextRevision']
+            if moved and aside and (seen := operations.seen_upto(store, tid, rv['ContextRevision'])) is not None:
+                moved = any(i > seen and i not in aside for i, _ in operations._material(store, tid))
+        # a draft pinned to an aside (the thanks it last saw) has seen everything up to it: only a later line moves it
+        elif rv.get('MessageId') in aside: moved = bool(latest and latest['MessageId'] > rv['MessageId'])
         else: moved = bool(latest and latest.get('MessageId') != rv.get('MessageId'))
     else:
         m = store.get_message(rv.get('MessageId')) if rv.get('MessageId') else None
@@ -106,21 +114,43 @@ def _attach(store, rid: int, name: str, data: bytes, actor: str = 'owner') -> di
     if rv.get('Status') not in ('pending', 'held'): raise ValueError('this reply has already been decided')
     if rv.get('DeliveryClaim') or rv.get('DeliveryState') in ('sending', 'unknown'):
         raise ValueError('the attempted attachments must be kept while delivery is in progress or unknown')
-    name = SAFE_NAME.sub('_', str(name or '').strip())[:120] or 'attachment'
+    name = _safe(name)
     if not data: raise ValueError('that file is empty')
     from . import outbound
     if len(data) > outbound.ATTACH_MAX:
         raise ValueError(f'that file is over {outbound.ATTACH_MAX // (1024 * 1024)}MB, which no mailbox will accept')
-    path = outbox_dir(rid) / name
-    path.write_bytes(data)
     env = _envelope(rv)
     files = [f for f in (env.get('attachments') or []) if f.get('name') != name]
+    # ...and one that fits alone but not beside the files already on: refused here, by its name, not at Send with the draft half-made
+    if len(data) + sum(int(f.get('size') or 0) for f in files) > outbound.ATTACH_MAX:
+        raise ValueError(f'with the files already on this reply it would come to more than {outbound.ATTACH_MAX // (1024 * 1024)}MB, '
+                         'which no mailbox will accept - send a link instead')
+    path = outbox_dir(rid) / name
+    path.write_bytes(data)
     files.append({'name': name, 'path': str(path), 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()})
     env['attachments'] = files
+    # ...a file said not attached earlier (refused) is attached now: its line comes off the card
+    if env.get('not_attached'): env['not_attached'] = [f for f in env['not_attached'] if _safe(f.get('name')) != name]
     if not store.set_review_deliver(int(rid), json.dumps(env)):
         raise ValueError('the reply changed before its attachment could be saved')
     store.audit('review', int(rid), 'attached', actor, detail={'name': name, 'size': len(data)})
     return {'attachments': files}
+
+
+def _safe(name) -> str: return SAFE_NAME.sub('_', str(name or '').strip())[:120] or 'attachment'
+
+
+# A FILE THAT DID NOT RIDE IS SAID ON THE CARD (2026-11-04): an agent handed over three reports with long, near-identical names; the third
+# was over the mailbox's cap and was refused - said in a comment under the agent's pane, while Close out showed two chips and nothing else,
+# under a draft that said "here are the three". The refusal is kept on the envelope beside the files, by the name the agent gave and why,
+# and the card draws it where the files are. Attaching a file of that name takes it off (_attach).
+def refused(store, rid: int, name: str, why: str) -> bool:
+    with store.review_delivery_edit(int(rid)):
+        rv = store.get_review(int(rid)) or {}
+        if rv.get('DeliveryClaim') or rv.get('DeliveryState') in ('sending', 'unknown'): return False
+        env = _envelope(rv)
+        env['not_attached'] = [f for f in (env.get('not_attached') or []) if f.get('name') != name] + [{'name': str(name), 'why': str(why)}]
+        return store.set_review_deliver(int(rid), json.dumps(env))
 
 
 def detach(store, rid: int, name: str, actor: str = 'owner') -> dict:
@@ -215,7 +245,9 @@ def _deliver_review(store, rv, final, verb, actor, note=None, cc=None, envelope=
     from . import outbound
     rid = rv['ReviewId']
     env = dict(envelope if envelope is not None else _envelope(rv))
-    msg = store.get_message(rv.get('MessageId')) if rv.get('MessageId') else None
+    # the reply goes to the mail that ASKED (AnswersMid); MessageId is the newest line it saw, which may be a "thanks" (2026-11-04)
+    to_mid = rv.get('AnswersMid') or rv.get('MessageId')
+    msg = store.get_message(to_mid) if to_mid else None
     # FILES ARE NOT AN ADDRESS. A reply's envelope stays empty until the send works out who it goes to, and attaching
     # to it wrote {"attachments": [...]} alone - which read as new outbound mail with no recipient (2026-10-07: a
     # session's `--attach`; the owner's Attach button did the same). Only a destination makes it outgoing - not files,
@@ -251,7 +283,7 @@ def _deliver_review(store, rv, final, verb, actor, note=None, cc=None, envelope=
             return unknown('the provider returned no usable delivery receipt')
         finished = store.finish_review_delivery(rid, token, 'sent', receipt=sent)
         if not finished: raise RuntimeError('the provider receipt could not be saved; verify delivery before retrying')
-        if rv.get('MessageId'): store.set_message_status(rv['MessageId'], 'sent')
+        for m in {rv.get('MessageId'), rv.get('AnswersMid')} - {None}: store.set_message_status(m, 'sent')
         if attempted['envelope'].get('kind') == 'zoho_invoice':
             from . import invoice_workflow
             invoice_workflow.mark_sent(store, int(attempted['envelope'].get('item_id')),
@@ -345,6 +377,20 @@ def _deliver_review(store, rv, final, verb, actor, note=None, cc=None, envelope=
             store.finish_review_delivery(rid, token, 'unknown', reason='Delivery unknown after an interrupted attempt; verify with the provider before retrying.')
 
 
+# A REPLY NO LONGER NEEDED IS SAID, NOT DELETED (Task 4.5, the owner 2026-11-04): a colleague on the thread answered what the owner was
+# asked, and the drafted reply kept sitting there "ready to send". The agent, re-planning on the change, says so on the draft - the card
+# shows "Not needed - <why>" with Send still under it. Nothing is sent, deleted or closed: the owner decides, and a redraft clears it.
+def not_needed(store, tid: int, why: str, by: str) -> dict:
+    "Mark the task's pending reply not needed, for `why`. {'ok': False, 'why': ...} when there is none or no reason was given."
+    why = ' '.join(str(why or '').split())
+    if not why: return {'ok': False, 'why': 'say why the reply is not needed - who answered it, or what changed'}
+    rv = store.pending_review(tid, kind='draft') or store.pending_review(tid, kind='draft_reply')
+    if not rv: return {'ok': False, 'why': 'no reply is waiting on this task, so there is nothing to mark'}
+    store.set_review_not_needed(rv['ReviewId'], why)
+    store.add_comment(tid, by, 'agent', f"The drafted reply is not needed: {why.rstrip('.')}. It stays on the task - Send still sends it.")
+    return {'ok': True, 'review_id': rv['ReviewId']}
+
+
 def _settle_task_after_sent_reply(store, rv: dict, actor: str, was_sent: bool):
     """Reconcile task/agent state after its reviewed reply really left the machine."""
     task_id = rv.get('TaskId')
@@ -394,7 +440,8 @@ def _carried(store, closeout: dict, reply: dict) -> bool:
     """Does the close-out itself carry this reply? A reply to a GitHub PR or issue IS a comment on it, so it goes WITH
     the merge/close the owner approved - not as a separate send that the GitHub card's replies switch refuses (the
     owner, 2026-09-27: "it should be close pr with message not separate section")."""
-    msg = store.get_message(reply['MessageId']) if reply.get('MessageId') else {}
+    to_mid = reply.get('AnswersMid') or reply.get('MessageId')      # the mail that asked, as _deliver_review sends it
+    msg = store.get_message(to_mid) if to_mid else {}
     return str((msg or {}).get('Channel') or '').lower() == 'github'
 
 

@@ -163,6 +163,69 @@ class AttachTests(NoHook):
         out = wrapup.agent_reply(s, tid, OWN, 'coding', files=[('empty.csv', b'')])
         self.assertEqual(out['attached'], []); self.assertIn('empty.csv', out['not_attached'][0])
 
+    # THREE NAMED, TWO RIDE (2026-11-04): an agent built three reports with long, near-identical names and wrote "here are the three"; the
+    # third was over the mailbox's cap, so it was refused - said only in a comment under the agent's pane, while Close out showed two chips
+    # and nothing more. The refusal now rides on the envelope, by name and why, where the card draws the files, and the draft keeps the
+    # names the agent handed over, so the card can count them against what is attached.
+    THREE = [('_ Summary - Erin_ Gail_ Paula.xlsx', XLSX), ('_ Summary - Ray_ Marcus_ Omar_ Alex.xlsx', XLSX), ('% Summary - 15 east sites.xlsx', None)]
+
+    def _three(self, s, tid):
+        from taskuary import outbound
+        return [(n, d or b'x' * (outbound.ATTACH_MAX + 1)) for n, d in self.THREE]
+
+    def test_three_named_two_ride_and_the_card_is_told_which_did_not_and_why(self):
+        import json
+        s = MemoryStore(); tid, _ = task_with(s)
+        out = wrapup.agent_reply(s, tid, 'Hi Dana - here are the three summaries, one for each group.', 'assistant', files=self._three(s, tid))
+        self.assertEqual(len(out['attached']), 2); self.assertEqual(len(envelope(s, out['review_id'])), 2)
+        rv = s.get_review(out['review_id'])
+        (no,) = json.loads(rv['Deliver'])['not_attached']
+        self.assertEqual(no['name'], '% Summary - 15 east sites.xlsx'); self.assertIn('25MB', no['why'])
+        self.assertEqual(json.loads(rv['FilesPromised'])['named'], [n for n, _ in self.THREE])
+
+    def test_saving_the_same_files_again_says_the_refusal_once(self):
+        import json
+        s = MemoryStore(); tid, _ = task_with(s)
+        text = 'Hi Dana - here are the three summaries, one for each group.'
+        wrapup.agent_reply(s, tid, text, 'assistant', files=self._three(s, tid))
+        rid = wrapup.agent_reply(s, tid, text + ' They tie out.', 'assistant', files=self._three(s, tid))['review_id']
+        self.assertEqual(len(json.loads(s.get_review(rid)['Deliver'])['not_attached']), 1)
+
+    def test_the_owner_attaching_it_after_all_takes_the_line_off(self):
+        import json
+        from taskuary import verdicts
+        s = MemoryStore(); tid, _ = task_with(s)
+        rid = wrapup.agent_reply(s, tid, 'Hi Dana - here are the three summaries.', 'assistant', files=self._three(s, tid))['review_id']
+        verdicts.attach(s, rid, '% Summary - 15 east sites.xlsx', b'a smaller copy')
+        env = json.loads(s.get_review(rid)['Deliver'])
+        self.assertEqual(env.get('not_attached') or [], []); self.assertEqual(len(env['attachments']), 3)
+
+    # ...AND THE AGENT HEARS IT: told only in a comment it never reads, it went on telling the owner "the three files are attached"
+    def test_the_reply_tool_tells_the_agent_which_file_did_not_ride_and_what_to_offer(self):
+        s = MemoryStore(); tid, _ = task_with(s)
+        out = wrapup.agent_reply(s, tid, 'Hi Dana - here are the three summaries.', 'assistant', files=self._three(s, tid))
+        self.assertIn('% Summary - 15 east sites.xlsx', out['tell']); self.assertIn('25MB', out['tell'])
+        self.assertIn('link', out['tell']); self.assertIn('smaller copy', out['tell'])
+
+    def test_saving_the_words_again_without_files_still_says_the_file_that_did_not_ride(self):
+        s = MemoryStore(); tid, _ = task_with(s)
+        wrapup.agent_reply(s, tid, 'Hi Dana - here are the three summaries.', 'assistant', files=self._three(s, tid))
+        out = wrapup.agent_reply(s, tid, 'Hi Dana - here are two of the three summaries.', 'assistant')     # propose_reply carries no files
+        self.assertEqual([w.split(':')[0] for w in out['not_attached']], ['% Summary - 15 east sites.xlsx'])
+        self.assertIn('% Summary - 15 east sites.xlsx', out['tell'])
+
+    def test_all_attached_tells_nothing(self):
+        s = MemoryStore(); tid, _ = task_with(s)
+        out = wrapup.agent_reply(s, tid, 'Hi Dana - the list is attached.', 'assistant', files=[('review.xlsx', self.XLSX)])
+        self.assertNotIn('tell', out); self.assertEqual(out['not_attached'], [])
+
+    def test_the_next_turn_is_told_too(self):
+        from taskuary import general
+        s = MemoryStore(); tid, _ = task_with(s)
+        wrapup.agent_reply(s, tid, 'Hi Dana - here are the three summaries.', 'assistant', files=self._three(s, tid))
+        system, _ = general._prompt(s, tid)
+        self.assertIn('% Summary - 15 east sites.xlsx', system); self.assertIn(wrapup.REFUSED_HEAD, system)
+
     def test_the_shell_door_carries_bytes_not_a_path(self):
         import base64
         s = MemoryStore(); tid, _ = task_with(s)

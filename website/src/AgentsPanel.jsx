@@ -1,6 +1,6 @@
-﻿// Connections own commands; profiles are a name and instructions, run on whatever brain the AI defaults choose.
+// Connections own commands; profiles are a name and instructions, run on whatever brain the AI defaults choose.
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Box, Button, Chip, CircularProgress, Dialog, DialogContent, DialogTitle, FormControlLabel, MenuItem, Switch, TextField, Typography } from "@mui/material";
+import { Alert, Box, Button, Chip, CircularProgress, Dialog, DialogContent, DialogTitle, MenuItem, TextField, Typography } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import api from "./api";
@@ -26,7 +26,7 @@ const CLI_DESCRIPTIONS = {
 };
 // A PROFILE IS A NAME AND INSTRUCTIONS (the owner, 2026-10-22): no provider, no model - the brain is the AI defaults' answer. A saved
 // profile carrying those keys from before still loads; they are not shown and Save does not send them
-const BLANK_PROFILE = { name: "", purpose: "", kind: "general", rulesDoc: "", triageEnabled: true };
+const BLANK_PROFILE = { name: "", purpose: "", kind: "general", rulesDoc: "" };
 const PROFILE_KINDS = ["general", "coding", "research", "analysis", "coordination", "marketing", "markets", "accounts-payable"];
 
 export const CliConnectionsPage = ({ onBack }) => {
@@ -188,13 +188,12 @@ export const AgentsPage = ({ onBack, section, title, initialCreate = false, onCr
   useEffect(() => { load(); }, [load]);
   const edit = (name) => {
     const a = agents[name];
-    setDraft({ name, existing: true, purpose: a.purpose, kind: a.kind, rulesDoc: a.rules_doc, triageEnabled: a.triage_enabled !== false });
+    setDraft({ name, existing: true, purpose: a.purpose, kind: a.kind, rulesDoc: a.rules_doc });
   };
   const save = async () => {
     setSaving(true); setErr("");
     const name = draft.name.trim();
-    const p = { purpose: draft.purpose.trim(), kind: draft.kind, rules_doc: draft.rulesDoc || (draft.kind === "coding" ? "coding" : name),
-      triage_enabled: draft.triageEnabled };
+    const p = { purpose: draft.purpose.trim(), kind: draft.kind, rules_doc: draft.rulesDoc || (draft.kind === "coding" ? "coding" : name) };
     try {
       const { data } = await api.put(`/api/agents/${encodeURIComponent(name)}`, p);
       const isNew = !draft.existing;
@@ -206,7 +205,7 @@ export const AgentsPage = ({ onBack, section, title, initialCreate = false, onCr
     <Crumb section={section || t("Docs")} title={title || t("Manage profiles")} onBack={onBack} />
     {err && !draft && <Alert severity="error" sx={{ mb: 2 }}>{errorText(err)}</Alert>}
     <Box sx={{ display: "flex", alignItems: "center", gap: 2, mb: 2 }}>
-      <Typography variant="body2" sx={{ color: DIM, flex: 1 }}>{t("Give each worker a purpose and instructions. Triage uses the purpose to assign new tasks.")}</Typography>
+      <Typography variant="body2" sx={{ color: DIM, flex: 1 }}>{t("Give each worker a purpose and instructions. A routine or workflow names the worker it runs on.")}</Typography>
       {/* the two roads to a new worker, side by side and named as a choice: this screen IS the one
           door, so Docs sends you here rather than offering either of them again (2026-09-17) */}
       <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDraft({ ...BLANK_PROFILE })}>{t("Add profile manually")}</Button>
@@ -219,11 +218,10 @@ export const AgentsPage = ({ onBack, section, title, initialCreate = false, onCr
     {Object.entries(agents || {}).map(([name, a]) => <Box key={name} data-profile={name} sx={{ py: 2, borderBottom: `1px solid ${BORDER}` }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
         <Chip size="small" label={name} /><Box sx={{ flex: 1 }} />
-        {a.triage_enabled === false && <Chip size="small" label={t("Manual only")} />}
         {onRules && <Button size="small" onClick={() => onRules(a.rules_doc || name)}>{t("Instructions")}</Button>}
         <Button size="small" onClick={() => edit(name)}>{t("Edit")}</Button><Button size="small" color="error" onClick={() => remove(name)}>{t("Remove")}</Button>
       </Box>
-      <Typography variant="body2" sx={{ color: DIM, mt: 1 }}>{a.purpose || t("Add a purpose so triage knows when to choose this profile.")}</Typography>
+      <Typography variant="body2" sx={{ color: DIM, mt: 1 }}>{a.purpose || t("Add a purpose: what this worker is for.")}</Typography>
     </Box>)}
     {draft && <Dialog open fullWidth maxWidth="sm" onClose={() => !saving && setDraft(null)}>
       <DialogTitle>{draft.existing ? t("Edit profile · {name}", { name: draft.name }) : t("Add profile")}</DialogTitle>
@@ -232,7 +230,7 @@ export const AgentsPage = ({ onBack, section, title, initialCreate = false, onCr
         <TextField autoFocus label={t("Profile name")} disabled={draft.existing} value={draft.name}
           error={!draft.existing && !!agents?.[draft.name.trim()]} helperText={!draft.existing && agents?.[draft.name.trim()] ? t("A profile already uses this name.") : ""}
           onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
-        <TextField label={t("Purpose — when should triage choose this profile?")} multiline minRows={2} value={draft.purpose} onChange={(e) => setDraft({ ...draft, purpose: e.target.value })} />
+        <TextField label={t("Purpose — what is this worker for?")} multiline minRows={2} value={draft.purpose} onChange={(e) => setDraft({ ...draft, purpose: e.target.value })} />
         <TextField select label={t("Type of work")} value={draft.kind} onChange={(e) => setDraft({ ...draft, kind: e.target.value })}>
           {[...new Set([...PROFILE_KINDS, draft.kind])].map((k) => <MenuItem key={k} value={k}>{PROFILE_KINDS.includes(k) ? t(k) : k}</MenuItem>)}
         </TextField>
@@ -240,7 +238,6 @@ export const AgentsPage = ({ onBack, section, title, initialCreate = false, onCr
           <MenuItem value="">{t(draft.kind === "coding" ? "Shared CODING.md" : "Own document with starter instructions")}</MenuItem>
           {[...new Set(["coding", ...Object.entries(agents || {}).map(([n, a]) => a.rules_doc || n), draft.rulesDoc])].filter(Boolean).map((n) => <MenuItem key={n} value={n}>{n.toUpperCase()}.md</MenuItem>)}
         </TextField>
-        <FormControlLabel control={<Switch checked={draft.triageEnabled} onChange={(e) => setDraft({ ...draft, triageEnabled: e.target.checked })} />} label={t("Can be given new work from what comes in")} />
         <Box><Button variant="contained" disabled={saving || !agents || !draft.name.trim() || (!draft.existing && !!agents?.[draft.name.trim()]) || !draft.purpose.trim()} onClick={save}>{t("Save")}</Button><Button onClick={() => setDraft(null)}>{t("Cancel")}</Button></Box>
       </Box></DialogContent>
     </Dialog>}

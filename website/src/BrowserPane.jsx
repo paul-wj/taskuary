@@ -48,7 +48,7 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
   const held = useRef(null);    // the newest frame while this tab is hidden: drawn and acked on return
   // null until the daemon says; false = it is up but holding no page, so no frame is coming
   const [attached, setAttached] = useState(null);
-  const shape = useRef(null), shapeTimer = useRef(null);
+  const shape = useRef(null), shapeTimer = useRef(null), shaped = useRef(false);
 
   /* THE PAGE IS GIVEN THIS PANE'S SHAPE, so there is nothing left to letterbox. Debounced, because
      the splitter drags; ignored on failure, because a browser that will not resize still draws. */
@@ -89,6 +89,9 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
          form the agent was waiting on read as a dead pane (2026-09-15). It is live until the
          relay closes; a page that is not moving is a page that is not moving. */
       img.current = im; paint(); setLive(true);
+      // the FIRST frame of a connection sends the pane's shape: one sent while the browser was still starting is refused (browserview.set_viewport),
+      // and the page would stay letterboxed - black bars at its sides - until a resize (2026-11-04)
+      if (!shaped.current) { shaped.current = true; fitViewport(true); }
       send?.({ type: "ack", seq: m.seq });       // ack AFTER drawing: the next frame is the page now, not history
     };
     im.src = m.src;
@@ -127,7 +130,7 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
          open (the 2026-10-02 pane pass). Now the poll turning `open` false tears this effect down and
          true brings it back; in between, the retry backs off instead of hammering. */
       ws.onopen = () => { tries = 0; };
-      ws.onclose = () => { setLive(false); if (!closed) retry = setTimeout(connect, Math.min(15000, 2000 * 2 ** tries++)); };
+      ws.onclose = () => { setLive(false); shaped.current = false; if (!closed) retry = setTimeout(connect, Math.min(15000, 2000 * 2 ** tries++)); };
     };
     connect();
     return () => { closed = true; clearTimeout(retry); ws?.close(); };
@@ -315,7 +318,8 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
         {driving && !filling && !turn && (
           <Typography sx={{ ...mono, position: "absolute", left: 8, bottom: 6, fontSize: 10, color: CATPPUCCIN.yellow,
             bgcolor: "#000000aa", px: 0.75, py: 0.25, borderRadius: 1, pointerEvents: "none" }}>
-            {handed.current ? t("your turn — the agent is waiting on you; click the page and type") : t("you are driving — the agent's next command still runs; hand back when done")}
+            {/* ...only over a page that has drawn: "click the page and type" stood over a pane with no frame in it (2026-11-04) */}
+            {!live ? t("waiting for the page to draw — type once it shows") : handed.current ? t("your turn — the agent is waiting on you; click the page and type") : t("you are driving — the agent's next command still runs; hand back when done")}
           </Typography>
         )}
         {asked && !driving && (

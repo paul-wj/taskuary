@@ -34,7 +34,7 @@ export default function QueuedStart({ taskId, queued, onChanged, compact = false
       borderLeft: `3px solid ${c.bd}`, borderRadius: 1.25 }}>
       <Typography variant="caption" sx={{ color: c.ink, fontWeight: 600, display: "block", fontSize: compact ? 10 : 11.5, lineHeight: 1.4 }}>
         {failed ? t("⏳ Couldn't start") : retrying ? at ? t("⏳ Couldn't start yet - trying again at {time}", { time: at }) : t("⏳ Couldn't start yet - trying again shortly") : queued.behind ? t("⏳ Waiting on {behind}", { behind: queued.behind })
-          : ranked ? t("⏳ Waiting its turn") : t("⏳ Waiting for a free agent slot")}
+          : t("⏳ Waiting its turn")}
         {!failed && queued.behindTitle ? ` — “${queued.behindTitle}”` : ""}
       </Typography>
       <Typography variant="caption" title={queued.lastError || ""} sx={{ color: c.ink, display: "block", fontSize: compact ? 9.5 : 11, lineHeight: 1.45, mt: 0.2 }}>

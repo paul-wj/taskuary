@@ -51,6 +51,14 @@ FIELDS = {
     'recently_closed': "recently_closed is work on this thread, sender or subject that was closed in the last few days, each with its "
                        "tid and how it ended - the finding the agent wrote, or the ask if no agent ran.",
     'open_work': "open_work is the OPEN tasks this message touches, each with its tid.",
+    'open_items': ("open_items is the owner's other open tasks and Watching items, newest first, one line each: its ref and (tid), title, "
+                   "what it asks, where it came from, whether it is watched, and its age. Nothing ties them to this message by thread, sender "
+                   "or number - most are unrelated. When this message is about the same matter as one of them, whoever wrote it and on "
+                   "whatever channel or thread, answer same_as with that tid."),
+    'found_by_search': ("found_by_search is what the owner's own task search finds for this message's subject and words, open or closed, "
+                        "best found first, one line each: ref and (tid), title, what it asks, its status (open, watching, or closed and "
+                        "when) and age. A word match is not the same matter - when this message IS one of them, answer same_as with "
+                        "that tid; a closed one comes back only when this brings it new work or a question for the owner."),
     'thread_task': "thread_task is the task this message's thread already belongs to - its tid, title, ask and status. The message "
                    "joins it unless you answer new_job: one line saying why this is a different job; null when it is the same.",
     'room_tasks': "room_tasks are this chat's tasks - the ones its same-day lines already sit on, then its others open or closed in the last "
@@ -186,6 +194,7 @@ NEEDS_BROWSER = _bullet('needs_browser')   # the work is done on a web page: the
 NEEDS_DESKTOP = _bullet('needs_desktop')   # ...in a desktop app: the task is marked "needs desktop" when Agent Desktop is on (agentdesktop, 2026-10-31)
 WRAPPER = _bullet('wrapper')     # the text its sender did not write, for a screen to leave out (2026-10-28)
 WATCH = _bullet('watch')       # the fourth verdict, for a document written before it (the owner, 2026-11-03)
+THREAD = _bullet('thread')         # every verdict reads the whole conversation: who asks what, the owner's part, the mails that are aside (2026-11-04)
 HANDLED = _bullet('handled_elsewhere')   # a watched task's new line: does it show somebody else dealt with it (watch.py, 2026-11-01)
 DATA_CLASSES = ('ordinary', 'sensitive')
 INTENTS = ('task', 'reply_only', 'watch', 'fyi')
@@ -229,7 +238,33 @@ def without_coding(guide: str) -> str:
     return '\n'.join(keep).replace('"kind": "coding|general|task"', '"kind": "general|task"')
 
 
-def verdict_schema(repos=None, candidates=None, playbooks=None, profiles=None, same=False, goals=False, coding=True, workflows=None,
+_S = {'type': 'string'}
+THREAD_SCHEMA = {'type': ['object', 'null'], 'additionalProperties': False, 'required': ['asking', 'your_part', 'others', 'asks', 'aside', 'on_you'],
+    'properties': {'asking': _S, 'your_part': _S, 'on_you': {'type': 'array', 'items': _S},
+                   'others': {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False, 'required': ['who', 'did'], 'properties': {'who': _S, 'did': _S}}},
+                   'asks': {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False, 'required': ['mid', 'about'], 'properties': {'mid': {'type': 'integer'}, 'about': _S}}},
+                   'aside': {'type': 'array', 'items': {'type': 'object', 'additionalProperties': False, 'required': ['mid', 'why'], 'properties': {'mid': {'type': 'integer'}, 'why': _S}}}}}
+
+
+def thread_of(j: dict, earlier: set):
+    """The model's reading of the whole thread, cut to size; a mid it was not shown (0 is the mail being judged) is dropped. None when there is none."""
+    t = j.get('thread')
+    if not isinstance(t, dict): return None
+    s = lambda v, n: ' '.join(str(v or '').split())[:n]
+    def mids(k, f):
+        r = []
+        for o in (t.get(k) if isinstance(t.get(k), list) else []):
+            try: m = int(o['mid'])
+            except (TypeError, ValueError, KeyError): continue
+            if m in earlier | {0}: r.append({'mid': m, f: s(o.get(f), 200)})
+        return r[:6]
+    oth = [{'who': s(o.get('who'), 200), 'did': s(o.get('did'), 200)} for o in (t.get('others') if isinstance(t.get('others'), list) else []) if isinstance(o, dict)][:6]
+    on = [s(x, 200) for x in (t.get('on_you') if isinstance(t.get('on_you'), list) else []) if x][:6]
+    th = {'asking': s(t.get('asking'), 300), 'your_part': s(t.get('your_part'), 300), 'others': oth, 'asks': mids('asks', 'about'), 'aside': mids('aside', 'why'), 'on_you': on}
+    return th if any(th.values()) else None
+
+
+def verdict_schema(repos=None, candidates=None, playbooks=None, same=False, goals=False, coding=True, workflows=None,
                    earlier=False, thread_task=False, notes=False, workstreams=False, watched=False) -> dict:
     """The answer's shape as a JSON schema, for the brains whose wire can carry one (llm.ask_json).
 
@@ -285,7 +320,6 @@ def verdict_schema(repos=None, candidates=None, playbooks=None, profiles=None, s
     if workflows: p['workflow'] = {'type': ['string', 'null']}
     # which of the owner's workstreams it belongs to (workstreams.py, the owner 2026-11-01: triage sorts by them), null when unsure
     if workstreams: p['workstream'] = {'type': ['string', 'null']}
-    if profiles: p['profile'] = {'type': ['string', 'null']}
     if repos: p.update(repository={'type': ['string', 'null']}, needs_repo_choice={'type': 'boolean'},
                        repo_reason={'type': 'string'})
     if candidates is not None:
@@ -303,6 +337,7 @@ def verdict_schema(repos=None, candidates=None, playbooks=None, profiles=None, s
         # ...and when it joins with a part the title does not cover, the title that covers both: the task widens, never narrows to the
         # line (the owner, 2026-10-29: a chat bridge's later lines joined at combine 4 - the task should read as the bridge's, not the last line's)
         p['task_title'] = {'type': ['string', 'null']}
+    p['thread'] = THREAD_SCHEMA   # every verdict reads the whole thread, so it is never optional on the wire (2026-11-04)
     # the earlier lines of the exchange the ask rests on - shown with the task so its ask can be checked (2026-10-22)
     if earlier: p['rests_on'] = {'type': ['array', 'null'], 'items': {'type': 'integer'}}
     # ...and the standing notes it applied, by the ids they were shown with (ingest.relevant_notes): the model says which bear on it
@@ -728,7 +763,7 @@ def classify_intent(msg: dict, llm=None, soul: str = None, notes: list = None, i
                     learned: str = None, system: str = None, notes_left: int = 0, mine=(),
                     thread: dict = None, watch: str = None, playbooks: str = None,
                     project: dict = None, candidates: list = None, repos: list = None,
-                    profiles: str = None, routing_history: list = None, seen: set = None, job: str = None,
+                    routing_history: list = None, seen: set = None, job: str = None,
                     coding: bool = True, workflows: str = None, connected: list = None, workstreams: str = None) -> dict:
     """`job` is JOB.md as job_doc() reads it - what the owner is responsible for, who they serve, what to
     protect. It weighs IMPORTANCE (how much this arrival matters to the job) and never intent; blank until
@@ -831,7 +866,7 @@ def classify_intent(msg: dict, llm=None, soul: str = None, notes: list = None, i
                            + ':\n' + '\n'.join(f'- {n}' for n in notes)
                            + (f'\n({notes_left} further note(s) also apply to this sender but did not fit.)' if notes_left else ''))
             # From here down the code only LABELS what it hands over. Every sentence about how to judge it - the
-            # report brief, the workers, kind, repositories, chat lines, same_as - lives in the guide (2026-10-09:
+            # report brief, kind, repositories, chat lines, same_as - lives in the guide (2026-10-09:
             # the owner, "why are there items in code in triage? I thought we removed them").
             if watch: system += "\n\nTHE REPORT'S BRIEF - why the owner runs this report and what they watch for:\n" + str(watch)[:1200]
             if playbooks: system += "\n\nPLAYBOOKS - the owner's written procedures, each with the arrival that starts it (when):\n" + str(playbooks)[:3000]
@@ -841,11 +876,14 @@ def classify_intent(msg: dict, llm=None, soul: str = None, notes: list = None, i
                                        'never work); name in "workstream" the one this message belongs to, by its id before the colon, or '
                                        'null when you are not sure:\n' + str(workstreams)[:2000])
             if workflows: system += "\n\nWORKFLOWS A MAIL STARTS - the owner's configured jobs, each with the arrival that starts it (when):\n" + str(workflows)[:3000]
-            if profiles: system += '\n\nTHE WORKERS - the specialists for non-coding work, each with what it is for:\n' + str(profiles)[:2000]
             # a FACT about this install, not a rule of judgement: no coding tool is connected, so coding is not a kind it has
             if not coding: system += ('\n\nTHERE IS NO CODING AGENT on this install (no coding tool, or developer mode is off). Never choose '
                                       'kind coding - work that would be coding is general.')
             same_ids = {int(w['tid']) for key in ('open_work', 'recently_closed') for w in ((thread or {}).get(key) or []) if w.get('tid')}
+            # ...and any line of the owner's open items: a join by meaning names one of those, and it was shown (context.open_items)
+            # ...and of what the owner's search found, closed ones too (context.found_tasks)
+            same_ids |= {int(x) for k in ('open_items', 'found_by_search') for l in (thread or {}).get(k) or []
+                         for x in re.findall(r'\(tid (\d+)\)', str(l))[:1]}
             goal_steps = {int(g['tid']): {x['id'] for x in g.get('steps') or []} for g in (thread or {}).get('open_goals') or []}
             earlier_ids = {int(x) for l in (thread or {}).get('exchange') or [] for x in re.findall(r'^\[#(\d+)\]', str(l))}
             home = ((thread or {}).get('thread_task') or {}).get('tid')
@@ -901,6 +939,7 @@ def classify_intent(msg: dict, llm=None, soul: str = None, notes: list = None, i
             if not shape and '**needs_browser**' not in base: system += '\n\n' + NEEDS_BROWSER   # ...and whether it is done on a web page (2026-10-29)
             if not shape and '**needs_desktop**' not in base: system += '\n\n' + NEEDS_DESKTOP   # ...or in a desktop app (2026-10-31)
             if not shape and '**wrapper**' not in base: system += '\n\n' + WRAPPER    # ...and what its sender did not write (2026-10-28)
+            if '**thread**' not in base: system += '\n\n' + THREAD   # ...and the reading of the whole thread (2026-11-04)
             if '**watch**' not in base: system += '\n\n' + WATCH     # ...and the fourth verdict, someone else's to handle (2026-11-03)
             if watched and '**handled_elsewhere**' not in base: system += '\n\n' + HANDLED   # ...and whether a watched task looks handled (2026-11-01)
             # the last thing asked for, after every block that says how to JUDGE: the output shape
@@ -910,7 +949,7 @@ def classify_intent(msg: dict, llm=None, soul: str = None, notes: list = None, i
             # behind it, for a CLI brain that has no wire to put a schema on - one more ask, naming
             # what was left out. Both exist because neither reaches every brain (TQ-0665).
             from .llm import ask_json
-            answer = ask_json(llm, system, user, want=verdict_schema(repos, candidates, playbooks, profiles, same=bool(same_ids), goals=bool(goal_steps),
+            answer = ask_json(llm, system, user, want=verdict_schema(repos, candidates, playbooks, same=bool(same_ids), goals=bool(goal_steps),
                                                                      coding=coding, workflows=workflows, earlier=bool(earlier_ids), thread_task=bool(home),
                                                                      notes=bool(note_ids), workstreams=bool(workstreams), watched=watched),
                               need=('title', 'summary'), **({'max_tokens': TRIAGE_TOKENS} if takes_tokens(llm) else {}),
@@ -943,12 +982,6 @@ def classify_intent(msg: dict, llm=None, soul: str = None, notes: list = None, i
                 wf = str(j.get('workflow') or '').strip().lower()
                 if workflows and wf and out['intent'] == 'task' and re.search(rf'^- {re.escape(wf)}: ', workflows, re.M):
                     out['workflow'] = wf
-                # WHICH WORKER, when one starts: validated against the roster it was actually shown, the
-                # same way the playbook is. A name nobody offered is dropped, and the task falls to the
-                # default profile - a hallucinated worker must not route work anywhere.
-                pr = str(j.get('profile') or '').strip().lower()
-                if profiles and pr and out['intent'] == 'task' and re.search(rf'^- {re.escape(pr)}: ', profiles, re.M):
-                    out['profile'] = pr
                 if candidates is not None: out.update(relationship_of(j, candidates, [t.get('tid') for t in (thread or {}).get('room_tasks') or []]))
                 # same_as: only a tid it was actually shown - a task it made up joins nothing
                 try: same = int(j.get('same_as')) if j.get('same_as') is not None else None
@@ -967,6 +1000,7 @@ def classify_intent(msg: dict, llm=None, soul: str = None, notes: list = None, i
                     except (TypeError, ValueError): continue
                     if v in earlier_ids and v not in rests: rests.append(v)
                 if rests: out['rests_on'] = rests
+                if (th := thread_of(j, earlier_ids)): out['thread'] = th
                 # notes_applied: only the ids of notes it was shown - which standing notes bore on this message is the model's word
                 applied = j.get('notes_applied') if isinstance(j.get('notes_applied'), list) else []
                 if note_ids: out['notes_applied'] = [i for i in dict.fromkeys(str(x) for x in applied) if i in note_ids]

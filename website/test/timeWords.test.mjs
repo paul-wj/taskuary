@@ -29,9 +29,19 @@ test("age is the bare distance, band the rail's gutter, bandUntil For later's co
   assert.deepEqual([age(at(0.4), now), age(at(40), now), age(at(240), now), age(at(-12), now), age("", now)],
     [t("now"), t("{count}m", { count: 40 }), t("{count}h", { count: 4 }), t("in {time}", { time: t("{count}m", { count: 12 }) }), ""]);
   assert.deepEqual([band(at(10), now), band(at(45), now), band(at(185), now), band(at(-5), now)],
-    [t("< 30m"), t("< 1h"), t("{count}h", { count: 3 }), t("in {time}", { time: t("{count}m", { count: 5 }) })]);
+    [t("< 15m"), t("< 1h"), t("{count}h", { count: 3 }), t("in {time}", { time: t("{count}m", { count: 5 }) })]);
   assert.deepEqual([bandUntil(at(-10), now), bandUntil(at(-45), now), bandUntil(at(-185), now), bandUntil(at(5), now)],
     [t("in 30m"), t("in 1h"), t("in {time}", { time: t("{count}h", { count: 3 }) }), ""]);
+});
+
+// the owner, 2026-11-04: finer tiers for fresh rows. Whole minutes r (rounded): r<5 "< 5m", r<15 "< 15m", r<30 "< 30m", then as before
+test("band: fresh rows get < 5m / < 15m / < 30m, the edges at 5, 15 and 30 whole minutes; later and future unchanged", () => {
+  const b = (m) => band(at(m), now);
+  assert.deepEqual([0, 2, 4.4].map(b), [t("< 5m"), t("< 5m"), t("< 5m")]);
+  assert.deepEqual([5, 12, 14.4].map(b), [t("< 15m"), t("< 15m"), t("< 15m")]);
+  assert.deepEqual([15, 16, 29, 29.4].map(b), [t("< 30m"), t("< 30m"), t("< 30m"), t("< 30m")]);
+  assert.deepEqual([30, 31, 59, 60, 1439, 1440].map(b), [t("< 1h"), t("< 1h"), t("< 1h"), t("{count}h", { count: 1 }), t("{count}h", { count: 23 }), t("{count}d", { count: 1 })]);
+  assert.deepEqual([-60, -5].map(b), [t("in {time}", { time: t("{count}h", { count: 1 }) }), t("in {time}", { time: t("{count}m", { count: 5 }) })]);
 });
 
 test("dur says how long something has run; span and plural say a count", () => {

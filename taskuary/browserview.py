@@ -369,7 +369,10 @@ def keep_page(tid, url: str) -> None:
     if not tid or not url.startswith(('http://', 'https://')): return
     with _PAGES_LOCK:
         pages = _pages()
-        if pages.get(str(tid)) == url: return
+        had = str(pages.get(str(tid)) or '')
+        # ...never the same page with its query cut off: agent-browser's .target keeps an address without it, and a portal's sign-in
+        # reopened as https://portal.example/signin/ with no ?app=... sat on a white spinner for good (the browser-agent walk, 2026-11-04)
+        if had == url or ('?' not in url and had.split('?')[0].split('#')[0] == url.split('#')[0]): return
         pages[str(tid)] = url
         try: _pages_file().write_text(json.dumps(pages), encoding='utf-8')
         except OSError as e: logger.debug(f'could not keep the page of task {tid}: {e}')
@@ -417,7 +420,16 @@ def your_turn(store, tid: int, sid: str, what: str = '') -> str:
     "Record the agent's hand-over as an open request on the task. The request id - `yourturn:<hash>`."
     from urllib.parse import urlsplit
     from . import terminal as term, workerstate as ws
-    try: host = urlsplit(str(state(sid, fresh=True).get('url') or '')).hostname or ''
+    st = state(sid, fresh=True)
+    # ...ON A PAGE. With no browser, or an empty tab, there is nothing to hand over: what the agent wants is said in words and answered
+    # in the chat's box - drawn as "your turn - click the page and type" over a black about:blank it was the owner's turn on nothing
+    # (the owner, 2026-11-04, on a flight search that only asked where and when)
+    if not st.get('open') or not _page(st.get('url')):
+        text = what or 'The agent needs you to do a step on a web page, and has none open yet'
+        rid = ws.request_id_for(text)
+        ws.record(store, tid, sid, 'input_needed', request_id=rid, text=text, source='api')
+        return rid
+    try: host = urlsplit(str(st.get('url') or '')).hostname or ''
     except ValueError: host = ''
     host = host[4:] if host.startswith('www.') else host
     text = f"Your turn in the browser{f' on {host}' if host else ''}: {what or 'the agent needs you to do a step on the page'}"
@@ -425,6 +437,18 @@ def your_turn(store, tid: int, sid: str, what: str = '') -> str:
     chat = hasattr(term.SESSIONS.get(str(sid)), 'send_prompt')
     ws.record(store, tid, sid, 'input_needed', request_id=rid, text=text, choices=[TURN_DONE] if chat else None, source='api')
     return rid
+
+
+def page_url(sid: str) -> str:
+    """The address the session's page is on IN FULL, or ''. agent-browser's .target (state) keeps it without its query string, which
+    is what a portal's sign-in needs to draw at all; the relay's last word on it, else the browser asked (`get url`), keeps it whole."""
+    from . import browsergate
+    u = str((LAST.get(str(sid)) or {}).get('url') or '')
+    if '?' in u: return u
+    try: rc, said = browsergate._run(sid, ['get', 'url'], 15, 'url')
+    except Exception as e: logger.debug(f'the page of {sid} could not be asked for - {e}'); return u
+    got = next((w for w in reversed(str(said or '').split()) if re.match(r'^https?://', w, re.I)), '') if rc == 0 else ''
+    return got or u
 
 
 def last_page(tid) -> str:
@@ -472,6 +496,21 @@ def wanted(task: dict | None) -> bool:
     """Did the owner say this task needs a browser? (the tag the New task dialog writes)"""
     import re as _re
     return bool(_re.search(rf'(^|[\s,]){_re.escape(WANTS)}([\s,]|$)', str((task or {}).get('Tags') or '')))
+
+
+def _page(url) -> bool: u = str(url or '').strip(); return bool(u) and not u.lower().startswith('about:')
+
+
+# NO URL, NO BROWSER (the owner, 2026-11-04: "no browser should open if we don't have a URL"). A task marked "needs a browser" - by triage
+# reading "find flight options" as web work - had Chrome launched on about:blank with its session, and the agent, which only searched and
+# asked where and when, sat beside a black empty browser. The browser comes up at the agent's first navigate instead: its hook sees the
+# `agent-browser open <url>` before it runs and launches Taskuary's browser on that address (start - the owner's saved sign-ins restored),
+# so the agent's own open lands in it. Or on the page the task's browser was last on, which is an address too (last_page).
+def on_demand(sid: str, cmd: str) -> bool:
+    "Launch this session's browser on the address the agent's command navigates to, if it is not up yet. True when one was launched."
+    from .browsergate import opens
+    u = opens(cmd)
+    return bool(u) and _page(u) and not state(sid, fresh=True).get('open') and start(sid, u)
 
 
 def start(sid: str, url: str = 'about:blank') -> bool:
@@ -532,6 +571,13 @@ def set_viewport(sid: str, w: int, h: int) -> bool:
     exe = program()
     w, h = int(w), int(h)
     if not exe or not (200 <= w <= 4000 and 200 <= h <= 4000): return False
+    # ...ONLY ON A BROWSER THAT IS UP. Any agent-browser command LAUNCHES a daemon for its session when none answers - so a pane that sent
+    # its shape while the task's browser was still starting (a reload, Back and Forward, a resize) launched a second, default-configured
+    # one beside Taskuary's: "a daemon ... started concurrently with different daemon configuration", every open the agent tried after
+    # failed the same way, and the pane showed an empty tab (the browser-agent walk, 2026-11-04). The pane sends its shape again when it
+    # is next shown or focused.
+    lock = _START_LOCKS.get(sid)
+    if (lock and lock.locked()) or not state(sid, fresh=True).get('open'): return False
     try:
         spawn.popen([exe, '--session', session_name(sid), 'set', 'viewport', str(w), str(h)], env=_cli_env(sid),
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, close_fds=True)
@@ -569,8 +615,9 @@ SAY_WHY = ('IF A STEP FAILS OR IS REFUSED, your answer says which step, what the
            'thing the owner can do about it (sign in on the site in the browser pane, approve the held step on the task, send another '
            'message to open the browser again) - never only that you could not. ')
 OFFER_HEAD = ('NO BROWSER IS OPEN for this task yet, but Taskuary keeps one for you: if the work needs a web page - a link in a message to '
-              'follow, a form to fill, a site to look at - run `agent-browser open <url>` and it opens beside this chat, where the owner '
-              'watches it. NEVER use --session, --headed, profile listing, or launch Chrome separately. ')
+              'follow, a form to fill, a site to sign in to - run `agent-browser open <url>` and it opens beside this chat, where the owner '
+              'watches it. Searching and reading the web needs no browser: use your own web search and fetch for that, and open this one '
+              'only for a page you must see or act on. NEVER use --session, --headed, profile listing, or launch Chrome separately. ')
 NOT_SET_UP = ('THIS COMPUTER HAS NO BROWSER FOR AGENTS YET (agent-browser is not installed). Do not use a browser tool of your own CLI '
               'or of another app instead - Taskuary cannot show those to the owner or hold their presses, and they fail here. If the work needs a web page, do what you can without it (read the message, find the link), then tell the owner in one line: '
               '"The browser is not set up - install agent-browser under {where}, then ask me again." ')

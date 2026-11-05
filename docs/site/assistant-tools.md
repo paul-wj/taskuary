@@ -9,13 +9,13 @@ the button that does it, lit, or the page that holds it. On a phone it asks yes 
 
 | Bucket | What it is for | Tools, and what each needs |
 |---|---|---|
-| **table** | decide about the item on the table | reply(text, cc?), approve, send_close, redraft(text), mine, regular_agent(text, as?, new?), coding_agent(text, as?, new?), not_ours, not_ours_sender, block_sender, not_ours_kind, close, next, answer_agent(text), stop_agent, rerun, report_off, remember(text), setup(text), confirm, cancel, chase, let_go, accept_invite, decline_invite, propose_time, find_time, prepare, elsewhere |
+| **table** | decide about the item on the table | reply(text, cc?), approve, send_close, redraft(text), mine, regular_agent(text, new?), coding_agent(text, as?, new?), not_ours, not_ours_sender, block_sender, not_ours_kind, close, next, answer_agent(text), stop_agent, rerun, report_off, remember(text), setup(text), confirm, cancel, chase, let_go, accept_invite, decline_invite, propose_time, find_time, prepare, elsewhere |
 | **task** | change any task - the table's or one by ref | task.update(priority/title/assignee/due), task.set_kind(kind), task.set_repo(repo), task.check(item, done?, note?), task.checklist(add?, items?, emails?, drop?), task.watch(what?), task.comment(text), task.split(text), task.merge(into), task.reopen, task.not_a_task, task.complete(note?), task.defer(until), task.handoff(who, note?), task.clarify(text), task.share(who, about?), review.approve, review.reject |
 | **agents** | a task's agent; where work belongs | dispatch.prepare(kind, instructions?), agent.continue, agent.answer(text), agent.tell(text), agent.stop, agents.stop(refs/all), routing.remember(field, value), task.ask_agent(who, text) |
 | **new** | new work with no task yet | task.create_from_text(kind, text, channel?, to?), task.create_from_message(kind), meeting.new(who?, about?, when?, minutes?), task.setup(text) |
 | **pipe** | the walk and sets of items, and filing mail | pipe.clear(select, scope?), pipe.defer(select, until), pipe.close(select), pipe.remove(select, learn?), pipe.block(select, how?), pipe.mine(select), review.each, button.light(button, ref?, note?), item.settle(verb), message.file, message.archive, preference.exclude_sender(scope), preference.sender_rule, message.retriage |
 | **reports** | reports and workflows | report.create(config), report.run, report.rerun, report.pause, report.resume, report.route(line, how, to?), report.edit(config), report.delete, advisor.ideas |
-| **app** | settings, connections, scripts, memory, rules, bell, Hub, Board, Search | setting.set(setting, value), connection.create(type), role.apply(role, portal?, route_mail?), connection.test, connection.pause, connection.resume, app.repair(name, how), issue.draft(kind, trying, happened), script.start(name), memory.remember(note, about?, section?, replaces?), memory.wrong(key, how?), people.relate(who), rule.change(about, how?), deleted.restore(what), hub.publish(title, body, topic?, kind?, why_earned?), hub.comment(post, text), hub.vote(post, up?), page.open(page, query?), problems.dismiss |
+| **app** | settings, connections, scripts, memory, rules, bell, Hub, Board, Search | setting.set(setting, value), connection.create(type), role.apply(role, portal?), connection.test, connection.pause, connection.resume, app.repair(name, how), issue.draft(kind, trying, happened), script.start(name), memory.remember(note, about?, section?, replaces?), memory.wrong(key, how?), people.relate(who), rule.change(about, how?), deleted.restore(what), hub.publish(title, body, topic?, kind?, why_earned?), hub.comment(post, text), hub.vote(post, up?), page.open(page, query?), problems.dismiss |
 | **look** | look-ups - they run at once and change nothing | app.find, task.read, timeline.search, tasks.list, asks.list, message.read, sender.read, docs.search, agents.now, approvals.list, pipe.list, pipe.read, calendar.read, activity.list, errors.list, memory.about, memory.list, outputs.find, deleted.list, rules.list, missed.check, report.read, reports.list, settings.list, setting.read, connections.list, connection.read, app.health, agents.list, repos.list, tools.list, tools.describe, knowledge.search |
 
 A task you name goes in `ref` ("TQ-0123"); otherwise the tool acts on what is on the table.
@@ -64,7 +64,6 @@ The "Put it on my list" button: make it a task on the owner's own list - no agen
 The "Send to agent" button: send it to an agent that does not write code - it becomes a task of its own. Never for Taskuary's own settings, connections or update: those are its own screens (app.find), nor for setting up a meeting: meeting.new.
 
 - `text` - the job
-- `as` (optional) - a profile from agents.list, only when one fits
 - `new` (optional) - true when the job is NOT about the item on the table
 
 <p class="runs">Brings up its button for you to press.</p>
@@ -233,7 +232,7 @@ Change a task's priority, title, owner or due day. Any other value is refused wi
 
 - `priority` - regular | important | urgent
 - `title`
-- `assignee` - exactly `owner` (the owner takes it) or `agent:<profile>` (a worker on the roster)
+- `assignee` - exactly `owner` (the owner takes it) or `agent:<profile>` (one of the saved profiles)
 - `due` - the day the work is due (2026-10-30, "friday", "2 weeks", or "none" to clear it)
 - `ref` (optional) - the task (TQ-0123), when it is not the one on the table
 
@@ -729,11 +728,10 @@ Bring up a connector card to connect it; a second one of a kind opens with its A
 
 ### `role.apply`
 
-Set Taskuary up for the owner's job in one go - its worker, playbooks and daily workflow. Before calling, ASK the owner, one question at a time: the address of their bill-approval portal (`portal`; fine to leave out), and whether their own non-coding mail should go to that worker (`route_mail`: true or false - when they are only trying it out, false). The workflow is created OFF: after the yes, offer to run it once (report.run), and say they sign in to the portal themselves in the browser pane.
+Set Taskuary up for the owner's job in one go - its worker, playbooks and daily workflow. Before calling, ASK the owner the address of their bill-approval portal (`portal`; fine to leave out). The workflow is created OFF: after the yes, offer to run it once (report.run), and say they sign in to the portal themselves in the browser pane.
 
 - `role` - ap (accounts payable)
 - `portal` (optional)
-- `route_mail` (optional) - true or false - when they are only trying it out
 
 <p class="runs">Brings up its button for you to press.</p>
 

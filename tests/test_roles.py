@@ -3,7 +3,7 @@
 roles.apply lays them out in one go; these pin what it may and may not touch - above all that
 applying twice changes nothing, and that nothing the owner already chose is overwritten.
 """
-import json, tempfile, unittest
+import inspect, json, tempfile, unittest
 from pathlib import Path
 from unittest import mock
 import xml.etree.ElementTree as ET
@@ -27,19 +27,21 @@ class RoleTests(unittest.TestCase):
             p.start(); self.addCleanup(p.stop)
         self.addCleanup(self.dir.cleanup)
 
-    def test_ap_lays_out_the_worker_its_playbooks_the_route_and_an_off_workflow(self):
+    def test_ap_lays_out_the_worker_its_playbooks_and_an_off_workflow_and_routes_no_mail(self):
         s, cfg = setup()
         s.save_connector({'Type': 'intacct', 'Name': 'Intacct', 'Active': 1}, 'o')
         r = roles.apply(s, cfg, 'ap', 'https://portal.example/bills')
         a = s.get_agent('ap')
         self.assertEqual(a['Kind'], 'accounts-payable')
-        self.assertTrue(json.loads(a['Config'])['triage_enabled'])
+        # a profile is for routines and workflows (the owner, 2026-11-04): the worker is not offered the mail
+        self.assertFalse(json.loads(a['Config'])['triage_enabled'])
         self.assertNotIn('cmd', cfg['agents']['ap'])                    # a profile carries no CLI...
         self.assertEqual(json.loads(a['Config'])['cmd'], 'claude')      # ...its row runs on the default brain: runnable on day one
         self.assertIn('vendor asks where their money is', s.get_doc('ap'))
-        self.assertIn('- ap: ACCOUNTS PAYABLE', agents.roster(s))
         self.assertEqual(sorted(r['playbooks_added']), ['portal-bill-approvals', 'vendor-payment-inquiry'])
-        self.assertEqual(s.get_setting('default_profile'), 'ap')
+        self.assertEqual(s.get_setting('default_profile') or '', '')
+        for k in ('default_profile', 'default_was', 'mail_routed', 'on_roster'): self.assertNotIn(k, r)
+        self.assertNotIn('route_mail', inspect.signature(roles.apply).parameters)
         self.assertEqual(s.get_connector_by_type('intacct')['Scope'], 'read')
         src = s.get_source(r['workflow_id'])
         self.assertEqual(src['Active'], 0)                              # needs a sign-in first
@@ -80,25 +82,20 @@ class RoleTests(unittest.TestCase):
 
 
 class DefaultProfileTests(unittest.TestCase):
-    def test_general_work_triage_named_nobody_for_goes_to_the_default(self):
-        s, _ = setup()
-        s.upsert_agent('ap', 'accounts-payable', 'cli', '{}'); s.upsert_agent('researcher', 'research', 'cli', '{}')
-        self.assertEqual(agents.routed_role(s, 'general', ''), '')        # blank keeps the old answer
-        s.set_setting('default_profile', 'ap', 'o')
-        self.assertEqual(agents.routed_role(s, 'general', ''), 'ap')
-        self.assertEqual(agents.routed_role(s, 'general', 'invented'), 'ap')
-        self.assertEqual(agents.routed_role(s, 'general', 'researcher'), 'researcher')   # a better fit still wins
+    def test_general_work_goes_to_the_assistant(self):
+        """A general agent working a TASK walks the owner through their work (the owner, 2026-11-04): applying a
+        role adds its worker for routines and sets no default for the mail, and an old default routes nothing."""
+        s, cfg = setup()
+        with mock.patch.object(playbooks, 'folder', return_value=Path(tempfile.mkdtemp())), mock.patch.object(config, 'save'):
+            out = roles.apply(s, cfg, 'ap')
+        self.assertFalse(s.get_setting('default_profile'))
+        self.assertNotIn('default_profile', out)
+        self.assertEqual(agents.routed_role(s, 'general', ''), '')
+        self.assertEqual(agents.routed_role(s, 'general', 'ap'), '')
+        s.set_setting('default_profile', 'ap', 'o')                       # one an older version wrote
+        self.assertEqual(agents.routed_role(s, 'general', ''), '')
         self.assertEqual(agents.routed_role(s, 'coding', ''), 'coding')
         self.assertEqual(agents.routed_role(s, 'task', ''), '')           # the owner's own list stays theirs
-
-    def test_a_coding_or_switched_off_default_routes_nothing(self):
-        s, _ = setup()
-        s.set_setting('default_profile', 'coding', 'o')
-        self.assertEqual(agents.routed_role(s, 'general', ''), '')
-        s.upsert_agent('ap', 'accounts-payable', 'cli', '{}'); s.set_setting('default_profile', 'ap', 'o')
-        self.assertEqual(agents.routed_role(s, 'general', ''), 'ap')
-        s._exec("UPDATE agent SET Active=0 WHERE Name='ap'")
-        self.assertEqual(agents.routed_role(s, 'general', ''), '')
 
 
 class WorkflowRunsAsItsWorkerTests(unittest.TestCase):
@@ -201,9 +198,10 @@ class RolesApiTests(unittest.TestCase):
             c = TestClient(server.app)
             ap = next(r for r in c.get('/api/roles').json()['data'] if r['name'] == 'ap')
             self.assertFalse(ap['applied'])
-            got = c.post('/api/roles/ap', json={'portal': ''}).json()
-            self.assertTrue(got['profile_added'])
-            self.assertTrue(next(r for r in c.get('/api/roles').json()['data'] if r['name'] == 'ap')['is_default'])
+            got = c.post('/api/roles/ap', json={'portal': '', 'route_mail': True}).json()     # an older page's field moves no mail
+            self.assertTrue(got['profile_added']); self.assertEqual(s.get_setting('default_profile') or '', '')
+            after = next(r for r in c.get('/api/roles').json()['data'] if r['name'] == 'ap')
+            self.assertTrue(after['applied']); self.assertNotIn('is_default', after)
             self.assertEqual(c.post('/api/roles/nope', json={}).status_code, 422)
 
 
@@ -233,29 +231,31 @@ class TheAssistantSetsARoleUpTests(unittest.TestCase):
     def test_the_desk_opens_profiles_and_sets_nothing_up(self):
         from taskuary import concierge
         s, _ = setup()
-        with concierge.delivering(concierge.DESK): out = self.card(s, {'role': 'ap', 'route_mail': True})
+        with concierge.delivering(concierge.DESK): out = self.card(s, {'role': 'ap'})
         self.assertNotIn('proposal', out); self.assertEqual(out['open'], '#profiles'); self.assertIsNone(s.get_agent('ap'))
 
-    def test_a_trial_sets_up_the_worker_and_the_job_and_leaves_the_mail_alone(self):
+    def test_it_sets_up_the_worker_and_the_job_and_leaves_the_mail_alone(self):
         s, cfg = setup()
-        p = self.card(s, {'role': 'ap', 'portal': 'https://portal.example', 'route_mail': 'no'})['proposal']
+        p = self.card(s, {'role': 'ap', 'portal': 'https://portal.example'})['proposal']
         self.assertEqual((p['kind'], p['label'], p['targetKind']), ('role.apply', 'Set it up', 'role'))
         self.assertIsNone(s.get_agent('ap'))                                   # nothing before the yes
         r = self.run_card(s, cfg, p)
         self.assertEqual(r['status'], 'done')
         self.assertFalse(json.loads(s.get_agent('ap')['Config'])['triage_enabled'])
-        self.assertNotIn('- ap:', agents.roster(s)); self.assertEqual(s.get_setting('default_profile') or '', '')
+        self.assertEqual(s.get_setting('default_profile') or '', '')
         self.assertIn('https://portal.example', json.loads(s.get_source(r['outcome']['workflow_id'])['ConfigJson'])['prompt'])
         from taskuary import concierge
         said = concierge._outcome_line('role.apply', p['params'], r['outcome'])
-        self.assertIn('your mail goes where it went before', said); self.assertIn('switched off', said)
+        self.assertIn('switched off', said); self.assertNotIn('mail', said)
 
-    def test_handing_over_the_mail_is_said_outright(self):
+    def test_a_call_asking_to_hand_over_the_mail_hands_over_nothing(self):
+        """Every general task runs on the assistant (the owner, 2026-11-04): a `route_mail` an older model still writes
+        neither rides on the card nor moves the owner's mail."""
         s, cfg = setup()
         p = self.card(s, {'role': 'ap', 'route_mail': True})['proposal']
+        self.assertNotIn('route_mail', p['params']); self.assertNotIn('Your mail', p['say'])
         self.assertEqual(self.run_card(s, cfg, p)['status'], 'done')
-        self.assertEqual(s.get_setting('default_profile'), 'ap')
-        self.assertIn('- ap:', agents.roster(s))
+        self.assertEqual(s.get_setting('default_profile') or '', '')
 
     def test_a_role_nobody_ships_is_answered_with_the_ones_there_are(self):
         s, _ = setup()
@@ -272,7 +272,7 @@ class TheAssistantSetsARoleUpTests(unittest.TestCase):
         s, cfg = setup()
         def brain(system, user, **kw):
             if 'sort one set-up request' in system: return json.dumps({'kind': 'role', 'role': 'ap', 'why': 'their job'})
-            if 'answer to set-up questions' in system: return json.dumps({'portal': 'portal.example/bills', 'route_mail': False})
+            if 'answer to set-up questions' in system: return json.dumps({'portal': 'portal.example/bills', 'route_mail': True})
             return '{}'
         def turn(text):
             line = 'CALL: ' + json.dumps({'kind': 'setup', 'params': {'text': text}})
@@ -280,27 +280,33 @@ class TheAssistantSetsARoleUpTests(unittest.TestCase):
                 return concierge.say(s, text, llm=lambda *a, **k: line)
         first = turn('I am an AP rep, set Taskuary up for my job')
         self.assertFalse(first.get('proposal'))
-        self.assertIn('1. What is the address of your bill-approval portal', first['say']); self.assertIn('2. Should your own', first['say'])
-        p = turn('portal.example/bills, and I am only trying it out')['proposal']
-        self.assertEqual((p['kind'], p['params']), ('role.apply', {'role': 'ap', 'portal': 'https://portal.example/bills', 'route_mail': False}))
-        for line in ('Worker: AP.md', 'Your mail: goes where it goes today', 'created switched off'): self.assertIn(line, p['say'])
+        # the one question left is the portal: where the mail goes is no longer the owner's to choose (2026-11-04)
+        self.assertIn('1. What is the address of your bill-approval portal', first['say'])
+        for gone in ('2.', 'Should your own', 'non-coding mail', 'trying it out'): self.assertNotIn(gone, first['say'])
+        p = turn('portal.example/bills')['proposal']
+        self.assertEqual((p['kind'], p['params']), ('role.apply', {'role': 'ap', 'portal': 'https://portal.example/bills'}))
+        for line in ('Worker: AP.md', 'created switched off'): self.assertIn(line, p['say'])
+        self.assertNotIn('Your mail', p['say'])
+        self.assertNotIn('route_mail', concierge.ROLE_READ_SYSTEM)
         self.assertEqual(self.run_card(s, cfg, p)['status'], 'done')
         self.assertEqual(s.get_setting('default_profile') or '', '')
 
-    def test_a_worker_already_on_the_roster_is_said_to_still_be_reachable(self):
+    def test_a_worker_already_here_is_left_as_it_is_and_promised_no_mail(self):
         from taskuary import concierge
         s, cfg = setup()
         s.upsert_agent('ap', 'accounts-payable', 'cli', json.dumps({'triage_enabled': True, 'purpose': 'AP work'}))
-        o = roles.apply(s, cfg, 'ap', route_mail=False)
-        self.assertFalse(o['profile_added']); self.assertTrue(o['on_roster'])
+        o = roles.apply(s, cfg, 'ap')
+        self.assertFalse(o['profile_added']); self.assertTrue(json.loads(s.get_agent('ap')['Config'])['triage_enabled'])   # the owner's own
         said = concierge._outcome_line('role.apply', {}, o)
-        self.assertIn('can still reach it', said); self.assertNotIn('where it went before', said)
+        self.assertIn('already here', said); self.assertNotIn('mail', said); self.assertNotIn('reach it', said)
 
     def test_the_catalogue_offers_it_with_its_questions(self):
         from taskuary import toolcatalog
         self.assertIn('role.apply', toolcatalog.bucket_list('app'))
         d = toolcatalog.describe('role.apply')
-        self.assertIn('ap (accounts payable)', d); self.assertIn('route_mail', d); self.assertIn('the owner presses its button', d)
+        self.assertIn('ap (accounts payable)', d); self.assertNotIn('route_mail', d); self.assertNotIn('non-coding mail', d)
+        self.assertIn('the owner presses its button', d)
+        self.assertEqual(toolcatalog.HINTS['role.apply'], 'role, portal?')
 
 
 class RunNowOpensTheWorkflowsTaskTests(unittest.TestCase):

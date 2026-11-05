@@ -50,6 +50,7 @@ test("the size warning is the seed's own cut, reported by the server - not a byt
 });
 
 
+
 // Fix round 1: the server slugifies a name before writing it and echoes back the slug, but a row
 // used to match on the raw, freely-typed field - so "My Skill" imported fine server-side and then
 // sat in `pending` forever, because "My Skill" !== "my-skill". These exercise the actual behaviour
@@ -78,4 +79,5 @@ test("slug matches the server's own rule (taskuary/skillimport.py's save())", ()
   assert.equal(slug("  --Weird__Name!! "), "weird-name");
   assert.equal(slug(""), "");
 });
+
 

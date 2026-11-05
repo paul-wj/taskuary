@@ -338,7 +338,7 @@ def install(cwd: str, base: str = None, token: str = '', cmd: str = None) -> boo
 
 def _describe(tool: str, inp) -> str:
     from .agents import _fmt_input
-    try: what = _fmt_input(inp)
+    try: what = _fmt_input(inp, tool)          # a draft by what it is, never its body (sessionrecord.hide_draft)
     except Exception: what = json.dumps(inp)[:200] if inp else ''
     return f'{tool} {what}'.strip() if what else tool
 
@@ -792,6 +792,11 @@ def browser(payload: dict, brain=None, sid: str = '') -> dict:
     t = _pane(payload, 'claude') or _general(payload, sid)
     st = getattr(t, 'store', None) if t else None
     if not t or not st: return {}
+    # ...and the browser comes up HERE, at the agent's first navigate - never before it has an address (browserview.on_demand)
+    if browse:
+        from . import browserview
+        try: browserview.on_demand(t.sid, cmd)
+        except Exception as e: logger.warning(f'the browser for {t.sid} did not start on its first page - {e}')
     # ...asked in the CLI's own prompt where the owner can answer it there, held for the task's Approve where nobody can (shellgate.asks)
     if out: return shellgate.check(st, t.task_id, t.sid, cmd, tool, str(payload.get('cwd') or getattr(t, 'cwd', '') or ''), shellgate.asks(st, t))
     # a line that drives both is judged desktop first: either one held holds the whole line
@@ -818,7 +823,10 @@ def permit(payload: dict, tid: int, wait: float = None, store=None) -> dict:
     from . import workerstate as ws, redact
     sid, inp = run_sid(payload, tid), payload.get('tool_input')
     inp = inp if isinstance(inp, dict) else {}
+    from .sessionrecord import DRAFT_SHOWN, drafting
+    # a draft by what it is, never its body (sessionrecord.hide_draft)
     what = redact.scrub(str(inp.get('command') or inp.get('url') or inp.get('file_path') or inp))[:600]
+    if drafting(payload.get('tool_name'), inp): what = DRAFT_SHOWN
     g = ws.group_key(f'permit:{tid}:{sid}:{time.time_ns()}')        # a new group per call, so one Allow can never cover the next
     rid = ws.question_id(g, 1)
     # the hold BEFORE the card: an answer that lands between the two would find nothing to release and the wait would never end

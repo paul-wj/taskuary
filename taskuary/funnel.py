@@ -595,6 +595,14 @@ def _news_i18n(store, tid, message):
                        day=_story_i18n('today') if day == 'today' else day, time=when[11:16], agent=_story_i18n(who))
 
 
+def timed_out(store, tid) -> str:
+    "The run's own sentence when its last word is a turn that ran out of time (general.TIMED_OUT), nothing live on it - else ''."
+    from . import general, workerstate
+    last = store.last_worker_event(tid, skip=workerstate.NOTES)
+    ok = last and last['Kind'] == 'stopped' and last.get('Source') == general.TIMED_OUT and workerstate.ended(store, tid) == 'stopped'
+    return str(last.get('Text') or '') if ok else ''
+
+
 def idle_state(store, tid) -> dict:
     """Why nothing is running on a task that was handed to an agent and never began: {'kind', 'line', 'row'}.
 
@@ -629,6 +637,8 @@ def idle_state(store, tid) -> dict:
         return result
     news = news_since_agent(store, tid)
     if news: return out('news', news_line(store, tid, news), line_i18n=_news_i18n(store, tid, news))
+    # A time-limited run paused; it was not stopped by the owner.
+    if (to := timed_out(store, tid)): return out('left', to, 'cut off by a time limit - continue it')
     if terminal.SAVED in [x.strip() for x in tags.split(',')]:
         return out('saved', 'You stopped it and its report is written.',
                    line_i18n=_story_i18n('You stopped it and its report is written.'))
@@ -777,7 +787,7 @@ def agent_story(store, tid) -> dict | None:
     owner, 2026-10-11: "it should say what the agent did so far and was interrupted or it never started"). Facts only:
     not_started_why's sentence, and for work that went, the run's own worker events - no model. None when no agent
     was ever meant to have the task. The caller hides it behind a live session."""
-    from . import terminal
+    from . import general, terminal
     t = store.get_task(tid) or {}
     if not t or t.get('Status') in ('done', 'dropped'): return None
     tags = [x.strip() for x in str(t.get('Tags') or '').split(',')]
@@ -820,7 +830,8 @@ def agent_story(store, tid) -> dict | None:
     for e in run:
         k, src = e['Kind'], e.get('Source')
         w = ('Started' if not steps else None) if k == 'working' else \
-            (f'Cut off - Taskuary {how}' if src in terminal.INTERRUPTING else 'Session ended') if k == 'disconnected' else _EVENT_SAYS.get(k)
+            (f'Cut off - Taskuary {how}' if src in terminal.INTERRUPTING else 'Session ended') if k == 'disconnected' else \
+            'Cut off by a time limit' if k == 'stopped' and src == general.TIMED_OUT else _EVENT_SAYS.get(k)
         if w and (not steps or steps[-1]['text'] != w):
             steps.append({'at': e['CreatedAt'], 'text': w, 'text_i18n': _story_i18n(w), 'cut': k == 'disconnected' and src in terminal.INTERRUPTING})
     if len(steps) > 8: steps = steps[:1] + steps[-7:]
@@ -1539,6 +1550,25 @@ def workers_signature(live_state) -> str | None:
 _OBSERVE = object()
 
 
+def _moved(store, workers) -> bool:
+    """Written to, or a worker moved, since the cached build began. Held under _LOCK."""
+    top = _rail_top(store)
+    if workers is None or workers != _CACHE.get('workers'): return True
+    if top is None or _CACHE.get('mark') is None or top == _CACHE['mark']: return False
+    if not _chat_only(store, _CACHE['mark'], top): return True
+    _CACHE['mark'] = top; return False                 # ...the Assistant's own words only: the build stands, at the new mark
+
+
+def warm(store) -> bool:
+    """A read of the pile now is served from the cache: built for this store, in its time, and nothing written or moved since."""
+    from . import terminal as term
+    try: workers = workers_signature(term.live_sessions(tail=6))
+    except Exception: return False
+    with _LOCK:
+        return (_CACHE.get('store') is store and bool(_CACHE.get('pile')) and time.time() - _CACHE.get('at', 0) < PILE_EVERY
+                and not _moved(store, workers))
+
+
 def pile(store, force: bool = False, quiet: bool = False, observed=_OBSERVE, seen=None) -> dict:
     """The pile, cached for a few seconds: it is polled while the page is open, and every look
     is a dozen queries.
@@ -1560,12 +1590,7 @@ def pile(store, force: bool = False, quiet: bool = False, observed=_OBSERVE, see
     workers = workers_signature(observed)
     with _LOCK:
         same_store = _CACHE.get('store') is store
-        def moved():                                   # written to, or a worker moved, since the cached build began
-            top = _rail_top(store)
-            if workers is None or workers != _CACHE.get('workers'): return True
-            if top is None or _CACHE.get('mark') is None or top == _CACHE['mark']: return False
-            if not _chat_only(store, _CACHE['mark'], top): return True
-            _CACHE['mark'] = top; return False         # ...the Assistant's own words only: the build stands, at the new mark
+        moved = lambda: _moved(store, workers)
         if same_store and _CACHE['pile'] and not force and moved(): _CACHE.update(at=0.0); force = True
         # One websocket event wakes every open browser. If they all arrive while the first forced
         # rebuild is running, that one result satisfies all of them; rebuilding once per tab is a
@@ -2084,7 +2109,9 @@ def settle(store, key: str, verb: str, by: str = 'owner', hours: float = None, n
     if verb == 'done': _idea_done(store, key, by)
     # ...and an FYI row that speaks for its whole email thread settles the mails folded under it (processing_unread.fold_fyi_threads)
     for k in (thread_of(store, key) if thread is None else thread):
-        try: settle(store, k, verb, by, hours, note, read=read)
+        # ...a folded mail settles alone: its own remembered thread (_THREADS) names the row above it again, and mails on one thread settled
+        # each other over and over - the walk table's world took 0.6s, then 1, 3, 10, 48, 300s (CI, 2026-11-04)
+        try: settle(store, k, verb, by, hours, note, read=read, thread=())
         except Exception as e: logger.debug(f'funnel: {k} under {key} not settled - {e}')
     invalidate()
     # BULK PROCESSING: an item leaving the head is what pays for the next one to be judged - triage

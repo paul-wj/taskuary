@@ -76,6 +76,12 @@ test("keystrokes carry text for printable keys and Enter, none for chords and sp
   assert.equal(keyMessage("keydown", { key: "Enter", code: "Enter" }).windowsVirtualKeyCode, 13);
   assert.ok(isPaste({ key: "v", ctrlKey: true }) && isPaste({ key: "V", metaKey: true }) && !isPaste({ key: "v" }));
   assert.deepEqual(pasteMessages("a\r\nb").map((m) => m.text), ["a", "\r", "b"]);
+  // a password's shifted symbols and capitals go in as typed: the character is the key's own, Shift rides only in the modifiers (2026-11-04)
+  for (const [key, code, keyCode] of [["!", "Digit1", 49], ["@", "Digit2", 50], ["&", "Digit7", 55], ["Z", "KeyZ", 90], ["~", "Backquote", 192], ['"', "Quote", 222]]) {
+    const m = keyMessage("keydown", { key, code, keyCode, shiftKey: true });
+    assert.equal(m.text, key, key); assert.equal(m.modifiers, 8); assert.equal(m.windowsVirtualKeyCode, keyCode);
+  }
+  assert.equal(pasteMessages("P@ss!w0rd#$%^&*()").map((m) => m.text).join(""), "P@ss!w0rd#$%^&*()");
   assert.equal(keyMessage("keydown", { key: "a", code: "KeyA", ctrlKey: true }).text, undefined);
   assert.equal(keyMessage("keydown", { key: "Enter", code: "Enter" }).text, "\r");
   assert.equal(keyMessage("keydown", { key: "Tab", code: "Tab" }).eventType, "rawKeyDown");
@@ -170,12 +176,12 @@ test("the chat keeps a readable width whatever share the browser was dragged to"
   assert.equal(splitRatio(0.6, 400), 0.3);                                // never below the browser's own floor
 });
 
-test("a browser that was open and closed folds the pane; one still starting keeps it", () => {
-  assert.equal(showsBrowser(false, true, false), true);    // asked for, Chrome still coming up
-  assert.equal(showsBrowser(true, true, true), true);
-  assert.equal(showsBrowser(false, true, true), false);    // it was open and has gone: fold, stop knocking
-  assert.equal(showsBrowser(true, false, true), true);     // the agent opened one unasked
-  assert.equal(showsBrowser(false, false, false), false);
+test("only a browser open on a page is shown: not one still starting, nor an empty tab (2026-11-04)", () => {
+  assert.equal(showsBrowser(true, "https://fares.example/results"), true);
+  assert.equal(showsBrowser(true, "file:///receipt.html"), true);         // a local file: shown folded to its chip (isLocalPage)
+  assert.equal(showsBrowser(true, "about:blank"), false);                 // "no browser should open if we don't have a URL"
+  assert.equal(showsBrowser(true, ""), false);
+  assert.equal(showsBrowser(false, "https://fares.example/results"), false);   // closed, or still coming up
 });
 
 test("only the tab the owner is at shapes the page, so a phone tab cannot reshape the desktop's", () => {

@@ -29,6 +29,7 @@ import AiDefaults from "./AiDefaults.jsx";
 import AgentPermissions from "./AgentPermissions.jsx";
 import SharedLinks from "./SharedLinks.jsx";
 import SavedSignins from "./SavedSignins.jsx";
+import HandSignature from "./HandSignature.jsx";
 import SendFilter from "./SendFilter.jsx";
 import AboutYou from "./AboutYou.jsx";
 import UpdateCard from "./UpdateCard.jsx";
@@ -45,7 +46,6 @@ import { ABOUT_SECTIONS, AUDIT_SECTIONS, secId, pageId, scrollToSection, section
 import MenuBookIcon from "@mui/icons-material/MenuBook";
 import DocsView, { OPERATOR_DOCS } from "./DocsView.jsx";
 import RoleStart from "./RoleStart.jsx";
-import { AGENT_SHOWN, instructionsHint } from "./kinds.js";
 import { recipientLabel, recipientOptions } from "./recipientOptions.js";
 
 function LanguageSelector() {
@@ -485,7 +485,6 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
   const [brains, setBrains] = useState([]);
   const [agentNames, setAgentNames] = useState([]);
   const [agentOptions, setAgentOptions] = useState([]);
-  const [profileNames, setProfileNames] = useState([]);   // the general workers default_profile may name
   const [agentModels, setAgentModels] = useState({});
   const [connectors, setConnectors] = useState([]);
   const [mailboxes, setMailboxes] = useState(null);         // the sending mailboxes a rule can be scoped to (ruleMailbox.js); null until read - no "Applies to" until then
@@ -499,7 +498,6 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
       api.get("/api/agents").then(({ data }) => {
         const rows = data.data || [], models = data.models || {}, seen = new Set();
         setAgentNames(rows.map((a) => a.Name));
-        setProfileNames(rows.filter((a) => !["coding", "cli"].includes(String(a.Kind || "").toLowerCase())).map((a) => a.Name));
         setAgentModels(models);
         // Settings asks which coding CLI runs, not which instruction profile it wears.
         // The endpoint puts the saved default first; keep that order and collapse profiles
@@ -578,17 +576,7 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
         {!codingOptions.length && <MenuItem value="" disabled sx={{ fontSize: 12.5 }}>{t("no coding CLI yet — add one under Connections")}</MenuItem>}
       </Select>
     );
-    // WHO TAKES YOUR MAIL IS TASKUARY (the owner, 2026-10-29: profile names hidden in Settings too, as on every other screen - kinds.json
-    // `shown_`): the choice is which instructions it follows, said as that - "Instructions: ap" - never a profile standing as a worker
-    if (m.type === "profile") return (
-      <Select size="small" displayEmpty value={profileNames.includes(s.Value) ? s.Value : ""} title={instructionsHint(s.Value) || undefined}
-        renderValue={(v) => (v ? t(AGENT_SHOWN) : t("nobody - leave it for me to pick"))}
-        onChange={(e) => saveSetting(s.Name, e.target.value)} sx={{ minWidth: 160, fontSize: 12.5, bgcolor: "#fff" }}>
-        <MenuItem value="" sx={{ fontSize: 12.5 }}>{t("nobody - leave it for me to pick")}</MenuItem>
-        {profileNames.map((n) => <MenuItem key={n} value={n} sx={{ fontSize: 12.5 }}>{t(AGENT_SHOWN)}
-          <Box component="span" sx={{ color: DIM, ml: 0.75 }}>{instructionsHint(n)}</Box></MenuItem>)}
-      </Select>
-    );
+
     if (m.type === "agents") {
       const values = s.Value === "*" ? ["*"] : String(s.Value || "").split(",").filter((v) => codingOptions.some((o) => o.value === v));
       return (
@@ -757,6 +745,7 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
   // ...and what a section lists UNDER its knobs: the share links still open sit below the switch that allows them
   const after = {
     Sharing: <SharedLinks />,
+    Replies: <HandSignature />,              // the signature forms are signed with sits beside the one under the email
     "Agent permissions": <><SavedSignins /><SendFilter /></>,
   };
   // no coding tool connected: the Coding agent section has nothing to set (capabilities.js)

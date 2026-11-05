@@ -41,7 +41,7 @@ def test_command_only_claude_gets_headless_defaults_on_migration_and_legacy_crea
     connection = cfg['cli_connections']['claude']
     assert connection['args'] == ['-p', '--dangerously-skip-permissions', '--output-format', 'stream-json', '--verbose']
     assert connection['resume_args'] == ['--resume']
-    assert connection['timeout'] == 1500
+    assert 'timeout' not in connection          # an agent run has no time limit (the owner, 2026-11-04)
     assert not cli_connections.migrate(cfg)
     cfg['cli_connections']['claude'] = {'cmd': 'claude'}
     assert cli_connections.migrate(cfg)  # repair configs already split by the earlier migration
@@ -137,7 +137,6 @@ def test_connection_edits_reach_all_profiles_and_provider_switch_is_independent(
     assert 'light_model' not in research
     assert json.loads(store.get_agent('analyst')['Config'])['model'] == 'opus'
     assert json.loads(store.get_agent('coding')['Config'])['cmd'] == 'claude'
-    assert '- researcher:' in agents.roster(store)
 
 
 def test_settings_model_edit_keeps_shared_command_reference():

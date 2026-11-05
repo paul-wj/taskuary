@@ -1,6 +1,6 @@
-// Start from a role: one click from "I do accounts payable" to the worker, its playbooks and its
-// mail. Everything it lays out (roles.py) already had its own page; nobody who is not technical
-// ever found all four, so the role is offered here, where the workers live, until it is taken.
+// Start from a role: one click from "I do accounts payable" to the worker, its playbooks and its daily job - no mail is
+// routed to it: a task's general work runs on the assistant (2026-11-04). Everything it lays out (roles.py) already had its
+// own page; nobody who is not technical ever found them all, so the role is offered here, where the workers live, until it is taken.
 import React, { useCallback, useEffect, useState } from "react";
 import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, TextField, Typography } from "@mui/material";
 import api from "./api";
@@ -12,7 +12,6 @@ import { useLocale } from "./LocaleProvider.jsx";
 const said = (r) => [
   r.profile_added ? t("Added the {profile}.md worker.", { profile: r.profile.toUpperCase() }) : t("The {profile}.md worker was already here.", { profile: r.profile.toUpperCase() }),
   r.playbooks_added.length ? t(r.playbooks_added.length > 1 ? "Added {count} playbooks." : "Added {count} playbook.", { count: r.playbooks_added.length }) : "",
-  t("Mail with no better-suited worker now goes to {profile}.", { profile: r.profile }),
   r.ledger_narrowed ? t("{ledger} is set to read: every bill becomes a proposal you approve.", { ledger: r.ledger_narrowed }) : "",
   r.workflow_id ? t("The daily portal job is under Reports, in Workflows, switched off until you have signed in to the portal once.") : "",
 ].filter(Boolean).join(" ");
@@ -53,7 +52,8 @@ export default function RoleStart({ onApplied }) {
         <DialogTitle sx={{ fontSize: 16 }}>{t("Set up for {title}", { title: open?.name === "ap" && open.title === "Accounts payable" ? t("accounts payable") : open?.title.toLowerCase() })}</DialogTitle>
         <DialogContent>
           <Typography sx={{ fontSize: 12.5, color: INK, mb: 1.5 }}>
-            {t("Adds the {profile}.md worker and its playbooks, and sends your mail to it when no other worker fits. Nothing is posted to your ledger without your approval.", { profile: open?.profile.toUpperCase() })}
+            {t("Adds the {profile}.md worker, its playbooks and its daily job.", { profile: open?.profile.toUpperCase() })}
+            {t("Nothing is posted to your ledger without your approval.")}
           </Typography>
           {open?.portal_needed && (
             <TextField size="small" fullWidth label={t("Bill-approval portal address (optional)")} placeholder="https://"

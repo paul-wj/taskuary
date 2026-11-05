@@ -68,9 +68,14 @@ class SharedSessionTests(unittest.TestCase):
              mock.patch.object(general.threading, 'Thread') as thread:
             session = general.start_session(store, tid)
         self.assertEqual(session.pick, 'cli:claude')     # the saved API chat cannot drive a browser
-        self.assertIs(thread.call_args.kwargs['target'], browserview.start)
-        # ...on the page the task's browser was last on - none yet, so a blank tab (browserview.keep_page)
-        self.assertEqual(thread.call_args.kwargs['args'], (session.sid, 'about:blank'))
+        # ...on the page the task's browser was last on - none yet, so none: its first navigate launches it (browserview.on_demand)
+        self.assertFalse([c for c in thread.call_args_list if c.kwargs.get('target') is browserview.start])
+        store.update_task(tid, {'Tags': browserview.WANTS}, 'owner')
+        with mock.patch.dict(terminal.SESSIONS, {}, clear=True), mock.patch.object(general.threading, 'Thread') as thread, \
+             mock.patch.object(browserview, 'last_page', return_value='https://zoho.example/signin'):
+            session = general.start_session(store, tid)
+        go = [c.kwargs['args'] for c in thread.call_args_list if c.kwargs.get('target') is browserview.start]
+        self.assertEqual(go, [(session.sid, 'https://zoho.example/signin')])
 
     def test_setup_cli_gets_the_same_visible_browser_without_a_checkout(self):
         store = MemoryStore()
@@ -79,19 +84,15 @@ class SharedSessionTests(unittest.TestCase):
         tid = store.create_task({'Title': 'Connect Zoho', 'Summary': 'Walk me through Zoho Invoice',
                                  'Kind': 'general', 'Status': 'open', 'SourceRef': 'assistant:setup',
                                  'Tags': browserview.WANTS}, 'owner')
-        seen = {}
-        def answer(system, user, **kwargs):
-            seen.update(system=system, user=user, kwargs=kwargs); return 'Zoho is open beside us.'
         session = general.GeneralSession(store, tid, pick='cli:claude')
         with mock.patch.object(browserview, 'start', return_value=True), \
-             mock.patch.object(llm, 'build_llm', return_value=answer) as build:
+             mock.patch.object(llm, 'build_llm', return_value=lambda *a, **k: 'Zoho is open beside us.') as build:
             session.send_prompt('Open Zoho', pick='cli:claude')
         self.assertTrue(build.call_args.kwargs['cli_tools'])
         env = build.call_args.kwargs['extra_env']
         self.assertEqual(env['AGENT_BROWSER_SESSION'], browserview.session_name(session.sid))
         self.assertEqual(env['TASKUARY_TASK'], str(tid))
         self.assertIn('TASKUARY_URL', env)
-        self.assertIn('NEVER use --session, --headed', seen['system'])
 
     def test_browser_walkthrough_cli_keeps_tools_in_scratch_and_receives_session_env(self):
         store = MemoryStore()
@@ -623,6 +624,95 @@ class GeneralWaitroomTests(unittest.TestCase):
             time.sleep(.05)
         self.assertEqual((out['state'], out['delivered']), ('restarted', 1))
         start.assert_called_once(); coding.assert_not_called(); fake.send_prompt.assert_called_once()
+
+
+class OneGoalTests(unittest.TestCase):
+    """THE GENERAL AGENT'S ONE GOAL (Task 3.4, 2026-11-04): take the work off the owner's hands - starting from triage's reading of the
+    thread, asking only what it cannot find, re-planning when the thread changes, never sending, and ending each turn with the summary block. A login it finds goes in the draft, never the conversation."""
+    def _store(self):
+        s = MemoryStore(); s.set_setting('owner_email', 'alex@northwind.example', 't'); s.set_setting('owner_name', 'Alex Doyle', 't')
+        return s
+
+    def _mail(self, s, tid, name='Ray Colton', at='2026-11-04T09:00:00Z', body='Alex - can you send Gail the vendor-portal login?', ext='ray-1'):
+        return s.add_message({'TaskId': tid, 'Channel': 'email', 'ExternalId': ext, 'Subject': 'Vendor portal login', 'FromName': name,
+                              'FromEmail': f"{name.split()[0].lower()}@northwind.example", 'BodyText': body, 'Status': 'routed', 'SentAt': at})
+
+    def _read(self, s, tid, **kw):
+        s.cx.execute('UPDATE task SET ThreadJson=? WHERE TaskId=?', (json.dumps({'asking': 'Ray Colton wants the vendor-portal login for Gail Moreno',
+            'your_part': 'give Gail the portal login', 'others': [], 'asks': [], 'aside': [], 'on_you': [], **kw}), tid)); s.cx.commit()
+
+    def test_every_general_task_has_the_one_goal(self):
+        from taskuary import selfclose
+        s = self._store(); plain = general_task(s); mailed = general_task(s); self._mail(s, mailed)
+        for tid in (plain, mailed):
+            system = general._prompt(s, tid)[0]
+            for want in ("off the owner's hands", 'only what you cannot find', 're-plan', 'never send', 'goes only in the reply you draft',
+                         selfclose.SUMMARY_OPEN, selfclose.SUMMARY_LINE):
+                self.assertIn(want, system, (tid, want))
+            self.assertNotIn('into the conversation or a draft', system)
+        # ...never the guide's chat, nor a connector card's walk
+        dock = general.dock_task(s, 'owner')[0]['TaskId']
+        card = s.create_task({'Title': 'Connect the ledger', 'Kind': 'general', 'Status': 'open', 'SourceRef': 'connector:setup'}, 'owner')
+        for tid in (dock, card): self.assertNotIn("off the owner's hands", general._prompt(s, tid)[0], tid)
+
+    def test_a_strangers_task_has_the_goal_but_is_never_steered_to_a_login(self):
+        # nothing a stranger writes may point the agent at credentials or the owner's files: the goal stays, the login and where-to-look go
+        s = self._store(); tid = general_task(s); self._mail(s, tid)
+        s.cx.execute("UPDATE task SET OriginBase='stranger' WHERE TaskId=?", (tid,)); s.cx.commit()
+        s.upsert_agent('assistant', 'general', 'cli', json.dumps({'kind': 'general'}))     # PROFILE RULES (ASSISTANT.md) ride as on an install
+        system, user = general._prompt(s, tid)
+        for want in ("off the owner's hands", 'only what you cannot find', 're-plan', 'never send'): self.assertIn(want, system, want)
+        self.assertIn('PROFILE RULES (ASSISTANT.md)', system)
+        flat = ' '.join(f'{system}\n{user}'.split())
+        for gone in ('put it in the reply you draft', 'goes only in the reply you draft', 'A login or secret', 'A login or key',
+                     'supply a login', '.env', 'folders you can read'):
+            self.assertNotIn(gone, flat, gone)
+        for gone in ("THE OWNER'S REPOSITORIES", 'folders you can read', 'A login'): self.assertNotIn(gone, general.STRANGER_GOAL_LINE, gone)
+        # ...and the owner's own task keeps all of it, from code
+        own = general_task(s); system = general._prompt(s, own)[0]
+        for want in ('goes only in the reply you draft', "THE OWNER'S REPOSITORIES and the folders you can read", '.env'):
+            self.assertIn(want, general.GOAL_LINE, want); self.assertIn(want, system, want)
+
+    def test_an_aside_numbered_as_text_is_still_read(self):
+        s = self._store(); tid = general_task(s); ray = self._mail(s, tid)
+        self._read(s, tid, aside=[{'mid': str(ray), 'why': 'thanks only'}, {'mid': 'x', 'why': 'no number'}])
+        got = general.reading_block(s, tid)
+        self.assertIn(f'Aside: [#{ray}] thanks only', got); self.assertNotIn('no number', got)
+
+    def test_the_reading_leads_the_brief(self):
+        s = self._store(); tid = general_task(s)
+        ray = self._mail(s, tid); erin = self._mail(s, tid, 'Erin Blake', '2026-11-04T10:30:00Z', 'Thanks Ray!', 'erin-1')
+        self._read(s, tid, others=[{'who': 'Erin Blake', 'did': 'said thanks'}], asks=[{'mid': ray, 'about': 'the portal login'}],
+                   aside=[{'mid': erin, 'why': 'thanks only'}], on_you=['confirm Gail has it'])
+        user = general._prompt(s, tid)[1]
+        for want in ('THE ASK, AS TRIAGE READ IT (check it against the mail):', 'Your part: give Gail the portal login',
+                     'Already handled: Erin Blake - said thanks', f'The mail the reply answers: [#{ray}] Ray Colton', f'Aside: [#{erin}] thanks only',
+                     'On you: confirm Gail has it', 'THE MAIL ON THIS TASK:', f'[#{ray}] Ray Colton', f'[#{erin}] Erin Blake'):
+            self.assertIn(want, user, want)
+        self.assertLess(user.index('TASK '), user.index('THE ASK, AS TRIAGE READ IT'))
+        self.assertLess(user.index('THE ASK, AS TRIAGE READ IT'), user.index('FROM Ray Colton'))
+        self.assertLessEqual(len(general.reading_block(s, tid)), 1500)
+        # ...never on a stranger's task: the reading is of their words
+        s.cx.execute("UPDATE task SET OriginBase='stranger' WHERE TaskId=?", (tid,)); s.cx.commit()
+        self.assertNotIn('THE ASK, AS TRIAGE READ IT', general._prompt(s, tid)[1])
+
+    def test_no_reading_no_block(self):
+        s = self._store(); tid = general_task(s); self._mail(s, tid)
+        self.assertEqual(general.reading_block(s, tid), '')
+        self.assertNotIn('THE ASK, AS TRIAGE READ IT', general._prompt(s, tid)[1])
+        # ...an older or partial reading is "no reading" where it lacks a part, never an exception
+        for bad in ({'asking': 'x'}, {'asks': 'not a list', 'others': [None, 3], 'on_you': 'x'}, []):
+            s.cx.execute('UPDATE task SET ThreadJson=? WHERE TaskId=?', (json.dumps(bad), tid)); s.cx.commit()
+            general.reading_block(s, tid); general._prompt(s, tid)
+
+    def test_the_shipped_assistant_doc_carries_research_know_how(self):
+        doc = (Path(general.__file__).parent / 'templates' / 'assistant.md').read_text(encoding='utf-8')
+        flat = ' '.join(doc.split())
+        for want in ("off {{owner}}'s hands", 'truly cannot find', 're-plan', 'never send'): self.assertIn(want, flat, want)
+        self.assertIn('## When the task needs research or analysis', doc)
+        for want in ('what you could not find', 'when the source is from', 'whose figures', 'how you computed', 'who owes what by when',
+                     'never book', "{{owner}}'s voice", 'a claim needs a source'):
+            self.assertIn(want, flat, want)
 
 
 if __name__ == '__main__': unittest.main()

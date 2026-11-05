@@ -50,6 +50,7 @@ ALLOWED_WRITES = (
     r'^/api/prompt-image$',                            # a picture for a prompt: saved in the demo's own home
     r'^/api/messages/\d+/(file|promote|read)$',        # the triage verdicts: the whole funnel
     r'^/api/reviews?/\d+/(hold|drop|edit)$',           # ...but never /send
+    r'^/api/reviews/\d+/attachment$',                  # a file onto a draft: copied into the demo's own home, sent nowhere
     r'^/api/board/notes',                              # the wall
     r'^/api/(hub|handbook)',                           # durable Hub posts and compatibility route
     r'^/api/settings$',                                # display preferences
@@ -617,6 +618,22 @@ HISTORY = [
      'Sharing for visibility.', 'fyi', 'cc-for-visibility, nothing asked'),
 ]
 
+# WHAT TRIAGE MADE OF AN FYI (the verdict's `thread`, kept on its own route - store.message_thread): what an FYI's middle opens with,
+# "What this says" and "What matters to you" (ItemSections ItemAsk). By its words; an FYI not here has no reading, as an older verdict has none
+FYI_READS = {
+    'Sharing for visibility.': ('Priya forwarded the regional operations newsletter for visibility', 'Nothing is asked of you - it is for reading when you have a minute'),
+    'The feed dropped on Thursday and has caught up. Nothing is missing.': ('The bank feed is back and August is complete', 'The month-end reconciliation can use August as it is'),
+    'Attached is your statement. No action required.': ('The August statement of account, sent automatically', 'Nothing to pay or answer - keep it for the close'),
+    'Your agreement renews on 1 November. No action is needed to continue.': ('The food services agreement renews by itself on 1 November', 'If you mean to change the contract, it has to be before then'),
+}
+
+def _file_fyi(store, f, mid, why, body):
+    """An FYI filed as triage files it: its reading on the route, when the world wrote one (FYI_READS)."""
+    said = FYI_READS.get(body)
+    if not said: return f.route(mid, None, 'file', why)
+    return store.add_route(mid, None, 'file', None, why, [], 'triage', verdict={'intent': 'fyi', 'why': why, 'thread': {
+        'asking': said[0], 'your_part': said[1], 'others': [], 'asks': [], 'aside': [], 'on_you': []}})
+
 
 # ── the calendar, scripted (calwrite.py): the demo has no calendar behind it, so the week it answers invites against is this ──
 def _workdays(n: int) -> list:
@@ -705,7 +722,7 @@ def seed(store) -> int:
             f.review(tid, mid, draft=DRAFTS.get(body) or DRAFTS[subject])
         else:
             mid = f.message(status='filed', **said)
-            f.route(mid, None, 'file', why)
+            _file_fyi(store, f, mid, why, body)
         refs[subject] = tid if verdict != 'fyi' else None
         made += 1
 
@@ -729,6 +746,9 @@ def seed(store) -> int:
         store.add_comment(gl, OWNER.split()[0] if role == 'user' else 'assistant',
                           general.USER_TYPE if role == 'user' else general.ASSISTANT_TYPE, body)
     refs['gl'] = gl
+    store._exec('UPDATE task SET ThreadJson=? WHERE TaskId=?', (json.dumps({
+        'asking': f'{marcus[0]} wants the August export reconciled against the bank feed before Thursday', 'your_part': 'Review what the agent flags',
+        'others': [], 'asks': [{'mid': gm, 'about': 'reconcile and flag mismatches'}], 'aside': [], 'on_you': ['Decide how to treat the inter-company transfers']}), gl))
     # ONE GOAL (spec 2026-10-12): an outcome with a date, its steps tasks of their own - one done by a coding agent, one waiting
     # on a person past its day, the rest not started. Dana's census migration.
     g = f.task(title='Migrate the census export off the old portal', status='open', kind='task',
@@ -767,6 +787,15 @@ def seed(store) -> int:
         m = f.message(task_id=audit, subject=subject, body=body, from_name=priya[0], from_email=priya[1],
                       sent_at=f.ago(hours=hours), conversation_id='email:year-end-audit')
         f.route(m, audit, 'create' if n == 0 else 'attach', 'a request with a list and a date' if n == 0 else 'same conversation thread')
+        audit_mids = [*(audit_mids if n else []), m]
+    # triage's reading of the thread, as the verdict's `thread` leaves it on the task (what Came from and the agent's chat open with)
+    store._exec('UPDATE task SET ThreadJson=? WHERE TaskId=?', (json.dumps({
+        'asking': f'{priya[0]} wants three documents for the auditors by the 15th', 'your_part': 'Gather the bank reconciliations, the AP ageing and the asset register',
+        'others': [{'who': priya[0], 'did': 'added the fixed asset register'}], 'asks': [{'mid': audit_mids[2], 'about': 'all of it by the 15th'}],
+        'aside': [{'mid': audit_mids[1], 'why': 'an addition to the list'}], 'on_you': ['Send the pack before the 15th']}), audit))
+    store._exec('UPDATE task SET ThreadJson=? WHERE TaskId=?', (json.dumps({
+        'asking': f'{ruth[0]} asks whether AP still moves over on Thursday', 'your_part': 'Confirm the date', 'others': [], 'aside': [],
+        'asks': [], 'on_you': ['Answer so she can tell the team']}), refs['cutover']))
     f.filed_fyi(subject='Vendor portal maintenance window, Sunday 02:00-04:00')
     # the code lane: GitHub is a source like any other - an issue is an ask, a PR is a notice
     gh = f.task(title='northwind/importers#214 - census sync fails when a site has no manager',
@@ -810,7 +839,8 @@ def seed(store) -> int:
                         from_email=email if channel == 'email' else None, sent_at=when,
                         status='filed' if verdict == 'fyi' else 'routed',
                         conversation_id=f'{channel}:{email or name}:{days}', source_name=source)
-        f.route(mid, tid, 'file' if verdict == 'fyi' else 'create', why)
+        if verdict == 'fyi': _file_fyi(store, f, mid, why, body)
+        else: f.route(mid, tid, 'create', why)
         if tid: past.append((tid, mid, when, channel, verdict))
         made += 1
     seed_history_work(store, f, past)

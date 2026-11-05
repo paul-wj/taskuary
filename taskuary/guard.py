@@ -91,6 +91,8 @@ DENIED = (
     (r'POST', r'^/api/cli/setup', "setting a coding CLI up runs it on this machine, and signs in as the owner - their decision"),
     (r'POST', r'^/api/setup/first-run/', "choosing the AI that reads the mail, or the mailbox it reads, is the owner's decision"),
     (r'POST', r'^/api/signature(/|$)', "the signature under the owner's email is theirs to read off their mail and check"),
+    # ...and the one they sign forms with (handsign.py): no session reads the picture or swaps it - sign_form places it, on a form the owner sees
+    (r'GET|HEAD|PUT|POST|DELETE', r'^/api/hand-signature(/|$)', "the owner's handwritten signature - only Taskuary places it, on a form the owner sees before anything is sent"),
     (r'PUT|DELETE|POST', r'^/api/cli/connections', 'CLI commands and connection tests are configured by the owner'),
     (r'POST', r'^/api/problems/', 'what is failing is the owner\'s to read - an agent does not get to clear the bell'),
     # ...and the doors the 2026-09-02 audit found standing open: releasing the held task of the very
@@ -127,9 +129,10 @@ AGENT_WRITES = (
     (r'POST', r'^/api/hooks/claude/(floor|permit)$', "a stranger's session asking the floor, or the owner, before a tool call"),
     (r'POST', r'^/api/hooks/claude/reason$', "the Reason Network hook - a message to someone untrusted is refused, an approval goes to the owner"),
     (r'POST', r'^/api/hooks/claude/browser$', "the browser hook - an act that can't be undone is held for the owner (browsergate)"),
-    (r'POST', r'^/api/agent/(reply|done|draft|item|tick|waiting)$',
-     "`taskuary --reply/--done/--draft/--item/--tick/--waiting-on` on the session's OWN task (owns_task); nothing leaves"),
+    (r'POST', r'^/api/agent/(reply|done|draft|item|tick|waiting|not-needed)$',
+     "`taskuary --reply/--done/--draft/--item/--tick/--waiting-on/--reply-not-needed` on the session's OWN task (owns_task); nothing leaves"),
     (r'POST', r'^/api/agent/propose$', "an act only the owner's press runs (proposals.queue), filed on the session's OWN task; nothing runs"),
+    (r'POST', r'^/api/agent/sign-form$', "`taskuary --sign-form`: a PDF on the session's OWN task filled and signed into its folder (handsign) - nothing leaves"),
     (r'POST', r'^/api/mcp$', "Taskuary's own tools for the session (agenttools): each one is a door on this list or a read, on its OWN task"),
     (r'POST', r'^/api/board/notes$', 'the wall agents leave lines for each other on'),
     (r'POST', r'^/api/(hub|handbook)(/\d+/(comment|vote|retire|restore))?$',
@@ -170,6 +173,7 @@ OWNER_ONLY = (
     (r'PUT', r'^/api/tasks/\d+/workstream$', "which of the owner's workstreams a task belongs to is the owner's word - it teaches where its people belong"),
     (r'POST', r'^/api/tasks/\d+/desktop$', "marking a task 'needs desktop' hands its agent the owner's desktop - never its own agent's press"),
     (r'POST', r'^/api/tasks/\d+/trust$', "raising a task's origin is the owner's decision (origin.raise_to) - never a session's"),
+    (r'POST', r'^/api/tasks/\d+/assistant/seen$', "the owner's open task keeps its agent's process warm - a session never keeps itself alive (clipool.touch)"),
     (r'POST', r'^/api/reason/(trusted|gate|folder|held/[0-9A-Za-z]+)$', "who may reach the owner's agents over Reason Network is the owner's"),
     (r'POST', r'^/api/tasks/\d+/reason-ask$', "asking a teammate's agent is the owner's - an agent uses its own Reason Network tools"),
     (r'POST', r'^/api/cloudfix/setup$', 'it commits a workflow to the repository - only ever the owner pressing Set up (cloudfix.install)'),
@@ -196,7 +200,7 @@ OWNER_ONLY = (
     (r'POST', r'^/api/(ai/defaults|setup/(adopt-brain|dismiss|seen|walk|walk/reset)|knowledge/reindex|calendar/prep(are)?|prompt-image)$',
      "set-up, the brains, the index and the owner's own starts"),
     (r'POST', r'^/api/reports/(\d+/replay|due)$', "replaying a judge or running every due report is the owner's"),
-    (r'POST', r'^/api/roles/[a-z0-9_-]+$', "a role decides where the owner's mail goes and narrows a ledger's authority"),
+    (r'POST', r'^/api/roles/[a-z0-9_-]+$', "a role adds a worker and a workflow and narrows a ledger's authority"),
     (r'POST', r'^/api/platform/macos/(open-settings|probe)$', "operating-system permission prompts are the owner's"),
     (r'POST', r'^/api/deleted/\d+/restore$', "Undo and Restore put back what the owner removed - a report, a rule, a profile, a sign-in (recentlydeleted)"),
     (r'POST|PUT', r'^/api/voice/(transcribe|vocabulary|speech-on|listen(/[0-9a-f]+/stop)?)$', "the owner's microphone and vocabulary"),
@@ -270,7 +274,7 @@ def stranger_tid(server: dict, presented) -> int | None:
 # --draft/--item/--tick`, whose task id owns_task checks in the handler - and `taskuary --note`, whose note the board door pins to
 # the token's own task, so it never reaches another session's seed (blackboard.live_notes, wave B). Not the Hub, the data
 # tools or a report rerun: each of those reaches past its own task.
-_STRANGER_WRITES = (re.compile(r'^/api/hooks/[a-z]+$'), re.compile(r'^/api/agent/(reply|done|draft|item|tick|waiting)$'), re.compile(r'^/api/board/notes$'))
+_STRANGER_WRITES = (re.compile(r'^/api/hooks/[a-z]+$'), re.compile(r'^/api/agent/(reply|done|draft|item|tick|waiting|not-needed)$'), re.compile(r'^/api/board/notes$'))
 _STRANGER_TASK_HOOK = re.compile(r'^/api/hooks/claude/(floor|permit)$')
 _STRANGER_FILE = re.compile(r'^/api/(attachments|task-artifacts)/(\d+)$')
 STRANGER_WHY = "a session working a stranger's task reaches its own task and nothing else"

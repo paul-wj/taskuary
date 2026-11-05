@@ -123,6 +123,22 @@ test("the row in three: the moves that finish or advance it in one pill, the tas
   assert.equal(typeOf({ id: "w:Make a task" }), "act");                  // a card's own words lead, unlabelled
 });
 
+test("a card's own <Button> is read into a row verb: its label, handler, disabled flag and ONE filled tone", async () => {
+  const { default: React } = await import("react");
+  const { movesOf } = await import("../src/actionRow.js");
+  const calls = [];
+  const h = React.createElement;
+  const node = h(React.Fragment, null,
+    h("div", { "data-tq-verb": "open-settings", variant: "contained", onClick: () => calls.push("a"), title: "does a" }, "Open ", "Settings"),
+    h("div", { "data-tq-verb": "second", variant: "contained", disabled: true, onClick: () => calls.push("b") }, "Second"),
+    h("div", { "data-tq-verb": "join", variant: "outlined", href: "https://example.test/join" }, "Join"),
+    h("div", { "data-tq-verb": "no-handler", variant: "outlined" }, "No handler"));
+  const v = movesOf(node);
+  assert.deepEqual(v.map((x) => [x.label, x.tone, x.disabled]), [["Open Settings", "p", false], ["Second", "s", true], ["Join", "s", false]]);
+  v[0].run({}); v[1].run({});
+  assert.deepEqual(calls, ["a", "b"], "the card's own handler runs; nothing is re-implemented");
+});
+
 
 
 

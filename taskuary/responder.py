@@ -158,6 +158,10 @@ FILES = 'FILES PROMISED:'
 FILES_RULE = (f'If your reply tells them a file is attached, enclosed or sent with it, end with one more line: {FILES} and the names of '
               'those files, comma-separated (or "unnamed" when it names none). That line is for the owner and is never sent. Leave it '
               'out when the reply promises no file - a file mentioned for any other reason is no promise.' + chr(10))
+# WHY THE REPLY SAYS WHAT IT SAYS is the writer's one line for the owner: what it read in the mail and why the reply answers so. Taken off the
+# draft like FILES, kept on the review (store.DraftWhy), never sent.
+WHY = 'WHY:'
+WHY_RULE = (f'End your reply with a blank line and then one more line for the owner, never sent: {WHY} <one or two sentences on what you read and why the reply says this>' + chr(10))
 
 
 class NoReply(Exception):
@@ -426,7 +430,30 @@ def _answer(llm, system, user, max_tokens, images=None, guard=False, sig=''):
     if out.upper().startswith(NEEDS):
         why = ' '.join(out[len(NEEDS):].split()) or 'something it does not have'      # whole: the store keeps it by sentence
         raise NotDrafted(f'not drafted - it needs {why.rstrip(".")}. An agent can work it out and draft the reply, or Redraft with it')
-    return files_said(out)
+    files = why = None
+    for _ in range(2):                                         # WHY and FILES, in either order, each at the very end
+        out, f = files_said(out); out, w = why_said(out)
+        files, why = (files if f is None else f), why or w
+    # ...and with its control lines off, nothing left is no draft: it fails, said, and never lands on the card as an empty reply
+    if not out.strip(): raise RuntimeError('the AI wrote no reply - only its note on why' if why else 'the AI wrote no reply - only the files it would send')
+    return out, files, why
+
+
+def why_said(out: str) -> tuple:
+    """(the reply, the writer's own WHY line - None for none), the line taken off."""
+    ls = out.rstrip().split(chr(10))
+    ne = [i for i, l in enumerate(ls) if l.strip() and not l.strip().upper().startswith(FILES)]     # FILES lines are control lines: not counted
+    # a WHY is the last line, or one or two lines set off by a blank line (the rule asks for one): "Why: ..." inside the reply is the reply's
+    # ...and its second line is its own only when it follows at once: a WHY put FIRST, a blank, then a one-line chat reply, read the reply as
+    # the WHY's wrap and took it too - the draft came back empty, and the empty text went on the card (2026-11-04)
+    w = lambda i: ls[i].strip().upper().startswith(WHY)
+    said = lambda xs: ' '.join(' '.join(xs).strip()[len(WHY):].split()) or None
+    i = next((i for i in reversed(ne[-2:]) if w(i) and i != ne[0] and (i == ne[-1] or (ne[-1] == i + 1 and not ls[i - 1].strip()))), None)
+    if i is not None: end = ne[-1] + 1; return chr(10).join(ls[:i] + ls[end:]).rstrip(), said(ls[i:end])
+    # ...and a WHY put first is the writer's note all the same: its paragraph comes off, and the reply under it stays
+    if not ne or not w(ne[0]): return out, None
+    end = next((j for j in range(ne[0], len(ls)) if not ls[j].strip()), len(ls))
+    return chr(10).join(ls[:ne[0]] + ls[end:]).strip(), said(ls[ne[0]:end])
 
 
 def files_said(out: str) -> tuple:
@@ -527,7 +554,8 @@ def known_block(store, t: dict) -> str:
             f"leave a question put to you unanswered, write {NEEDS} and what is missing - never invent to fill the gap.\n" + '\n'.join(lines))
 
 
-def draft_reply(store, task_id: int, llm=None, resolution: str = None, nudge: str = None, seen: dict = None, pressed: bool = False) -> str:
+def draft_reply(store, task_id: int, llm=None, resolution: str = None, nudge: str = None, seen: dict = None, pressed: bool = False,
+                answers: int = None) -> str:
     """The reply this task needs, as text. Uses the owner's own brain (the AI connector, or
     whichever brain `triage_ai` names), the standing memory notes, and the thread itself.
 
@@ -560,7 +588,7 @@ def draft_reply(store, task_id: int, llm=None, resolution: str = None, nudge: st
     # request. DONE supplies its own completeness/shape rules, so do not put BREVITY in conflict.
     length_rule = '' if resolution else BREVITY
     system = (SYSTEM.format(owner=owner) + signature_line(store) + length_rule + (CHAT if chat else email_rule(store, box)) + '\n'
-              + (OWNER_SAYS if nudge else DONE if resolution else NOT_YET + FEEDBACK) + FILES_RULE
+              + (OWNER_SAYS if nudge else DONE if resolution else NOT_YET + FEEDBACK) + FILES_RULE + WHY_RULE
               # every block below describes YOU. They are written in the third person because
               # the same documents serve agents working FOR the owner - said once, here, so the
               # model does not read its own biography as notes about somebody else.
@@ -587,7 +615,10 @@ def draft_reply(store, task_id: int, llm=None, resolution: str = None, nudge: st
     if seen is not None:
         from . import operations
         seen['saw'], seen['revision'] = store.last_inbound_on_task(task_id) or promised, operations.message_revision(store, task_id)
-    user = f"Subject: {last.get('Subject') or t.get('Title') or ''}\nFrom: {last.get('FromName')} <{last.get('FromEmail')}>\n{_to_cc(store, last)}\n{thread}"
+    # the mail that holds the ask is the one answered (triage's thread reading) - its sender, its To and Cc; none, and the newest inbound as always
+    ask = (answers and store.get_message(answers)) or last
+    asked = (answers and store.get_message(answers)) or next((m for m in reversed(msgs) if m.get('Direction') != 'out'), last)
+    user = f"Subject: {last.get('Subject') or t.get('Title') or ''}\nFrom: {ask.get('FromName')} <{ask.get('FromEmail')}>\n{_to_cc(store, ask)}\n{thread}"
     # ...said as what it is: the message above is the owner's own, and the reply is the one that keeps its promise to whom it went
     if promised: user += (f"\n\n--- WHAT THIS REPLY IS FOR: the last message above is YOUR OWN, to {store.promisee(promised) or 'them'}. "
                           f"{t.get('Summary') or ''} Write the message that keeps that promise to them - never an answer to yourself.")
@@ -600,7 +631,6 @@ def draft_reply(store, task_id: int, llm=None, resolution: str = None, nudge: st
                         'answer about what they show, and never ask for one they already sent.')
     files = files_block(store, [m['MessageId'] for m in reversed(msgs)])
     user += files
-    asked = next((m for m in reversed(msgs) if m.get('Direction') != 'out'), last)
     user += triage_read(store, asked)
     # ...and with no agent's result, what Taskuary already knows about the task stands in for it (known_block)
     if not resolution and not promised: user += known_block(store, t)
@@ -615,9 +645,9 @@ def draft_reply(store, task_id: int, llm=None, resolution: str = None, nudge: st
         store.add_comment(task_id, 'responder', 'agent', 'Checked your calendar before drafting'
                           + (' - it could not be read, so the draft does not promise a time.' if 'COULD NOT READ' in calendar else '.'))
     has = bool(files) or len(sender_body(str(asked.get('BodyText') or ''), asked.get('OwnText'))[0]) >= SUBSTANCE
-    out, files = _answer(llm, system, user, COMPLETE_REPLY_TOKENS if resolution else FEEDBACK_TOKENS if has else REPLY_TOKENS, images,
+    out, files, why = _answer(llm, system, user, COMPLETE_REPLY_TOKENS if resolution else FEEDBACK_TOKENS if has else REPLY_TOKENS, images,
                          guard=not nudge, sig=signature_for(store, box))
-    if seen is not None: seen['files'] = files
+    if seen is not None: seen['files'], seen['why'] = files, why
     # THE WRITER SAID NOTHING GOES BACK - with its NO_REPLY token, and only that. A sign-off word list used to decide that
     # "Thanks,\nAlex" was nothing and put the draft down, when a thank-you can be the whole real reply (the owner,
     # 2026-10-11: "everything should be ai"). A reply the owner asked for (nudge) is theirs to want: never dropped, it fails.
@@ -642,25 +672,36 @@ def draft_for_review(store, task_id: int, review_id: int, llm=None, resolution: 
     # stricter reading, so a caller that replaces draft_reply cannot quietly switch the guard off
     seen = {'saw': store.last_inbound_on_task(task_id) or store.promised_in(store.get_task(task_id)),
             'revision': operations.message_revision(store, task_id)}
-    try: text = draft_reply(store, task_id, llm, resolution, nudge, seen, pressed)
+    from . import wrapup
+    ans = wrapup.answers_for(store, task_id, (seen['saw'] or {}).get('MessageId'))     # the mail holding the ask, when triage read one
+    try: text = draft_reply(store, task_id, llm, resolution, nudge, seen, pressed, answers=ans)
     except NoReply:
         # ...carried out, and said: the draft is put down as no reply, the way the owner's own No reply does it (which closes
         # the task when nothing else of it waits), never left on the card as an email of one signature
         from . import verdicts
         rv = store.get_review(review_id)
+        # a draft already waiting (a new mail joined the thread and this was the redraft) is never put down or deleted: it is marked
+        # Not needed, with the writer's WHY, and Send still sends it
+        if rv and rv.get('Status') == 'pending' and str(rv.get('DraftText') or '').strip() and not resolution:
+            verdicts.not_needed(store, task_id, seen.get('why') or 'the thread no longer asks you for a reply', 'drafter')
+            logger.info(f'redraft for task {task_id}: the writer says no reply is owed now; the draft is marked not needed')
+            return ''
         if rv and rv.get('Status') in ('pending', 'held'):
             store.add_comment(task_id, 'responder', 'agent', 'No reply drafted - from what was done, nothing needs to go back to the sender.')
             verdicts.decide(store, rv, 'no_reply', None, None, 'responder')
         logger.info(f'no reply for task {task_id}: the writer said nothing needs to go back')
         return ''
     saw, revision = seen['saw'], seen['revision']
+    if ans: store.set_review_answers(review_id, ans)
+    if seen.get('why'): store.set_review_why(review_id, seen['why'])
+    tgt = (ans and store.get_message(ans)) or saw
     if saw and str(saw.get('Channel') or '').lower() == 'email':
         # the signature rides in the draft the owner reviews, once (PW-065); the recipients it will go to are pinned
         # with it, Reply all by default (PW-063/064) - an envelope the owner already set is kept
         text = signed(text, signature_for(store, mailbox_in(saw)))
         from . import outbound as _ob
         if not store.review_envelope(review_id):
-            env = _ob.reply_envelope(store, saw)
+            env = _ob.reply_envelope(store, tgt)
             if env: store.set_review_envelope(review_id, env)
     store.update_review_draft(review_id, text, None, files=seen.get('files'))
     if saw: store.pin_review_context(review_id, saw['MessageId'], revision)
@@ -738,7 +779,7 @@ def draft_for_message(store, m: dict, review_id: int, llm=None, instruction: str
     sty = style_doc(store)
     from . import stylews, workstreams
     if sty and (wsb := stylews.block(store, workstreams.of_message(store, m))): sty += wsb
-    system = (SYSTEM.format(owner=owner) + signature_line(store) + BREVITY + (CHAT if chat else email_rule(store, mailbox_in(m))) + '\n' + NOT_YET + FEEDBACK + FILES_RULE
+    system = (SYSTEM.format(owner=owner) + signature_line(store) + BREVITY + (CHAT if chat else email_rule(store, mailbox_in(m))) + '\n' + NOT_YET + FEEDBACK + FILES_RULE + WHY_RULE
               # every block below describes YOU. They are written in the third person because
               # the same documents serve agents working FOR the owner - said once, here, so the
               # model does not read its own biography as notes about somebody else.
@@ -764,7 +805,7 @@ def draft_for_message(store, m: dict, review_id: int, llm=None, instruction: str
     files = files_block(store, [m['MessageId']]) if m.get('MessageId') else ''
     user += files
     has = bool(files) or len(sender_body(str(m.get('BodyText') or ''), m.get('OwnText'))[0]) >= SUBSTANCE
-    out, files = _answer(llm, system, user, FEEDBACK_TOKENS if has else REPLY_TOKENS, images, guard=not instruction,
+    out, files, why = _answer(llm, system, user, FEEDBACK_TOKENS if has else REPLY_TOKENS, images, guard=not instruction,
                          sig=signature_for(store, mailbox_in(m)))
     out = (strip_signoff(out, own_lines(store)) or out) if chat else signed(out, signature_for(store, mailbox_in(m)))
     if not chat and not store.review_envelope(review_id):
@@ -772,5 +813,6 @@ def draft_for_message(store, m: dict, review_id: int, llm=None, instruction: str
         env = _ob.reply_envelope(store, m)
         if env: store.set_review_envelope(review_id, env)
     store.update_review_draft(review_id, out, None, files=files)
+    if why: store.set_review_why(review_id, why)
     store.update_review_message(review_id, m['MessageId'])
     return out

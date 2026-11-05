@@ -86,4 +86,5 @@ test("a draft an earlier agent session wrote is not drawn while a newer session 
   const fresh = { ...mine, ReviewId: 11, DraftSid: "s-new" };
   assert.deepEqual(latestDrafts([old, fresh, owned], "s-new").map((r) => r.ReviewId), [11, 9]);
   assert.equal(agentAsks(latestDrafts([old], "s-new")).length, 0, "no 'drafted a message' notice for it");
+
 });

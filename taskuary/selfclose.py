@@ -306,9 +306,65 @@ REPLY_OPEN, REPLY_CLOSE = '[[TASKUARY-REPLY]]', '[[/TASKUARY-REPLY]]'
 _REPLY_RE = re.compile(r'\[\[\s*TASKUARY[-_ ]?REPLY\s*\]\](.*?)\[\[\s*/\s*TASKUARY[-_ ]?REPLY\s*\]\]', re.I | re.S)
 REPLY_LINE = (f'REPLYING FOR THE OWNER: when you write the answer the person who asked will get, put exactly that '
               f'text between {REPLY_OPEN} and {REPLY_CLOSE}. It becomes the reply waiting on the owner\'s approval, '
-              f'in your words - nothing is sent until they approve it. A file it sends rides only if you name it on its own '
+              f'in your words - nothing is sent until they approve it. The owner reads it in Close out, beside your answer, never in it: say the '
+              f'reply is in Close out, not "below". A file it sends rides only if you name it on its own '
               f'line: [[TASKUARY-ATTACH: <full path>]] - a file you made in your working folder, or one listed under '
               f'ATTACHED FILES. Never say a file is attached unless you named it that way.')
+
+
+# ...and EVERY TURN ENDS WITH WHERE THE OWNER STANDS (Task 3.4, 2026-11-04): the general agent's one goal is to get the owner to done, so
+# each turn closes on a block the page draws as three parts - what the task wants, what the agent did, what is on the owner (the parser
+# is Task 3.5's). Not `SUMMARY:`, which the brief already uses as the task-summary label.
+SUMMARY_OPEN, SUMMARY_CLOSE = '[[TASKUARY-SUMMARY]]', '[[/TASKUARY-SUMMARY]]'
+SUMMARY_LINE = (f'ENDING EVERY TURN: close each reply with {SUMMARY_OPEN}{{"about": "<what this task wants from the owner>", "did": "<what '
+                f'you researched, found or did>", "on_you": ["<each step left for the owner, one short line each>"], "nothing_left": '
+                f'<true when nothing is left for them but to close>}}{SUMMARY_CLOSE} - valid JSON, plain words, no secret in it. When you '
+                f'need the owner, say what you got and what you are unsure about in one or two plain sentences above it; offer choices '
+                f'(through [[TASKUARY-ASK]]) only when there are real ones. When the owner\'s newest message CORRECTS you, add "corrections": '
+                f'[{{"kind": "redraft" (their words for the draft) or "ask" (you read what the task wants wrongly), "review": <the draft\'s id or null>, '
+                f'"said": "<their exact words>"}}] - never show them as anything.')
+_SUMMARY_RE = re.compile(r'\[\[\s*TASKUARY[-_ ]?SUMMARY\s*\]\](.*?)\[\[\s*/\s*TASKUARY[-_ ]?SUMMARY\s*\]\]', re.I | re.S)
+# ...and one that never closed: a live line is cut to 300-400 characters before it is drawn (agents.py), and a turn can end without
+# the closing tag - the opening tag through to the end goes, and so does a tag cut off part-way at the very end ("[[TASKUA")
+_SUMMARY_CUT = re.compile(r'\[\[\s*TASKUARY[-_ ]?SUMMARY\s*\]\].*\Z', re.I | re.S)
+_SUMMARY_TAGS = re.compile(r'\[\[\s*/?\s*TASKUARY[-_ ]?SUMMARY\s*\]\]', re.I)
+_TAG_STUB = re.compile('(?:' + '|'.join(re.escape(SUMMARY_OPEN[:k]) for k in range(len(SUMMARY_OPEN) - 1, 2, -1)) + r')\s*\Z', re.I)
+def without_summary(text: str) -> str:
+    "`text` with every summary block, an unclosed one and a cut-off tag at its end taken out."
+    return _TAG_STUB.sub('', _SUMMARY_CUT.sub('', _SUMMARY_RE.sub('', str(text or ''))))
+
+
+def summary_marker(text: str, letters=()) -> tuple:
+    """(text with every summary block taken out, {about, did, on_you, nothing_left}) - the dict None when it wrote none, or none that
+    reads as JSON or says nothing. The block comes out either way, closed or not: a broken one is Taskuary's plumbing, never words for
+    the owner - unless it was all the answer said, when its words are kept without the tags. `on_you` is there only when the agent
+    gave a list: a summary without one leaves the owner's steps as they are. `letters`: the pending drafts' bodies, each of their
+    lines said as SEE_DRAFT (without_letters) before the fields are cut to size."""
+    t = str(text or ''); m = _SUMMARY_RE.search(t)
+    if not m and not _SUMMARY_CUT.search(t): return text, None
+    rest, bare = without_summary(t).strip(), lambda: (rest or _SUMMARY_TAGS.sub('', t).strip(), None)
+    if not m: return bare()
+    try: j = json.loads(m.group(1).strip())
+    except ValueError: return bare()
+    if not isinstance(j, dict): return bare()
+    flat = lambda x, n: without_letters(' '.join(str(x or '').split()), letters)[:n]
+    out = {'about': flat(j.get('about'), 600), 'did': flat(j.get('did'), 600), 'nothing_left': j.get('nothing_left') is True}
+    if isinstance(j.get('on_you'), list): out['on_you'] = list(dict.fromkeys(x for x in (flat(o, 200) for o in j['on_you'] if isinstance(o, str)) if x))[:6]
+    if cs := [{'kind': c['kind'], 'review': c['review'] if isinstance(c.get('review'), int) else None, 'said': ' '.join(c['said'].split())[:1000]}
+              for c in j.get('corrections') or [] if isinstance(c, dict) and c.get('kind') in ('redraft', 'ask') and isinstance(c.get('said'), str) and c['said'].strip()]:
+        out['corrections'] = cs[:6]
+    return (rest, out) if out['about'] or out['did'] or out.get('on_you') else bare()
+
+
+# ...and never a second copy of the letter (the owner, 2026-11-04): what goes to the sender - a login in it above all - lives in the draft
+# only, never kept again in the summary or the On you list. A line of a pending letter found in it is said as SEE_DRAFT. Short lines
+# ("Hi Gail,") are left alone: they carry nothing a summary could leak, and swapping them would garble its own words
+SEE_DRAFT = '(see the drafted reply)'
+def without_letters(s: str, letters=()) -> str:
+    "`s` with every line (12+ characters) of the `letters` in it said as SEE_DRAFT, longest first."
+    lines = sorted({x for l in letters or () for x in (' '.join(r.split()) for r in str(l or '').splitlines()) if len(x) >= 12}, key=len, reverse=True)
+    for x in lines: s = s.replace(x, SEE_DRAFT)
+    return s
 
 
 def reply_marker(text: str) -> tuple:
@@ -349,7 +405,7 @@ def attach_markers(text: str) -> tuple:
 # stuff not"). Nothing it writes on the way is shown: only a file it names this way lands in the chat, under this turn.
 _SHOW_RE = re.compile(r'^[ \t]*\[\[\s*TASKUARY[-_ ]?SHOW\s*:?\s*(.+?)\s*\]\][ \t]*\n?', re.I | re.M)
 SHOW_LINE = ('SHOWING YOUR ANSWER: when a chart, an image, a table or a small page makes your answer easier to understand than '
-             'words alone, make it as a file in your working folder (.png .jpg .svg .html .md .csv) and name it on its own line: '
+             'words alone, make it as a file in your working folder (.png .jpg .svg .html .md .csv .pdf) and name it on its own line: '
              '[[TASKUARY-SHOW: <full path>]] - it appears in the chat under this answer and stays on the task. Only when it truly '
              'helps; never your working files, test data or drafts. An .html page runs with no network: put its data and scripts in it.')
 
@@ -458,7 +514,8 @@ def for_screen(text: str) -> str:
     once, as the answer. A CLI's final text streams in as a progress line too, so the box drew the markers and the answer twice
     (2026-10-15); a done line left in kept the last paragraph from matching the answer, so it was drawn twice again (walk 2026-10-29)."""
     # ...and no show line: its file is drawn under the answer, and left in it kept the answer drawn twice again (stress test 2026-11-02)
-    return show_markers(attach_markers(_DONE_LINE.sub('', _REPLY_RE.sub('', without_ask(text))))[0])[0].strip()
+    # ...and no summary block: it is the turn's three parts, drawn under the answer from the row it is filed as (Task 3.5)
+    return show_markers(attach_markers(_DONE_LINE.sub('', without_summary(_REPLY_RE.sub('', without_ask(text)))))[0])[0].strip()
 
 
 _ASK_ONE = re.compile(r'\[\[\s*TASKUARY[-_ ]?ASK\s*\]\]\s*:?', re.I)

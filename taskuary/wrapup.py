@@ -137,6 +137,16 @@ def reply_target(store, task_id: int):
     return own or (store.promised_in(store.get_task(task_id)) or {}).get('MessageId') or (rows[0]['MessageId'] if rows else None)
 
 
+def answers_for(store, task_id: int, mid: int, to: str = '') -> int | None:
+    """The mail that holds the ask a reply to `mid` answers: the newest of triage's asks that is on the task, in `mid`'s conversation, no newer than
+    `mid` - and, with `to`, written by the person `mid` is from. None when triage read no ask there: the reply then answers `mid` as it always did."""
+    conv, mine = (store.get_message(mid) or {}).get('ConversationId'), {m['MessageId'] for m in store.list_messages(task_id)}
+    asks = [a.get('mid') for a in (store.task_thread(task_id) or {}).get('asks') or [] if isinstance(a, dict)]
+    ok = [i for i in asks if isinstance(i, int) and i in mine and i <= mid and (store.get_message(i) or {}).get('ConversationId') == conv
+          and (not str(to or '').strip() or _person(store, i) == _person(store, mid))]
+    return max(ok, default=None)
+
+
 # WHO A REPLY IS TO IS THE AGENT'S TO SAY (2026-11-02): a task that had joined a second person's thread took the session's follow-up
 # question to its first requester and filed it as a reply to the second person's "Perfect!" - reply_target answers the NEWEST mail,
 # whoever wrote it. `taskuary --reply --to <name or address>` names the person, and the reply answers that person's newest message.
@@ -251,8 +261,30 @@ def attach_files(store, rid: int, files, agent: str = 'agent') -> dict:
     done, why = [], []
     for name, data in files or []:
         try: verdicts.attach(store, rid, name, data, agent); done.append(name)
-        except ValueError as e: why.append(f'{name}: {e}')
+        except ValueError as e: why.append(f'{name}: {e}'); verdicts.refused(store, rid, name, str(e))
     return {'attached': done, 'not_attached': why}
+
+
+# ...AND THE AGENT HEARS IT (2026-11-04): a refusal said only in a comment it never reads left it telling the owner "the three files are
+# attached" turn after turn. Every save's answer carries each file the reply does not carry - this save's refusals and the ones still standing
+# on the review (verdicts.refused) - with what to do about it, and the next turn's brief says the same (general._prompt) while one stands.
+REFUSED_HEAD = 'THE REPLY YOU SAVED DOES NOT CARRY EVERY FILE YOU HANDED OVER'
+REFUSED_TELL = ("Its words must not say these are attached. Tell the owner plainly which file did not attach and why, and offer a way on: "
+                "a link to it in their cloud storage, or a smaller copy (zipped, split or trimmed) attached again. Then save the reply again "
+                "with words that match what it carries.")
+def refused_files(store, rid) -> list:
+    """`name: why` of each file the review's envelope keeps as not attached."""
+    from .verdicts import _envelope
+    return [f"{f.get('name')}: {f.get('why')}" for f in (_envelope(store.get_review(int(rid)) or {}).get('not_attached') or []) if f.get('name')] if rid else []
+def refused_line(store, task_id: int) -> str:
+    """The next turn's brief: the files the pending reply does not carry, and what to do - '' while it carries every one."""
+    rv = store.pending_review(task_id, 'draft_reply', live_only=False) or {}
+    got = refused_files(store, rv.get('ReviewId'))
+    return f'{REFUSED_HEAD}\n' + '\n'.join(f'- {w}' for w in got) + f'\n{REFUSED_TELL}' if got else ''
+def _told(store, rid, out: dict) -> dict:
+    no = list(out.get('not_attached') or [])
+    no += [w for w in refused_files(store, rid) if not any(x.split(':')[0] == w.split(':')[0] for x in no)]
+    return {**out, 'not_attached': no, **({'tell': f"Not attached: {'; '.join(no)}. {REFUSED_TELL}"} if no else {})}
 
 
 def _words(t) -> str: return re.sub(r'\s+', ' ', str(t or '')).strip().lower()
@@ -294,7 +326,7 @@ def owner_asked_since(store, task_id: int, at: str) -> bool:
 
 
 def agent_reply(store, task_id: int, text: str, agent: str = 'agent', run_id: int = None, files=None, follow_up: bool = False,
-                to: str = '', sid: str = None) -> dict:
+                to: str = '', sid: str = None, answers: int | None = None) -> dict:
     """Put the agent's reply on the task as the pending draft - the same review the responder would
     write into (held, live or new; one per answer, PW-236), marked as the agent's. Nothing is sent:
     the owner approves it like every other reply. `files` are (name, bytes) pairs to attach; with no
@@ -305,7 +337,7 @@ def agent_reply(store, task_id: int, text: str, agent: str = 'agent', run_id: in
     if not text and files:
         rv = store.pending_review(task_id, 'draft_reply', live_only=False) or store.pending_review(task_id, 'draft', live_only=False)
         if not rv: return {'ok': False, 'why': 'there is no pending reply to attach to - save one with --reply first'}
-        return {'ok': True, 'review_id': rv['ReviewId'], **attach_files(store, rv['ReviewId'], files, agent)}
+        return {'ok': True, 'review_id': rv['ReviewId'], **_told(store, rv['ReviewId'], attach_files(store, rv['ReviewId'], files, agent))}
     if not text: return {'ok': False, 'why': 'no reply text'}
     # THE SAME LETTER TWICE IS A MISTAKE, never a new draft: a resumed session saved its first session's reply again after the
     # owner had sent it, and it went back on the table aimed at the sender's "Thanks!" (2026-10-16) - one press from a resend
@@ -320,6 +352,11 @@ def agent_reply(store, task_id: int, text: str, agent: str = 'agent', run_id: in
         mid = hit['MessageId']
         if held and _person(store, held.get('MessageId')) != _person(store, mid): held = {}
     else: mid = reply_target(store, task_id) or held.get('MessageId')
+    # ...and `answers` names the mail that holds the ask when the owner means one triage did not pick: it must be somebody's mail on this task
+    if answers:
+        a = store.get_message(answers) or {}
+        if a.get('TaskId') != task_id or a.get('Status') in ('context', 'skipped') or str(a.get('Direction') or 'in') == 'out' or from_owner(store, a):
+            return {'ok': False, 'why': f'#{answers} is not a mail on this task'}
     # work the owner started here (a brief typed in the chat) has only their own words behind it: the agent's
     # answer IS the result, and filing it as a reply "waiting on your approval" addressed it to them (2026-09-23).
     # Refusing it outright threw the answer away - a whole review the owner asked for, gone (2026-10-06) - so keep it.
@@ -359,11 +396,14 @@ def agent_reply(store, task_id: int, text: str, agent: str = 'agent', run_id: in
     # FYI this answered - never equal - and Send threw the agent's words away for a fresh draft to whoever wrote last (2026-11-02)
     from . import operations
     store.pin_review_context(rid, mid, operations.message_revision(store, task_id))
+    # the mail that holds the ask is what the draft answers and what it is addressed from; the newest mail still pins its freshness
+    ans = answers or answers_for(store, task_id, mid, to)
+    if ans: store.set_review_answers(rid, ans)   # a plain re-save keeps the mail an earlier save pinned
     rv = store.get_review(rid) or {}
     # ...and to whom it goes, at once - its To and Cc - so the card says the person the agent wrote to, and a line from somebody else
     # later never moves it. An answer to the owner's OWN mail (a promise task's) goes to whom it went (outbound.reply_envelope)
-    m = store.get_message(mid) or {}
-    if not store.review_envelope(rid):
+    m = store.get_message(ans or mid) or {}
+    if ans or not store.review_envelope(rid):   # a mail that holds the ask replaces the recipients an earlier save set
         from .outbound import reply_envelope
         if (env := reply_envelope(store, m)): store.set_review_envelope(rid, env)
     from .signatures import agent_signed
@@ -371,12 +411,14 @@ def agent_reply(store, task_id: int, text: str, agent: str = 'agent', run_id: in
     # ...said once per letter: the same reply saved twice - its marker and its `--reply` in one turn - wrote "agent drafted the reply
     # itself" and "assistant drafted the reply itself" one under the other (the email walk, 2026-10-29)
     same = agent_drafted(rv) and ' '.join(str(rv.get('DraftText') or '').split()) == ' '.join(text.split())
-    store.update_review_draft(rid, text, run_id or rv.get('RunId'), by=AGENT_DRAFT + agent); store.set_review_sid(rid, sid)
+    # ...with the names of the files it hands over kept as the draft's promise (FilesPromised): the card counts them against what rides
+    store.update_review_draft(rid, text, run_id or rv.get('RunId'), by=AGENT_DRAFT + agent, files=[n for n, _ in files] if files else ...)
+    store.set_review_sid(rid, sid)
     if not same: store.add_comment(task_id, agent, 'agent', f'{agent} drafted the reply itself - it is on the task, waiting on your approval.')
     # ...and the session is told whom it went to - and, when it did not say and the task has more than one person on it, who they are
     many = [] if str(to or '').strip() else people_named(store, task_id)
     return {'ok': True, 'review_id': rid, 'message_id': mid, 'to': m.get('FromName') or m.get('FromEmail') or '',
-            **({'people': many} if len(many) > 1 else {}), **attach_files(store, rid, files, agent)}
+            **({'people': many} if len(many) > 1 else {}), **_told(store, rid, attach_files(store, rid, files, agent))}
 
 
 # ── the cheap ending ────────────────────────────────────────────────────────────────────

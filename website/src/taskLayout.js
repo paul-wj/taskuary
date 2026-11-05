@@ -5,6 +5,7 @@ import { fmtDate } from "./dates.js";
 import { drawerLit, mainView, sectionOf as sectionOfStage, stageOf } from "./stages.js";
 import { waitingEmails } from "./taskLifecycle.js";
 import { getLocale, t } from "./i18n.js";
+import { isGeneralKind } from "./autostart.js";
 
 // WHILE AN AGENT WORKS THE WORK TAKES THE WHOLE WIDTH: a live session - coding or general, working or waiting on you (the rail's
 // spinning ring, or its hand) - and From folds to one line over it; the terminal is never covered or squeezed. `sessionView` is the
@@ -93,6 +94,15 @@ export const fromLine = ({ sender = null, count = 0, workflow = null, made = "" 
 // open and fills the width, the other two are closed tabs that say where each stands in a line or two. `here`: the section the task is up
 // to (stages.sectionOf). Pure, so node --test reads it.
 export const SECTIONS = [{ key: "from", n: 1, name: "Came from" }, { key: "agent", n: 2, name: "Agent" }, { key: "close", n: 3, name: "Close out" }];
+// ...BUT TWO WHERE THE CHAT IS HOME (phase 4): a general or reply task is Came from and the agent's chat, opening on the chat, and Close out's
+// own moves (Mark done, Close with a note, Attach, Share) ride the agent's strip. Read off the kind, not the workspace mode: a reply task no
+// agent ran is "empty" there (taskWorkspace), and its chat is still home. A coding task, a plain one and a live terminal keep all three
+// ...and a kind not yet known is not home: a coding task drew two sections for a moment before its detail landed
+export const chatHome = ({ kind, terminal = false } = {}) => !terminal && !!kind && (isGeneralKind(kind) || kind === "reply");
+// ...a live CODING terminal, that is: a general agent's own chat is a session too (mode "assistant"), and its task stays home
+export const liveTerminal = (term) => !!term?.alive && term.mode !== "assistant";
+export const taskSections = (home) => (home ? SECTIONS.filter((s) => s.key !== "close") : SECTIONS);
+export const homeSection = (home, here) => (home ? "agent" : here);
 // ...a closed tab says MORE than its name (the owner, 2026-10-27: "maybe a little smaller and have more summary on each one"): three or four
 // short lines, each clamped so a tab never scrolls. Words quoted are somebody's own; each line only where there is something to say.
 // ...and read like a book's SPINE (the owner, 2026-10-27): its `lines` at the top under the name, its `foot` - the one status line - at the
@@ -113,8 +123,9 @@ export const fromStatus = ({ channel = "", count = 0, msgs = [], workflow = null
     ...msgs.slice(0, TAB_MOST).map((m) => `${m.who}: ${q(m.words)}`)].filter(Boolean),
   foot: sorted ? `✓ ${sorted}` : "" });
 // ...the Agent: its profile and where it stands, what it did in a line, what it made - and at its foot its state and the Advisor's next move
-export const agentWord = ({ live = false, waiting = false, failed = false, stopped = false, result = false, record = false, codeRun = false } = {}) =>
-  live ? (waiting ? "needs you" : "working") : failed ? "failed" : stopped ? "stopped" : result ? "finished" : record ? "ran" : codeRun ? "steps ran by code" : "not started";
+// ...and a start held back for a free agent slot says so (`queued`, QueuedStart), never "not started" over a start already on its way (2026-11-04)
+export const agentWord = ({ live = false, waiting = false, failed = false, stopped = false, result = false, record = false, codeRun = false, queued = false } = {}) =>
+  live ? (waiting ? "needs you" : "working") : queued ? "waiting its turn" : failed ? "failed" : stopped ? "stopped" : result ? "finished" : record ? "ran" : codeRun ? "steps ran by code" : "not started";
 // ...what an AGENT REPORT says in a line: its Summary, else its first line of words - never the "AGENT REPORT" marker it opens with (the
 // state matrix, 2026-10-28: the Agent tab of a task whose sender wrote again read "general · ran / AGENT REPORT")
 export const reportLine = (body) => {

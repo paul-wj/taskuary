@@ -245,6 +245,7 @@
   "Taskuary is signing in to {host} — the picture resumes in a moment": "Taskuary 正在登录 {host}，画面稍后恢复",
   "Taskuary is signing in — the picture resumes in a moment": "Taskuary 正在登录，画面稍后恢复",
   "the browser closed — this is where it last was; it reopens when the agent next needs it": "浏览器已关闭，画面显示的是最后位置；智能体下次需要时会重新打开",
+  "waiting for the page to draw — type once it shows": "等待页面显示——显示后即可输入",
   "your turn — the agent is waiting on you; click the page and type": "轮到您了，智能体正在等待；点击页面并输入",
   "you are driving — the agent's next command still runs; hand back when done": "您正在操作，智能体的下一条命令仍会运行；完成后请交还",
   "You are watching the agent's page — Take over to type on it.": "您正在查看智能体的页面，接管后即可输入。",

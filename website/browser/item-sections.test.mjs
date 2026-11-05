@@ -159,3 +159,38 @@ test("a dashboard opens on itself between slim Came from and Close out tabs, lik
   assert.ok(await page.$("[data-tq-item-sections] [data-tq-dash-canvas]"), "the dashboard itself is the open section");
   assert.deepEqual(errors, []);
 });
+
+// WHAT IT SAYS AND WHAT MATTERS TO YOU (the Close-out spec section 8, 2026-11-04): an FYI's middle opens with triage's reading of it, as a
+// task's chat does - kept on its own route, since no task holds it (store.message_thread)
+test("an FYI's middle says what it says and what matters to you", { timeout: 240000 }, async (t) => {
+  const { page, errors } = await boot(t, { width: 1440, height: 900 });
+  assert.ok(await clickRow(page, await findRow(page, /Regional operations newsletter/)));
+  await settled(page, "fyi");
+  await tab(page, "agent"); await sleep(800);
+  const said = await page.$eval('[data-tq-item-sections] [data-tq-slot="agent"] [data-tq-item-ask="fyi"]', (e) => e.innerText);
+  assert.match(said, /What this says\s+Priya forwarded the regional operations newsletter[\s\S]*What matters to you\s+Nothing is asked of you/, said);
+  assert.match(await page.$eval("[data-tq-fyi-agent]", (e) => e.innerText), /No agent yet/, "the Agent section still says nobody is on it");
+  assert.deepEqual(errors, []);
+});
+
+// A QUESTION ON AN FYI ONLY GETS AN ANSWER (the owner, 2026-11-04: "question on report should not start task"): its box answers under itself
+// - the recorded answer ends on a CALL to start an agent, which the item's box drops - and the row is still an FYI, with no task made
+test("typing in an FYI's box shows the answer under it and the row stays an FYI", { timeout: 240000 }, async (t) => {
+  const { page, errors } = await boot(t, { width: 1440, height: 900 });
+  assert.ok(await clickRow(page, await findRow(page, /Regional operations newsletter/)));
+  await settled(page, "fyi");
+  const tasks = () => page.evaluate(() => fetch("/api/tasks", { headers: { "X-Taskuary-Token": localStorage.getItem("taskuary_token") } }).then((r) => r.json()).then((j) => (Array.isArray(j) ? j : j.data || []).length));
+  const had = await tasks();
+  assert.ok(had > 0, "the task list was read");
+  await tab(page, "agent"); await sleep(800);
+  await page.type('[data-tq-item-ask="fyi"] [aria-label="Ask about this"]', "anything asked of me here?");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector('[data-tq-item-ask="fyi"] [data-tq-item-answer]', { timeout: 30000 });
+  const a = await page.$eval('[data-tq-item-ask="fyi"] [data-tq-item-said]', (e) => e.innerText);
+  assert.match(a, /You: anything asked of me here\?[\s\S]*Priya only forwarded it so you can read it/, a);
+  assert.doesNotMatch(a, /CALL|task\.create/, a);
+  await sleep(2000);
+  assert.ok(await page.$('[data-tq-item-sections="fyi"]'), "still the FYI on the table");
+  assert.equal(await tasks(), had, "no task was made");
+  assert.deepEqual(errors, []);
+});

@@ -28,7 +28,7 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import api from "./api.js";
 import { DEMO_SAID } from "./apiError.js";
 import { runOperation } from "./taskOps.js";
-import { openReply } from "./replyDraft.js";
+import { draftJob, openReply, rewriteReceipt } from "./replyDraft.js";
 import { DEMO } from "./demoApi.js";
 import { lazyView } from "./lazyView.jsx";
 import { loadGeneral } from "./lazyGeneral.js";
@@ -1230,6 +1230,7 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
   // sat on the rail as an open task already seen: under For later (the owner, 2026-10-01: "it first went to Later ... and
   // did not disappear right away"). Held until the pile no longer carries it, so a reopened task is never hidden.
   const [leavingTid, setLeavingTid] = useState(null);
+  const leavingWas = useRef(null);                   // the row being put down, as it stood at the press (funnelPile.putDownLanded)
   // ...and the rows a walk press READS (rule 4), by key: {keys, coming, after} - `coming` the fyi batch below them, `after` the rail they
   // wait out when the answer brought none (surface)
   const [readGone, setReadGone] = useState(null);
@@ -2472,10 +2473,18 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
       }
       // the reply's card comes up at once and its draft fills in behind it - never a wait on the model (2026-10-01)
       if (verb === "reply" && mid) {
-        const data = await openReply(api, mid, d.text || null, d.cc || null);
+        const data = await openReply(api, mid, d.text || null, d.cc || null, false, d.line || null);
         // a name to loop in that nobody by it has written as is said, never guessed: the card's CC row takes an address
         if (data?.cc_unknown?.length) setMsgs((m) => [...m, { id: `r${Date.now()}`, role: "receipt",
           ...uiReceipt("I have no address for {names} - add them in the reply's CC.", { names: data.cc_unknown.join(", ") }) }]);
+        // ..."Drafting a reply" is under way, never done: a draft that did not come is said under it, with why (the server's receipt,
+        // the owner 2026-11-04: "it says it's doing things and it does not do them") - one that came is the card's own, Send lit
+        const failed = (rc) => rc?.status === "failed" && setMsgs((m) => [...m, { id: `r${Date.now()}`, role: "receipt", status: "failed", text: rc.text }]);
+        failed(data?.receipt);
+        if (data?.reviewId && data.drafting) Promise.resolve(draftJob(data.reviewId)?.promise).then(() => {
+          const j = draftJob(data.reviewId);
+          failed(j?.receipt || (j?.state === "failed" ? { status: "failed", text: `No reply was drafted - ${j.error}.` } : null));
+        });
         // ...wherever it was asked about: "send Omar the answer" with nothing on the table was told "it lands below for your
         // yes", and the draft went onto his task with nothing landing here (2026-10-06)
         // ...and its Send is lit: drafting is not sending, the owner's press is (the owner, 2026-10-19)
@@ -2487,15 +2496,14 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
         loadPile(); return;
       }
       if (verb === "redraft" && cur?.rid && mid) {
-        const { data } = await api.post(`/api/messages/${mid}/reply`, { draft: true, redraft: true, instruction: d.text || null });
+        const { data } = await api.post(`/api/messages/${mid}/reply`, { draft: true, redraft: true, instruction: d.text || null, ...(d.line ? { line: d.line } : {}) });
         // "below" only when it lands below: a redraft on another task said "read it below" over nothing (2026-10-19 UI walk) - there
         // the receipt names the task and its chip opens it
         const ref = cur.ref || `TQ-${String(cur.tid).padStart(4, "0")}`;
         const there = elsewhere && cur.tid ? { tid: cur.tid, ref, chips: [{ verb: "opentask", tid: cur.tid, label: `Open ${ref}` }] } : {};
         // ...and a rewrite that did not happen is drawn as the failure it is (✗) - a receipt with no status wore the tick (2026-10-26)
-        setMsgs((m) => [...m, { id: `r${Date.now()}`, role: "receipt", ...there, ...(data.draft ? {} : { status: "failed" }),
-          ...uiReceipt(data.draft ? (there.tid ? "Rewritten on {ref} - read it there before you send it." : "Rewritten - read it below before you send it.") : there.tid ? "I could not rewrite it here; edit the draft on {place} and send that." : "I could not rewrite it here; edit the draft on the card and send that.",
-            { ref, place: ref }) }]);
+        // ...and one that came back empty or unchanged is one that did not happen, said with why (rewriteReceipt, 2026-11-04)
+        setMsgs((m) => [...m, { id: `r${Date.now()}`, role: "receipt", ...there, ...rewriteReceipt(data, there.tid ? ref : "") }]);
         if (!elsewhere) { putOnTable(null, "sync"); deferInChat(() => surfaceRef.current?.(`review:${cur.rid}`), 300); } else loadPile();
         return;
       }
@@ -3376,7 +3384,7 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
   useEffect(() => { if (!readGone?.after) return;
     if (pile !== readGone.after || !(pile?.items || []).some((i) => readGone.keys.some((k) => answersTo(i, k)))) setReadGone(null); }, [pile, readGone]);
   useEffect(() => {                                   // the close has landed: the server's pile no longer has it, or has it For later
-    if (leavingTid && pile?.items && putDownLanded(pile.items, leavingTid)) setLeavingTid(null);
+    if (leavingTid && pile?.items && putDownLanded(pile.items, leavingTid, leavingWas.current)) setLeavingTid(null);
   }, [pile, leavingTid]);
   useEffect(() => {                                   // ...and the continue has: the server's pile has it working (or not at all)
     const row = continuingTid && pile?.items ? pile.items.find((i) => i.tid === continuingTid) : undefined;
@@ -3393,7 +3401,8 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
     toggle: () => setExpanded((x) => !x), fold: (key) => { setExpanded(false); setFoldedKey(key); },
     // the task leaves the table the moment it is put down, the "…" under its title line while the close and the walk's answer are out;
     // a close that fails unfolds it and says why
-    putDown: (key, tid = null) => { leftKey.current = key; setExpanded(false); setFoldedKey(key); setNextComing(true); setLeavingTid(tid); },
+    putDown: (key, tid = null) => { leftKey.current = key; setExpanded(false); setFoldedKey(key); setNextComing(true);
+      leavingWas.current = (pileRef.current?.items || []).find((i) => i.tid === tid) || null; setLeavingTid(tid); },
     pickUp: (key, why) => { leftKey.current = null; setFoldedKey((k) => (k === key ? null : k)); setNextComing(false); setLeavingTid(null); if (why) setErr(why); } }),
     [bodyH, expanded, foldedKey, browsing, phone, litNow?.verb, litNow?.line, litNow?.hand?.to, litNow?.hand?.note, noteAdvice?.for, noteAdvice?.state, noteAdvice?.line, noteAdvice?.verb]);   // eslint-disable-line react-hooks/exhaustive-deps
   const lastCardIdx = useMemo(() => { const i = tableCardIndex(shown, old ? null : current || cardKey), c = shown[i]?.card;

@@ -2,6 +2,64 @@
 
 What each release changed, newest first. Ask the Assistant "what changed in the last update?" and it reads this page.
 
+## 0.3.10.29 - 2026-11-04
+
+- Triage sees every open item and what the owner's search finds, so a matter joins its task from any source
+- A row clicked lights Back and Next at once, a watched row included
+- Mark done on a watched row takes it off the rail at the press and keeps it off
+- The rail's age gutter splits the first half hour into < 5m, < 15m and < 30m
+- Triage no longer picks a worker for a task: every general task runs on the one assistant; routines still name theirs
+- A general task whose reply writer says NEEDS starts the assistant on it, as a reply task's does
+- A login the thread asks the owner for, kept in their own files, goes in the drafted reply and never in the conversation
+- A drafted reply's body stays out of the agent's pane, live trace and kept steps
+- A research task handed on by the reply writer's NEEDS keeps its kind, and counts as opening until its start lets go
+- A drafted reply's body stays off the CLI live line and an ACP call named by its kind, and a broken start lets its hold go
+- A Claude hook on the draft call names it by what it is: the worker's tool line and the approval text carry no body
+- A stranger session's permission card names the draft call, never its body
+- The general agent's one goal is to get the owner to done, starting from triage's reading
+- A stranger's task keeps the one goal but is never steered toward a login
+- The login rule lives only in the owner's own goal line, never in a document a stranger's task reads
+- Each agent turn ends with what it is about, what it did and what is on the owner
+- A summary block cut short never reaches the screen, and the owner's On you steps survive ticks, edits and empty summaries
+- The agent's chat says Working on thisâ€¦, and ends each turn in three parts
+- An opened Working on thisâ€¦ stays open, a failure is never folded, and a pending Approve is not Nothing left
+- Profiles are for routines only: the roster and the "Can be given new work" switch go
+- The assistant-tools page is the catalogue as it stands
+- GOAL_LINE is defined once, and the danger check asks the verdict schema without a profile
+
+## 0.3.10.28 - 2026-11-04
+
+- A helpdesk's answer on its own thread is shown the request it answers, so a watched ask and its ticket confirmation are one row
+- Settings drops "Your mail goes to": triage picks no worker for a task, so the row chose nothing
+- The role walk no longer asks where the owner's mail goes, and applying a role moves none of it
+- A file the agent hands over that cannot ride is kept on the reply, by name and why
+- Close out says which file did not attach and why, and Attach another names a refused file
+- The agent is told which file its reply does not carry, and what to offer instead
+- The admin approval link goes through the sign-in page, which takes the app's desktop redirect
+- Help page: why an old approval link said AADSTS900971, and the Entra admin center as a last resort
+
+## 0.3.10.27 - 2026-11-04
+
+- An agent run is never killed for running long, and a turn cut by a time limit says so and offers Continue
+- A draft keeps which mail it answers apart from the newest mail it saw
+- The agent's reply answers the mail that holds the ask, and can be pointed at another
+- A re-saved reply addressed from the mail that holds the ask, and a plain re-save that keeps what was pinned
+- The drafter answers the mail that holds the ask and leaves the owner one line on why
+- A draft with no thread reading keeps its From and Cc, and a WHY that wraps is taken off whole
+- A WHY is taken off only at the very end, set off by a blank line, so a Why heading in the reply stays
+- A thanks on the thread leaves the draft where it was, and Send goes to the mail that asked
+- A reply sent with a merge goes to the mail that asked, and an aside opens no draft and moves no unthreaded reply
+- A draft pinned to a thanks is not moved by the older ask it answers, and the store finds the newest line past the asides
+
+## 0.3.10.26 - 2026-11-04
+
+- The owner's exact words go under YOU; what the Assistant adds is Taskuary's, folded
+- A sign-in form that also asks for a third box says so, instead of calling the saved password wrong
+- The vault keeps the other boxes a sign-in form asks for, and fills them by their label
+- An approved click the page refuses tells the agent and ends the held act, instead of a raw refusal under Approve
+- A sign-in answered by Taskuary itself clears from the open task without a reload
+- Two poll tests follow the read made while the agent waits on the page; the new browser test joins the list
+
 ## 0.3.10.25 - 2026-11-03
 
 - A run cut off while asking the owner reads as still asking, not stopped

@@ -688,6 +688,7 @@ class SigninAddBody(BaseModel):
     user: str = ''
     password: str
     key: str = ''
+    fields: dict[str, str] = {}      # the other boxes its form asks for, by their label (a "Customer ID")
 
 
 # A SIGN-IN SAVED AHEAD OF TIME (the owner, 2026-11-03: "we probably should have space on connector to fill out what the system requires"):
@@ -699,7 +700,7 @@ def signin_add(body: SigninAddBody, request: Request):
     _owner_only(request, "the saved sign-ins are the owner's")
     site = signin.site_from(body.site)
     if not site: raise HTTPException(400, 'that is not a site a sign-in can be kept for - type its address, like portal.example.com')
-    try: signin.save(store, site, body.user.strip(), body.password, ACTOR, key=body.key.strip() or None)
+    try: signin.save(store, site, body.user.strip(), body.password, ACTOR, key=body.key.strip() or None, extra=body.fields or None)
     except ValueError as e: raise HTTPException(400, str(e))
     return {'ok': True, 'site': site}
 
@@ -713,6 +714,45 @@ def signin_code(site: str, body: SigninKeyBody, request: Request):
     except ValueError as e: raise HTTPException(400, str(e))
     if not ok: raise HTTPException(404, 'nothing is saved for that site')
     return {'ok': True, 'code': bool(body.key.strip())}
+
+
+# ── THE OWNER'S HANDWRITTEN SIGNATURE (handsign.py, Settings -> Your signature): drawn or uploaded once, read back by the owner's token
+# alone - the guard denies every one of these to a session, and _owner_only says no to anyone else who gets this far ──
+class HandSignatureBody(BaseModel):
+    data: str                         # base64, or the data: URL a canvas hands over
+
+@app.get('/api/hand-signature')
+def hand_signature(request: Request):
+    from . import handsign
+    _owner_only(request, "the owner's signature is theirs")
+    return handsign.info()
+
+@app.get('/api/hand-signature/image')
+def hand_signature_image(request: Request):
+    from . import handsign
+    _owner_only(request, "the owner's signature is theirs")
+    got = handsign.load()
+    if not got: raise HTTPException(404, 'no signature is saved')
+    return Response(got[0], media_type=got[1], headers={'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'})
+
+@app.put('/api/hand-signature')
+def hand_signature_save(body: HandSignatureBody, request: Request):
+    import base64, binascii
+    from . import handsign
+    _owner_only(request, "the owner's signature is theirs")
+    try: raw = base64.b64decode(re.sub(r'^data:[^,]*,', '', body.data.strip()), validate=True)
+    except (binascii.Error, ValueError): raise HTTPException(422, 'that picture did not arrive whole - try again')
+    try: out = handsign.save(raw)
+    except ValueError as e: raise HTTPException(422, str(e))
+    store.audit('setting', 0, 'hand_signature', ACTOR, detail={'saved': True, 'type': out['type']})
+    return out
+
+@app.delete('/api/hand-signature')
+def hand_signature_clear(request: Request):
+    from . import handsign
+    _owner_only(request, "the owner's signature is theirs")
+    store.audit('setting', 0, 'hand_signature', ACTOR, detail={'saved': False, 'had': handsign.clear()})
+    return handsign.info()
 
 
 # The fill page sits outside /api on purpose: it is opened as a page, so no header can ride on it - the one-time token in its address
@@ -759,7 +799,7 @@ async def signin_submit(token: str, request: Request):
         # the form again, on a fresh link, with the site's answer: nothing saved, the agent not told "signed in"
         r = signin.peek(store, e.again) if e.again else None
         if not r: return _signin_gone(token, f'Nothing was signed in: {e}.')
-        return HTMLResponse(signin.form_html(r['Site'], signin.TTL // 60, f"{r['Site']} did not accept that password - nothing was saved. Try again.",
+        return HTMLResponse(signin.form_html(r['Site'], signin.TTL // 60, f"{e} - nothing was saved. Try again.",
                                              task=signin.for_line(store, r['TaskId']), action=f'/signin/{e.again}'), 409, headers=signin.HEADERS)
     except LookupError: return _signin_gone(token)
     except (signin.SignInError, ValueError) as e:
@@ -1340,6 +1380,8 @@ def _run_kind(op: dict, background: BackgroundTasks):
         # had already removed (the owner, 2026-09-22: "don't see anywhere on agent or task to choose repo").
         out = dispatch_task(tid, DispatchBody(kind=p.get('kind'), agent=p.get('agent'), brain=p.get('brain'),
                                               instruction=p.get('instructions'), model=p.get('model')), background)
+        # ...a start the door refused is its 422, said as its reason - it read "'JSONResponse' object has no attribute 'get'" (2026-11-04)
+        if isinstance(out, JSONResponse): raise RuntimeError(json.loads(out.body or b'{}').get('detail') or 'the agent did not start')
         if out.get('dispatch') == 'needs_repo':
             raise operations.Halt(f"{out.get('ref') or 'it'} needs a repository first - {out.get('reason') or 'pick one'}", out)
         return out
@@ -1546,7 +1588,7 @@ def _run_kind(op: dict, background: BackgroundTasks):
         return clarify_with_sender(tid, ClarifyBody(body=str(p.get('text') or ''), message_id=int(p['message_id']) if str(p.get('message_id') or '').isdigit() else None))
     # the owner vouching for a stranger's task (origin.raise_to) - a page press only: not in toolcatalog.PURPOSE, so no chat can vouch
     if kind == 'task.trust': return task_trust(tid, str(p.get('scope') or ''))
-    if kind == 'agent.continue': return continue_work(tid, ContinueBody(note=str(p.get('note') or '') or None))
+    if kind == 'agent.continue': return continue_work(tid, ContinueBody(note=str(p.get('note') or '') or None, context=str(p.get('context') or '') or None))
     if kind == 'review.reject': return decide(tid, DecideBody(verb='reject'), background)
     if kind == 'hub.publish':
         from . import handbook
@@ -1716,8 +1758,8 @@ def _run_kind(op: dict, background: BackgroundTasks):
         # prompt as yes, and "which branch?" as the word yes
         said = ' '.join(str(p.get('text') or '').split())
         if not said: raise ValueError('say what to tell the agent')
-        out = ws.answer_open(store, tid, said, ACTOR)
-        if out['state'] == 'no_request': return waitroom_add(tid, {'text': said})
+        out = ws.answer_open(store, tid, said, ACTOR, owner=p.get('owner') or None)
+        if out['state'] == 'no_request': return waitroom_add(tid, {'text': said, 'owner': p.get('owner')})
         if not out['delivered']: raise RuntimeError(f"{out['state']}: {out.get('why') or ''}")
         return out
     # THE OWNER'S NEXT PROMPT TO AN AGENT AT WORK (the owner, 2026-11-02: "send a new prompt into the general/coding agent"): the page's
@@ -1725,7 +1767,7 @@ def _run_kind(op: dict, background: BackgroundTasks):
     if kind == 'agent.tell':
         said = ' '.join(str(p.get('text') or '').split())
         if not said: raise ValueError('say what to tell the agent')
-        return waitroom_add(tid, {'text': said})
+        return waitroom_add(tid, {'text': said, 'owner': p.get('owner')})
     # the page's "Stop and save" (TasksView.wrapUp posts close=False): the agent ends, the task stays
     if kind == 'agent.stop': return _wrap_task(tid, False) if p.get('wrap') else stop_task_agent(tid)
     if kind == 'report.rerun':
@@ -1795,7 +1837,7 @@ def _run_kind(op: dict, background: BackgroundTasks):
         # the same road the Profiles page's Set up takes (roles.apply) - the chat walked the owner to it
         from . import roles
         # the SERVER's config (the one put_agent saves): `cfg` is a local name further down this function
-        return roles.apply(store, globals()['cfg'], str(p.get('role') or ''), str(p.get('portal') or ''), bool(p.get('route_mail')))
+        return roles.apply(store, globals()['cfg'], str(p.get('role') or ''), str(p.get('portal') or ''))
     if kind == 'pipe.clear':
         from . import concierge
         # a SELECTOR names the set - the model's, checked by select_items - and nothing else clears: a word list matching the
@@ -2026,7 +2068,7 @@ def task_detail(task_id: int):
     # happened - the Done and Pause buttons used to vanish with the pty
     tr = store.last_transcript(task_id)
     rs = _resumable(task_id)[0]
-    from . import assistant, concierge, origin, workflows
+    from . import assistant, concierge, general, origin, workflows
     # ...and whether its channel can carry a reply, as /api/reviews says: without it a Teams draft offered Send, and
     # the press came back "not sent" instead of the card offering Copy & close from the start
     memo, sigs = {}, {}
@@ -2086,6 +2128,10 @@ def task_detail(task_id: int):
             # The detail page only needs lifecycle here; its terminal pane and optional WorkStrip
             # load their own rich data. Do not block selecting a task on git status.
             'session': session,
+            # ...and a start UNDER WAY before it has a session (general.OPENING: a quick call, a Continue, a carried-on turn), or one waiting
+            # on a free agent slot: the Agent section says "Starting…" or "Waiting its turn" at once, not when the session first speaks (2026-11-04)
+            'starting': task_id in general.OPENING,
+            'queued': _queued_info(store.get_dispatch(task_id)),
             # ...and what the task IS, the list's own State (taskstate): the table opens a task with no list row, and without it an
             # agent's own close read "stopped and saved" and opened on Close out (the owner, 2026-10-21)
             'state': (st := _task_state(task_id, d, session)),
@@ -2258,6 +2304,8 @@ def _assistant_payload(task_id: int, session=None):
             # by Stop and save - which closed the agent's browser, and then Approve said "the agent's browser is closed"
             'browserActs': [r for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action' AND Status='pending' "
                                                    "ORDER BY ReviewId", (task_id,)) if _proposals._action(r) in _proposals.HELD_ACTS],
+            # triage's reading of the thread (who asks what, the owner's part, the mails aside): None before the first verdict
+            'thread': store.task_thread(task_id),
             'session': session.info(tail=3) if session else None}
 
 @app.get('/api/tasks/{task_id}/assistant')
@@ -2370,6 +2418,12 @@ def desktop_status():
     from . import agentdesktop
     c = agentdesktop.card(store)
     return {'on': agentdesktop.on(store), 'active': bool(c.get('Active')), 'installed': agentdesktop.installed(), 'how': agentdesktop.HOW}
+
+@app.post('/api/tasks/{task_id}/assistant/seen')
+def assistant_seen(task_id: int):
+    """The task is on screen (the page posts every 60 s while it is open): its agent's CLI stays open - nothing here starts one."""
+    from . import clipool
+    return {'warm': clipool.touch(f'general:{task_id}') > 0}
 
 @app.post('/api/tasks/{task_id}/assistant/cancel')
 def assistant_cancel(task_id: int):
@@ -2738,6 +2792,7 @@ HANDED_OVER = ("THE OWNER HANDED THIS TO YOU: triage first read it as the owner'
 
 class ContinueBody(BaseModel):
     note: str | None = None          # what to tell it as it picks up - optional
+    context: str | None = None       # ...and what the Assistant added to the owner's words, Taskuary's own (general.relayed)
     images: list[str] = []           # pictures to go with it (/api/prompt-image)
 
 
@@ -2769,14 +2824,20 @@ def continue_work(task_id: int, body: ContinueBody = None):
         # THE TURN LEADS WITH WHAT CAME IN (2026-11-03, as ingest.carry_on_turn): the news, then the owner's note, then Resume's words. A resumed
         # CLI is handed the turn alone, so the news behind it in the instructions sat under "restate that one question and wait", shown nowhere.
         # Taskuary's part is filed as its brief (the chat's grey line) and the note as the owner's own, in that order
-        brief = '\n\n'.join(x for x in [news, '' if note else continuity.RESUME_PROMPT] if x)
+        extra = general.relayed(note, (body.context if body else '') or '')
+        brief = '\n\n'.join(x for x in [news, f'{general.RELAY} {extra}' if extra else '', '' if note else continuity.RESUME_PROMPT] if x)
         if brief: store.add_comment(task_id, general.BRIEF_ACTOR, general.USER_TYPE, brief)
         if note: store.add_comment(task_id, 'owner', general.USER_TYPE, note)
-        turn = '\n\n'.join(x for x in [news, f'FROM THE OWNER: {note}' if note else '', continuity.RESUME_PROMPT] if x)
+        turn = '\n\n'.join(x for x in [news, f'FROM THE OWNER: {note}' if note else '', f'{general.RELAY} {extra}' if extra else '', continuity.RESUME_PROMPT] if x)
         def go():
-            try: general.start_session(store, task_id, actor=ACTOR).send_prompt(turn, imgs or None, brief=True, kept=True)
-            except general.Stopped: pass       # the owner stopped it again: nothing to say
-            except Exception as e: _walk_cannot(task_id, f'The session could not continue: {e}. Your saved conversation is still here.')
+            try:
+                try: ses = general.start_session(store, task_id, actor=ACTOR)
+                except Exception as e: _walk_cannot(task_id, f'The session could not continue: {e}. Your saved conversation is still here.'); return
+                # ...a turn that fails is its run's own failure, said by the run (workerstate `failed`) with Try again: a line here said it twice,
+                # "Failed - Claude: API Error ..." over "The session could not continue: claude: API Error ..." (the desktop run, 2026-11-04)
+                try: ses.send_prompt(turn, imgs or None, brief=True, kept=True)
+                except general.Stopped: pass       # the owner stopped it again: nothing to say
+                except Exception as e: logger.info(f'task {task_id}: the continued turn failed - {e}')
             finally: general.OPENING.discard(task_id)
         # marked HERE, as /resume and the walk are: the page reloads the conversation the moment this answers, before the thread has
         # a session, read "nothing running" and never looked again - Continue and Try again left the new turn unseen (the agents walk,
@@ -3398,7 +3459,8 @@ def get_message(mid: int):
     """One message, whole body - the timeline row only carries a 4000-char preview."""
     m = store.get_message(mid)
     if not m: raise HTTPException(404, 'message not found')
-    return _readable(m)
+    # ...and triage's reading of it, for an item no task holds - an FYI, a report: "What this says", "What matters to you" (ItemSections)
+    return (_readable(m) or {}) | {'reading': store.message_thread(mid)}
 
 def _att_row(a: dict, mail: bool = True) -> dict:
     """One attachment as the panel needs it: enough to decide whether to draw it or list it. `mail`: it rode in on an email, where
@@ -3551,11 +3613,12 @@ def task_artifact(aid: int, download: bool = False):
     if not artifact: raise HTTPException(404, 'artifact not found')
     path = session_artifacts.confined(artifact.get('Path'))
     if not path: raise HTTPException(404, f'{_att_filename(artifact.get("Name"))} {GONE} - it is no longer in Taskuary\'s artifacts folder')
-    # a picture the chat SHOWED (session_artifacts.shown) is drawn by <img> as itself; anything that could run - SVG, a page -
-    # comes back as text like a Claude page below, for the sandboxed frame or the reader to draw (_NOSCRIPT)
+    # a picture the chat SHOWED (session_artifacts.shown) is drawn by <img> as itself, and a PDF by the browser's viewer (application/pdf
+    # inline, as the outputs route serves one); anything that could run - SVG, a page - comes back as text like a Claude page below, for
+    # the sandboxed frame or the reader to draw (_NOSCRIPT)
     kind = str(artifact.get('ContentType') or '')
     name = _att_filename(artifact.get('Name'))
-    if artifact.get('Kind') == 'shown' and kind.startswith('image/') and kind not in _NOSCRIPT:
+    if artifact.get('Kind') == 'shown' and (kind.startswith('image/') or kind == 'application/pdf') and kind not in _NOSCRIPT:
         response = Response(path.read_bytes(), media_type=kind)
         response.headers['Content-Disposition'] = _disposition('attachment' if download else 'inline', name)
         response.headers['X-Content-Type-Options'], response.headers['Cache-Control'] = 'nosniff', 'no-cache'
@@ -3733,6 +3796,8 @@ class OpenReplyBody(BaseModel):
     app_words: bool = False
     # DRAFT WITH AI was pressed: every press that asks for a draft gets one now (open_reply), so it says no more than `draft`
     ai: bool = False
+    # the Assistant's under-way line for this ("Rewriting the draft on TQ-n."): said again in its place with how it went (concierge.settle)
+    line: int | None = None
 
 
 @app.post('/api/messages/{mid}/reply')
@@ -3776,7 +3841,7 @@ def open_reply(mid: int, body: OpenReplyBody = None):
     rv = store.pending_review(tid) if tid else None
     rid = rv['ReviewId'] if rv else store.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft',
                                                       'Status': 'pending', 'Reason': 'you opened a reply on this message'})
-    draft = (rv or {}).get('DraftText') or ''
+    draft = before = (rv or {}).get('DraftText') or ''
     if rv and rv.get('MessageId') != mid:
         draft = ''                    # a correct old draft is still wrong for a newer conversation
     if body is not None and body.redraft: draft = ''          # write it again over what is there
@@ -3790,17 +3855,19 @@ def open_reply(mid: int, body: OpenReplyBody = None):
     # Reply on a task no agent had worked opened a signature-only box under Draft with AI, nothing coming (2026-10-28) - and when the
     # arrival's own draft was still being written (ingest.DRAFTING) it landed in that box seconds later, unannounced. Every press that
     # asks for a draft is owed one; the page's /draft waits on a draft already under way, and a writer with nothing to go on says so.
-    owed = not draft and (body is None or body.draft)
+    owed, failed = not draft and (body is None or body.draft), False
     if owed and not later:
         try:
             draft = (responder.write_draft(store, tid, rid, actor=ACTOR, nudge=_reply_nudge(body and body.instruction), pressed=True) if tid
                      else responder.draft_for_message(store, m, rid, instruction=_reply_nudge(body and body.instruction)))
         except Exception as e:
             logger.warning(f'reply draft failed for message {mid}: {e}')   # the box opens empty; write it yourself
+            failed = True
             # ...with the reason beside it (PW-046): what it needs is the owner's to read, whole - work for an agent, never a failure
             try: (store.set_review_draft_needs if isinstance(e, responder.NotDrafted) else store.set_review_draft_error)(rid, str(e))
             except Exception as e2: logger.debug(f'could not record the draft failure on review {rid}: {e2}')
-    if body is not None and body.redraft and draft: store.update_review_draft(rid, draft, (rv or {}).get('RunId'))
+    # ...an empty one is refused there and said (store.EMPTY_DRAFT): the draft before it stays
+    if body is not None and body.redraft and not failed: store.update_review_draft(rid, draft, (rv or {}).get('RunId'))
     # WHO IT GOES TO, AT ONCE: the envelope was pinned only when the AI's draft landed (responder.write_draft), so a fresh box -
     # Write another above all - showed the sender alone and no CC for the seconds the model took (2026-10-13). It is a lookup on
     # the message, nothing to wait for; a draft finds it set and keeps it, an envelope the owner set already stays.
@@ -3809,8 +3876,37 @@ def open_reply(mid: int, body: OpenReplyBody = None):
         if env: store.set_review_envelope(rid, env)
     store.audit('review', rid, 'redraft' if (body is not None and body.redraft) else 'open_reply', ACTOR, detail={'message_id': mid})
     looped, unknown = _loop_in(rid, m, (body.cc if body is not None else None) or [])
-    return {'reviewId': rid, 'taskId': tid, 'draft': draft, 'drafting': bool(owed and later),
-            **({'cc': looped} if looped else {}), **({'cc_unknown': unknown} if unknown else {})}
+    # A REWRITE IS SAID DONE ONLY WHEN THE DRAFT CHANGED: the Assistant said "Rewritten" over a box that stayed empty (2026-11-04) - `draft` is
+    # what the review holds now, and `changed`/`why` are the receipt's to read, never the writer's return
+    rewrite = owed and not later
+    got = _rewritten(rid, before) if rewrite else {}
+    # ...and the Assistant's under-way line for it ("Rewriting the draft on TQ-n.") is said again in its place, with the same receipt: a draft
+    # decided here now, or one already in the box (_draft_receipt) - one still being written is /draft's to say
+    receipt = None if owed and later else _draft_receipt(tid, got or _rewritten(rid, ''), body is not None and body.redraft, body.line if body is not None else None)
+    return {'reviewId': rid, 'taskId': tid, 'draft': got.get('draft', draft) if rewrite else draft, 'drafting': bool(owed and later), **got,
+            **({'receipt': receipt} if receipt else {}), **({'cc': looped} if looped else {}), **({'cc_unknown': unknown} if unknown else {})}
+
+
+def _draft_receipt(tid, got: dict, rewrite: bool = False, line=None) -> dict:
+    """{'status': done | failed, 'text'} for a reply's draft from what the review holds now (_rewritten: changed into something, or why not),
+    and the Assistant's under-way line for it said again in its place with the same words (concierge.settle, the owner 2026-11-04: "it says
+    it's doing things and it does not do them")."""
+    from . import concierge
+    ref, why = task_ref(tid) if tid else 'the card', '' if got.get('changed') else str(got.get('why') or 'no draft came back').rstrip(' .')
+    text = (f"{'Rewrote the draft' if rewrite else 'Drafted a reply'} on {ref} - read it before you {buttons.label('approve')}." if not why else
+            f"The draft on {ref} was not rewritten - {why}. It is as it was; edit it there, or ask again." if rewrite else
+            f"No reply was drafted on {ref} - {why}. Write it in the box, or press {buttons.label('redraft', 'none')}.")
+    concierge.settle(store, line, text, not why)
+    return {'status': 'failed' if why else 'done', 'text': text}
+
+
+def _rewritten(rid: int, before: str) -> dict:
+    "What a (re)draft left on the review: its text now, whether that changed into something, and - when it did not - why, plainly."
+    rv = store.get_review(rid) or {}
+    now = str(rv.get('DraftText') or '')
+    changed = bool(now.strip()) and now != str(before or '')
+    why = '' if changed else (rv.get('DraftNeeds') or rv.get('DraftError') or ('it came back the same as before' if now.strip() else store_mod.EMPTY_DRAFT))
+    return {'draft': now, 'changed': changed, **({'why': by_sentence(str(why))} if why else {})}
 
 
 def _loop_in(rid: int, m: dict, who: list) -> tuple:
@@ -3832,12 +3928,9 @@ def _loop_in(rid: int, m: dict, who: list) -> tuple:
 
 
 def _keep_instruction(rid: int, said: str):
-    """The owner's words for a draft, kept on its review (phase B) - and the second time the same words are said for one person, they
-    are how that person is written to: a STYLE.md "By recipient" line every later draft to them reads (byrecipient, phase C;
-    the owner, 2026-10-23: the typed instruction is stored and remembered, the 2nd time a style line, no chips)."""
-    store.add_review_instruction(rid, said)
+    "The owner's words for a draft: kept, and the second time for one person a style line (byrecipient.keep_instruction)."
     from . import byrecipient
-    byrecipient.note_instruction(store, rid, said)
+    byrecipient.keep_instruction(store, rid, said)
 
 
 def _reply_nudge(instruction) -> str | None:
@@ -4207,8 +4300,14 @@ def _dispatch_one(tid: int, body: DispatchBody, background: BackgroundTasks) -> 
             # the owner sent it to read that as its orders and did nothing (the overnight run, 2026-11-03)
             if was not in task_kinds.AGENT and prompt: prompt += '\n\n' + HANDED_OVER
         # ...the Summary is Taskuary's brief, never the owner's words: pressed with nothing typed, the pane drew it under YOU (2026-11-03)
+        # ...marked opening until its turn has run, as Continue's is: answered before the turn takes the session, the page read an idle
+        # session with nothing said, drew no Starting… and never polled (2026-11-04)
         if prompt:
-            background.add_task(session.send_prompt, prompt, brief=not typed)
+            def turn():
+                try: session.send_prompt(prompt, brief=not typed)
+                finally: general.OPENING.discard(tid)
+            general.OPENING.add(tid)
+            background.add_task(turn)
         # the same four words every door speaks (PW-209): a reused conversation is not a new start
         return {'dispatch': 'assistant', 'agent': session.provider, 'model': session.model, 'started': not had_session, 'existing': had_session,
                 'taskId': tid, 'ref': task_ref(tid), 'session': session.info(tail=3)}
@@ -5205,7 +5304,7 @@ def agent_memory(request: Request, task_id: int, section: str = ''):
     return {'text': text, 'says': text or 'nothing learned about the owner yet' + (f' under {learned_cut.TITLE[section]}' if section else '')}
 
 class AgentFile(BaseModel): name: str; data: str                 # data is base64: the CLI reads the file, the server never opens a path it is handed
-class AgentReplyBody(BaseModel): task_id: int; text: str = ''; agent: str = 'agent'; files: list[AgentFile] = []; follow_up: bool = False; to: str = ''
+class AgentReplyBody(BaseModel): task_id: int; text: str = ''; agent: str = 'agent'; files: list[AgentFile] = []; follow_up: bool = False; to: str = ''; answers: int | None = None
 
 def _agent_files(files):
     import base64, binascii
@@ -5220,7 +5319,7 @@ def agent_reply(body: AgentReplyBody, request: Request):
     from . import wrapup
     _own_task_only(request, body.task_id)
     if not store.get_task(body.task_id): raise HTTPException(404, 'no such task')
-    return wrapup.agent_reply(store, body.task_id, body.text, body.agent, files=_agent_files(body.files), follow_up=body.follow_up, to=body.to)
+    return wrapup.agent_reply(store, body.task_id, body.text, body.agent, files=_agent_files(body.files), follow_up=body.follow_up, to=body.to, answers=body.answers)
 
 class AgentDraftBody(BaseModel): task_id: int; text: str; to: str = ''; subject: str = ''; slot: str = ''; agent: str = 'agent'; files: list[AgentFile] = []
 
@@ -5271,6 +5370,17 @@ def agent_tick(body: AgentTickBody, request: Request):
     if err: raise HTTPException(*err)
     return {'ok': True, 'item': hit['id'], 'text': hit['text'], 'done': bool(body.done)}
 
+class AgentNotNeededBody(BaseModel): task_id: int; why: str; agent: str = 'agent'
+
+@app.post('/api/agent/not-needed')
+def agent_not_needed(body: AgentNotNeededBody, request: Request):
+    """`taskuary --reply-not-needed "<why>"` from the session working the task: the reply waiting there is no longer needed - someone
+    else answered, the owner already did (verdicts.not_needed). The card says so with Send still on it; nothing is sent, deleted or closed."""
+    from . import verdicts
+    _own_task_only(request, body.task_id)
+    if not store.get_task(body.task_id): raise HTTPException(404, 'no such task')
+    return verdicts.not_needed(store, body.task_id, body.why, body.agent)
+
 class AgentProposeBody(BaseModel):
     model_config = {'extra': 'allow'}
     task_id: int; action: str; why: str = ''
@@ -5289,6 +5399,54 @@ def agent_propose(body: AgentProposeBody, request: Request):
     if not q: raise HTTPException(422, 'the proposal was refused - the reason is on the task')
     return {'ok': True, 'queued': True, 'review': q['reviewId'], 'says': "Waiting on the owner's press - nothing happens until they approve it."}
 
+class AgentSignBody(BaseModel):
+    task_id: int; attachment: int | None = None; file: str = ''; name: str = ''; data: str = ''   # data: base64, from the CLI's own read
+    fields: dict = {}; sign: dict = {}; date: bool | str = False; agent: str = 'agent'
+
+@app.post('/api/agent/sign-form')
+def agent_sign_form(body: AgentSignBody, request: Request):
+    """A PDF on the session's OWN task - one of its attachments, a file in its folder, or one the CLI read - filled and signed with the
+    owner's saved signature (handsign), into the task's folder and shown in the chat. Nothing leaves: it rides on a reply only when the
+    agent attaches it, and goes only on the owner's Send. With no signature saved the answer says so, and nothing is signed."""
+    import base64, binascii
+    from . import agenttools, handsign, outputs, session_artifacts
+    _own_task_only(request, body.task_id)
+    tid = body.task_id
+    if not store.get_task(tid): raise HTTPException(404, 'no such task')
+    if body.attachment is not None:
+        x = store.get_attachment(int(body.attachment)) or {}
+        m = store.get_message(x.get('MessageId')) or {}
+        if not x or str(m.get('TaskId') or '') != str(tid): raise HTTPException(404, f'{body.attachment} is not an attachment on this task - read_message lists the ones it has')
+        if agenttools.unvouched(store, tid, {'id': m['MessageId']}): raise HTTPException(403, agenttools.UNVOUCHED)
+        p = _attachment_path(x.get('Path'))
+        if not p: raise HTTPException(404, f"{x.get('Name')} is not kept here - open the original message")
+        name, pdf = x.get('Name') or 'form.pdf', p.read_bytes()
+    elif body.file:
+        p = outputs.named(tid, body.file)
+        if not p: raise HTTPException(404, f'{body.file} is not a file in this task\'s folder ({outputs.folder(tid)})')
+        name, pdf = p.name, p.read_bytes()
+    elif body.data:
+        try: name, pdf = body.name or 'form.pdf', base64.b64decode(body.data, validate=True)
+        except (binascii.Error, ValueError): raise HTTPException(422, 'the file was not valid base64')
+    else: raise HTTPException(422, 'name the form: `attachment` (its id) or `file` (a PDF in your folder)')
+    try: signed, did = handsign.sign(pdf, body.fields, body.sign, body.date)
+    except LookupError as e: return {'ok': False, 'signature': False, 'says': str(e)}
+    except RuntimeError as e: return {'ok': False, 'says': str(e)}
+    except ValueError as e: raise HTTPException(422, str(e))
+    except Exception as e:
+        logger.warning(f'sign_form on task {tid} failed: {e}')
+        raise HTTPException(422, f'that PDF could not be filled ({type(e).__name__}) - say so to the owner; they can sign it by hand')
+    d = outputs.folder(tid); d.mkdir(parents=True, exist_ok=True)
+    stem = re.sub(r'[^\w .()-]+', '-', Path(name).stem).strip(' .-') or 'form'
+    out = next(d / f'{stem}-signed{f"-{i}" if i else ""}.pdf' for i in range(1000) if not (d / f'{stem}-signed{f"-{i}" if i else ""}.pdf').exists())
+    out.write_bytes(signed)
+    art = session_artifacts.shown(store, tid, out, body.agent)
+    store.audit('task', tid, 'sign_form', body.agent, detail={'file': out.name, 'page': did['page'], 'filled': did['filled']})
+    return {'ok': True, 'file': out.name, 'path': str(out), 'artifact': art['ArtifactId'], **did,
+            'says': f"Filled and signed {out.name} (the signature is on page {did['page']}) and showed it in the chat. Attach it to the reply - "
+                    f"propose_reply with attach: [\"{out.name}\"], or taskuary --reply ... --attach \"{out}\" - and ask the owner whether to send "
+                    "it; it goes only on their Send."}
+
 @app.post('/api/mcp')
 async def mcp_rpc(request: Request, task: int = 0):
     """Taskuary's tools as an MCP server (agenttools) for the session on `task` - its agent token and task proof in the headers, which
@@ -5305,8 +5463,10 @@ async def mcp_rpc(request: Request, task: int = 0):
                              'error': {'code': -32001, 'message': 'agents cannot do this: a session uses the tools of its OWN task'}}, status_code=403)
     doors = {'tool_run': lambda b: tool_run(b, request),
              'tick': lambda tid, item, done: agent_tick(AgentTickBody(task_id=tid, item=item, done=done), request),
-             'reply': lambda tid, text, to='': agent_reply(AgentReplyBody(task_id=tid, text=text, to=to), request),
-             'draft': lambda tid, text, to, subject: agent_draft(AgentDraftBody(task_id=tid, text=text, to=to, subject=subject), request),
+             'not_needed': lambda tid, why: agent_not_needed(AgentNotNeededBody(task_id=tid, why=why), request),
+             'reply': lambda tid, text, to='', files=(): agent_reply(AgentReplyBody(task_id=tid, text=text, to=to, files=list(files)), request),
+             'draft': lambda tid, text, to, subject, files=(): agent_draft(AgentDraftBody(task_id=tid, text=text, to=to, subject=subject, files=list(files)), request),
+             'sign': lambda tid, a: agent_sign_form(AgentSignBody(**{**{k: v for k, v in a.items() if k in AgentSignBody.model_fields}, 'task_id': tid}), request),
              'propose': lambda tid, a: agent_propose(AgentProposeBody(**{**a, 'task_id': tid}), request)}
     def run(name, args):
         cls = agenttools.TOOLS[name][0]
@@ -5837,10 +5997,11 @@ def _with_pile(out: dict, body) -> dict:
 
 # THE WALK'S OWN ROUTES (railwalk, 2026-10-30): the page sends an action and draws the Answer that comes back - the row, its words and
 # chips, where the walk now stands, and the rail as the move left it with the next answer prepared in it.
-def _walk_answer(out: dict, body: RailWalkBody) -> Response:
+def _walk_answer(out: dict, body: RailWalkBody, along: bool = True) -> Response:
     # ...the cached rail unless something moved since it was built (funnel.pile's own check: a write anywhere, a worker): forced, a walk
     # move built the whole rail a second time after the one its own writes had already cost it (2026-10-31, 0.5 s a press on a real home)
-    out = {**out, 'pile': _pile_along(fyi=body.fyi, force=False)}
+    # `along=False`: no rail rides, and the page reads it itself once the answer has drawn (AssistantView.landed)
+    out = {**out, 'pile': _pile_along(fyi=body.fyi, force=False) if along else None}
     _refresh_after(out)
     return _encoded(out)
 
@@ -5876,7 +6037,13 @@ def walk_open(body: RailWalkBody):
     from . import railwalk
     if body.level: return _walk_answer(railwalk.section(store, body.level, ACTOR, press=body.press), body)
     if not body.key: raise HTTPException(422, 'a key or a section is required')
-    return _walk_answer(railwalk.open(store, body.key, ACTOR, press=body.press, at=body.from_key), body)
+    # A ROW CLICKED ANSWERS WITHOUT BUILDING THE RAIL (the owner, 2026-11-04: "i clicked a watching task and there is no next/back thing
+    # yet? took a long time to light up"): opening a row reads its "+N", and that write made the answer build the whole rail before it
+    # went - Back and Next stand greyed until a move lands, ~0.5 s of a click on 450 rows, more on a real home. The rail it opened is
+    # the one on screen; the cached one rides when nothing moved, else the page reads it after the answer has drawn
+    from . import funnel
+    out = railwalk.open(store, body.key, ACTOR, press=body.press, at=body.from_key)
+    return _walk_answer(out, body, along=funnel.warm(store))
 
 @app.post('/api/walk/leave')
 def walk_leave(body: RailWalkBody):
@@ -6235,7 +6402,7 @@ def waitroom_list(tid: int):
 def waitroom_add(tid: int, body: dict):
     """Queue a note for this task's agent. It is typed in the moment the agent parks at its
     prompt - and at once, as the answer, when it is already parked on a question for you."""
-    try: return waitroom.add(store, tid, str((body or {}).get('text') or ''), ACTOR)
+    try: return waitroom.add(store, tid, str((body or {}).get('text') or ''), ACTOR, owner=(body or {}).get('owner') or None)
     except ValueError as e: raise HTTPException(422, str(e))
 
 @app.post('/api/tasks/{tid}/waitroom/bulk')
@@ -6339,7 +6506,9 @@ def release_review(rid: int):
     store.audit('review', rid, 'release', ACTOR)
     return {'ok': True}
 
-class DraftBody(BaseModel): instruction: str | None = None     # a reply opened at once with the owner's words (open_reply's later)
+class DraftBody(BaseModel):
+    instruction: str | None = None     # a reply opened at once with the owner's words (open_reply's later)
+    line: int | None = None            # the Assistant's "Drafting a reply on TQ-n" line, said again with how it went (_draft_receipt)
 
 @app.post('/api/reviews/{rid}/draft')
 def draft_review(rid: int, body: DraftBody = None):
@@ -6363,9 +6532,11 @@ def draft_review(rid: int, body: DraftBody = None):
     running = None if body and (body.instruction or '').strip() else DRAFTING.get(rid)
     if running and running.wait(180):
         got = store.get_review(rid) or {}
-        if got.get('DraftText'): return {'ok': True, 'draft': got['DraftText']}
+        if got.get('DraftText'): return {'ok': True, 'draft': got['DraftText'], 'receipt': _draft_receipt(rv.get('TaskId'), {'changed': True}, False, body and body.line)}
         # ...and what that writer said it needs is the answer too: a second call would only say it again (ingest._auto_draft)
-        if got.get('DraftNeeds'): return {'ok': False, 'draft': '', 'needs': by_sentence(str(got['DraftNeeds']), 2000)}
+        if got.get('DraftNeeds'):
+            needs = by_sentence(str(got['DraftNeeds']), 2000)
+            return {'ok': False, 'draft': '', 'needs': needs, 'receipt': _draft_receipt(rv.get('TaskId'), {'changed': False, 'why': needs}, False, body and body.line)}
     try:
         if rv.get('Kind') == 'slot':
             from . import outbox as ob
@@ -6392,12 +6563,17 @@ def draft_review(rid: int, body: DraftBody = None):
         # THE WRITER SAID WHAT IT NEEDS - no draft, and no failure: a plain line on the card and Send to agent / Continue lit (rulebook
         # needs_agent). It was a 422 like any error, so the card drew a red app failure cut mid-word (walk 2026-10-29)
         store.set_review_draft_needs(rid, str(e))
-        return {'ok': False, 'draft': '', 'needs': by_sentence(str(e), 2000)}
+        needs = by_sentence(str(e), 2000)
+        return {'ok': False, 'draft': '', 'needs': needs, 'receipt': _draft_receipt(rv.get('TaskId'), {'changed': False, 'why': needs}, False, body and body.line)}
     except Exception as e:
         store.set_review_draft_error(rid, str(e))     # visible beside the draft box, with Retry (PW-046)
+        _draft_receipt(rv.get('TaskId'), {'changed': False, 'why': by_sentence(str(e))}, False, body and body.line)
         raise HTTPException(422, by_sentence(str(e)))
     store.audit('review', rid, 'redraft', ACTOR)
-    return {'ok': True, 'draft': draft}
+    # ...and an empty one never replaced the draft (store.update_review_draft): what the review holds is the answer, said changed or why not
+    if not str(draft or '').strip(): store.update_review_draft(rid, draft, rv.get('RunId'))
+    got = _rewritten(rid, rv.get('DraftText') or '')
+    return {'ok': True, **got, 'receipt': _draft_receipt(rv.get('TaskId'), got, bool(rv.get('DraftText')), body and body.line)}
 
 class EnvelopeBody(BaseModel): mode: str | None = None; to: list[str] | None = None; cc: list[str] | None = None
 
@@ -7436,10 +7612,11 @@ def ms_callback(request: Request, code: str = None, state: str = '', error: str 
     and the tab is told only whether it worked - never a token (escaped, under a CSP, no-store)."""
     import hmac
     from . import msauth
-    # AN ADMIN'S APPROVAL comes back here too (msauth.admin_consent_url): admin_consent=True, or an error, and no code. It carries no
-    # secret and starts no sign-in, so it is answered first, from any browser, as the plain page an admin who may never run Taskuary reads
-    if admin_consent is not None or (state == msauth.ADMIN_STATE and not code):
-        ok, head, line = msauth.admin_return(admin_consent, error, error_description or '')
+    # AN ADMIN'S APPROVAL comes back here too (msauth.admin_consent_url): ADMIN_STATE with a code, or an error - admin_consent=True from a
+    # link made before it. The code is never redeemed and nobody is signed in as the admin: it starts no round, so it is answered
+    # first, from any browser, as the plain page an admin who may never run Taskuary reads
+    if admin_consent is not None or state == msauth.ADMIN_STATE:
+        ok, head, line = msauth.admin_return(admin_consent, error, error_description or '', code)
         return _oauth_tab(ok, line, head=head, tail='')
     if not _is_loopback(request.client.host if request.client else ''):
         return _oauth_tab(False, 'This sign-in only finishes on the computer Taskuary runs on.')
@@ -8840,11 +9017,8 @@ def agents():
     head = hub_agents.default_agent(store)
     rows = sorted(store.list_agents(), key=lambda a: a['Name'] != head)
     profs = hub_agents.profiles(store)
-    # `roster` is the line triage actually reads for this worker, or why there is none - answered
-    # HERE so the Docs page shows the router's real view instead of re-deriving it from Config.
     return {'data': [{**a, 'installed': hub_agents.runs_here(profs.get(a['Name']) or {}),
                       'rules_doc': hub_agents.profile_document(store, a['Name']),
-                      'roster': dict(zip(('line', 'reason', 'code'), hub_agents.roster_line(store, a))),
                       'purpose': hub_agents.profile_purpose(a['Name'], profs.get(a['Name']) or {}, a.get('Kind') or 'coding')}
                      for a in rows],
             'config': cfg.get('agents', {}), 'default': head,
@@ -8902,8 +9076,6 @@ def put_agent(name: str, body: dict):
     # answer, asked when work starts. "Choose a configured CLI provider" refused every profile on a box with none connected
     profile['kind'] = profile.get('kind') or hub_agents.DEFAULT_PROFILES.get(name, {}).get('kind') or row.get('Kind') or 'coding'
     profile['purpose'] = hub_agents.profile_purpose(name, profile, profile['kind'])
-    if profile.get('triage_enabled', True) and not profile['purpose']:
-        raise HTTPException(422, 'Describe when triage should choose this profile, or turn off automatic triage routing')
     if profile.get('rules_doc') and not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', str(profile['rules_doc'])):
         raise HTTPException(422, 'Invalid rules document name')
     rules_doc = profile.get('rules_doc')
@@ -8915,22 +9087,21 @@ def put_agent(name: str, body: dict):
     cli_connections.sync(cfg, store, name)
     rules_doc = hub_agents.ensure_profile_document(store, name)
     store.audit('agent', 0, 'save', ACTOR, detail=name)
-    return {'ok': True, 'rules_doc': rules_doc, 'triage_available': profile.get('triage_enabled', True) is not False and bool(profile['purpose'])}
+    return {'ok': True, 'rules_doc': rules_doc}
 
 @app.get('/api/roles')
 def roles_list():
-    """The roles one click sets Taskuary up for (roles.py): a worker, its playbooks, where mail goes."""
+    """The roles one click sets Taskuary up for (roles.py): a worker, its playbooks, its daily job."""
     from . import roles
     return {'data': roles.catalog(store)}
 
 class RoleBody(BaseModel):
     portal: str = ''
-    route_mail: bool = True
 
 @app.post('/api/roles/{name}')
 def roles_apply(name: str, body: RoleBody):
     from . import roles
-    try: return roles.apply(store, cfg, name, body.portal, body.route_mail)
+    try: return roles.apply(store, cfg, name, body.portal)
     except ValueError as e: raise HTTPException(422, str(e))
 
 @app.delete('/api/agents/{name}')

@@ -10,20 +10,67 @@
 // fold arrows - and an item that `lays` its moves has every one of them on the strip of the section it is about, and on that section's spine
 // folded; the bar is Back and Next. A phone's stacked sections keep the row as it was
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Box, Typography } from "@mui/material";
+import { Box, CircularProgress, IconButton, InputBase, Typography } from "@mui/material";
+import SendIcon from "@mui/icons-material/ArrowUpward";
+import api from "./api.js";
+import { Md } from "./md.jsx";
+import { MicButton } from "./ui.jsx";
 import { FOCUS, FOCUS_EDGE, MINI_W, OPEN_MIN, PaneStrip, SECTION, SHADE, SLOT, STRIP_H, SectionHead, SectionTab, tabW, useStackBelow } from "./TaskPage.jsx";
 import { BORDER, DIM, INK, frameInner } from "./theme.jsx";
 import { layTable, onPressing, useSpineAll } from "./actionRow.js";
+import { itemLines, readingOf } from "./threadReading.js";
 
 // a section's white card on the warm ground, as a task's focus is
 export const ItemPart = ({ children, sx = null, ...rest }) => <Box {...rest} sx={{ ...FOCUS, px: { xs: 1.25, sm: 2 }, minWidth: 0, ...sx }}>{children}</Box>;
 // the section an item's moves are laid on, while it lays them (the card's Foot reads it: actionRow.splitRow `all`), else null
 export const ItemLay = React.createContext(null);
 
+// WHAT AN ITEM SAYS, AS TRIAGE READ IT, AND A BOX TO ASK ABOUT IT (the Close-out spec, 2026-11-04 section 8): a report, an FYI or a dashboard
+// gets the column a task's chat opens with - "What this says", "What matters to you" - atop its middle section, and a box under it.
+// `ask`: { key, kind, title, reading } (reading: the message payload's `reading`, store.message_thread - optional, so none draws no lines)
+// ...THE BOX ONLY ANSWERS (the owner, 2026-11-04: "question on report should not start task"): it is the dock's own door (concierge.say)
+// with the item in the turn's view, area 'item', which the server answers from the item and nothing more (concierge.asked_on_item)
+const SAYS = { says: "What this says", matters: "What matters to you" };
+export function ItemAsk({ ask }) {
+  const ls = itemLines(readingOf(ask?.reading));
+  const [text, setText] = useState(""), [said, setSaid] = useState([]), [busy, setBusy] = useState(false), [err, setErr] = useState("");
+  useEffect(() => { setText(""); setSaid([]); setErr(""); }, [ask?.key]);
+  const send = async () => {
+    const q = text.trim();
+    if (!q || busy) return;
+    setBusy(true); setErr("");
+    try {
+      const { data } = await api.post("/api/concierge/say", { text: q, key: ask.key,
+        view: { area: "item", title: typeof ask.title === "string" ? ask.title : "", item: { kind: ask.kind, id: ask.key, title: typeof ask.title === "string" ? ask.title : "", section: "ask" } } });
+      setSaid((w) => [...w, { q, a: String(data?.say || "") }]); setText("");
+    } catch (e) { setErr(e?.response?.data?.detail || e?.message || "That did not go through - try again."); }
+    finally { setBusy(false); }
+  };
+  return <ItemPart data-tq-item-ask={ask.kind || ""} sx={{ display: "flex", flexDirection: "column", gap: 0.75, flexShrink: 0 }}>
+    {ls.map((l) => <Box key={l.k} data-tq-item-reading={l.k} sx={{ minWidth: 0 }}>
+      <Typography sx={{ fontSize: 12, fontWeight: 700, color: DIM, mb: 0.2 }}>{SAYS[l.k]}</Typography>
+      <Typography sx={{ fontSize: 13.5, lineHeight: 1.5, color: INK, overflowWrap: "anywhere" }}>{l.text}</Typography>
+    </Box>)}
+    {said.map((t, i) => <Box key={i} data-tq-item-said="" sx={{ minWidth: 0, fontSize: 13.5, lineHeight: 1.5, color: INK }}>
+      <Typography sx={{ fontSize: 12.5, color: DIM, overflowWrap: "anywhere" }}><b>You:</b> {t.q}</Typography>
+      <Box data-tq-item-answer="" sx={{ overflowWrap: "anywhere", "& p": { my: 0.25 } }}><Md text={t.a} /></Box>
+    </Box>)}
+    <Box sx={{ display: "flex", alignItems: "flex-end", gap: 0.5, border: `1px solid ${BORDER}`, borderRadius: "8px", px: 1, py: 0.25, bgcolor: "#fff" }}>
+      <InputBase multiline maxRows={5} value={text} disabled={busy} placeholder="Ask about anything here…" inputProps={{ "aria-label": "Ask about this" }}
+        onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+        sx={{ flex: 1, minWidth: 0, fontSize: 13.5, py: 0.5 }} />
+      <MicButton size={16} sx={{ color: "#6b5f45", p: 0.5 }} onText={(t) => setText((w) => (w.trim() ? `${w.trimEnd()} ${t}` : t))} />
+      <IconButton size="small" aria-label="Ask" disabled={busy || !text.trim()} onClick={send} sx={{ p: 0.5 }}>
+        {busy ? <CircularProgress size={14} /> : <SendIcon sx={{ fontSize: 17 }} />}</IconButton>
+    </Box>
+    {err && <Typography role="alert" sx={{ fontSize: 12.5, color: "#a33" }}>{err}</Typography>}
+  </ItemPart>;
+}
+
 // `sections`: [{ key, n, name, body, lines, foot, icon, moves }] in the flow's order; `about`: the key the item is about (it opens there, and only it
 // folds to a full tab); `here`: the section it is up to; `height`: the canvas's (CanvasItem wordsCap) - one height, like a task's three;
-// `lays`: its moves ride the `about` section on a desk (ItemLay)
-export default function ItemSections({ kind, label, title, aside, sections, about, here = about, height, itemKey, lays = false }) {
+// `lays`: its moves ride the `about` section on a desk (ItemLay); `ask`: what it says and the box, atop the middle section (ItemAsk)
+export default function ItemSections({ kind, label, title, aside, sections, about, here = about, height, itemKey, lays = false, ask = null }) {
   const [open, setOpen] = useState(about);
   useEffect(() => { setOpen(about); }, [itemKey, about]);
   const body = useRef(null), [w, setW] = useState(0);
@@ -66,6 +113,7 @@ export default function ItemSections({ kind, label, title, aside, sections, abou
           <Box key={s.key} data-tq-slot={s.key} data-tq-open="" sx={{ minWidth: 0, flexShrink: 0 }}>
             <Box role="region" aria-label={s.name} className="tq-item-sec" sx={{ display: "flex", flexDirection: "column", gap: 1.5, minWidth: 0 }}>
               <SectionHead sec={s} moves={s.moves} />
+              {i === 1 && ask && <ItemAsk ask={ask} />}
               {s.body}
             </Box>
           </Box>
@@ -78,6 +126,7 @@ export default function ItemSections({ kind, label, title, aside, sections, abou
             {open === s.key && <PaneStrip sec={s.key} name={s.name} keys={keys} fold={(to) => (s.key === about ? to : about)} onFold={setOpen} />}
             <Box role="region" aria-label={s.name} aria-hidden={open !== s.key ? true : undefined} className="tq-item-sec"
               sx={{ ...SECTION(open === s.key, w ? openW(s.key) : "100%"), gap: 1.5 }}>
+              {i === 1 && ask && <ItemAsk ask={ask} />}
               {s.body}
             </Box>
           </Box>

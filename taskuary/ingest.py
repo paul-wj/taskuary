@@ -14,7 +14,7 @@ from .routing import first_line, draft_task_fields
 from .policy import evaluate
 from .triage import agent_words, classify_intent, person_name, sender_called, wrapper_of
 from .store import task_ref, auto_code_enabled, _now
-from . import buttons, remind, senders, textsim, watch, words, workstreams
+from . import buttons, remind, senders, textsim, watch, wrapup, words, workstreams
 from .categories import agent_word, route_head
 
 # A task the stranger gate held back (senders.known). It is a TAG rather than a column because
@@ -675,6 +675,16 @@ def judge(store, msg: dict, llm, mine=(), me=(), home=None) -> tuple[dict, dict]
         # ...and the open GOALS with their steps, so a mail on another thread can say which step it serves (spec 2026-10-12)
         goals = taskcontext.open_goals(store)
         if goals: thread = {**thread, 'open_goals': goals}
+        # ...and every other open task and Watching item, one line each: a third party's follow-up on another thread or channel shares
+        # no structure with the task it belongs to, so only its meaning can join it - the model's to read (open_items, 2026-11-04)
+        shown = {int(w['tid']) for k in ('open_work', 'room_tasks', 'open_goals') for w in thread.get(k) or [] if w.get('tid')}
+        if (items := taskcontext.open_items(store, shown | {int((thread.get('thread_task') or {}).get('tid') or 0)})):
+            thread = {**thread, 'open_items': items}
+        # ...and what the owner's own search finds for it, open or closed: a follow-up on a matter closed last week, from anyone (2026-11-04)
+        shown |= {int(w['tid']) for w in thread.get('recently_closed') or [] if w.get('tid')}
+        shown |= {int(x) for l in thread.get('open_items') or [] for x in re.findall(r'\(tid (\d+)\)', l)[:1]}
+        if (found := taskcontext.found_tasks(store, msg, shown | {int((thread.get('thread_task') or {}).get('tid') or 0)})):
+            thread = {**thread, 'found_by_search': found}
         # ...and how this sender's last asks were worked, further back than three days (TQ-0955, 2026-10-05)
         theirs = taskcontext.sender_history(store, msg)
         if theirs: thread = {**thread, 'sender_history': theirs}
@@ -705,7 +715,7 @@ def judge(store, msg: dict, llm, mine=(), me=(), home=None) -> tuple[dict, dict]
     said = said_about(store, msg.get('conversation_id'))
     if said: thread = {**thread, 'assistant_said': said}
     from .projects import context_for_message
-    from . import agents as hub_agents, capabilities
+    from . import capabilities
     project = context_for_message(store, msg)
     from .triage import job_doc
     # THE WHOLE MEMORY, every time (the owner, 2026-10-27: "triage needs the entire thing to make a decision every time, so load the
@@ -728,9 +738,6 @@ def judge(store, msg: dict, llm, mine=(), me=(), home=None) -> tuple[dict, dict]
                              # ...and the playbooks: a message that is an instance of one is
                              # tagged with it, and the agent is seeded from it (playbooks.py)
                              playbooks=_playbook_menu(store), workflows=_workflow_menu(store), project=project, candidates=candidates, repos=repos or None,
-                             # ...and WHICH worker, out of the ones this install actually has: the roster is
-                             # data the owner edits on the Agents page, never a vocabulary in the prompt
-                             profiles=hub_agents.roster(store) or None,
                              # ...and what the owner corrected LAST time a message like this was
                              # judged. The loop closes here: a verdict, a correction, a better verdict.
                              routing_history=_routing_history(store, msg),
@@ -977,6 +984,9 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
             # nothing for the owner, but the answer the waiting agent asked for all the same - it was typed in when a
             # busy thread skipped triage, and judging it must not strand the agent (B6, 2026-10-11)
             if talking: _hand_to_agent(store, cfg, tid, msg, actor)
+            # ...and nothing for the owner is still a change for the assistant on it: someone else may have answered what its draft
+            # answers (thread_moved - the agent re-plans; a filed line's own verdict and reading ride with it)
+            elif not kept: thread_moved(store, tid, msg, mid, follow, actor)
             return {'status': 'filed', 'task_id': tid, 'message_id': mid}
         mid = _land(store, msg, tid, 'routed')
         back = bool(r.get('reopen')) and _reopen(store, tid, msg, actor, follow)
@@ -1004,10 +1014,13 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
         # conversation on where it would have started by itself, and a REPLY task whose new line needs an agent gets one
         # (agent_on_reply) - which then drafts the reply itself, so the tool-less writer below is not asked for one too
         went = _carry_on(store, tid, msg, mid, follow, actor)
+        # ...and an ASIDE (a "thanks", a nudge) leaves the draft as it is, but its agent still hears it and re-plans (thread_moved)
+        if not went and not talking and is_aside(follow): went = thread_moved(store, tid, msg, mid, follow, actor)
         # a drafted reply on this task was written against the thread as it WAS (PW-051): mark it behind, and
         # when the fresh verdict says a reply is still owed, redraft that same review - never a second one
+        # ...unless triage read THIS mail as an aside (a "thanks" on the thread): the draft is no further behind, and stays on what it answers
         behind = store.pending_review(tid, kind='draft')
-        if behind:
+        if behind and not is_aside(follow):
             store.mark_review_stale(behind['ReviewId'])
             # WHATEVER the new line was judged to be. This rewrote the draft only when the follow-up
             # was reply_only, so Ray's second mail - judged a task, because it asked for access -
@@ -1025,7 +1038,7 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
             added = store.merge_task_checklist(tid, follow['checklist'], 'triage', src=mid)
             if added: store.add_comment(tid, 'triage', 'agent', 'New from the latest message:\n' + '\n'.join(f"- [ ] {i['text']}" for i in added))
         if (follow and follow.get('intent') == 'reply_only' and not follow.get('degraded') and not talking and not follow.get('invite')
-                and not store.pending_review(tid)):
+                and not is_aside(follow) and not store.pending_review(tid)):
             # a fresh question on an existing task is reply-needed there: one pending review for
             # this message, drafted at once, whatever the channel can carry (PW-043)
             unsendable = send_block(store, msg.get('channel'))
@@ -1189,12 +1202,10 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
         # TRIAGE's title, never the router's subject cut: a subject line is the very resemblance that
         # joined two unrelated refunds in 2026-09-03, and two people can send one subject about two
         # different things. A verdict that named no title has said nothing to match on.
-        # WHICH ROLE works this - a different question from which brain runs it. Coding has one
-        # role and triage does not choose it; a specialist is named only on general work. The
-        # session is seeded from THIS role's document (terminal.profile_of), so a researcher is
-        # never handed CODING.md's "work only in the repository".
+        # WHICH ROLE works this - a different question from which brain runs it. Coding has one role and triage does not
+        # choose it; general work is the assistant's, so it names nobody (the owner, 2026-11-04: profiles are for routines)
         from . import agents as hub_agents
-        role = hub_agents.routed_role(store, f['kind'], intent.get('profile') or '')
+        role = hub_agents.routed_role(store, f['kind'], '')
         # A GOAL (spec 2026-10-12): the open-ended ask opens as the owner's goal - its done-when sentence, its date, no steps
         # and nobody on it; the planner proposes the steps behind the arrival, as the New sheet's Set a goal does
         goal = intent['intent'] == 'task' and bool(intent.get('goal') and intent.get('done_when'))
@@ -1332,6 +1343,11 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
         if intent.get('invite'): reason = f"{intent['why']} · your answer goes out only when you press {buttons.label('approve')}"
     # a split is triage's own decision and recorded as one, so the correction loop and the eval replay read it like any verdict
     store.add_route(mid, tid, r['decision'], r['score'], reason, r['candidates'], 'triage' if split_from else actor, verdict=verdict)
+    # A REPLY NO AGENT WORKS takes what is on the owner from triage's reading (Task 3.5) - where an agent works, its turn summary says it.
+    # A reading is optional (older verdicts, CLI brains): none, or none with an on_you list, leaves the list as it is
+    th = (verdict or {}).get('thread') if isinstance(verdict, dict) else None
+    if tid and isinstance(th, dict) and isinstance(th.get('on_you'), list) and (store.get_task(tid) or {}).get('Kind') == 'reply' and not live_agent(store, tid):
+        store.set_on_you(tid, th['on_you'], 'triage')
     # ...and only now the agent it set going: started before the verdict was on file, the start read no needs_browser, took the quick
     # one-call path, and its session then found the verdict and opened a browser beside one call that never drives a page (2026-11-03)
     for a in starts: _spawn(*a)
@@ -1672,8 +1688,11 @@ def thread_task(store, tid) -> dict | None:
     the `exchange` beside it."""
     t = store.get_task(tid) if tid else None
     if not t: return None
+    rep = next((wrapup.report_body(c['Body']) for c in reversed(store.list_comments(tid)) if wrapup.is_report(c['Body'])), '')
     return with_agent(store, {'tid': tid, 'ref': task_ref(tid), 'title': t.get('Title') or '', 'ask': ' '.join(str(t.get('Summary') or '').split())[:300],
             'status': 'closed' if t.get('Status') == 'done' else 'open',
+            # what triage last made of the whole thread, and what the agent last said it did: a new mail is measured against both
+            **({'reading': r} if (r := store.task_thread(tid)) else {}), **({'agent_said': rep[:600]} if rep else {}),
             # ...and the owner WATCHING it for somebody else to handle (watch.py): triage says whether this message shows it handled
             **({'watching': True} if watch.watching(t) else {})})
 
@@ -2141,9 +2160,10 @@ DRAFTER_NEEDS = 'The reply writer could not answer it from what it had - it need
 NEEDS_SAID = 'not drafted - it needs '      # how responder._answer words a NEEDS failure
 
 
-def agent_on_reply(store, tid, msg: dict, mid, verdict: dict | None, actor: str) -> bool:
+def agent_on_reply(store, tid, msg: dict, mid, verdict: dict | None, actor: str, opening: bool = False) -> bool:
     """Start the agent a `task` verdict names (general or coding) on a REPLY task, where it may start by itself (auto_start_ok);
-    else say why not on the task. True when one was set going."""
+    else say why not on the task. True when one was set going. `opening`: the assistant counts as live from here, not from its
+    thread's start a beat later (general.OPENING, let go by _start_general), so a second hand-over meanwhile starts nothing."""
     v = verdict or {}
     kind = str(v.get('kind') or '').lower()
     if v.get('degraded') or v.get('intent') != 'task' or kind not in task_kinds.AGENT: return False
@@ -2158,7 +2178,9 @@ def agent_on_reply(store, tid, msg: dict, mid, verdict: dict | None, actor: str)
         not_started(store, tid, who)
         store.audit('task', tid, 'auto_code_held', actor, 'agent', {'from': msg.get('from_email'), 'why': str(who), 'reply': True})
         return False
-    store.update_task(tid, {'Kind': kind}, 'triage')
+    from . import general
+    # ...a research or marketing task is already the assistant's: it keeps its kind (only a reply task, or a coding one, changes)
+    if not (kind == 'general' and general.handles(store.get_task(tid))): store.update_task(tid, {'Kind': kind}, 'triage')
     store.tag_task(tid, REPLY_TAG, actor='triage')
     if (store.get_task(tid) or {}).get('Status') in ('done', 'waiting'): store.update_task(tid, {'Status': 'open'}, 'triage')
     store.add_comment(tid, 'router', 'agent', f"{_who_said(msg)}'s message needs {task_kinds.worker(kind)} before it can be answered: it "
@@ -2168,15 +2190,23 @@ def agent_on_reply(store, tid, msg: dict, mid, verdict: dict | None, actor: str)
     if choose:
         store.tag_task(tid, NEEDS_REPO_TAG, actor='triage')
         _spawn(_choose_then_start, store, tid, msg, mid)
-    else: _spawn(_auto_code if kind == 'coding' else _auto_general, store, tid)
+    else:
+        if opening and kind != 'coding': general.OPENING.add(tid)
+        _spawn(_auto_code if kind == 'coding' else _auto_general, store, tid)
     return True
 
 
 def hand_reply_to_agent(store, tid, rid, why: str) -> bool:
     """The reply writer could not answer (responder.NotDrafted: NEEDS, or only a promise): no draft, and a reply task goes to the
-    general agent to do the work and draft the real reply - by itself where it may, else the line says why it did not."""
+    general agent to do the work and draft the real reply - by itself where it may, else the line says why it did not.
+    ...and a GENERAL task no agent has run on yet the same (Task 3.2, 2026-11-04): a colleague asked the owner for details kept in the
+    owner's own project, the writer said NEEDS, and nothing more happened. Whether the agent can find what the writer lacks is its
+    judgement, read from the NEEDS words it is handed (reply_job) - never a list here. A coding task, an agent live on it, or a general
+    conversation already open is left as it is: the owner's Continue or the agent's own turn picks it up, never a second start."""
+    from . import general
     t = store.get_task(tid) or {}
-    if t.get('Kind') != 'reply' or t.get('Status') in ('done', 'dropped'): return False
+    if t.get('Status') in ('done', 'dropped') or live_agent(store, tid): return False
+    if t.get('Kind') != 'reply' and (not general.handles(t) or general.history(store, tid)): return False
     rv = store.get_review(rid) or {}
     m = store.get_message(rv['MessageId']) if rv.get('MessageId') else None
     if not m: return False
@@ -2184,7 +2214,7 @@ def hand_reply_to_agent(store, tid, rid, why: str) -> bool:
     need = (w[len(NEEDS_SAID):].split('. ')[0] if w.startswith(NEEDS_SAID)
             else 'the work done first - its draft only promised to look into it later')
     store.add_comment(tid, 'responder', 'agent', f"{DRAFTER_NEEDS}{need.rstrip('.')}.")
-    return agent_on_reply(store, tid, _from_row(m, store), m['MessageId'], {'intent': 'task', 'kind': 'general', 'why': why}, 'auto-draft')
+    return agent_on_reply(store, tid, _from_row(m, store), m['MessageId'], {'intent': 'task', 'kind': 'general', 'why': why}, 'auto-draft', opening=True)
 
 
 # WHAT AN AGENT COULD DO FOR THE OWNER (the owner, 2026-10-28): triage reads the main ask and may say, in one sentence to the owner, what
@@ -2283,7 +2313,7 @@ def _pass_turn(msg: dict) -> str:
             f"These are their words, not the owner's: take what they ask into the work. A reply you write waits for the owner's Send.\n\n{body}")
 
 
-def _pass_general(store, tid, msg: dict):
+def _pass_general(store, tid, msg: dict, turn: str = None):
     """The line as the assistant's NEXT turn: send_prompt takes its turn behind the one running (GeneralSession._take), so a line
     that lands mid-answer - or while a carried-on turn is still opening - is queued, never dropped."""
     from . import general, quickwork
@@ -2298,8 +2328,8 @@ def _pass_general(store, tid, msg: dict):
     store.add_comment(tid, 'router', 'agent', f"Passed {_who_said(msg)}'s new message to the agent - it is the assistant's next turn.")
     try:
         # a session of quick answers re-decides on the task's depth now: still quick, one more call on it; else the turn runs the agent
-        if ses.quick and quickwork.takes(store, tid): quickwork.again(store, tid, ses, _pass_turn(msg))
-        else: ses.send_prompt(_pass_turn(msg), brief=True)      # Taskuary's brief, shown in the chat as coding's typed line is
+        if ses.quick and quickwork.takes(store, tid): quickwork.again(store, tid, ses, turn or _pass_turn(msg))
+        else: ses.send_prompt(turn or _pass_turn(msg), brief=True)      # Taskuary's brief, shown in the chat as coding's typed line is
     except Exception as e:
         logger.warning(f'passing a line to the assistant failed for task {tid}: {e}')
         store.add_comment(tid, 'router', 'agent', f"The assistant couldn't take {_who_said(msg)}'s new message: {' '.join(str(e).split())[:200]} - Continue picks it up.")
@@ -2343,6 +2373,97 @@ def _continue_general(store, tid, msg: dict = None, mid=None):
         # said, not retried: the start queue's retry opens a conversation without a turn (_start_general prompts a fresh one only)
         logger.warning(f'assistant carry-on failed for task {tid}: {e}')
         store.add_comment(tid, 'router', 'agent', f"The assistant couldn't carry on by itself: {' '.join(str(e).split())[:200]} - Continue picks it up.")
+    finally: general.OPENING.discard(tid)
+
+
+# ANY CHANGE ON THE THREAD WAKES ITS AGENT, WHICH RE-PLANS THE WHOLE NEXT STEP (Task 4.5, the owner 2026-11-04: "regardless of what
+# happens on the thread the agent should respond correctly ... not just fix drafts - it might be no more draft needed, I need to research
+# again"). The owner was asked a question and a reply was drafted; a colleague on the thread answered it, triage read that as an fyi, it
+# was filed for the chain - and the draft sat "ready to send", its agent never told. Now every line that joins an assistant's task - an
+# fyi, a watch, an aside, the owner's own answer on any channel - is the agent's next turn when it has a conversation there or a reply
+# waiting: what changed, in their words, and triage's reading of who handled what. Whether a reply is still owed is the agent's call
+# (its reply_not_needed), never a rule here. Coding tasks are as they were: their own carry-on takes new work, nothing else.
+REPLAN = ('Re-plan the WHOLE next step from here, not only the draft: it may need no reply any more (then mark the waiting draft with '
+          '`taskuary --reply-not-needed "<why>"` or the reply_not_needed tool - it stays for the owner, never deleted), new research, a '
+          'corrected or an added draft, or nothing left at all. You never send or close anything. End with the [[TASKUARY-SUMMARY]] block.')
+_QUIET_WAKE = ('the task is closed', 'not an assistant task', 'no agent conversation', 'triage could not read it',
+               'passing lines to the agent is switched off')
+
+
+def replan_turn(msg: dict, follow: dict | None = None, own: bool = False) -> str:
+    "The turn a change on the thread hands the agent: who wrote and their words, triage's reading when it has one, then REPLAN."
+    body = ' '.join(agent_words(msg).split())[:4000]
+    ch = senders.channel_name(msg.get('channel')) or 'another channel'
+    head = (f"THE THREAD CHANGED: you already answered on {ch} - the owner's own words:" if own else
+            f"THE THREAD CHANGED: {sender_called(msg)} wrote on this task (by {ch}) - their words, not the owner's:")
+    th = (follow or {}).get('thread')
+    th = th if isinstance(th, dict) else {}
+    s = lambda v: ' '.join(str(v).split()) if isinstance(v, str) else ''
+    done = '; '.join(f"{s(o.get('who'))} - {s(o.get('did'))}" for o in (th.get('others') if isinstance(th.get('others'), list) else [])
+                     if isinstance(o, dict) and s(o.get('who')))
+    read = [f'Triage read it: {s(follow.get("why"))}' if s((follow or {}).get('why')) else '',
+            f'Already handled: {done}' if done else '',
+            (f"The owner's part now: {s(th['your_part']) or 'nothing'}" if 'your_part' in th else '')]
+    return '\n\n'.join(x for x in [head + '\n' + body, '\n'.join(x for x in read if x), REPLAN] if x)
+
+
+def wake_why(store, tid, msg: dict, mid, follow: dict | None, own: bool = False) -> str:
+    "'' when a line that joined the task should wake its assistant to re-plan (replan_turn), else why not."
+    from . import general
+    t = store.get_task(tid) or {}
+    if t.get('Status') in ('done', 'dropped'): return 'the task is closed'
+    if not general.handles(t): return 'not an assistant task'
+    # ...with the assistant's conversation on it: a writer's draft alone (a reply task, an invite and its banter) never starts an agent
+    # by itself - the reply writer's own redraft (attach, above) is that task's road
+    if not general.history(store, tid): return 'no agent conversation'
+    if (follow or {}).get('degraded'): return 'triage could not read it'
+    if store.get_setting('answer_to_agent') == 'off': return 'passing lines to the agent is switched off'
+    if msg.get('no_auto'): return 'the channel waits for the owner'
+    live = live_agent(store, tid)
+    if live not in ('', 'general'): return 'another agent is live on it'
+    if own:
+        if live: return ''
+        if store.get_setting('general_auto_enabled') == '0': return f"Starting an agent by itself is switched off in {words.name('coding')}."
+        return '' if general.provider_options(store) else f"No AI is set up for an agent to run on yet ({words.name('ai')})."
+    if live:
+        if (d := danger(store, msg, mid, follow)): return f'it reads as an attempt to steer an AI ({d}) - it waits for you'
+        ok, why = senders.known(store, msg, exclude_mid=mid, deep=True)
+    else: ok, why = auto_start_ok(store, msg, mid, 'general')
+    return '' if ok else str(why)
+
+
+def thread_moved(store, tid, msg: dict, mid, follow: dict | None, actor: str, own: bool = False) -> bool:
+    """A line joined the task: wake its assistant to re-plan (wake_why) - queued behind a live or opening turn as its next one, else
+    the conversation carried on. Once per arrival; nothing is sent or closed by it. True when the agent was handed the turn."""
+    from . import general
+    if why := wake_why(store, tid, msg, mid, follow, own):
+        if why not in _QUIET_WAKE: not_started(store, tid, why)
+        return False
+    turn = replan_turn(msg, follow, own)
+    store.audit('task', tid, 'thread_moved', actor, 'agent', {'message_id': mid, 'own': own})
+    if live_agent(store, tid):
+        _spawn(_replan_pass, store, tid, {**msg, 'message_id': mid}, turn)
+        return True
+    if not has_room(store):
+        not_started(store, tid, f'{busy_words(store)} - Continue picks it up')
+        return False
+    general.OPENING.add(tid)
+    store.add_comment(tid, 'router', 'agent', ('You answered' if own else f'{_who_said(msg)} wrote') +
+                      ' on the thread - the assistant looks again at what is left to do here.')
+    _spawn(_replan_general, store, tid, turn)
+    return True
+
+
+def _replan_pass(store, tid, msg: dict, turn: str): _pass_general(store, tid, msg, turn)
+
+
+def _replan_general(store, tid, turn: str):
+    from . import general
+    try: general.start_session(store, tid, actor='router').send_prompt(turn, brief=True)
+    except general.Stopped: pass
+    except Exception as e:
+        logger.warning(f'assistant re-plan failed for task {tid}: {e}')
+        store.add_comment(tid, 'router', 'agent', f"The assistant couldn't look again by itself: {' '.join(str(e).split())[:200]} - Continue picks it up.")
     finally: general.OPENING.discard(tid)
 
 
@@ -2518,6 +2639,12 @@ def _joinable_task(store, tid):
     """An open task, or a DONE one a line can reopen - never a dropped one (not a task, or folded away)."""
     t = store.get_task(tid) if tid else None
     return tid if t and t.get('Status') != 'dropped' else None
+
+
+def is_aside(v: dict | None) -> bool:
+    """Did triage read the mail it judged (mid 0) as an aside on its thread? A missing or partial reading is not one."""
+    th = (v or {}).get('thread')
+    return isinstance(th, dict) and isinstance(th.get('aside'), list) and any(isinstance(o, dict) and o.get('mid') == 0 for o in th['aside'])
 
 
 def owes_owner(v: dict | None) -> bool:
@@ -3028,13 +3155,18 @@ def _auto_general(store, tid, brief: str = None, deep: bool = False):
     `deep`: the quick path already handed this one on (quickwork.escalate), so it never goes back to it.
     A task triage judged quick (quickwork.takes) is answered in one call instead: no desk, a fraction of one (quickwork._take). Every door reaching
     here has passed auto_start_ok already, so the gate is the same for both; a task triage never judged reads as deep."""
-    from . import blackboard as bb, quickwork
-    if not deep and _reads_quick(store, tid): return quickwork.start(store, tid, brief)
-    if not has_room(store):
-        # the brief waits with it (a quick call's notes, an Advisor's idea): the drain starts the agent on it, not on the bare Summary
-        store.enqueue_dispatch(tid, None, 'assistant', busy_words(store), brief=brief)
-        store.add_comment(tid, 'router', 'agent', f'Waiting its turn: {busy_words(store)}, and it starts by itself when there is room.')
-        return
+    from . import blackboard as bb, general, quickwork
+    try:
+        if not deep and _reads_quick(store, tid): return quickwork.start(store, tid, brief)
+        if not has_room(store):
+            # the brief waits with it (a quick call's notes, an Advisor's idea): the drain starts the agent on it, not on the bare Summary
+            store.enqueue_dispatch(tid, None, 'assistant', busy_words(store), brief=brief)
+            store.add_comment(tid, 'router', 'agent', f'Waiting its turn: {busy_words(store)}, and it starts by itself when there is room.')
+            general.OPENING.discard(tid)            # queued is not live: the drain starts it
+            return
+    except Exception:
+        general.OPENING.discard(tid)                # a hand-over's hold (agent_on_reply `opening`) never outlives a start that broke
+        raise
     _start_general(store, tid, brief)
 
 
@@ -3053,6 +3185,7 @@ def _start_general(store, tid, brief: str = None) -> bool:
     from . import general, quickwork
     try:
         session = general.start_session(store, tid, actor='router')
+        general.OPENING.discard(tid)            # a hand-over's hold (agent_on_reply `opening`): the session is live from here
         fresh = not general.history(store, tid)
         store.add_comment(tid, 'router', 'agent', 'The assistant started by itself'
                           + ('.' if fresh else ' - it carries on the conversation already open here.'))
@@ -3065,6 +3198,7 @@ def _start_general(store, tid, brief: str = None) -> bool:
         from . import blackboard as bb
         bb.record_failure(store, tid, e, 'assistant', label='The assistant')
         return False
+    finally: general.OPENING.discard(tid)
 
 
 # THE DRAFTS BEING WRITTEN AT ARRIVAL, by review: a Draft with AI or a Reply pressed on the new row meanwhile waits for this one

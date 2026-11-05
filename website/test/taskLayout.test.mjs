@@ -1,7 +1,7 @@
 // THE TASK PAGE'S LAYOUT (the redesign, owner-approved 2026-10-21): From | Work, and the work alone - full width - while an agent works
 import test from "node:test";
 import assert from "node:assert/strict";
-import { SECTIONS, advisorAt, cameFrom, agentStatus, agentWord, answeredOutside, outsideLine, reportLine, closeStatus, closeOut, fromStatus, TAB_MOST, focusOf, fromLine, holderName, layoutOf, mainOf, nextInDrawer, sameWords, sectionHere, waitingOn, workPane } from "../src/taskLayout.js";
+import { SECTIONS, advisorAt, chatHome, homeSection, liveTerminal, taskSections, cameFrom, agentStatus, agentWord, answeredOutside, outsideLine, reportLine, closeStatus, closeOut, fromStatus, TAB_MOST, focusOf, fromLine, holderName, layoutOf, mainOf, nextInDrawer, sameWords, sectionHere, waitingOn, workPane } from "../src/taskLayout.js";
 
 test("two columns at rest, the whole width while an agent works - coding or general, working or waiting on you", () => {
   assert.equal(layoutOf({ sessionView: false }), "columns");
@@ -37,6 +37,7 @@ test("the layout: two columns whenever no agent is live - a Result and a failure
   assert.equal(focusOf({ pane: "agent", list: true }), "list");
   assert.equal(focusOf({ pane: "agent" }), "source");
   assert.equal(focusOf({ pane: "", waiting: true }), "none");
+
 });
 
 
@@ -54,6 +55,7 @@ test("the main view follows where the task is up to: the work with Came from on 
   // ...and ONLY the task's own next move lights it (the owner, 2026-10-26: "advisor should not light drawer for no reason"): the page's
   // focus, never a word of the Advisor's - the lit tab reads main and focus, and focus is read off the task alone
   assert.equal(nextInDrawer({ main: "task", focus: "list", advice: { verb: "reply" } }), false, "advice lights no tab");
+
   assert.equal(mainOf({ focus: "list" }), "task", "a to-do or a goal's steps");
   assert.equal(mainOf({ focus: "source" }), "task", "an ask nothing has worked yet");
   assert.equal(mainOf({ focus: "none" }), "task", "a wait on a person");
@@ -93,6 +95,7 @@ test("Close out under a Result on a task nobody sent: no 'Nobody sent this one',
   assert.equal(closeOut({ hasSender: true, result: true, writeup: failed }).writeupAt, "closeout");
   // ...and an open task nobody sent, nothing done yet, keeps its advice
   assert.deepEqual(closeOut({ hasSender: false, result: false }), { advice: true, chip: true, writeupAt: null });
+
 });
 
 test("From folds to who and how many", () => {
@@ -223,4 +226,29 @@ test("Close out knows the owner answered outside Taskuary, and says so", () => {
   assert.equal(answeredOutside({ messages: ins, outside: [] }), null);
   const line = outsideLine({ who: "Erin Blake", where: "Teams", when: "at 12:10 PM" });
   for (const w of ["Erin Blake", "Teams", "at 12:10 PM"]) assert.ok(line.includes(w), w);
+});
+
+// WHERE THE CHAT IS HOME (phase 4, Task 4.1): a general or reply task shows Came from and the agent, opens on the agent, and Mark done,
+// Close with a note, Attach and Share ride the agent's strip; a coding task, a plain task and a live terminal keep their three sections
+test("a task whose home is the chat shows Came from and the agent, and opens on the chat", () => {
+  assert.equal(chatHome({ kind: "general" }), true);
+  assert.equal(chatHome({ kind: "reply" }), true);
+  assert.equal(chatHome({ kind: "coding" }), false);
+  assert.equal(chatHome({ kind: "task" }), false);
+  assert.equal(chatHome({ kind: "general", terminal: true }), false);
+  // ...nor a kind not known yet: a coding task never draws two sections before its detail lands
+  assert.equal(chatHome({}), false);
+  assert.equal(chatHome({ kind: "" }), false);
+  // ...and the terminal that keeps three is a coding one: a general agent's own live chat ("assistant" mode) is still home
+  assert.equal(liveTerminal({ alive: true, mode: "pty" }), true);
+  assert.equal(liveTerminal({ alive: true }), true);
+  assert.equal(liveTerminal({ alive: true, mode: "assistant" }), false);
+  assert.equal(liveTerminal({ alive: false, mode: "pty" }), false);
+  assert.equal(liveTerminal(null), false);
+  assert.equal(liveTerminal(undefined), false);
+  assert.equal(chatHome({ kind: "general", terminal: liveTerminal({ alive: true, mode: "assistant" }) }), true);
+  assert.deepEqual(taskSections(true).map((s) => s.key), ["from", "agent"]);
+  assert.equal(taskSections(false), SECTIONS);
+  assert.equal(homeSection(true, "close"), "agent");
+  assert.equal(homeSection(false, "close"), "close");
 });

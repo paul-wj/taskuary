@@ -34,8 +34,11 @@ class AskingForOneTests(unittest.TestCase):
         asked = s.create_task({'Title': 'portal', 'Kind': 'coding', 'Tags': bv.WANTS}, 'o')
         plain = s.create_task({'Title': 'code', 'Kind': 'coding'}, 'o')
         with mock.patch.object(terminal.shutil, 'which', return_value='/usr/bin/agent-browser'):
-            self.assertIn('A BROWSER IS OPEN', terminal.seed_text(s, asked, repo=None, cwd=''))
-            self.assertNotIn('A BROWSER IS OPEN', terminal.seed_text(s, plain, repo=None, cwd=''))
+            # ...offered until there is a page to open it on: its first navigate launches it (browserview.on_demand, 2026-11-04)
+            self.assertIn('NO BROWSER IS OPEN', terminal.seed_text(s, asked, repo=None, cwd=''))
+            with mock.patch.object(bv, 'last_page', return_value='https://portal.example/login'):
+                self.assertIn('A BROWSER IS OPEN', terminal.seed_text(s, asked, repo=None, cwd=''))
+            self.assertNotIn('BROWSER IS OPEN', terminal.seed_text(s, plain, repo=None, cwd=''))
 
     def test_nothing_is_promised_when_the_tool_is_not_installed(self):
         s = MemoryStore()
@@ -95,10 +98,11 @@ class TheChatIsNamedTooTests(unittest.TestCase):
         self.assertFalse(self._turn(hands='look')[0].get('cli_tools'), 'look only, and no browser asked for: no shell')
 
     def test_a_task_that_asked_for_one_gets_the_browser_and_the_brief(self):
-        seen, started = self._turn(tags=bv.WANTS)
+        # ...launched by its first navigate, not with the turn: no URL, no browser (the owner, 2026-11-04)
+        with mock.patch.object(bv, 'installed', return_value=True): seen, started = self._turn(tags=bv.WANTS)
         self.assertIn('AGENT_BROWSER_SESSION', seen.get('extra_env') or {})
         self.assertTrue(seen.get('cli_tools'), 'it has to be able to RUN agent-browser')
-        started.assert_called_once()
+        started.assert_not_called()
 
 
 class AskingForOneLaterTests(unittest.TestCase):
@@ -158,6 +162,19 @@ class AskingForOneLaterTests(unittest.TestCase):
 
 class TheShapeOfThePageTests(unittest.TestCase):
     """The pane says what shape it is; the page renders that shape, so there is nothing to letterbox."""
+
+    def setUp(self):
+        p = mock.patch.object(bv, 'state', return_value={'open': True}); p.start(); self.addCleanup(p.stop)
+
+    def test_a_browser_not_up_yet_is_never_sent_a_shape(self):
+        """Any agent-browser command launches a daemon when none answers: a shape sent while the task's browser was still starting
+        launched a second, default one - "started concurrently with different daemon configuration", and the agent's every open after
+        failed (the browser-agent walk, 2026-11-04)."""
+        with mock.patch.object(bv.shutil, 'which', return_value='ab'), mock.patch.object(bv.spawn, 'popen') as popen:
+            with mock.patch.object(bv, 'state', return_value={'open': False}): self.assertFalse(bv.set_viewport('abc123', 1200, 1480))
+            lock = bv._START_LOCKS.setdefault('abc123', __import__('threading').Lock())
+            with lock: self.assertFalse(bv.set_viewport('abc123', 1200, 1480))      # mid-launch: the start holds its lock
+        popen.assert_not_called()
 
     def test_the_viewport_is_set_on_the_session_and_never_waited_on(self):
         with mock.patch.object(bv.shutil, 'which', return_value='ab'), \
