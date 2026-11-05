@@ -27,7 +27,7 @@ flowchart LR
 | # | Decision | Built |
 |---|---|---|
 | T1 | The list's chip is the rail's word and mark - never "on you" for an agent's task | `taskstate.state` → `stateOf` |
-| T2, T3 | Board columns are the agent states: waiting to start · working · waiting on you · saved or stopped · finished today (with its reply or close-out waiting) | `BoardView` |
+| T2, T3 | Board columns are the agent states: waiting to start · working · waiting on you · saved or stopped · finished today (including owner-confirmed completion, with any reply or close-out waiting). Refresh keeps today's completed agent work; personal to-dos stay off the Board. | `BoardView` |
 | T4 | One word for one thing: "ready to send" (a reply and a close-out alike, 2026-09-27), "done", the agent's own sentence for what it asks | lanes.json |
 | T5 | No agent line on a task nobody handed to an agent | `agentPhase({handed})` |
 | T6 | "agent finished" when the agent closed it; the heading says asked, needs approval or stuck | `agentPhase({finished})` |

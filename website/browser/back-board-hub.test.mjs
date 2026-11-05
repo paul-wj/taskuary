@@ -34,3 +34,30 @@ test("Back from an opened Hub post returns to the Hub's list", { timeout: 180000
   assert.equal(await page.$(`${B} [data-tq-browse-one]`), null, "Back did not close the post");
   assert.deepEqual(errors, []);
 });
+
+test("owner-completed agent work stays on the Board after refresh in both locales", { timeout: 180000 }, async (t) => {
+  const { h, page, errors } = await boot(t, { width: 1440, height: 1000 });
+  const post = async (path, body) => {
+    const response = await fetch(`${h.fixtureApi}${path}`, {
+      method: "POST", headers: { "X-Taskuary-Token": h.token, "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const { taskId } = await post("/api/fixture/task/matrix", { state: "stopped" });
+  const { taskId: todoId } = await post("/api/fixture/task/matrix", { state: "todo" });
+  await post("/api/fixture/task/closed-elsewhere", { task_id: todoId });
+  await page.goto(`${h.ui}#board`, { waitUntil: "domcontentloaded" });
+  const card = `[data-tq-board-task="${taskId}"]`;
+  await page.waitForSelector(card, { visible: true, timeout: 15000 });
+  await post("/api/fixture/task/closed-elsewhere", { task_id: taskId });
+  for (const locale of ["en", "zh-CN"]) {
+    await page.evaluate((locale) => localStorage.setItem("taskuary.language", locale), locale);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector(card, { visible: true, timeout: 15000 });
+    assert.ok(await page.$eval(card, (el) => el.parentElement === el.parentElement.parentElement.lastElementChild), "finished work belongs in the last column");
+    assert.equal(await page.$(`[data-tq-board-task="${todoId}"]`), null, "a completed personal to-do is not agent work");
+  }
+  assert.deepEqual(errors, []);
+  assert.deepEqual(page.fixtureEscapes, []);
+});

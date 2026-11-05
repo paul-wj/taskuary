@@ -64,6 +64,16 @@ class StateTests(unittest.TestCase):
         s.update_task(t, {'Status': 'done'}, 'owner')                                  # you edited it last
         self.assertEqual(taskstate.state(s, row(s, t)), 'closed')
 
+    def test_owner_completed_agent_work_keeps_its_finished_column(self):
+        from taskuary import concierge, workerstate
+        s = MemoryStore(); tid = task(s, Assignee='agent:coding')
+        workerstate.record(s, tid, 'completed-run', 'finished', text='Fixed the export.')
+        self.assertEqual(taskstate.column(taskstate.state(s, row(s, tid))), 'agentdone')
+        self.assertTrue(concierge.close_task(s, tid, 'owner'))
+        refreshed = next(t for t in s.list_tasks(active_only=True) if t['TaskId'] == tid)
+        self.assertEqual(refreshed['Status'], 'done')
+        self.assertEqual(taskstate.column(taskstate.state(s, refreshed)), 'agentdone')
+
     def test_board_columns(self):
         self.assertEqual([taskstate.column(k) for k in ('queued', 'working', 'blocked', 'saved', 'stopped', 'agentdone', 'approve')],
                          ['queued', 'working', 'blocked', 'left', 'left', 'agentdone', 'agentdone'])

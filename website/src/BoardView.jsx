@@ -238,7 +238,7 @@ const NoteDialog = ({ open, task, onClose }) => {
 // Its columns are the agent's states, in lanes.json's words: "Queued" held waiting-to-start, stopped, saved and
 // Taskuary-closed alike, and "Waiting on you" held an asking agent, a drafted reply and a task waiting on somebody else.
 const COLUMN_OF = { queued: "queued", working: "working", blocked: "blocked", saved: "left", stopped: "left",
-  agentdone: "agentdone", approve: "agentdone" };
+  agentdone: "agentdone", approve: "agentdone", closed: "agentdone" };
 const laneOf = (t) => COLUMN_OF[t.State] || null;
 
 // Done is a TODAY column: yesterday's finished work is history, not board furniture - it

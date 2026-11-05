@@ -16,7 +16,7 @@ from .processing_unread import OWNER_ACTORS, finish_evidence
 
 # the Board's columns, left to right: what each holds (T2, T3)
 BOARD = (('queued', ('queued',)), ('working', ('working',)), ('blocked', ('blocked',)),
-         ('left', ('saved', 'stopped')), ('agentdone', ('agentdone', 'approve')))
+         ('left', ('saved', 'stopped')), ('agentdone', ('agentdone', 'approve', 'closed')))
 
 
 def _general_waiting(store, t) -> bool:
