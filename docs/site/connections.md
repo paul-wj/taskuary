@@ -463,6 +463,8 @@ running Taskuary, and press **Use this folder**. The directory must exist. Inval
 the current selection unchanged. Binding only saves the code location; it does not start or
 restart an agent, edit files, or approve permissions. Start the coding agent separately when
 ready. Existing GitHub repository choices remain available alongside local folders.
+Local bindings display their readable directory paths in task headings, classification results,
+repository pickers and hand-off cards; the encoded internal identifiers are not display names.
 
 The presets supply each CLI's noninteractive arguments. Some operations may still need an approval;
 for Oh My Pi general-agent ACP sessions, Taskuary declines permission requests rather than approving

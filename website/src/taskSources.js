@@ -4,6 +4,7 @@ import { assignedAgent } from "./agentIdentity.js";
 import { routeIntent, routeWhy } from "./triageVerdict.js";
 import { level } from "./priority.js";
 import { t } from "./i18n.js";
+import { repoLabel } from "./repoNames.js";
 
 const CHANNEL_NAMES = { email: "Email", whatsapp: "WhatsApp", telegram: "Telegram", slack: "Slack", teams: "Teams", github: "GitHub",
   monday: "Monday", jira: "Jira", linear: "Linear", imessage: "iMessage", discord: "Discord", report: "Report", assistant: "Assistant",
@@ -218,7 +219,7 @@ export function headerFacts({ verdict = null, route = null, task = {}, workflow 
       run && workflow?.by_code ? { key: "who", label: "Who does it", value: "its steps", tone: "agent" }
         : { key: "who", label: "Who does it", value: WHO[kind] || "yours", tone: WHO[kind] ? "agent" : "" },
       profile && { key: "profile", label: "Agent", value: profile },
-      repo && { key: "repo", label: "Repository", value: repo, mono: true },
+      repo && { key: "repo", label: "Repository", value: repoLabel(repo), mono: true },
       // a start that stopped on "which repository?" (funnel.HELD_REPO) says so where the repository would be; the pick is on the bar
       !repo && kind === "coding" && /(?:^|[\s,])held:repo(?:$|[\s,])/.test(String(task?.Tags || "")) && { key: "repo", label: "Repository", value: "none - not started", tone: "alert" },
       { key: "priority", label: "Priority", value: pri, tone: pri === "urgent" ? "alert" : pri === "important" ? "info" : "" },

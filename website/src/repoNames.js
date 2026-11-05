@@ -7,3 +7,10 @@ export const namedRepo = (rows, text) => {
     .some((n) => n.length >= 4 && words.has(n.toLowerCase()))).map((r) => r.repo));
   return hits.size === 1 ? [...hits][0] : "";
 };
+
+// Local bindings keep their encoded identity for dispatch; only presentation decodes it.
+export const repoLabel = (repo) => {
+  const name = String(repo || "");
+  if (!name.startsWith("local:")) return name;
+  try { return decodeURIComponent(name.slice(6)); } catch { return name; }
+};

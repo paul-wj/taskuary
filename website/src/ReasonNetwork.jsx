@@ -8,6 +8,7 @@ import { BORDER, DIM, FAINT, INK, PANEL } from "./theme.jsx";
 import { cleanOne, sessionLine, trustOf, withTrust, withoutTrust } from "./reasonNetwork.js";
 import { t, translateDescriptor } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
+import { repoLabel } from "./repoNames.js";
 
 const said = (e, d) => e?.response?.data?.detail || { source: d, values: {} };
 const Section = ({ title, children }) => (
@@ -151,7 +152,7 @@ export default function ReasonPanel({ conn, reload }) {
           <Row key={f.path}>
             <Switch size="small" checked={!!f.off} disabled={busy === f.path}
               onChange={(e) => act(f.path, () => api.post("/api/reason/folder", { path: f.path, off: e.target.checked }))} />
-            <Typography variant="body2" sx={{ color: INK }}>{f.repo}</Typography>
+            <Typography variant="body2" sx={{ color: INK }}>{repoLabel(f.repo)}</Typography>
             <Typography variant="caption" sx={{ color: FAINT, fontFamily: "monospace" }}>{f.path}</Typography>
             <Typography variant="caption" sx={{ color: DIM }}>{t(f.off ? "off - its sessions are not seen and cannot be messaged" : "on the network")}</Typography>
           </Row>

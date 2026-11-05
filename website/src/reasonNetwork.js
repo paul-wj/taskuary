@@ -1,6 +1,7 @@
 // The Reason Network card's words and its trust list, apart from React so node tests read them (test/reasonNetwork.test.mjs).
 // The list is the server's rule as well (reasonnet.clean_trusted): people (erin) and single sessions (erin/api-claude),
 // lower case, no machine, never a group - a star or a repo: line would let a whole team in by one entry.
+import { repoLabel } from "./repoNames.js";
 const NAME = "[a-z0-9][a-z0-9._-]*";
 const ADDR = new RegExp(`^${NAME}(/${NAME})?$`);
 
@@ -28,7 +29,7 @@ export const withoutTrust = (trusted, x) => cleanTrusted(trusted).filter((t) => 
 
 // one line per session, the way `reason-network who` reads: what it is and what it is doing now
 export function sessionLine(s) {
-  const where = s.repo ? `${s.repo}${s.branch ? `@${s.branch}` : ""}` : "";
+  const where = s.repo ? `${repoLabel(s.repo)}${s.branch ? `@${s.branch}` : ""}` : "";
   return [s.agent, where, s.status, s.doing].filter(Boolean).join(" · ");
 }
 

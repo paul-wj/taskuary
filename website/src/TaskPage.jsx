@@ -102,6 +102,7 @@ import { mainView, stageOf } from "./stages.js";
 import { taskStatus } from "./railStatus.js";
 import { StatusPill } from "./StatusMark.jsx";
 import { ASK_TAG, BROWSER_TAG } from "./newTask.js";
+import { repoLabel } from "./repoNames.js";
 import { completionFact, completionLine, owedEmails, waitingEmails, wentOut,
   AGENT, agentPhase, closedLine, focusStage, generalAnswered, hasCorrespondent, ownerControlsCompletion, pageState, pendingProposals, pendingReplyReview, reopenedDetail, replyPhase, replySource, sentElsewhere, sentReplyReview, sessionWord, taskPhase, unsentReplyReview,
 } from "./taskLifecycle.js";
@@ -3224,7 +3225,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                       {!isGeneral && canCode && <Button size="small" variant="outlined" sx={chipBtn}
                         startIcon={<AccountTreeIcon sx={{ fontSize: 14, color: "#55697a" }} />}
                         title={heldRepo ? heldWhy : btnHint("pick_repo")}
-                        onClick={pickRepo}>{repoOf(t) || PICK_CODE.toLowerCase()}</Button>}
+                        onClick={pickRepo}>{repoLabel(repoOf(t)) || PICK_CODE.toLowerCase()}</Button>}
                       {!isGeneral && canCode && heldRepo && !repoOf(t) && <Typography variant="caption" sx={{ color: "#6b2733", fontWeight: 600 }}>{tr("not started - {choice}", { choice: PICK_CODE.toLowerCase() })}</Typography>}
                     </Box>
                   )}
@@ -3691,7 +3692,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
         {pick?.what === "menu" && [
           <MenuItem key="kind" sx={{ fontSize: 12.5 }} onClick={() => setPick({ ...pick, what: "kind" })}>{tr("Who does it · {kind}", { kind: KINDS.includes(t.Kind || "task") ? tr(kindLabel(t.Kind || "task")) : t.Kind })}</MenuItem>,
           <MenuItem key="priority" sx={{ fontSize: 12.5 }} onClick={() => setPick({ ...pick, what: "priority" })}>{tr("Priority · {priority}", { priority: tr(level(t.Priority)) })}</MenuItem>,
-          ...(!isGeneral && canCode ? [<MenuItem key="repo" sx={{ fontSize: 12.5 }} onClick={() => { setPick(null); pickRepo(); }}>{tr("Repository · {repo}", { repo: repoOf(t) || tr("pick a repo") })}</MenuItem>] : []),
+          ...(!isGeneral && canCode ? [<MenuItem key="repo" sx={{ fontSize: 12.5 }} onClick={() => { setPick(null); pickRepo(); }}>{tr("Repository · {repo}", { repo: repoLabel(repoOf(t)) || tr("pick a repo") })}</MenuItem>] : []),
         ]}
         {pick?.what === "kind" && (KINDS.includes(t.Kind || "task") ? KIND_OPTIONS : [{ key: t.Kind, label: t.Kind, hint: "legacy task type" }, ...KIND_OPTIONS])
           .filter((o) => o.key !== "coding" || canCode || t.Kind === "coding").map((o) =>

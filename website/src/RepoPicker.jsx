@@ -8,7 +8,7 @@ import AccountTreeIcon from "@mui/icons-material/AccountTree";
 import CheckIcon from "@mui/icons-material/Check";
 import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 import api from "./api";
-import { namedRepo } from "./repoNames.js";
+import { namedRepo, repoLabel } from "./repoNames.js";
 import { ACCENT, PANEL, PANEL2, BORDER, DIM, FAINT, INK, mono } from "./theme.jsx";
 import { openAppLink } from "./appLinks.js";
 import { LOCAL, place } from "./words.js";
@@ -118,7 +118,7 @@ export const RepoPicker = ({ taskId, agent = "", hasSession, onDone }) => {
     <Box>
       <Typography variant="caption" sx={{ color: DIM, display: "block", mb: 0.75 }}>
         {general ? t("Not code work — this one is a question, and the agent is told so.")
-          : picked ? <>{t("Working in")} <b style={mono}>{picked.startsWith("local:") ? decodeURIComponent(picked.slice(6)) : picked}</b>{why ? ` — ${why}` : ""}.</>
+          : picked ? <>{t("Working in")} <b style={mono}>{repoLabel(picked)}</b>{why ? ` — ${why}` : ""}.</>
             : t("No code chosen yet — the agent works in its own folder until you pick one.")}
         {" "}{t("Pick another and the agent starts again there, told where it is.")}
       </Typography>
@@ -130,7 +130,7 @@ export const RepoPicker = ({ taskId, agent = "", hasSession, onDone }) => {
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
               <AccountTreeIcon sx={{ fontSize: 14, color: on ? "#55697a" : FAINT }} />
               <Typography variant="caption" sx={{ ...mono, fontWeight: 600, color: on ? "#55697a" : INK,
-                flex: 1, minWidth: 0 }} noWrap>{r.repo.startsWith("local:") ? r.path || decodeURIComponent(r.repo.slice(6)) : r.repo}</Typography>
+                flex: 1, minWidth: 0 }} noWrap>{r.repo.startsWith("local:") ? r.path || repoLabel(r.repo) : r.repo}</Typography>
               {r.tagged && <Chip size="small" label={t("pinned")} sx={{ height: 16, fontSize: 9, bgcolor: "#eae4d8", color: "#55697a" }} />}
               {!r.has_path && (
                 <Chip size="small" icon={<WarningAmberIcon sx={{ fontSize: 11 }} />} label={t("not {local}", { local: t(LOCAL) })}
@@ -156,8 +156,8 @@ export const RepoPicker = ({ taskId, agent = "", hasSession, onDone }) => {
               <Box sx={{ mt: 0.75, pl: 2.6 }}>
                 <Typography variant="caption" sx={{ color: r.found ? "#47654a" : "#55697a", display: "block", mb: 0.5 }}>
                   {r.found
-                    ? t("Found {repo} {local} — confirm or correct the folder.", { repo: r.repo, local: t(LOCAL) })
-                    : t("Which folder holds {repo} {local}? It is saved on the {agent} agent, so every later task about it uses it.", { repo: r.repo, local: t(LOCAL), agent: agent || t("coding") })}
+                    ? t("Found {repo} {local} — confirm or correct the folder.", { repo: repoLabel(r.repo), local: t(LOCAL) })
+                    : t("Which folder holds {repo} {local}? It is saved on the {agent} agent, so every later task about it uses it.", { repo: repoLabel(r.repo), local: t(LOCAL), agent: agent || t("coding") })}
                 </Typography>
                 <Box sx={{ display: "flex", gap: 0.75, alignItems: "center" }}>
                   <TextField size="small" fullWidth autoFocus value={path} placeholder="C:\\Users\\you\\Documents\\portal"
@@ -220,7 +220,7 @@ export const RepoSelect = ({ taskId, agent = "", instruction = "", value, onChan
       <select className="tq-start-repo" aria-label={t("which code")} value={value || ""} onChange={(e) => { setManual(true); onChange?.(e.target.value); }}
         style={{ fontSize: 12.5, padding: "4px 6px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", color: INK, minWidth: 220 }}>
         {!value && <option value="">{t("choose the code…")}</option>}
-        {rows.map((r) => <option key={r.repo} value={r.repo}>{r.repo.startsWith("local:") ? r.path || decodeURIComponent(r.repo.slice(6)) : r.repo}{r.has_path ? "" : t(" (not {local})", { local: t(LOCAL) })}</option>)}
+        {rows.map((r) => <option key={r.repo} value={r.repo}>{r.repo.startsWith("local:") ? r.path || repoLabel(r.repo) : r.repo}{r.has_path ? "" : t(" (not {local})", { local: t(LOCAL) })}</option>)}
       </select>
       <Typography variant="caption" sx={{ color: FAINT }}>
         {!value ? t("not clear from the task - choose one to start")

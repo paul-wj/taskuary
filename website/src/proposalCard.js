@@ -3,6 +3,7 @@
 // after the click is what the server said happened. The action words themselves are no longer here -
 // they are concierge.CHIPS, chosen per item and rendered inside the assistant's own line.
 import { t } from "./i18n.js";
+import { repoLabel } from "./repoNames.js";
 
 export function proposalOf(data) { return data && data.proposal && data.proposal.id ? data.proposal : null; }
 
@@ -31,7 +32,7 @@ export function describe(p) {
     const title = String(p.params?.title || "").trim(), x = String(p.params?.text || "").trim();
     // a checkout nobody NAMED is the words' best match - worth a look before it opens, so it says it is a guess
     const repo = p.params?.kind === "coding" ? (!p.params?.repo ? t("not clear from the words - you pick it when it starts")
-      : p.clear === false ? t("{repo} - a best guess, say which if it is another", { repo: p.params.repo }) : p.params.repo) : "";
+      : p.clear === false ? t("{repo} - a best guess, say which if it is another", { repo: repoLabel(p.params.repo) }) : repoLabel(p.params.repo)) : "";
     // a general job names its worker
     const agent = p.params?.kind === "general" ? (p.params?.profile || t("none fits clearly - the default agent, or say which one")) : "";
     // a title that is only the brief cut short says nothing the brief does not: show the brief, once

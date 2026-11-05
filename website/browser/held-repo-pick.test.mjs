@@ -72,6 +72,8 @@ test("local code can be bound without GitHub, rejecting missing paths without ch
   const repos = await call(`/api/tasks/${made.taskId}/repos?agent=coding`);
   assert.equal(repos.data.find((r) => r.tagged).path, folder);
   await page.waitForFunction((path) => document.querySelector("[data-tq-repo-picker]")?.innerText.includes(path), {}, folder);
+  assert.ok(!(await page.$eval("body", (b) => b.innerText)).includes("repo:local:"));
+  assert.ok(!(await page.$eval("body", (b) => b.innerText)).includes("local:"), "classification and pickers show the directory, not its internal identifier");
   assert.deepEqual(starts, []);
   assert.deepEqual(errors, []);
   assert.deepEqual(page.fixtureEscapes, []);

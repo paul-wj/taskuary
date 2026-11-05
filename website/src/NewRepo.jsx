@@ -10,6 +10,7 @@ import AccountTreeIcon from "@mui/icons-material/AccountTree";
 import api from "./api";
 import { BORDER, DIM, FAINT, INK } from "./theme.jsx";
 import { AUTO, OTHER, chosenRepo } from "./newRepo.js";
+import { repoLabel } from "./repoNames.js";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 
@@ -42,8 +43,8 @@ export default function NewRepo({ agent = "", bus, out, first = "" }) {
         <Typography variant="caption" sx={{ color: DIM, fontWeight: 600 }}>{t("Repository")}</Typography>
         <select aria-label={t("Repository the session opens in")} value={pick} onChange={(e) => setPick(e.target.value)}
           style={{ fontSize: 12.5, padding: "5px 6px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", color: INK, minWidth: 240, maxWidth: "100%" }}>
-          <option value={AUTO}>{c.named ? t("Auto - {repo}", { repo: c.repo }) : t("Auto - picks from what you write")}</option>
-          {list.map((r) => <option key={r.repo} value={r.repo}>{r.repo}{r.has_path ? "" : t(" (no local folder)")}</option>)}
+          <option value={AUTO}>{c.named ? t("Auto - {repo}", { repo: repoLabel(c.repo) }) : t("Auto - picks from what you write")}</option>
+          {list.map((r) => <option key={r.repo} value={r.repo}>{repoLabel(r.repo)}{r.has_path ? "" : t(" (no local folder)")}</option>)}
           <option value={OTHER}>{t("Another repository…")}</option>
         </select>
         <Typography variant="caption" sx={{ color: FAINT, flex: 1, minWidth: 180 }}>{rows === null ? t("loading the list…") : why}</Typography>
@@ -56,7 +57,7 @@ export default function NewRepo({ agent = "", bus, out, first = "" }) {
       )}
       {pick !== OTHER && c.needsPath && (
         <Box sx={{ mt: 1 }}>
-          <TextField size="small" fullWidth label={t("Where is {repo} checked out?", { repo: c.repo })} value={path} onChange={(e) => setPath(e.target.value)}
+          <TextField size="small" fullWidth label={t("Where is {repo} checked out?", { repo: repoLabel(c.repo) })} value={path} onChange={(e) => setPath(e.target.value)}
             helperText={t("Saved on the agent, so every later task for this repository opens there.")} sx={small} />
         </Box>
       )}

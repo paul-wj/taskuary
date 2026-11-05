@@ -5,6 +5,7 @@ import { RepoPicker } from "./RepoPicker.jsx";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 import { CHOICES, VERBS, choice, label as buttonLabel } from "./buttons.js";
+import { repoLabel } from "./repoNames.js";
 
 // The confirmation box (PW-123): what will happen, on what, with which parameters - and one specifically
 // labelled button that submits the structured proposal. Cancel leaves everything where it is. A card
@@ -92,7 +93,7 @@ export default function ProposalCard({ p: given, onConfirm, onCancel, onPreview 
           <select className="tq-repo-pick" value={repo} onChange={(e) => setRepo(e.target.value)}
             style={{ fontSize: 12, padding: "3px 6px", borderRadius: 6, border: "1px solid #d8d1c5", background: "#fff", color: "#3d4a55" }}>
             {!repo && <option value="">{t("choose a repository…")}</option>}
-            {p.repo_choices.map((r) => <option key={r} value={r}>{r}{r === p.params?.repo ? t(" (best guess)") : ""}</option>)}
+            {p.repo_choices.map((r) => <option key={r} value={r}>{repoLabel(r)}{r === p.params?.repo ? t(" (best guess)") : ""}</option>)}
           </select>
         </label>
       )}
