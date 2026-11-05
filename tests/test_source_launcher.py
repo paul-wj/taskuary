@@ -52,3 +52,52 @@ def test_source_egg_info_does_not_trigger_reinstall_of_valid_editable_install(tm
     monkeypatch.syspath_prepend(str(tmp_path))
     assert start.installed_here(tmp_path)
     assert not start.installed_here(tmp_path / 'other-checkout')
+
+
+def gui_module():
+    import sys
+    spec = importlib.util.spec_from_file_location('launcher_gui', Path(__file__).parents[1] / 'tools' / 'launcher_gui.py')
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_gui_preferences_remember_lan_without_changing_server_credentials(tmp_path):
+    import json
+    gui = gui_module()
+    credentials = tmp_path / 'config.toml'
+    credentials.write_text('[server]\ntoken = "fixture-secret"\n', encoding='utf-8')
+    (tmp_path / 'launcher.json').write_text('{"other": true}', encoding='utf-8')
+    gui.save_lan(tmp_path, True)
+    assert gui.load_lan(tmp_path) is True
+    assert json.loads((tmp_path / 'launcher.json').read_text()) == {'other': True, 'lan': True}
+    gui.save_lan(tmp_path, False)
+    assert gui.load_lan(tmp_path) is False
+    assert credentials.read_text() == '[server]\ntoken = "fixture-secret"\n'
+
+
+def test_gui_remote_addresses_exclude_unusable_adapters_and_use_actual_port():
+    gui = gui_module()
+    assert gui.lan_urls('http://127.0.0.1:8123',
+                        ['127.0.0.1', '0.0.0.0', '169.254.1.2', '192.0.2.10', '192.0.2.10', '::1']) == ['http://192.0.2.10:8123']
+
+
+def test_gui_link_generation_preserves_remote_address_and_refuses_missing_key():
+    import json, threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    gui = gui_module()
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            ok = self.path == '/api/launch-key' and self.headers.get('X-Taskuary-Token') == 'owner-fixture'
+            self.send_response(200 if ok else 403); self.end_headers()
+            self.wfile.write(json.dumps({'key': 'fresh-key'} if ok else {}).encode())
+        def log_message(self, *args): pass
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+    try:
+        local = f'http://127.0.0.1:{server.server_port}'
+        assert gui.login_link(local, 'http://192.0.2.10:8123', 'owner-fixture') == 'http://192.0.2.10:8123/?k=fresh-key'
+        with pytest.raises(RuntimeError): gui.login_link(local, local, 'wrong')
+    finally:
+        server.shutdown(); server.server_close(); thread.join()

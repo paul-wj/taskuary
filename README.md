@@ -265,11 +265,23 @@ window instead, install `pip install "taskuary[desktop]"` and run `taskuary-desk
 
 Double-click `start-taskuary.cmd` in the repository root. It checks Python 3.10+, creates
 `.venv` if needed, installs missing core Python dependencies, checks the committed UI assets,
-and puts this environment's `taskuary` command on the app and agent PATH. It then starts the
-normal app and opens the browser only after the server answers; a running instance is reused.
-Keep the console open while the server runs; use Ctrl+C to stop it. Errors keep the window open.
+and puts this environment's `taskuary` command on the app and agent PATH. With no arguments,
+it opens a graphical launcher (requires Python's Tkinter). Click **启动 / 刷新状态** to start
+the normal app or reuse the instance serving the same data folder, then **打开本机应用**.
+Closing the launcher does not stop the server; use Quit in the application to stop it cleanly.
+
+For another computer on the same LAN, enable **允许局域网访问** before starting the server.
+This preference is remembered in `TASKUARY_HOME/launcher.json` (default `~/.taskuary/launcher.json`).
+Choose a detected LAN address and click **复制一次性登录链接**. Each click creates a fresh
+owner login link, valid for two minutes and one use: keep it private. Changing the checkbox
+does not restart an existing server; quit the app first when no agents need to keep working,
+then start it again. No firewall rules are changed; allow the port only on trusted networks.
+Both computers use this one server's data and execution environment; separate databases are not merged.
+Startup diagnostics are in `launcher-server.log` in the data home.
 
 Run `start-taskuary.cmd --check` to prepare and check the environment without starting the app.
+Explicit arguments retain console startup, e.g. `start-taskuary.cmd --no-browser`; keep that console
+open while the server runs and press Ctrl+C to stop it.
 Initial setup or dependency repair may need network access. Python itself must already be installed;
 optional agent CLIs, credentials and connector extras are configured separately in the app.
 Missing UI assets stop startup and show the frontend build commands. This does not enable

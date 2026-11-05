@@ -104,6 +104,10 @@ def main() -> int:
         sys.path.insert(0, str(root))
         prepare(root)
         if sys.argv[1:] == ['--check']: return 0
+        if not sys.argv[1:]:
+            from launcher_gui import main as launch_gui
+            launch_gui(root)
+            return 0
         from taskuary.cli import main as start
         start()
         return 0
