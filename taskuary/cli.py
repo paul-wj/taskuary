@@ -57,10 +57,11 @@ def open_when_ready(url: str, wait, open_it=None):
     here and deadlocked against urllib3's six shim over there: the port never opened, and the app
     the owner had just started sat there dead for as long as they left it (2026-09-09).
 
-    If it never answers the browser still opens: degrade to the old behaviour, which at least
-    shows the owner something, rather than to a window that never appears.
+    A startup failure stays in the launcher console instead of opening a broken page.
     """
-    wait(url)
+    if not wait(url):
+        print(f'Taskuary did not become ready at {url}; UI not opened. Check the startup log.', flush=True)
+        return
     (open_it or webbrowser.open)(url)
 
 _UC = r'Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice'

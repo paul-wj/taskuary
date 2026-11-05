@@ -261,6 +261,20 @@ taskuary
 Taskuary opens at [http://127.0.0.1:7787](http://127.0.0.1:7787). For a native desktop
 window instead, install `pip install "taskuary[desktop]"` and run `taskuary-desktop`.
 
+### Windows source checkout launcher
+
+Double-click `start-taskuary.cmd` in the repository root. It checks Python 3.10+, creates
+`.venv` if needed, installs missing core Python dependencies, checks the committed UI assets,
+and puts this environment's `taskuary` command on the app and agent PATH. It then starts the
+normal app and opens the browser only after the server answers; a running instance is reused.
+Keep the console open while the server runs; use Ctrl+C to stop it. Errors keep the window open.
+
+Run `start-taskuary.cmd --check` to prepare and check the environment without starting the app.
+Initial setup or dependency repair may need network access. Python itself must already be installed;
+optional agent CLIs, credentials and connector extras are configured separately in the app.
+Missing UI assets stop startup and show the frontend build commands. This does not enable
+Windows auto-start, change the global PATH, or select Demo mode; existing data-home overrides are preserved.
+
 ### Docker
 
 ```bash

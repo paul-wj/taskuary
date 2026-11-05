@@ -118,16 +118,17 @@ class BrowserWaitsForThePortTests(unittest.TestCase):
             t = threading.Thread(target=body); t.start(); t.join(10)
         finally: builtins.__import__ = real
         self.assertFalse(t.is_alive())
-        self.assertEqual(opened, [dead])
+        self.assertEqual(opened, [])
         self.assertEqual(imported, [], 'an import on the opener thread is the deadlock')
 
-    def test_a_server_that_never_answers_still_gets_the_browser_opened(self):
-        """Degrade to the old behaviour rather than to nothing: the owner should see their
-        browser's error, not a window that never appears."""
-        from taskuary import cli
-        opened = []
-        cli.open_when_ready('http://127.0.0.1:9', open_it=opened.append, wait=lambda u: False)
-        self.assertEqual(opened, ['http://127.0.0.1:9'])
+
+def test_unready_server_reports_failure_without_opening_ui(capsys):
+    from taskuary import cli
+    opened = []
+    cli.open_when_ready('http://127.0.0.1:9', wait=lambda u: False, open_it=opened.append)
+    assert opened == []
+    assert 'http://127.0.0.1:9' in capsys.readouterr().out
+
 
 
 if __name__ == '__main__':

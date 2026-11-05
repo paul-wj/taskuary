@@ -209,6 +209,18 @@ taskuary
 打开 [http://127.0.0.1:7787](http://127.0.0.1:7787)。
 若希望使用原生桌面窗口，安装 `pip install "taskuary[desktop]"`，然后运行 `taskuary-desktop`。
 
+### Windows 源码一键启动
+
+双击项目根目录的 `start-taskuary.cmd`。启动器先检查 Python 3.10+，按需创建 `.venv`、
+安装缺失的 Python 核心依赖，检查已构建的界面文件，并将当前环境的 `taskuary` 命令加入
+应用和 Agent 的 PATH。检查通过后启动正式应用，服务就绪才打开浏览器 UI；已有实例则直接复用。
+服务运行期间保留控制台窗口，按 Ctrl+C 停止；启动失败时窗口保留错误信息。
+
+运行 `start-taskuary.cmd --check` 可只准备、检查环境，不启动应用。
+首次安装或修复依赖可能需要联网；Python 本身需要预先安装。可选的 Agent CLI、凭据和连接器
+额外依赖仍在应用中配置，不会自动安装。界面文件缺失时停止启动并显示前端构建命令。
+这不是开机自启，不修改系统全局 PATH，不自动启用 Demo；已有的数据目录环境变量保持不变。
+
 ### Docker
 
 ```bash
