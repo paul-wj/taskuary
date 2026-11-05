@@ -458,6 +458,14 @@ above all work.)
 **AI providers** — Anthropic, OpenAI, Azure OpenAI, OpenRouter, Ollama (and any OpenAI-compatible
 local server: LM Studio, llama.cpp, vLLM), and the Meta Model API.
 
+OpenAI-compatible API cards offer **Disable thinking mode** under Credentials. Enable it only
+when your gateway supports `chat_template_kwargs.enable_thinking`: requests then include
+`{"chat_template_kwargs":{"enable_thinking":false}}`. Off (the default) omits this parameter
+and leaves the gateway's default unchanged. Save the connection before running work with it.
+The option applies to chat-completions requests using that connection, not coding CLIs or the
+OpenAI/Azure Responses web-search path. Unsupported endpoints may reject it, and disabling
+thinking does not guarantee that an empty-answer error is resolved.
+
 **Coding CLIs** — Claude Code, Codex, Qwen Code, OpenCode, Kimi Code, Gemini, Cursor, Copilot,
 Muse Code, Devin and Oh My Pi, plus any CLI that accepts a prompt on stdin. The connector defines its
 command, arguments, model argument and working-directory behaviour.

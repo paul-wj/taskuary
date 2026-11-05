@@ -2385,6 +2385,37 @@ const JiraDeployment = ({ cfg, setCfg }) => {
   );
 };
 
+// THE GATEWAY'S THINKING (llm.make_llm): on, the card's requests carry {"chat_template_kwargs":{"enable_thinking":false}};
+// off (the default), the parameter is OMITTED and the gateway's own default stands. Offered only where the card sends the
+// shared chat-completions body (llm.py: the OPENAI_COMPATIBLE table, and the openai / azure_openai / vertex_ai / ollama /
+// openrouter / meta branches) - never Anthropic, the ChatGPT sign-in, the decision model, or the voice and image cards.
+const CHAT_COMPLETIONS_AI = new Set([
+  "openai", "azure_openai", "vertex_ai", "ollama", "openrouter", "meta",
+  "groq", "mistral", "together", "cerebras", "xai", "gemini", "cohere", "deepseek", "perplexity", "hipaa_ai"]);
+const offersThinking = (type) => CHAT_COMPLETIONS_AI.has(type);
+function ThinkingSwitch({ cfg, setCfg }) {
+  useLocale();
+  // strict true: a saved "false", a string, or anything but the boolean true is off. Off OMITS the key - the default,
+  // and a config that never asked for it stays the one the gateway runs on
+  const on = cfg.disable_thinking === true;
+  const flip = (e) => {
+    if (e.target.checked) return setCfg({ ...cfg, disable_thinking: true });
+    const next = { ...cfg }; delete next.disable_thinking; setCfg(next);
+  };
+  return (
+    <Box data-tq-thinking-switch="" sx={{ bgcolor: "#fff", borderRadius: 1.5, p: 1, maxWidth: 460 }}>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+        <Switch size="small" data-tq-disable-thinking={on ? "on" : "off"} checked={on} onChange={flip}
+          inputProps={{ "aria-label": t("Disable thinking mode") }} />
+        <Typography sx={{ color: INK, fontSize: 13, fontWeight: 600 }}>{t("Disable thinking mode")}</Typography>
+      </Box>
+      <Typography variant="caption" data-tq-thinking-help="" sx={{ color: FAINT, fontSize: 11.5, display: "block", pl: 4.25, lineHeight: 1.45 }}>
+        {t("Only for gateways that support chat_template_kwargs.enable_thinking. Unsupported endpoints may reject this option. Off leaves the gateway default unchanged.")}
+      </Typography>
+    </Box>
+  );
+}
+
 export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, onBack: leave, onCreated, onNavigate, simple = false, onConnected, chatsAsk = null }) {
   useLocale();
   // ONE SAVE FOR THE CARD (ConnectorDraft.jsx): every control below draws from the draft and stages into it
@@ -2497,7 +2528,8 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
   // Sync now reads what is saved: there once the server has the card on, greyed while a box or the bar holds an unsaved edit.
   // The boxes are measured against what they last saved, not the row: a sign-in that rewrites the config is not the owner's typing.
   // The Jira deployment selector is a card box too: changing it without saving greys Sync, exactly like typing a new site
-  const dirtyKeys = conn.Type === "jira" ? [...m.fields.map((f) => f[1]), "deployment"] : m.fields.map((f) => f[1]);
+  const dirtyKeys = conn.Type === "jira" ? [...m.fields.map((f) => f[1]), "deployment"]
+    : offersThinking(conn.Type) ? [...m.fields.map((f) => f[1]), "disable_thinking"] : m.fields.map((f) => f[1]);
   const sync = syncState(savedConn, draft.pending, editedBoxes(dirtyKeys, cfg, cfgSaved, secret));
   // Jira Data Center, read from the UNSAVED draft: the card renders the DC road (help, ceiling, and no write authority) the
   // moment the owner picks it - not after Save. The server is the authority, but the card must not OFFER a write ceiling it
@@ -2535,6 +2567,7 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
                 {t("Read-only by design: this Data Center connection brings issues in and nothing goes back - no comments, moves, assignments or close-outs are offered, and a saved write scope never raises that ceiling. Cloud keeps its approved writes.")}
               </Typography>
             )}
+            {offersThinking(conn.Type) && <ThinkingSwitch cfg={cfg} setCfg={setCfg} />}
             {need.map((f) => <ConfigField key={f[1]} conn={conn} field={f} cfg={cfg} setCfg={setCfg} />)}
             {/* WhatsApp has no secret at all - the bridge holds the pairing, not us */}
             {adminFields && m.secretLabel && (
@@ -2721,6 +2754,7 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
           <TextField key={key} size="small" label={t(label)} placeholder={ph || ""} value={cfg[key] || ""} sx={boxSx}
             helperText={helper ? t(helper) : helper} onChange={(e) => setCfg({ ...cfg, [key]: e.target.value })} />
         ))}
+        {isAI && offersThinking(conn.Type) && <ThinkingSwitch cfg={cfg} setCfg={setCfg} />}
         {m.secretLabel && <TextField size="small" type="password" label={t(m.secretLabel)} value={secret} sx={boxSx}
           onChange={(e) => setSecret(e.target.value)} helperText={conn.Type === "gmail" ? <>{t("Not your normal password: Google makes a 16-letter App Password at")}{" "}
             <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">myaccount.google.com/apppasswords</a>{" "}
@@ -3709,6 +3743,7 @@ const DRAFT_LABELS = {
   ...Object.fromEntries(GITHUB_PERMS.map(([k, label]) => [k, label])),
   ...Object.fromEntries([...GH_PROMPTS, ...TASK_PROMPT].map(([k]) => [k, k === "prompt_pr" ? "Prompt for pull requests" : k === "prompt_issue" ? "Prompt for issues" : "Prompt for tasks"])),
   Active: "Connection", Roles: "Inbound", Scope: "Permission", bulk: "Processing", bulk_head: "Read at once",
+  disable_thinking: "Disable thinking mode",
   closeout: "Close-out", assistant_chat: "Assistant chat", poll_seconds: "Check every (seconds)",
   mode: "Use", folders: "Folders", issues: "issues", prs: "PRs", auto: "agent",
 };

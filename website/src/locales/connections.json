@@ -915,6 +915,8 @@
   "Enter the model name (ollama list shows what's installed). No key needed for a local server.": "输入模型名称（ollama list 会显示已安装的模型）。本地服务器无需密钥。",
   "Test runs a real round trip through the local model, then Enable makes it the triage brain — or pick it under Settings → How mail is sorted.": "“测试”会通过本地模型执行一次真实的往返请求，然后点击“启用”即可将其设为分类大脑——也可以在“设置 → 邮件排序方式”中选择它。",
   "For the CODING side, local models ride the CLI road instead: add any CLI that reads a prompt on stdin under Connections → AI CLI agents.": "对于编程方面，本地模型则通过 CLI 方式接入：在“连接 → AI CLI 代理”下添加任何能从 stdin 读取提示词的 CLI。",
+  "Disable thinking mode": "禁用思考模式",
+  "Only for gateways that support chat_template_kwargs.enable_thinking. Unsupported endpoints may reject this option. Off leaves the gateway default unchanged.": "仅适用于支持 chat_template_kwargs.enable_thinking 的网关。不支持该参数的端点可能会拒绝此选项。关闭时保持网关默认设置不变。",
   "AI — voice": "AI — 语音",
   "Google Gemini API key": "Google Gemini API 密钥",
   "Google Gemini transcription — accurate speech-to-text with native custom-vocabulary biasing for names, acronyms and system terms.": "Google Gemini 转录——精准的语音转文字，原生支持通过自定义词汇提高姓名、缩写和系统术语的识别准确率。",

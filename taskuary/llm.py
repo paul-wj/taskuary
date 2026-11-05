@@ -935,6 +935,7 @@ def make_llm(t, cfg: dict, key: str):
         content = ([{'type': 'image_url', 'image_url': {'url': f'data:{ct};base64,{b64}'}}
                     for ct, b64 in (images or [])] + [{'type': 'text', 'text': user}]) if images else user
         msgs = [{'role': 'system', 'content': system}, {'role': 'user', 'content': content}]
+        thinking_off = cfg.get('disable_thinking') is True      # the card's Disable thinking switch: send enable_thinking=false, omit the field when it is off
         last = None
 
         def once(fmt):
@@ -944,7 +945,8 @@ def make_llm(t, cfg: dict, key: str):
             for url in urls:
                 for tok_param in ('max_completion_tokens', 'max_tokens'):
                     body = {'messages': msgs, tok_param: max_tokens,
-                            **({'model': model} if model else {}), **({'response_format': fmt} if fmt else {})}
+                            **({'model': model} if model else {}), **({'response_format': fmt} if fmt else {}),
+                            **({'chat_template_kwargs': {'enable_thinking': False}} if thinking_off else {})}
                     # a local model may spend its first call loading weights off disk, a reasoning deployment its time on a long
                     # prompt - room to answer, and a quick give-up on an endpoint that is not there
                     r = post_retrying(url, headers, body, (CONNECT_TIMEOUT, READ_TIMEOUT))
