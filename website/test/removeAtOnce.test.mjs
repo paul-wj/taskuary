@@ -1,12 +1,13 @@
 // A REMOVE ACTS AT ONCE, AND UNDO TAKES IT BACK (the owner, 2026-10-21: no "are you sure"). Remove, Sign out, Disconnect and Not ours
 // each asked first; now each runs on the press and leaves "Removed <it> - Undo" in place, and Recently deleted keeps a report, a
-// workflow, a rule and a profile for 30 days (recentlydeleted.py).
+// workflow, a rule and a profile for 30 days (recentlydeleted.py). The one exception is a connection card's Remove, which asks once
+// (the owner, 2026-11-05: one press, one confirm) - connectorUses.test.mjs pins its question.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { announceRemoved, clearRemoved, fromAnswer, lastRemoved, onRemoved, removedLine, showsRemoved, UNDO_MS } from "../src/removed.js";
-import { keepDraft, keptDraft } from "../src/connectorDraft.js";
 import { followUps } from "../src/proposalCard.js";
 import { getLocale, setLocale } from "../src/i18n.js";
+
 
 
 test("the Undo line: announced by the press, drawn by the list that holds its kind, and only while it is fresh", () => {
@@ -42,13 +43,6 @@ test("the undo line translates interface descriptors without translating saved t
 });
 
 
-test("leaving a card with unsaved changes keeps them in its draft - nothing asks, nothing is saved behind the owner's back", () => {
-  assert.deepEqual(keptDraft(5), { want: null, wantSrc: {} });
-  keepDraft(5, { Active: false }, {});
-  assert.deepEqual(keptDraft(5).want, { Active: false });
-  keepDraft(5, null, {});                                  // saved or discarded: gone
-  assert.deepEqual(keptDraft(5), { want: null, wantSrc: {} });
-});
 
 test("Not ours runs as just this once, and offers From now on after it - never before", () => {
   const p = { verb: "not_ours", kind: "message.file", target: 12, params: { learn: false }, alts: [{ verb: "not_ours", label: "Just this once", current: true },

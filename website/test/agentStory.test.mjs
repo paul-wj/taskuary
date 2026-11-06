@@ -43,6 +43,7 @@ test("the story is the record's first line when there is a record, and the whole
 });
 
 
+
 test("a run that finished wears the list's word for it, never 'not started' (G7)", () => {
   assert.equal(startLabel({ kind: "finished", line: "The coding agent finished its work" }, "coding", true), null);
 });

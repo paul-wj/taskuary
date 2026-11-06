@@ -10,6 +10,7 @@
 // a file name instead of a path, the search's query, a page's host, a task's id - and never by guessing intent from words. The raw call
 // and its output stay in `detail`, which the canvas keeps behind the row's disclosure for debugging.
 import { forScreen } from "./agentMarkers.js";
+import { plural } from "./timeWords.js";
 import { t } from "./i18n.js";
 
 const flat = (s) => String(s || "").split(/\s+/).join(" ").trim();
@@ -20,7 +21,18 @@ export const baseName = (p) => parts(p).pop() || String(p || "");
 // `$d`, `$env:TEMP`, `%TEMP%`: the shell fills these in, so they name nothing a person can read ("Listed the files in $d", 2026-11-03)
 const named = (p) => !!p && !/\$|%\w+%/.test(String(p));
 const parent = (p) => { const x = parts(p); return x.length > 1 ? x[x.length - 2] : ""; };
-const hostOf = (u) => (/^https?:\/\/(?:www\.)?([^/?#:]+)/i.exec(String(u || "")) || [])[1] || "";
+// ...past any `user:password@` the address carries: a host is all a person needs, and a sign-in in a URL is a secret
+const hostOf = (u) => (/^https?:\/\/(?:[^/@\s]*@)?(?:www\.)?([^/?#:@]+)/i.exec(String(u || "")) || [])[1] || "";
+// WHERE A FETCH WENT, host and path (the owner, 2026-11-05: "it has to show what it's working on ... like pulling from url's"): never its query
+// string or fragment, where tokens ride, nor a path segment that reads as a key (long, letters and digits mixed)
+const KEYLIKE = /^(?=.*\d)(?=.*[A-Za-z])[\w~.=-]{24,}$/;
+const unesc = (p) => { try { return decodeURIComponent(p); } catch { return p; } };
+export const pageOf = (u) => {
+  const m = /^https?:\/\/(?:[^/@\s]*@)?(?:www\.)?([^/?#:@]+)(?::\d+)?([^?#\s]*)/i.exec(String(u || "").trim());
+  if (!m) return "";
+  const path = m[2].split("/").filter(Boolean).map((p) => (KEYLIKE.test(p) ? "…" : unesc(p))).join("/");
+  return clip(path ? `${m[1]}/${path}` : m[1], 64);
+};
 const key = (name) => String(name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 const prog = (w) => String(w || "").split(/[\\/]/).pop().toLowerCase().replace(/\.(exe|cmd|bat|ps1)$/, "");
 
@@ -100,7 +112,7 @@ export const browserStep = (args) => {
   }
   const [verb = "", ...rest] = a.map(String), v = verb.toLowerCase();
   const step = (summary, more = {}) => ({ kind: "page", summary, browser: true, ...more });
-  if (["open", "goto", "navigate"].includes(v)) { const host = hostOf(rest[0]) || hostOf(`https://${rest[0] || ""}`); return step(host ? t("Opened {host}", { host }) : t("Opened a page"), { host }); }
+  if (["open", "goto", "navigate"].includes(v)) { const host = hostOf(rest[0]) || hostOf(`https://${rest[0] || ""}`); return step(host ? t("Opened {host} in the browser", { host }) : t("Opened a page in the browser"), { host, doing: host ? t("Opening {host} in the browser", { host }) : t("Opening a page in the browser") }); }
   if (AB_LOOKS.has(v)) return step(t("Looked at the page"));
   if (v === "find") {
     // find <locator> <value> <action> [text]: a role's own name may sit before the action ("button "Pay now" click") or after it
@@ -136,7 +148,7 @@ const commandStep = (cmd, depth = 0) => {
       if (!url) { found.push({ kind: "run", summary: t("Ran {command}", { command: p }) }); continue; }
       const api = url.indexOf("/api/"), host = hostOf(url);
       if (api >= 0 && (!host || /^(localhost|127\.0\.0\.1)$/i.test(host))) found.push(taskuaryCall(url.slice(api + 5), seg.text));
-      else found.push({ kind: "page", summary: t("Read a page on {host}", { host: host || clip(url, 40) }), host });
+      else { const at = pageOf(url); found.push({ kind: "page", summary: at ? t("Read {where}", { where: at }) : t("Read a web page"), doing: at ? t("Reading {where}", { where: at }) : t("Reading a web page"), host }); }
       continue;
     }
     // `cat > desk.svg` WRITES desk.svg: it read "Read <<EOF" (the stress test, 2026-11-02)
@@ -183,6 +195,28 @@ const TOOLS = {
   plan: ["todowrite", "updateplan", "plan", "todoread"],
   sync: ["syncmessages"],
 };
+const OWN = {
+  mytask: () => ({ kind: "task", summary: t("Looked at the task's emails") }),
+  searchmessages: (a) => { const q = a.words || a.subject || a.sender || ""; return { kind: "mail", summary: q ? t("Searched your mail for {what}", { what: quoted(q) }) : t("Searched your mail"),
+    doing: q ? t("Searching your mail for {what}", { what: clip(q, 60) }) : t("Searching your mail"), q }; },
+  readmessage: () => ({ kind: "mail", summary: t("Read an email") }),
+  readattachment: () => ({ kind: "read", summary: t("Read an attachment") }),
+  searchtasks: (a) => { const q = a.words || ""; return { kind: "task", summary: q ? t("Searched your tasks for {what}", { what: quoted(q) }) : t("Searched your tasks"),
+    doing: q ? t("Searching your tasks for {what}", { what: clip(q, 60) }) : t("Searching your tasks") }; },
+  person: (a) => ({ kind: "mail", summary: a.name ? t("Looked up {name} in your mail", { name: clip(a.name, 40) }) : t("Looked up a person in your mail") }),
+  searchknowledge: (a) => { const q = a.text || ""; return { kind: "read", summary: q ? t("Searched your documents for {what}", { what: quoted(q) }) : t("Searched your documents"),
+    doing: q ? t("Searching your documents for {what}", { what: clip(q, 60) }) : t("Searching your documents") }; },
+  ownermemory: () => ({ kind: "data", summary: t("Read what Taskuary has learned about you") }),
+  calendar: () => ({ kind: "data", summary: t("Looked at your calendar") }),
+  listsystems: () => ({ kind: "data", summary: t("Looked at your connected systems") }),
+  runsystem: (a) => ({ kind: "data", summary: a.type ? t("Looked up data in {system}", { system: clip(a.type, 30) }) : t("Looked up data in a connected system") }),
+  tick: (a) => ({ kind: "plan", summary: a.done === false ? t("Unticked a to-do") : t("Ticked a to-do") }),
+  proposereply: () => ({ kind: "edit", summary: t("Drafted a reply") }),
+  proposeemail: () => ({ kind: "edit", summary: t("Drafted an email") }),
+  replynotneeded: () => ({ kind: "plan", summary: t("Marked the reply as not needed") }),
+  signform: () => ({ kind: "edit", summary: t("Filled in and signed a form") }),
+  propose: () => ({ kind: "plan", summary: t("Asked for your yes") }),
+};
 const KIND = Object.fromEntries(Object.entries(TOOLS).flatMap(([k, names]) => names.map((n) => [n, k])));
 
 export const describeCall = (name, args = {}) => {
@@ -204,8 +238,10 @@ export const describeCall = (name, args = {}) => {
   if (kind === "read") { const f = fileOf(a); return { kind, summary: f ? t("Read {file}", { file: baseName(f) }) : t("Read a file"), file: f }; }
   if (kind === "search") { const pat = a.pattern || a.query || a.regex; return { kind, summary: pat ? t("Searched files for {pattern}", { pattern: quoted(pat) }) : t("Searched files"), pattern: pat }; }
   if (kind === "list") { const g = a.pattern || a.glob, d = a.path || a.dir_path || a.directory; return { kind, summary: g ? t("Looked for files matching {pattern}", { pattern: quoted(g) }) : d ? t("Listed the files in {directory}", { directory: baseName(d) }) : t("Listed the files") }; }
-  if (kind === "web") { const q = a.query || a.q || a.search_term; return { kind, summary: q ? t("Searched the web for {query}", { query: quoted(q) }) : t("Searched the web"), q }; }
-  if (kind === "page") { const host = hostOf(a.url || firstUrl(a.prompt)); return { kind, summary: host ? t("Read a page on {host}", { host }) : t("Read a web page"), host }; }
+  if (kind === "web") { const q = a.query || a.q || a.search_term;
+    return { kind, summary: q ? t("Searched the web for {query}", { query: quoted(q) }) : t("Searched the web"), doing: q ? t("Searching the web for {query}", { query: clip(q, 60) }) : t("Searching the web"), q }; }
+  if (kind === "page") { const u = a.url || firstUrl(a.prompt), at = pageOf(u);
+    return { kind, summary: at ? t("Read {where}", { where: at }) : t("Read a web page"), doing: at ? t("Reading {where}", { where: at }) : t("Reading a web page"), host: hostOf(u) }; }
   if (kind === "edit" || kind === "write") {
     const changes = Array.isArray(a.changes) ? a.changes : [];
     if (changes.length > 1) return { kind: "edit", summary: t("Changed {count} files", { count: changes.length }) };
@@ -214,13 +250,28 @@ export const describeCall = (name, args = {}) => {
   }
   if (kind === "helper") return { kind, summary: a.description ? t("Handed part of the work to a helper: {description}", { description: clip(a.description, 70) }) : t("Handed part of the work to a helper") };
   if (kind === "plan") { const n = (a.todos || a.plan || []).length; return { kind, summary: n ? t("Updated its plan ({count} steps)", { count: n }) : t("Updated its plan") }; }
-  if (kind === "sync") return { kind, summary: a.new ? t("Checked for new mail ({count} new)", { count: a.new }) : t("Checked for new mail") };
+  // ...whatever channel the task came in on - a WhatsApp task read "Checking for new mail" (the owner, 2026-11-05: "this is not mail")
+  if (kind === "sync") return { kind, summary: a.new ? t("Found {count} on the thread", { count: plural(a.new, "new message") }) : t("Checked the thread for new messages") };
+  // TASKUARY'S OWN TOOLS (agenttools.TOOLS), by what each one is for: "Used my task (taskuary)" said nothing
+  const own = OWN[key(mcp ? mcp[2] : name)];
+  if (own && (!mcp || key(mcp[1]) === "taskuary")) return own(a);
   // anything else: its own name in words, and the one argument a person would want - a query, a host, a file
   const label = String(mcp ? mcp[2] : a.title || name || t("a tool")).replace(/[_-]+/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").trim();
   const target = a.query ? quoted(a.query) : hostOf(a.url) || (fileOf(a) ? baseName(fileOf(a)) : "");
   const tool = `${label}${mcp ? ` (${mcp[1].replace(/[_-]+/g, " ")})` : ""}`;
   return { kind: "tool", summary: target ? t("Used {tool} on {target}", { tool, target }) : t("Used {tool}", { tool }) };
 };
+
+// WHAT IT IS DOING NOW, said as it happens (the owner, 2026-11-05: "look how other chat libraries show intermediately the tool calls"): a step's
+// own `doing` where its words differ ("Searching the web for "…""), else its summary's verb in the present - "Read notes.md" is "Reading notes.md"
+const ING = { Read: "Reading", Searched: "Searching", Wrote: "Writing", Edited: "Editing", Ran: "Running", Opened: "Opening", Looked: "Looking",
+  Listed: "Listing", Changed: "Changing", Typed: "Typing", Clicked: "Clicking", Used: "Using", Handed: "Handing", Updated: "Updating",
+  Checked: "Checking", Went: "Going", Reloaded: "Reloading", Scrolled: "Scrolling", Closed: "Closing", Pressed: "Pressing", Ticked: "Ticking",
+  Unticked: "Unticking", Chose: "Choosing", Uploaded: "Uploading", Saved: "Saving", Started: "Starting", Drafted: "Drafting", Marked: "Marking",
+  Filled: "Filling", Asked: "Asking" };
+export const present = (s) => { const t = String(s || ""), m = /^([A-Z][a-z]+)\b/.exec(t); return m && ING[m[1]] ? ING[m[1]] + t.slice(m[1].length) : t; };
+// the row's words: what it is doing while it runs, what it did once done
+export const stepLabel = (s) => (s?.status === "running" ? s.doing || present(s.summary) : s?.summary || "");
 
 // a mail search's own answer says how many it found - read off the JSON it returned, when it is JSON
 const countOf = (out) => {
@@ -353,7 +404,9 @@ function group(steps) {
                || (s.kind === "mail" && s.q !== undefined && steps[j].q !== undefined))) j += 1;
     const run = steps.slice(i, j);
     const summary = run.length > 1 ? together(run) : null;
-    if (run.length > 1 && summary) out.push({ ...s, id: run.map((x) => x.id).join("+"), summary: withCount(summary, run), status: statusOf(run), detail: run.map(detailOf).join("\n\n") });
+    // ...and a run still under way is doing its NEWEST call: "Reading 3 files" said less than "Reading BudgetTable.js"
+    const last = run[run.length - 1], doing = last.status === "running" ? last.doing || present(last.summary) : present(summary || "");
+    if (run.length > 1 && summary) out.push({ ...s, id: run.map((x) => x.id).join("+"), summary: withCount(summary, run), doing, status: statusOf(run), detail: run.map(detailOf).join("\n\n") });
     else for (const x of run) out.push({ ...x, summary: withCount(x.summary, [x]), detail: detailOf(x) });
     i = j;
   }

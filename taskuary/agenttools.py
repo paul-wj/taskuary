@@ -16,6 +16,8 @@ Results that carry other people's words are fenced (terminal.fence), scrubbed (r
 import json
 from loguru import logger
 
+from . import words
+
 SERVER = 'taskuary'
 CAP = 12000                                         # one result; past it the agent is told to narrow, never handed half silently
 
@@ -37,8 +39,9 @@ TOOLS = {
                         _S({'id': _INT}, ('id',)), ('GET', '/api/attachments/1')),
     'my_task': ('read', "This task's brief: its title, summary, status and checklist with each to-do's id. Re-read it after a long "
                 "stretch of work. Read-only.", _S({}), ('GET', '/api/tasks/1')),
-    'search_tasks': ('read', "Search the owner's tasks, mail, chats and pull requests by words - what Taskuary's own search box finds. "
-                     "Read-only.", _S({'words': _STR}, ('words',)), ('GET', '/api/search')),
+    'search_tasks': ('read', "Search the owner's tasks, mail, chats and pull requests by words - what Taskuary's own search box finds - "
+                     "and what earlier tasks SETTLED (their own endings: the id found, the route that worked, the account used). Search "
+                     "here before asking the owner a fact. Read-only.", _S({'words': _STR}, ('words',)), ('GET', '/api/search')),
     'person': ('read', "Who a name or address is in the owner's mail, and their latest messages. Read-only.",
                _S({'name': _STR}, ('name',)), ('GET', '/api/agent/messages')),
     'search_knowledge': ('read', "Search the documents in the owner's knowledge base (indexed folders and SharePoint libraries). "
@@ -60,6 +63,11 @@ TOOLS = {
                     'additionalProperties': True}, ('POST', '/api/tools/run')),
     'tick': ('own', "Tick (done=true) or untick one of this task's to-dos by its id. Only what you actually finished.",
              _S({'item': _STR, 'done': {'type': 'boolean'}}, ('item',)), ('POST', '/api/agent/tick')),
+    # ...and a wake of its own later on this task (checkback.py, the owner 2026-11-05) - for what only time settles
+    'check_back': ('own', "Check back on this task later: at `when` (\"tomorrow 9am\", \"in 2 days\", \"2026-11-12\", \"in 3 hours\") you are "
+                   "woken here with `what` as your next turn - a payment that should clear, a reply expected by a date, a form that takes a "
+                   "day. One per task; a new one replaces it. Nothing is sent and the task stays where it is.",
+                   _S({'when': _STR, 'what': _STR}, ('when', 'what')), ('POST', '/api/agent/check-back')),
     'propose_reply': ('propose', "Write the reply to a person on this task - `to` names them (a name or address), else it answers the newest "
                       "mail. It becomes a pending reply with a Send button for the owner - nothing is sent.",
                       _S({'text': _STR, 'to': _STR, 'attach': _ATTACH}, ('text',)), ('POST', '/api/agent/reply')),
@@ -77,14 +85,15 @@ TOOLS = {
                   "(points from the bottom left); `date`: true writes today's date beside it, or a field name to put it in. The signed copy "
                   "lands in your folder and shows in the chat. When a mail brings a form to fill or sign, fill and sign it here, show it, "
                   "and propose the reply with it in `attach` for the owner's Send - never send it yourself. With no signature saved it says "
-                  "so: ask the owner to add one in Settings -> Your signature; never make one up.",
+                  "so: ask the owner to add one in " + words.name('replies') + " (Your signature); never make one up.",
                   _S({'attachment': _INT, 'file': _STR, 'fields': {'type': 'object', 'additionalProperties': True},
                       'sign': {'type': 'object', 'properties': {'field': _STR, 'near': _STR, 'page': _INT,
                                                                  'box': {'type': 'array', 'items': {'type': 'number'}}}},
                       'date': {'type': ['boolean', 'string']}}), ('POST', '/api/agent/sign-form')),
     'propose': ('propose', "Ask the owner to approve one act Taskuary runs on their press: comment_issue {body} (a public GitHub "
                 "comment), close_issue, open_pr, land, run_tool {type, connector_id, ...} (a send, post or order on one of their "
-                "systems), write_playbook {slug, text}, settings {changes}. On a Jira, Monday or Linear item: run_tool with type "
+                "systems - a post: {type: linkedin_post, text, image: a picture in your task folder}, drawn for the owner as the post with "
+                "its Post button), write_playbook {slug, text}, settings {changes}. On a Jira, Monday or Linear item: run_tool with type "
                 "jira_comment {body}, jira_move {status}, jira_assign {assignee}, jira_close {body?} (monday_ and linear_ the same); `item` "
                 "is the one this task came from unless you name another. Always give `why`. It puts an Approve button in front of "
                 "the owner - nothing happens until they press it.",
@@ -135,7 +144,7 @@ def call(store, tid: int, name: str, args: dict, doors: dict) -> str:
         from . import attachtext
         x = store.get_attachment(int(a['id']))
         if not x or not store.get_message(x.get('MessageId')) or (store.get_message(x['MessageId']) or {}).get('Channel') == 'assistant':
-            raise ValueError(f"no attachment {a['id']}")
+            raise ValueError(f"no attachment {a['id']} - read_message lists a message's attachments with their ids")
         p = Path(x['Path']) if x.get('Path') else None
         if not p or not p.is_file(): return f"{x.get('Name')}: not kept here - open the original message"
         got = attachtext.read(x.get('Name'), p.read_bytes())
@@ -148,8 +157,10 @@ def call(store, tid: int, name: str, args: dict, doors: dict) -> str:
     if name == 'search_tasks':
         from . import search
         got = search.everything(store, a.get('words', ''))
-        return _out(_j([{k: h.get(k) for k in ('type', 'id', 'ref', 'title', 'sub', 'snippet', 'when', 'status') if h.get(k)} for h in got.get('hits', [])][:40]),
-                    fence_it=True)
+        # ...and the endings of earlier tasks on those words (search.outcomes): what one already settled is not asked of the owner again
+        done = search.says_outcomes(search.outcomes(store, a.get('words', ''), skip=tid))
+        return _out(_j([{k: h.get(k) for k in ('type', 'id', 'ref', 'title', 'sub', 'snippet', 'when', 'status') if h.get(k)} for h in got.get('hits', [])][:40])
+                    + (f'\n\n{done}' if done else ''), fence_it=True)
     if name == 'person':
         from . import people
         who = people.resolve(store, a.get('name', ''))
@@ -180,6 +191,7 @@ def call(store, tid: int, name: str, args: dict, doors: dict) -> str:
         r = doors['tool_run']({**a, 'task_id': tid})
         return _out(_j(json.loads(r.body) if hasattr(r, 'body') else r), fence_it=True)     # a 202 (queued) comes back as a response
     if name == 'tick': return _j(doors['tick'](tid, str(a['item']), a.get('done', True) is not False))
+    if name == 'check_back': return _j(doors['check_back'](tid, str(a.get('when') or ''), str(a.get('what') or '')))
     if name == 'reply_not_needed': return _j(doors['not_needed'](tid, str(a.get('why') or '')))
     if name == 'propose_reply': return _j(doors['reply'](tid, str(a.get('text') or ''), str(a.get('to') or ''), attached(tid, a.get('attach'))))
     if name == 'propose_email': return _j(doors['draft'](tid, str(a.get('text') or ''), str(a.get('to') or ''), str(a.get('subject') or ''),
@@ -188,7 +200,7 @@ def call(store, tid: int, name: str, args: dict, doors: dict) -> str:
         out = doors['sign'](tid, a)
         return out['says'] if out.get('says') else _j(out)
     if name == 'propose': return _j(doors['propose'](tid, a))
-    raise ValueError(f'no tool {name!r} - tools/list names them')
+    raise ValueError(f'no tool {name!r} - tools/list names them; use one of those')
 
 
 def attached(tid: int, names) -> list:
@@ -198,7 +210,8 @@ def attached(tid: int, names) -> list:
     out = []
     for raw in ([names] if isinstance(names, str) else names or []):
         p = outputs.named(tid, raw)
-        if not p: raise ValueError(f'{raw} is not a file in your task folder ({outputs.folder(tid)}) - nothing was saved')
+        if not p: raise ValueError(f'{raw} is not a file in your task folder ({outputs.folder(tid)}) - nothing was saved. Save the file '
+                                   'there first, or name one that is, and call it again')
         out.append({'name': p.name, 'data': base64.b64encode(p.read_bytes()).decode()})
     return out
 

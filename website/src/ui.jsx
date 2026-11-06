@@ -1,6 +1,8 @@
 // Shared Task Hub atoms: chips, channel icons, relative time. Light + compact.
 import { says } from "./laneSays.js";
 import { laneMeta, taskStateMeta } from "./funnelPile.js";
+import { chatReady } from "./railStatus.js";
+import { isGeneralKind } from "./autostart.js";
 import { AGENT, NOT_SENT, READY } from "./taskLifecycle.js";
 import { WORD } from "./lanes.js";
 import { ago, agoMins, dur, durSince } from "./timeWords.js";
@@ -17,6 +19,7 @@ import BlockIcon from "@mui/icons-material/Block";
 import PsychologyOutlinedIcon from "@mui/icons-material/PsychologyOutlined";
 import api from "./api";
 import { browserRecogniser, dictate, dictationError } from "./dictation.js";
+import { voiceChoice, micRoute } from "./voiceChoice.js";
 import { onLive, touches } from "./live.js";
 import { outcomeOf } from "./dispatchOutcome.js";
 import { RepoPicker } from "./RepoPicker.jsx";
@@ -60,7 +63,7 @@ import { readContacts } from "./contacts.js";
 import { personLine, runSearch, withFound } from "./peopleSearch.js";
 export { agentAssignee, assignedAgent, assigneeLabel } from "./agentIdentity.js";
 import { ROLES, ACTION_COLORS, TAGS, ASSISTANT, ALERT, ALERT_INK, ALERT_TINT, ALERT_BD, BORDER, CATPPUCCIN, TASK_STATUS_COLORS, mono, DIM, FAINT, INK, PANEL, ACCENT2, PANEL2, label } from "./theme.jsx";
-import { AGENT_SHOWN, shownAgent } from "./kinds.js";
+import { AGENT_SHOWN, MESSAGE, shownAgent } from "./kinds.js";
 const message = (source, values = {}) => ({ source, values });
 // a waiting note the Assistant passed on keeps the owner's words and its own version apart (waitroom.SEP): the owner's are what is shown
 export const ownWords = (note) => String(note || "").split("\x1f")[0].trim();
@@ -484,10 +487,16 @@ export const useVoiceReady = () => {
   const [v, setV] = React.useState(null), [n, setN] = React.useState(0);
   React.useEffect(() => {
     let alive = true;
-    api.get("/api/voice/status").then(({ data }) => alive && setV(data)).catch(() => alive && setV({ ready: false }));
+    api.get("/api/voice/status", { params: { builtin: true } }).then(({ data }) => alive && setV(data)).catch(() => alive && setV({ ready: false }));
     return () => { alive = false; };
   }, [n]);
-  return v && { ...v, recheck: () => setN((x) => x + 1) };
+  React.useEffect(() => {
+    const changed = () => setN((x) => x + 1);
+    window.addEventListener("taskuary-voice-choice", changed);
+    window.addEventListener("storage", changed);
+    return () => { window.removeEventListener("taskuary-voice-choice", changed); window.removeEventListener("storage", changed); };
+  }, []);
+  return v && { ...v, choice: voiceChoice(), recheck: () => setN((x) => x + 1) };
 };
 
 // One mic. Press to record, press again to stop; the clip goes to /api/voice/transcribe as its
@@ -516,15 +525,16 @@ export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) =
   // tab's own recogniser (Edge and Chrome ship the Web Speech API) is used at once; else the computer's own (voice.py builtin - Windows'
   // dictation, behind the desktop window too); only with neither is the mic crossed out and its press asks. A card still wins, and is
   // still what transcribes a voice-note FILE. A tab whose speech service will not answer hands over to the computer's own.
-  const SR = browserRecogniser(), builtin = voice && !voice.ready ? voice.builtin : null;
+  const SR = browserRecogniser(), route = micRoute(voice, SR, voice?.choice);
+  const builtin = route !== "connector" ? voice?.builtin : null;
   // ...AND NOTHING THAT DOES NOT WORK (TQ-1283, the owner, 2026-11-03: "you can't use something that doesn't work ... trigger the
   // question if you want to turn that on"): Windows voice typing with its speech setting off is not a fallback to worse dictation -
   // the press asks to turn it on, and a yes turns it on and starts listening
   const speechAsk = !!builtin?.ask;
-  const viaBrowser = !!(voice && !voice.ready && SR && !(srDown && builtin));
-  const viaBuiltin = !!(builtin && !viaBrowser);
+  const viaBrowser = !!(voice && route === "browser" && !(srDown && builtin && voice.choice === "auto"));
+  const viaBuiltin = !!(builtin && !viaBrowser && (route === "windows" || (route === "browser" && voice?.choice === "auto")));
   const viaLive = !!(viaBuiltin && builtin.live && !speechAsk);     // Windows voice typing hears the microphone itself: a session, not a clip
-  const off = !!(voice && !voice.ready && !viaBrowser && !viaBuiltin);
+  const off = !!(voice && route !== "connector" && !viaBrowser && !viaBuiltin);
   const press = (e) => { if (!off && !(viaBuiltin && speechAsk)) return start(); setAsk(e.currentTarget); voice.recheck(); };
   const [turning, setTurning] = React.useState(false);
   const turnOn = async () => {
@@ -549,7 +559,7 @@ export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) =
           onInterim: (t) => live.current.onInterim?.(t),
           onEnd: (line) => {
             setRec(null); if (ctl) ctl.current = null; if (all) live.current.onText?.(all);
-            if (builtin && [dictationError("network"), dictationError("service-not-allowed")].includes(line)) {
+            if (builtin && voice.choice === "auto" && [dictationError("network"), dictationError("service-not-allowed")].includes(line)) {
               setSrDown(true); line = message("The browser's speech service did not answer - press the mic again to use {name}", { name: builtin.label });
             }
             if (line) {
@@ -587,6 +597,7 @@ export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) =
   // computer's microphone from the press to the next one. Each phrase lands as it settles - one by one into the chat box (onInterim),
   // all at the stop elsewhere, as the browser's dictation does - and the stop waits for a phrase still being said
   const listen = async () => {
+    setBusy(true);
     let id, seen = 0, all = "", timer = null, over = false;
     const take = (said = []) => { seen += said.length; for (const t of said) { if (live.current.onInterim) live.current.onText?.(t); else all = all ? `${all} ${t}` : t; } };
     const end = (error) => {
@@ -595,7 +606,7 @@ export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) =
       if (error) flash(error);
     };
     try { id = (await api.post("/api/voice/listen")).data.id; }
-    catch (e) { flash(e?.response?.data?.detail || message("Windows voice typing would not start")); return; }
+    catch (e) { setBusy(false); flash(e?.response?.data?.detail || message("Windows voice typing would not start")); return; }
     timer = setInterval(async () => {
       try { const { data } = await api.get(`/api/voice/listen/${id}`, { params: { since: seen } }); take(data.said); if (data.done) end(data.error); }
       catch { end(message("Windows voice typing stopped")); }
@@ -608,15 +619,16 @@ export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) =
       },
       cancel: () => { if (!over) { over = true; clearInterval(timer); api.post(`/api/voice/listen/${id}/stop`).catch(() => {}); } },
     };
-    setRec(session); if (ctl) ctl.current = { cancel: session.cancel };
+    setRec(session); setBusy(false); if (ctl) ctl.current = { cancel: session.cancel };
   };
   const stop = () => { rec?.stop(); if (!viaBrowser && !viaLive) setRec(null); };   // the browser's dictation and voice typing report back themselves
   const title = translateDescriptor(err) || (!voice ? ""
     : rec ? t("Stop and transcribe")
-    : voice.ready ? t("Dictate ({provider})", { provider: voice.label || voice.provider })
+    : route === "connector" ? t("Dictate ({provider})", { provider: voice.label || voice.provider })
     : viaBrowser ? t("Dictate — your browser's own recogniser. A voice AI ({place}) is more accurate and reads voice notes.", { place: placeName("voice") })
     : viaLive ? t("Dictate — {name}. A voice AI ({place}) also reads voice notes.", { name: builtin.label, place: placeName("voice") })
     : viaBuiltin ? t("Dictate — turn on Windows' speech recognition first (press to say yes)")
+    : voice?.choice !== "auto" ? t("The selected built-in speech service is unavailable here — check Windows / browser voice in Connections")
     : t("Voice is off — no voice AI is set up yet"));
   return (<>
     <MuiTooltip title={ask ? "" : err ? <span data-tq-mic-err="">{translateDescriptor(err)}</span> : title} open={!ask && (!!err || (hover && !!title))}
@@ -636,6 +648,11 @@ export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) =
         <Typography sx={{ fontSize: 12.5, color: DIM, mt: 0.75, lineHeight: 1.5 }}>
           {t("Or pick a voice AI under {place} instead - it also reads voice notes.", { place: placeName("voice") })}
         </Typography>
+      </> : voice?.choice !== "auto" ? <>
+        <Typography sx={{ fontSize: 13.5, fontWeight: 600, color: INK }}>Built-in speech is unavailable here</Typography>
+        <Typography sx={{ fontSize: 12.5, color: DIM, mt: 0.5, lineHeight: 1.5 }}>
+          Open Windows / browser voice under {placeName("voice")} to check availability or choose another built-in service.
+        </Typography>
       </> : <>
         <Typography sx={{ fontSize: 13.5, fontWeight: 600, color: INK }}>{t("Set up voice to talk instead of type")}</Typography>
         <Typography sx={{ fontSize: 12.5, color: DIM, mt: 0.5, lineHeight: 1.5 }}>
@@ -650,7 +667,7 @@ export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) =
         {viaBuiltin && speechAsk && <Button size="small" variant="contained" disableElevation sx={{ textTransform: "none" }} disabled={turning}
           data-tq-speech-on="" onClick={turnOn}>{turning ? t("Turning it on…") : t("Turn it on")}</Button>}
         <Button size="small" variant={viaBuiltin && speechAsk ? "text" : "contained"} disableElevation sx={{ textTransform: "none" }}
-          onClick={() => { setAsk(null); openAppLink(place("voice").href); }}>{t("Set up voice AI")}</Button>
+          onClick={() => { setAsk(null); openAppLink(place("voice").href); }}>{voice?.choice !== "auto" ? t("Voice settings") : t("Set up voice AI")}</Button>
       </Box>
     </Popover>
   </>);
@@ -729,7 +746,7 @@ let agentsLast = null;
 const agentsOf = (data) => ({
   agentsRead: true, codingReady: data.coding_ready ?? !!(data.brain_list || []).length,
   // ...and Developer mode (agents.developer_mode): off, every job is a general agent's and no coding door is drawn (the owner, 2026-11-02)
-  devMode: data.developer_mode ?? true,
+  devMode: data.developer_mode ?? false,      // ...and off until the server says so: no coding UI flashes while settings load (audit 2026-11-05)
   agents: (data.data || []).map((a) => a.Name),
   models: data.models || {},
   // what each worker is FOR. A coding dialog asks which CLI; the five general profiles -
@@ -975,7 +992,7 @@ export const NotMine = ({ messageId, onDone, onLock, row, first, compact = false
         <Button size="small" sx={{ color: DIM, fontSize: 11 }} onClick={() => setOpen(false)}>{t("Cancel")}</Button>
         <Button size="small" variant="contained" disableElevation
           disabled={busy || !note.trim() || (scope === "subject" && !topic.trim())} onClick={save}
-          sx={{ fontSize: 11.5 }}>{busy ? t("saving…") : t("Not ours — remember this")}</Button>
+          sx={{ fontSize: 11.5 }}>{busy ? t("saving…") : t("Not for me — remember this")}</Button>
       </Box>
       {err && <Typography variant="caption" sx={{ color: ROLES.bad.ink, fontWeight: 600, display: "block", mt: 0.75 }}>
         {t("{error} — your note is still here.", { error: translateDescriptor(err) })}
@@ -1072,8 +1089,7 @@ export const SendToAgent = ({ messageId, subject, taskKind, onOpenTask, dense, r
       </Typography>
       {agentKind && <TextField fullWidth multiline minRows={2} size="small" autoFocus value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder={coding ? t('What should it do? e.g. "Find why this failed and fix it, then tell me what changed."')
-            : t("What should the agent do with this?")}
+          placeholder={coding ? t('What should it do? e.g. "Find why this failed and fix it, then tell me what changed."') : t(MESSAGE)}
           sx={{ bgcolor: "#fff" }} />}
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 0.75 }}>
         <Typography variant="caption" sx={{ color: FAINT, flex: 1, minWidth: 0 }} noWrap>
@@ -1165,7 +1181,8 @@ export const stateOf = (t) => {
 };
 export const StateChip = ({ task }) => {
   useLocale();
-  const st = stateOf(task);
+  // ...a chat task's waiting move reads "agent ready for you" (railStatus.chatReady) - the key, and the filter it files under, stay
+  const s0 = stateOf(task), st = { ...s0, label: chatReady({ key: s0.state || s0.key, word: s0.label }, isGeneralKind(task?.Kind)).word };
   // the rail's mark leads the word, as it does on the rail (⏳ waiting to start, 👋 agent waiting on you)
   return <Chip size="small" label={st.mark && st.mark !== "spinner" ? `${st.mark} ${t(st.label)}` : t(st.label)}
     sx={{ bgcolor: st.c.bg, color: st.c.fg, border: `1px solid ${st.c.bd}`, height: 19, fontSize: 10.5, fontWeight: 600 }} />;
@@ -2031,7 +2048,7 @@ export const ToRow = ({ to, onSave, disabled }) => {
           {/* ...opened on the address it has: "change" emptied To while the footer still named the old one (the UI audit, 2026-10-21) */}
           {!disabled && <Typography {...pressable(() => { setText(bareAddresses(to).join(", ")); setOpen(true); })} data-tq-to-change
             sx={{ ...FOCUS_RING, fontSize: 11.5, color: "#55697a", cursor: "pointer", fontWeight: 600, "&:hover": { textDecoration: "underline" } }}>
-            {t("change")}</Typography>}
+            {t("Change")}</Typography>}
         </>
       )}
       {!!err && <Typography variant="caption" sx={{ color: "#6b2733" }}>{translateDescriptor(err)}</Typography>}
@@ -2074,7 +2091,7 @@ export const CcRow = ({ cc, setCc, channel }) => {
         <Typography {...pressable(() => setOpen(true))}
           sx={{ ...FOCUS_RING, fontSize: 11.5, color: "#55697a", cursor: "pointer", fontWeight: 600,
                 "&:hover": { textDecoration: "underline" } }}>
-          {(cc || []).length ? t("+ someone else") : t("+ loop someone in")}
+          {(cc || []).length ? t("Add another") : t("Add CC")}
         </Typography>
       )}
       {!!err && open && <Typography variant="caption" sx={{ color: "#6b2733" }}>{translateDescriptor(err)}</Typography>}

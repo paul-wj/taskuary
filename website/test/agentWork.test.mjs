@@ -98,6 +98,7 @@ test("only a real http target names a source", () => {
 });
 
 
+
 test("a chat card shows its turn's answer from the start, never the sign-off its tail ends on (email walk 2026-10-29)", () => {
   const run = { said: "Hi Paula,\n\nThe announcement reads well.\n\nBest,\nAlex", tail: ["Best,", "Alex"] };
   assert.equal(saidOf(run), "Hi Paula, The announcement reads well. Best, Alex");

@@ -189,7 +189,7 @@ def test_a_report_that_writes_the_draft_out_keeps_only_its_own_words():
 def test_a_report_that_is_only_the_draft_says_where_it_waits():
     s = home(); tid, _ = arrived(s)
     filed(s, tid, {**ANSWER, 'report': LETTER, 'draft': LETTER})
-    assert 'Close out' in general.history(s, tid)[1]['content'][0]['text']
+    assert 'under Next steps' in general.history(s, tid)[1]['content'][0]['text']      # the chat's own card; a chat task has no Close out
 
 def test_without_draft_leaves_an_answer_that_never_quotes_it():
     from taskuary import selfclose
@@ -216,17 +216,15 @@ def test_a_quick_question_waits_on_the_owner_like_a_general_one():
         assert req['kind'] == 'input_needed' and req['text'].startswith('Do you want to go Friday')
         assert ses.info()['state'] == 'asking'
 
-def test_done_closes_through_the_agents_own_close():
+def test_done_never_closes_the_task():
+    # the owner, 2026-11-05: "agent should never close once it's open until we hit close" - a quick turn that says done leaves it open
     s = home(); tid, _ = arrived(s)
-    with mock.patch.dict(terminal.SESSIONS, {}, clear=True):               # the close runs on a 0.1s timer: wait inside
+    with mock.patch.dict(terminal.SESSIONS, {}, clear=True):
         ses = opened(s, tid); ses.quick = True
         ses.file_quick(ASK, quickwork.read({**ANSWER, 'draft': None, 'done': True, 'why': 'Answered: worth going.'}), [])
-        end = time.time() + 10
-        said = lambda: any('The agent closed this itself: Answered: worth going.' in c['Body'] for c in s.list_comments(tid))
-        # ...the note is filed AFTER the close (selfclose.declare), so a loaded run read the status before the note was written
-        while time.time() < end and not (s.get_task(tid)['Status'] in ('done', 'waiting') and said()): time.sleep(.05)
-    assert s.get_task(tid)['Status'] == 'waiting'          # closed, as wrapup closes one whose sender is owed a reply: it waits on the draft
-    assert said()
+        time.sleep(.5)                                     # past the 0.1s the close used to wait
+    assert s.get_task(tid)['Status'] not in ('done', 'waiting', 'dropped')
+    assert not any('The agent closed this itself' in (c['Body'] or '') for c in s.list_comments(tid))
 
 def test_markers_in_the_models_fields_do_nothing():
     s = home(); tid, _ = arrived(s)
@@ -569,3 +567,13 @@ def test_a_quick_answer_opens_no_browser():
     with mock.patch.dict(terminal.SESSIONS, {}, clear=True), mock.patch('taskuary.general.threading.Thread') as th:
         opened(s, tid, quick=True)
         assert not any(c.kwargs.get('target') is browserview.start for c in th.call_args_list)
+
+def test_a_quick_turn_ends_in_the_same_three_parts_as_an_agent_turn():
+    """The stress run, 2026-11-05: a quick answer filed no summary, so a chat task's quick turn read as the agent's whole prose with no
+    "What this is about" / "What I did" - every other turn there ends in those sections. Its report is what it did; the ask is triage's reading."""
+    s = home(); tid, _ = arrived(s, thread={'asking': 'Erin Blake asks whether to go to the partner day on Friday', 'your_part': 'Decide',
+                                            'others': [], 'asks': [], 'aside': [], 'on_you': []})
+    filed(s, tid, ANSWER)
+    summ = [m for m in general.shown_history(s, tid) if m.get('summary')]
+    assert summ and summ[-1]['summary']['about'].startswith('Erin Blake asks whether') and summ[-1]['summary']['did'] == ANSWER['report']
+    assert 'on_you' not in summ[-1]['summary']                       # the owner's own steps stay as they were

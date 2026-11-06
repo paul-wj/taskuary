@@ -532,7 +532,7 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
         like every other settings page (the owner, 2026-09-22). */}
     {!rail && (
     <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, mb: 2.5, borderBottom: "1px solid #e1dcd5" }}>
-      {[["documents", t("Operator documents")], ["profiles", `${t("Profiles")}${profs.length ? ` (${profs.length})` : ""}`],
+      {[["documents", t("Your documents")], ["profiles", `${t("Profiles")}${profs.length ? ` (${profs.length})` : ""}`],
         ["playbooks", `${t("Playbooks")}${books.length ? ` (${books.length})` : ""}`],
         ["how", t("How it works")]].map(([key, label]) => (
         <Box key={key} component="button" onClick={() => chooseSection(key)}
@@ -604,7 +604,7 @@ export default function DocsView({ sel = null, onSel = null, onCatalog = null, c
           </>
         ) : section === "documents" ? (
           <>
-            <Typography sx={{ color: INK, fontWeight: 600, fontSize: 16, mb: 1.5, flexShrink: 0 }}>{t("Operator documents")}</Typography>
+            <Typography sx={{ color: INK, fontWeight: 600, fontSize: 16, mb: 1.5, flexShrink: 0 }}>{t("Your documents")}</Typography>
             {/* the eight scroll; the identity card below them does not, so it is always on screen */}
             <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", pr: 0.5, mr: -0.5 }}>
             {NAMES.map((n) => (

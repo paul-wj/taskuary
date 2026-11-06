@@ -64,3 +64,4 @@ test("the badge's hover says where it went; an email says nothing is sent before
   assert.notEqual(sharedNote("link", { url }, true), sharedNote("link", { url }, false));
 });
 
+

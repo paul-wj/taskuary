@@ -6,10 +6,11 @@ import React, { useEffect, useRef, useState } from "react";
 import { Box, Typography } from "@mui/material";
 import api from "./api.js";
 import { label } from "./buttons.js";
+import { useAgents } from "./ui.jsx";
 import { BORDER, CATPPUCCIN, FAINT, PANEL, mono } from "./theme.jsx";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
-import { fitFrame, isPaste, keyMessage, mayShape, pasteMessages, mouseMessage, parseMessage, shortUrl, viewportFor, viewportMoved,
+import { fitFrame, isPaste, isPress, keyMessage, mayShape, pasteMessages, mouseMessage, parseMessage, shortUrl, viewportFor, viewportMoved,
   wheelMessage } from "./browserSplit.js";
 
 const wsUrl = (sid) => {
@@ -32,6 +33,7 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
   filling = false, waiting = [], turn = null, onHandBack, onDecided, ended = false }) {
   useLocale();
   const box = useRef(null), canvas = useRef(null), sendRef = useRef(null), img = useRef(null), fit = useRef(null);
+  const { devMode } = useAgents();
   const [live, setLive] = useState(false);
   const [url, setUrl] = useState(url0);
   /* THE PAGE THE SERVER SAYS IT IS ON. A reopened task mounts this before the parent's first poll, so
@@ -254,9 +256,10 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
         <Box component="button" onClick={() => (driving ? setDriving(false) : takeOver())}
           title={driving ? t("give the page back to the agent") : t("drive the page yourself - for a password or a code the agent must not type")}
           sx={{ ...btn, ...(driving ? { color: CATPPUCCIN.yellow, borderColor: CATPPUCCIN.yellow } : {}) }}>
-          {driving ? t("Hand back") : t("Take over")}
+          {driving ? t("I'm done") : t("Take over")}
         </Box>
-        <Box component="button" onClick={snapshot} title={t("keep this frame on the task as an attachment")} sx={btn}>{t("Snapshot")}</Box>
+        {/* ...Snapshot only in Developer mode (audit, 2026-11-05): a frame filed as an attachment is a developer's record */}
+        {devMode && <Box component="button" onClick={snapshot} title={t("keep this frame on the task as an attachment")} sx={btn}>{t("Snapshot")}</Box>}
         {onFold && <Box component="button" onClick={onFold} title={overlay ? t("back to the terminal") : t("fold the browser away - the browser chip above the terminal brings it back")} sx={btn}>{overlay ? "✕" : "›"}</Box>}
       </Box>
       {/* the page. tabIndex so keystrokes land here while driving; the canvas swallows the wheel
@@ -319,7 +322,7 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
           <Typography sx={{ ...mono, position: "absolute", left: 8, bottom: 6, fontSize: 10, color: CATPPUCCIN.yellow,
             bgcolor: "#000000aa", px: 0.75, py: 0.25, borderRadius: 1, pointerEvents: "none" }}>
             {/* ...only over a page that has drawn: "click the page and type" stood over a pane with no frame in it (2026-11-04) */}
-            {!live ? t("waiting for the page to draw — type once it shows") : handed.current ? t("your turn — the agent is waiting on you; click the page and type") : t("you are driving — the agent's next command still runs; hand back when done")}
+            {!live ? t("Loading the page…") : handed.current ? t("your turn — the agent is waiting on you; click the page and type") : t("you are driving — the agent's next command still runs; press I'm done when finished")}
           </Typography>
         )}
         {asked && !driving && (
@@ -393,14 +396,17 @@ function TurnBar({ turn, onHandBack }) {
     try { await onHandBack?.(); } catch (e) { setErr(failed(e)); setBusy(false); }
   };
   useEffect(() => { setBusy(false); setErr(""); }, [turn?.request_id]);
+  // a press handed over is said by its own line, and the press that matters is the page's; every hand-over is watched and goes on by itself
+  // when the page moves on (the owner, 2026-11-05) - Done stays, quiet, for a page Taskuary cannot read
+  const pressing = isPress(turn);
   return (
-    <Box data-tq-browser-turn={turn.request_id} sx={bar}>
+    <Box data-tq-browser-turn={turn.request_id} data-tq-browser-press={pressing ? "" : undefined} sx={bar}>
       <Typography sx={barText}>
         <Box component="span" sx={{ color: CATPPUCCIN.yellow, fontWeight: 600 }}>{turn.text || t("Your turn in the browser")}</Box>
-        <Box component="span" sx={{ color: "#a8a196" }}>{t(" · click the page and do it, then hand it back")}</Box>
+        {!pressing && <Box component="span" sx={{ color: "#a8a196" }}>{t(" · do it on the page, and the agent goes on when it moves on")}</Box>}
       </Typography>
-      <Box component="button" onClick={back} disabled={busy} sx={primary}
-        title={t("The agent looks at the page as you left it and carries on")}>{busy ? t("handing back…") : t("Done — hand back to the agent")}</Box>
+      <Box component="button" onClick={back} disabled={busy} sx={press}
+        title={t("The agent looks at the page as you left it and carries on")}>{busy ? t("handing back…") : t("I'm done")}</Box>
       {err && <Typography role="alert" sx={{ ...mono, fontSize: 10.5, color: CATPPUCCIN.red, flexBasis: "100%" }}>{err.local ? t(err.text) : err.text}</Typography>}
     </Box>
   );

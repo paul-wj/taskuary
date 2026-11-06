@@ -7,6 +7,7 @@ test("the triage reason is kept and whitespace normalized", async () => {
   assert.ok(triageSays(facts, "reply", "  she asks for half an hour\n on a named day ").endsWith("she asks for half an hour on a named day"));
   assert.ok(!triageSays(facts, "reply", "").endsWith(" · "));
 });
+
 test("a running agent's Stop and save is dark on its own; the Advisor's pick outranks it, and nothing else darkens itself", async () => {
   const { rowOf } = await import("../src/actionRow.js");
   const v = (id, group, extra = {}) => ({ id, group, label: id, tone: "s", promote: true, ...extra });

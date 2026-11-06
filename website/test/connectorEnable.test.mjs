@@ -55,3 +55,4 @@ test("a credential box counts as unsaved only past what it last saved", () => {
   assert.equal(editedBoxes(["host"], {}, {}, "pw"), true, "a typed secret is unsaved until saved");
 });
 
+

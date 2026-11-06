@@ -4,6 +4,7 @@
 // connectors (Outlook, Teams, Slack, GitHub), cloud AI APIs (Anthropic, OpenAI, Azure
 // OpenAI - wired into intent triage), AI CLI agents, and scheduled report connections.
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import BuiltinVoice from "./BuiltinVoice.jsx";
 import {
   Alert, Autocomplete, Box, Button, Chip, CircularProgress, Collapse, IconButton, InputAdornment, MenuItem, Popover, Radio, Select, Step,
   Slider, StepButton, StepContent, Stepper, Switch, TextField, Typography,
@@ -23,11 +24,11 @@ import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import api from "./api";
 import { takeLists } from "./connectorLists.js";
-import { usedBy } from "./connectorUses.js";
+import { removeWords, usedBy } from "./connectorUses.js";
 import { nothingMatches } from "./searchHits.js";
 import { connectName, connectionWish, openBugReport } from "./bugReportOpen.js";
 import { PANEL, PANEL2, BORDER, DIM, FAINT, INK, mono } from "./theme.jsx";
-import { ChannelIcon, StatusDot, timeAgo, Crumb, UnderTabs, Empty, FilterPills, SideRail, Confirm } from "./ui.jsx";
+import { ChannelIcon, StatusDot, timeAgo, Crumb, UnderTabs, Empty, FilterPills, SideRail, Confirm, ConfirmDelete } from "./ui.jsx";
 import { UndoLine, removeNow } from "./Removed.jsx";
 import { AllowFiles, GoogleFiles, MS_FILES_HINT } from "./FileAccess.jsx";
 import { GoogleCalendar } from "./GoogleCalendar.jsx";
@@ -35,6 +36,7 @@ import { hasLogo } from "./logos.jsx";
 import { CliConnectionsPage } from "./AgentsPanel.jsx";
 import { TerminalPane } from "./TerminalView.jsx";
 import { matchCards, onceEach, oneOf, plannedFor } from "./connectorCatalog.js";
+import { settingsOf } from "./actionCard.js";
 import { isPollField, pollSecondsField } from "./pollFields.js";
 import { githubInboundValue } from "./githubInbound.js";
 import { ALWAYS, ENDS, HI, LO, MARKS, SAYS, clampLevel, combines, defaultLevel, kindOf } from "./combineLevel.js";
@@ -42,8 +44,8 @@ import { useSaveNote } from "./SaveNote.jsx";
 import { errorPresentation, errorText } from "./apiError.js";
 import { namesRestart, pairAgain, restartBridge } from "./waBridge.js";
 import { waLine } from "./waStatus.js";
-import { DraftProvider, SaveBar, useCardDraft, useSaveConnector, useSaveSource } from "./ConnectorDraft.jsx";
-import { editedBoxes, syncState } from "./connectorDraft.js";
+import { DraftProvider, Tick, useBoxesSave, useCardDraft, useSaveConnector, useSaveSource } from "./ConnectorDraft.jsx";
+import { cfgPatch, editedBoxes, syncState } from "./connectorDraft.js";
 import { AI_SHELF, needsGateway } from "./aiShelf.js";
 import { cliCardOf } from "./cliCard.js";
 import SavedSignins from "./SavedSignins.jsx";
@@ -139,33 +141,32 @@ const GATEWAY_HINT = "Paste the address you were sent with your access code.";
 /* ── connector metadata: channel + AI connectors (rows in the connector table) ── */
 const META = {
   outlook: { group: "Messaging", channel: "email", srcLabel: "Mailboxes", srcPh: "someone@yourdomain.com",
-    fields: [["tenant_id (tenant app only)", "tenant_id"], ["client_id (your own app - sign-in or tenant app)", "client_id"]],
+    fields: [["Directory (tenant) ID", "tenant_id"], ["Application (client) ID", "client_id"]],
     secretLabel: "client secret (tenant app only)",
-    desc: "Your Microsoft mailbox, read and sorted for you. Sign in with your own account - no Azure portal - or register your own app if you prefer.",
-    howto: ["Sign in with Microsoft (anyone): Credentials → Sign in with Microsoft → Microsoft's sign-in page opens in your browser; sign in with your own account and accept, and the tab hands you back to Taskuary. No code to type. (Taskuary on another computer, or a browser that cannot reach it? \"Sign in with a code instead\" shows a code for microsoft.com/devicelogin - some organisations block that one.) That is mail, sending and calendar for your mailbox - work or personal (Outlook.com). Nobody registers anything.",
-      "\"Need admin approval\": some organisations let only an admin say yes to a new app. The card then shows an approval link - forward it to your Microsoft 365 admin. They open it, sign in and click Accept once, and everyone in the organisation can sign in from then on. If the page after Accept says it can't connect (localhost), that is expected - the approval is done. It is a consent grant on Taskuary's app id: nothing to set up in Azure; the yellow \"unverified publisher\" note on their screen is expected.",
-      "Register your own Microsoft app (optional - if your organisation only approves apps it registered itself, or you want your own name on the consent screen). portal.azure.com → Microsoft Entra ID → App registrations → New registration: name it Taskuary; Supported account types: \"Accounts in any organizational directory and personal Microsoft accounts\" (or just your organisation); Redirect URI: platform \"Mobile and desktop applications\", enter http://localhost/api/ms/callback (the browser sign-in comes back to Taskuary on whatever port it runs; Entra ignores the port of a localhost redirect - the admin-approval link returns to the same address) → Register.",
-      "Then: Authentication → Advanced settings → Allow public client flows = Yes → Save (needed only for the \"Sign in with a code instead\" fallback). API permissions → Add a permission → Microsoft Graph → Delegated permissions: offline_access, User.Read, Mail.ReadWrite, Mail.Send, Calendars.ReadWrite (reads the calendar and answers invites) → Add. No client secret - a sign-in app is public by design. Copy the Application (client) ID into client_id here (under Admin?) and sign in above - or set TASKUARY_MS_CLIENT_ID on the server so every install uses it. No Partner Center and no publisher verification: those only remove the \"unverified\" label on the consent screen.",
-      "Tenant app (admins - required for Teams chat reading and for mailboxes other than your own): the same App registrations → New registration, then API permissions → APPLICATION permissions Mail.Read (Mail.ReadWrite for Outlook drafts on approve or 'Handled mail, at the source') and Calendars.Read (Calendars.ReadWrite to answer invites and book meetings from Taskuary) → Grant admin consent; Certificates & secrets → New client secret. Enter tenant_id + client_id and paste the secret under Admin?; blank = the server's AZURE_* env vars.",
+    desc: "Your Microsoft mailbox, read and sorted for you, through your company's own Microsoft app - its IT registers it once, then you sign in.",
+    howto: ["Your company's own Microsoft app: Taskuary ships none, so nothing goes through anyone else's Azure. The card shows the steps for your IT - Microsoft Entra ID → App registrations → New registration (single tenant); Authentication → Add a platform → Mobile and desktop applications → redirect URI http://localhost/api/ms/callback (Entra ignores the port of a localhost redirect, so it covers whatever port Taskuary runs on); Allow public client flows: Yes; API permissions → Microsoft Graph → Delegated: the permissions the card lists → Grant admin consent. No client secret - a sign-in app is public by design.",
+      "Copy the app's Application (client) ID and Directory (tenant) ID into the card, then sign in - either in the browser (Sign in with Microsoft: Microsoft's page opens, you sign in with your own account and the tab hands you back to Taskuary) or with a code (Sign in with a code instead: a code for microsoft.com/devicelogin, for a Taskuary the browser cannot reach on localhost - some organisations block that one). Both use the same app. That is mail, sending and calendar for your mailbox.",
+      "AADSTS50011 on Microsoft's page: the app does not list http://localhost/api/ms/callback under Mobile and desktop applications yet. AADSTS700016: the client or tenant ID on the card is wrong. \"Need admin approval\": IT has not granted admin consent yet - the card's approval link does it too, once for everyone.",
+      "Tenant app (admins - for Teams chat reading and for mailboxes other than your own): the same App registrations → New registration, then API permissions → APPLICATION permissions Mail.Read (Mail.ReadWrite for Outlook drafts on approve or 'Handled mail, at the source') and Calendars.Read (Calendars.ReadWrite to answer invites and book meetings from Taskuary) → Grant admin consent; Certificates & secrets → New client secret. Enter the two IDs and paste the secret under Admin?; blank = the server's AZURE_* env vars.",
       "Mailboxes: signing in adds your own automatically. A tenant app reads every mailbox you add as a UPN under Sources.",
       "Test acquires a real Graph token and reports exactly what failed if anything - and whether the calendar can be read. Enable, and mail flows through the same triage funnel as everything else."],
     // written FOR the agent: it starts the browser sign-in through the API and hands the owner the link (a code only if they ask)
-    agent: ["Preferred road, no Azure portal: POST {base}/api/connectors/{cid}/ms/signin{hdr}. It returns url and a flow id. Tell the owner: open <url> in the browser on this computer, sign in with their own Microsoft account and Accept - the tab comes back to Taskuary by itself. Only if the owner's browser cannot reach this Taskuary on localhost (it runs on another machine): POST the same with JSON {\"code\": true} instead - it returns user_code and verification_uri; tell them to open <verification_uri> and enter <user_code>.",
-      "Poll POST {base}/api/connectors/{cid}/ms/poll{hdr} with JSON {\"flow\": \"<flow>\"} every 5 seconds. status pending = keep waiting; status ok = the card is connected as them and their mailbox was added as a source; status error = read detail. If the error carries admin_consent_url, give the owner that link to forward to their Microsoft 365 admin, and start again at step 1 once the admin has approved.",
-      "Only if the owner says they are an admin who wants a tenant app (needed for Teams chat reading or for mailboxes other than their own): ask for tenant_id, client_id and the client secret, save tenant_id and client_id in ConfigJson and the client secret as Secret.",
+    agent: ["The card needs the company's own Microsoft app: Taskuary ships none. GET {base}/api/connectors{hdr}: this card's MsApp is 'card' or 'install' when an app is set, '' when not. If not, the registration is the company IT's to do in its own Entra ID (the steps are on the card) - ask the owner for the Application (client) ID and Directory (tenant) ID; never invent one.",
+      "Start the sign-in: POST {base}/api/connectors/{cid}/ms/signin{hdr} with JSON {\"client_id\": \"<id>\", \"tenant_id\": \"<id>\"} (the card keeps them). It returns url and a flow id. Tell the owner: open <url> in the browser on this computer, sign in with their own Microsoft account and Accept - the tab comes back to Taskuary by itself. Only if the owner's browser cannot reach this Taskuary on localhost: add \"code\": true - it returns user_code and verification_uri; tell them to open <verification_uri> and enter <user_code>.",
+      "Poll POST {base}/api/connectors/{cid}/ms/poll{hdr} with JSON {\"flow\": \"<flow>\"} every 5 seconds. status pending = keep waiting; status ok = the card is connected as them and their mailbox was added as a source; status error = read detail (it names what to fix in the app). If the error carries admin_consent_url, give the owner that link to forward to their Microsoft 365 admin, and start again once the admin has approved.",
       "Run Test (POST {base}/api/connectors/{cid}/test{hdr}), turn the connector on (POST {base}/api/connectors{hdr} with {\"ConnectorId\": {cid}, \"Active\": true}) and say SETUP DONE."] },
   teams: { group: "Messaging", channel: "teams", srcLabel: "Users / chat ids", srcPh: "user UPN, e.g. jsmith@yourcompany.com",
-    fields: [["tenant_id", "tenant_id"], ["client_id", "client_id"],
+    fields: [["Directory (tenant) ID", "tenant_id"], ["Application (client) ID", "client_id"],
       pollSecondsField("teams")],
     secretLabel: "client secret",
-    desc: "Your Teams chats, read and answered as you. Sign in with your own Microsoft account, like Outlook - each Teams card is one account.",
-    howto: ["Sign in with Microsoft (anyone): the button above, Microsoft's page in your browser, your own account (or \"Sign in with a code instead\" when the browser cannot reach Taskuary). That is your chats - read, and answered as you - and nobody registers anything. A second organisation's Teams is a second card: Add another Teams account, and sign that one in.",
+    desc: "Your Teams chats, read and answered as you, through your company's own Microsoft app - like Outlook, each Teams card is one account.",
+    howto: ["Your company's own Microsoft app, as on the Outlook card (the same app can serve both: list both cards' permissions on it). Enter its Application (client) ID and Directory (tenant) ID, then sign in in the browser - or with a code when the browser cannot reach Taskuary. That is your chats - read, and answered as you. A second organisation's Teams is a second card: Add another Teams account, and sign that one in.",
       "No sign-in of its own: a Teams card reads through the Outlook card signed in as the SAME account (the user named under Sources) - never another account's Outlook card.",
-      "Admins - a tenant app instead: tenant_id + client_id + client secret under Admin?. App-only chat reading is a Microsoft PROTECTED API: the tenant needs Microsoft-approved Chat.Read.All - until that approval is granted, Test shows the 403 telling you so - and an app cannot post into a chat, so replies need the sign-in.",
+      "Admins - a tenant app instead: the two IDs above plus a client secret under Admin?. App-only chat reading is a Microsoft PROTECTED API: the tenant needs Microsoft-approved Chat.Read.All - until that approval is granted, Test shows the 403 telling you so - and an app cannot post into a chat, so replies need the sign-in.",
       "Add the user whose chats to ingest as a UPN under Sources. Your UPN (User Principal Name) is your Microsoft 365 sign-in address - usually just your work email. Find it in Teams: click your profile picture, it's the address under your name. Or run `whoami /upn` in a terminal on a work Windows machine, or check Azure Portal → Users → your account → User principal name.",
       "A specific chat id works too (Teams web: open the chat, the 19:...@thread.v2 part of the URL).",
       "Test probes an actual chat read for the first Teams source, not just the token."],
-    agent: ["The usual road is the owner's own: Sign in with Microsoft on this card (the button above this terminal) - Microsoft's page in their browser, their account. Tell them to press it; nothing to register. Only if they are a Microsoft 365 admin who wants a tenant app instead: tenant_id + client_id + secret with the Microsoft-approved Chat.Read.All application permission - do not invent a registration.",
+    agent: ["The usual road is the owner's own sign-in on this card through their company's own Microsoft app (Taskuary ships none): if the card's MsApp is '', ask for the app's Application (client) ID and Directory (tenant) ID and send them with POST {base}/api/connectors/{cid}/ms/signin{hdr} as on the Outlook card - or tell the owner to enter them and press Sign in with Microsoft. Only if they are a Microsoft 365 admin who wants a tenant app instead: tenant_id + client_id + secret with the Microsoft-approved Chat.Read.All application permission - do not invent a registration.",
       "Find the owner's UPN yourself when you can: on a domain-joined Windows machine run `whoami /upn`; otherwise ask - it is usually their work email. Add it with POST {base}/api/sources{hdr} and JSON {\"Channel\": \"teams\", \"Address\": \"<upn>\", \"ConnectorId\": {cid}, \"Active\": true}.",
       "Run Test (POST {base}/api/connectors/{cid}/test{hdr}). A 403 naming Chat.Read.All means the tenant has not been granted the protected API - report that as the blocker, it is not something to retry. Otherwise turn the connector on and say SETUP DONE."] },
   slack: { group: "Messaging", channel: "slack", srcLabel: "Channel IDs", srcPh: "C0123456789",
@@ -585,7 +586,7 @@ const META = {
     desc: "TypeSafe's Jev — answers typed questions with calibrated probabilities instead of words. It can decide where a finished report goes; it cannot write one.",
     howto: ["Create a key at typesafe.ai → API keys.",
       "Paste it under Credentials. Test asks Jev one real question and reports the confidence it came back with — there is no completion to run.",
-      `Then pick it under ${PLACES.sorting.name} → Where runs go. It appears in no other brain picker, on purpose.`,
+      `Then pick it under ${PLACES.sorting.name} → Where reports go. It appears in no other AI picker, on purpose.`,
       "Before you trust it: open a report with an AI routing line and press try it on the last 5 runs, with and without this chosen. That replays both judges over the same real runs."] },
   ollama: { group: "AI — agents & models", channel: "ai", srcLabel: null,
     fields: [["base_url (default http://127.0.0.1:11434)", "base_url"], ["model — required, e.g. llama3.2 / qwen2.5", "model"]],
@@ -814,7 +815,7 @@ const DATA_META = {
       text: "Opens Intuit's sign-in in a new tab. Pick the company; the token lands on this card and never reaches the browser." },
     howto: ["developer.intuit.com → Dashboard → Create an app → QuickBooks Online and Payments → scope Accounting. Keys & credentials has a Development (sandbox) and a Production tab — production keys need the app's short questionnaire; sandbox keys work the same day against Intuit's test company.",
       "On that same page add the REDIRECT URI shown on this card (http://localhost:<port>/api/quickbooks/callback) — Intuit refuses a sign-in whose redirect is not registered, character for character.",
-      "Paste the client id and secret here, choose production or sandbox, Save, then Connect to QuickBooks: Intuit's sign-in opens, you pick the company, and the browser comes back to Taskuary with the token. Test reads the company name and a vendor list.",
+      "Paste the client id and secret here, choose production or sandbox (each saves as you go), then Connect to QuickBooks: Intuit's sign-in opens, you pick the company, and the browser comes back to Taskuary with the token. Test reads the company name and a vendor list.",
       "Reads (queries, vendors, accounts) run at the card's default scope. The two WRITES — a bill, a paid expense — need scope write on this card; below that an agent can only PROPOSE one, which lands on the task with the vendor, amount and account, and approving it posts it. That is the design: nothing reaches the books without a click until you say otherwise.",
       "Build the reports on the REPORTS tab: 'QuickBooks Online' with a query in QBO's SQL (SELECT * FROM Bill WHERE TxnDate >= '2026-08-01'), or the vendor / account lists as their own reports."],
     agent: ["GET {base}/api/connectors/{cid}/quickbooks/status{hdr}: has_app says whether the Intuit keys are saved; connected says whether a token is. Neither is yours to make - the owner creates the app at developer.intuit.com and presses Connect (a browser sign-in). Ask for the client id and secret, save them in ConfigJson, tell them the redirect URI from status to register, then ask them to press Connect on the card.",
@@ -837,7 +838,7 @@ const DATA_META = {
       "Once approved, Add new app client: any name, API type SP API, the same roles. Nothing to publish — a self-authorized app works while it is still a draft.",
       "In the app list, LWA credentials → View: copy the Client identifier and the Client secret into this card.",
       "Then the app's Edit App ▾ → Authorize → Authorize app. Amazon shows a refresh token (it starts Atzr|) — paste it into the refresh token box. It does not expire, and Taskuary trades it for an hour-long access token as needed.",
-      "Pick the region your marketplaces live in (na, eu or fe) and, if you only want some of them, their marketplace ids (ATVPDKIKX0DER is amazon.com, A2EUQ1WTGCTBG2 amazon.ca, A1F83G8C2ARO7P amazon.co.uk). Save, then Test: it lists the marketplaces this account sells in.",
+      "Pick the region your marketplaces live in (na, eu or fe) and, if you only want some of them, their marketplace ids (ATVPDKIKX0DER is amazon.com, A2EUQ1WTGCTBG2 amazon.ca, A1F83G8C2ARO7P amazon.co.uk). Each box saves itself; then Test: it lists the marketplaces this account sells in.",
       "Build the reports on the REPORTS tab: 'Amazon — sales & traffic', 'orders', 'FBA inventory', 'settlement', or 'Amazon — any report' with a report type name from Amazon's list (developer-docs.amazon.com/sp-api/docs/report-type-values). Dashboards take the same sources.",
       "Vendor Central works the same way: Integration → API Integration to register and authorize; vendor reports (GET_VENDOR_SALES_REPORT and friends) go through 'any report'.",
       "Buying on Amazon Business instead (or as well)? The same client id, secret and refresh token work when the app holds the Business Purchase Reconciliation role. Test tries both APIs and fills a dot for each one that answered — a 403 from one is fine while the other works. Then build 'Amazon — Business purchases': every charge and refund in a window, matched to its invoice or credit memo number.",
@@ -945,7 +946,7 @@ const DATA_META = {
     // IN PLAIN WORDS, each saying where it comes from (the owner, 2026-10-21: "LinkedIn is not working") - the two keys are the
     // app's, the token is what Sign in brings back, and nothing here asks for a token as if one had to be fetched by hand
     fields: [["Client ID", "client_id", "", "developer.linkedin.com/apps → your app → Auth tab → Client ID"],
-      ["Client Secret", "client_secret", "", "The same Auth tab → Primary Client Secret. Paste both, press Save, then Sign in with LinkedIn above."],
+      ["Client Secret", "client_secret", "", "The same Auth tab → Primary Client Secret. Paste both - each saves itself - then Sign in with LinkedIn above."],
       ["API version (optional)", "version", "", "Leave blank - 202609 is used. LinkedIn dates its API by month."]],
     secretLabel: "Access token — Sign in with LinkedIn fills it in",
     secretHelp: "Nothing to paste here: Sign in with LinkedIn brings the token back on its own. A token from the developer portal's OAuth token generator works too. Write-only - never shown again.",
@@ -956,7 +957,7 @@ const DATA_META = {
     howto: ["Create an app at developer.linkedin.com/apps. It must be associated with a LinkedIn Page you are an admin of — that is LinkedIn's rule, not ours, and there is no way around it.",
       "On the app's Products tab add BOTH: 'Share on LinkedIn' (which lets it post) and 'Sign In with LinkedIn using OpenID Connect' (which lets it read who you are). Both are self-serve and granted immediately. With only the first, the sign-in is refused with “Scope openid is not authorized for your application”.",
       "Do NOT request Community Management. That one needs a registered legal entity and a narrated screencast, and a rejection is terminal for the app — you would have to make a new one.",
-      "On the Auth tab, add the redirect URL shown here EXACTLY, then paste the client id and secret below and Save.",
+      "On the Auth tab, add the redirect URL shown here EXACTLY, then paste the client id and secret below - each saves itself.",
       "Press Sign in with LinkedIn. Consent opens in a new tab and the token comes back on its own — nothing to copy.",
       "Tokens last 60 days and the card says how many are left. When one runs out, Reconnect is the whole of it.",
       "Your author id is never typed in: it is read from the token when a post goes out."],
@@ -1066,7 +1067,7 @@ const DATA_META = {
     connect: { label: "Connect to Zoho Invoice", status: (cid) => `/api/connectors/${cid}/zoho/status`, start: (cid) => `/api/connectors/${cid}/zoho/authorize`,
       text: "Opens Zoho sign-in in a new tab. The refresh token returns directly to Taskuary." },
     howto: ["At api-console.zoho.com create a Server-based application and add the redirect URI shown here exactly.",
-      "Paste the client id and secret, Save, then Connect. For a non-US account use its accounts host, such as accounts.zoho.eu.",
+      "Paste the client id and secret - each saves itself - then Connect. For a non-US account use its accounts host, such as accounts.zoho.eu.",
       "Test reads the organization and active customers. Then open Reports and create a Monthly Zoho invoices routine; its schedule opens a batch but never sends it.",
       "Confirm amounts, Prepare drafts, and approve customer emails on the task. The customer/month reference prevents duplicate invoices on retries."],
     agent: ["The owner connects Zoho in the browser. Do not ask for or print refresh tokens.",
@@ -1081,7 +1082,7 @@ const DATA_META = {
     connect: { widget: "teller", label: "Connect a bank", status: (cid) => `/api/connectors/${cid}/teller/status`, enroll: (cid) => `/api/connectors/${cid}/teller/enroll`,
       text: "Opens the bank's own sign-in (Teller Connect). The token for that login lands on this card; the browser never keeps it." },
     howto: ["teller.io → sign up → create an application. The dashboard hands you an application id and, for development and production, a certificate.pem and private_key.pem — save both somewhere on this machine and put their paths on the card. Sandbox needs no certificate and accepts any login at its fake banks, which is how to try the loop first.",
-      "Paste the application id, pick the environment, Save, then Connect a bank: the bank's sign-in opens in a modal, you sign in, and the access token for that login lands on this card. One card is one bank login - Add another for a second bank.",
+      "Paste the application id and pick the environment - each saves itself - then Connect a bank: the bank's sign-in opens in a modal, you sign in, and the access token for that login lands on this card. One card is one bank login - Add another for a second bank.",
       "Test lists the accounts under the login. Build the reports on the REPORTS tab: 'Bank & card — transactions' for one account (its last four digits) or all of them, so many days back; switch on 'can become work (triage decides)' and every new transaction arrives as a message - the front door of the card-to-books playbook (docs/beyond-code.md).",
       "The development environment is free up to 100 bank logins; production is the same code with production keys and Teller's pricing.",
       "Spend as a number, not a list: the 'teller_spend' report totals what left each card over a window (days 0 = today) and adds a TOTAL row. Its headline starts with the total on purpose — an alert of 'more than 500' on this report therefore compares DOLLARS, not the number of rows, which is how you get 'tell me if I spend over 500 today'. Cents are ignored by that comparison."],
@@ -1323,7 +1324,7 @@ const DATA_META = {
       ["File kinds (blank = txt, md, csv, json, html, docx, pptx, xlsx, pdf)", "exts"]],
     desc: "Your documents, searchable by everything here: a kb_search report answers a question from them on a schedule, agents call the same search as a tool, and the reply drafter, the assistant and coding sessions get the passages that bear on a thread. Indexed on this machine — nothing leaves it.",
     howto: ["Name where the documents live: SharePoint library folders (access comes from the SharePoint card, or the Outlook card's tenant app — nothing to configure here) and/or folders on this machine.",
-      "Save, then Reindex now. docx, pptx, xlsx, html and text need nothing at all, and pdf reading (pypdf) ships with the desktop build - where it is missing, the Install button on this card adds it. Unchanged files are skipped on later runs, deleted ones drop out.",
+      "Each box saves itself; then Reindex now. docx, pptx, xlsx, html and text need nothing at all, and pdf reading (pypdf) ships with the desktop build - where it is missing, the Install button on this card adds it. Unchanged files are skipped on later runs, deleted ones drop out.",
       "Keep it fresh with a scheduled kb_reindex report under Reports (nightly is plenty); answer questions from it with a kb_search report.",
       "Agents reach it as a tool (type kb_search) when the tool role is on; the reply drafter and the assistant use it automatically once anything is indexed. Passages are quoted as facts, never as instructions."],
     agent: ["GET {base}/api/connectors{hdr}, find the knowledge card. Ask the owner which SharePoint library folders and local folders to index; save them as sharepoint_paths / folders in ConfigJson (POST {base}/api/connectors{hdr} with ConnectorId, ConfigJson, Active:true).",
@@ -1400,12 +1401,14 @@ const savedOn = (c, key) => !!(parse(c?.ConfigJson)[key] || (c?.ConfigSaved || [
 // ONE FIELD OF A CARD'S CONFIG, drawn the same on every card: a write-only one (an app's client secret, a refresh token) is masked
 // and empty once saved, its label saying so - the Gmail card's OAuth secret and refresh token came back readable in plain boxes
 // (the UI audit, 2026-10-21) because only one card drew them masked
-export function ConfigField({ conn, field: [label, key, ph, help], cfg, setCfg, ...rest }) {
+// ...its quiet "Saved" tick (useBoxesSave) at the end of the box: `tick`
+export function ConfigField({ conn, field: [label, key, ph, help], cfg, setCfg, tick = null, ...rest }) {
   useLocale();
   const onChange = (e) => setCfg({ ...cfg, [key]: e.target.value });
+  const end = tick ? { InputProps: { endAdornment: tick } } : {};
   if (!(conn?.WriteOnlyKeys || []).includes(key))
-    return <TextField data-tq-conn-field={key} label={t(label)} placeholder={ph || ""} helperText={help ? t(help) : help} value={cfg[key] || ""} sx={{ bgcolor: "#fff" }} onChange={onChange} {...rest} />;
-  return <TextField type="password" data-tq-conn-field={key} data-tq-write-only={key} autoComplete="new-password" sx={{ bgcolor: "#fff" }} {...rest}
+    return <TextField data-tq-conn-field={key} label={t(label)} placeholder={ph || ""} helperText={help ? t(help) : help} value={cfg[key] || ""} sx={{ bgcolor: "#fff" }} onChange={onChange} {...end} {...rest} />;
+  return <TextField type="password" data-tq-conn-field={key} data-tq-write-only={key} autoComplete="new-password" sx={{ bgcolor: "#fff" }} {...end} {...rest}
     label={(conn.ConfigSaved || []).includes(key) ? t("{label} — saved, type to replace", { label: t(label) }) : t(label)} placeholder={ph || ""}
     helperText={help ? `${t(help)} ${t("Never shown again once saved.")}` : t("Never shown again once saved.")}
     value={cfg[key] || ""} onChange={onChange} />;
@@ -1545,6 +1548,7 @@ export const ConnCard = ({ c }) => {
             lineHeight: 1.6, color: "#47654a", bgcolor: "#e8efe6", border: "1px solid #c9d8c5" }}>{t("Connected")}</Box>
         )}
         <Box sx={{ width: 7, height: 7, borderRadius: "50%", bgcolor: connDot(c), flexShrink: 0 }} />
+        {c.remove && <CardRemove {...c.remove} />}
       </Box>
       <Typography sx={{ color: FAINT, fontSize: 11.5, lineHeight: 1.5, pt: 1, minHeight: "3em", boxSizing: "content-box",
         display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
@@ -1858,6 +1862,7 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
   const conn = open?.kind === "connector" ? connectors.find((c) => c.ConnectorId === open.id) : null;
   const shared = conn ? { conn, reload: load, onBack: back, onCreated: (id) => setOpen({ kind: "connector", id }) } : null;
   const page = open?.kind === "agents" ? <CliConnectionsPage onBack={back} />
+    : open?.kind === "builtin-voice" ? <BuiltinVoice onBack={back} />
     : open?.kind === "voice-vocabulary" ? <VoiceVocabulary onBack={back} />
     : open?.kind === "signins" ? <SavedSignins />
     : open?.kind === "alchemy-wallet" ? <AlchemyWalletGuide onBack={back}
@@ -1876,7 +1881,10 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
   }
 
   /* ── landing: searchable grouped catalog ── */
-  const chanCard = (c) => connCardOf(c, sources, () => setOpen({ kind: "connector", id: c.ConnectorId }));
+  // ...a card with anything saved on it carries its Remove on its face (CardRemove); a blank catalogue card has nothing to remove
+  const removable = (c) => !!(c.Active || c.HasSecret || c.LastSyncAt || c.LastError || sources.some((s) => s.ConnectorId === c.ConnectorId));
+  const chanCard = (c) => ({ ...connCardOf(c, sources, () => setOpen({ kind: "connector", id: c.ConnectorId })),
+    remove: removable(c) ? { conn: c, channel: META[c.Type]?.channel || "", reload: load } : null });
   // three shapes of card, said once instead of inline in five groups
   const dataDesc = (c, rtype) => (c?.LastError ? "connection failing" : c?.LastSyncAt ? "connection ✓" : "not set up")
     + ` · ${plural(reports.filter((s2) => (parse(s2.ConfigJson).type || "rest") === rtype).length, "report")} (built under Reports)`;
@@ -1888,7 +1896,7 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
         + ` · ${plural(count, "report")} (built under Reports)`,
       displayDesc: `${t(c.LastError ? "connection failing" : c.LastSyncAt ? "connection ✓" : "not set up")} · ${t(count === 1 ? "{count} report (built under Reports)" : "{count} reports (built under Reports)", { count })}`,
       haystack: `${dm.title} ${type} ${dm.desc} ${dm.types.join(" ")} ` + dm.howto.join(" "),
-      go: () => setOpen({ kind: "connector", id: c.ConnectorId }) };
+      go: () => setOpen({ kind: "connector", id: c.ConnectorId }), remove: removable(c) ? { conn: c, channel: "data", reload: load } : null };
   }));
   const channelCards = (keys) => keys.flatMap((t) => allOf(t).map(chanCard));
   const specialCards = (type, title, rtype, haystack, desc = (c) => dataDesc(c, rtype)) => allOf(type).map((c) => {
@@ -1929,8 +1937,12 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
       // what happens with NO card here is not visible anywhere else, and it looked like something was missing
       note: "Without a card here the mic still works where a voice is found: in Edge or Chrome it uses the browser's own recognition at once, and in the Taskuary window on Windows it uses Windows' own dictation (on this computer, no key) — free, live microphone only. With neither it shows crossed out. Voice notes on WhatsApp/Telegram land marked not transcribed, with a Transcribe button for later. A card is what transcribes a voice-note file on the server. Free choices: Groq (free tier) or Local Whisper (no key, on this machine). Edge's voices are text-to-speech — the other direction.",
       cards: [
+        { key: "builtin-voice", title: t("Windows / browser voice"), channel: "ai",
+          desc: t("Choose built-in dictation and test the microphone. No API key."),
+          haystack: "windows browser edge chrome built in speech microphone dictation voice",
+          go: () => setOpen({ kind: "builtin-voice" }) },
         { key: "voice-vocabulary", title: t("Shared voice vocabulary"), channel: "ai",
-          desc: "one system-wide list used by every voice connector and mic", displayDesc: t("one system-wide list used by every voice connector and mic"),
+          desc: t("one system-wide list used by every voice connector and mic"), displayDesc: t("one system-wide list used by every voice connector and mic"),
           haystack: "custom shared voice vocabulary words phrases domain names acronyms",
           go: () => setOpen({ kind: "voice-vocabulary" }) },
         ...channelCards(["gemini_stt", "groq_stt", "openai_stt", "deepgram", "elevenlabs_stt", "stt_server", "local_whisper"]),
@@ -2040,7 +2052,7 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
       cards: inSection.map((c) => ({ key: c.key, node: <ConnCard c={{ ...c, go: c.go && (() => { c.go();
         onBrowseState?.({ ...browseState, section: q ? c.crumb || browseState.section : browseState.section, open: c.key,
           connector: c.key === "agents" ? "cli-agents" : /^[cds](\d+)$/.exec(c.key)?.[1] || "" }); }) }} /> })),
-      detail, onBack: back,
+      detail, onBack: back, openKey: browseState.open || (conn ? `c${conn.ConnectorId}` : ""),
       openLabel: openCard ? `the ${openCard.title} connector card (Connections), ${openCard.desc}` : conn ? `the ${conn.Name} connector card (Connections)` : "",
       search: (
         <Box component="input" type="search" value={q} onChange={(e) => search(e.target.value)} placeholder={t("Search connectors…")}
@@ -2049,6 +2061,8 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
             fontFamily: "inherit", fontSize: 12.5, color: INK, bgcolor: "#fff", outline: "none", "&:focus": { borderColor: "#55697a" } }} />
       ),
       query: q, empty: t("Nothing in this section yet."), noneAction: <RequestConnection q={q} />,
+      // a card removed is gone, and the page back on the list: its Undo stands here (RemoveConnection)
+      tools: <UndoLine kinds={["connection"]} onRestored={load} sx={{ mt: 1.25, mb: 0 }} />,
     });
   }
 
@@ -2059,6 +2073,7 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
       value={group} onChange={setGroup}
       note={t("Keys and connection settings are stored locally, in the same SQLite file as your tasks.")}>
       {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 1.5 }}>{displayMessage(err)}</Alert>}
+      <UndoLine kinds={["connection"]} onRestored={load} />
       <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, mb: 2 }}>
         <Typography sx={{ color: INK, fontWeight: 600, fontSize: 15, flex: 1, minWidth: 0 }} noWrap>
           {q ? t("Matches for “{query}”", { query: q }) : t(shown.title)}
@@ -2104,19 +2119,27 @@ function ConnectorIdentity({ conn, reload, onCreated, addOnly = false }) {
   const [newName, setNewName] = useState("");
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
+  const [named, setNamed] = useState(null);       // the name's own tick (ConnectorDraft.jsx Tick)
   useEffect(() => setName(conn.Name || ""), [conn.Name]);
   const one = oneOf(conn.Type);
   // ...ONLY ONCE THIS ONE IS CONNECTED (the setup sweep, 2026-10-28): "Add another Outlook mailbox" under a first one not yet signed in
   // offered a second before there was a first
   const connected = !!(conn.HasSecret || conn.LastSyncAt);
+  // THE NAME SAVES ITSELF (the owner, 2026-11-05): once the typing pauses, or the box is left - a blank one is never saved
   const rename = async () => {
+    clearTimeout(renameAt.current);
     const value = name.trim();
-    if (!value || value === conn.Name) return;
-    setBusy("rename"); setErr("");
-    try { await api.post("/api/connectors", { ConnectorId: conn.ConnectorId, Name: value }); await reload(); }
-    catch (e) { setErr(e?.response?.data?.detail || message("could not rename the connector")); }
-    setBusy("");
+    if (value === conn.Name) return;
+    if (!value) { setNamed({ state: "error", why: t("a connection needs a name") }); return; }
+    setNamed({ state: "saving" });
+    try { await api.post("/api/connectors", { ConnectorId: conn.ConnectorId, Name: value }); setNamed({ state: "saved", at: Date.now() }); await reload(); }
+    catch (e) { setNamed({ state: "error", why: e?.response?.data?.detail || t("could not rename the connector") }); }
   };
+  const renameAt = useRef(null);
+  useEffect(() => {
+    if (name.trim() === (conn.Name || "")) return undefined;
+    renameAt.current = setTimeout(rename, 900); return () => clearTimeout(renameAt.current);
+  }, [name]);   // eslint-disable-line react-hooks/exhaustive-deps
   const add = async () => {
     const value = newName.trim();
     if (!value) return;
@@ -2131,10 +2154,9 @@ function ConnectorIdentity({ conn, reload, onCreated, addOnly = false }) {
   return (
     <Box data-tq-add-another={conn.Type} sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap", mb: addOnly ? 0 : 1.5, maxWidth: 720 }}>
       {!addOnly && <>
-        <TextField size="small" label={t("Connection name")} value={name} onChange={(e) => setName(e.target.value)}
+        <TextField size="small" label={t("Connection name")} value={name} onChange={(e) => setName(e.target.value)} onBlur={rename}
           onKeyDown={(e) => { if (e.key === "Enter") rename(); }} sx={{ bgcolor: "#fff", minWidth: 240 }} />
-        <Button size="small" variant="outlined" disabled={busy === "rename" || !name.trim() || name.trim() === conn.Name}
-          onClick={rename}>{busy === "rename" ? t("Saving…") : t("Save name")}</Button>
+        <Tick st={named} sx={{ ml: 0 }} />
       </>}
       {!one || !connected ? null : !adding ? (
         <Button size="small" startIcon={<AddIcon sx={{ fontSize: 14 }} />} onClick={() => setAdding(true)}>{t("Add another {connection}", { connection: one })}</Button>
@@ -2192,37 +2214,56 @@ function CardPlaybooks({ type }) {
   );
 }
 
-// REMOVE IS AT ONCE (the owner, 2026-10-21: no "are you sure"): its credentials and settings are wiped and its sources switched off
-// on the press, and "Removed <it> - Undo" stays on the card in its place. The sealed sign-in is kept only for the Undo line's minutes
-// (recentlydeleted.UNDO_SECONDS), then forgotten. `onBack` is kept for the callers; the card no longer leaves on a Remove.
-function RemoveConnection({ conn, reload }) {
+// REMOVE IS ONE PRESS AND ONE QUESTION (the owner, 2026-11-05: "going through each step of a connection to remove it and it should go
+// away"): the question says what stays, what goes and what stops working with it (#238); on yes the card is gone - an added one off the
+// list, the last of its kind wiped back to the catalogue's blank card (recentlydeleted.remove_connection) - and the page is back on the
+// list, where "Removed <it> - Undo" stands for the Undo line's minutes. Before 2026-11-05 it removed on the press, without asking.
+// ...the question and the press, shared by the detail page and the card's face (CardRemove): `read` - what leans on it, read now (#238)
+function useRemove(conn, channel, reload, after, read = true) {
   useLocale();
-  const [err, setErr] = useState("");
-  // what leans on it, beside the button: read before the press, never asked after it (#238)
-  const [uses, setUses] = useState(null);
+  const [asking, setAsking] = useState(false), [uses, setUses] = useState(null);
   useEffect(() => {
+    if (!read) return undefined;
     let live = true;
     api.get(`/api/connectors/${conn.ConnectorId}/uses`).then(({ data }) => { if (live) setUses(data.data); }).catch(() => {});
     return () => { live = false; };
-  }, [conn.ConnectorId]);
-  const line = usedBy(uses);
+  }, [conn.ConnectorId, read]);
+  // a refusal is said in the question (ConfirmDelete), which stays open on it
   const remove = async () => {
-    setErr("");
-    try { await removeNow(() => api.post(`/api/connectors/${conn.ConnectorId}/reset`), "connection", conn.Name || conn.Type); await reload(); }
-    catch (e) { setErr(e?.response?.data?.detail || message("It could not be removed.")); }
+    await removeNow(() => api.post(`/api/connectors/${conn.ConnectorId}/reset`), "connection", conn.Name || conn.Type);
+    after?.(); await reload?.();
   };
+  return { asking, setAsking, uses, words: removeWords(conn, channel, uses), remove };
+}
+function RemoveConnection({ conn, reload, onBack, channel = "" }) {
+  const { asking, setAsking, uses, words, remove } = useRemove(conn, channel, reload, onBack);
+  const line = usedBy(uses);
   return (
     <Box sx={{ mt: 3, pt: 1.5, borderTop: `1px solid ${BORDER}`, maxWidth: 720 }}>
-      <UndoLine kinds={["connection"]} onRestored={reload} />
       <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
         <Button size="small" startIcon={<DeleteOutlineIcon sx={{ fontSize: 15 }} />} sx={{ color: "#867f74" }}
-          title={t("Wipes its saved sign-in and settings and switches its sources off - Undo puts them back")}
-          onClick={remove}>{t("Remove connection")}</Button>
+          title={t("Asks once, then wipes its saved sign-in and settings and switches its sources off - Undo puts them back")}
+          onClick={() => setAsking(true)}>{t("Remove connection")}</Button>
         {line && <Typography data-tq-used-by="" variant="caption" sx={{ color: DIM, lineHeight: 1.5 }}>{line}</Typography>}
-        {err && <Typography variant="body2" sx={{ color: "#6b2733", fontWeight: 600 }}>✗ {displayMessage(err)}</Typography>}
       </Box>
+      <ConfirmDelete open={asking} title={words.title} consequence={words.text} confirmLabel="Remove" undoable
+        onConfirm={remove} onClose={() => setAsking(false)} />
     </Box>
   );
+}
+
+// REMOVE ON THE CARD'S FACE (the owner, 2026-11-05: "Remove = one press + one confirm" - never stepping into the card to find it): the
+// same question as the detail page's, and the card is gone; its Undo stands on the list (UndoLine). The card's own press never fires.
+function CardRemove({ conn, channel = "", reload }) {
+  const [open, setOpen] = useState(false);
+  const { asking, setAsking, words, remove } = useRemove(conn, channel, reload, null, open);
+  const stop = (e) => e.stopPropagation();
+  return <Box component="span" onClick={stop} onKeyDown={stop} sx={{ display: "inline-flex", flexShrink: 0 }}>
+    <IconButton size="small" data-tq-card-remove="" aria-label={`Remove ${conn.Name || conn.Type}`} title="Remove - asks once; Undo puts it back"
+      onClick={() => { setOpen(true); setAsking(true); }} sx={{ p: 0.25, color: FAINT, "&:hover": { color: "#6b2733" } }}>
+      <DeleteOutlineIcon sx={{ fontSize: 16 }} /></IconButton>
+    <ConfirmDelete open={asking} title={words.title} consequence={words.text} confirmLabel="Remove" undoable onConfirm={remove} onClose={() => setAsking(false)} />
+  </Box>;
 }
 
 /* ── Apple Messages: the two macOS permissions, as a walkthrough instead of a paragraph ──
@@ -2418,10 +2459,10 @@ function ThinkingSwitch({ cfg, setCfg }) {
 
 export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, onBack: leave, onCreated, onNavigate, simple = false, onConnected, chatsAsk = null }) {
   useLocale();
-  // ONE SAVE FOR THE CARD (ConnectorDraft.jsx): every control below draws from the draft and stages into it
+  // EVERY FIELD SAVES ITSELF (ConnectorDraft.jsx): every control below draws from the draft and stages into it, and the draft saves it
   const draft = useCardDraft(savedConn, savedSources, reload);
   const { conn, sources } = draft;
-  const onBack = leave;      // the unsaved changes stay in the card's draft for when it is opened again (keepDraft) - leaving never asks
+  const onBack = leave;      // leaving saves what was still waiting to save (useCardDraft, useBoxesSave)
   const m = META[conn.Type] || { fields: [], howto: [] };
   const isAI = m.channel === "ai";
   const [tab, setTab] = useState("Setup");
@@ -2435,31 +2476,23 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
   const [srcBad, setSrcBad] = useState("");
   const [test, setTest] = useState(null);
   const [busy, setBusy] = useState("");
-  const [msg, setMsg] = useState("");
-  // WHAT SAVE SAYS STAYS UNDER SAVE (the 2026-10-19 UI walk): a refused save, or a GitHub token the service turned down, was written
-  // into the Test step - folded shut under the one the owner was looking at - so they pressed Save and saw nothing happen
+  // WHAT A SAVE SAYS STAYS BY THE BOXES (the 2026-10-19 UI walk): a GitHub token the service turned down was written into the Test
+  // step - folded shut under the one the owner was looking at - so the save looked like nothing happened
   const [saveSaid, setSaveSaid] = useState(null);
 
   const mine = sources.filter((s) => s.ConnectorId === conn.ConnectorId);   // owned, never channel-shared
 
-  const saveCreds = async () => {
-    setBusy("save"); setMsg(""); setSaveSaid(null);
-    try {
-      const body = { ConnectorId: conn.ConnectorId, ConfigJson: JSON.stringify(cfg) };
-      if (secret) body.Secret = secret;
-      const { data } = await api.post("/api/connectors", body);
-      const d = data.discovery;
-      setSecret(""); setCfg(withoutWriteOnly(conn, cfg)); setCfgSaved(withoutWriteOnly(conn, cfg)); setTest(null); setFresh(!d?.error); reload();
-      if (d?.error) setSaveSaid({ ok: false, detail: d.error });     // saved, but the key was refused: the fix is here, not a step on
-      else {
-        setMsg(message("saved ✓"));
-        if (d) setTest({ ok: true, detail: `authenticated as ${d.login} · ${d.repos} repos discovered · ${d.added} sources added · repo map written to SOUL.md`,
-          detailMessage: message("authenticated as {login} · {repos} repos discovered · {added} sources added · repo map written to SOUL.md", { login: d.login, repos: d.repos, added: d.added }) });
-        setStep(1);
-      }
-    } catch (e) { const detailPresentation = errorPresentation(e, "That didn't save. Try again in a moment."); setSaveSaid({ ok: false, detail: detailPresentation.message || detailPresentation.source, detailPresentation }); }
-    setBusy("");
-  };
+  // THE CREDENTIALS SAVE THEMSELVES (the owner, 2026-11-05): each box once its typing pauses, the key when its box is left (useBoxesSave);
+  // the next step is Test, and it opens once the key is saved - never on a box's own pause, which would fold the boxes away mid-typing.
+  // A saved key that discovers (GitHub) says what it found, or why the service refused it, here by the boxes, and stays on them
+  // ...never on the first run's simple card (`simple`), whose one Connect saves, tests and starts reading together
+  const boxes = useBoxesSave({ off: simple, cid: conn.ConnectorId, cfg, setCfg, base: cfgSaved, rebase: setCfgSaved, secret, setSecret,
+    writeOnly: conn.WriteOnlyKeys || [], onSaved: (data, keys) => {
+      const d = data?.discovery;
+      setTest(null); setFresh(!d?.error); setSaveSaid(d?.error ? { ok: false, detail: d.error } : null); reload();
+      if (d && !d.error) setTest({ ok: true, detail: `authenticated as ${d.login} · ${d.repos} repos discovered · ${d.added} sources added · repo map written to SOUL.md` });
+      if (keys.includes("Secret") && !d?.error) setStep(1);
+    } });
   const [fresh, setFresh] = useState(false);     // saved since the last Test: its old failure is not said under the new save
   const runTest = async () => {
     setBusy("test"); setFresh(false);
@@ -2489,7 +2522,7 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
   const [srcSync, setSrcSync] = useState(false);
   // the Outlook card leads with the sign-in; the tenant-app fields (an admin's road) fold
   // away unless they are already what this card runs on
-  const [adminFields, setAdminFields] = useState(!MS_SIGNIN.includes(conn.Type) || (!!cfg.client_id && cfg.auth !== "user"));
+  const [adminFields, setAdminFields] = useState(!MS_SIGNIN.includes(conn.Type) || (!!cfg.client_id && !!conn.HasSecret && cfg.auth !== "user"));
   // ...only the tenant app's own fields fold: a Teams card's chat clock is the signed-in person's setting too (PW-003), and folding
   // it with tenant_id and client_id hid it behind "Admin?" the moment Teams signed in like Outlook
   // ...and the Gmail card's Google client fields fold the same way: the calendar signs in on Taskuary's own client (googlecal.py; the
@@ -2508,7 +2541,8 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
   const ownFields = jiraFields.filter(([, key]) => !appKeys.includes(key));
   // REQUIRED FIRST, THEN THE KEY, THEN WHAT HAS A DEFAULT (the setup sweep, 2026-10-28): optional model and language boxes stood
   // before the one key the card cannot run without; a chat card's fast clock folds under Advanced, after the token
-  const shownFields = adminFields && MS_SIGNIN.includes(conn.Type) ? m.fields : ownFields;
+  // ...and a Microsoft card's tenant_id and client_id are the sign-in box's own (MsOwnApp): the tenant-app fold adds only its secret
+  const shownFields = ownFields;
   const late = shownFields.filter(isPollField), early = shownFields.filter((f) => !isPollField(f));
   const need = early.filter((f) => !isOptional(f)), maybe = early.filter(isOptional);
   const [advanced, setAdvanced] = useState(false);
@@ -2568,27 +2602,22 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
               </Typography>
             )}
             {offersThinking(conn.Type) && <ThinkingSwitch cfg={cfg} setCfg={setCfg} />}
-            {need.map((f) => <ConfigField key={f[1]} conn={conn} field={f} cfg={cfg} setCfg={setCfg} />)}
+            {need.map((f) => <ConfigField key={f[1]} conn={conn} field={f} cfg={cfg} setCfg={setCfg} tick={boxes.tick(f[1])} onBlur={boxes.flush} />)}
             {/* WhatsApp has no secret at all - the bridge holds the pairing, not us */}
             {adminFields && m.secretLabel && (
               <TextField data-tq-secret="secret" label={conn.HasSecret ? t("{label} (saved — type to replace)", { label: t(m.secretLabel) }) : t(m.secretLabel)} type="password"
-                value={secret} onChange={(e) => setSecret(e.target.value)} sx={{ bgcolor: "#fff" }}
-                helperText={t(SECRET_HELP)} />
+                value={secret} onChange={(e) => setSecret(e.target.value)} onBlur={boxes.flush} sx={{ bgcolor: "#fff" }}
+                onKeyDown={(e) => { if (e.key === "Enter") boxes.flush(); }}
+                InputProps={{ endAdornment: boxes.tick("Secret") }} helperText={t(SECRET_HELP)} />
             )}
-            {maybe.map((f) => <ConfigField key={f[1]} conn={conn} field={f} cfg={cfg} setCfg={setCfg} />)}
+            {maybe.map((f) => <ConfigField key={f[1]} conn={conn} field={f} cfg={cfg} setCfg={setCfg} tick={boxes.tick(f[1])} onBlur={boxes.flush} />)}
             {late.length > 0 && <>
               <Button size="small" variant="text" data-tq-advanced="" onClick={() => setAdvanced((v) => !v)}
                 endIcon={advanced ? <ExpandLessIcon sx={{ fontSize: 16 }} /> : <ExpandMoreIcon sx={{ fontSize: 16 }} />}
                 sx={{ alignSelf: "flex-start", fontSize: 12, color: DIM, px: 0.5 }}>{t("Advanced")}</Button>
-              {/* mounted while folded, so a value already saved is still the one Save sends */}
               <Collapse in={advanced} data-tq-advanced-fold=""><Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, pt: 0.5 }}>
-                {late.map((f) => <ConfigField key={f[1]} conn={conn} field={f} cfg={cfg} setCfg={setCfg} />)}</Box></Collapse>
+                {late.map((f) => <ConfigField key={f[1]} conn={conn} field={f} cfg={cfg} setCfg={setCfg} tick={boxes.tick(f[1])} onBlur={boxes.flush} />)}</Box></Collapse>
             </>}
-            <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
-              <Button variant="contained" disableElevation disabled={busy === "save"} onClick={saveCreds} data-tq-save-conn="">
-                {busy === "save" ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : t("Save & continue")}</Button>
-              {msg && <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>{displayMessage(msg)}</Typography>}
-            </Box>
             <TestLine test={saveSaid} mt={0} />
           </>
         )}
@@ -2684,11 +2713,11 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
         {conn.Active && conn.Type === "whatsapp" && waSt ? <WaStatusLine st={waSt} cid={conn.ConnectorId} onTurnedAway={openPicker} /> : (
           <Typography variant="body2" sx={{ color: DIM }}>
             {t(conn.Active
-              ? (isAI ? "On — wired into intent triage (the first active AI connector wins)." : "On — polling on schedule and via Sync now.")
+              ? (isAI ? "On — sorts your mail." : "On — polling on schedule and via Sync now.")
               : "Off — flip on once Test passes.")}
           </Typography>)}
         {/* the last step of a setup should be the first sync - not a wait for the ten-minute clock. It is there once the SERVER has the
-            card on (syncState), and greyed - the reason in its hover - while a box or the Save bar holds an edit it would not read */}
+            card on (syncState), and greyed - the reason in its hover - while a box or a pick is still saving an edit it would not read */}
         {sync.show && !isAI && (
           <Box component="span" title={sync.why ? t(sync.why) : ""} data-tq-sync-why={sync.why || undefined} sx={{ display: "inline-flex" }}>
             <Button size="small" variant="contained" disableElevation onClick={syncHere} disabled={srcSync || !sync.ok} data-tq-sync-now=""
@@ -2711,7 +2740,7 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
     // Microsoft is one sign-in, nothing to type; an AI card's key becomes the AI (firstrun.choose_key) - the same card either way
     if (conn.Type === "outlook") return (
       <Box sx={{ display: "flex", flexDirection: "column", gap: 1.25, maxWidth: 720 }}>
-        <MsSignIn conn={conn} cfg={cfg} reload={reload} onSignedIn={onConnected} plain />
+        <MsSignIn conn={conn} cfg={cfg} setCfg={setCfg} reload={reload} onSignedIn={onConnected} plain />
         {reads}
         {another}
       </Box>
@@ -2774,7 +2803,8 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
   }
   return (
     <DraftProvider value={draft.ctx}>
-    <Box sx={{ maxWidth: 980, mx: "auto" }} data-tq-test-state={test ? (test.ok ? "ok" : "error") : "none"}>
+    {/* a box left saves what its typing was waiting to save */}
+    <Box sx={{ maxWidth: 980, mx: "auto" }} data-tq-test-state={test ? (test.ok ? "ok" : "error") : "none"} onBlur={draft.flush}>
       {note}
       <Crumb section={t("Connections")} onBack={onBack} title={conn.Name} />
       <ConnectorIdentity conn={conn} reload={reload} onCreated={onCreated} />
@@ -2784,7 +2814,7 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
       {/* the sign-in lives at the TOP of the card, not inside the Credentials step: a card that already
           runs on a tenant app opens on Sources, and the one button most people need was folded away.
           It sits above the agent box too: one sign-in is the whole setup, the agent is the long road (B10) */}
-      {MS_SIGNIN.includes(conn.Type) && <Box sx={{ mb: 2 }}><MsSignIn conn={conn} cfg={cfg} reload={reload} onSignedIn={() => setStep(m.srcLabel ? 2 : 3)} /></Box>}
+      {MS_SIGNIN.includes(conn.Type) && <Box sx={{ mb: 2 }}><MsSignIn conn={conn} cfg={cfg} setCfg={setCfg} reload={reload} onSignedIn={() => setStep(m.srcLabel ? 2 : 3)} /></Box>}
       {conn.Type === "chatgpt" && <Box sx={{ mb: 2 }}><ChatGptSignIn conn={conn} cfg={cfg} reload={reload} /></Box>}
       {conn.Type === "gmail" && <GoogleCalendar conn={conn} cfg={cfg} reload={reload} />}
       {conn.Type === "gmail" && <GoogleFiles conn={conn} cfg={cfg} reload={reload} />}
@@ -2794,9 +2824,10 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
       {tab === "Agent" && <AgentTab steps={jiraDc ? (m.agentDC || m.agent) : m.agent} />}
       {tab === "Setup" && (
         <Stepper nonLinear activeStep={step} orientation="vertical" sx={{ "& .MuiStepLabel-label": { fontSize: 13.5, fontWeight: 600 } }}>
+          {/* a pick saved on the open step says so by the step's name: only the open step's body is drawn, so it is the pick's */}
           {steps.map((s, i) => (
             <Step key={s.label} completed={s.done}>
-              <StepButton data-tq-step-btn={s.id || undefined} onClick={() => setStep(i)}>{t(s.label)}</StepButton>
+              <StepButton data-tq-step-btn={s.id || undefined} onClick={() => setStep(i)}>{t(s.label)}{i === step && <Tick st={draft.st} />}</StepButton>
               <StepContent>{s.body}</StepContent>
             </Step>
           ))}
@@ -2811,10 +2842,8 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
         secretLabel={m.secretLabel}
         agentSteps={jiraDc ? (m.agentDC || m.agent || []) : (m.agent || [])}
         reload={reload} />}
-      <SaveBar draft={draft} labels={Object.fromEntries(Object.entries(DRAFT_LABELS).map(([key, label]) => [key, t(label)]))}
-        words={Object.fromEntries(Object.entries(DRAFT_WORDS).map(([key, values]) => [key, Object.fromEntries(Object.entries(values).map(([value, label]) => [value, t(label)]))]))} />
       <CardPlaybooks type={conn.Type} />
-      <RemoveConnection conn={conn} reload={reload} onBack={leave} />
+      <RemoveConnection conn={conn} reload={reload} onBack={leave} channel={m.channel} />
     </Box>
     </DraftProvider>
   );
@@ -2842,7 +2871,7 @@ function MssqlDetail({ conn, reload, onBack, onCreated }) {
       {tab === "Guide" && <Steps steps={MSSQL_HOWTO} />}
       <AiSetup conn={conn} steps={MSSQL_HOWTO} agentSteps={MSSQL_AGENT} reload={reload} />
       <CardPlaybooks type={conn.Type} />
-      <RemoveConnection conn={conn} reload={reload} onBack={onBack} />
+      <RemoveConnection conn={conn} reload={reload} onBack={onBack} channel="data" />
     </Box>
   );
 }
@@ -2851,23 +2880,17 @@ function MssqlDetail({ conn, reload, onBack, onCreated }) {
 function MssqlConnection({ conn, drivers, reload }) {
   useLocale();
   const [cfg, setCfg] = useState(parse(conn.ConfigJson));
+  const [base, setBase] = useState(cfg);
   const [secret, setSecret] = useState("");
   const [step, setStep] = useState(conn.LastSyncAt && !conn.LastError ? 1 : 0);
   const [test, setTest] = useState(null);
   const [busy, setBusy] = useState("");
-  const [msg, setMsg] = useState("");
   const sqlAuth = (cfg.auth || "windows") === "sql";
-
-  const save = async () => {
-    setBusy("save"); setMsg("");
-    try {
-      const body = { ConnectorId: conn.ConnectorId, ConfigJson: JSON.stringify(cfg), Active: true };
-      if (secret) body.Secret = secret;
-      await api.post("/api/connectors", body);
-      setMsg(message("saved ✓")); setSecret(""); setStep(1); reload();
-    } catch (e) { setTest(testFailure(e, "save failed")); }
-    setBusy("");
-  };
+  // each box saves itself (useBoxesSave); a save switches the card on, as its Save did - the card has no switch of its own
+  // ...and its password saved, Test opens (the owner, 2026-11-05)
+  const boxes = useBoxesSave({ cid: conn.ConnectorId, cfg, setCfg, base, rebase: setBase, secret, setSecret, extra: { Active: true },
+    onSaved: (data, keys) => { reload(); if (keys.includes("Secret")) setStep(1); } });
+  const box = (k) => ({ onBlur: boxes.flush, InputProps: { endAdornment: boxes.tick(k) } });
   const runTest = async () => {
     setBusy("test");
     try { setTest((await api.post(`/api/connectors/${conn.ConnectorId}/test`)).data); }
@@ -2882,26 +2905,23 @@ function MssqlConnection({ conn, drivers, reload }) {
         <StepContent>
           <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, maxWidth: 460, mt: 1 }}>
             <TextField label={t("server")} placeholder="localhost  ·  localhost\SQLEXPRESS  ·  HOST\INSTANCE" value={cfg.server || ""}
-              sx={{ bgcolor: "#fff" }} onChange={(e) => setCfg({ ...cfg, server: e.target.value })} />
+              sx={{ bgcolor: "#fff" }} onChange={(e) => setCfg({ ...cfg, server: e.target.value })} {...box("server")} />
             <TextField label={t("database")} placeholder="master" value={cfg.database || ""}
-              sx={{ bgcolor: "#fff" }} onChange={(e) => setCfg({ ...cfg, database: e.target.value })} />
-            <Select value={cfg.auth || "windows"} sx={{ bgcolor: "#fff" }} onChange={(e) => setCfg({ ...cfg, auth: e.target.value })}>
+              sx={{ bgcolor: "#fff" }} onChange={(e) => setCfg({ ...cfg, database: e.target.value })} {...box("database")} />
+            <Select value={cfg.auth || "windows"} sx={{ bgcolor: "#fff" }} onChange={(e) => setCfg({ ...cfg, auth: e.target.value })}
+              endAdornment={<Box sx={{ mr: 3 }}>{boxes.tick("auth")}</Box>}>
               <MenuItem value="windows" sx={{ fontSize: 12.5 }}>{t("Windows auth (local, trusted)")}</MenuItem>
               <MenuItem value="sql" sx={{ fontSize: 12.5 }}>{t("SQL login")}</MenuItem>
             </Select>
             {sqlAuth && <TextField label={t("username")} value={cfg.username || ""} sx={{ bgcolor: "#fff" }}
-              onChange={(e) => setCfg({ ...cfg, username: e.target.value })} />}
+              onChange={(e) => setCfg({ ...cfg, username: e.target.value })} {...box("username")} />}
             {sqlAuth && <TextField label={t(conn.HasSecret ? "password (saved — type to replace)" : "password")} type="password"
-              value={secret} onChange={(e) => setSecret(e.target.value)} sx={{ bgcolor: "#fff" }} />}
-            <Select value={cfg.driver || ""} displayEmpty sx={{ bgcolor: "#fff" }} onChange={(e) => setCfg({ ...cfg, driver: e.target.value })}>
+              value={secret} onChange={(e) => setSecret(e.target.value)} sx={{ bgcolor: "#fff" }} {...box("Secret")} />}
+            <Select value={cfg.driver || ""} displayEmpty sx={{ bgcolor: "#fff" }} onChange={(e) => setCfg({ ...cfg, driver: e.target.value })}
+              endAdornment={<Box sx={{ mr: 3 }}>{boxes.tick("driver")}</Box>}>
               <MenuItem value="" sx={{ fontSize: 12.5 }}>{t("(auto — newest installed driver)")}</MenuItem>
               {drivers.map((d) => <MenuItem key={d} value={d} sx={{ fontSize: 12.5 }}>{d}</MenuItem>)}
             </Select>
-            <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
-              <Button variant="contained" disableElevation disabled={busy === "save"} onClick={save}>
-                {busy === "save" ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : t("Save & continue")}</Button>
-              {msg && <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>{displayMessage(msg)}</Typography>}
-            </Box>
           </Box>
         </StepContent>
       </Step>
@@ -2978,7 +2998,7 @@ function DesktopDetail({ conn: savedConn, reload, onBack, onCreated }) {
           startIcon={busy === "test" ? <CircularProgress size={12} /> : <BoltIcon sx={{ fontSize: 15 }} />}>{t("Test")}</Button>
       </Box>
       <TestLine test={test} mt={1} />
-      {draft.err && <Typography role="alert" sx={{ mt: 1, color: "#8a3646", fontSize: 12 }}>{draft.err}</Typography>}
+      {draft.st?.state === "error" && <Typography role="alert" sx={{ mt: 1, color: "#8a3646", fontSize: 12 }}>{draft.st.why}</Typography>}
       <CardPlaybooks type={conn.Type} />
       <RemoveConnection conn={conn} reload={reload} onBack={onBack} />
     </Box>
@@ -2989,19 +3009,13 @@ function WinrmDetail({ conn, reload, onBack, onCreated }) {
   useLocale();
   const [tab, setTab] = useState("Setup");
   const [cfg, setCfg] = useState(parse(conn?.ConfigJson));
+  const [base, setBase] = useState(cfg);
   const [test, setTest] = useState(null);
   const [busy, setBusy] = useState("");
-  const [msg, setMsg] = useState("");
+  // the machine name saves itself and switches the card on, as its Save did (useBoxesSave)
+  const boxes = useBoxesSave({ cid: conn?.ConnectorId, cfg, setCfg, base, rebase: setBase, extra: { Active: true }, onSaved: () => reload() });
   if (!conn) return null;
-
-  const save = async () => {
-    setBusy("save"); setMsg("");
-    try {
-      await api.post("/api/connectors", { ConnectorId: conn.ConnectorId, ConfigJson: JSON.stringify(cfg), Active: true });
-      setMsg(message("saved ✓")); reload();
-    } catch (e) { setTest(testFailure(e, "save failed")); }
-    setBusy("");
-  };
+  
   const runTest = async () => {
     setBusy("test");
     try { setTest((await api.post(`/api/connectors/${conn.ConnectorId}/test`)).data); }
@@ -3022,13 +3036,10 @@ function WinrmDetail({ conn, reload, onBack, onCreated }) {
       {tab === "Setup" && (
         <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, maxWidth: 460, mt: 1 }}>
           <TextField label={t("machine name")} placeholder="AZWEB01" value={cfg.host || ""} sx={{ bgcolor: "#fff" }}
-            onChange={(e) => setCfg({ ...cfg, host: e.target.value })} />
+            onChange={(e) => setCfg({ ...cfg, host: e.target.value })} onBlur={boxes.flush} InputProps={{ endAdornment: boxes.tick("host") }} />
           <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
-            <Button variant="contained" disableElevation disabled={busy === "save"} onClick={save}>
-              {busy === "save" ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : t("Save")}</Button>
-            <Button variant="outlined" disabled={busy === "test" || !cfg.host} onClick={runTest}
-              startIcon={busy === "test" ? <CircularProgress size={12} /> : <BoltIcon sx={{ fontSize: 15 }} />}>{t("Test")}</Button>
-            {msg && <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>{displayMessage(msg)}</Typography>}
+            <Button variant="contained" disableElevation disabled={busy === "test" || !cfg.host} onClick={runTest}
+              startIcon={busy === "test" ? <CircularProgress size={12} sx={{ color: "#fff" }} /> : <BoltIcon sx={{ fontSize: 15 }} />}>{t("Test")}</Button>
           </Box>
           <TestLine test={test} mt={0} />
           {!test && conn.LastError && <Typography variant="body2" sx={{ color: "#6b2733" }}>✗ {conn.LastErrorPlain || conn.LastError}</Typography>}
@@ -3036,7 +3047,7 @@ function WinrmDetail({ conn, reload, onBack, onCreated }) {
       )}
       <AiSetup conn={conn} steps={WINRM_HOWTO} fields={[["machine name", "host"]]} agentSteps={WINRM_AGENT} reload={reload} />
       <CardPlaybooks type={conn.Type} />
-      <RemoveConnection conn={conn} reload={reload} onBack={onBack} />
+      <RemoveConnection conn={conn} reload={reload} onBack={onBack} channel="data" />
     </Box>
   );
 }
@@ -3045,7 +3056,7 @@ function WinrmDetail({ conn, reload, onBack, onCreated }) {
    pickers, and the same reason: one bucket is a report source, the next should put every
    new file on the Timeline - that is a per-OBJECT decision, not a per-connection one.
    'report' is the default and polls nothing: the object is simply available on the
-   Reports tab. A pick waits for the card's Save bar. ── */
+   Reports tab. A pick saves itself, as every field on the card does (useCardDraft). ── */
 const CLOUD_MODES = [
   ["report", "report only — selectable under Reports, never polled"],
   ["feed", "feed — new items show up to read, never become work"],
@@ -3263,12 +3274,12 @@ function OAuthConnect({ conn, meta, reload }) {
         )}
         <Button variant="contained" disableElevation onClick={go}
           disabled={busy || !st?.has_app || (meta.connect.widget === "token" && !token.trim())}
-          title={st?.has_app ? t(meta.connect.text) : t("save the app's client id and secret first")}>
+          title={st?.has_app ? t(meta.connect.text) : t("paste the app's client id and secret below first")}>
           {busy ? <><CircularProgress size={12} sx={{ color: "#fff", mr: 1 }} /> {meta.connect.widget === "token" ? t("claiming…") : t("waiting for the sign-in…")}</> : st?.connected ? t("Reconnect") : t(meta.connect.label)}
         </Button>
         {st?.connected
           ? <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>✓ {t("Connected")}{st.member ? t(" as {name}", { name: st.member }) : ""}{st.realm_id ? t(" · company {id}", { id: st.realm_id }) : ""}{st.institution ? ` · ${st.institution}` : ""}{(st.env || st.environment) === "sandbox" ? t(" · sandbox") : ""}{st.days_left != null ? t(st.days_left === 1 ? " · {count} day left on the sign-in" : " · {count} days left on the sign-in", { count: st.days_left }) : ""}</Typography>
-          : <Typography variant="body2" sx={{ color: DIM }}>{t(st?.has_app ? "keys saved — not connected yet" : "paste the application's keys below and Save first")}</Typography>}
+          : <Typography variant="body2" sx={{ color: DIM }}>{t(st?.has_app ? "keys saved — not connected yet" : "paste the application's keys below first")}</Typography>}
         {busy && url && !st?.connected && (
           <Typography variant="caption" sx={{ color: DIM, display: "flex", alignItems: "center", gap: 1, flexBasis: "100%" }}>
             {t("Finish in the tab that opened — this box turns green by itself.")}
@@ -3317,14 +3328,30 @@ function ApiDots({ apis, cfg, setCfg }) {
   );
 }
 
+// WHAT THE AGENT'S ACT STARTS WITH, PER CONNECTION (the owner, 2026-11-05: "each connector should have settings what the action view looks
+// like"): the choices the catalogue marks `setting` on this card's acts (a LinkedIn post's audience, post now or save as a draft), saved on the
+// card as default_<key> like every other box here - no Save. The agent's proposal is filled from them (connectorcatalog.with_defaults), and
+// the owner can still change each on the card before pressing.
+function ActionDefaults({ type, cfg, setCfg, tick }) {
+  const fields = settingsOf(type);
+  if (!fields.length) return null;
+  return <Box data-tq-action-defaults={type} sx={{ display: "flex", gap: 1.5, flexWrap: "wrap" }}>
+    {fields.map((f) => <TextField key={f.key} select size="small" label={f.label} value={String(cfg[`default_${f.key}`] ?? f.default)} sx={{ bgcolor: "#fff", minWidth: 180 }}
+      data-tq-action-default={f.key} onChange={(e) => setCfg({ ...cfg, [`default_${f.key}`]: e.target.value })} InputProps={{ endAdornment: tick(`default_${f.key}`) }}
+      helperText="What a post an agent sets up starts with - you can change it on the post">
+      {f.choices.map((c) => <MenuItem key={String(c.value)} value={String(c.value)} sx={{ fontSize: 13 }}>{c.label}</MenuItem>)}</TextField>)}
+  </Box>;
+}
+
 function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload, onBack: leave, onCreated, byType = {} }) {
   useLocale();
-  // the same one Save as a channel card: what each discovered object is used for is held until the bar saves it
+  // as on a channel card, every field saves itself: what each discovered object is used for through the draft, the boxes on their own
   const draft = useCardDraft(savedConn, savedSources, reload);
   const { conn, sources } = draft;
-  const onBack = leave;      // the unsaved changes stay in the card's draft for when it is opened again (keepDraft) - leaving never asks
+  const onBack = leave;      // leaving saves what was still waiting to save (useCardDraft, useBoxesSave)
   const [tab, setTab] = useState("Setup");
   const [cfg, setCfg] = useState(parse(conn?.ConfigJson));
+  const [base, setBase] = useState(cfg);
   const [secret, setSecret] = useState("");
   const [test, setTest] = useState(null);
   const [busy, setBusy] = useState("");
@@ -3332,6 +3359,9 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
   // the AI setup: its button in the row below, its walk under it; a field it asks for brings the Connection tab up to be lit
   const ai = useAiWalk({ conn: conn || {}, steps: meta.howto || [], fields: meta.fields || [], secretLabel: meta.secretLabel,
     agentSteps: meta.agent || [], reload });
+  // the settings only: a save never switches the card on - the switch below does that (#242)
+  const boxes = useBoxesSave({ cid: conn?.ConnectorId, cfg, setCfg, base, rebase: setBase, secret, setSecret, writeOnly: conn?.WriteOnlyKeys || [],
+    onSaved: () => { setTest(null); setFresh(true); reload(); } });
   if (!conn) return null;
   const objects = (sources || []).filter((s) => s.Channel === conn.Type && s.ConnectorId === conn.ConnectorId);
   // the borrow offer: only when the OTHER card actually has something to lend (a tenant app, a
@@ -3340,9 +3370,9 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
   const useShared = async () => {
     // ...a write-only one is cleared by name (null): left out, the server keeps the one it holds (guard.keep_write_only)
     const next = { ...cfg }; (meta.reuse.clear || []).forEach((k) => { if ((conn.WriteOnlyKeys || []).includes(k)) next[k] = null; else delete next[k]; });
-    setCfg(next); setBusy("save"); setMsg("");
+    setCfg(next); setBase(next); setBusy("save"); setMsg("");
     try {
-      await api.post("/api/connectors", { ConnectorId: conn.ConnectorId, ConfigJson: JSON.stringify(next) });
+      await api.post("/api/connectors", { ConnectorId: conn.ConnectorId, ConfigPatch: cfgPatch(cfg, next) });
       setMsg(message("saved — using the {provider} card's app ✓", { provider: meta.reuse.from }));
       setBusy("test");
       setTest((await api.post(`/api/connectors/${conn.ConnectorId}/test`)).data);
@@ -3350,25 +3380,14 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
     setBusy(""); reload();
   };
 
-  const save = async () => {
-    setBusy("save"); setMsg("");
-    try {
-      // the settings only: it switched the card on too, so editing a card turned off turned it back on (#242) - the switch below does that
-      const body = { ConnectorId: conn.ConnectorId, ConfigJson: JSON.stringify(cfg) };
-      if (secret) body.Secret = secret;
-      await api.post("/api/connectors", body);
-      // a write-only value typed is the server's now: the box goes back to empty, its label says saved
-      if ((conn.WriteOnlyKeys || []).some((k) => cfg[k])) setCfg(withoutWriteOnly(conn, cfg));
-      setMsg(message("saved ✓")); setSecret(""); setTest(null); setFresh(true); reload();
-    } catch (e) { setTest(testFailure(e, "save failed")); }
-    setBusy("");
-  };
+  
   const runTest = async () => {
     setBusy("test"); setFresh(false);
     try {
       const t = (await api.post(`/api/connectors/${conn.ConnectorId}/test`, onScreen(conn, cfg, parse(conn.ConfigJson), secret))).data;
       setTest(t);
-      if (Array.isArray(t?.apis)) setCfg((c) => ({ ...c, apis: t.apis }));   // the server saved the dots that answered; show them now
+      // the server saved the dots that answered; show them now - as saved, so they are not saved again
+      if (Array.isArray(t?.apis)) { setCfg((c) => ({ ...c, apis: t.apis })); setBase((c) => ({ ...c, apis: t.apis })); }
     } catch (e) { setTest(testFailure(e, "test call failed")); }
     setBusy(""); reload();
   };
@@ -3379,7 +3398,7 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
 
   return (
     <DraftProvider value={draft.ctx}>
-    <Box sx={{ maxWidth: 980, mx: "auto" }}>
+    <Box sx={{ maxWidth: 980, mx: "auto" }} onBlur={draft.flush}>
       <Crumb section={t("Connections")} onBack={onBack} title={conn.Name} />
       <ConnectorIdentity conn={conn} reload={reload} onCreated={onCreated} />
       <Typography variant="body2" sx={{ color: DIM, mb: 1.5 }}>
@@ -3394,24 +3413,24 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
             <Box sx={{ p: 1.25, border: `1px dashed ${BORDER}`, borderRadius: 2, bgcolor: PANEL2 }}>
               <Typography variant="body2" sx={{ fontWeight: 600, color: INK }}>{t(meta.reuse.title)}</Typography>
               <Typography variant="caption" sx={{ color: DIM, display: "block", lineHeight: 1.5, mb: 0.75 }}>{t(meta.reuse.text)}</Typography>
-              <Button size="small" variant="outlined" disabled={!!busy} onClick={useShared}>{t("Use it — save and test")}</Button>
+              <Button size="small" variant="outlined" disabled={!!busy} onClick={useShared}>{t("Use it and test")}</Button>
             </Box>
           )}
           {meta.connect && <OAuthConnect conn={conn} meta={meta} reload={reload} />}
           {/* a field's 4th entry says where to get what it asks for, under the box */}
           {/* ...and a write-only one (an app's client secret, guard.WRITE_ONLY_CONFIG) is masked: once saved the server never sends it
               back, so the box is empty and says it is saved - typed, it replaces the stored one */}
-          {meta.fields.map((f) => <ConfigField key={f[1]} conn={conn} field={f} cfg={cfg} setCfg={setCfg}
+          {meta.fields.map((f) => <ConfigField key={f[1]} conn={conn} field={f} cfg={cfg} setCfg={setCfg} tick={boxes.tick(f[1])} onBlur={boxes.flush}
             {...(f[1] === "conn_str" && !(conn.WriteOnlyKeys || []).includes(f[1]) ? { multiline: true, minRows: 2 } : {})} />)}
           {meta.apis && <ApiDots apis={meta.apis} cfg={cfg} setCfg={setCfg} />}
+          <ActionDefaults type={conn.Type} cfg={cfg} setCfg={setCfg} tick={boxes.tick} />
           {!meta.noSecret && <TextField label={meta.secretLabel ? (conn.HasSecret ? t("{label} — saved, type to replace", { label: t(meta.secretLabel) }) : t(meta.secretLabel)) : meta.secretLabel}
             type="password" value={secret} onChange={(e) => setSecret(e.target.value)} sx={{ bgcolor: "#fff" }}
+            onBlur={boxes.flush} onKeyDown={(e) => { if (e.key === "Enter") boxes.flush(); }} InputProps={{ endAdornment: boxes.tick("Secret") }}
             helperText={t(meta.secretHelp || SECRET_HELP)} />}
           <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
-            <Button variant="contained" disableElevation disabled={busy === "save"} onClick={save}>
-              {busy === "save" ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : t("Save")}</Button>
-            <Button variant="outlined" disabled={busy === "test"} onClick={runTest}
-              startIcon={busy === "test" ? <CircularProgress size={12} /> : <BoltIcon sx={{ fontSize: 15 }} />}>
+            <Button variant="contained" disableElevation disabled={busy === "test"} onClick={runTest}
+              startIcon={busy === "test" ? <CircularProgress size={12} sx={{ color: "#fff" }} /> : <BoltIcon sx={{ fontSize: 15 }} />}>
               {t(meta.discovers ? "Test & discover" : "Test")}</Button>
             {/* a card's own verbs (the knowledge base's Reindex): one POST, the answer said in a line */}
             {(meta.actions || []).map((a) => (
@@ -3430,6 +3449,7 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
             <Switch data-tq-card-on="" checked={!!conn.Active} disabled={draft.flipping} onChange={(e) => setActive(e.target.checked)} />
             <Typography variant="body2" sx={{ color: DIM }}>
               {t(conn.Active ? "On — reports, routines and agents can use it." : "Off — flip on once Test passes.")}
+              <Tick st={draft.st} />
             </Typography>
           </Box>
           {meta.search && <KbSearch conn={conn} />}
@@ -3441,10 +3461,9 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
       {tab === "Setup" && meta.discovers && (
         <CloudObjects conn={conn} meta={meta} objects={objects} reload={reload} />
       )}
-      <SaveBar draft={draft} labels={Object.fromEntries(Object.entries(DRAFT_LABELS).map(([key, label]) => [key, t(label)]))}
-        words={Object.fromEntries(Object.entries(DRAFT_WORDS).map(([key, values]) => [key, Object.fromEntries(Object.entries(values).map(([value, label]) => [value, t(label)]))]))} />
+  
       <CardPlaybooks type={conn.Type} />
-      <RemoveConnection conn={conn} reload={reload} onBack={leave} />
+      <RemoveConnection conn={conn} reload={reload} onBack={leave} channel="data" />
     </Box>
     </DraftProvider>
   );
@@ -3738,20 +3757,7 @@ const PROMPTABLE = new Set(["outlook", "teams", "slack", "telegram", "whatsapp",
   "jira", "asana", "monday"]);
 const promptsFor = (t) => (t === "github" ? GH_PROMPTS : PROMPTABLE.has(t) ? TASK_PROMPT : []);
 
-// what the card's Save bar calls each setting, in the words the card itself uses (ConnectorDraft.jsx SaveBar)
-const DRAFT_LABELS = {
-  ...Object.fromEntries(GITHUB_PERMS.map(([k, label]) => [k, label])),
-  ...Object.fromEntries([...GH_PROMPTS, ...TASK_PROMPT].map(([k]) => [k, k === "prompt_pr" ? "Prompt for pull requests" : k === "prompt_issue" ? "Prompt for issues" : "Prompt for tasks"])),
-  Active: "Connection", Roles: "Inbound", Scope: "Permission", bulk: "Processing", bulk_head: "Read at once",
-  disable_thinking: "Disable thinking mode",
-  closeout: "Close-out", assistant_chat: "Assistant chat", poll_seconds: "Check every (seconds)",
-  mode: "Use", folders: "Folders", issues: "issues", prs: "PRs", auto: "agent",
-};
-const DRAFT_WORDS = {
-  bulk: { rank: "Ranked together", clear: "One by one", "": "One by one" },
-  Roles: { "": "off", trigger: "creates work", feed: "timeline only" },
-};
-
+  
 const ghInboundExplicit = (mine) => mine.some((s) => {
   const c = parse(s.ConfigJson);
   return ["tasks", "feed"].includes(c.issues) || ["tasks", "feed"].includes(c.prs);
@@ -3860,8 +3866,9 @@ const WaPair = ({ conn, reload, onStatus, onTurnedAway }) => {
         setSt(data); onStatus?.(data);
         if (data.connected && wasConnected === false) reload?.();     // just paired: the card's status line changes
         wasConnected = !!data.connected;
-        // Node is there and the bridge is not: start it, once per visit - the owner opened this card to pair
-        if (data.bridge === false && data.node && !kicked.current && !["installing", "starting", "failed"].includes(data.manager?.phase)) { kicked.current = true; startBridge(); }
+        // Node is there and the bridge is not: start it, once per visit - the owner opened this card to pair. Not one stopped on purpose
+        // (manager.held): a Remove stopped it, and starting it here put the card straight back up (TQ-1320) - Start bridge is the way back
+        if (data.bridge === false && data.node && !data.manager?.held && !kicked.current && !["installing", "starting", "failed"].includes(data.manager?.phase)) { kicked.current = true; startBridge(); }
         setTimeout(tick, data.connected ? 30000 : data.bridge === false ? (data.node ? 3000 : 6000) : 4000);
       // A STATUS WE COULD NOT READ IS NOT "NODE IS MISSING". Faking {bridge:false} here sent the owner
       // off to install Node they already had, because the app was restarting or busy for a moment.
@@ -3951,6 +3958,7 @@ const WaPair = ({ conn, reload, onStatus, onTurnedAway }) => {
             <Typography variant="caption" sx={{ color: phase === "failed" ? "#a33" : DIM, lineHeight: 1.5, display: "block", mb: 0.75 }}>
               {phase === "installing" ? t("Fetching the bridge's dependency (Baileys, not bundled on purpose). The QR appears here the moment the bridge is up.")
                 : phase === "failed" ? t("The bridge could not start: {detail}", { detail: st.manager.detail })
+                : st.manager?.held ? t("The bridge is stopped and this computer is unpaired. Start bridge to pair a phone again.")
                 : t("Starting the bridge…")}
             </Typography>
             {phase === "failed" && (
@@ -4128,7 +4136,7 @@ const WaChats = ({ conn, mine, reload, onNavigate, onRoster, toggle, ask = null 
   );
 };
 
-/* ── Sign in with Microsoft: Graph for a regular user, no Azure portal (taskuary/msauth.py).
+/* ── Sign in with Microsoft: Graph for a regular user, through the company's own app (taskuary/msauth.py).
    Microsoft's page in the browser, back to this server on localhost (a code on microsoft.com/devicelogin only as the fallback); this box polls until they are done. ── */
 // Sign in with ChatGPT: the browser goes to auth.openai.com and comes back to a one-off listener on 127.0.0.1, so there
 // is no code to type - the page only waits. A popup blocker is the one thing that can stop it, so the link is shown too.
@@ -4216,9 +4224,44 @@ const ChatGptSignIn = ({ conn, cfg, reload }) => {
 const NO_REPLY = /AADSTS900971/;
 export const msSays = (d) => NO_REPLY.test(d || "") ? "Microsoft stopped at your organisation's approval step (error AADSTS900971, \"No reply address provided\") - "
   + "your IT admin approves Taskuary once with the link below, then sign in again." : d;
-const STALL_MS = 90 * 1000;   // a browser sign-in this long without coming back: say what a tenant's admin approval looks like
+const STALL_MS = 90 * 1000;
+// THE COMPANY'S OWN MICROSOFT APP (the owner, 2026-11-05: "i don't want it to go through my azure ... they can create their own app"):
+// Taskuary ships no Microsoft app id (msauth.py), so the card asks for the company's - the two ids, and the steps IT follows to make it.
+// The ids ride the Sign in press (server ms_signin keeps them on the card); both roads - the browser and the code - use the same app.
+export const MS_REDIRECT = "http://localhost/api/ms/callback";
+// ...a Teams card with no app of its own uses the Outlook card's ('outlook'): its sign-in is ready at once (the owner, 2026-11-05)
+export const msNeedsApp = (conn, cfg) => !["install", "outlook"].includes(conn.MsApp) && !(String(cfg.client_id || "").trim() && String(cfg.tenant_id || "").trim());
+const MsOwnApp = ({ conn, cfg, setCfg, copy }) => {
+  const install = conn.MsApp === "install" || conn.MsApp === "outlook", steps = !["card", "install", "outlook"].includes(conn.MsApp);
+  const box = { "& .MuiInputBase-root": { bgcolor: "#fff" }, "& .MuiFormHelperText-root": { mx: 0 } };   // white is the box's, not its hint's
+  const code = (t) => <Box component="code" sx={{ ...mono, fontSize: 11, color: INK, bgcolor: "#fff", px: 0.6, borderRadius: 0.75, border: `1px solid ${BORDER}` }}>{t}</Box>;
+  return (
+    <Box data-tq-ms-own-app="" sx={{ display: "flex", flexDirection: "column", gap: 1.25 }}>
+      {steps && (
+        <Box component="ol" data-tq-ms-steps="" sx={{ m: 0, pl: 2.5, color: DIM, fontSize: 12.5, lineHeight: 1.6, "& li": { mb: 0.25 } }}>
+          <li>Your IT registers the app once: Microsoft Entra ID → App registrations → New registration → name it Taskuary, accounts in this
+            organizational directory only (single tenant) → Register.</li>
+          <li>Authentication → Add a platform → <b>Mobile and desktop applications</b> → redirect URI {code(MS_REDIRECT)}
+            <IconButton size="small" onClick={() => copy(MS_REDIRECT)} title="copy the redirect URI" aria-label="copy the redirect URI" sx={{ p: 0.25, ml: 0.25 }}>
+              <ContentCopyIcon sx={{ fontSize: 13 }} /></IconButton>
+            {conn.MsRedirect && conn.MsRedirect !== MS_REDIRECT && <> (if Microsoft asks for this install's port, add {code(conn.MsRedirect)} too)</>}</li>
+          <li>Authentication → Allow public client flows: <b>Yes</b> → Save.</li>
+          <li>API permissions → Add a permission → Microsoft Graph → Delegated: {code(conn.MsScopes || "")} → Add, then <b>Grant admin consent</b>.</li>
+          <li>From the app's Overview, copy the Application (client) ID and the Directory (tenant) ID into the boxes below. Then sign in -
+            in the browser, or with a code.</li>
+        </Box>
+      )}
+      <TextField size="small" label="Application (client) ID" value={cfg.client_id || ""} sx={box} required={!install}
+        inputProps={{ spellCheck: false, autoComplete: "off" }} onChange={(e) => setCfg({ ...cfg, client_id: e.target.value.trim() })}
+        helperText={conn.MsApp === "outlook" ? "Blank uses your Outlook card's app - the same sign-in." : install ? "Blank uses the app this install was set up with." : "Your company's app, from its Overview page in Entra ID."} />
+      <TextField size="small" label="Directory (tenant) ID" value={cfg.tenant_id || ""} sx={box} required={!install}
+        inputProps={{ spellCheck: false, autoComplete: "off" }} onChange={(e) => setCfg({ ...cfg, tenant_id: e.target.value.trim() })}
+        helperText="The same Overview page. A work account needs it." />
+    </Box>
+  );
+};   // a browser sign-in this long without coming back: say what a tenant's admin approval looks like
 // shared with the first-run card on the canvas (FirstRun.jsx) - one Microsoft sign-in, wherever it is drawn
-export const MsSignIn = ({ conn, cfg, reload, onSignedIn, plain = false }) => {
+export const MsSignIn = ({ conn, cfg, setCfg, reload, onSignedIn, plain = false }) => {
   useLocale();
   // {flow, mode: "browser", url} - the default, Microsoft's page in the browser coming back to this server - or {flow, mode: "code",
   // user_code, verification_uri, interval}, the device code the owner asks for when the browser cannot reach Taskuary on localhost
@@ -4233,7 +4276,11 @@ export const MsSignIn = ({ conn, cfg, reload, onSignedIn, plain = false }) => {
   // a stored token is not a sign-in: Microsoft lets one lapse, and this said "Signed in" over hours of unread mail
   // (problems.signed_out, from the card's last poll)
   const signedOut = cfg.auth === "user" && conn.HasSecret && conn.SignedOut;
-  const signedIn = cfg.auth === "user" && conn.HasSecret && !signedOut;
+  // a card signed in through the Microsoft app Taskuary used to ship has a token and no app: it reads nothing until the company's own
+  // app is on it and it signs in again (msauth.NO_APP) - so it is not drawn as signed in
+  const legacy = cfg.auth === "user" && conn.HasSecret && conn.MsApp === "";
+  const signedIn = cfg.auth === "user" && conn.HasSecret && !signedOut && !legacy;
+  const needsApp = msNeedsApp(conn, cfg);
   // a Teams card signs in the same way for its own account's chats (msauth.TEAMS_SCOPES) - the words say chats, not mail
   const chats = conn.Type === "teams", what = chats ? "chats" : "mail";
   useEffect(() => {
@@ -4272,8 +4319,9 @@ export const MsSignIn = ({ conn, cfg, reload, onSignedIn, plain = false }) => {
   const start = async (want = files, code = false) => {
     setBusy(true); setState(""); setDetail("");
     try {
-      const { data } = await api.post(`/api/connectors/${conn.ConnectorId}/ms/signin`, { files: !!want, code });
-      setFlow({ ...data, at: Date.now() });
+      const { data } = await api.post(`/api/connectors/${conn.ConnectorId}/ms/signin`,
+        { files: !!want, code, client_id: cfg.client_id || null, tenant_id: cfg.tenant_id || null });
+      setFlow({ ...data, at: Date.now() }); reload?.();
       if (data.mode === "browser") window.open(data.url, "_blank", "noopener");
     }
     catch (e) { setState("error"); setDetail(e?.response?.data?.detail || message("could not start the sign-in")); }
@@ -4312,8 +4360,8 @@ export const MsSignIn = ({ conn, cfg, reload, onSignedIn, plain = false }) => {
       {/* the first-run card says it for someone who has never heard of a tenant (FirstRun.jsx) */}
       <Typography variant="caption" sx={{ color: DIM, lineHeight: 1.5 }}>
         {t(plain ? "Press the button and sign in on Microsoft's page as usual. This page finishes by itself."
-          : chats ? "Your own work account, your own chats — read here and answered as you. No Azure portal, no tenant id, no secret; each Teams card signs in its own account, so a second organisation is a second card."
-          : "Your own account, your own mailbox — mail, sending and calendar. No Azure portal, no tenant id, no secret; work and personal (Outlook.com) accounts both work.")}
+          : chats ? "Your own work account, your own chats — read here and answered as you, through your company's own Microsoft app. Each Teams card signs in its own account, so a second organisation is a second card."
+          : "Your own account, your own mailbox — mail, sending and calendar — through your company's own Microsoft app. No secret.")}
       </Typography>
       {!flow && signedIn ? (
         <Box sx={{ display: "flex", gap: 1.5, alignItems: "center", flexWrap: "wrap" }}>
@@ -4337,7 +4385,7 @@ export const MsSignIn = ({ conn, cfg, reload, onSignedIn, plain = false }) => {
           <Button size="small" onClick={cancel} sx={{ fontSize: 11.5, color: DIM }}>{t("Cancel")}</Button>
           {/* a redirect the app does not list is refused ON Microsoft's page - it never comes back here, so the card says it ahead */}
           <Box component="span" data-tq-ms-redirect-hint="" sx={{ flexBasis: "100%" }}>
-            {t("Microsoft shows error AADSTS50011 instead? The Microsoft app this card uses does not list http://localhost/api/ms/callback yet - whoever manages that app adds it under Authentication → Mobile and desktop applications, then press Sign in again.")}</Box>
+            {t("Microsoft shows error AADSTS50011 instead? Your company's app does not list {redirect} yet - your IT adds it in that app under Authentication → Mobile and desktop applications, then press Sign in again. AADSTS700016: the client or tenant ID on this card is wrong.", { redirect: MS_REDIRECT })}</Box>
           {stalled && <Box component="span" data-tq-ms-stalled="" sx={{ flexBasis: "100%", color: INK, fontWeight: 600 }}>
             {t('The sign-in didn\'t come back. If your company asked for an admin\'s approval - or Microsoft showed an error like AADSTS900971 ("No reply address provided") or "Need admin approval" - your IT admin approves Taskuary once with the link below; once they have, Cancel and sign in again. Sign in with a code instead works too.')}</Box>}
         </Typography>
@@ -4360,20 +4408,28 @@ export const MsSignIn = ({ conn, cfg, reload, onSignedIn, plain = false }) => {
         </Box>
       ) : (
         <Box sx={{ display: "flex", gap: 1.5, alignItems: "center", flexWrap: "wrap" }}>
+          {legacy && (
+            <Typography variant="body2" data-tq-ms-legacy="" sx={{ color: INK, fontWeight: 600, flexBasis: "100%" }}>
+              This card signed in through the Microsoft app Taskuary used to ship, and Taskuary ships none now. Put your company's own app
+              on it below and sign in again - nothing is lost.
+            </Typography>
+          )}
+          {setCfg && (needsApp || legacy || !signedOut) && <Box sx={{ flexBasis: "100%" }}><MsOwnApp conn={conn} cfg={cfg} setCfg={setCfg} copy={copy} /></Box>}
           {signedOut && (
             <Typography variant="body2" sx={{ color: INK, fontWeight: 600, flexBasis: "100%" }}>
               {t("Microsoft signed you out{account}. I can't see your {what} until you sign in again — nothing is lost, and I'll catch up on everything that came in.", { account: cfg.account ? t(" of {account}", { account: cfg.account }) : "", what: t(what) })}
             </Typography>
           )}
-          <Button variant="contained" disableElevation disabled={busy} onClick={() => start()}>
-            {busy ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : signedOut ? t("Sign in again") : t("Sign in with Microsoft")}</Button>
-          {/* the device code is the fallback, never the default: Conditional Access blocks it in many organisations */}
-          <Button size="small" disabled={busy} onClick={() => start(files, true)} sx={{ fontSize: 11.5, color: DIM }}
+          <Button variant="contained" disableElevation disabled={busy || needsApp} onClick={() => start()}
+            title={needsApp ? t("Enter your company's Application (client) ID and Directory (tenant) ID first") : undefined}>
+            {busy ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : signedOut || legacy ? t("Sign in again") : t("Sign in with Microsoft")}</Button>
+          {/* the device code is the second road, never the default: Conditional Access blocks it in many organisations */}
+          <Button size="small" disabled={busy || needsApp} onClick={() => start(files, true)} sx={{ fontSize: 11.5, color: DIM }}
             title={t("For a Taskuary on another computer, or one this browser cannot reach: type a code on Microsoft's page instead")}>{t("Sign in with a code instead")}</Button>
           {!plain && <AllowFiles checked={files} disabled={busy} hint={MS_FILES_HINT} onChange={setFiles} />}
           {/* the QUESTION is not the button. Asked and answered in one 48-character control, it was
               the widest thing on the card and read as a sentence somebody had made clickable. */}
-          {!adminUrl && !signedOut && (
+          {!adminUrl && !signedOut && !needsApp && (
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
               <Typography variant="caption" sx={{ color: DIM }}>{t("Does IT have to approve apps?")}</Typography>
               <Button size="small" onClick={adminLink} sx={{ fontSize: 11.5, color: DIM }}>{t("Get the admin link")}</Button>
@@ -4387,7 +4443,7 @@ export const MsSignIn = ({ conn, cfg, reload, onSignedIn, plain = false }) => {
         <Box sx={{ p: 1.25, border: `1px dashed ${BORDER}`, borderRadius: 1.5, bgcolor: "#fff", display: "flex", flexDirection: "column", gap: 0.5 }}>
           <Typography variant="body2" sx={{ fontWeight: 600, color: INK }}>{t("Approval link for your Microsoft 365 admin")}</Typography>
           <Typography variant="caption" sx={{ color: DIM, lineHeight: 1.5 }}>
-            {t("Forward this to whoever runs your Microsoft 365. They open the link, sign in, and click Accept - once, for everyone in your organisation. If the page after Accept says it can't connect, that's expected: the approval is done. Nothing to set up in Azure. Then click Sign in with Microsoft again.")}
+            {t("Forward this to whoever runs your Microsoft 365. They open the link, sign in, and click Accept - once, for everyone in your organisation. If the page after Accept says it can't connect, that's expected: the approval is done. Grant admin consent on the app's API permissions page does the same. Then click Sign in with Microsoft again.")}
           </Typography>
           <Typography variant="caption" data-tq-ms-no-reply="" sx={{ color: DIM, lineHeight: 1.5 }}>
             {t("Your admin saw error AADSTS900971 (\u201cNo reply address provided\u201d)? Their link came from an older Taskuary - send them this one.")}
@@ -4542,7 +4598,7 @@ const InboundStep = ({ conn, m, mine, reload }) => {
             {t("2 · PER REPO — WHAT ISSUES AND PRS DO")}
           </Typography>
           <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.5, mb: 0.5 }}>
-            {t("tasks = sorted like everything else that comes in, feed = shown to read only, replies (issues) = the issues themselves are ignored but a person commenting on one is sorted like everything else that comes in, off = ignored. The third picker says whose items may start a coding agent by themselves: team = owners, members and collaborators; contributors adds anyone who has had a change merged; anyone = every author. Everyone else’s items still become tasks for you to promote. A picker set here pulls that repo whatever the switches above say; nothing changes until you press Save below.")}
+            {t("tasks = sorted like everything else that comes in, feed = shown to read only, replies (issues) = the issues themselves are ignored but a person commenting on one is sorted like everything else that comes in, off = ignored. The third picker says whose items may start a coding agent by themselves: team = owners, members and collaborators; contributors adds anyone who has had a change merged; anyone = every author. Everyone else’s items still become tasks for you to promote. A picker set here pulls that repo whatever the switches above say; it saves as soon as it is picked.")}
           </Typography>
           {mine.filter((s) => s.Active).map((s) => {
             const gc = parse(s.ConfigJson);

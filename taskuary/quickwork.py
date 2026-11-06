@@ -55,6 +55,9 @@ QUICK_LINE = ('QUICK WORK: answer in one go, as one JSON object with the fields 
     'Set escalate to true, with one line in why, when the job needs more than a lookup: acting anywhere, files to work through, booking, or multi-step research. '
     'A decision that is the owner\'s to make - spending, who goes, which option - is not a reason to escalate: give your recommendation in report, '
     'the draft built on it, and the decision in question with the options. '
+    # ...nor is a question only the OWNER can answer about themselves (2026-11-05: "are you here yet" started an agent that ran a command for it)
+    'Nor is a question only the owner can answer about themselves - where they are, whether they are coming, what they want or will do: there is '
+    'nothing to look up. Put a short draft reply for them to edit in draft (or null if it is theirs alone to word), say so in report, never escalate. '
     'Never claim an action you did not take. You have no mail search, no connectors and no files: when the answer depends on any of them, '
     'or on anything you cannot verify, set escalate rather than answer from memory. Never set done while a question is pending.')
 NO_LOOKUP_LINE = 'THIS AI CANNOT LOOK ANYTHING UP. When the answer depends on a fact that must be checked, set escalate (why: what needs checking) rather than answer from memory.'
@@ -114,10 +117,16 @@ def report_of(text) -> str:
     try: return _clean(json.loads('"' + re.sub(r'\\u?[0-9a-fA-F]{0,3}$|\\$', '', m.group(1)) + '"'))
     except ValueError: return _clean(m.group(1).replace('\\n', '\n'))
 
-def as_reply(out: QuickAnswer) -> str:
-    "The answer as the markers a general turn writes, so GeneralSession._file reads it exactly as it reads one."
+def as_reply(out: QuickAnswer, about: str = '') -> str:
+    """The answer as the markers a general turn writes, so GeneralSession._file reads it exactly as it reads one - its summary too (the stress
+    run, 2026-11-05: a quick turn was the one turn on a chat task with no "What this is about" / "What I did"). `about`: triage's reading of
+    the ask. A report too long for the summary's field stays the turn's prose instead, never cut mid-sentence."""
+    own = selfclose.without_draft(out.report, out.draft) if out.draft else out.report      # a report that is only the letter has done nothing to say
+    summ = own and len(' '.join(own.split())) <= 600 and \
+        f"{selfclose.SUMMARY_OPEN}{json.dumps({'about': about, 'did': own, 'nothing_left': bool(out.done and not out.draft)})}{selfclose.SUMMARY_CLOSE}"
     return '\n\n'.join(x for x in (out.report, out.draft and f'[[TASKUARY-REPLY]]{out.draft}[[/TASKUARY-REPLY]]',
-                                   out.question and f'[[TASKUARY-ASK]] {out.question}', out.done and f"{selfclose.MARKER} {' '.join(out.why.split())}") if x)   # the close reads one line
+                                   out.question and f'[[TASKUARY-ASK]] {out.question}', out.done and f"{selfclose.MARKER} {' '.join(out.why.split())}",
+                                   summ) if x)   # the close reads one line
 
 def prompt(store, tid, ask: str, lookups: bool) -> tuple:
     "(system, user): what the general agent reads, the mail history it would have had searched for it, and the ask."

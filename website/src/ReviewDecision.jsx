@@ -10,6 +10,8 @@ import ReplyFiles from "./ReplyFiles.jsx";
 import { holdInView } from "./inView.js";
 import { filesPromised, filesShort } from "./replyFiles.js";
 import { proposalFrom, proposalPresentation, reviewText } from "./reviewProposal.js";
+import { cardOf } from "./actionCard.js";
+import ActionCard from "./ActionCard.jsx";
 import { withoutSignature } from "./signature.js";
 import { OFFER_HINT, OFFER_LABEL, useCloseoutState } from "./closeoutState.js";
 import { PANEL2, BORDER, DIM, FAINT, INK, label } from "./theme.jsx";
@@ -325,7 +327,9 @@ function StandardReviewDecision({ review: r, closeout, onChanged, onOpenTask, on
       // ...and on the task page a send that went IS the close (closeOnSend, 2026-10-29): only here, after the receipt - never at the press
       // ...and only Send and close's (`shut`, the owner 2026-11-03): Close out's plain Send leaves the task open, as every other Send does
       else if (data.ok && (verb === "approve" || (verb === "close_unsent" && r.Kind !== "slot")) && onSent) {
-        setSent(verb === "approve"); setBusy(false); await onSent({ closes: closesIt && shut && verb === "approve" && (data.reply ? !!data.reply.ok : true) }); return;
+        // ...with what went and where (`said`): the chat keeps the sent card in place, marked, while the task closes (TaskPage SentHere)
+        setSent(verb === "approve"); setBusy(false); await onSent({ closes: closesIt && shut && verb === "approve" && (data.reply ? !!data.reply.ok : true),
+          said: verb === "approve" ? { text: value, channel: r.Channel || "", to: replyContext(r), id: r.ReviewId } : null }); return;
       }
       onChanged?.();
     } catch (e) {
@@ -527,7 +531,7 @@ function StandardReviewDecision({ review: r, closeout, onChanged, onOpenTask, on
       {proposal?.kind === "closeout" ? (
         <Typography variant="caption" sx={{ color: "#6f8a6e", display: "block", mb: 0.5 }}>{proposal.context}</Typography>
       ) : r.Reason && (r.DraftText || !/draft/i.test(r.Reason)) && (
-        <Typography variant="caption" sx={{ color: "#6f8a6e", display: "block", mb: 0.5 }}>{r.Reason}</Typography>
+        <Typography data-tq-review-reason="" variant="caption" sx={{ color: "#6f8a6e", display: "block", mb: 0.5 }}>{r.Reason}</Typography>
       )}
       {/* the agent re-planned on a change and found no reply needed (Task 4.5): said plainly, the draft and its Send kept - the owner decides */}
       {!!r.NotNeeded && (
@@ -716,7 +720,7 @@ function StandardReviewDecision({ review: r, closeout, onChanged, onOpenTask, on
           </Button>
         )}
         {/* Redraft beside the send, under the draft it rewrites - not at the far end of the row, and not on the task's bar */}
-        {canRedraft && !r.Stale && !delivery.frozen && !warnTop && <Button size="small" variant={lit === no("redraft") ? "contained" : "outlined"} disableElevation disabled={off} onClick={redraft}
+        {canRedraft && !r.Stale && !delivery.frozen && !warnTop && <Button data-tq-redraft-btn="" size="small" variant={lit === no("redraft") ? "contained" : "outlined"} disableElevation disabled={off} onClick={redraft}
           title={btnHint("redraft")}>
           {redraftLabel}</Button>}
         {/* ...and one email of several can be let go: it drops that slot and closes nothing (slots.settled) */}
@@ -738,7 +742,7 @@ function StandardReviewDecision({ review: r, closeout, onChanged, onOpenTask, on
       </Box>
       {fillLine && <Alert severity="warning" data-tq-fill-in="" sx={{ mt: 0.75 }} onClose={() => setFillIn(false)}>{t("{line} - nothing was sent.", { line: fillLine })}</Alert>}
       {/* what the one word does HERE - the buttons never change, this line does */}
-      {thenLine && <Typography variant="caption" sx={{ color: DIM, display: "block", mt: 0.5 }}>{thenLine}</Typography>}
+      {thenLine && <Typography data-tq-then-line="" variant="caption" sx={{ color: DIM, display: "block", mt: 0.5 }}>{thenLine}</Typography>}
       {(coFail || (gh && (blocked || gh.note))) && (() => {
         const text = coFail ? coFail.text.replace(/ - nothing was merged or sent$/, "") : blocked ? gh.reason : gh.note;
         const offers = coFail ? coFail.offers : gh.offers;
@@ -778,5 +782,8 @@ export default function ReviewDecision(props) {
   if (proposal?.action === "publish_skill") {
     return <React.Suspense fallback={<CircularProgress size={18} />}><SkillPackageReview key={proposal.generation_id} generationId={proposal.generation_id} onChanged={props.onChanged} onOpenTask={props.onOpenTask} /></React.Suspense>;
   }
-  return <StandardReviewDecision {...props} />;
+  // ...an act a connector declares a card for (a post, a tracker comment) is drawn as that card (ActionCard.jsx), wherever its proposal shows -
+  // the same decide road, its own face
+  const act = cardOf(props.review);
+  return act ? <ActionCard row={act} tid={props.review?.TaskId} onChanged={props.onChanged} /> : <StandardReviewDecision {...props} />;
 }

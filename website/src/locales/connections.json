@@ -2169,5 +2169,13 @@
   "authenticated as {login} · {repos} repos discovered · {added} sources added · repo map written to SOUL.md": "已以 {login} 身份验证 · 发现 {repos} 个仓库 · 添加 {added} 个来源 · 仓库映射已写入 SOUL.md",
   "That didn't work.": "操作未成功。",
   "{detail} Press Connect to try again.": "{detail} 请按“连接”重试。",
+  "Check the record": "检查记录",
+  "Windows / browser voice": "Windows / 浏览器语音",
+  "Choose built-in dictation and test the microphone. No API key.": "选择内置听写并测试麦克风，无需 API 密钥。",
+  "a connection needs a name": "连接需要一个名称",
+  "Use it and test": "使用并测试",
+  "On — sorts your mail.": "已开启 — 自动分拣邮件。",
+  "paste the app's client id and secret below first": "请先在下方粘贴应用的客户端 ID 和密钥",
+  "The bridge is stopped and this computer is unpaired. Start bridge to pair a phone again.": "桥接已停止，此计算机已解除配对。启动桥接后可重新配对手机。",
   "To use it, turn the Agent Desktop card on and mark a task \"needs desktop\".": "使用前请开启 Agent Desktop 卡片，并将任务标记为“needs desktop”。"
 }

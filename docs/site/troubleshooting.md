@@ -116,7 +116,7 @@ Open the report row: the last run shows what it read, what came out, and the err
 
 ## Reading the audit log
 
-**Settings → Audit integrity** is the answer to "why did this happen" and "who did this". Every
+**Settings → Activity log** is the answer to "why did this happen" and "who did this". Every
 consequential action is one row: routed, filed, replied, opened, saved, deleted — with the actor,
 the time, and the thing it happened to.
 
@@ -192,7 +192,7 @@ move that opens the same popup:
 
 A failure you can fix yourself, such as a sign-in that was refused, is never counted. Neither is a
 task that carries words from someone you have not vouched for. Each problem is raised once. Put it
-down with **Not ours** and it stays down.
+down with **Not for me** and it stays down.
 
 ## Still wrong
 

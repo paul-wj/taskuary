@@ -26,7 +26,7 @@ from . import climodels
 # One row per default. `gear` says WHICH of a CLI profile's two models this slot sets, and is
 # the reason a coding brain and a triage brain can be the same agent without fighting over one field.
 SLOTS = [
-    {'key': 'triage_ai', 'label': 'Triage brain', 'pick': 'brain', 'gear': 'light',
+    {'key': 'triage_ai', 'label': 'AI that sorts your mail', 'pick': 'brain', 'gear': 'light',
      'desc': 'Reads every inbound message and decides: a task to do, a question to answer, or FYI to file. '
              'Also runs the Advisor and writes what Taskuary remembers.',
      'why': 'One message in, one line of JSON out - so this wants your cheapest fast model, not your best one.'},
@@ -61,7 +61,7 @@ SLOTS = [
     # brain writes its summary; this decides where the finished run goes - four yes/nos about text
     # somebody else produced. They were one setting while both were chat models; they are two now
     # because a decision model can do the second job and not the first.
-    {'key': 'judge_ai', 'label': 'Where runs go', 'pick': 'judge', 'gear': 'light',
+    {'key': 'judge_ai', 'label': 'Where reports go', 'pick': 'judge', 'gear': 'light',
      'desc': 'Decides whether a finished report shows under Reports, lands on your work rail, reaches you '
              'right away, or goes out - against the sentences you wrote on its card.',
      'why': 'Four yes/nos about a result somebody else wrote. It does not need to be able to talk, '
@@ -343,10 +343,7 @@ def apply(store, cfg, slot_key: str, value=None, model=None, effort=None, actor:
         if not home: raise ValueError('no brain on this card to set a strong model on')
         if home[0] == 'cli': _save_gear(store, cfg, home[1], 'strong_model', strong)
         else:
-            conf = json.loads(store.get_connector(home[1]).get('ConfigJson') or '{}')
-            if strong: conf['strong_model'] = strong
-            else: conf.pop('strong_model', None)
-            store.set_connector_config(home[1], conf)
+            store.merge_connector_config(home[1], {'strong_model': strong or None})
         store.audit('setting', 0, 'save', actor, detail=f'{slot_key} strong_model={strong or "(none)"}')
     if sensitive is not None:
         # the mark lives on the brain like its gears: two cards on one brain show one mark
@@ -354,10 +351,7 @@ def apply(store, cfg, slot_key: str, value=None, model=None, effort=None, actor:
         if not home: raise ValueError('no brain on this card to mark')
         if home[0] == 'cli': _save_gear(store, cfg, home[1], 'sensitive_ok', '1' if sensitive else '')
         else:
-            conf = json.loads(store.get_connector(home[1]).get('ConfigJson') or '{}')
-            if sensitive: conf['sensitive_ok'] = '1'
-            else: conf.pop('sensitive_ok', None)
-            store.set_connector_config(home[1], conf)
+            store.merge_connector_config(home[1], {'sensitive_ok': '1' if sensitive else None})
         store.audit('setting', 0, 'save', actor, detail=f"{slot_key} sensitive_ok={'yes' if sensitive else 'no'}")
     if model is None and effort is None: return resolve(store, cfg, slot_key)
     # the Drafting model box is shut until a drafting brain is chosen - blank is the triage brain, whose model is its own card's
@@ -395,9 +389,6 @@ def apply(store, cfg, slot_key: str, value=None, model=None, effort=None, actor:
         else:
             cid = cur.get('connector')
             if not cid: raise ValueError('no AI connector to set a model on')
-            conf = json.loads(store.get_connector(cid).get('ConfigJson') or '{}')
-            conf['model'] = model
-            if not model: conf.pop('model', None)
-            store.set_connector_config(cid, conf)
+            store.merge_connector_config(cid, {'model': model or None})
     store.audit('setting', 0, 'save', actor, detail=f'{slot_key} model={model or "(default)"}{"@" + effort if effort else ""}')
     return resolve(store, cfg, slot_key)

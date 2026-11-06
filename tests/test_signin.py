@@ -223,6 +223,37 @@ class Asking(unittest.TestCase):
         # ...and a site that asks AGAIN minutes later is not tried twice
         with on_page('https://www.bank.example/signin'): self.assertFalse(signin.needs(self.s, t2, 'sess2', fill=lambda *a: typed.append(a))['auto'])
 
+    def test_a_saved_sign_in_goes_straight_in_and_never_asks_the_owner(self):
+        """The owner's ruling (2026-11-05): with the sign-in saved, the run goes straight in. An open `signin:` ask is what draws the
+        browser on the owner's screen, so none is ever raised - not even for the seconds the server types."""
+        signin.save(self.s, 'bank.example', USER, PW)
+        class Chat:
+            sid, alive, task_id = 'sess1', True, None
+            def __init__(self): self.said = []
+            def send_prompt(self, text, as_owner=True): self.said.append(text)
+        sess, typed, raised, rec = Chat(), [], [], ws.record
+        sess.task_id = self.tid
+        def spy(store, tid, sid, kind, request_id=None, *a, **k):
+            if kind == 'input_needed': raised.append(request_id)
+            return rec(store, tid, sid, kind, request_id, *a, **k)
+        def fill(*a, **k):
+            raised.append(('open while typing', signin.pending(self.s, self.tid))); typed.append(a)
+        with on_page('https://login.bank.example/'), mock.patch.dict('taskuary.terminal.SESSIONS', {'sess1': sess}),              mock.patch.object(ws, 'record', spy):
+            self.assertTrue(signin.needs(self.s, self.tid, 'sess1', 'bank.example', fill=fill)['auto'])
+            self.wait_for(lambda: sess.said)
+        self.assertEqual(typed, [('sess1', 'bank.example', USER, PW)])
+        self.assertEqual(raised, [('open while typing', None)])
+        self.assertIsNone(signin.pending(self.s, self.tid))
+        self.assertEqual(sess.said, ['Signed in to bank.example - continue.'])
+
+    def test_a_saved_sign_in_that_does_not_go_in_asks_the_owner_after_all(self):
+        signin.save(self.s, 'bank.example', USER, PW)
+        def boom(*a, **k): raise signin.NotAccepted('bank.example kept its sign-in form up')
+        with on_page('https://login.bank.example/'): self.assertTrue(signin.needs(self.s, self.tid, self.sid, fill=boom, watch=None)['auto'])
+        self.wait_for(lambda: signin.pending(self.s, self.tid))
+        self.assertEqual(signin.pending(self.s, self.tid)['request_id'], 'signin:bank.example')
+        self.assertIn('did not work', ' '.join(r['Body'] for r in self.s._rows('SELECT * FROM comment WHERE TaskId=?', (self.tid,))))
+
     def test_a_saved_sign_in_is_never_typed_on_another_site(self):
         signin.save(self.s, 'bank.example', USER, PW)
         typed = []
@@ -302,6 +333,19 @@ class TheOwnerSignsInOnThePage(Asking):
             def __init__(s, tid): s.said, s.task_id = [], tid
             def send_prompt(s, text, as_owner=True): s.said.append(text)
         return Chat(self.tid)
+
+    def test_a_password_page_still_loading_is_not_taken_for_signed_in(self):
+        """The owner, 2026-11-05: between a site's user-name page and its password page, one look found no user box and no password box at
+        another address - the agent was told "signed in" on the password page, and nothing watched when the owner did sign in. Past is
+        past only once it stays past (PAST_STEADY looks in a row)."""
+        sess = self.chat(); p = self.ask(sess)
+        loading = form('https://login.bank.example/password', False, False)
+        page = WatchPage([form('https://login.bank.example/signin', password=False), loading, form('https://login.bank.example/password', user=False), form('https://login.bank.example/password', user=False)]
+                         + [form('https://app.bank.example/home', False, False)] * signin.PAST_STEADY)
+        with mock.patch.dict('taskuary.terminal.SESSIONS', {'sess1': sess}):
+            self.assertTrue(signin.watch(self.s, self.tid, 'sess1', 'bank.example', p['request_id'], conn=page, every=0))
+        self.assertEqual(len(sess.said), 1)                         # told once - after the real sign-in, not on the loading page
+        self.assertEqual(page.pages, [form('https://app.bank.example/home', False, False)])   # ...it read through to the page past it
 
     def test_a_two_step_sign_in_typed_on_the_page_is_seen_saved_and_used_next_time(self):
         sess = self.chat(); p = self.ask(sess)

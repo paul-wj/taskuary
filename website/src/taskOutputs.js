@@ -13,7 +13,11 @@ const ADDRESS = /^(?:https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?)?\/o
 const ON_DISK = /(?:^|\/)scratch\/outputs\/TQ-0*(\d+)\/(.+)$/i;
 
 export const baseName = (p) => String(p || "").replace(/\\/g, "/").split("/").filter(Boolean).pop() || String(p || "");
-export const outputUrl = (tid, rel) => `/api/task-outputs/${Number(tid)}/${String(rel).split("/").map(encodeURIComponent).join("/")}`;
+// THE STATIC DEMO CARRIES ITS OWN BYTES (demo_fixtures.mjs): taskuary.com/demo has no server behind /api/task-outputs, so a picture or a PDF
+// the recorded agent made rides in the recording as a data: address, put here by demoApi.js - its post's chart draws there too
+export const STATIC_OUTPUTS = {};
+export const outputUrl = (tid, rel) => STATIC_OUTPUTS[`${Number(tid)}/${rel}`]
+  || `/api/task-outputs/${Number(tid)}/${String(rel).split("/").map(encodeURIComponent).join("/")}`;
 
 // {tid, rel} for an address or a path into any task's outputs folder, or null. rel is a name inside the folder - no `..`, no drive
 // ...and only an ADDRESS is decoded (a URL, or any markdown link's target: `link`), its query and fragment cut first. A path on disk
@@ -139,4 +143,14 @@ export const deliverables = (rows) => {
     else { const n = { ...r, earlier: [] }; by.set(k, n); made.push(n); }
   }
   return { made, working };
+};
+
+// WHAT A TURN MADE, IN THE TURN (the owner, 2026-11-05: "the post and images are as artifacts separate not inline???"): the files placed on this
+// answer by when they were made (the server's `after`, as a shown page's) and the ones its words or its summary name - each thing once, the
+// newest of a family, never the agent's working files - less `skip` (a post's own picture, drawn on the post)
+export const turnFiles = ({ listed = [], id, words = "", did = "", tid, skip = [] } = {}) => {
+  const no = new Set((skip || []).map(baseName)), by = new Map();
+  for (const r of (listed || []).filter((x) => x?.after != null && x.after === id)) by.set(r.path, r);
+  for (const rel of outputRefs(`${words || ""}\n${did || ""}`, tid, listed).files) if (!by.has(rel)) by.set(rel, outputRow(tid, rel, listed));
+  return deliverables([...by.values()].filter((r) => !no.has(baseName(r.path || r.name)) && !r.missing)).made;
 };

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { foldedSummaries, nextSteps } from "../src/agentSummary.js";
+import { answerShown, chatReplyShown, foldedSummaries, hasReply, lastAnswerSummed, nextSteps } from "../src/agentSummary.js";
 
 const read = (name) => readFileSync(fileURLToPath(new URL(`../src/${name}`, import.meta.url)), "utf8");
 
@@ -14,6 +14,18 @@ test("every summary but the newest folds", () => {
   assert.ok(!f.has("b"));
   assert.equal(foldedSummaries([]).size, 0);
   assert.equal(foldedSummaries(undefined).size, 0);
+});
+// ...but a newest answer with no summary of its own folds them all: its drafts follow it, not a turn up the chat (the owner, 2026-11-05)
+test("a newest answer with no summary folds every summary, so the cards follow it", () => {
+  const msgs = [{ id: "a", role: "assistant", summary: {} }, { id: "u", role: "user" }, { id: "b", role: "assistant" }];
+  assert.deepEqual([...foldedSummaries(msgs)], ["a"]);
+  assert.equal(lastAnswerSummed(msgs), false);
+  assert.equal(lastAnswerSummed([...msgs, { id: "c", role: "assistant", summary: {} }]), true);
+  // ...and anything after the answer (a mail, the owner's words) makes that turn history: it folds and its card goes (the owner, 2026-11-05:
+  // "the draft card is part of the chat response ... next turn if i ask something or new input that turn is gone")
+  assert.equal(lastAnswerSummed([{ id: "a", role: "assistant", summary: {} }, { id: "w", role: "user", brief: true }]), false);
+  assert.deepEqual([...foldedSummaries([{ id: "a", role: "assistant", summary: {} }, { id: "w", role: "user", brief: true }])], ["a"]);
+  assert.equal(lastAnswerSummed([{ id: "a", role: "assistant", summary: {} }, { id: "t", role: "user", content: [] }]), false);
 });
 
 test("Next steps: nothing left only when no draft waits and no On you step is unticked", () => {
@@ -66,4 +78,47 @@ test("a pending draft is no Next step where the summary draws no cards", () => {
   const reviews = [{ ReviewId: 1, Kind: "reply", Status: "pending", DraftText: "Thanks, Erin" }];
   assert.equal(nextSteps({ summary: { nothing_left: false }, reviews, cards: false }).drafts.length, 0);
   assert.equal(nextSteps({ summary: { nothing_left: false }, reviews }).drafts.length, 1);
+});
+
+test("the chat's Suggested reply stands only once a reply is in it, never over a bare To line", () => {
+  const replyMessage = { MessageId: 1, FromName: "Ray Colton" };
+  assert.equal(chatReplyShown({ replyMessage }), false);
+  assert.equal(chatReplyShown({ replyMessage, pendingReview: { ReviewId: 3 } }), true);
+  assert.equal(chatReplyShown({ replyMessage, sentReview: { ReviewId: 3 } }), true);
+  assert.equal(chatReplyShown({ pendingReview: { ReviewId: 3 } }), false);
+});
+
+test("a chat task's chat keeps its height while its agent starts: the box sits at the card's foot", () => {
+  // the stress run (2026-11-05): while the agent started, the chat shrank to its content and left ~485px of empty card under the box
+  const page = read("TaskPage.jsx"), at = page.indexOf('"&:has([data-tq-starting])"');
+  assert.ok(at > 0);
+  assert.match(page.slice(at - 80, at), /!chatPane/, "the one-line starting room is for a pane that is not the task's chat");
+});
+
+test("Suggested reply heads only a reply, never a closed task's Mark done line or a proposal", () => {
+  assert.equal(hasReply([]), false);
+  assert.equal(hasReply([{ Kind: "action", Status: "pending" }]), false);
+  assert.equal(hasReply([{ Kind: "draft_reply", Status: "pending" }]), true);
+  assert.equal(hasReply([{ Kind: "draft", Status: "approved" }]), true);
+  assert.match(read("AgentSummary.jsx"), /hasReply\(reviews\)/);
+});
+
+test("a chat task's chat carries no agent picker, model box or Full screen - only actions", () => {
+  // the owner's ruling on the stress run (2026-11-05): "remove as much as possible ui components in the chat unless it's actions"
+  const view = read("GeneralWorkspace.jsx");
+  assert.match(view, /!dock && !noTools && !chat && toolsAt && !full && <>\{createPortal\(tools, toolsAt\)\}<\/>/);
+  assert.match(view, /!dock && !noTools && !chat && !\(toolsAt && !full\) && <Box/);
+});
+
+// THE AGENT SAYS WHETHER ITS PROSE IS THE RESULT (the owner, 2026-11-05: "no hardcoded words"): its own `answer_is_result` decides; a turn
+// that never said - every turn filed before - keeps the length-or-link rule, so history draws as it did
+test("the agent's answer_is_result decides whether its prose shows beside the summary", () => {
+  const long = "Here is what I found. ".repeat(40);
+  assert.equal(answerShown({ answer_is_result: true }, long), true);
+  assert.equal(answerShown({ answer_is_result: false }, "Short and done."), false);
+  assert.equal(answerShown({}, "Short and done."), true);
+  assert.equal(answerShown({}, long), false);
+  assert.equal(answerShown({}, long + " https://northwind.example/brief"), true);
+  assert.equal(answerShown({ answer_is_result: true }, "  "), false);
+  assert.doesNotMatch(read("GeneralWorkspace.jsx"), /answerWords/, "the pane asks the agent's say, never its own rule");
 });

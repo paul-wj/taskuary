@@ -21,6 +21,9 @@ import {
   viewOnScreen,
   heldOn,
   isTurn,
+  isPress,
+  needsOwner,
+  PRESS_PREFIX,
   TURN_PREFIX,
   wheelMessage,
 } from "../src/browserSplit.js";
@@ -145,6 +148,13 @@ test("what waits on the view: a held act of THIS browser, and the agent's hand-o
   assert.ok(!isTurn({ request_id: "signin:bank.example" }) && !isTurn(null));
 });
 
+test("a press handed over is the owner's turn on the page, and only it is a press", () => {
+  const press = { request_id: `${PRESS_PREFIX}abc`, text: 'Your turn: check it and press "Pay $42.00" on the page.' };
+  assert.ok(isPress(press) && isTurn(press), "drawn on the view as the owner's turn (browsergate.hand_over)");
+  assert.ok(needsOwner(press), "the browser shows beside the chat for it");
+  assert.ok(!isPress({ request_id: `${TURN_PREFIX}abc` }) && !isPress(null), "a captcha's hand-over keeps its own line");
+});
+
 
 test("the page is given the pane's shape, at a desktop width", () => {
   // 55% of the pane was black because a 16:9 render was fitted into a tall box (measured
@@ -210,4 +220,19 @@ test("an empty tab is not a page: the view folds to its chip until the agent ope
   assert.equal(waitsOnPage({ request_id: "signin:portal.example" }), true);
   assert.equal(waitsOnPage({ request_id: "571e07b97197", text: "First month free, or a price now?" }), false);
   assert.equal(waitsOnPage(null), false);
+});
+
+// A CHAT TASK'S BROWSER (the owner, 2026-11-05): drawn only when the owner has a part on the page, and then beside the chat
+test("a chat task's browser shows only when the owner is needed, side by side", async () => {
+  const { needsOwner, quietLayout, quietRatio, CHAT_SHARE } = await import("../src/browserSplit.js");
+  assert.equal(needsOwner(null), false);                                                   // the agent just browsing
+  assert.equal(needsOwner({ request_id: "q:where" }), false);                              // a question asked in words: the chat's box
+  assert.equal(needsOwner({ request_id: "signin:bank.example" }), true);                   // a sign-in (or its code) the vault does not keep
+  assert.equal(needsOwner({ request_id: "yourturn:captcha" }), true);                      // a captcha handed over
+  assert.equal(needsOwner(null, [{ id: 7 }]), true);                                       // a held step: Approve / Dismiss
+  assert.equal(quietLayout(1200, false), "none");
+  for (const w of [555, 600, 700, 900, 1400]) assert.equal(quietLayout(w, true), "split");     // never stacked at a desktop's width
+  assert.equal(quietLayout(380, true), "chip");                                            // a phone's width: the view as a link
+  assert.equal(quietLayout(900, true, true), "folded");                                    // the owner's own Fold
+  for (const r of [0.3, 0.58, 0.8, NaN]) assert.ok(1 - quietRatio(r) >= CHAT_SHARE - 1e-9 && quietRatio(r) >= 0.3);
 });

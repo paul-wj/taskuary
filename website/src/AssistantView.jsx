@@ -72,9 +72,10 @@ import { RemindPicker } from "./RemindMe.jsx";
 import { SlotPicker } from "./CalendarPick.jsx";
 import { agentOpen } from "./taskFilter.js";
 import ContinueBox from "./ContinueBox.jsx";
-import { ASK_MEETING, ASK_REPORT, AgentAsk } from "./RunForm.jsx";
+import { AgentAsk } from "./RunForm.jsx";
 import CloseNote from "./CloseNote.jsx";
-import { AttachImage, ImageTray, usePromptImages } from "./promptImages.jsx";
+import { AttachImage, ImageTray, usePromptImages, withImages } from "./promptImages.jsx";
+import { handToItem } from "./ItemSections.jsx";
 import { afterCancel, afterConfirm, afterExecute, followUps, holdsProposal, markExecuted, proposalSay } from "./proposalCard.js";
 import { LEVEL_ROLE, arrivals, isUrgent, arrivedAt, asPressed, putDownLanded, bandsOf, canAdvance as canWalkOn, cardFor, currentItemFromPile, displayRevision, drawOrder, fillCaps, followsItem, foldsAs, inOrder, interactiveCardIndex, tableCardIndex, keysOf, lastActIndex, furtherIndex, chipsOf, receiptChips, CAPPED, FLOOR, FOOT_PX, levelHint, levelLabel, nextMarkerKey, trimCaps, ROW_PX, refreshCurrentPresentation, refreshPilePresentation, rowMeta, settledHistory, sinceOpener, walkOf } from "./funnelPile.js";
 import { FYI_PAGE, ageHover, fyiCap, answersTo, awayFromClear, coveredByReload, fyiHasRoom, fyiTail, heldSince, latestLine, pileRows, rowKeys, sameKey, sameRow, sentChips } from "./funnelPile.js";
@@ -333,7 +334,7 @@ class BeforeCommit extends React.Component {
   render() { return null; }
 }
 
-function Pile({ pile, current, onPull, error, onRetry, onSection, onCurrent, onMoreFyi, settingUp = false, noAi = false, tag = "on the table", coming = false, moved = {} }) {
+function Pile({ pile, current, onPull, error, onRetry, onSection, onCurrent, onMoreFyi, settingUp = false, noAi = false, coming = false, moved = {} }) {
   useLocale();
   const items = pile?.items || [];
   const sendCaps = useCapabilities();       // a draft its channel cannot send wears "draft to copy", never the flag (railStatus)
@@ -703,7 +704,7 @@ function Pile({ pile, current, onPull, error, onRetry, onSection, onCurrent, onM
         let wasInBatch = false;
         const positioned = shown.map((item) => {
           // ...and the ROW AFTER the bracket steps down by the height of the bracket's own label, so
-          // "on the table · 4 fyi" hangs in a gap instead of being printed across the next fyi's
+          // "4 fyi" hangs in a gap instead of being printed across the next fyi's
           // subject (the owner, 2026-09-22). One gap, once, while a batch is up: no row is reordered
           // and nothing above it moves, which is what "the row wears the ring where it sits" protects.
           const inBatch = batched(item);
@@ -756,7 +757,7 @@ function Pile({ pile, current, onPull, error, onRetry, onSection, onCurrent, onM
             <div className="tq-pile-stack" style={{ height: stackHeight }}>
               {bracket && (
                 <div className="tq-pile-batch" style={{ top: bracket.top, height: bracket.height }}>
-                  <b>on the table · {mem.length} fyi</b>
+                  <b>{mem.length} fyi</b>
                 </div>
               )}
               {positioned.map(({ item: i, top }) => {
@@ -851,8 +852,9 @@ function Pile({ pile, current, onPull, error, onRetry, onSection, onCurrent, onM
                         {!!batchNo[i.key] && <span className="tq-pile-ref" title={batchNo[i.key].line}>{railShort(batchNo[i.key].states)}</span>}
                         {i.settling && <span className="tq-pile-tag">{t("reading…")}</span>}
                         {/* ...an FYI or a report made a task says where it went, quietly, its ref the way to the task (movedFyi.js) */}
-                        {!!i.moved && <span className="tq-pile-moved" data-tq-moved={i.moved.ref}><span className="w">{t("Moved to Tasks")} ·</span><span className="ref" role="link"
-                          title={t("Open {ref}", { ref: i.moved.ref })} onClick={(e) => { e.stopPropagation(); onPull(i.key); }}>{i.moved.ref}</span></span>}
+                        {/* ...its ref first in the page, drawn last (row-reverse): squeezed, the words drop out whole instead of reading "Mo…" */}
+                        {!!i.moved && <span className="tq-pile-moved" data-tq-moved={i.moved.ref}><span className="ref" role="link"
+                          title={t("Open {ref}", { ref: i.moved.ref })} onClick={(e) => { e.stopPropagation(); onPull(i.key); }}>{i.moved.ref}</span><span className="w">{t("Moved to Tasks")} ·</span></span>}
                         {!!word && (
                           <span className={`tq-pile-word${goal ? " keep" : ""}`}
                             style={meta.role === "bad" ? { color: ROLES.bad.ink } : undefined}>
@@ -863,13 +865,7 @@ function Pile({ pile, current, onPull, error, onRetry, onSection, onCurrent, onM
                       {isCur && <div className="sub">{batchNo[i.key]?.line || (latestLine(i) ? [latestLine(i), ago(i.last_at)]
                         : [why, i.kind === "meeting" ? age(i.when) : ago(i.since || i.when)]).filter(Boolean).join(" · ")}</div>}
                     </div>
-                    {/* THE SAME WORD ON THE SAME BORDER. A handful on the table says so on its
-                        bracket ("on the table · 4 fyi"); one item on the table wore the identical
-                        slate ring and said nothing, so the ring had to be read rather than known
-                        (the owner, 2026-09-17: "isn't there a current word on the border around
-                        chosen task by the assistant?"). It is a sibling of the card, not a child:
-                        the card clips its overflow so the title can ellipse. */}
-                    {isCur && <b className="tq-pile-now" data-tq-now={tag}>{tag}</b>}
+                    {/* no "ON THE TABLE" under the ringed row (audit, 2026-11-05): the ring and its highlight say it */}
                   </div>
                 );
               })}
@@ -967,11 +963,15 @@ function RetryVerbs({ item, failed, onSaid, onDone }) {
   return null;
 }
 
+// WHAT THE CHAT'S ROAD CANNOT CARRY, said on the chip (the owner, 2026-11-05): the turn names a file's path - an AI on this computer opens it,
+// an API one is handed pictures only (general._images)
+const dockCannot = (i) => (i.image ? "" : "read only by an AI on this computer");
 function Line({ m, lastBrief = false, live, last, further = false, actions, fresh, tableChips = [], barHolds = false, pageOver = false, canvas = null }) {
   useLocale();
   if (m.role === "user") return <div className="tq-msg you"><div className="body">{m.text}
     {!!m.shots?.length && <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>{m.shots.map((s) => (
-      <img key={s.path} src={s.url} alt={s.name} style={{ maxWidth: 160, maxHeight: 120, borderRadius: 6, border: "1px solid #ddd6cb" }} />))}</div>}</div></div>;
+      s.url ? <img key={s.path} src={s.url} alt={s.name} style={{ maxWidth: 160, maxHeight: 120, borderRadius: 6, border: "1px solid #ddd6cb" }} />
+        : <span key={s.path} data-tq-file-sent={s.name} style={{ fontSize: 12, padding: "2px 8px", borderRadius: 11, border: "1px solid #ddd6cb", background: "#f6f4f1" }}>📎 {s.name}</span>))}</div>}</div></div>;
   // the day's opener draws the welcome, once - an earlier day's sits under it as nothing (actions.welcome)
   if (m.card?.kind === "brief") return lastBrief ? actions.welcome(m) : null;
   // BROWSING (the canvas redesign, 2026-09-29): Connections, Settings, Reports or Hub, walked by clicks on this line
@@ -1230,6 +1230,9 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
   // sat on the rail as an open task already seen: under For later (the owner, 2026-10-01: "it first went to Later ... and
   // did not disappear right away"). Held until the pile no longer carries it, so a reopened task is never hidden.
   const [leavingTid, setLeavingTid] = useState(null);
+  // NOTHING IS ON THE TABLE WHILE THE CANVAS SHOWS SOMETHING ELSE (the owner, 2026-11-05: "When new is on the canvas nothing is on the table"): a
+  // page over it (table.place) or a pull on its way to another row (`opening`, the pulled key) takes the rail's mark off the row at once
+  const [opening, setOpening] = useState(null);
   const leavingWas = useRef(null);                   // the row being put down, as it stood at the press (funnelPile.putDownLanded)
   // ...and the rows a walk press READS (rule 4), by key: {keys, coming, after} - `coming` the fyi batch below them, `after` the rail they
   // wait out when the answer brought none (surface)
@@ -1303,7 +1306,8 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
   // ...and the owner's notes the Assistant lit it with ("rerun it with these notes: ..."): its box opens holding them, for that task
   const continueNote = useRef(null);
   const noteFor = (tid) => (continueNote.current && Number(continueNote.current.tid) === Number(tid) ? continueNote.current.note : "");
-  const pics = usePromptImages();                        // pictures sent with the chat line
+  // pictures sent with the chat line - and any file (the owner, 2026-11-05): the turn names its path; an API AI is handed pictures only
+  const pics = usePromptImages({ files: true });
   // ...A CONTINUE IN THE AGENT PANE (the owner, 2026-10-29: "Continue box should be inside the canvas always"): a Continue for the task on
   // the table - the walk's, or the Assistant's lit with notes - is the task view's own card, in its Agent pane, when it lays its panes
   // (TaskPage claims it, tq-continue-here); only a view that does not (a phone) leaves it to the card under the item here
@@ -1412,6 +1416,8 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
   // WHAT IS ON THE TABLE, by key: the walk's item, or the task opened by name. The advice is read for this key and shown only
   // when it was read for it - the last item's line never stands over the next one
   const onTable = current || cardKey;
+  useEffect(() => { setOpening(null); }, [current]);
+  useEffect(() => { if (!busy) setOpening(null); }, [busy]);
   useEffect(() => { if (!tableKey) return; setExpanded(false); setFoldedKey(null); }, [tableKey]);
   // ONE ROAD ONTO THE TABLE (2026-10-18): Next, a chip, a rail click, the Board's open, a reopen, a browse card, the card after a
   // receipt or a failed act - every way something reaches the table comes through here, so the rail's "on the table" mark, the
@@ -1911,12 +1917,20 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
   const stuck = useRef(false);
   // ...unless a line was said AFTER the view (the owner, 2026-10-28: a phone's answer sat under the chat box): a one-line answer under
   // a tall view is less than toEnd's 48px, and putting the view's top up put the answer below the fold
-  const lastSaid = (el) => [...el.querySelectorAll(".tq-msg:not(.tq-welcome-msg):not(.receipt)")].pop() || null;
+  // ...and the "…" of a move in flight is no line said (the owner, 2026-11-05: "try to smooth"): read as one after the card, a Send and close or
+  // Mark done threw the body to its end the moment the dots came - the card jumped up 50px, then the next one drew back at the top. The dots
+  // wait under the card's floor (assistantView.css .tq-canvas-live) and the card holds still until the next one draws in its place
+  const lastSaid = (el) => [...el.querySelectorAll(".tq-msg:not(.tq-welcome-msg):not(.receipt):not(.tq-walk-dots)")].pop() || null;
   const saidAfter = (live, said) => !!live && !!said && !live.contains(said) && !!(live.compareDocumentPosition(said) & Node.DOCUMENT_POSITION_FOLLOWING);
+  // A CARD PUT ON THE TABLE IS PUT THERE, not slid there (the owner, 2026-11-05: "try to smooth"): the body scrolls smoothly for the owner's
+  // reading, and the next task drew a line low under the one put down, then slid up to its place - the card's own placing goes at once
+  const placeAt = (el, top) => { el.style.scrollBehavior = "auto"; el.scrollTop = top; el.style.scrollBehavior = ""; };
   const toEnd = (el) => {
     const live = [...el.querySelectorAll(".tq-canvas-live")].pop(), box = el.getBoundingClientRect(), r = live?.getBoundingClientRect(), said = lastSaid(el);
-    const top = r && !saidAfter(live, said) && box.bottom + (el.scrollHeight - el.scrollTop - el.clientHeight) - r.bottom < 48;
-    el.scrollTop = top ? el.scrollTop + r.top - box.top : el.scrollHeight;
+    // ...the walk's dots under the card count for nothing there either: with them the end lay a line below the card, and the body went to it
+    const dots = el.querySelector(".tq-walk-dots"), slack = dots ? dots.getBoundingClientRect().height + 24 : 0;
+    const top = r && !saidAfter(live, said) && box.bottom + (el.scrollHeight - el.scrollTop - el.clientHeight) - r.bottom < 48 + slack;
+    if (top) placeAt(el, el.scrollTop + r.top - box.top); else el.scrollTop = el.scrollHeight;
     stuck.current = !top;
     // ...and on a phone the newest line stands clear of the chat box under it, whatever lies over the body's foot
     if (!top && said && window.matchMedia?.("(max-width:600px)").matches) {
@@ -1942,7 +1956,7 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
     // send's Redraft was pulled back under the dock the moment it was scrolled clear (the matrix's phone pass, 2026-10-20)
     const lit = !held && el.querySelector("[data-tq-lit]")?.getBoundingClientRect();
     const off = held ? r.top + r.height / 2 - (b.top + body.clientHeight / 2) : Math.max(r.top - b.top, lit?.height ? lit.bottom + 8 - floorOf(body, el) : -Infinity);
-    if (Math.abs(off) > 2) body.scrollTop += off;      // the body alone scrolls - scrollIntoView moved the whole page as well
+    if (Math.abs(off) > 2) placeAt(body, body.scrollTop + off);      // the body alone scrolls - scrollIntoView moved the whole page as well
     return true;
   }, []);
   // a NEW line lets go of the hold: the answer to "what does this one do?" must land in view (the final review) - a pinned card
@@ -2294,7 +2308,9 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
       // next "mark this done" went out about nothing while the rail still said ON THE TABLE (verify, 2026-10-19). Both go; the words say which
       // ...except a DOOR's ask ("Get AI to set it up"), which is about the page it was pressed on: sent with the task on the table, "Help me
       // set up Any mailbox (IMAP)" was answered with that task's story (TQ-1251)
-      const subject = how.door ? null : tableKey || current || cardRef.current;
+      // ...and NOW NO PAGE CARRIES THE TASK UNDER IT (the owner, 2026-11-05): with Settings, Connections, Reports, the Hub or New on the canvas
+      // the question is about that page alone - its view goes, the task beneath does not
+      const subject = how.door || browsing ? null : tableKey || current || cardRef.current;
       const ask = () => turn({ mode: "say", text: t, key: subject, context_mid: currentItem?.mid && subject === current ? currentItem.mid : null,
                                open_card: openCardRef.current, images, ...(view ? { view } : {}), ...(react ? { react } : {}) });
       const data = await ask().catch(async (e) => { if (!isCoveragePending(e)) throw e; await new Promise((r) => setTimeout(r, 1200)); return ask(); });
@@ -2635,6 +2651,11 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
     if (item?.tid && showsTask(item, cardFor(item))) { window.dispatchEvent(new CustomEvent("tq-agent-ask", { detail: { tid: item.tid, coding } })); return; }
     if (!item?.key) return;
     setContinueOn(null); setNoteOn(null);
+    // ...a report, an FYI, a dashboard or an Advisor item takes it in ITS OWN box, the item a chip on it (ItemSections.handToItem; the owner,
+    // 2026-11-05: "attach the report or fyi list to the prompt box on bottom and make them type in"): no second box. Its Send is this Start
+    const v = coding ? "coding_agent" : "regular_agent";
+    if (handToItem(item.key, { verb: v, items: [{ key: item.key, title: item.title || item.ref || "this item" }],
+      start: (o) => startOnItem(item, { verb: o.verb, text: withImages(o.text, o.files) }) })) { setAgentOn(null); return; }
     setAgentOn({ item, coding });
   };
   // ...and its Start: the hand-off's own proposal, carrying what was said and the agent chosen (concierge.propose_direct), run at
@@ -3118,6 +3139,9 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
     }
     navHow.current = "push";
     if (setupOn.current) setOverSetup(true);                // during setup it opens over setup, which waits where it was (W2)
+    // ...and the row it leaves is off the table at the press (`opening`): New's Send put the new task's pull out and the FYI under New wore
+    // "on the table" again until the task loaded (the owner, 2026-11-05)
+    setOpening(key && key !== currentRef.current?.key ? key : null);
     setRailOpen(false); if (old) setOld(null); browseDown(); surface(key, asUser || null);
   };
   pullRef.current = pull;
@@ -3585,7 +3609,7 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
   // ...a line of its own that stands under the card on the table only while the answer is on its way (tq-pending, assistantView.css) -
   // or in the pop-up over it, where the answer it waits for will be
   const pendingLine = <>{(busy || phoneBusy || nextComing || walkDots) && (
-            <div className="tq-msg tq-pending"><div className="avatar"><AssistantMark /></div>
+            <div className={`tq-msg tq-pending${(nextComing || walkDots) && !(busy && words) ? " tq-walk-dots" : ""}`}><div className="avatar"><AssistantMark /></div>
               <div className="body">{busy && words ? <div className="tq-words" data-tq-words="">{looksMd(words) ? <Md text={words} /> : words.split("\n").map((p, i) => <p key={i}>{p}</p>)}</div>
                 : <span className="tq-typing"><i /><i /><i /></span>}
                 {/* ...and how long it has been at it, where the dots alone were silent: its own clock, so the chat does not redraw each second */}
@@ -3767,7 +3791,6 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
               <AgentAsk inline coding={agentOn.coding} title={`${btn(agentOn.coding ? "coding_agent" : "regular_agent")}${agentOn.item.ref ? ` · ${agentOn.item.ref}` : ""}`}
                 what={agentOn.item.kind === "report" ? "It gets this report and its rows." : agentOn.item.kind === "meeting" ? "It gets the meeting: when, who, where and what the invite says."
                   : agentOn.item.mid ? "It gets the message and its attachments." : "It gets this item."}
-                placeholder={agentOn.item.kind === "report" ? ASK_REPORT : agentOn.item.kind === "meeting" ? ASK_MEETING : undefined}
                 view={{ item: { kind: agentOn.item.kind || "item", id: agentOn.item.key, ...(agentOn.item.ref ? { ref: agentOn.item.ref } : {}), title: agentOn.item.title || "" },
                   title: `${btn(agentOn.coding ? "coding_agent" : "regular_agent")} - ${agentOn.item.kind === "meeting" ? "the meeting " : ""}${agentOn.item.title || agentOn.item.ref || "this item"}` }}
                 onClose={() => setAgentOn(null)} onStart={(o) => startOnItem(agentOn.item, o)} />
@@ -3814,7 +3837,8 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
               ref={popRef} hidden={!popOpen} style={{ height: isMini ? Math.round(popH / 2) : popH }} onKeyDown={escShut}>
               {/* ...folded, the head is all there is - and a press anywhere on it brings the window back */}
               <div className="tq-chat-pop-head" onClick={isMini ? expand : undefined} title={isMini ? t("Open the chat") : undefined}>
-                <TaskuaryMark size={16} /><b>Taskuary</b>{currentItem?.ref && <span>{`· ${currentItem.ref}`}</span>}
+                {/* ...a page over the task is what the chat is about, and the task under it is not named (the owner, 2026-11-05) */}
+                <TaskuaryMark size={16} /><b>Taskuary</b>{currentItem?.ref && !browsing && <span>{`· ${currentItem.ref}`}</span>}
                 {isMini && unseen > 0 && <i className="tq-chat-unseen in-head" data-tq-unseen={unseen} aria-label={t("{count} new in the chat", { count: unseen })}>{unseen}</i>}<span style={{ flex: 1 }} />
                 {!isMini && <Tooltip title={t("Past chats")}><IconButton size="small" aria-label={t("Past chats")} onClick={openChats}><HistoryIcon sx={{ fontSize: 16, color: DIM }} /></IconButton></Tooltip>}
                 {isMini
@@ -3833,7 +3857,7 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
                 </div>
               )}
               <div className="tq-chat-pop-body" ref={popBodyRef}>
-                {!winLines.length && !popPending && !popErr && <p className="tq-chat-pop-empty">{currentItem?.ref ? t("Ask about {ref}, or anything on your list.", { ref: currentItem.ref }) : t("Ask about anything on your list.")}</p>}
+                {!winLines.length && !popPending && !popErr && <p className="tq-chat-pop-empty">{browsing ? t("Ask about this page, or anything on your list.") : currentItem?.ref ? t("Ask about {ref}, or anything on your list.", { ref: currentItem.ref }) : t("Ask about anything on your list.")}</p>}
                 {winLines.map(([m, i]) => <Line key={m.id} m={m} lastBrief={m.id === lastBriefId} live={false} last={!old && i === lastSaidIdx} further={!old && i === furtherIdx} tableChips={tableChips} barHolds={barHolds} pageOver={pageOver}
                   actions={actions} fresh={currentItem} canvas={canvasState} />)}
                 {popPending && pendingLine}
@@ -3861,7 +3885,7 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
                 by it (advice.stripWord's quiet pick), so it leaves the same mark */}
             {!shownAdvice && !litNow && stripPick?.verb === "next" && advice?.none && advice.for === onTable && <div hidden data-tq-advice="" data-tq-silent="" data-tq-advice-verb="next" />}
           </>}
-          {!firstRun && !chatApart && <ImageTray pics={pics} sx={{ width: "100%", mb: 0.75 }} />}
+          {!firstRun && !chatApart && <ImageTray pics={pics} cannot={dockCannot} sx={{ width: "100%", mb: 0.75 }} />}
           {/* ONE ROW: the row's groups and the box share a line (the one-row chat bar, 2026-10-26) - the box a pill at its end while at rest,
               widened while it is used, the groups folding into their ▾ for the room (ActionRow measures what is left; Next and the lit
               move never fold). With no row - the day's opener, a phone, whose row rides with its task view - the box is the whole line */}
@@ -3874,7 +3898,7 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
           {!chatApart && composeBox}
           </div>
           </div>
-          {chatApart && <div className="tq-chat-unit" data-tq-chat-unit=""><ImageTray pics={pics} sx={{ width: "100%", mb: 0.75 }} />{composeBox}</div>}
+          {chatApart && <div className="tq-chat-unit" data-tq-chat-unit=""><ImageTray pics={pics} cannot={dockCannot} sx={{ width: "100%", mb: 0.75 }} />{composeBox}</div>}
           <Popover open={!!emojiEl} anchorEl={emojiEl} onClose={() => setEmojiEl(null)}
             anchorOrigin={{ vertical: "top", horizontal: "left" }} transformOrigin={{ vertical: "bottom", horizontal: "left" }}
             slotProps={{ paper: { sx: { p: 1.1, borderRadius: 2.5 } } }}>
@@ -3934,10 +3958,10 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
         // ...unless the press read them: then they are off the pile already (readGone), the ring would only put them back (onTable), and
         // the fyi batch below them takes the bracket at the press - the answer puts the same one on the table
         current={old ? null : readGone?.keys.includes(currentItem?.key) ? (readGone.coming ? { key: readGone.coming, kind: "fyis", members: readGone.coming.slice(5).split(",") } : null)
-          : (table.folded && !flight?.from) || (leavingTid && currentItem?.tid === leavingTid) ? null : currentItem} coming={nextComing || busy}
+          : (table.folded && !flight?.from) || (leavingTid && currentItem?.tid === leavingTid) || table.place || (opening && opening !== currentItem?.key) ? null : currentItem} coming={nextComing || busy}
         error={pile ? "" : errDisplay} onRetry={() => { setErr(""); loadPile(true); }}
         onPull={(key, asUser) => { if (asUser) pull(key, asUser); else railPress(key); }}
-        onSection={walkSection} onMoreFyi={moreFyi} tag={tableSays.tag} onCurrent={() => backToTable()} moved={movedTo} /></>}
+        onSection={walkSection} onMoreFyi={moreFyi} onCurrent={() => backToTable()} moved={movedTo} /></>}
       stage={chat}
       onPull={(r, o) => pull(keyForRow(r), o?.quiet ? null : `Tell me about “${r.Subject || r.Title || "this"}”`)}
       railOnNarrow={railOpen} setupMode={firstRun} setupRail={firstRun ? <SetupSteps /> : null} />

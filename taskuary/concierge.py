@@ -40,11 +40,18 @@ MAX_TOKENS, TURNS, FACT_CHARS = 380, 10, 1_600
 # for "USER: " while this said "The owner says:", so it never saw the question and gave every ask one line (2026-10-19 UI walk)
 OWNER_SAYS = 'The owner says: '
 NO_ANSWER = "I didn't get an answer to that one - say it again, or put it another way."
-READ_ROUNDS = 3          # a bucket, then a look-up, then one more - never an open-ended crawl (tools are disclosed on demand)
+# a bounded crawl, never an open-ended one (tools are disclosed on demand). Three ran out on ordinary asks - a bucket, a look-up, one more -
+# and the owner got a canned line over what it had read (the owner, 2026-11-05: "is there hard coded things"): six, and then it answers
+READ_ROUNDS = 6
 LAST_READ = ('That was your last look-up for this turn - there is no other. Answer now with what you have. If nothing '
              'written down here answers it and it needs somebody to go and find out - research, a repository, a website - '
              'say so in one line and CALL the hand-off: regular_agent to research or read, coding_agent for work in a repository.')
 NEWLINE = chr(10)
+# ...and when the rounds still run out, one last call WITHOUT tools answers with what the look-ups found (last_word); only an answer that is
+# still nothing but another look-up reads this
+OUT_OF_READS = "I could not finish looking that up - ask me again, a little more narrowly."
+FINAL_READ = ('Your look-ups for this turn are used up and none runs now. Answer the owner with what they found - say what you found, and '
+              'in one line what is still unknown and where it could be found. No CALL.')
 # A SUMMARY IS A LONGER ANSWER, NOT A CARD (the owner's ruling, 2026-10-28): pipe.read takes the whole rail in, and 380 tokens cut what it
 # said of it short - the answer after it gets room, grouped by the rail's sections. The model chose the read; no word of theirs is matched
 SUMMARY_TOKENS, SUMMARY_READS = 900, frozenset({'pipe.read'})
@@ -207,7 +214,7 @@ OPENING = (
 RECEIPTS = {'chase': "I'll draft the nudge - nothing goes out until you say so.", 'let_go': 'Put down.', 'elsewhere': 'Closed - they answered elsewhere.',
             'reply': "I'll draft that - nothing goes out until you say so.", 'approve': f"Sending it as drafted - the task stays open until you {buttons.label('close')}.",
             'send_close': 'Sending it as drafted, then closing the task - it stays open while anything on it still waits on you.',
-            'not_ours': "Not ours, then - filed. Moving on.", 'not_ours_remember': "Filed, and remembered: this kind goes straight past you from now on.",
+            'not_ours': "Not for me, then - filed. Moving on.", 'not_ours_remember': "Filed, and remembered: this kind goes straight past you from now on.",
             'not_ours_sender': "Noted: that sender is noise - everything from them files itself from now on. Moving on.",
             'remember': "Remembered. Moving on.", 'coding_agent': "Handed off - the code work starts now, and what it finds comes back here.",
             'regular_agent': "Handed off - work on it starts now, and the answer comes back here.",
@@ -546,7 +553,7 @@ def facts(store, item: dict, whole: bool = False) -> str:
     """What the model is handed about ONE item: the item's own words, then the body, the draft,
     the agent's screen or the meeting, whichever it has. Bounded, so a turn stays fast."""
     if not item: return '(no item on the table - the owner is just talking)'
-    lines = [f"ITEM [{item['kind']} / {funnel.LANE_WORDS.get(item['lane'], (item['lane'],))[0]}]: {item['title']}",
+    lines = [f"ITEM [{item['kind']} / {funnel.lane_word(item) or item['lane']}]: {item['title']}",
              f"from: {item.get('who') or '?'} | when: {item.get('when') or '?'} | why it is here: {item.get('why') or ''}"]
     if no_thread(item): lines.append(f"NO THREAD: {NO_THREAD}.")
     if item.get('tid'):
@@ -942,7 +949,7 @@ def cannot(item: dict | None, verb: str, store=None) -> str:
         if proposals.held_pending(store, item['tid']): return ''
     if need and not item.get(need):
         # the item's own line, not "TQ-0006 is assistant asked you: Should I…?." glued into a sentence (2026-10-06)
-        state = str(item.get('why') or funnel.LANE_WORDS.get(item.get('lane'), ('waiting',))[0]).strip().rstrip('.')
+        state = str(item.get('why') or funnel.lane_word(item) or 'waiting').strip().rstrip('.')
         return f"There is nothing to {SAYS_VERB.get(verb, verb)} on {what} - {state}.{OPEN_IT}"
     return ''
 
@@ -1907,7 +1914,7 @@ def _past_of(label: str) -> str:
     "What a card's badge says happened to it, in the past tense."
     L = buttons.label
     return {L('close'): 'marked done', L('close_note'): 'closed with a note', L('approve'): 'sent', L('send_close'): 'sent and closed', L('defer'): 'put away until its day',
-            L('remove'): 'removed - not a task', L('not_ours'): 'filed - not ours', L('next', 'read'): 'read', L('next', 'batch'): 'all read',
+            L('remove'): 'put down - not for me', L('not_ours'): 'put down - not for me', L('next', 'read'): 'read', L('next', 'batch'): 'all read',
             L('next'): 'passed - still on you'}.get(label) or f'pressed {label}'
 
 
@@ -1936,7 +1943,7 @@ def _canvas_table(store, item: dict, d: dict) -> list:
                          + (' - its tab lit, the next move is in it' if p['lit'] else ''))
         ask = str(t.get('Summary') or '').strip()
     else:
-        lines.append(f"  card: {item.get('kind')} ({funnel.LANE_WORDS.get(item.get('lane'), (item.get('lane'),))[0]})"
+        lines.append(f"  card: {item.get('kind')} ({funnel.lane_word(item) or item.get('lane')})"
                      + (f" - {len(item.get('items') or [])} notices on one card, of {fyi_waiting(store, item)} FYI waiting in all"
                         if item.get('kind') == 'fyis' else ''))
         ask = ''
@@ -2413,7 +2420,7 @@ def _urgent_line(pile_items: list, item: dict | None) -> str:
     """One line for the prompt when something more pressing waits behind the item on the table."""
     more = funnel.more_urgent(pile_items, (item or {}).get('key'))
     if not more: return ''
-    return ('\nMORE URGENT WAITING (not what we are on): ' + '; '.join(f"{i.get('who') + ' - ' if i.get('who') else ''}{i['title']} ({funnel.LANE_WORDS[i['lane']][0]})" for i in more[:3])
+    return ('\nMORE URGENT WAITING (not what we are on): ' + '; '.join(f"{i.get('who') + ' - ' if i.get('who') else ''}{i['title']} ({funnel.lane_word(i)})" for i in more[:3])
             + ' - mention it in one short clause and offer to switch after this one; do not describe it.\n')
 
 
@@ -3073,6 +3080,20 @@ def look_rounds(store, item: dict | None, call: dict | None, ask, rounds: int = 
     return ans, call, reads
 
 
+def last_word(llm, system: str, table: str, text: str, reads) -> tuple:
+    """(reply, options) once the look-ups ran out: the model answers from what they found, in one call with no tools (FINAL_READ). An answer
+    that is still only a look-up - its words a preamble ("Checking.") - or none at all is OUT_OF_READS."""
+    seen = '\n\n'.join(f"{c['kind']} said:\n{_cut(f, read_chars(c['kind']))}" for c, f in reads[-3:])
+    try: raw = _view_lines(str(llm(system, f"{table}What your look-ups found:\n{seen}\n\nThe owner asked: {text}\n{FINAL_READ}",
+                                   max_tokens=MAX_TOKENS) or '').strip())
+    except Exception as e: logger.warning(f'concierge: the last answer pass failed - {e}'); raw = ''
+    raw, call = parse_call(raw)
+    raw, _ = parse_decision(raw)
+    reply, options = parse_options(raw)
+    reply, broken = gate(reply)
+    return (reply, options) if reply and not broken and not call else (OUT_OF_READS, [])
+
+
 def _read(store, item: dict | None, call: dict) -> str:
     """A look-up in a turn: a task or message that does not exist, asked for over an item with no thread, says why."""
     found = read_op(store, call['kind'], call['params'])
@@ -3314,7 +3335,7 @@ def task_contract(store, kind: str, tid: int, p: dict) -> dict:
 
 
 # the passes a turn gets to fix a missed call (a look-up for the right name, then the action again)
-LOOKUP_ROUNDS = 2
+LOOKUP_ROUNDS = 4
 
 
 def call_turn(store, tid: int, call: dict, item: dict | None, text: str, actor: str = 'owner') -> dict:
@@ -4225,6 +4246,13 @@ def close_after_send(store, tid: int, actor: str = 'owner') -> dict:
     if not t: raise ValueError('task not found')
     if t.get('Status') in ('done', 'dropped'): return {'status': t['Status'], 'closed': False, 'kept_open': []}
     kept = waiting_on_owner(store, tid)
+    # ...but an agent PARKED at its prompt is not work still going (the owner's ruling, 2026-11-05): on a chat task the session stays open
+    # after every turn, and Send and close never closed once an agent had run. The owner's press stops it - saved as Mark done saves it
+    # (close_task) - and closes; an agent still working keeps it open, and nothing closes a task on its own
+    from . import workerstate as ws
+    live = ws._live(tid)
+    parked = getattr(live, 'mode', '') == 'assistant' and getattr(live, 'busy', None) is False      # a chat agent at rest; a terminal never reads as one
+    if ws.LIVE_SESSION in kept and parked: kept = [k for k in kept if k != ws.LIVE_SESSION]
     if not kept: return {'status': 'done', 'closed': close_task(store, tid, actor), 'kept_open': []}
     said = '; '.join(kept)
     store.add_comment(tid, actor, 'human', f'Sent. Kept open: {said[0].upper()}{said[1:]}.')
@@ -4309,10 +4337,12 @@ def setup_task(store, text: str, actor: str = 'owner', title: str = '', kind: st
     if kind == SETUP_KIND and not agent_job: store.add_comment(tid, actor, general.USER_TYPE, text)
     else: store.add_comment(tid, actor, 'human', f'Asked in the Assistant chat: {text}')
     store.audit('task', tid, 'create_from_assistant_setup', actor)
+    # ...and says whether its agent started, which the receipt checks (effects._started) before telling the owner it is on it
+    started = False
     if kind == 'coding':
-        try: ingest._spawn(ingest._auto_code, store, tid)
+        try: ingest._spawn(ingest._auto_code, store, tid); started = True
         except Exception as e: logger.warning(f'setup task {tid}: the agent did not start - {e}')
-    return {'taskId': tid, 'ref': task_ref(tid), 'title': title, 'kind': kind}
+    return {'taskId': tid, 'ref': task_ref(tid), 'title': title, 'kind': kind, **({'started': True} if started else {})}
 
 
 def card_for(item: dict) -> dict:
@@ -4569,6 +4599,7 @@ def handoff_task(store, text: str, kind: str = 'coding', actor: str = 'owner', t
             _read_outputs(store, made, job, actor)
             session.send_prompt(brief)
         threading.Thread(target=first_turn, daemon=True).start()
+        made['started'] = True
     return made
 
 
@@ -5752,7 +5783,7 @@ def _rail_block(p: dict, cap: int = RAIL_CAP) -> str:
         bits = [x for x in (handle_of(i), i.get('who'), _cut(i.get('title') or '', 90)) if x]
         # ...and whether a DRAFT waits on it: the lane's word alone ("ready to send") left "reject the draft on TQ-0004" answered
         # "there is no draft", and "send the reply to Sam" written as a new one (real-AI check, 2026-10-18)
-        if bits: rows.append(f"- {' · '.join(bits)} ({funnel.LANE_WORDS.get(i.get('lane'), ('',))[0]}"
+        if bits: rows.append(f"- {' · '.join(bits)} ({funnel.lane_word(i)}"
                              + ('; a drafted reply waits for your yes' if i.get('rid') and i.get('draft') else '') + ')')
     if not rows: return ''
     more = f"\n- ...and {len(items) - cap} more" if len(items) > cap else ''
@@ -5801,7 +5832,7 @@ def say(store, text: str, key: str = None, llm=None, actor: str = 'owner', trace
 # A QUESTION ON A REPORT, AN FYI OR A DASHBOARD IS ANSWERED, NEVER ACTED ON (the owner, 2026-11-04: "question on report should not start
 # task"): its own box (ItemSections ItemAsk) sends the turn with the item in its view, area 'item'. The model reads the item whole and answers
 # from it; a CALL, a DECIDE or a VIEW line it writes is dropped, so nothing is filed, started or pressed - the item's own moves do that
-ASKED_ON = ('report', 'fyi', 'dashboard')
+ASKED_ON = ('report', 'fyi', 'dashboard', 'idea')   # ...and an Advisor item, answered from it the same way (the owner, 2026-11-05)
 ITEM_ONLY = ("THE OWNER ASKED IN THIS ITEM'S OWN BOX: answer from what is written above, in plain words. Nothing is done from this box - "
              "no task, no agent, no button, no look-up - so never say you started, filed, sent, changed or looked up anything; if what "
              "they want needs doing, say which of the item's own buttons does it.")
@@ -5946,7 +5977,7 @@ def _say(store, text: str, key: str = None, llm=None, actor: str = 'owner', trac
                       + ((f"{adv}\n\n" if (adv := _advice_block(store, item, adv_d)) else '') if item else '')
                       + f"{OWNER_SAYS}{text}\n"
                       # A PICTURE WITH THE LINE (the owner, 2026-09-30): an API brain sees it, a CLI brain reads the file it names
-                      + ("ATTACHED IMAGES (read these files - they are what the owner is showing you)\n" + "\n".join(images) + "\n" if images else '')
+                      + (f"{general.files_head(images)} (read these files - they are what the owner is showing you)\n" + "\n".join(images) + "\n" if images else '')
                       + 'Answer them, briefly.')                        # the rest of how is the instructions' (TURN_GUIDE)
         raw = _view_lines(str(llm(system, asked, max_tokens=MAX_TOKENS, **({'images': general._images(images)} if images else {})) or '').strip())
         rail_read(llm, tid, rail, rail_sent)
@@ -5997,7 +6028,7 @@ def _say(store, text: str, key: str = None, llm=None, actor: str = 'owner', trac
         if broken and not call and not decision: reply, options = LOST, []
         # ...and the words it wrote around that last call are a PREAMBLE, never the answer: "I'm handing it to the analyst -
         # you'll confirm it on the card" was shown with no card behind it (2026-10-06)
-        if out_of_reads and not decision: reply, options = "I could not finish looking that up - ask me again, a little more narrowly.", []
+        if out_of_reads and not decision: reply, options = last_word(llm, system, f'{table}\n\n{on_page}', text, reads)
         _remember_sid(store, tid, llm)
     except Exception as e:
         logger.warning(f'concierge: the model pass failed - {e}'); failed = e

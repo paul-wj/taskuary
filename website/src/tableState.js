@@ -13,17 +13,18 @@ export function tableOf({ current = null, cardKey = null, foldedKey = null, brow
   return { key, folded, place, speaks: !!key && !folded && !place && (!setup || !!over) };
 }
 
-// WHAT THE RAIL'S TAG AND THE BOX SAY of it (the 2026-10-19 UI walk, G5): a page opened over the item keeps it on the table - the next
-// ask carries both, and its ringed row still brings it back - but it is not in view, and "on the table" and "Ask about this one" said
-// it was while Connections covered it
+// WHAT THE RAIL'S TAG AND THE BOX SAY of it (the 2026-10-19 UI walk, G5): a page opened over the item keeps it on the table - its ringed
+// row still brings it back - but it is not in view, and "on the table" and "Ask about this one" said it was while Connections covered it
+// ...and the next ask is about THE PAGE ALONE (the owner, 2026-11-05): it no longer carries the task beneath, so the box names only the page
 export function tableWords(table, ref = "") {
   const has = !!table?.key, under = has && !!table.place;
   return { tag: t(under ? "under this page" : "on the table"),
     box: !has ? t("Ask Taskuary anything — a name or a subject pulls it in…")
-      : under ? t("Ask about this page or {item}, or name something else…", { item: ref || t("the one under it") }) : t("Ask about this one, tell me what to do with it, or name something else…"),
+      : under ? t("Ask about this page…") : t("Ask about this one, tell me what to do with it, or name something else…"),
     phone: !has ? t("Ask Taskuary anything…") : under ? t("Ask about this page…") : t("Talk to Taskuary…"),
-    // The accessible name identifies the item without altering its reference.
-    name: !has ? t("Ask Taskuary anything") : under ? (ref ? t("Ask Taskuary about this page or {ref}", { ref }) : t("Ask Taskuary about this page")) : t("Tell Taskuary what to do with {item}", { item: ref || t("this one") }) };
+    // The accessible name identifies the item without altering its reference - the one-row bar's pill, whose words
+    // ("Ask…") name no task: its name for a reader and the walk says which one the chat will talk about (the dead-end walk's RING, 2026-10-27)
+    name: !has ? t("Ask Taskuary anything") : under ? t("Ask Taskuary about this page") : t("Tell Taskuary what to do with {item}", { item: ref || t("this one") }) };
 }
 
 // What an /api/advice answer (advisor.status) means for the strip: the Advisor's ONE decision - a lit verb, its line '' when the move is

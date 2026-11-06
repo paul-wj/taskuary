@@ -28,8 +28,17 @@ export const navEnd = (on) => { if (!!on === end) return; end = !!on; draw(); };
 let off = "";
 export const navOff = (why) => { if ((why || "") === off) return; off = why || ""; draw(); };
 
+const sameVerbs = (a, b) => a.length === b.length && a.every((v, i) => JSON.stringify(view(v)) === JSON.stringify(view(b[i])));
 export function put(owner, verbs, ref = "", at = null) {
-  const old = owners.get(owner)?.verbs || [];
+  // THE SAME VERBS AGAIN (a card re-rendering) take nothing over and draw nothing: only its handlers are made the latest. Two mounted copies of
+  // one draft card - the turn that drafted it and the turn after it - re-put theirs on every render, took each id from the other and back,
+  // and each redraw rendered both again until React gave up ("Maximum update depth exceeded", the chat-model stress run 2026-11-05)
+  const was = owners.get(owner);
+  if (was && verbs?.length && was.ref === ref && was.at === at && sameVerbs(was.verbs, verbs)) {
+    verbs.forEach((v, i) => { if (live.get(v.id) === was.verbs[i]) live.set(v.id, v); });
+    was.verbs = verbs; return;
+  }
+  const old = was?.verbs || [];
   old.forEach((v) => { if (live.get(v.id) === v) { live.delete(v.id); ofs.delete(v.id); } });   // not one a newer owner has since taken over
   if (verbs?.length) { owners.set(owner, { verbs, ref, at }); verbs.forEach((v) => { live.set(v.id, v); ofs.set(v.id, owner); }); } else owners.delete(owner);
   draw();
@@ -495,7 +504,8 @@ export function splitRow(row, on, list = []) {
   // ...and its Mark done on Close out (the owner, 2026-11-02: "Mark done always shows on Close out, which will save the result and move on"):
   // a parked agent's task offered only Stop and save, and Mark done came back only once it had stopped. The press stops and saves first
   if (on.live) { const all = [...row.decide, ...row.agent, ...row.more];
-    return { row: nav, by: { live: all.filter((v) => String(v.id).split(":").pop() === "save-end"), head: all.filter(isDone) } }; }
+    // ...and a CLOSED chat task keeps that layout (the owner, 2026-11-05): its Reopen stands where Mark done stood
+    return { row: nav, by: { live: all.filter((v) => String(v.id).split(":").pop() === "save-end"), head: all.filter((v) => isDone(v) || String(v.id).split(":").pop() === "reopen") } }; }
   // ...an item that lays ONE pane of its own (`only`: an FYI's Came from) takes that pane's moves off the bar and leaves it the rest
   if (on.only) { const { move, change } = pillsOf(row), here = [...move, ...change].filter((v) => stageOf(v) === on.only), off = (xs) => xs.filter((v) => !here.includes(v));
     return { row: { ...row, decide: off(row.decide), agent: off(row.agent), more: off(row.more) }, by: { [on.only]: here } }; }

@@ -497,6 +497,7 @@ class DecideBody(BaseModel):
     cc: list[str] | None = None      # loop somebody in on this answer (email only)
     reply_text: str | None = None    # on a close-out: the task's pending reply, sent once the merge/close succeeded
     anyway: bool = False             # Send anyway: past a delivery nobody can confirm (verdicts._deliver_review)
+    fields: dict | None = None       # an action card's choices the owner changed (who sees a post, now or a draft): connectorcatalog.owner_edits
 class CodeBody(BaseModel):
     repo: str | None = None; agent: str | None = None
     model: str | None = None; instruction: str | None = None
@@ -506,6 +507,7 @@ class SettingBody(BaseModel): name: str; value: str
 class SourceBody(BaseModel):
     SourceId: int | None = None; ConnectorId: int | None = None; Channel: str | None = None
     Address: str | None = None; ConfigJson: str | None = None; Active: bool | None = None
+    ConfigPatch: dict | None = None                # as on a connector: only the keys changed, merged over the stored config
 class DispatchBody(BaseModel):
     # `agent` is the ROLE that works it; `brain` is WHICH CLI runs it. Two questions, and
     # answering both with one name is what sent TQ-0588's coding work to Copilot. `pick` is the
@@ -535,6 +537,7 @@ class ConnectorBody(BaseModel):
     ConfigJson: str | None = None; Secret: str | None = None; Active: bool | None = None
     Roles: str | None = None                       # csv of trigger,report,tool - see store.ROLES
     Scope: str | None = None                       # read | write | admin - see scopes.SCOPES
+    ConfigPatch: dict | None = None                # the config keys one field changed, merged over what is stored (None removes one)
 class AiSetupBody(BaseModel):
     guide: list[str] = []; fields: list = []; secret_label: str | None = None   # the card's Guide + form, as the UI has them
     agent_steps: list[str] = []                                                  # the card's Agent tab: steps written FOR the agent
@@ -2272,11 +2275,30 @@ def _assistant_payload(task_id: int, session=None):
     published = [{**r, 'after': next((mid for at, mid in answers if at >= str(r.get('created_at') or '')), None)}
                  for r in (_artifact_row(a) for a in store.list_task_artifacts(task_id) if a.get('Kind') in ('claude_artifact', 'shown'))]
     from . import outputs
+    at_turn = lambda at: next((mid for a, mid in answers if a >= str(at or '')), None)
+    # AN ACT IS DRAWN IN THE TURN THAT SET IT UP (the owner, 2026-11-05): every proposal on a tool a catalogue card declares an action view
+    # for (a post, a tracker comment - connectorcatalog.action_for), waiting or answered, with the answer it belongs to and who it goes out
+    # as - ActionCard draws what the card declares, and once it went, that it did and where
+    from . import connectorcatalog as _cat
+    cards = []
+    for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action' ORDER BY ReviewId", (task_id,)):
+        try: p = json.loads(r.get('FinalText') or r.get('DraftText') or '{}')
+        except ValueError: continue
+        if p.get('action') != 'run_tool' or not (act := _cat.action_for(p.get('type'))): continue
+        c = store.get_connector(int(p['connector_id'])) if str(p.get('connector_id') or '').isdigit() else None
+        try: who = json.loads((c or {}).get('ConfigJson') or '{}').get('member_name') or ''
+        except ValueError: who = ''
+        cards.append({**{k: r.get(k) for k in ('ReviewId', 'Status', 'CreatedAt', 'DecidedAt', 'Reason')}, 'post': p, 'after': at_turn(r.get('CreatedAt')),
+                      'network': _proposals.POSTS.get(p['type']) or (_cat.by_type(act['card']) or {}).get('title') or act['card'],
+                      'as': who or (c or {}).get('Name') or ''})
     return {'messages': messages,
-            # the conversations of the agents run before this one (Run another agent): kept on the task, read but never continued
-            'earlier': general.earlier(store, task_id),
+            'cards': cards,
+            'demo': demo.enabled(),          # the demo's turns are written in advance: no AI to connect, so no banner asking for one
+            # the conversations of the agents run before this one: drawn IN the chat now (shown_history: every run), never a fold of their own
+            'earlier': [],
             # the files the agent made for this task (outputs.py): listed on the canvas, and a chip where an answer names one
-            'outputs': outputs.listing(task_id),
+            # ...each under the answer of the turn that made it (`after`, as a published page), so the turn shows what it made
+            'outputs': [{**o, 'after': at_turn(o.get('at'))} for o in outputs.listing(task_id)],
             # ONE ENTRY PER CLI, and only the installed ones: this listed a provider per worker
             # profile, so five profiles on Claude read as five brains (the owner, 2026-09-18).
             'providers': general.brain_options(store, keep=general.default_pick(store, task)),
@@ -2351,7 +2373,14 @@ def _refuse_closed_chat(task_id: int):
     dock - the assistant that runs Taskuary - is never a task you close, so it is never refused."""
     from . import general
     t = store.get_task(task_id) or {}
-    if t.get('Status') in ('done', 'dropped') and not general.is_dock(t): raise HTTPException(409, CLOSED_CHAT)
+    if t.get('Status') not in ('done', 'dropped') or general.is_dock(t): return
+    # ...EXCEPT A CHAT TASK, WHERE TYPING IS THE WAY ON (the owner, 2026-11-05: "typing into chat should continue it or restart it ... we can
+    # remove those 2 buttons like continue agent or start new agent. Just type and it continues"): the words reopen it, as Reopen does
+    # (task.reopen: open, an old Remind me cleared), and start_session picks the saved conversation back up, or starts one
+    if general.handles(t):
+        store.update_task(task_id, {'Status': 'open', 'RemindAt': ''}, ACTOR)
+        store.audit('task', task_id, 'reopened_by_typing', ACTOR); return
+    raise HTTPException(409, CLOSED_CHAT)
 
 FOLLOW_UP_STALE = 'The newest messages could not be read first, so the agent goes on from what it already has'
 
@@ -2367,10 +2396,22 @@ def _refresh_for_turn(task_id: int) -> tuple[dict, str]:
         logger.info(f'task {task_id}: follow-up sent without a fresh sync - {e}')
         return {}, FOLLOW_UP_STALE
 
+def _demo_turn(task_id: int, text: str):
+    """THE DEMO HAS NO AI (the owner, 2026-11-05: "of course no prompts work since there is no AI"): what is typed into a task's chat is
+    kept, and the answer under it says so in plain words - never "No AI is connected" over a chat whose turns were all written in
+    advance. None off the demo, and for the Assistant's own chat, which the demo answers from its recordings."""
+    from . import general
+    if not demo.enabled() or general.is_dock(store.get_task(task_id)) or not str(text or '').strip(): return None
+    store.add_comment(task_id, 'owner', general.USER_TYPE, str(text).strip())
+    store.add_comment(task_id, 'assistant', general.ASSISTANT_TYPE, demo.CHAT_TURN)
+    return demo.CHAT_TURN
+
+
 @app.post('/api/tasks/{task_id}/assistant/messages')
 def assistant_message(task_id: int, body: AssistantMessageBody):
     from . import general
     _refuse_closed_chat(task_id)
+    if (said := _demo_turn(task_id, body.text)) is not None: return {'reply': said, **_assistant_payload(task_id)}
     try:
         _refresh_for_turn(task_id)
         session = general.start_session(store, task_id, body.connector_id, body.model, ACTOR, body.pick)
@@ -2422,7 +2463,8 @@ def desktop_status():
 @app.post('/api/tasks/{task_id}/assistant/seen')
 def assistant_seen(task_id: int):
     """The task is on screen (the page posts every 60 s while it is open): its agent's CLI stays open - nothing here starts one."""
-    from . import clipool
+    from . import clipool, general
+    if (s := general.session_for(task_id)): s.seen = time.time()       # ...and its session is not idled out from under the owner (idle_out)
     return {'warm': clipool.touch(f'general:{task_id}') > 0}
 
 @app.post('/api/tasks/{task_id}/assistant/cancel')
@@ -2449,6 +2491,10 @@ async def assistant_stream(task_id: int, body: AssistantMessageBody):
     """
     from . import general
     await run_in_threadpool(_refuse_closed_chat, task_id)    # before the stream opens: a plain 409 the composer can say (a store read: off the loop)
+    if (said := await run_in_threadpool(_demo_turn, task_id, body.text)) is not None:
+        payload = await run_in_threadpool(_assistant_payload, task_id)
+        line = json.dumps({'type': 'done', 'reply': said, 'payload': payload}) + '\n'
+        return StreamingResponse(iter([line]), media_type='application/x-ndjson')
     loop, events, cancel = asyncio.get_running_loop(), asyncio.Queue(), threading.Event()
 
     def put(event):
@@ -2465,7 +2511,8 @@ async def assistant_stream(task_id: int, body: AssistantMessageBody):
         try:
             fresh, stale = _refresh_for_turn(task_id)
             if stale: put({'type': 'progress', 'name': 'sync_messages', 'detail': stale})
-            if fresh.get('polled'):
+            # ...shown only when it found something: an empty check before every turn was machinery in the chat (the owner, 2026-11-05)
+            if fresh.get('polled') and fresh.get('added'):
                 put({'type': 'tool_call', 'name': 'sync_messages',
                      'detail': {'new': fresh.get('added', 0)}})
             session = general.start_session(store, task_id, body.connector_id, body.model, ACTOR, body.pick)
@@ -4746,6 +4793,22 @@ async def review_attach(rid: int, request: Request, name: str = ''):
     except ValueError as e: raise HTTPException(422, str(e))
     _owners(rid); return out
 
+@app.get('/api/reviews/{rid}/attachment')
+def review_attachment_read(rid: int, name: str, download: bool = False):
+    """A file on a pending reply, read back for its preview (the owner, 2026-11-05: "can't click the file"): only one named in that reply's
+    envelope, from the path it was stored at - never a path from the request."""
+    import mimetypes, os
+    from fastapi.responses import FileResponse
+    rv = store.get_review(rid)
+    if not rv: raise HTTPException(404, 'no such reply')
+    from . import verdicts
+    env = verdicts._envelope(rv)
+    f = next((x for x in (env.get('attachments') or []) if x.get('name') == name), None)
+    if not f or not f.get('path') or not os.path.isfile(f['path']): raise HTTPException(404, 'that file is not on this reply')
+    kind = mimetypes.guess_type(name)[0] or 'application/octet-stream'
+    return FileResponse(f['path'], media_type=kind, filename=name if download else None,
+                        content_disposition_type='attachment' if download else 'inline')
+
 @app.delete('/api/reviews/{rid}/attachment')
 def review_detach(rid: int, name: str):
     from . import verdicts
@@ -4817,7 +4880,7 @@ def decide(rid: int, body: DecideBody, background: BackgroundTasks = None):
                                       + '; review it and approve again.' if draft
                                       else f"Press {buttons.label('redraft')} to write it with the latest context before approving."))}
     return land(store, rv, body.verb, body.final_text, body.note, ACTOR,
-                learn_async=(background.add_task if background is not None else None), cc=body.cc, reply_text=body.reply_text, anyway=body.anyway)
+                learn_async=(background.add_task if background is not None else None), cc=body.cc, reply_text=body.reply_text, anyway=body.anyway, fields=body.fields)
 
 @app.get('/api/reviews/{rid}/closeout')
 def closeout_state(rid: int):
@@ -5272,10 +5335,12 @@ def _owner_history(request: Request, tid: int):
 def agent_messages(request: Request, task_id: int, sender: str = '', subject: str = '', words: str = '', since: str = '', until: str = '',
                    limit: int = 20):
     """`taskuary --search` from an agent's own shell: the owner's mail and messages by sender, subject, words and date (mailsearch)."""
-    from . import mailsearch
+    from . import mailsearch, search
     _owner_history(request, task_id)
     hits = mailsearch.search(store, sender, subject, words, since, until, limit)
-    return {'data': hits, 'says': mailsearch.says(hits)}
+    # ...and what earlier tasks settled on those words (search.outcomes): the CLI's one search reads both, so it asks the owner neither
+    done = search.outcomes(store, f'{subject} {words}', skip=task_id) if (words or subject).strip() else []
+    return {'data': hits, 'outcomes': done, 'says': mailsearch.says(hits) + (f'\n\n{search.says_outcomes(done)}' if done else '')}
 
 @app.get('/api/agent/messages/{mid}')
 def agent_message(mid: str, request: Request, task_id: int):
@@ -5381,6 +5446,18 @@ def agent_not_needed(body: AgentNotNeededBody, request: Request):
     if not store.get_task(body.task_id): raise HTTPException(404, 'no such task')
     return verdicts.not_needed(store, body.task_id, body.why, body.agent)
 
+class AgentCheckBackBody(BaseModel): task_id: int; when: str; what: str; agent: str = 'agent'
+
+@app.post('/api/agent/check-back')
+def agent_check_back(body: AgentCheckBackBody, request: Request):
+    """`taskuary --check-back WHEN "WHAT"` (and the check_back tool) from the session working the task: its own follow-up, woken on the
+    reminders' clock with that note as its next turn (checkback.py). Nothing is sent, the task stays where it is."""
+    from . import checkback
+    _own_task_only(request, body.task_id)
+    if not store.get_task(body.task_id): raise HTTPException(404, 'no such task')
+    try: return checkback.set_check(store, body.task_id, body.when, body.what, body.agent)
+    except ValueError as e: raise HTTPException(422, str(e))
+
 class AgentProposeBody(BaseModel):
     model_config = {'extra': 'allow'}
     task_id: int; action: str; why: str = ''
@@ -5395,8 +5472,8 @@ def agent_propose(body: AgentProposeBody, request: Request):
     if not store.get_task(body.task_id): raise HTTPException(404, 'no such task')
     try: p = agenttools.proposal_of(body.model_dump())
     except ValueError as e: raise HTTPException(403, str(e))
-    q = proposals.queue(store, body.task_id, p, 'agent')
-    if not q: raise HTTPException(422, 'the proposal was refused - the reason is on the task')
+    q = proposals.queue(store, body.task_id, p, 'agent', refused=(miss := []))
+    if not q: raise HTTPException(422, proposals.refusal_line(miss[0] if miss else ''))
     return {'ok': True, 'queued': True, 'review': q['reviewId'], 'says': "Waiting on the owner's press - nothing happens until they approve it."}
 
 class AgentSignBody(BaseModel):
@@ -5464,6 +5541,7 @@ async def mcp_rpc(request: Request, task: int = 0):
     doors = {'tool_run': lambda b: tool_run(b, request),
              'tick': lambda tid, item, done: agent_tick(AgentTickBody(task_id=tid, item=item, done=done), request),
              'not_needed': lambda tid, why: agent_not_needed(AgentNotNeededBody(task_id=tid, why=why), request),
+             'check_back': lambda tid, when, what: agent_check_back(AgentCheckBackBody(task_id=tid, when=when, what=what), request),
              'reply': lambda tid, text, to='', files=(): agent_reply(AgentReplyBody(task_id=tid, text=text, to=to, files=list(files)), request),
              'draft': lambda tid, text, to, subject, files=(): agent_draft(AgentDraftBody(task_id=tid, text=text, to=to, subject=subject, files=list(files)), request),
              'sign': lambda tid, a: agent_sign_form(AgentSignBody(**{**{k: v for k, v in a.items() if k in AgentSignBody.model_fields}, 'task_id': tid}), request),
@@ -6431,6 +6509,23 @@ async def prompt_image(request: Request):
     return await _save_prompt_image(None, request)
 
 
+@app.post('/api/prompt-file')
+async def prompt_file(request: Request):
+    """ANY FILE for a prompt (the owner, 2026-11-05: "does drop in the prompt box attach it in all prompt boxes?"): a PDF, a sheet, a log,
+    dropped, pasted or picked into any box - the image road's bytes-as-body contract and its 12 MB cap, the name in X-File-Name. Saved
+    under attachments/prompt/ like a picture, so the same prompt_images check is the one that lets its path reach a prompt."""
+    from urllib.parse import unquote
+    data = await request.body()
+    if not data: raise HTTPException(422, 'no file in the request')
+    if len(data) > IMG_MAX: raise HTTPException(413, 'file over 12 MB - send a smaller one')
+    name = re.sub(r'[^\w.\- ]+', '_', Path(unquote(request.headers.get('x-file-name') or 'file')).name).strip(' .')[:80] or 'file'
+    d = config.home() / 'attachments' / 'prompt' / time.strftime('%Y%m')
+    p = d / f'{time.strftime("%Y%m%d-%H%M%S")}-{secrets.token_hex(3)}-{name}'
+    def keep(): d.mkdir(parents=True, exist_ok=True); p.write_bytes(data)
+    await run_in_threadpool(keep)
+    return {'path': str(p), 'size': len(data), 'name': name}
+
+
 def prompt_images(paths) -> list[str]:
     """The paths a prompt may name: only files this server saved under attachments/ - a path from the page is never a read of
     anything else on the disk."""
@@ -6445,8 +6540,9 @@ def prompt_images(paths) -> list[str]:
 
 def with_images(text: str, paths) -> str:
     """The words, then the files - how a CLI agent is shown a picture: it reads the path (general.py says it the same way)."""
+    from .general import files_head
     ps = prompt_images(paths)
-    return (text or '') + ('\n\nATTACHED IMAGES (read these files)\n' + '\n'.join(ps) if ps else '')
+    return (text or '') + (f'\n\n{files_head(ps)} (read these files)\n' + '\n'.join(ps) if ps else '')
 
 
 async def _save_prompt_image(tid: int | None, request: Request):
@@ -6742,6 +6838,14 @@ def save_source(body: SourceBody):
         raise HTTPException(422, 'WhatsApp takes named chats only - add the person or the group you want, '
                                  'not every chat on the account')
     was = store.get_source(fields['SourceId']) if fields.get('SourceId') else None
+    patch = fields.pop('ConfigPatch', None)
+    if patch is not None and (not was or fields.get('ConfigJson') is not None):
+        raise HTTPException(422, 'a config patch is for a saved source, and never beside a whole ConfigJson')
+    # a report's card is checked whole (below): its patch is laid over what is stored and saved the old way
+    if patch is not None and channel == 'report':
+        try: base = json.loads(was.get('ConfigJson') or '{}') or {}
+        except ValueError: base = {}
+        fields['ConfigJson'] = json.dumps({k: v for k, v in {**base, **patch}.items() if v is not None}); patch = None
     # a workflow's steps are checked before they are kept: a broken list would only fail on its first scheduled run (flow.validate)
     if fields.get('ConfigJson') and channel == 'report':
         try: rcfg = json.loads(fields['ConfigJson']) or {}; flow_cfg = rcfg.get('flow')
@@ -6758,7 +6862,8 @@ def save_source(body: SourceBody):
             from . import flow
             ok, why = flow.validate(store, flow_cfg)
             if not ok: raise HTTPException(422, f'The steps cannot be saved yet: {why}.')
-    sid = store.save_source(fields, ACTOR)
+    sid = store.save_source(fields, ACTOR) if set(fields) - {'SourceId'} else fields['SourceId']
+    if patch: store.merge_config('source', sid, patch)
     # A NEW WORKFLOW STARTS ON ITS NEXT SLOT, not on the next tick. A source never run is due at once (reports.is_due) - right
     # for a report you want to see, wrong for a job that opens tasks and drafts mail: a weekly Monday workflow saved on a
     # Wednesday ran seconds later, beside the editor's "Saved - runs Mon at 08:00", and again beside its own Save & run now -
@@ -6943,6 +7048,27 @@ def connectors(request: Request):
     from .peoplesearch import missing
     rows = [c | {'PeopleMissing': missing(c.get('ConfigJson'), c['Type'])} if c['Type'] in ('outlook', 'teams', 'gmail') else c
             for c in rows]
+    def _outlook_app():
+        for o in store.list_connectors():
+            if o.get('Type') == 'outlook':
+                k = json.loads(o.get('ConfigJson') or '{}')
+                if str(k.get('client_id') or '').strip(): return {'client_id': k['client_id'], **({'tenant_id': k['tenant_id']} if k.get('tenant_id') else {})}
+        return None
+    # MsApp: whose Microsoft app this card signs in through - 'card' (the company's own, on the card), 'install' (TASKUARY_MS_CLIENT_ID)
+    # or '' (none yet: the card shows the setup steps). MsRedirect: this install's own redirect, the one with its port
+    from . import msauth
+    # ...and a TEAMS card with none of its own signs in through the Outlook card's app ('outlook') - the same company app, one registration
+    # (the owner, 2026-11-05: "for teams you should be able to click auth with outlook oauth as well")
+    def _ms_app(c):
+        if str(json.loads(c.get('ConfigJson') or '{}').get('client_id') or '').strip(): return 'card'
+        if c['Type'] == 'teams' and _outlook_app(): return 'outlook'
+        return 'install' if msauth.PUBLIC_CLIENT_ID else ''
+    # MsScopes: the delegated Graph permissions the company's app lists - exactly what this card's sign-in asks for
+    def _ms_row(c):
+        k = json.loads(c.get('ConfigJson') or '{}')
+        return {'MsApp': _ms_app(c), 'MsRedirect': msauth.redirect_uri(cfg['server'].get('port')),
+                'MsScopes': msauth.scopes_for(c['Type'], bool(k.get('allow_files')))}
+    rows = [c | _ms_row(c) if c['Type'] in ('outlook', 'teams') else c for c in rows]
     if guard.scope_of(cfg['server'], request.headers) == guard.AGENT:
         rows = [guard.without_config_secrets(c) for c in rows]
     rows = [guard.masked_config(c) for c in rows]
@@ -7012,6 +7138,10 @@ def brains():
 @app.post('/api/connectors')
 def save_connector(body: ConnectorBody):
     fields = {k: (int(v) if k == 'Active' else v) for k, v in body.model_dump().items() if v is not None}
+    # ...a field's own save carries only its keys (store.merge_config): never beside a whole ConfigJson, never before the card exists
+    patch = fields.pop('ConfigPatch', None)
+    if patch is not None and (not fields.get('ConnectorId') or fields.get('ConfigJson') is not None):
+        raise HTTPException(422, 'a config patch is for a saved connector, and never beside a whole ConfigJson')
     if fields.get('Name') is not None:
         fields['Name'] = fields['Name'].strip()
         if not fields['Name']: raise HTTPException(422, 'connector name cannot be blank')
@@ -7045,8 +7175,16 @@ def save_connector(body: ConnectorBody):
         if isinstance(conf, dict) and conf.get('base_url'):
             try: fields['ConfigJson'] = json.dumps({**conf, 'base_url': llm.gateway_url(conf['base_url'])})
             except ValueError as e: raise HTTPException(422, str(e))
+    if not current and patch is not None: raise HTTPException(404, 'connector not found')
+    if typ == 'hipaa_ai' and (patch or {}).get('base_url'):
+        from . import llm
+        try: patch = {**patch, 'base_url': llm.gateway_url(patch['base_url'])}
+        except ValueError as e: raise HTTPException(422, str(e))
     cid = store.save_connector(fields, ACTOR)
-    safe = {k: v for k, v in fields.items() if k != 'Secret'} | ({'secret': 'updated'} if 'Secret' in fields else {})
+    if patch: store.merge_config('connector', cid, patch, keep=guard.WRITE_ONLY_CONFIG.get(typ, ()))
+    # the keys a patch changed, never their values: a field's save may be a client secret
+    safe = ({k: v for k, v in fields.items() if k != 'Secret'} | ({'secret': 'updated'} if 'Secret' in fields else {})
+            | ({'config_keys': sorted(patch)} if patch else {}))
     store.audit('connector', cid, 'edit' if body.ConnectorId else 'create', ACTOR, detail=safe)
     discovery = None
     # a new GitHub PAT is all the config there is: saving the token IS connecting - and
@@ -7081,7 +7219,15 @@ def connector_reset(cid: int):
     if not c: raise HTTPException(404, 'connector not found')
     # at once, with the page's Undo: its sealed sign-in is kept for the Undo line's minutes, then forgotten (recentlydeleted.py)
     from . import recentlydeleted
+    # a WhatsApp card's pairing lives in the bridge, not the row: removed with it, or the bridge kept syncing (wabridge.forget)
+    bridge = None
+    if c['Type'] == 'whatsapp':
+        from . import wabridge, demo
+        if not demo.enabled():
+            try: bridge = wabridge.forget(store.get_connector(cid, with_secret=True) or c)
+            except Exception as e: logger.warning(f'wa bridge: the pairing was not removed with the card: {e}'); bridge = {'unpaired': False, 'why': str(e)}
     out = recentlydeleted.remove_connection(store, cid, c.get('Name') or c['Type'])
+    if bridge is not None: out['bridge'] = bridge
     store.audit('connector', cid, 'reset', ACTOR, detail={'type': c['Type']})
     from .docsync import sync_connections
     sync_connections(store, ACTOR)
@@ -7229,9 +7375,11 @@ def task_reason_ask(tid: int, payload: dict):
 
 # ── Voice (taskuary/voice.py): speech to text for the funnel and for the prompt box ──
 @app.get('/api/voice/status')
-def voice_status(request: Request):
+def voice_status(request: Request, builtin: bool = False, refresh: bool = False):
     from . import voice
     out = voice.ready(store)
+    if builtin and refresh: out['builtin'] = voice.builtin(refresh=True)
+    elif builtin and out['ready']: out['builtin'] = voice.builtin()
     # Windows voice typing hears THIS computer's microphone: a page on another device never gets it
     if (out.get('builtin') or {}).get('live') and not _is_loopback(request.client.host if request.client else ''): out['builtin'] = None
     return out
@@ -7460,9 +7608,12 @@ def chatgpt_poll(cid: int, body: dict):
         logger.warning(f'chatgpt sign-in poll failed: {e!r}')
         return failed(f'the answer from OpenAI could not be read ({type(e).__name__})')
     if t.get('pending'): return {'status': 'pending'}
-    cfg = {**cfg, 'auth': 'user', 'client_id': t['client_id'], 'host_id': t['host_id'], 'account': t['email'], 'name': t['name'],
-           'sub': t['sub'], 'granted_scope': t['scope']}
-    store.save_connector({'ConnectorId': cid, 'ConfigJson': json.dumps(cfg), 'Secret': t['refresh_token'], 'Active': 1}, ACTOR)
+    # the sign-in's own keys merged over the card as it is NOW: the copy read before OpenAI answered is not written back (merge_config)
+    signed = {'auth': 'user', 'client_id': t['client_id'], 'host_id': t['host_id'], 'account': t['email'], 'name': t['name'],
+              'sub': t['sub'], 'granted_scope': t['scope']}
+    cfg = {**cfg, **signed}
+    store.save_connector({'ConnectorId': cid, 'Secret': t['refresh_token'], 'Active': 1}, ACTOR)
+    store.merge_connector_config(cid, signed)
     store.audit('connector', cid, 'chatgpt_signin', ACTOR, detail={'account': t['email']})
     store.touch_connector(cid)                                  # the last failure is over
     # ...and with no brain chosen, the one just signed in IS the brain, now - "Pick it as a brain under Settings" sent a
@@ -7495,13 +7646,15 @@ def chatgpt_signout(cid: int):
     store.audit('connector', cid, 'chatgpt_signout', ACTOR)
     return {'ok': True, **out}
 
-# ── Sign in with Microsoft (taskuary/msauth.py): Graph for a regular user, no Azure portal ──
+# ── Sign in with Microsoft (taskuary/msauth.py): Graph for a regular user, through the company's own app ──
 _MSFLOWS = {}   # flow id -> a sign-in in progress (a device code being polled, or a browser round awaiting its callback); minutes, then gone
 MS_TTL = 600    # a browser round not back in ten minutes is over: its state answers nothing after that
 
 class MsSignInBody(BaseModel):
     files: bool | None = None        # Allow saving files: this sign-in asks for Files.ReadWrite too (None: as the card already says)
     code: bool = False               # the fallback the owner picks: a device code, for a Taskuary the browser cannot reach on localhost
+    client_id: str | None = None     # the company's own app, as typed on the card: kept on the card from this press on
+    tenant_id: str | None = None
 
 
 @app.post('/api/connectors/{cid}/ms/signin')
@@ -7516,11 +7669,28 @@ def ms_signin(cid: int, body: MsSignInBody | None = None):
     cfg_ = json.loads(c.get('ConfigJson') or '{}')
     body = body or MsSignInBody()
     if body.files is not None: cfg_['allow_files'] = bool(body.files)
+    # THE COMPANY'S OWN APP (msauth.py): the ids typed on the card ride the press, and the card keeps them whatever the sign-in
+    # answers - a refusal names what to fix in that app, and the next press starts from what was typed
+    typed = {k: str(getattr(body, k) or '').strip() for k in ('client_id', 'tenant_id')}
+    if any(typed.values()):
+        why = msauth.check_app(typed['client_id'] or cfg_.get('client_id'), typed['tenant_id'] or cfg_.get('tenant_id'))
+        if why: raise HTTPException(409, why[0].upper() + why[1:])
+        typed = {k: v for k, v in typed.items() if v}
+        cfg_.update(typed)
+        store.merge_connector_config(cid, typed)            # the typed ids alone, over the card as it is after the app check
+    # ...a Teams card with no app of its own signs in through the Outlook card's (the same company registration; its ids are not copied onto
+    # the Teams card, so changing the Outlook card's app moves both)
+    if c['Type'] == 'teams' and not str(cfg_.get('client_id') or '').strip():
+        for o in store.list_connectors():
+            k = json.loads(o.get('ConfigJson') or '{}') if o.get('Type') == 'outlook' else {}
+            if str(k.get('client_id') or '').strip():
+                cfg_ = {**cfg_, 'client_id': k['client_id'], **({'tenant_id': k['tenant_id']} if k.get('tenant_id') else {})}; break
     # a tenant that refused the people scopes once is not asked for them on every sign-in (_ms_retry_base)
     scope = msauth.scopes_for(c['Type'], bool(cfg_.get('allow_files')), people=not cfg_.get('people_refused'))
     for k, v in list(_MSFLOWS.items()):
         if time.time() - v.get('at', 0) > 1800: _MSFLOWS.pop(k, None)
-    flow, f = _secrets.token_urlsafe(12), {'cid': cid, 'kind': c['Type'], 'cfg': cfg_, 'at': time.time()}
+    # `was`: the card as read here - what the sign-in itself changes (the files choice, a refused scope) is told from it at the finish
+    flow, f = _secrets.token_urlsafe(12), {'cid': cid, 'kind': c['Type'], 'cfg': cfg_, 'at': time.time(), 'was': json.loads(c.get('ConfigJson') or '{}')}
     if not body.code:
         redirect = msauth.redirect_uri(cfg['server'].get('port'))
         try: b = msauth.browser_start(cfg_, scope, redirect)
@@ -7665,9 +7835,14 @@ def _ms_finish(cid, f, t) -> dict:
     if other:
         return {'status': 'error', 'detail': f"{who['account']} is already signed in on the {other['Name']} card - sign in here "
                                              "with a different Microsoft account (choose Use another account on Microsoft's page)"}
-    cfg = {**f['cfg'], 'auth': 'user', 'account': who['account'], 'name': who['name'],
-           **({'granted_scope': t['scope']} if t.get('scope') else {})}      # what was granted, for the send probe (PW-143)
-    store.save_connector({'ConnectorId': cid, 'ConfigJson': json.dumps(cfg), 'Secret': t['refresh_token'], 'Active': 1}, ACTOR)
+    # the sign-in's own keys - and what the round itself changed (the files choice, a refused scope) - merged over the card as it is
+    # NOW: f['cfg'] is the card as it was when the sign-in STARTED, minutes ago, and writing it back undid every field saved since
+    was = f.get('was') or {}
+    signed = {**{k: v for k, v in f['cfg'].items() if was.get(k) != v}, 'auth': 'user', 'account': who['account'],
+              'name': who['name'], **({'granted_scope': t['scope']} if t.get('scope') else {})}      # what was granted, for the send probe (PW-143)
+    cfg = {**f['cfg'], **signed}
+    store.save_connector({'ConnectorId': cid, 'Secret': t['refresh_token'], 'Active': 1}, ACTOR)
+    store.merge_connector_config(cid, signed)
     # the account signed in is what the card reads: its mailbox, or for a Teams card its chats (the UPN a source names)
     chan = 'teams' if kind == 'teams' else 'email'
     had = next((s for s in store.list_sources(active_only=False) if s['Channel'] == chan
@@ -7902,8 +8077,8 @@ def _agent_proposes(request: Request, t: str, conn: dict, body: dict, why: str):
     if not store.get_task(tid): raise HTTPException(404, 'no such task')
     p = {**{k: v for k, v in query_only(body).items() if k not in _NOT_PROPOSED},
          'action': 'run_tool', 'type': t, 'connector_id': conn['ConnectorId'], 'why': str((body or {}).get('why') or '')[:300]}
-    q = proposals.queue(store, tid, p, 'agent')
-    if not q: raise HTTPException(403, 'the proposal was refused - the reason is on the task')
+    q = proposals.queue(store, tid, p, 'agent', refused=(miss := []))
+    if not q: raise HTTPException(403, proposals.refusal_line(miss[0] if miss else ''))
     store.audit('tool', conn['ConnectorId'], 'run_proposed', 'agent', detail={'type': t, 'task': tid, 'review': q['reviewId']})
     return JSONResponse({'ok': True, 'queued': True, 'review': q['reviewId'],
                          'says': f"Waiting on the owner's press: this {why}. Nothing was sent; it runs only when they press Approve."},
@@ -8229,9 +8404,8 @@ def teller_enroll(cid: int, body: TellerEnrollBody):
     c = store.get_connector(cid)
     if not c or c['Type'] != 'teller': raise HTTPException(404, 'not a Teller connector')
     if not body.access_token.strip(): raise HTTPException(422, 'no access token in the enrolment')
-    conf = json.loads(c.get('ConfigJson') or '{}')
-    conf.update({k: v for k, v in (('enrollment_id', body.enrollment_id), ('institution', body.institution)) if v})
-    store.save_connector({'ConnectorId': cid, 'Secret': body.access_token.strip(), 'ConfigJson': json.dumps(conf), 'Active': True}, ACTOR)
+    store.save_connector({'ConnectorId': cid, 'Secret': body.access_token.strip(), 'Active': True}, ACTOR)
+    store.merge_connector_config(cid, {k: v for k, v in (('enrollment_id', body.enrollment_id), ('institution', body.institution)) if v})
     store.audit('connector', cid, 'teller_enrolled', ACTOR, detail={'institution': body.institution or ''})
     return {'ok': True}
 

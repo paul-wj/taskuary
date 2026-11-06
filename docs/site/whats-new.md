@@ -8,6 +8,152 @@ What each release changed, newest first. Ask the Assistant "what changed in the 
 - A configured file-capable Agent authors the complete package; the owner reviews every file, returns changes to the same task, or approves the exact revision for publication.
 - Published `taskuary-` Skills retain scripts, examples, references and binary resources, with owned native discovery links and explicit validation/link failures. Publication never grants the Agent additional permissions.
 
+## 0.3.11.9 - 2026-11-06
+
+- A reply block glued to the agent's words is its own paragraph, shown once
+- A chat reply's To line names the app: "in Teams", not "in teams"
+- The open chat reads a turn the server woke: new mail, a check-back
+- A check-back's turn opens on what it checks; the server's start keeps the clock
+- A report made a task: its row keeps its ref, never "Moâ€¦"
+
+## 0.3.11.8 - 2026-11-05
+
+- One message everywhere: Taskuary is your AI work partner - your work, in the right order
+- An input bubble is its icon, who and when - no "sent to Taskuary"
+- A post card's picture is a preview, capped at 180px
+- No stop icon on a chat task; the chat box stops any turn at work
+- The card holds still while the walk brings the next one
+- One prompt box at the pane's foot, one attachment chip in one line
+
+## 0.3.11.7 - 2026-11-05
+
+- A mail read in mid-turn stands after that turn, over the re-think it woke
+- A turn that ended draws as ended: its own run length, no step still spinning
+- Copy at the corner of an answer and a code block
+- No "Taskuary answered" line over a chat
+- Send and close keeps the sent reply in place and says it went
+- "Startingâ€¦" is a quiet line like "Working on thisâ€¦", with an honest clock
+- A burst from one sender reads as one; a summary keeps its breath under prose
+
+## 0.3.11.6 - 2026-11-05
+
+- An agent's lesson goes to LEARNED.md, named for its kind of job - never a card on the playbook
+- A lesson is only what changes how the next job like it is done: a lasting fact, a rule about the owner, a route that works - never a log of clicks
+- The general agent reads what LEARNED.md has learned about the owner: the trusted lines nearest its task, small, the rest on ask
+- A message that changes nothing gets one line from the agent - nothing new, the plan stands - not a re-run
+- The check before a turn shows only when it found new messages, and never calls a WhatsApp thread mail
+
+## 0.3.11.5 - 2026-11-05
+
+- An agent can check back on its own task later, on the reminders' clock
+- The agent searches what earlier tasks settled before asking the owner
+- Playbooks are a menu the agent reads, and learn from its turns
+
+## 0.3.11.4 - 2026-11-05
+
+- Fix built-in Windows dictation recovery and add voice selection card
+- A held press is the owner's own click on the real page, not an Approve card
+- Each connector declares its act's card; one card draws it, with per-connection defaults - LinkedIn audience and post now or draft first
+- A Slack line is answered in Slack: in its thread, in Slack's own markup, through the card that read it
+- Every hand-over on the page is watched; a desktop press is a line in the chat
+- The agent keeps going when a way fails, and a payment's last press is the owner's on the real page
+- An Advisor idea reads as its finding and what to do in one line, with no Whose move row; Based on stays
+- The Advisor's looking-out pass runs each morning and proposes up to four ideas across families
+- The demo world gets a general agent's finished working day
+- The static demo is re-recorded with the agent's day, and carries the files it made
+- README and docs show a task as one chat, reshot against the demo world
+
+## 0.3.11.3 - 2026-11-05
+
+- A trusted repo's own steps go through: a push, a pull request or a workflow run on a repo whose card may act no longer asks
+- A card's field saves only its own keys, merged over the config as stored; Remove takes an added card off the list
+- Every field on a connection card saves itself, and Remove asks once and takes the card away
+- A poll, a Test or a sign-in merges only its own keys over the card, so it never rolls back a field the owner saved meanwhile
+- The chat reads like a chat: local times, every input shown before the turn it woke, a turn's draft kept read-only in its history
+
+## 0.3.11.2 - 2026-11-05
+
+- The agent never closes a chat task: only the owner's Mark done, Send and close or Close with a note does
+- A saved sign-in goes straight in and raises no ask, so no browser is shown for it
+- Typing in a chat task is the way on: it reopens a closed one and carries on, and Continue and Run another are gone
+- A chat task draws the agent's browser only when the owner has a part on it, beside the chat
+
+## 0.3.11.1 - 2026-11-05
+
+- A chat task draws no Advisor line: its agent is the advisor
+- Reports, FYIs, dashboards and Advisor items have no Close out, and their box reads as a chat; an Advisor item answers questions too
+- An item's ask box sits under what it opens on, never in the Agent tab of an item no agent was sent to
+- The agent says its reply waits under Next steps, never in a Close out a chat task no longer has
+- A quick turn ends in the same What this is about / What I did as an agent turn
+- A burst of mail on a thread is one re-think, and a line is never lost to a session that just ended
+- The chat box takes a line while the agent works, shows no Suggested reply before one exists, and stays at the card's foot
+- One playbook proposal per task while it waits, never one per session ending
+- "Suggested reply" heads a reply in the chat, never a closed task's Mark done line
+- The agent's question is said once: never again as an On you step under it
+- Send and close closes a chat task whose agent is parked: the press stops it, saved, and closes
+- A chat task's chat has no agent picker, model box or Full screen: only the task's own actions
+- A chat reply's To names the person, never their phone or chat id, and no room for a one-to-one chat
+- When the thread moves, the agent says plainly what changed first: "I see you answered Ray there"
+- The owner's own reply on a thread wakes every open task on it, not only the one it is filed on
+
+## 0.3.11.0 - 2026-11-05
+
+- Triage sees every open item and what the owner's search finds, so a matter joins its task from any source
+- A row clicked lights Back and Next at once, a watched row included
+- Mark done on a watched row takes it off the rail at the press and keeps it off
+- The rail's age gutter splits the first half hour into < 5m, < 15m and < 30m
+- Triage no longer picks a worker for a task: every general task runs on the one assistant; routines still name theirs
+- A general task whose reply writer says NEEDS starts the assistant on it, as a reply task's does
+- A login the thread asks the owner for, kept in their own files, goes in the drafted reply and never in the conversation
+- A drafted reply's body stays out of the agent's pane, live trace and kept steps
+- A research task handed on by the reply writer's NEEDS keeps its kind, and counts as opening until its start lets go
+- A drafted reply's body stays off the CLI live line and an ACP call named by its kind, and a broken start lets its hold go
+- A Claude hook on the draft call names it by what it is: the worker's tool line and the approval text carry no body
+- A stranger session's permission card names the draft call, never its body
+- The general agent's one goal is to get the owner to done, starting from triage's reading
+- A stranger's task keeps the one goal but is never steered toward a login
+- The login rule lives only in the owner's own goal line, never in a document a stranger's task reads
+- Each agent turn ends with what it is about, what it did and what is on the owner
+- A summary block cut short never reaches the screen, and the owner's On you steps survive ticks, edits and empty summaries
+- The agent's chat says Working on thisâ€¦, and ends each turn in three parts
+- An opened Working on thisâ€¦ stays open, a failure is never folded, and a pending Approve is not Nothing left
+- Profiles are for routines only: the roster and the "Can be given new work" switch go
+- The assistant-tools page is the catalogue as it stands
+- GOAL_LINE is defined once, and the danger check asks the verdict schema without a profile
+- The general agent's goal is a principle: take the work off the owner's hands
+- A PDF clicked in Came from or in the agent's answer is read in place, Download beside it
+- An agent's browser starts at its first navigate, never on an empty tab, and a hand-over with no page is a question in words
+- Only a browser on a page takes room in the agent's canvas: an empty tab is no view and no chip
+- An agent fills and signs a form with the signature the owner saved once
+- Settings has a Your signature card: draw it or upload it once, see it, clear it
+- A task whose home is the chat shows Came from and the agent, and opens on the chat
+- A live general agent's strip carries Mark done where the chat is home, and a coding task never flashes two sections
+- A browser test: an agent started on the open task says Startingâ€¦ within 1.5 s
+- A start on the open task says Startingâ€¦ at once, and a queued one Waiting its turn
+- A correction typed in the chat is learned the way the draft box's words were
+- Drafts read how the owner works, inside the same budget
+- The Advisor reads the agent's last summary, so Nothing left to do lights Mark done
+- The agent's process stays warm while its task is on screen (cold 7 s, warm 3 s)
+- Any change on the thread wakes the task's assistant, which re-plans the whole next step
+- The warm-keeping heartbeat route is the owner's: a session never keeps its own process alive
+- A reply draft is never left empty without saying so, and a rewrite says whether it changed
+- Close out shows a draft filed under the open card, says an empty one plainly, and the Assistant says Rewritten only when it changed
+- An FYI or a report says what it says and what matters to you
+- A question on a report, FYI or dashboard is answered from it - no task, no agent
+- The Assistant says an act is done only when the store shows it: every receipt from the result, never the plan
+- Draft cards, emails owed and On you steps live in the agent's summary; Close out is gone on chat tasks
+- A redraft that says NO REPLY marks the waiting draft Not needed, with the writer's WHY, instead of leaving it ready to send
+- Run now's notice sits under the Reports toolbar, not squeezed beside its buttons
+- Removing the WhatsApp card unpairs its bridge, and the open card stops scrolling to its top
+- CI's Python suite is green again: stale stand-ins, a leaked session, and two sentences that typed a place
+- Fix WhatsApp wrapped messages and first LID delivery (#273)
+- A pull-request row is shown to triage by what it holds and who sent it, so a chat line about that PR joins it
+- The agent-button tests open Send to agent's box only where it is not already up, and the walk says why Draft reply goes unpressed on chat tasks
+- A fresh question on a task its agent already worked reaches that agent's chat, and the demo lets an open task keep its agent warm
+- The Assistant says an agent it handed work to is on it, because the hand-off now says the agent started
+- A chat task's Agent section is one chat: the ask, each turn, a line for each new mail, and the box always under it
+- Came from no longer repeats triage's reading as "What's going on", and the source-text tests follow the one-chat pane
+
 ## 0.3.10.29 - 2026-11-04
 
 - Triage sees every open item and what the owner's search finds, so a matter joins its task from any source

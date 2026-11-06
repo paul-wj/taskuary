@@ -135,6 +135,7 @@ test("the result reads the write-up's own parts, each once, and nothing it did n
     " def sync(site):", "+    if not site.manager:", "+        continue", "-    pass", "--- /dev/null", "+++ b/tests/test_census_sync.py", "+def test_no_manager(): pass"].join("\n");
   assert.deepEqual(diffStat(diff), { files: 2, added: 3, removed: 1 });
   assert.equal(diffStat(""), null);
+
 });
 
 // THE RESULT AT REST (the owner, 2026-10-27): what it did and what it based it on, and what it made listed once

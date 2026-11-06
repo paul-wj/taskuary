@@ -23,7 +23,7 @@ sign-in from the phone was a dead end. Now:
   ~/.agent-browser, which the agent's shell can read.
 - SAVED, IT IS SEALED (vault.seal: DPAPI on Windows, the keychain elsewhere; refused where neither exists), one row per site. The
   next time an agent asks to sign in on that site the server fills it by itself and tells the agent "Signed in - continue": no owner
-  step. A saved sign-in the site asked for AGAIN within a few minutes is not tried twice (a changed password, a lockout) - the ask
+  step, and no ask raised - so nothing is shown (2026-11-05); the ask is raised only when the saved one does not go in. A saved sign-in the site asked for AGAIN within a few minutes is not tried twice (a changed password, a lockout) - the ask
   stays with the owner.
 - EVERY FILL IS AUDITED: site, task, how, whether it went in. Never what was typed.
 
@@ -329,6 +329,19 @@ def _chat(sid) -> bool:
     return hasattr(term.SESSIONS.get(str(sid)), 'send_prompt')
 
 
+def on_signin_page(sid: str, conn=None) -> bool:
+    """The agent's browser is open, on a page a password may be typed on (site_of), showing a password box - a sign-in nobody raised.
+    `conn`: the DevTools connection (tests stand one in). False whenever the page cannot be read."""
+    from . import browserview
+    st = browserview.state(sid, fresh=True)
+    if not st.get('open') or not site_of(st.get('url')): return False
+    c = conn or connect(sid)
+    try: f = c.fields('') or {}
+    finally:
+        if conn is None: c.close()
+    return bool(f.get('top') and f.get('password'))
+
+
 def needs(store, tid: int, sid: str, claimed: str = '', fill=None, watch=...) -> dict:
     """The agent ended its turn asking to be signed in. Record the ask on the existing road and, when the owner keeps a sign-in for
     the site the browser is actually on, fill it at once on its own thread. `fill`: the filler (tests stand one in)."""
@@ -351,20 +364,27 @@ def needs(store, tid: int, sid: str, claimed: str = '', fill=None, watch=...) ->
     # through signed_in, never the chooser (2026-10-25)
     # NO PRESSES ON IT (the owner, 2026-11-03: "remove that stupid box again ... just have the question and link to fill it out securely"):
     # the ask is its words; Taskuary sees the sign-in happen on the page itself (watch), and "done" typed in the chat's box still tells it
-    ws.record(store, tid, sid, 'input_needed', request_id=rid, text=text, choices=None, source='api')
-    if watch: threading.Thread(target=watch, args=(store, tid, sid, site, rid), daemon=True, name=f'signin-watch-{tid}').start()
+    def ask():
+        ws.record(store, tid, sid, 'input_needed', request_id=rid, text=text, choices=None, source='api')
+        if watch: threading.Thread(target=watch, args=(store, tid, sid, site, rid), daemon=True, name=f'signin-watch-{tid}').start()
     row, last = saved(store, site), _TRIED.get((tid, site), 0)
-    if row and _now() - last < AGAIN:
+    # A SAVED SIGN-IN GOES STRAIGHT IN, AND NOTHING IS ASKED (the owner, 2026-11-05: "once you have that saved it should save the login and
+    # next time just go in and get the data"). The open `signin:` ask is what puts the browser on the owner's screen; raised before the
+    # fill, it drew the pane for the seconds the server typed - for a step the owner had nothing to do in. It is raised only when the
+    # fill fails, and then the owner is the way on.
+    if row and _now() - last >= AGAIN:
+        _TRIED[(tid, site)] = _now()
+        threading.Thread(target=_auto, args=(store, tid, sid, site, rid, fill or type_in, ask), daemon=True, name=f'signin-{tid}').start()
+        return {'site': site, 'auto': True}
+    ask()
+    if row:
         store.add_comment(tid, 'taskuary', 'agent', f'{site} asked to sign in again within minutes of the saved sign-in - it may be out '
                                                     'of date, so it was not tried twice. Sign in yourself, or update it on the fill page.')
-        return {'site': site, 'auto': False}
-    if not row: return {'site': site, 'auto': False}
-    _TRIED[(tid, site)] = _now()
-    threading.Thread(target=_auto, args=(store, tid, sid, site, rid, fill or type_in), daemon=True, name=f'signin-{tid}').start()
-    return {'site': site, 'auto': True}
+    return {'site': site, 'auto': False}
 
 
-def _auto(store, tid, sid, site, rid, fill):
+def _auto(store, tid, sid, site, rid, fill, ask=None):
+    """Type the saved sign-in. `ask`: raises the owner's ask - called only when the fill did not go in."""
     from . import vault
     row = saved(store, site) or {}
     try:
@@ -381,10 +401,12 @@ def _auto(store, tid, sid, site, rid, fill):
         why = str(e) if 'also asks for' in str(e) else (f'The saved password for {site} did not work - {site} kept its sign-in form up. '
                                                       'Sign in on the page, or fill it in securely with the right one - it is saved when it works.')
         store.add_comment(tid, 'taskuary', 'agent', why[0].upper() + why[1:] + ('.' if not why.endswith('.') else ''))
+        if ask: ask()
     except Exception as e:
         why = str(e) if isinstance(e, SignInError) else 'the browser could not be reached'
         _audit(store, tid, site, 'vault', False, why)
         store.add_comment(tid, 'taskuary', 'agent', f'The saved sign-in for {site} was not used: {why}. Sign in yourself to continue.')
+        if ask: ask()
 
 
 def _code_of(key):
@@ -445,6 +467,11 @@ def _continue(store, tid, rid, site, actor, code=False):
     if not sess:
         store.add_comment(tid, actor, 'agent', f'{did}, but no agent is running on this task to tell - open it to continue.')
         return False
+    # ...and the chat shows what woke the agent's next answer (the owner, 2026-11-05: "why is there taskuary twice"): a short trigger line
+    try:
+        from .general import BRIEF_ACTOR, USER_TYPE
+        if hasattr(sess, 'send_prompt'): store.add_comment(tid, BRIEF_ACTOR, USER_TYPE, f'{did}.')
+    except Exception as e: logger.debug(f'signin: the trigger line for task {tid} was not filed - {e}')
     try:
         if hasattr(sess, 'send_prompt'): sess.send_prompt(said, as_owner=False)
         else: term.type_into(sess, said)
@@ -515,6 +542,10 @@ CAPTURE = r'''(() => {
 })()'''
 WATCH_FOR = 30 * 60             # a sign-in ask is watched this long, then left to the owner's word
 WATCH_EVERY = 1.5
+# ...and PAST ONLY ONCE IT STAYS PAST (the owner, 2026-11-05, a site that asks for the user name, then the password on a page of its own: the
+# password page, still loading, read as no user box and no password box at another address - "signed in", the agent was woken on the
+# password page, and when the owner did sign in nothing was watching any more). This many readings in a row, ~4.5 s at WATCH_EVERY
+PAST_STEADY = 3
 _TYPED = {}                     # tid -> {'user', 'pw', 'site'}: what the owner sent on the page, until the sign-in is past - memory only
 SAVED_LINE = 'Saved your {site} sign-in to the vault - remove it under {where}, Saved sign-ins.'
 
@@ -566,7 +597,7 @@ def watch(store, tid: int, sid: str, site: str, rid: str, conn=None, every: floa
             c.call('Page.addScriptToEvaluateOnNewDocument', {'source': CAPTURE})
             c.js(CAPTURE)
         except SignInError as e: logger.debug(f'signin: the {site} page of task {tid} could not be listened to - {e}')
-        start, end = (c.fields('') or {}).get('href') or '', time.time() + until
+        start, end, steady = (c.fields('') or {}).get('href') or '', time.time() + until, 0
         while time.time() < end and _asked(store, tid, rid):
             time.sleep(every)
             for ev in c.drain():
@@ -575,7 +606,8 @@ def watch(store, tid: int, sid: str, site: str, rid: str, conn=None, every: floa
             if sid in browserview.FILLING: continue
             try: f = c.fields('')
             except SignInError: continue                         # mid-navigation: the page cannot be read for a moment
-            if past(f, site, start) and _asked(store, tid, rid):
+            steady = steady + 1 if past(f, site, start) else 0
+            if steady >= PAST_STEADY and _asked(store, tid, rid):
                 kept = keep_typed(store, tid, site)
                 _audit(store, tid, site, 'page', True, saved=kept)
                 _continue(store, tid, rid, site, 'owner')

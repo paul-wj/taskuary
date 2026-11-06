@@ -76,7 +76,8 @@ ACTIONS = {
                        ('slug', 'text'), 'playbooks_enabled'),
     # what the outcome ledger counted about a kind of work, as a block on its playbook (playbook_facts.py): reflection proposes it,
     # the owner's yes writes it - a derived line never edits a playbook on its own (spec 2026-10-12, build step 5)
-    'amend_playbook': ('add what the ledger learned to a playbook', ('slug', 'text'), 'playbooks_enabled'),
+    # ...and what an agent's turn found the hard way, as a lesson on the playbook it belongs to (playbooks.take_lesson, the owner 2026-11-05)
+    'amend_playbook': ('add what was learned to a playbook', ('slug', 'text'), 'playbooks_enabled'),
     'publish_skill': ('publish this reviewed Skill package and expose it to compatible local Agents',
                       ('generation_id', 'digest'), None),
     # An instruction that BELONGS in a switch should be written there, not left as a note the
@@ -97,6 +98,57 @@ ACTIONS = {
 }
 HELD_ACTS = ('browser_act', 'shell_act', 'desktop_act')     # raised by a hook before the act ran - never an agent's marker
 
+# A POST IS DRAWN AS THE POST (the owner, 2026-11-05: "it's not showing the post and the image as a linkedin post and asking me if i want to
+# post it"): a run_tool on one of these is the owner's words on a network, so its card shows them as a post, editable, with the picture
+# where the network takes one - and what the owner left in the box is what goes. MEDIA: the ones that carry a picture from here.
+POSTS = {'linkedin_post': 'LinkedIn', 'bluesky_post': 'Bluesky', 'mastodon_post': 'Mastodon'}
+MEDIA = {'linkedin_post'}
+
+
+def is_post(p: dict) -> bool: return (p or {}).get('action') == 'run_tool' and (p or {}).get('type') in POSTS
+
+
+def picture_why(tid, p: dict) -> str:
+    """'' when a post's `image` is a picture in the task's own folder it can carry; else what is wrong, said to the agent."""
+    if not p.get('image'): return ''
+    from . import linkedin, outputs
+    if p.get('type') not in MEDIA: return f"{POSTS.get(p.get('type'), p.get('type'))} posts carry no picture from here - post the words alone"
+    f = outputs.named(int(tid), p['image']) if tid else None
+    if not f: return f"{p['image']} is not a file in your task folder - save the picture there first"
+    if f.suffix.lower() not in linkedin.IMAGE_TYPES: return f'{f.name} is not a PNG, JPG or GIF picture'
+    return ''
+
+
+def _edited(p: dict, final_text, fields: dict = None) -> dict:
+    """An act's box IS its words: what the owner left there is what goes (an empty box is not a post, so it stays as proposed) - in the key
+    its catalogue card edits (a post's `text`, a tracker comment's `body`). `fields`: the choices the owner changed on the card (who sees a
+    post, post now or save as draft), only those the card declares editable (connectorcatalog.owner_edits)."""
+    from . import connectorcatalog as cat
+    t, act = str(final_text or '').strip(), cat.action_for((p or {}).get('type')) if (p or {}).get('action') == 'run_tool' else None
+    k = cat.text_key(act) or ('text' if is_post(p) else None)
+    if k and t and not t.startswith('{'): p = {**p, k: t}
+    return cat.owner_edits(p, fields) if fields else p
+
+
+def _ran(res) -> dict:
+    """An executor's answer as the card reads it: (headline, body), or the {rows, columns} a connector returns - its first row's
+    link the place it landed. Unpacking that dict as a pair read its two KEYS: a LinkedIn post said "rows" / "columns"."""
+    if isinstance(res, dict):
+        rows = res.get('rows') or []
+        first = rows[0] if rows and isinstance(rows[0], dict) else {}
+        return {k: v for k, v in {'headline': str(res.get('headline') or f"{len(rows)} row{'s' * (len(rows) != 1)}")[:200],
+                                  'output': json.dumps(rows, default=str)[:2000], 'url': first.get('url') or ''}.items() if v}
+    head, body = res
+    return {'headline': str(head)[:200], 'output': (body or '')[:2000]}
+
+
+def receipt(rv: dict, final_text, out: dict, fields: dict = None) -> str:
+    """What an approved proposal keeps as its FinalText: as proposed, with the owner's edit and what it did - so a post still says
+    "Posted" and its link when the chat is read again."""
+    try: p = json.loads(rv.get('DraftText') or '{}')
+    except ValueError: return rv.get('DraftText')
+    return json.dumps({**_edited(p, final_text, fields), 'result': out}, default=str) if p.get('action') == 'run_tool' else rv.get('DraftText')
+
 # What a proposal may touch: routing and visibility only. Never a permission that lets anything OUT
 # (agent_push_enabled, github_replies_ok, reply channels), never a token, key, model or document.
 SETTING_ALLOW = {
@@ -106,7 +158,6 @@ SETTING_ALLOW = {
     'poll_minutes': 'how often the mailboxes are read',
     'funnel_hours': 'how far back the pipe reaches',
     'funnel_max': 'how much the pipe holds at once',
-    'timeline_fade': 'how old rows dim on the work rail',
     'calendar_enabled': 'read your calendar',
     'playbooks_enabled': 'let agents follow and propose playbooks',
     'agent_issues_enabled': 'treat GitHub issues as the tracker (off = GitHub items are rows on the work rail, not tasks)',
@@ -114,7 +165,7 @@ SETTING_ALLOW = {
 # ...and the same rule for a CONNECTOR's own switches, which is where "PRs are Timeline items, not
 # tasks" actually lives (store.github_permissions reads the connector first).
 CONNECTOR_ALLOW = {'github': {'use_as_tracker': 'treat GitHub issues/PRs as the tracker'}}
-SETTING_VALUES = {'answer_to_agent': ('auto', 'ask', 'off'), 'timeline_fade': ('none', 'soft', 'normal', 'strong')}
+SETTING_VALUES = {'answer_to_agent': ('auto', 'ask', 'off')}   # timeline_fade retired with the Timeline (audit, 2026-11-05)
 
 
 def _switch_ok(store, name) -> bool:
@@ -206,6 +257,13 @@ def collect(store, task_id: int, transcript: str, actor='agent') -> list:
 WHERE_KEYS = ('path', 'to', 'folder', 'table', 'url', 'bucket', 'key', 'container', 'blob', 'channel', 'list', 'database', 'item')
 
 
+# A REFUSAL THAT STEERS (the owner, 2026-11-05, from the open-source assistants: a tool's error says what to try next): "the reason is on
+# the task" sent the agent to a page it cannot read - it is told the reason, and the next move
+def refusal_line(why) -> str:
+    return (f"the proposal was refused: {why or 'it did not validate'}. Fix that and propose it again - or, if it cannot be fixed from "
+            "here, say in your answer what is missing and who could supply it.")
+
+
 def tool_words(store, p: dict) -> str:
     from . import reports, scopes, trackers
     t = str(p.get('type') or '')
@@ -221,8 +279,9 @@ def tool_words(store, p: dict) -> str:
     return f"{verb} {what}" + (f" on {on}" if on else '')
 
 
-def queue(store, task_id: int, p: dict, actor='agent') -> dict | None:
-    """ONE proposal through the gate: a pending review when it validates, a recorded refusal (None) when not."""
+def queue(store, task_id: int, p: dict, actor='agent', refused: list | None = None) -> dict | None:
+    """ONE proposal through the gate: a pending review when it validates, a recorded refusal (None) when not - its reason appended to
+    `refused`, so the agent that proposed it is told why and can fix it (refusal_line)."""
     from . import trackers
     # an agent's comment or move on "the ticket" means the item this task came from: named on the proposal, so the card says which
     if p.get('action') == 'run_tool' and p.get('type') in trackers.TYPES and not str(p.get('item') or '').strip():
@@ -234,9 +293,28 @@ def queue(store, task_id: int, p: dict, actor='agent') -> dict | None:
         generation = skillstate.get(store, 'generation', int(p['generation_id']))
         if not generation or generation.get('task_id') != task_id:
             ok, why = False, 'a task may only propose its own Skill package'
+    # ...a picture on a post is one in the task's own folder, named - never a path the agent wrote (execute resolves it again)
+    if ok and p.get('action') == 'run_tool':
+        p = {k: v for k, v in p.items() if k != 'image_path'}
+        if why := picture_why(task_id, p): ok = False
+        elif p.get('image'):                     # ...kept as its name in the folder: an agent names it by its full path as often as not
+            from . import outputs
+            f = outputs.named(int(task_id), p['image'])
+            p = {**p, 'image': f.relative_to(outputs.folder(int(task_id))).as_posix()}
+    # ...and what the agent left unnamed on a card's choices comes from the connection's own defaults (Connections), so the card shows them
+    if ok and p.get('action') == 'run_tool':
+        from . import connectorcatalog as cat
+        if act := cat.action_for(p.get('type')):
+            c = store.get_connector(int(p['connector_id'])) if str(p.get('connector_id') or '').isdigit() else store.get_connector_by_type(act['card'])
+            try: conf = json.loads((c or {}).get('ConfigJson') or '{}')
+            except ValueError: conf = {}
+            p = cat.with_defaults(p, conf)
+            if bad := next((f for f in act['fields'] if f['key'] in p and not cat.choice_ok(f, p[f['key']])), None):
+                ok, why = False, f"{bad['key']} must be one of: {', '.join(str(c['value']) for c in bad['choices'])}"
     if not ok:
         store.add_comment(task_id, actor, 'agent', f'PROPOSAL REFUSED ({p.get("action")}): {why}')
         store.audit('task', task_id, 'proposal_refused', actor, detail={'action': p.get('action'), 'why': why})
+        if refused is not None: refused.append(why)
         return None
     # a close-out is not the agent's ask ("proposes to merge the pull request this task opened" was said of a stranger's PR), and
     # neither is a workflow's own repair or write, raised by the run itself (flow.py) with no agent anywhere on the task
@@ -279,12 +357,15 @@ def closeout_pending(store, tid: int):
 # playbook proposal its agent left (approved or dismissed) are each said on the task, and only the owner's Mark done closes it
 # (2026-10-18: "sending and closing are two steps, never automatic"). A sent reply used to dismiss the undecided playbook.
 PLAYBOOK = 'write_playbook'
+# ...and a lesson an agent's turn left for a playbook (playbooks.take_lesson) is the same kind of ask: the owner's yes or no on how a kind of
+# job is done, never a close-out owed on the task - so it holds, settles and counts as the playbook does (the owner, 2026-11-05)
+PLAYBOOKS = (PLAYBOOK, 'amend_playbook')
 
 
 def playbook_pending(store, tid: int):
     """The playbook proposal still waiting on the owner's approve or dismiss, if any."""
     return next((r for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action' AND Status='pending'", (tid,))
-                 if _action(r) == PLAYBOOK), None)
+                 if _action(r) in PLAYBOOKS), None)
 
 
 # A PLAYBOOK PROPOSAL IS ALWAYS SEEN (the owner, 2026-10-21). It is drafted after the task's ending, and a task that closed itself
@@ -319,7 +400,7 @@ def held_pending(store, tid) -> dict | None:
     for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action' AND Status='pending' ORDER BY ReviewId DESC", (int(tid),)):
         try: p = json.loads(r.get('DraftText') or '{}') or {}
         except (TypeError, ValueError): p = {}
-        if not isinstance(p, dict) or p.get('closeout') or p.get('action') in (PLAYBOOK, *CLOSEOUT): continue
+        if not isinstance(p, dict) or p.get('closeout') or p.get('action') in (*PLAYBOOKS, *CLOSEOUT): continue
         what = (p.get('what') or str(p.get('command') or '')[:160]) if p.get('action') in HELD_ACTS else ''
         return {'rid': r['ReviewId'], 'action': p.get('action') or '', 'what': ' '.join(str(what or r.get('Reason') or p.get('action') or 'a step').split())[:240]}
     return None
@@ -327,7 +408,7 @@ def held_pending(store, tid) -> dict | None:
 
 def owed(store, tid: int) -> bool:
     """Something of the close-out still waits on the owner: a reply, a close-out act, any other proposal - not the playbook."""
-    return any(_action(r) != PLAYBOOK for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Status='pending'", (tid,)))
+    return any(_action(r) not in PLAYBOOKS for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Status='pending'", (tid,)))
 
 
 def closed_out(store, tid: int, actor: str, said: str) -> bool:
@@ -425,7 +506,7 @@ def settle(store, rv: dict, verb: str, actor='owner') -> None:
     if tid and _action(rv) == 'publish_skill':
         from . import skillauthoring
         return skillauthoring.review_settled(store, rv, verb, actor)
-    if tid and _action(rv) == PLAYBOOK: return playbook_answered(store, tid, actor)
+    if tid and _action(rv) in PLAYBOOKS: return playbook_answered(store, tid, actor)
     if not tid: return
     if _action(rv) == 'browser_act' and verb not in ('approve', 'edit'):           # dismissed: the waiting agent hears it was not done
         from . import browsergate
@@ -479,7 +560,7 @@ def close_pr(store, rv: dict, actor='owner') -> dict:
 from .ghcloseout import Refused as ChecksRed      # a close-out GitHub's state refuses now, with what the card may offer instead
 
 
-def execute(store, rv: dict, actor='owner', final_text: str = None, skip_checks: bool = False) -> dict:
+def execute(store, rv: dict, actor='owner', final_text: str = None, skip_checks: bool = False, fields: dict = None) -> dict:
     """Run an APPROVED proposal. Called from the verdict road, and it re-validates: the
     switch may have gone off between proposing and approving, and the approval does not
     grant the permission.
@@ -493,6 +574,7 @@ def execute(store, rv: dict, actor='owner', final_text: str = None, skip_checks:
         p['text'] = final_text.strip()
     # a tracker close-out's box IS its comment: what the owner left there goes, emptied included (None = pressed off the card, as filed)
     if p.get('action') == 'close_item' and final_text is not None and not str(final_text).lstrip().startswith('{'): p['text'] = str(final_text).strip()
+    p = _edited(p, final_text, fields)
     ok, why = validate(store, p)
     if not ok: raise RuntimeError(f'refused at execution: {why}')
     tid, a = rv.get('TaskId'), p['action']
@@ -556,9 +638,7 @@ def execute(store, rv: dict, actor='owner', final_text: str = None, skip_checks:
             if c.get('connector'):
                 conn = store.get_connector_by_type(c['connector'])
                 if not conn: raise RuntimeError(f"no {c['connector']} connector to change")
-                cfg = json.loads(conn.get('ConfigJson') or '{}')
-                cfg[c['name']] = c['value']
-                store.save_connector({**dict(conn), 'ConfigJson': json.dumps(cfg)}, actor)
+                store.merge_connector_config(conn['ConnectorId'], {c['name']: c['value']})
                 done.append(f"{c['connector']}.{c['name']} = {c['value']}")
             else:
                 store.set_setting(c['name'], str(c['value']), actor)
@@ -569,6 +649,8 @@ def execute(store, rv: dict, actor='owner', final_text: str = None, skip_checks:
         if a == 'amend_playbook' and p.get('block') and not edited:      # the ledger's block onto the page as it is NOW (playbook_facts)
             from .people_pages import splice
             p['text'] = splice(playbooks.read(p['slug']) or p['text'], p['block'])
+        elif a == 'amend_playbook' and p.get('lessons') and not edited:   # ...and an agent's lessons, onto the page as it is NOW (take_lesson)
+            p['text'] = playbooks.with_lessons(playbooks.read(p['slug']) or p['text'], p['lessons'])
         slug = playbooks.write(p['slug'], p['text'])
         out = {'playbook': slug, 'path': str(playbooks.folder() / f'{slug}.md')}
     elif a == 'repair_workflow':
@@ -595,8 +677,12 @@ def execute(store, rv: dict, actor='owner', final_text: str = None, skip_checks:
     else:                                   # run_tool
         from .reports import REGISTRY, resolve_cfg
         # the owner approved THIS query, so it may commit - the one road to a write on a read-level SQL card
-        head, body = REGISTRY[p['type']](resolve_cfg(store, {**{k: v for k, v in p.items() if k not in ('action', 'flow_run')}, '_write': True}))
-        out = {'headline': str(head)[:200], 'output': (body or '')[:2000]}
+        cfg = {k: v for k, v in p.items() if k not in ('action', 'flow_run', 'image_path', 'result')}
+        if p.get('image'):
+            from . import outputs
+            if why := picture_why(tid, p): raise RuntimeError(f'{why} - nothing was posted')
+            cfg['image_path'] = str(outputs.named(int(tid), p['image']))
+        out = _ran(REGISTRY[p['type']](resolve_cfg(store, {**cfg, '_write': True})))
     if tid: store.add_comment(tid, actor, 'human', f'APPROVED PROPOSAL ({a}): {json.dumps(out)[:600]}')   # a task-less one has no card to say it on
     store.audit('review', rv['ReviewId'], 'proposal_executed', actor, detail={'action': a, 'result': out})
     # a workflow run that stopped for this yes goes on from that step (flow.resume) - on its own thread, as a run starts: a last

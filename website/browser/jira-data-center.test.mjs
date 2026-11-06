@@ -2,13 +2,16 @@
 // deployment selector (Cloud / Data Center). Data Center authenticates with the account username and an API token as the Basic
 // password and reads Jira REST v2; it is read-only - no upstream write or close-out is offered.
 //
-// The tests drive the ACTUAL card: open it (the app's own #connector=jira deep link, a fresh page per locale so no unsaved draft is
-// retained), select Data Center, type the fictional credentials, and press the REAL buttons - Test (the unsaved values on screen),
-// Save & continue, and Sync now - observing the recorded wire and the REAL Timeline rows the poll produces. The fictional DC Jira
-// upstream lives in the fixture (fixture_changes.py): the demo's network guard fails every outbound socket, so the fixture intercepts
-// Jira's HTTP at the `requests` boundary and answers ONLY the invented site (the real backend functions run for real against it).
-// What the tests verify is the recorded wire - never a real host, never a token value. Invented site, account and issues: reserved
-// example domains only.
+// The tests drive the ACTUAL card: open it (the app's own #connector=jira deep link, a fresh page per locale, over the seed's
+// reset card), select Data Center, type the fictional credentials, and press the REAL buttons - Test and Sync now - observing
+// the recorded wire and the REAL Timeline rows the poll produces. Since the autosave (2026-11-05) the card has no Save button:
+// every field saves itself once the typing pauses (a ConfigPatch of the changed keys only), and the write-only token goes when
+// its box is left (blur). The tests therefore wait on the SERVER for what the card's own saves wrote, and on the Enable step's
+// Sync now box for the autosave's signature - greyed with its reason while a save is still out, lit once what is saved is on.
+// The fictional DC Jira upstream lives in the fixture (fixture_changes.py): the demo's network guard fails every outbound socket,
+// so the fixture intercepts Jira's HTTP at the `requests` boundary and answers ONLY the invented site (the real backend
+// functions run for real against it). What the tests verify is the recorded wire - never a real host, never a token value.
+// Invented site, account and issues: reserved example domains only.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { startHarness } from "./harness.mjs";
@@ -16,6 +19,8 @@ import { startHarness } from "./harness.mjs";
 const SITE = "https://jira.northwind.example";
 const USER = "alex@northwind.example";
 const TOKEN = "fixture-dc-token-not-real";
+// the reason the Enable step's Sync box carries (untranslated) while the card's saves are still out (connectorDraft.syncState)
+const SAVING_WHY = "Saving your change - Sync now reads what is saved";
 
 // fixture calls go to the isolated backend (not the UI origin), with the owner token, as the other browser tests do
 const call = async (harness, path, body) => {
@@ -53,6 +58,18 @@ const typeToken = (page, v) => page.evaluate((v) => {
   i.dispatchEvent(new Event("input", { bubbles: true }));
   return true;
 }, v);
+// LEAVING THE BOX: the card's write-only token saves only when its box is left (useBoxesSave flushes the secret on blur). The
+// box is genuinely entered (focus) and then left for another control - a real focus change, so the real blur/focusout fires and
+// the card's own onBlur flushes the secret
+const blurSecret = (page) => page.evaluate(() => {
+  const i = document.querySelector('[data-tq-secret="secret"] input') || document.querySelector('input[type="password"]');
+  if (!i) return false;
+  i.focus();
+  const other = document.querySelector('[data-tq-conn-field="base_url"] input');
+  if (other && other !== i) other.focus();   // leave the secret box for the site field
+  else i.blur();
+  return true;
+});
 // the deployment selector: pick the option whose STABLE id is `value` (cloud | data_center) - not a translated label
 const setDeployment = (page, value) => page.evaluate((value) => {
   const opt = document.querySelector(`[data-tq-jira-deployment] [data-tq-jira-deploy="${value}"]`);
@@ -78,7 +95,28 @@ const pressButton = (page, sel) => page.evaluate((sel) => {
   return true;
 }, sel);
 const bodyHas = (page, text) => page.evaluate((t) => document.body.innerText.includes(t), text);
-// open the Jira card through the app's own deep link (no guessed browse-card keys), on a FRESH page so no unsaved draft is retained.
+// the autosave's marker on the card: the Save & continue button is gone - the fields save themselves
+const noSaveButton = (page) => page.evaluate(() => !document.querySelector('[data-tq-save-conn]'));
+// the Enable step's Sync now box: {present, disabled, why} - why is the untranslated reason on the stable attribute
+const syncBox = (page) => page.evaluate(() => {
+  const box = document.querySelector("[data-tq-sync-why]");
+  const btn = box?.querySelector("button");
+  return { present: !!btn, disabled: btn ? btn.disabled : null, why: box?.getAttribute("data-tq-sync-why") || "" };
+});
+// the card's row as the SERVER holds it - the autosave's ground truth (what the card's own saves wrote, not what the test typed)
+const connectorRow = (harness, type) => call(harness, "/api/connectors").then((r) => r.data.find((c) => c.Type === type));
+// wait until the card's own autosave has put what the test typed on the server
+const waitForSaved = async (harness, type, until, timeout = 30000) => {
+  const t0 = Date.now();
+  for (;;) {
+    const row = await connectorRow(harness, type);
+    if (row && until(row)) return row;
+    if (Date.now() - t0 > timeout) throw new Error(`the card's autosave did not save what the test typed within ${timeout}ms`);
+    await new Promise((r) => setTimeout(r, 250));
+  }
+};
+// open the Jira card through the app's own deep link (no guessed browse-card keys), on a FRESH page: the seed reset the card
+// server-side, so a fresh page is what draws it - the card's fields save as they are typed, nothing is kept aside.
 // The card opens on the Credentials step, so the site field is the stable "it is open" signal; the deployment selector
 // (data-tq-jira-deployment) is what this feature adds and is legitimately absent before it is built (the red case).
 async function openJiraCard(harness, page, language = "en") {
@@ -86,7 +124,8 @@ async function openJiraCard(harness, page, language = "en") {
   await page.goto(`${harness.ui}/#connector=jira`, { waitUntil: "domcontentloaded", timeout: 90000 });
   await page.waitForSelector('[data-tq-conn-field="base_url"] input', { timeout: 120000 });
 }
-// type the fictional DC credentials on the open card (stable hooks, so this holds in either language)
+// type the fictional DC credentials on the open card (stable hooks, so this holds in either language). The pick and the typing
+// save themselves (a ConfigPatch of the changed keys); the token still sits in its box until it is left (blurSecret)
 async function typeDcCredentials(page) {
   await page.waitForSelector("[data-tq-jira-deployment]", { timeout: 20000 });
   assert.ok(await setDeployment(page, "data_center"), "the Data Center option is offered");
@@ -96,14 +135,16 @@ async function typeDcCredentials(page) {
   assert.ok(await typeToken(page, TOKEN), "the token box is under Credentials");
 }
 
-test("Jira Data Center renders the read-only selector in both locales and keeps the draft", { timeout: 600000 }, async (t) => {
+test("Jira Data Center renders the read-only selector in both locales and saves as it is typed", { timeout: 600000 }, async (t) => {
   const harness = await startHarness();
   t.after(() => harness.close());
-  // arm the world (and leave the card on, so the card's own Sync now box is drawn): the surface test needs no wire, only the card
-  const seeded = await seed(harness, "success", { base_url: SITE, email: USER, deployment: "data_center" });
-  assert.ok(seeded.ok, `seed: ${JSON.stringify(seeded)}`);
 
   for (const language of ["en", "zh-CN"]) {
+    // arm the world (and reset the card to a fresh-but-on card) INSIDE the locale loop: the first locale's autosave is real, so
+    // the second must start from the seed's reset card, not the saved one
+    const seeded = await seed(harness, "success", { base_url: SITE, email: USER, deployment: "data_center" });
+    assert.ok(seeded.ok, `seed: ${JSON.stringify(seeded)}`);
+
     const page = await harness.newPage();
     t.after(() => page.close().catch(() => {}));
     const errors = [];
@@ -112,6 +153,7 @@ test("Jira Data Center renders the read-only selector in both locales and keeps 
     await openJiraCard(harness, page, language);
     await page.waitForSelector("[data-tq-jira-deployment]", { timeout: 20000 });
     assert.equal(await deploymentValue(page), "cloud", "an unsaved card is Cloud by default");
+    assert.ok(await noSaveButton(page), "the card has no Save button: its fields save themselves");
 
     assert.ok(await setDeployment(page, "data_center"));
     assert.equal(await deploymentValue(page), "data_center");
@@ -130,36 +172,57 @@ test("Jira Data Center renders the read-only selector in both locales and keeps 
     assert.equal(await fieldValue(page, "email"), USER, "the username survives a deployment switch");
     assert.equal(await tokenValue(page), TOKEN, "the typed token survives a deployment switch");
 
-    // an unsaved deployment change: the Sync now button (in the Enable step - the stepper collapses a step that is not open,
-    // so open it first) is present AND disabled, saying why (Sync reads what is saved)
+    // the typed token still sits in its box, UNFOCUSED (the test types .value, it never takes focus): while the secret is
+    // unsaved the Sync now button (in the Enable step - the stepper unmounts a step that is not open, so open it first) is
+    // present AND disabled, saying why (Sync reads what is saved). Leaving the step unmounts the box, but an unfocused box does
+    // not blur, so the secret is still not saved - the disabled state is stable, not a race
     assert.ok(await openStep(page, "enable"), "the Enable step can be opened");
     await page.waitForSelector("[data-tq-sync-why]", { timeout: 20000 });
-    const blocked = await page.evaluate(() => {
-      const box = document.querySelector("[data-tq-sync-why]");
-      const btn = box?.querySelector("button");
-      return { present: !!btn, disabled: btn ? btn.disabled : null, why: box?.getAttribute("data-tq-sync-why") || "" };
-    });
+    const blocked = await syncBox(page);
     assert.equal(blocked.present, true, "Sync now is drawn");
-    assert.equal(blocked.disabled, true, "Sync now is disabled while the deployment is unsaved");
+    assert.equal(blocked.disabled, true, "Sync now is disabled while the secret is still unsaved");
+    assert.equal(blocked.why, SAVING_WHY, "the reason says what Sync would not read");
 
-    // a LIVE locale flip (the app's own setLocale, same realm) preserves the unsaved draft and redraws the card in the other language
-    await page.evaluate(async () => { const m = await import("/src/i18n.js"); m.setLocale(m.getLocale() === "en" ? "zh-CN" : "en"); });
-    await page.waitForFunction(() => document.querySelector('[data-tq-conn-field="base_url"] input') !== null, { timeout: 15000, polling: 200 });
+    // back on Credentials, LEAVE THE TOKEN'S BOX: its write-only save goes at once (the card's own onBlur), and the card's
+    // autosave has the Data Center config and the token on the server - no Save button was pressed
+    assert.ok(await openStep(page, "credentials"), "the Credentials step can be opened again");
+    await page.waitForSelector('[data-tq-secret="secret"] input', { timeout: 20000 });
+    assert.ok(await blurSecret(page), "the token box can be left");
+    const saved = await waitForSaved(harness, "jira", (row) => {
+      const cfg = JSON.parse(row.ConfigJson || "{}");
+      return cfg.deployment === "data_center" && cfg.base_url === SITE && cfg.email === USER && row.HasSecret;
+    });
+    assert.ok(saved.HasSecret, "the token is stored write-only");
+    assert.ok(!JSON.stringify(saved).includes(TOKEN), "the saved token is not returned by the connector list");
+    // and once what is saved is on, Sync now reads it: the box's reason is gone and the button is lit (the card's own secret
+    // save opened the Test step, so the Enable step is opened again to reach its Sync box)
+    assert.ok(await openStep(page, "enable"), "the Enable step can be opened after the save");
+    await page.waitForFunction(() => {
+      const b = document.querySelector("[data-tq-sync-now]");
+      return b && !b.disabled;
+    }, { timeout: 20000, polling: 200 });
+
+    // Return from Enable before inspecting credential fields, which are unmounted while another step is open.
+    assert.ok(await openStep(page, "credentials"), "the saved credentials can be reopened");
+    await page.waitForSelector('[data-tq-conn-field="base_url"] input');
+    // Execute in the app's module realm so the rendered locale subscription receives the change.
+    const flippedLanguage = language === "en" ? "zh-CN" : "en";
+    await page.addScriptTag({ type: "module", content: `import { setLocale } from "/src/i18n.js"; setLocale(${JSON.stringify(flippedLanguage)});` });
+    await page.waitForFunction((lang) => document.documentElement.lang === lang
+      && document.querySelector("[data-tq-jira-deployment]")?.textContent.includes(lang === "zh-CN" ? "Jira 部署" : "Jira deployment"),
+    { timeout: 15000, polling: 200 }, flippedLanguage);
     assert.equal(await fieldValue(page, "base_url"), SITE, "a locale flip keeps the site");
     assert.equal(await fieldValue(page, "email"), USER, "a locale flip keeps the username");
-    assert.equal(await tokenValue(page), TOKEN, "a locale flip keeps the token");
     assert.equal(await deploymentValue(page), "data_center", "a locale flip keeps the deployment");
-    // and the card is actually redrawn in the other language: the Credentials step label is its translated word, not the other
     const flipped = await page.evaluate(() => document.body.innerText);
-    if (flipped.includes("凭据")) assert.ok(flipped.includes("Jira 部署"), "the DC selector is drawn in Chinese");
-    else assert.ok(flipped.includes("Jira deployment"), "the DC selector is drawn in English");
+    assert.ok(flipped.includes(flippedLanguage === "zh-CN" ? "Jira 部署" : "Jira deployment"), "the selector redraws in the selected language");
 
     assert.deepEqual(errors, [], "no page errors in this locale");
     assert.deepEqual(page.fixtureEscapes, [], "nothing reached outside the fixture");
   }
 });
 
-test("Jira Data Center connects read-only through the real card: Test, Save, Sync, real Timeline rows", { timeout: 600000 }, async (t) => {
+test("Jira Data Center connects read-only through the real card: Test, autosave, Sync, real Timeline rows", { timeout: 600000 }, async (t) => {
   const harness = await startHarness();
   t.after(() => harness.close());
   const page = await harness.newPage();
@@ -171,8 +234,23 @@ test("Jira Data Center connects read-only through the real card: Test, Save, Syn
   assert.ok(seeded.ok, `seed: ${JSON.stringify(seeded)}`);
   await openJiraCard(harness, page, "en");
   await typeDcCredentials(page);
+  assert.ok(await noSaveButton(page), "the card has no Save button: its fields save themselves");
 
-  // the REAL Test button (the Test step is collapsed until opened) - it tries the unsaved values on screen through the real /test route
+  // leave the token's box and wait for the card's own saves: the Data Center deployment and the fields land as a ConfigPatch,
+  // the write-only token with the blur
+  assert.ok(await blurSecret(page), "the token box can be left");
+  const saved = await waitForSaved(harness, "jira", (row) => {
+    const c = JSON.parse(row.ConfigJson || "{}");
+    return c.deployment === "data_center" && c.base_url === SITE && c.email === USER && row.HasSecret;
+  });
+  const savedCfg = JSON.parse(saved.ConfigJson || "{}");
+  assert.equal(savedCfg.deployment, "data_center", "the saved card carries the Data Center deployment");
+  assert.equal(savedCfg.base_url, SITE);
+  assert.equal(savedCfg.email, USER);
+  assert.ok(saved.HasSecret, "the token is stored write-only");
+  assert.ok(!JSON.stringify(saved).includes(TOKEN), "the saved token is not returned by the connector list");
+
+  // the REAL Test button (the Test step is collapsed until opened) - it tries what the card just saved through the real /test route
   assert.ok(await openStep(page, "test"), "the Test step can be opened");
   await page.waitForSelector('[data-tq-test-btn]', { timeout: 20000 });
   assert.ok(await pressButton(page, '[data-tq-test-btn]'), "the Test button is pressable");
@@ -190,26 +268,13 @@ test("Jira Data Center connects read-only through the real card: Test, Save, Syn
   assert.ok(w.auth.token_present, "the Basic password carried a token");
   assert.ok(!JSON.stringify(w).includes(TOKEN), "the recorded wire never carries the token value");
 
-  // the REAL Save & continue button - persists the Data Center deployment and the token. Opening Test folded the Credentials step,
-  // so it (and its Save button) must be opened again before the press
-  assert.ok(await openStep(page, "credentials"), "the Credentials step can be opened again");
-  await page.waitForSelector('[data-tq-save-conn]', { timeout: 20000 });
-  const savedResponse = page.waitForResponse((r) => r.url().endsWith("/api/connectors") && r.request().method() === "POST");
-  assert.ok(await pressButton(page, '[data-tq-save-conn]'), "the Save button is pressable");
-  assert.ok((await savedResponse).ok(), "the actual Save request succeeded");
-  const saved = await call(harness, "/api/connectors");
-  const jiraRow = saved.data.find((c) => c.Type === "jira");
-  const savedCfg = JSON.parse(jiraRow.ConfigJson || "{}");
-  assert.equal(savedCfg.deployment, "data_center", "the saved card carries the Data Center deployment");
-  assert.equal(savedCfg.base_url, SITE);
-  assert.equal(savedCfg.email, USER);
-  assert.ok(jiraRow.HasSecret, "the token is stored write-only");
-  assert.ok(!JSON.stringify(saved).includes(TOKEN), "the saved token is not returned by the connector list");
-
-  // the REAL Sync now button (the Enable step) - the real poll pages across the whole assigned set and writes nothing
+  // the REAL Sync now button (the Enable step) - it reads what is saved, and the real poll pages across the whole assigned set
   assert.ok(await openStep(page, "enable"), "the Enable step can be opened");
-  await page.waitForSelector('[data-tq-sync-now]', { timeout: 20000 });
-  assert.ok(await pressButton(page, '[data-tq-sync-now]'), "Sync now is pressable once the card is saved");
+  await page.waitForFunction(() => {
+    const b = document.querySelector("[data-tq-sync-now]");
+    return b && !b.disabled;
+  }, { timeout: 20000, polling: 200 });
+  assert.ok(await pressButton(page, '[data-tq-sync-now]'), "Sync now is pressable once the card's autosave has landed");
   // Setup hides the rail. Return to Timeline and expand FYI; the demo deliberately files unfamiliar issues.
   await page.goto(harness.ui, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(async () => {
@@ -245,6 +310,13 @@ test("Jira Data Center: a denied search is a failure, not an empty success", { t
   assert.ok(seeded.ok, `seed: ${JSON.stringify(seeded)}`);
   await openJiraCard(harness, page, "en");
   await typeDcCredentials(page);
+
+  // the card's own saves first (the token with its box's leave), so the Test tries the saved Data Center card
+  assert.ok(await blurSecret(page), "the token box can be left");
+  await waitForSaved(harness, "jira", (row) => {
+    const c = JSON.parse(row.ConfigJson || "{}");
+    return c.deployment === "data_center" && row.HasSecret;
+  });
 
   // the real Test: identity answers but the search is a 403, so the test reports a denial, never "connected with zero issues"
   assert.ok(await openStep(page, "test"), "the Test step can be opened");

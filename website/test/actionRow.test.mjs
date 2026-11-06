@@ -142,6 +142,7 @@ test("a card's own <Button> is read into a row verb: its label, handler, disable
 
 
 
+
 // TWO WAYS TO CLOSE, ONE PLACE (the owner, 2026-10-05: "why is close with note not inside the more.. menu but mark done is in the
 // menu?"): Close with a note is Mark done with words, so it stands right after Mark done wherever Mark done stands.
 test("close with a note stands beside Mark done on the bar when a decision is waiting", () => {
@@ -292,4 +293,21 @@ test("the row draws only the table's own verbs: another item's go the moment the
   assert.deepEqual(ran, ["b"], "the press acts on the task on the table, never the one put down");
   for (const o of ["card:a", "card:b", "next:x"]) put(o, null);
   rowTable(null);
+});
+
+// TWO COPIES OF ONE CARD (the chat-model stress run, 2026-11-05): a draft's card under the turn that drafted it and under the turn after it,
+// both mounted for a moment, each re-putting the same verbs on every render. The ids went from one to the other and back at each put, every
+// redraw rendered both again, and the task page went down with "Maximum update depth exceeded". The same verbs again change nothing.
+test("the same verbs put again by two copies of a card settle: no redraw, the press still reaches the latest handler", () => {
+  const hit = [];
+  const mk = (who) => [v("approve:7", "decide", { label: "Send", run: () => hit.push(who) }), v("attach", "more")];
+  put("copy-a", mk("a1")); put("copy-b", mk("b1"));
+  const settled = rowNow();
+  for (let i = 2; i < 6; i++) { put("copy-a", mk(`a${i}`)); put("copy-b", mk(`b${i}`)); }
+  assert.equal(rowNow(), settled);                                     // nothing new to draw: no redraw, so nothing renders again
+  press("approve:7", {}, null, settled.list.find((x) => x.id === "approve:7").of);
+  assert.equal(hit.length, 1); assert.match(hit[0], /^[ab]5$/);        // ...and a press runs a handler from the latest render
+  put("copy-a", [v("approve:7", "decide", { label: "Sending…", disabled: true })]);
+  assert.notEqual(rowNow(), settled);                                  // a change in what the row shows still draws
+  put("copy-a", null); put("copy-b", null);
 });

@@ -35,6 +35,7 @@ import NewSheet from "./NewSheet.jsx";
 import AddIcon from "@mui/icons-material/Add";
 import { processingErrorMessage, processingTransportLimit, unreadProcessingRows } from "./processingAll.js";
 import { fyiTail, pileRows } from "./funnelPile.js";
+import { onRoom, roomWanted } from "./browserSplit.js";
 
 // All and Unread are the only Timeline views. Kind and source remain independent filters.
 // The pill row is a fixed set of CATEGORIES - it must not grow as connections do (a
@@ -190,7 +191,11 @@ export default function FeedView({ onOpenTask, onChanged, active = true, top = n
   const visibleStage = stage;
   // SETUP IS A SCREEN OF ITS OWN (the owner, 2026-11-03: "the welcome screen should take up the entire screen not just the left side"): no
   // sidebar and no rail while setting up - the stage takes the width, its steps a strip across its top (setupRail). The rail stays mounted, hidden
-  const railShown = !setupMode && (!narrow || !visibleStage || railOnNarrow);
+  // ...and folded the same way while a chat's browser needs the owner and the room (browserSplit.wantRoom) - back when it goes
+  const [roomy, setRoomy] = useState(roomWanted);
+  useEffect(() => onRoom(setRoomy), []);
+  const folded = setupMode || (roomy && !narrow);
+  const railShown = !folded && (!narrow || !visibleStage || railOnNarrow);
   const stageShown = setupMode || !narrow || (!!visibleStage && !railOnNarrow);
   const calEvents = useCalToday();
   // The filter dock is a fixed flex sibling of the scroller. Rows never fade at its top edge;
@@ -510,7 +515,7 @@ export default function FeedView({ onOpenTask, onChanged, active = true, top = n
       // card - no ref, a lane's mark only. A ref back on the row cut every subject at a laptop to ~14
       // characters (the walk click-through, 2026-10-17), so a narrower floor means a leaner row, not a wider rail.
       // Everything else goes to the stage, which holds a whole message, the agent's work and the draft.
-      gridTemplateColumns: { xs: "minmax(0, 1fr)", md: setupMode ? "minmax(0, 1fr)" : "minmax(0, clamp(320px, 23.6vw, 380px)) minmax(0, 1fr)" },
+      gridTemplateColumns: { xs: "minmax(0, 1fr)", md: folded ? "minmax(0, 1fr)" : "minmax(0, clamp(320px, 23.6vw, 380px)) minmax(0, 1fr)" },
       mt: { xs: -1.5, md: -2.25 }, pt: { xs: 1.5, md: 2 } }}>
       {/* ── the rail ────────────────────────────────────────────────────────────── */}
       <Box data-tq-keep
@@ -642,9 +647,11 @@ export default function FeedView({ onOpenTask, onChanged, active = true, top = n
           position: "relative", pl: "2px", pr: 1, pt: 0, pb: 3 }}>
           {setupRail ? null : top}
         </Box>
+        {/* ...down to the card's inner edge: a pixel short of it, the top of a row scrolled to a fractional offset showed through under the fade
+            as a dark sliver on the card's bottom border (the scenario run, 2026-11-06); the card's own rounded clip keeps the corners */}
         {bottomFade && more && (
           <Box data-tq-bottom-fade={fade} aria-hidden sx={{
-            position: "absolute", left: "1px", right: "1px", bottom: "1px", zIndex: 6,
+            position: "absolute", left: "1px", right: "1px", bottom: 0, zIndex: 6,
             height: bottomFade.height, pointerEvents: "none",
             background: `linear-gradient(transparent, ${PANEL} ${bottomFade.solidAt}%)`,
           }} />

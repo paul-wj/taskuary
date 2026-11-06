@@ -1015,7 +1015,10 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
         # (agent_on_reply) - which then drafts the reply itself, so the tool-less writer below is not asked for one too
         went = _carry_on(store, tid, msg, mid, follow, actor)
         # ...and an ASIDE (a "thanks", a nudge) leaves the draft as it is, but its agent still hears it and re-plans (thread_moved)
-        if not went and not talking and is_aside(follow): went = thread_moved(store, tid, msg, mid, follow, actor)
+        # ...and so does a fresh QUESTION (reply_only) on a task its assistant already worked: only the tool-less writer heard it, and the
+        # agent's chat never moved under it (the owner, 2026-11-04: "the agent retriggers based off new messages and rethinks")
+        if not went and not talking and (is_aside(follow) or (follow or {}).get('intent') == 'reply_only'):
+            went = thread_moved(store, tid, msg, mid, follow, actor)
         # a drafted reply on this task was written against the thread as it WAS (PW-051): mark it behind, and
         # when the fresh verdict says a reply is still owed, redraft that same review - never a second one
         # ...unless triage read THIS mail as an aside (a "thanks" on the thread): the draft is no further behind, and stays on what it answers
@@ -1689,7 +1692,9 @@ def thread_task(store, tid) -> dict | None:
     t = store.get_task(tid) if tid else None
     if not t: return None
     rep = next((wrapup.report_body(c['Body']) for c in reversed(store.list_comments(tid)) if wrapup.is_report(c['Body'])), '')
-    return with_agent(store, {'tid': tid, 'ref': task_ref(tid), 'title': t.get('Title') or '', 'ask': ' '.join(str(t.get('Summary') or '').split())[:300],
+    # a batch's title and summary say only how many it holds: its items' own titles are what a line about one of them matches
+    items = ' ; '.join(b.get('Title') or '' for b in store.batch_items(tid))
+    return with_agent(store, {'tid': tid, 'ref': task_ref(tid), 'title': t.get('Title') or '', 'ask': ' '.join(str(items or t.get('Summary') or '').split())[:300],
             'status': 'closed' if t.get('Status') == 'done' else 'open',
             # what triage last made of the whole thread, and what the agent last said it did: a new mail is measured against both
             **({'reading': r} if (r := store.task_thread(tid)) else {}), **({'agent_said': rep[:600]} if rep else {}),
@@ -1715,7 +1720,7 @@ def agent_on(store, tid) -> dict | None:
     from . import general, terminal
     from .context import _latest
     s = next((x for x in list(terminal.SESSIONS.values()) if x.task_id == tid and getattr(x, 'alive', False)), None)
-    try: waiting = bool(s and live != 'run' and s.waiting())
+    try: waiting = bool(s and live != 'run' and s.waiting()) or (s is None and live == 'general' and general.idled(tid, store))
     except Exception: waiting = False
     t = store.get_task(tid) or {}
     try: brief = next((m['content'][0]['text'] for m in general.history(store, tid) if m.get('brief')), '') if live == 'general' else ''
@@ -2022,6 +2027,8 @@ def _hand_to_agent(store, cfg: dict, tid, msg: dict, actor: str):
 
 
 CODING_OPENING = set()      # coding tasks whose saved CLI conversation is being reopened by carry-on: live already, no pane yet
+PASS_GATHER = 3.0           # seconds a passed-in line waits once the session is free, for the rest of a burst to join it (_pass_general)
+_PASSING, _PASS_LOCK = {}, threading.Lock()     # task id -> the turns waiting together for its session
 PASS_WAIT = 180             # seconds a passed-in line waits for a session still opening before it is said as not passed
 
 
@@ -2029,7 +2036,8 @@ def live_agent(store, tid) -> str:
     """'general' / 'coding' when a session that can hear a next turn is on the task (or opening), 'run' for a headless run that
     cannot, '' when nothing is."""
     from . import general, terminal
-    if tid in general.OPENING or general.session_for(tid): return 'general'
+    # ...and one that IDLED OUT is still the task's agent (general.idle_out): what comes in is its next turn, and starts it again (_pass_general)
+    if tid in general.OPENING or general.session_for(tid) or general.idled(tid, store): return 'general'
     if tid in CODING_OPENING or any(getattr(x, 'alive', False) and x.task_id == tid for x in list(terminal.SESSIONS.values())): return 'coding'
     return 'run' if any(x['Status'] == 'running' for x in store.list_runs(tid)) else ''
 
@@ -2322,15 +2330,42 @@ def _pass_general(store, tid, msg: dict, turn: str = None):
     # past the deadline while a quick call is in flight, whose session opens only once its answer is in (a wait for a quick slot plus the call)
     while (time.time() < end or tid in quickwork.RUNNING) and tid in general.OPENING and not getattr(general.session_for(tid), 'busy', False): time.sleep(.25)
     ses = general.session_for(tid)
+    # an agent that idled out is started again, as the same run on its saved conversation, to take the line (general.idle_out)
+    if not ses and general.idled(tid, store):
+        try: ses = general.start_session(store, tid, actor='router')
+        except Exception as e: logger.warning(f'task {tid}: the idle agent was not started again for a new line - {e}')
     if not ses:
         store.add_comment(tid, 'router', 'agent', f"{_who_said(msg)}'s new message could not be passed in: the assistant's session ended - Continue picks it up.")
         return
+    # A BURST IS ONE RE-THINK (the owner's stress run, 2026-11-05): five mails in a few seconds were five queued turns, the agent re-reading
+    # one line at a time. A line that finds another already waiting for the session joins it; the one waiting goes in once the session is
+    # free, with every line that joined - one turn
+    with _PASS_LOCK:
+        waiting = _PASSING.get(tid)
+        if waiting is not None: waiting.append(turn or _pass_turn(msg))
+        else: _PASSING[tid] = [turn or _pass_turn(msg)]
+    if waiting is not None:
+        store.add_comment(tid, 'router', 'agent', f"Passed {_who_said(msg)}'s new message to the agent - it joins the turn already waiting.")
+        return
     store.add_comment(tid, 'router', 'agent', f"Passed {_who_said(msg)}'s new message to the agent - it is the assistant's next turn.")
     try:
+        # ...however long the turn ahead runs (general.WAIT_TURN None): a line is never dropped for waiting behind a long turn
+        end = None if general.WAIT_TURN is None else time.time() + general.WAIT_TURN
+        while getattr(ses, 'busy', False) is True and getattr(ses, 'alive', True) is not False and (end is None or time.time() < end):
+            time.sleep(.25); ses = general.session_for(tid) or ses
+        time.sleep(PASS_GATHER)                    # ...and the rest of a burst still landing
+    finally:
+        with _PASS_LOCK: lines = _PASSING.pop(tid, None) or [turn or _pass_turn(msg)]
+    said = lines[0] if len(lines) == 1 else f'{len(lines)} NEW LINES ON THIS TASK, in the order they came - one turn for all of them:\n\n' + '\n\n---\n\n'.join(lines)
+    try:
         # a session of quick answers re-decides on the task's depth now: still quick, one more call on it; else the turn runs the agent
-        if ses.quick and quickwork.takes(store, tid): quickwork.again(store, tid, ses, turn or _pass_turn(msg))
-        else: ses.send_prompt(turn or _pass_turn(msg), brief=True)      # Taskuary's brief, shown in the chat as coding's typed line is
+        if ses.quick and quickwork.takes(store, tid): quickwork.again(store, tid, ses, said)
+        else: ses.send_prompt(said, brief=True)      # Taskuary's brief, shown in the chat as coding's typed line is
     except Exception as e:
+        # ...the session ended under it - the agent closed its own at the end of the turn this line waited behind (the stress run,
+        # 2026-11-05): the line is not lost to a Continue, it carries the conversation on in a session of its own, as a mail on a quiet task does
+        if getattr(ses, "alive", True) is False and _open_task(store, tid):
+            general.OPENING.add(tid); _replan_general(store, tid, said); return
         logger.warning(f'passing a line to the assistant failed for task {tid}: {e}')
         store.add_comment(tid, 'router', 'agent', f"The assistant couldn't take {_who_said(msg)}'s new message: {' '.join(str(e).split())[:200]} - Continue picks it up.")
 
@@ -2383,9 +2418,16 @@ def _continue_general(store, tid, msg: dict = None, mid=None):
 # fyi, a watch, an aside, the owner's own answer on any channel - is the agent's next turn when it has a conversation there or a reply
 # waiting: what changed, in their words, and triage's reading of who handled what. Whether a reply is still owed is the agent's call
 # (its reply_not_needed), never a rule here. Coding tasks are as they were: their own carry-on takes new work, nothing else.
+# ...and a message that changes nothing is said so in a line (the owner, 2026-11-05: "it can just say this is the same result nothing
+# changed if it wants")
 REPLAN = ('Re-plan the WHOLE next step from here, not only the draft: it may need no reply any more (then mark the waiting draft with '
           '`taskuary --reply-not-needed "<why>"` or the reply_not_needed tool - it stays for the owner, never deleted), new research, a '
-          'corrected or an added draft, or nothing left at all. You never send or close anything. End with the [[TASKUARY-SUMMARY]] block.')
+          'corrected or an added draft, or nothing left at all. Open with one plain line on what changed, in the owner\'s terms - "I see you answered '
+          'Ray there", "Gail took care of it" - then either that we are good, nothing left (nothing_left true), or what is still open as next '
+          'steps. Start the summary\'s "did" with that same line: the owner reads the summary, not the words above it. When the new message '
+          'changes nothing - it repeats what you already had, or adds nothing to act on - say exactly that in one line ("Nothing new here: '
+          'the plan above still stands") and stop: no re-research, no rewritten answer, the earlier draft stays as it is. You never send '
+          'or close anything. End with the [[TASKUARY-SUMMARY]] block.')
 _QUIET_WAKE = ('the task is closed', 'not an assistant task', 'no agent conversation', 'triage could not read it',
                'passing lines to the agent is switched off')
 

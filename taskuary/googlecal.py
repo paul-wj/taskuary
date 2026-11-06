@@ -8,10 +8,9 @@ loopback port - fileaccess's round rides the same road) with PKCE and a one-time
 sealed (store seals google_refresh_token inside ConfigJson, vault.py), where calendar.agenda reads it as it read a pasted one.
 
 TASKUARY'S OWN GOOGLE CLIENT (the owner, 2026-10-26: "don't want to create my own google client, want to use their own"): nobody
-creates or pastes an OAuth client. The sign-in rides ONE Desktop-app client Taskuary ships, as msauth rides Taskuary's Microsoft app
-id (msauth.PUBLIC_CLIENT_ID) - BUILTIN_CLIENT_ID below, overridable per install with TASKUARY_GOOGLE_CLIENT_ID / _SECRET for
-development, or per card with its own google_client_id / google_client_secret (the card's admin fold, where the Outlook card keeps
-its client_id). A build with none says so in one line (UNAVAILABLE) instead of sending anyone to Google Cloud console."""
+creates or pastes an OAuth client. The sign-in rides ONE Desktop-app client Taskuary ships (Microsoft is the
+other way round since 2026-11-05: each company's own app, msauth.py) - BUILTIN_CLIENT_ID below, overridable per install with TASKUARY_GOOGLE_CLIENT_ID / _SECRET for
+development, or per card with its own google_client_id / google_client_secret (the card's admin fold). A build with none says so in one line (UNAVAILABLE) instead of sending anyone to Google Cloud console."""
 import base64, hashlib, json, os, secrets, threading, time
 from urllib.parse import urlencode
 from . import net as requests     # pooled Session + (connect, read) timeouts, same call shape
@@ -106,8 +105,8 @@ def _exchange(store, server, f, code, error) -> tuple:
     if SCOPE not in granted.split() and 'https://www.googleapis.com/auth/calendar' not in granted.split():
         return False, 'Google did not grant calendar access - the box for it was left unticked. Nothing was changed.'
     own = f['client'] == (cfg.get('google_client_id') or '', cfg.get('google_client_secret') or '')
-    cfg.update({'google_refresh_token': j['refresh_token'], 'google_scope': granted, 'google_signin': 'own' if own else 'builtin'})
-    store.save_connector({'ConnectorId': f['cid'], 'ConfigJson': json.dumps(cfg)}, 'owner')
+    # the sign-in's own keys merged over the card as it is NOW: the card read before Google answered is not written back (merge_config)
+    store.merge_connector_config(f['cid'], {'google_refresh_token': j['refresh_token'], 'google_scope': granted, 'google_signin': 'own' if own else 'builtin'})
     store.audit('connector', f['cid'], 'google_calendar', 'owner', detail={'scope': granted})
     with _LOCK: _TOK[j['refresh_token']] = (j.get('access_token') or '', time.time() + int(j.get('expires_in') or 3600))
     from . import calendar

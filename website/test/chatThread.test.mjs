@@ -26,3 +26,4 @@ test("a voice note says so once, and an attachment-only message has no words", (
   assert.deepEqual(splitBody("(no text - see the attachment)"), { words: "", voice: false });
 });
 
+

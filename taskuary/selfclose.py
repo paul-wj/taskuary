@@ -297,7 +297,21 @@ def owner_closes_line() -> str:
     from .buttons import label
     return (f'ENDING THE TASK: closing this task is the owner\'s, not yours - they close it with {label("close")} once they have what they '
             f'need. When the work is complete, say so plainly and that it is ready for {label("close")}. Never say you could not close it '
-            f'or tried to: that is not something you do here, so nothing failed.')
+            f'or tried to: that is not something you do here, so nothing failed. '
+            # ...and where what it drafts is (the owner, 2026-11-05: "it also says mindy draft is in close out, no that's wrong. there is no
+            # close out"): earlier turns of the conversation may still say Close out - the page they were written for is gone
+            f'WHERE YOUR DRAFTS ARE: this task is one chat. Every email or reply you draft shows as a card under your answer, with its own '
+            f'{label("approve")} - say it is "below" or "ready to send". There is no Close out here; never send the owner to one, even where an '
+            f'earlier turn of this conversation did.')
+
+
+# THE ONE ENDING THE AGENT SAYS (the owner, 2026-11-05: "it should trigger a new taskuary chat ... saying i saw you reply so i will close the
+# task" - then: "so i recommend close it"): the owner answered the thread themselves, outside Taskuary (general.owner_answered_last); the
+# agent thinks again and RECOMMENDS the close - the owner makes it
+OWNER_ANSWERED_LINE = ('THE OWNER ANSWERED THIS THEMSELVES: the newest message on the thread is their own reply, sent outside Taskuary. Think '
+                       'again about the task in its light. Say in one or two short lines that you saw their reply and what it settled; if that '
+                       'took care of it, recommend they close the task (you never close it yourself); if something is still open, say what. '
+                       'Do not draft a reply they already sent.')
 
 
 # ...and its reply. The chat writes the answer the sender gets inside a marked block; the words between
@@ -306,8 +320,8 @@ REPLY_OPEN, REPLY_CLOSE = '[[TASKUARY-REPLY]]', '[[/TASKUARY-REPLY]]'
 _REPLY_RE = re.compile(r'\[\[\s*TASKUARY[-_ ]?REPLY\s*\]\](.*?)\[\[\s*/\s*TASKUARY[-_ ]?REPLY\s*\]\]', re.I | re.S)
 REPLY_LINE = (f'REPLYING FOR THE OWNER: when you write the answer the person who asked will get, put exactly that '
               f'text between {REPLY_OPEN} and {REPLY_CLOSE}. It becomes the reply waiting on the owner\'s approval, '
-              f'in your words - nothing is sent until they approve it. The owner reads it in Close out, beside your answer, never in it: say the '
-              f'reply is in Close out, not "below". A file it sends rides only if you name it on its own '
+              f'in your words - nothing is sent until they approve it. The owner reads it as its own card under Next steps, after your answer, never '
+              f'in it: say the reply is drafted and waits for their Send - never "in Close out", which a chat task does not have. A file it sends rides only if you name it on its own '
               f'line: [[TASKUARY-ATTACH: <full path>]] - a file you made in your working folder, or one listed under '
               f'ATTACHED FILES. Never say a file is attached unless you named it that way.')
 
@@ -316,13 +330,20 @@ REPLY_LINE = (f'REPLYING FOR THE OWNER: when you write the answer the person who
 # each turn closes on a block the page draws as three parts - what the task wants, what the agent did, what is on the owner (the parser
 # is Task 3.5's). Not `SUMMARY:`, which the brief already uses as the task-summary label.
 SUMMARY_OPEN, SUMMARY_CLOSE = '[[TASKUARY-SUMMARY]]', '[[/TASKUARY-SUMMARY]]'
-SUMMARY_LINE = (f'ENDING EVERY TURN: close each reply with {SUMMARY_OPEN}{{"about": "<what this task wants from the owner>", "did": "<what '
-                f'you researched, found or did>", "on_you": ["<each step left for the owner, one short line each>"], "nothing_left": '
-                f'<true when nothing is left for them but to close>}}{SUMMARY_CLOSE} - valid JSON, plain words, no secret in it. When you '
+SUMMARY_LINE = (f'ENDING EVERY TURN: close each reply with {SUMMARY_OPEN}{{"about": "<two or three plain sentences on the situation: which '
+                f'conversation this is on and what it is about, who asked, for whom and why they want it - read from the whole thread, naming only people '
+                f'the thread itself shows in that role>", "did": "<the RESULT ITSELF first - the file path, the link, the figure or the name '
+                f'you found, never only that you gave it - then what '
+                f'you researched, found or did; a part unmet or unchecked is named here>", "on_you": ["<each step left for the owner, one short line '
+                f'each>"], "nothing_left": <true only when the goal is met and you checked it, and nothing is left for them but to close>, '
+                f'"answer_is_result": <true when your words above the block ARE what the owner asked for - the answer, the list, the link - so they '
+                f'show beside it; false when this block says it all>}}{SUMMARY_CLOSE} - valid JSON, plain words, no secret in it. A drafted reply is '
+                f'already its own card with Send under Next steps, and so is a post or any act you proposed; a question you ask is shown on its own: none '
+                f'is ever an on_you step - on_you is only what is truly the owner\'s, with why. When you '
                 f'need the owner, say what you got and what you are unsure about in one or two plain sentences above it; offer choices '
                 f'(through [[TASKUARY-ASK]]) only when there are real ones. When the owner\'s newest message CORRECTS you, add "corrections": '
                 f'[{{"kind": "redraft" (their words for the draft) or "ask" (you read what the task wants wrongly), "review": <the draft\'s id or null>, '
-                f'"said": "<their exact words>"}}] - never show them as anything.')
+                f'"said": "<what they corrected, in their words where you can>"}}] - never show them as anything.')
 _SUMMARY_RE = re.compile(r'\[\[\s*TASKUARY[-_ ]?SUMMARY\s*\]\](.*?)\[\[\s*/\s*TASKUARY[-_ ]?SUMMARY\s*\]\]', re.I | re.S)
 # ...and one that never closed: a live line is cut to 300-400 characters before it is drawn (agents.py), and a turn can end without
 # the closing tag - the opening tag through to the end goes, and so does a tag cut off part-way at the very end ("[[TASKUA")
@@ -349,10 +370,15 @@ def summary_marker(text: str, letters=()) -> tuple:
     if not isinstance(j, dict): return bare()
     flat = lambda x, n: without_letters(' '.join(str(x or '').split()), letters)[:n]
     out = {'about': flat(j.get('about'), 600), 'did': flat(j.get('did'), 600), 'nothing_left': j.get('nothing_left') is True}
+    # ...and the agent's own say on whether its prose is the deliverable (GeneralWorkspace: agentSummary.answerShown) - kept only when it said
+    if isinstance(j.get('answer_is_result'), bool): out['answer_is_result'] = j['answer_is_result']
     if isinstance(j.get('on_you'), list): out['on_you'] = list(dict.fromkeys(x for x in (flat(o, 200) for o in j['on_you'] if isinstance(o, str)) if x))[:6]
     if cs := [{'kind': c['kind'], 'review': c['review'] if isinstance(c.get('review'), int) else None, 'said': ' '.join(c['said'].split())[:1000]}
               for c in j.get('corrections') or [] if isinstance(c, dict) and c.get('kind') in ('redraft', 'ask') and isinstance(c.get('said'), str) and c['said'].strip()]:
         out['corrections'] = cs[:6]
+    # ...and the turn's lesson for the playbooks and its check-back (general.LESSON_LINE, CHECK_BACK_LINE): taken off the summary, never drawn
+    for k, need in (('lesson', 'text'), ('check_back', 'what')):
+        if isinstance(j.get(k), dict) and isinstance(j[k].get(need), str) and j[k][need].strip(): out[k] = j[k]
     return (rest, out) if out['about'] or out['did'] or out.get('on_you') else bare()
 
 
@@ -375,20 +401,31 @@ def reply_marker(text: str) -> tuple:
     # ...said once: an agent that wrote the answer out and then marked the same words had both left on screen (2026-10-15)
     flat = lambda s: ' '.join(s.split())
     if said and flat(said) in flat(rest): return rest.strip(), said
-    return (text[:m.start()] + said + text[m.end():]).strip(), said or None
+    # ...and a paragraph of its own where it stood: glued to the words before it ("Drafted.Hi Ray - ..."), the letter was no paragraph
+    # without_draft could find, and the chat drew it in the answer AND as its card (the scenario run, 2026-11-06)
+    return '\n\n'.join(x for x in (text[:m.start()].rstrip(), said, text[m.end():].lstrip()) if x).strip(), said or None
 
 
 # ...and said in ONE place: the draft is Close out's to show (the owner, 2026-11-02: "in agent we should just say 'agent drafted a message'").
 # A model that wrote the reply out in its answer as well as filing it left the whole letter in the agent's pane over the same letter in
 # Close out (the overnight run, 2026-11-03) - its words around the letter stay, the letter's own paragraphs and their rules go
 _RULE = re.compile(r'^\s*([-*_=~])(\s*\1){2,}\s*$')
+# ...only the letter itself: a run of paragraphs that together are substantially the whole draft. Any paragraph found anywhere in a draft
+# used to go, so "Thanks, Gail." - the agent's own line, and the draft's sign-off too - vanished from its answer (the owner, 2026-11-05)
+DRAFT_WHOLE = 0.6
 def without_draft(text: str, draft: str) -> str:
-    "`text` with every paragraph that is part of `draft` taken out - '' when it was nothing else."
+    "`text` with the run of paragraphs that IS `draft` (with the rules inside it) taken out - '' when it was nothing else."
     flat = lambda s: ' '.join(str(s or '').split()).lower()
     d, paras = flat(draft), [p for p in re.split(r'\n\s*\n', str(text or '')) if flat(p)]
-    kept = [p for p in paras if flat(p) not in d]
-    if not d or len(kept) == len(paras): return str(text or '').strip()
-    return '\n\n'.join(p.strip('\r\n') for p in kept if not _RULE.match(p)).strip()
+    if not d: return str(text or '').strip()
+    runs, cur = [], []
+    for i, p in enumerate(paras):
+        if _RULE.match(p) or flat(p) in d: cur.append(i)
+        elif cur: runs.append(cur); cur = []
+    if cur: runs.append(cur)
+    gone = {i for r in runs if sum(len(flat(paras[i])) for i in r if not _RULE.match(paras[i])) >= DRAFT_WHOLE * len(d) for i in r}
+    if not gone: return str(text or '').strip()
+    return '\n\n'.join(p.strip('\r\n') for i, p in enumerate(paras) if i not in gone and not _RULE.match(p)).strip()
 
 
 # ...and the files that go with it. A chat brain has no `taskuary --attach` it can use: an API provider has no shell, and a

@@ -61,8 +61,12 @@ def owed_no_draft(item: dict) -> bool:
 
 
 def lane_word(item: dict) -> str:
-    """The word a row's state wears in a sentence: its lane's, or "reply owed" for a reply nothing has drafted yet."""
-    return lanes.word('owed') if owed_no_draft(item) else (LANE_WORDS.get(str((item or {}).get('lane') or '')) or ('',))[0]
+    """The word a row's state wears in a sentence: its lane's, or "reply owed" for a reply nothing has drafted yet - and a CHAT task's waiting
+    move, any action, "agent ready for you" (build marks its row `chat`; the owner, 2026-11-05), on the phone and in the Assistant's words as
+    on the rail. A coding task keeps its own."""
+    it = item or {}
+    if it.get('chat') and it.get('lane') in CHAT_READY_LANES: return lanes.word('chat_ready')
+    return lanes.word('owed') if owed_no_draft(item) else (LANE_WORDS.get(str(it.get('lane') or '')) or ('',))[0]
 
 
 def mark_for(item: dict) -> str:
@@ -168,6 +172,7 @@ def says(r: dict) -> str:
     return _cut(_gist(r.get('Preview') or r.get('BodyText') or '', 240), PILL) or subj
 
 
+CHAT_READY_LANES = ('blocked', 'approve')
 def lane_index(lane: str) -> int: return LANES.index(lane) if lane in LANES else len(LANES)
 
 
@@ -763,6 +768,9 @@ def live_session_state(tid, agent: str = 'the agent') -> tuple | None:
         if not (s and getattr(s, 'alive', False)): return None
         waiting = bool(s.waiting()) if callable(getattr(s, 'waiting', None)) else getattr(s, 'busy', True) is False
     except Exception: return None
+    # ...a CHAT agent's parked turn is ready for you, whatever its next move is (lane_word, the owner 2026-11-05); a coding one waits on you
+    if waiting and type(s).__name__ == 'GeneralSession':
+        return (f'Ready for you. {_cap(agent)} finished its turn - the next move is yours.', lanes.word('chat_ready'))
     return (f'Waiting for you. {_cap(agent)} finished its turn and waits on you.', 'waiting on you') if waiting \
         else (f'{_cap(agent)} is working on this.', 'working')
 
@@ -967,6 +975,9 @@ def paused_conversation(store, item: dict) -> dict:
     try:
         from . import general
         if not general.handles(task) or tid in general.OPENING or general.session_for(tid): return item
+        # ...nor one that IDLED OUT (general.idle_out): nothing stopped and nothing was saved - its agent is just not running until the next
+        # input, and the task reads as the task (a reply ready, on you), never "agent stopped" or "conversation saved" (the owner, 2026-11-05)
+        if general.idled(tid, store): return item
     except Exception:
         return item
     replies = [c for c in store.list_comments(tid) if c.get('ActorType') == 'assistant_agent']
@@ -1465,6 +1476,13 @@ def build(store, now: datetime = None, keep_surfaced: bool = False,
                     'sid': live.get('sid'), 'tail': live.get('tail') or [],
                     'mode': live.get('mode') or 'terminal'}
     items = [held_item(i) for i in items]
+    # ...and a CHAT task's waiting move is the agent's, whatever it is (the owner, 2026-11-05: "we can remove reply ready for you since it can be
+    # any action"): its row says "agent ready for you" (lanes.json `chat_ready`) - a coding task keeps its own words
+    if (tids := {i['tid'] for i in items if i.get('tid') and i.get('lane') in CHAT_READY_LANES}):
+        from . import general
+        chats = {r['TaskId'] for r in store._rows(f"SELECT TaskId, Kind FROM task WHERE TaskId IN ({','.join('?' * len(tids))})", tuple(tids))
+                 if general.handles(r)}
+        items = [i | {'chat': True} if i.get('tid') in chats and i.get('lane') in CHAT_READY_LANES else i for i in items]
     # the wrap-up on a task an agent still holds is not a question yet either
     seen = set(); items = [i for i in items if not (i['key'] in seen or seen.add(i['key']))]
     hours, cap = knobs(store)
@@ -2211,4 +2229,4 @@ def summary(items: list, coming: bool = True) -> str:
     parts = [f"{n} {LANE_COUNTED[l]}" for l in LANES if (n := sum(1 for i in items if i['lane'] == l))]
     nxt = [i for i in items if not i.get('settling')][:3] if coming else []
     return (f"LEFT IN THE PIPE: {len(items)} - {', '.join(parts)}."
-            + (' Coming next: ' + '; '.join(f"{i['who'] + ' - ' if i.get('who') else ''}{i['title']} ({LANE_WORDS[i['lane']][0]}{', shown already, still waiting' if i.get('surfaced') else ''})" for i in nxt) if nxt else ''))
+            + (' Coming next: ' + '; '.join(f"{i['who'] + ' - ' if i.get('who') else ''}{i['title']} ({lane_word(i)}{', shown already, still waiting' if i.get('surfaced') else ''})" for i in nxt) if nxt else ''))

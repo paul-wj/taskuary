@@ -62,4 +62,5 @@ test("a Send lets go when the decide answers, and after a minute with no answer 
   assert.equal(timedOut({ code: "ECONNABORTED" }), true);
   assert.equal(timedOut({ code: "ERR_CANCELED" }), false);
   assert.equal(timedOut({ response: { status: 500 } }), false);
+
 });

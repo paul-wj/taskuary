@@ -13,7 +13,7 @@ and whatever part of the app is in use opens inside it.
 | Under the buttons | **Search** (or Ctrl+K anywhere), then the **filter** - the row's one control, saying what the rail is narrowed to (*All items*, *Email*, one mailbox) - then the day's count and **Sync now** |
 | Search | One box over everything, open or closed: tasks, mail, chats, pull requests and issues, Advisor posts, reports and your sources. Each result wears a pill saying what it is; the strip above them narrows to one kind (**Tab** steps through it). **Enter** opens the result - a task on the canvas, a message in full, a source as the rail's filter - and the task number on a message opens the task it is on |
 | The rail | **Tasks** (every open task; a ring spins round the icon of one an agent is working), **For later**, **Reports**, **Advisor**, **FYI** - click a heading to walk that section |
-| The canvas | The item on the table: a task opens as its full task view - Task, Agent work, Close out - with **Next** under it |
+| The canvas | The item on the table: a task opens as its full task view - Came from and Agent, the agent's one chat, and on a coding task Close out - with **Next** under it |
 | The top bar | **Board** - every agent and its session, full screen - and back to the Assistant |
 
 **Reports, Connections, Hub and Settings are browsed in the canvas**, by clicks: a button shows that part's sections, a
@@ -38,7 +38,7 @@ phone the task view is the screen, and **Expand** takes the session full screen 
 | **Reply** | a person's ask, a finished agent with no draft | Writes a draft reply. Nothing is sent | at once |
 | **Make a task** | an ask, an fyi, an idea | A task on your own list. No agent starts | you confirm |
 | **Send to agent** | an ask, an fyi, an idea, a meeting, a report | A task and an agent on it. The card asks which agent | you confirm |
-| **Not ours** | a draft reply, a proposal (not a close-out), an ask, an fyi | Files it. The card asks how far | you confirm |
+| **Not for me** | a draft reply, a proposal (not a close-out), an ask, an fyi | Files it. The card asks how far | you confirm |
 | **Send back to the agent** | a draft reply on a task (under More actions); a close-out GitHub refuses for merge conflicts (the main button) | Picks the task's own agent back up with your note - or, on a conflict, GitHub's reason - as the first thing it hears. The card comes back when it stops | at once |
 | **Stop and save** | an agent waiting on you | Writes up what the session did and stops the agent. The task stays open | at once |
 | **Remind me** | any card with an open task behind it | Asks for a day, then puts the task away until that morning: under For later on your rail, with its day. On the phone the days come as choices | you pick the day |
@@ -50,11 +50,11 @@ separate Reject: the reply on it is edited or redrafted in place.
 
 ## The two buttons that ask one question
 
-![Not ours asks how far; Send to agent asks which agent](img/assistant-questions.svg "The card asks; nothing runs until you confirm.")
+![Not for me asks how far; Send to agent asks which agent](img/assistant-questions.svg "The card asks; nothing runs until you confirm.")
 
 | Button | Answer | What happens |
 |---|---|---|
-| **Not ours** | Just this once | This message is filed. Its task is deleted if nothing was done on it, otherwise marked done |
+| **Not for me** | Just this once | This message is filed. Its task is deleted if nothing was done on it, otherwise marked done |
 | | From now on | Triage learns to file everything from this sender. Their mail still arrives and stays readable |
 | | A rule in Settings | An exclusion rule: their mail never reaches triage, and what already arrived leaves the rail. Reversible |
 | **Send to agent** | A coding agent | A task and a coding agent in a repository. The card asks which repository when it is not clear |
@@ -64,12 +64,12 @@ Send to agent starts on the agent triage would pick; the other is one click away
 
 ## Pictures, and your voice
 
-Paste a screenshot, drop an image, or use the paperclip - in the chat line, in **New**, and in **Continue**. It
+Paste a screenshot, drop an image, or use the paperclip - in the chat line, in **New**, in a task's chat box, and in **Continue**. It
 goes with your words: the Assistant looks at the picture itself, and a coding agent is handed the file to open. PNG,
 JPEG, GIF and WebP, up to eight at a time. The microphone beside each box dictates into it.
 
-**Continue** opens as a card under the item, not a popup: type or say what to tell the agent as it picks up,
-add a picture, or continue as is. Moving on with **Next** puts the card away with the item.
+On a coding task, **Continue** opens as a card under the item, not a popup: type or say what to tell the agent as it picks up,
+add a picture, or continue as is. Moving on with **Next** puts the card away with the item. A general task has no Continue: what you type in its chat box carries the same conversation on.
 
 ## Remind me
 

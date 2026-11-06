@@ -122,7 +122,8 @@ GENESIS = '0' * 64
 # the channels Taskuary writes itself - its reports and the Advisor's ideas - which carry no sender address
 OWN_CHANNELS = ('report', 'assistant')
 TASK_COLS = ('Title', 'Summary', 'Kind', 'Status', 'Priority', 'Assignee', 'Source', 'SourceRef', 'Tags', 'RemindAt', 'AskedVia', 'DueAt',
-             'DoneWhen', 'ParentId', 'OriginBase', 'TrustedThrough', 'Origin', 'OriginWhy', 'WatchedAt', 'WatchBack', 'ThreadJson')
+             'DoneWhen', 'ParentId', 'OriginBase', 'TrustedThrough', 'Origin', 'OriginWhy', 'WatchedAt', 'WatchBack', 'ThreadJson',
+             'CheckBackAt', 'CheckBackWhat')
 MSG_COLS = ('TaskId', 'ExternalId', 'ConversationId', 'Channel', 'SourceName', 'Subject',
             'FromName', 'FromEmail', 'SentAt', 'BodyText', 'SourceLink', 'Status', 'Direction', 'RecipientsJson',
             'MailMetaJson', 'OwnText', 'TriageTitle', 'RankValue', 'RankWhy', 'SenderClass', 'MeetJson')
@@ -638,6 +639,12 @@ CREATE INDEX IF NOT EXISTS idx_brainroute_task ON brainroute(TaskId, Id);
 -- How hard a task's work is, whether its reader could tell, and what kind of data it carries - triage's judgements, apart from the
 -- priority, kept per task (brainroute.judged). `By` is 'owner' once they correct one: their word stands until they change it again.
 CREATE TABLE IF NOT EXISTS task_judged (TaskId INTEGER PRIMARY KEY, Difficulty TEXT, Sure INTEGER, DataClass TEXT, By TEXT, At TEXT);
+-- THE DRAFT AS A TURN LEFT IT (the owner, 2026-11-05: "keep the original draft in that turn, and then in next turn show the next draft"): the
+-- agent rewrites one review in place, so a turn that kept only the review's id drew the LATER words. One row per turn that wrote or rewrote
+-- it (CommentId: that turn's answer), apart from the summary - the words to a sender never sit in the summary (2026-11-04)
+CREATE TABLE IF NOT EXISTS draft_snapshot (Id INTEGER PRIMARY KEY, TaskId INTEGER, ReviewId INTEGER, CommentId INTEGER, Text TEXT,
+  ToName TEXT, Subject TEXT, CreatedAt TEXT);
+CREATE INDEX IF NOT EXISTS idx_draft_snapshot ON draft_snapshot(TaskId, CommentId);
 """
 from .skillstate import SCHEMA as _SKILL_SCHEMA
 SCHEMA += _SKILL_SCHEMA
@@ -1153,6 +1160,9 @@ class SQLiteStore:
             # Watch it (the owner, 2026-11-01): when the owner began watching a task that is not theirs (watch.py), and why a watch came
             # back on the walk ('moved', 'handled', 'quiet') until their next move
             for col in ('WatchedAt', 'WatchBack'):
+                if col not in tcols: self.cx.execute(f'ALTER TABLE task ADD COLUMN {col} TEXT')
+            # a check-back its agent set (the owner, 2026-11-05: checkback.py): when the same task's agent wakes, and what it is to verify
+            for col in ('CheckBackAt', 'CheckBackWhat'):
                 if col not in tcols: self.cx.execute(f'ALTER TABLE task ADD COLUMN {col} TEXT')
             # what the owner asked for, and where (asks.py): the door, and the last lane said there - kept on the task,
             # so a restart never repeats what was already told
@@ -2168,7 +2178,8 @@ class SQLiteStore:
         if fields.get('Status') in ('done', 'dropped'):
             # a closed task waits on nobody: their later line is judged as any line on a closed thread (ingest._reopen)
             # ...and a closed task is watched by nobody (watch.py): Mark done ends a watch like any task
-            self._exec('UPDATE task SET WaitingOn=NULL, WatchedAt=NULL, WatchBack=NULL WHERE TaskId=?', (task_id,))
+            # ...and checked back on by nobody: a check-back is the agent's, and a closed task has none at work (checkback.py)
+            self._exec('UPDATE task SET WaitingOn=NULL, WatchedAt=NULL, WatchBack=NULL, CheckBackAt=NULL, CheckBackWhat=NULL WHERE TaskId=?', (task_id,))
             self._exec("UPDATE review SET Status='superseded', DecidedBy=?, DecidedAt=? "
                        "WHERE TaskId=? AND Status='pending'", (actor, _now(), task_id))
             # ...and so does the Advisor idea the task was MADE from: left open, 96 ideas outlived their closed tasks
@@ -2526,7 +2537,7 @@ class SQLiteStore:
                    "(json_extract(ActionJson,'$.tid')=? OR IdeaId IN (SELECT CAST(substr(SourceRef,16) AS INTEGER) FROM task "
                    "WHERE TaskId=? AND SourceRef LIKE 'assistant:idea:%'))", (_now(), task_id, task_id))
         for q in ("UPDATE message SET TaskId=NULL, Status='filed' WHERE TaskId=?", 'UPDATE route SET TaskId=NULL WHERE TaskId=?',
-                  'DELETE FROM review WHERE TaskId=?', 'DELETE FROM comment WHERE TaskId=?',
+                  'DELETE FROM review WHERE TaskId=?', 'DELETE FROM comment WHERE TaskId=?', 'DELETE FROM draft_snapshot WHERE TaskId=?',
                   'DELETE FROM run WHERE TaskId=?', 'DELETE FROM task_artifact WHERE TaskId=?',
                   'DELETE FROM session_resume WHERE TaskId=?',
                   # ...and its worker's events: a question it asked stayed open, and a deleted task still raised its toast (email walk 2026-10-29)
@@ -2971,11 +2982,15 @@ class SQLiteStore:
             " GROUP BY t.TaskId ORDER BY IFNULL(t.UpdatedAt, t.CreatedAt) DESC LIMIT ?", (limit,))
     def tasks_open_brief(self, limit=40):
         """The OPEN tasks and Watching items, newest activity first, each with what triage read it to ask (ThreadJson), the channel and the
-        name it first came from - one line each of the list every arrival is shown (context.open_items)."""
+        name it first came from - one line each of the list every arrival is shown (context.open_items). Senders is who wrote on it, as
+        tasks_open_linked has it, so a task someone sent is never read as the owner's own (context._own); Items are a batch's own titles,
+        best first, since its title and summary are only a count."""
         first = "(SELECT m.{} FROM message m WHERE m.TaskId=t.TaskId AND IFNULL(m.Direction,'')<>'out' ORDER BY m.MessageId LIMIT 1)"
         return self._rows(
             "SELECT t.TaskId, t.Title, t.Summary, t.ThreadJson, t.WatchedAt, t.Source, t.OriginBase, t.CreatedAt, "
-            f"       IFNULL(t.UpdatedAt, t.CreatedAt) Touched, {first.format('Channel')} Channel, {first.format('FromName')} FromName "
+            f"       IFNULL(t.UpdatedAt, t.CreatedAt) Touched, {first.format('Channel')} Channel, {first.format('FromName')} FromName, "
+            "       (SELECT GROUP_CONCAT(DISTINCT lower(IFNULL(m.FromEmail, m.FromName))) FROM message m WHERE m.TaskId=t.TaskId) Senders, "
+            "       (SELECT GROUP_CONCAT(Title, ' ; ') FROM (SELECT b.Title FROM batch_item b WHERE b.TaskId=t.TaskId ORDER BY b.Place, b.ItemId)) Items "
             "  FROM task t WHERE t.Status NOT IN ('done','dropped') ORDER BY IFNULL(t.UpdatedAt, t.CreatedAt) DESC, t.TaskId DESC LIMIT ?", (limit,))
     def task_people(self, tids) -> dict:
         """{TaskId: [{name, email, channel}]} - who wrote on each task, by display name, never the owner's own lines: what a name on
@@ -5046,6 +5061,23 @@ class SQLiteStore:
             self.cx.commit(); self._writes += 1
             return cur.lastrowid
     def list_comments(self, task_id): return self._rows('SELECT * FROM comment WHERE TaskId=? ORDER BY CommentId', (task_id,))
+    def snap_draft(self, review_id, comment_id) -> bool:
+        """Keep review `review_id` as it stands, under the turn `comment_id` that left it - only when its words changed since the last turn
+        kept it: a turn that left the draft untouched did not write it, so it is not drawn there again. True when one was kept."""
+        rv = self._one('SELECT rv.TaskId, rv.DraftText, m.FromName, m.FromEmail, m.Subject FROM review rv LEFT JOIN message m '
+                       'ON m.MessageId=COALESCE(rv.AnswersMid, rv.MessageId) WHERE rv.ReviewId=?', (review_id,))
+        if not rv or not str(rv.get('DraftText') or '').strip(): return False
+        last = self._one('SELECT Text FROM draft_snapshot WHERE ReviewId=? ORDER BY Id DESC LIMIT 1', (review_id,))
+        if last and last['Text'] == rv['DraftText']: return False
+        self._exec('INSERT INTO draft_snapshot (TaskId, ReviewId, CommentId, Text, ToName, Subject, CreatedAt) VALUES (?,?,?,?,?,?,?)',
+                   (rv['TaskId'], review_id, comment_id, rv['DraftText'], rv.get('FromName') or rv.get('FromEmail') or '', rv.get('Subject') or '', _now()))
+        return True
+    def draft_snapshots(self, task_id) -> dict:
+        "Each turn's kept drafts, by the turn's CommentId: [{review, text, to, subject, at}], oldest first."
+        out = {}
+        for r in self._rows('SELECT * FROM draft_snapshot WHERE TaskId=? ORDER BY Id', (task_id,)):
+            out.setdefault(r['CommentId'], []).append({'review': r['ReviewId'], 'text': r['Text'], 'to': r['ToName'] or '', 'subject': r['Subject'] or '', 'at': r['CreatedAt']})
+        return out
     def set_comment_body(self, comment_id, body):
         """Rewrite one turn where it stands: the day's opener is drawn at once and filled when the mail is in (welcome.arrive)."""
         self._exec('UPDATE comment SET Body=? WHERE CommentId=?', (body, comment_id))
@@ -5752,7 +5784,10 @@ class SQLiteStore:
         if not isinstance(cfg, dict): return cj
         try: old = json.loads((self._one('SELECT ConfigJson FROM connector WHERE ConnectorId=?', (cid,)) or {}).get('ConfigJson') or '{}') if cid else {}
         except (TypeError, ValueError): old = {}
-        if not isinstance(old, dict): old = {}
+        return self._seal_cfg(cfg, old if isinstance(old, dict) else {}, cj)
+    def _seal_cfg(self, cfg: dict, old: dict, cj=None):
+        """`cfg` as stored over `old`, the stored config: what _cfg_sealed says, from a config already read."""
+        if cj is None: cj = json.dumps(cfg)
         if not any(cfg.get(k) or old.get(k) for k in self.SEALED_CONFIG): return cj
         for k in self.SEALED_CONFIG:
             v, was = cfg.get(k), old.get(k)
@@ -5795,6 +5830,40 @@ class SQLiteStore:
         offset, the WhatsApp bridge's sequence) without touching secrets or roles."""
         self._exec('UPDATE connector SET ConfigJson=? WHERE ConnectorId=?', (self._cfg_sealed(cid, json.dumps(cfg)), cid))
         self._processing_ignored_writes += 1
+    # A FIELD SAVES ITSELF, AND ONLY ITSELF (the owner, 2026-11-05: "what saves with one click while other hit the save buttons"; #242).
+    # Each control on a card posts the key it changed, and the key is merged into the config as it is NOW - read and written in one
+    # transaction - so a poller's watermark written a moment ago (Telegram's offset, the WhatsApp sequence) is never rolled back by an
+    # edit made from an older read. A value None removes its key; a key in `keep` sent blank keeps what is stored (a write-only
+    # secret the browser never had: guard.keep_write_only). Returns the merged config, or None when the row is gone.
+    def merge_config(self, table, row_id, patch: dict, keep=()):
+        key = {'source': 'SourceId', 'connector': 'ConnectorId'}[table]
+        if not isinstance(patch, dict) or any(not isinstance(k, str) for k in patch): raise TypeError('a config patch is a dict of keys')
+        with self.lock:
+            self._clear_stale(); self.cx.execute('BEGIN IMMEDIATE')
+            try:
+                found = self.cx.execute(f'SELECT ConfigJson FROM {table} WHERE {key}=?', (row_id,)).fetchone()
+                if found is None: self.cx.rollback(); return None
+                try: cur = json.loads(found[0]) if found[0] else {}
+                except (TypeError, ValueError): cur = None
+                if not isinstance(cur, dict): raise ValueError('the stored config is not an object - not merged over')
+                new = dict(cur)
+                for k, v in patch.items():
+                    if v is None: new.pop(k, None)
+                    elif k in keep and v == '': continue
+                    else: new[k] = v
+                cj = self._seal_cfg(new, cur) if table == 'connector' else json.dumps(new)
+                self.cx.execute(f'UPDATE {table} SET ConfigJson=? WHERE {key}=?', (cj, row_id))
+                self.cx.commit(); self._writes += 1
+                return new
+            except BaseException:
+                self.cx.rollback(); raise
+    def merge_connector_config(self, cid, patch: dict) -> bool:
+        """THE KEYS A POLL OR A JOB CHANGED, merged over the config as it is now (merge_config) - never the whole config from its own
+        earlier read, which put back whatever the owner's field saved in between (the owner, 2026-11-05: every field saves itself).
+        None removes a key. False when the card is gone."""
+        merged = self.merge_config('connector', cid, patch) is not None
+        self._processing_ignored_writes += 1
+        return merged
     def patch_connector_poll_state(self, connector_id, *, config_set=None, config_remove=(),
                                    expect_fields=None, expect_config=None):
         """Atomically merge only poll-owned config keys while checking mailbox identity."""

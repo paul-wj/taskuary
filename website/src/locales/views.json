@@ -1743,5 +1743,10 @@
   "Kept sealed on this computer. Taskuary types it into the page of that site when an agent signs in there - the agent never sees it.": "加密保存在本机。智能体登录该网站时，Taskuary 会将其输入网页；智能体不会看到这些信息。",
   "Save to vault": "保存到保险库",
   "Your admin saw error AADSTS900971 (“No reply address provided”)? Their link came from an older Taskuary - send them this one.": "管理员遇到 AADSTS900971（“未提供回复地址”）错误？旧版 Taskuary 生成了那个链接，请把这个新链接发给管理员。",
-  "Forward this to whoever runs your Microsoft 365. They open the link, sign in, and click Accept - once, for everyone in your organisation. If the page after Accept says it can't connect, that's expected: the approval is done. Nothing to set up in Azure. Then click Sign in with Microsoft again.": "将此链接转发给 Microsoft 365 管理员。管理员打开链接、登录并点击接受，即可一次性为整个组织授权。接受后页面如提示无法连接，这是正常现象：授权已完成。无需在 Azure 中设置。然后再次点击使用 Microsoft 登录。"
+  "Forward this to whoever runs your Microsoft 365. They open the link, sign in, and click Accept - once, for everyone in your organisation. If the page after Accept says it can't connect, that's expected: the approval is done. Nothing to set up in Azure. Then click Sign in with Microsoft again.": "将此链接转发给 Microsoft 365 管理员。管理员打开链接、登录并点击接受，即可一次性为整个组织授权。接受后页面如提示无法连接，这是正常现象：授权已完成。无需在 Azure 中设置。然后再次点击使用 Microsoft 登录。",
+  "agent ready for you": "智能体已就绪，等待您",
+  "The AI chosen under Where reports go": "在“报告去向”中选择的 AI",
+  "the AI that sorts your mail (default)": "分类邮件的 AI（默认）",
+  "Your documents": "您的文档",
+  "The selected built-in speech service is unavailable here — check Windows / browser voice in Connections": "所选内置语音服务在此不可用 — 请在“连接”中检查 Windows / 浏览器语音"
 }

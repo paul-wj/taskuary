@@ -2,7 +2,7 @@
 // keeps quiet; "Thinking..." only while a judgement is in flight; a Board-opened task hears its Advisor line.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { adviceRead, sameTarget, tableOf, tableWords } from "../src/tableState.js";
+import { adviceRead, sameTarget, tableOf } from "../src/tableState.js";
 import { adviceKeyFor } from "../src/advice.js";
 
 test("folded by its X or under a page, the item stays on the table and the Advisor keeps quiet", () => {
@@ -17,19 +17,6 @@ test("folded by its X or under a page, the item stays on the table and the Advis
   assert.equal(tableOf({}).key, null);
 });
 
-test("the table presentation distinguishes a covered item, a visible item, and no item", () => {
-  const under = tableWords(tableOf({ current: "task:3", browsing: "b1" }), "TQ-0003");
-  const shown = tableWords(tableOf({ current: "task:3" }), "TQ-0003");
-  const empty = tableWords(tableOf({ browsing: "b1" }));
-  assert.notEqual(under.tag, shown.tag);
-  assert.notEqual(under.box, shown.box);
-  assert.notEqual(under.phone, shown.phone);
-  assert.notEqual(empty.box, shown.box);
-  assert.ok(under.box.includes("TQ-0003"));
-  assert.ok(under.name.includes("TQ-0003"));
-  assert.ok(shown.name.includes("TQ-0003"));
-  assert.equal(tableWords(tableOf({ cardKey: "task:9" })).box, shown.box);
-});
 
 // NO "THINKING..." (the owner, 2026-10-23): the server answers at once with the Advisor's one decision - a lit verb, silent or with its
 // fact - and the page keeps every answer it reads for the key it asked about

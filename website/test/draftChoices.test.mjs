@@ -16,3 +16,4 @@ test("the row draws Mark done once: the decision's, with the task's own left out
   assert.ok(!r.agent.some((x) => x.id === "done"), "and still not twice beside the draft's own");
 });
 
+

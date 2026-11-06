@@ -6,6 +6,7 @@ import { SECTIONS, advisorAt, chatHome, homeSection, liveTerminal, taskSections,
 test("two columns at rest, the whole width while an agent works - coding or general, working or waiting on you", () => {
   assert.equal(layoutOf({ sessionView: false }), "columns");
   assert.equal(layoutOf({ sessionView: true }), "full");
+
 });
 
 // THE WHOLE WIDTH IS A LIVE SESSION'S ALONE (the owner, 2026-10-25, reversing the 2026-10-22 fold for the states with no agent live): a

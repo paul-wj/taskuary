@@ -680,8 +680,10 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
             {section === "reports" && <SetupWithAi kind="report" onOpen={() => { setDraft(null); onBrowseState?.({ section, open: "new-report" }); }} />}
             {section === "dashboards" && <SetupWithAi kind="dashboard" onOpen={() => { setDashDraft(null); onBrowseState?.({ section, open: "new-dashboard" }); }} />}
             {section === "workflows" && <SetupWithAi kind="workflow" onOpen={() => { setDraft(null); onBrowseState?.({ section, open: "new-agent" }); }} />}
-            {note && <Typography variant="body2" sx={{ fontWeight: 600, color: note.ok ? "#47654a" : "#6b2733" }}>{note.ok ? "✓" : "✗"} {displayMessage(note.detail)}</Typography>}
           </Box>
+          {/* ...and what a press said, on its own line under them: inside the row, Run now's three-line "running in the background"
+              was squeezed between Set up with AI and the page's edge, and read as the toolbar breaking (2026-11-04) */}
+          {note && <Typography variant="body2" sx={{ fontWeight: 600, color: note.ok ? "#47654a" : "#6b2733" }}>{note.ok ? "✓" : "✗"} {displayMessage(note.detail)}</Typography>}
         </Box>
       ) : null,
       cards: section === "playbooks" ? [...pbs.books.map((b) => ({ key: `pb-${b.slug}`, node: <PlaybookRow b={b}
@@ -707,7 +709,7 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
   }
 
   return (
-    <SideRail title={t("Reports & routines")} q={q} setQ={setQ} placeholder={t("Search reports and routines…")}
+    <SideRail title={t("Reports")} q={q} setQ={setQ} placeholder={t("Search reports and routines…")}
       items={railItems} value={bucket} onChange={setBucket}
       note={t("Reports only read data and summarize it. Routines write data or keep state. Their connections live on the Connections tab.")}>
       {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 1.5 }}>{displayMessage(err)}</Alert>}
@@ -1002,14 +1004,14 @@ function InvoiceWorkflowWizard({ sourceId, sources, connectors, reload, onBack, 
    reaches nobody at all is not a setting, it is a report that does nothing. */
 // the one judge setting, app-wide: Settings › Configuration › How mail is sorted › Where runs go
 const JUDGE_HASH = `settings=config&group=${encodeURIComponent("How mail is sorted")}`;
-const WHERE_RUNS_GO = "Settings › How mail is sorted › Where runs go";
+const WHERE_RUNS_GO = "Settings › How mail is sorted › Where reports go";
 // Who decides where a run goes, in words the card can say. `judge` is the Where-runs-go slot as
 // /api/ai/defaults reports it; blank there means the brain that writes this report (reports.judge_for).
 function judgeWords(judge, cfg, brains) {
   const brainLabel = (value) => (brains || []).find((b) => b.value === value)?.label;
   if (judge?.kind === "decision") return [judge.display || "TypeSafe Jev",
     t("It reads what came back and answers yes or no to each line above — nothing else is asked of it, which is why a model that only decides can do this job. Chosen for every report under {settings}. A run it does not answer for reaches you anyway.", { settings: t(WHERE_RUNS_GO) })];
-  if (judge?.value) return [brainLabel(judge.value) || judge.display || t("The brain chosen under Where runs go"),
+  if (judge?.value) return [brainLabel(judge.value) || judge.display || t("The AI chosen under Where reports go"),
     t("It reads what came back and answers yes or no to each line above. Chosen for every report under {settings}. A run it does not answer for reaches you anyway.", { settings: t(WHERE_RUNS_GO) })];
   return [t("The brain that writes this report"),
     t("That is {brain} — the same AI the summary above runs on, picked there. To have one judge for every report, or a model that only decides, pick it under {settings}. A run it does not answer for reaches you anyway.", { brain: brainLabel(cfg.ai_brain) || t("the AI that sorts your mail"), settings: t(WHERE_RUNS_GO) })];
@@ -1151,7 +1153,7 @@ function RoutingCard({ cfg, setCfg, targets, inboxes, brains, firstDest, sourceI
         );
       })}
       {/* WHO JUDGES IS SAID HERE, NOT PICKED. There is ONE judge setting, for every report (Settings ›
-          How mail is sorted › Where runs go), and blank there means the brain that writes this report - the
+          How mail is sorted › Where reports go), and blank there means the brain that writes this report - the
           picker above the summary prompt. A second brain picker used to sit here: it wrote the very same
           field as that one, and read as a per-report judge that the setting then quietly overrode (the
           owner, 2026-09-17: "here i choose what model judges what goes on rail?? ... but then in setting
@@ -1619,7 +1621,7 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
                 <Box sx={{ display: "flex", gap: 1, mt: 1, alignItems: "center", flexWrap: "wrap" }}>
                   <Select size="small" displayEmpty value={cfg.ai_brain || ""} sx={{ bgcolor: "#fff", fontSize: 12.5, minWidth: 230 }}
                     onChange={(e) => setCfg({ ...cfg, ai_brain: e.target.value })}>
-                    <MenuItem value="" sx={{ fontSize: 12 }}>{t("the triage brain (default)")}</MenuItem>
+                    <MenuItem value="" sx={{ fontSize: 12 }}>{t("the AI that sorts your mail (default)")}</MenuItem>
                     {/* only brains that can actually answer: a connector with no key saved is
                         not a choice, it is a trap. A saved pick that lost its key stays
                         visible - disabled - instead of silently vanishing. Labels are worded

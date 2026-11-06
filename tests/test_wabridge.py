@@ -47,6 +47,26 @@ class BridgeManagerTests(unittest.TestCase):
             self.assertEqual(len(aside), 1); self.assertTrue((aside[0] / 'creds.json').exists())
             self.assertTrue((run / '.carried-wa-auth').exists(), "the package folder's old pairing is not carried back")
 
+    def test_removing_the_whatsapp_card_unpairs_and_holds_the_bridge(self):
+        """TQ-1320: Remove wiped the row and the bridge kept running paired, so the card still said Paired - connected."""
+        s = MemoryStore(); wa = s.get_connector_by_type('whatsapp')
+        s.save_connector({'ConnectorId': wa['ConnectorId'], 'Active': 1}, 'owner')
+        with mock.patch.object(server, 'store', s), mock.patch.object(wabridge, 'unpair', return_value='') as up:
+            out = c_api.post(f"/api/connectors/{wa['ConnectorId']}/reset").json()
+        up.assert_called_once_with(hold=True); self.assertEqual(out['bridge'], {'unpaired': True, 'why': ''})
+        self.assertFalse(s.get_connector(wa['ConnectorId'])['Active'])
+        tg = s.get_connector_by_type('telegram')
+        with mock.patch.object(server, 'store', s), mock.patch.object(wabridge, 'unpair') as up:
+            self.assertNotIn('bridge', c_api.post(f"/api/connectors/{tg['ConnectorId']}/reset").json()); up.assert_not_called()
+
+    def test_a_bridge_run_elsewhere_is_left_alone_on_remove(self):
+        with mock.patch.object(wabridge, 'unpair') as up:
+            self.assertFalse(wabridge.forget({'ConfigJson': json.dumps({'bridge_url': 'http://10.0.0.5:8977'})})['unpaired'])
+        up.assert_not_called()
+
+    def test_a_held_bridge_says_so_in_its_state(self):
+        with mock.patch.dict(wabridge._SUP, {'held': True}): self.assertTrue(wabridge.state()['held'])
+
     def test_pair_again_is_a_verb_on_the_whatsapp_card_only(self):
         s = MemoryStore(); wa = s.get_connector_by_type('whatsapp')
         with mock.patch.object(server, 'store', s), mock.patch.object(wabridge, 'pair_again', return_value={'phase': 'starting'}) as pa:
@@ -607,3 +627,14 @@ class LinkCheckTests(unittest.TestCase):
         wabridge.check_link(None, self.C, read=lambda: n.append(1) or {'connected': True}, now=1000)
         wabridge.check_link(None, self.C, read=lambda: n.append(1) or {'connected': True}, now=1030)
         self.assertEqual(len(n), 1)
+
+
+def test_a_bridge_that_cannot_resolve_whatsapp_says_it_is_the_network_not_a_restart():
+    """A user's bridge, 2026-11-05: "WebSocket Error (getaddrinfo ENOTFOUND web.whatsapp.com)". Restart bridge fixes nothing there."""
+    from taskuary import wabridge
+    wabridge._LINK.update(at=0.0, down=0.0, restarted=0.0, err=None)
+    st = {'connected': False, 'reconnect': {'reason': 'WebSocket Error (getaddrinfo ENOTFOUND web.whatsapp.com)'}}
+    assert wabridge.check_link(None, {'ConnectorId': 1}, read=lambda: st, now=1000.0) is None, 'inside the grace: nothing yet'
+    err = wabridge.check_link(None, {'ConnectorId': 1}, read=lambda: st, now=1000.0 + wabridge.LINK_GRACE + wabridge.LINK_EVERY)
+    assert 'cannot reach WhatsApp' in err and 'company network' in err and 'Restart bridge' not in err
+    wabridge._LINK.update(at=0.0, down=0.0, restarted=0.0, err=None)

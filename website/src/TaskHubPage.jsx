@@ -18,7 +18,7 @@ import SportsEsportsIcon from "@mui/icons-material/SportsEsportsOutlined";
 import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import PowerSettingsNewIcon from "@mui/icons-material/PowerSettingsNew";
 import api from "./api";
-import { inDesktop, quitTitle, stoppedLines } from "./appQuit.js";
+import { quitTitle, stoppedLines } from "./appQuit.js";
 import { track } from "./demoTrack";
 import { fmtStamp } from "./dates.js";
 import { theme, ACCENT, ALERT, BG, BORDER, DIM, FAINT, INK, PANEL, GRADIENT, BRAND } from "./theme.jsx";
@@ -256,20 +256,6 @@ function StaleBuild() {
   );
 }
 
-function ServerVersion() {
-  useLocale();
-  const [v, setV] = useState(null);
-  useEffect(() => { api.get("/api/version").then(({ data }) => setV(data)).catch(() => {}); }, []);
-  if (!v) return null;
-  return (
-    <Tooltip title={t("server started {started} — if this version looks old, restart taskuary", { started: v.started })}>
-      <Typography variant="caption" sx={{ color: "#a9a294", fontFamily: "Consolas, monospace", fontSize: 10.5,
-        display: { xs: "none", md: "block" } }}>
-        v{v.version}
-      </Typography>
-    </Tooltip>
-  );
-}
 
 const SWITCH_VIEWS = [
   { k: "chat", label: "Chat", icon: (on) => <TaskuaryMark size={17} sx={{ borderRadius: 1, ...(on ? { boxShadow: "0 0 0 1.5px #fff" } : {}) }} />,
@@ -299,7 +285,7 @@ export const ViewSwitch = ({ view, onView }) => {
 };
 
 // QUIT, ON THE TOP LINE (the owner, 2026-10-25: "Quit is an explicit option ... in the browser version's top line"). In the browser
-// nothing else stops the server; the desktop window has the tray's Quit, so it is not drawn there. No box asks: the hover says what
+// nothing else stops the server; the desktop window draws it too (2026-11-05), beside the tray's Quit. No box asks: the hover says what
 // stops with it, read when the pointer arrives (GET /api/quit), and the press is the decision.
 // `read`: what stops with it, asked when the pointer (or the phone's Help menu) arrives; `err`: a Quit that did not stop it says why
 function useQuit(onStopped) {
@@ -312,7 +298,9 @@ function useQuit(onStopped) {
     try { onStopped((await api.post("/api/quit", {})).data.stopped || []); }
     catch (e) { setBusy(false); setErr(e?.response?.data?.detail || { source: "Taskuary did not stop - close the terminal that runs it", values: {} }); }
   };
-  return { can: !inDesktop() && !DEMO, running, busy, err, read, quit };
+  // ...and in the desktop window too (the owner, 2026-11-05: "don't see the quit button on the desktop app"): the server stops, and the
+  // window closes with it (desktop.gone_with) - the tray's Quit is still there
+  return { can: !DEMO, running, busy, err, read, quit };
 }
 function QuitButton({ onStopped }) {
   useLocale();
@@ -591,7 +579,7 @@ export default function TaskHubPage() {
           {/* the word gives way on a phone: with it the bar wrapped, and the bell and refresh sat alone on a second row (2026-10-06) */}
           <Typography sx={{ fontWeight: 600, fontSize: 14.5, color: INK, letterSpacing: 0.2, display: { xs: "none", sm: "block" } }}>Taskuary</Typography>
           {/* no tagline here (the cleanup, 2026-10-06): the top bar is the logo, the views and three icons */}
-          <ServerVersion />
+          {/* no version number here (audit, 2026-11-05): it is Settings → Updates' to say */}
           <DemoBadge demo={demo} />
 
           {/* ONE SWITCH, THREE VIEWS (the owner, 2026-10-15: "Chat which is the regular workflow, then Board, then Game ... make

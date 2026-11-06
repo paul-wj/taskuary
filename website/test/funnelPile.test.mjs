@@ -132,6 +132,7 @@ test("the header line counts the pipe and what is on you", () => {
 });
 
 
+
 test("a few kinds say more than their lane does", async () => {
   const { rowMeta, laneMeta } = await import("../src/funnelPile.js");
   // an agent's finished task sits in a task lane under Tasks until read (2026-11-02); it reads "agent finished", not "on you"

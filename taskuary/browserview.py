@@ -416,8 +416,8 @@ TURN_PREFIX = 'yourturn:'
 TURN_DONE = 'Done'
 TURN_BACK = 'Done - I finished that in the browser. Look at the page as it is now and continue.'
 
-def your_turn(store, tid: int, sid: str, what: str = '') -> str:
-    "Record the agent's hand-over as an open request on the task. The request id - `yourturn:<hash>`."
+def your_turn(store, tid: int, sid: str, what: str = '', watch=...) -> str:
+    "Record the agent's hand-over as an open request on the task, watched on its page. The request id - `yourturn:<hash>`. `watch`: tests."
     from urllib.parse import urlsplit
     from . import terminal as term, workerstate as ws
     st = state(sid, fresh=True)
@@ -435,7 +435,11 @@ def your_turn(store, tid: int, sid: str, what: str = '') -> str:
     text = f"Your turn in the browser{f' on {host}' if host else ''}: {what or 'the agent needs you to do a step on the page'}"
     rid = f'{TURN_PREFIX}{ws.request_id_for(text)}'
     chat = hasattr(term.SESSIONS.get(str(sid)), 'send_prompt')
-    ws.record(store, tid, sid, 'input_needed', request_id=rid, text=text, choices=[TURN_DONE] if chat else None, source='api')
+    # ...AND WATCHED (the owner, 2026-11-05: "if we need the user we should wait for them to do it"): the page moving on closes it by itself
+    # and the agent goes on - Done stays for a page Taskuary cannot read (browsergate.watch_turn)
+    if ws.record(store, tid, sid, 'input_needed', request_id=rid, text=text, choices=[TURN_DONE] if chat else None, source='api'):
+        from . import browsergate
+        browsergate.watch_turn(store, tid, sid, rid, what, host or 'the page', watch=watch)
     return rid
 
 
@@ -590,13 +594,19 @@ def set_viewport(sid: str, w: int, h: int) -> bool:
 # WHAT THE BRIEF SAYS ABOUT ACTS THAT CAN'T BE UNDONE, by whether this session's hook can hold them (browsergate.py). It used to
 # promise "HELD for the owner's press" to every brain, and an agent said "nothing gets paid until you approve it" and then paid
 # (the owner's computer-use walk, 2026-10-25). Promise the hold only where there is one; everywhere else the agent asks first.
-HOLD_LINE = ('A browser command that would pay, order, submit for real, send, post, delete or cancel is HELD for the owner\'s press: '
-             'Taskuary refuses it with "held for the owner", puts it on the task, runs it in this browser once they approve and tells '
-             'you what happened. When that happens, end your turn - never try the same act another way. So never ask the owner in '
-             'words whether to submit, register or pay: run the command, and the hold puts it on the browser view for their Approve. ')
-ASK_FIRST_LINE = ('TASKUARY CANNOT HOLD YOUR BROWSER COMMANDS ON THIS AI: nothing stops a press once you run it. So before any command '
-                  'that would pay, order, submit for real, send, post, delete or cancel, STOP and ask the owner with the ask marker, '
-                  'naming the site and what it would do; run it only after they say yes. Never tell the owner Taskuary will hold it. ')
+# ...AND THE LAST PRESS IS THE OWNER'S, ON THE PAGE (the owner, 2026-11-05: "you hit pay in the browser instead of a generated ui"): work that
+# ends at a payment, a form or any button that can't be undone is filled in and left on that page for them (browsergate.hand_over).
+HOLD_LINE = ('WHEN THE WORK ENDS AT A PAYMENT, A FORM TO SUBMIT OR ANY BUTTON THAT CAN\'T BE UNDONE (pay, order, submit for real, send, post, '
+             'delete, cancel): fill in everything first, then run the command for that last button as you would. Taskuary refuses it with '
+             '"held for the owner" and hands them the page as you left it, scrolled to that button - THEY press it on the page themselves, '
+             'and you are told when they have and what the page shows (or that they did not). Then end your turn in one short line and run '
+             'no browser command until you hear back; never try the same act another way, and never ask the owner in words whether to '
+             'submit, register or pay. ')
+ASK_FIRST_LINE = ('TASKUARY CANNOT HOLD YOUR BROWSER COMMANDS ON THIS AI: nothing stops a press once you run it. So when the work ends at a '
+                  'payment, a form to submit or any button that can\'t be undone (pay, order, submit for real, send, post, delete, cancel), '
+                  'NEVER press it: fill in everything, leave the page on that button and end your turn with a final line '
+                  '[[TASKUARY-YOURTURN: check it and press <the button\'s own words> on the page]] - the owner presses it themselves, and '
+                  'their "Done" is your next message. Never tell the owner Taskuary will hold it. ')
 # ...and a browser that did not come up is said, not hidden: the agent got no brief and answered "no browser here" or sent the owner
 # looking for a connector that does not exist (the 2026-10-02 live check's gap #2, still open on 2026-10-25)
 FAILED_LINE = ('THE BROWSER DID NOT OPEN for this task ({why}). Tell the owner so in one plain line - "The browser did not open: {why}" - '

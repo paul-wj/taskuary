@@ -84,7 +84,7 @@ file as they are.
 
 - Write a concrete instruction — "Summarise spend by site; flag any vendor above 10k or new this
   month" — not "summarise the data".
-- **Brain**: the triage brain writes it by default; any connector with a saved key can be picked
+- **Brain**: the AI that sorts your mail writes it by default; any connector with a saved key can be picked
   per report. A saved pick that has lost its key stays visible and disabled rather than silently
   vanishing.
 - With a prompt set but no AI connector active, the raw data files and the builder says so.
@@ -188,7 +188,7 @@ and your phone. What it reads, its two clocks and the outcome ledger it learns f
 | **Make a task** | A task on your own list; no agent starts. If triage already opened one for it, that task is the answer - never a second. |
 | **Send to agent** | An agent takes it - a coding or a non-coding one, as its kind says. |
 | **Remind me** | Put away until the day you pick; it comes back that morning. |
-| **Not ours** | Put down: the Advisor does not raise it again, reworded or not - only something new on that thread brings a follow-up back. |
+| **Not for me** | Put down: the Advisor does not raise it again, reworded or not - only something new on that thread brings a follow-up back. |
 | **Next** | Move on; the idea stays as it is. |
 
 Marking the row done on the rail puts the idea down as handled. An idea never reopens a task that

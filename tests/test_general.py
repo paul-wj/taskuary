@@ -85,7 +85,7 @@ class SharedSessionTests(unittest.TestCase):
                                  'Kind': 'general', 'Status': 'open', 'SourceRef': 'assistant:setup',
                                  'Tags': browserview.WANTS}, 'owner')
         session = general.GeneralSession(store, tid, pick='cli:claude')
-        with mock.patch.object(browserview, 'start', return_value=True), \
+        with mock.patch.object(browserview, 'start', return_value=True), mock.patch.object(browserview, 'installed', return_value=True), \
              mock.patch.object(llm, 'build_llm', return_value=lambda *a, **k: 'Zoho is open beside us.') as build:
             session.send_prompt('Open Zoho', pick='cli:claude')
         self.assertTrue(build.call_args.kwargs['cli_tools'])
@@ -320,7 +320,8 @@ class SharedSessionTests(unittest.TestCase):
         close.assert_not_called()
         self.assertNotEqual(store.get_task(tid)['Status'], 'done')
 
-    def test_source_backed_work_can_still_close_after_answering(self):
+    def test_source_backed_work_never_closes_on_the_agents_word(self):
+        # the owner, 2026-11-05: "agent should never close once it's open until we hit close" - the marker is dropped, nothing closes
         store = MemoryStore(); tid = general_task(store)
         mid = store.add_message({'ExternalId': 'source-backed', 'Channel': 'email',
                                  'Subject': 'Please compare these', 'BodyText': 'Compare them'})
@@ -332,8 +333,8 @@ class SharedSessionTests(unittest.TestCase):
         with mock.patch.object(llm, 'build_llm', return_value=lambda *a, **k: answer), \
              mock.patch.object(general.threading, 'Timer', return_value=timer) as make_timer:
             session.send_prompt('Compare them')
-        make_timer.assert_called_once()
-        timer.start.assert_called_once()
+        make_timer.assert_not_called()
+        self.assertNotIn(store.get_task(tid)['Status'], ('done', 'dropped'))
 
 
 class GeneralApiTests(unittest.TestCase):

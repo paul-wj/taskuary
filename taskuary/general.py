@@ -88,11 +88,19 @@ EXTERNAL_WALK = (
     "automation that has to run on a schedule with nobody watching is exactly the sort of thing to "
     "name now rather than at the end.")
 SCROLLBACK = 200_000
-MAX_CONTEXT = 24_000
+# LEAN BY DEFAULT, THE REST ON ASK (the owner, 2026-11-05: "in general we should limit the amount of text as possible but it can search
+# the full context if it needs"): the brief carries the newest mails and turns, the older ones compacted to a line each, and every cut
+# says how to read it whole (READ_WHOLE) - the model opens what it needs instead of being handed everything
+MAX_CONTEXT = 30_000
+SOURCE_MAILS, SOURCE_CHARS = 8, 4_000
+TURNS, TURN_CHARS = 30, 4_000
+READ_WHOLE = 'read_message (or `taskuary --message ID`) reads any mail in full, search_messages (`taskuary --search`) finds the rest'
 OWNER_ASK_CHARS = 2_000          # the owner's words at the head of the prompt (_prompt): the whole of them, short of a pasted essay
-MAX_REPLY_TOKENS = 2_000
-DOCK_REPLY_TOKENS = 1_000       # a one-item walkthrough should answer quickly, not write an essay
-WAIT_TURN = 240.0        # how long a new question waits behind the one being answered
+MAX_REPLY_TOKENS = 8_000
+DOCK_REPLY_TOKENS = 3_000       # a one-item walkthrough should answer quickly, not write an essay
+# NO WAIT LIMIT ON A TURN BEHIND A TURN (the owner, 2026-11-05: talking to the agent while it works, several messages at once): a message
+# waited 240 s behind a long turn and then failed "something is stuck". It queues until the turn ahead ends, the session ends, or Stop
+WAIT_TURN = None
 _IMAGE_PATH = re.compile(r'(?P<path>(?:[A-Za-z]:\\|/)[^\r\n<>|"?*]+?\.(?:png|jpe?g|gif|webp))', re.I)
 
 # The conversation IS the teaching surface. An assistant that quietly guesses at a customised
@@ -314,7 +322,7 @@ def _selected(store, connector_id=None, model=None, pick=None) -> tuple[str, str
 NO_AI = 'No AI is connected'
 
 
-DRAFTED = 'The reply is drafted - it waits in Close out for your yes.'
+DRAFTED = 'The reply is drafted - it waits for your Send under Next steps.'
 def _split(store, tid: int) -> tuple[list, list]:
     "The task's chat as (before the current run, the current run), split at the last RUN_TYPE row if there is one."
     from . import selfclose
@@ -356,30 +364,82 @@ def history(store, tid: int) -> list:
 # news, then Resume's words - and the second mail of a thread was readable only inside the folded "Taskuary's instructions". On the
 # pane a brief after the run's first turn carries the mail that JOINED the task between the turn before it and it, each by its sender.
 # Joined, not stored: a mail read in while the agent worked waits for triage, and is put on the task after the turn it arrived during
-JOINED = ("SELECT m.*, MAX(m.CreatedAt, IFNULL((SELECT MAX(r.CreatedAt) FROM route r WHERE r.MessageId=m.MessageId AND r.TaskId=m.TaskId), '')) AS JoinedAt "
-          "FROM message m WHERE m.TaskId=? AND IFNULL(m.Direction,'in')<>'out' AND m.Status NOT IN ('context','history','skipped') "
+# ...the OWNER'S OWN reply on the thread too (Direction 'out', or a sent mail read as 'context'), marked `own`: the chat draws it as theirs, on
+# the right (the owner, 2026-11-05: "i saw you reply" - their answer sent outside Taskuary never showed in the chat at all)
+JOINED = ("SELECT m.*, MAX(m.CreatedAt, IFNULL((SELECT MAX(r.CreatedAt) FROM route r WHERE r.MessageId=m.MessageId AND r.TaskId=m.TaskId), '')) AS JoinedAt, "
+          "(IFNULL(m.Direction,'in')='out' OR m.Status='context') AS Own "
+          "FROM message m WHERE m.TaskId=? AND m.Status NOT IN ('history','skipped') "
           "AND IFNULL(m.Channel,'')<>'report' ORDER BY JoinedAt, m.MessageId")
+
+
+def owner_answered_last(store, tid: int) -> bool:
+    "The newest message on the task's thread is the owner's own: they answered it themselves, outside Taskuary."
+    rows = store._rows(JOINED, (tid,))
+    return bool(rows) and bool(rows[-1].get('Own'))
 def shown_history(store, tid: int) -> list:
     """history, as the pane draws it: each carried-on brief with the mail that woke it (`mail`: who, channel, at, their own words), and
     each answer with the `summary` filed after it."""
     from .triage import own_words
-    rows = chat_rows(store, tid, run=True); msgs = _as_messages(rows)
-    mail = store._rows(JOINED, (tid,)) if any(m.get('brief') for m in msgs[1:]) else []
+    # ...EVERY RUN, in order: a chat task is one conversation (the owner, 2026-11-05: "the chat not showing prior runs as there is only one run per
+    # task") - an earlier run is not folded away as "the earlier agent's conversation"; the next turn still continues the current run (history)
+    rows = chat_rows(store, tid); msgs = _as_messages(rows)
+    # ...the FIRST brief too, with what started the task (the owner, 2026-11-05: "the inputs on right ... email came in from x and was sent to agent")
+    mail = store._rows(JOINED, (tid,))
+    # `at`: when it was sent, in this server's zone like every stamp here (store.norm_stamp) - the page reads it through the zone setting.
+    # `words`: the text Taskuary kept of it
+    # (OwnText - no "sent from outside" banner, no quoted history), else its own words read from the body
+    def shown(got): return [{'who': 'You' if x.get('Own') else x.get('FromName') or x.get('FromEmail') or '', 'own': bool(x.get('Own')),
+                             'channel': x.get('Channel') or '', 'at': x.get('SentAt') or x.get('CreatedAt'),
+                             'words': (str(x.get('OwnText') or '').strip() or own_words(str(x.get('BodyText') or '')).strip())[:3000] or x.get('Subject') or ''}
+                            for x in got[-5:]]
+    placed = set()
     for i, (m, c) in enumerate(zip(msgs, rows)):
-        if not i or not m.get('brief'): continue
-        got = [x for x in mail if str(rows[i - 1].get('CreatedAt')) < str(x['JoinedAt']) <= str(c.get('CreatedAt'))]
-        if got: m['mail'] = [{'who': x.get('FromName') or x.get('FromEmail') or '', 'channel': x.get('Channel') or '', 'at': x.get('SentAt') or x.get('CreatedAt'),
-                              'words': own_words(str(x.get('BodyText') or '')).strip()[:3000] or x.get('Subject') or ''} for x in got[-5:]]
+        if not m.get('brief'): continue
+        got = [x for x in mail if (not i or str(rows[i - 1].get('CreatedAt')) < str(x['JoinedAt'])) and str(x['JoinedAt']) <= str(c.get('CreatedAt'))]
+        if got: m['mail'] = shown(got); placed.update(x['MessageId'] for x in got)
+    # ...and NONE IS LOST (the owner, 2026-11-05: "There was one at 12:58pm but then another one at 12:58 as well. i only see one input"): a
+    # mail that came in while the agent was at work falls between a brief and its answer - it joins the next brief, or stands at the foot as
+    # an input of its own until a turn answers it
+    first_turn = str(rows[0].get('CreatedAt')) if rows else ''
+    loose = [x for x in mail if x['MessageId'] not in placed and str(x['JoinedAt']) > first_turn]
+    # ...right above the FIRST entry after it: a brief takes it into its own mail; an answer (a re-think woken without a brief of its own) gets
+    # it as the input drawn over it - two answers in a row read as a restart, with the mail that woke the second nowhere
+    # ...the turn it woke is the next BRIEF after it (a re-think starts on its own brief once the turn it came in under ends); only with no
+    # brief after it does it stand over the next answer, else at the foot
+    # ...but never over the answer of a turn that was ALREADY RUNNING when it came in (the owner, 2026-11-05: four messages in a burst, the last
+    # read in mid-turn - all four were drawn over the first answer, which then "ran 1s", and the re-think it woke stood with no input over it,
+    # reading as a second agent): a turn whose input row (a brief, the owner's line - filed as the turn takes) is older than the mail had begun
+    # without it. A re-think woken with no brief of its own follows an answer, so the mail stands over it.
+    def took(i, j): return msgs[i]['role'] == 'assistant' and i and msgs[i - 1]['role'] == 'user' and str(rows[i - 1].get('CreatedAt')) < j
+    before = {}
+    for x in loose:
+        j = str(x['JoinedAt'])
+        at = next((i for i, c in enumerate(rows) if str(c.get('CreatedAt')) >= j and not took(i, j)), None)
+        if at is not None and msgs[at].get('brief'): msgs[at]['mail'] = (msgs[at].get('mail') or []) + shown([x]); continue
+        before.setdefault(at, []).append(x)
+    for at in sorted(before, key=lambda k: -1 if k is None else k, reverse=True):
+        got = before[at]
+        item = {'id': f'came-in-{got[0]["MessageId"]}', 'role': 'user', 'content': [{'type': 'text', 'text': ''}], 'brief': True,
+                'createdAt': got[-1].get('JoinedAt') or got[-1].get('CreatedAt'), 'mail': shown(got)}
+        if at is None: msgs.append(item)
+        else: msgs.insert(at, item)
+    # INPUT FIRST (the owner, 2026-11-05: "input should always be first?"): a run that opens on an answer - a conversation picked back up -
+    # opens on the mail that started the task, drawn above that answer as its trigger
+    if msgs and not msgs[0].get('brief') and msgs[0].get('role') == 'assistant':
+        got = [x for x in mail if str(x['JoinedAt']) <= str(rows[0].get('CreatedAt'))]
+        if got: msgs.insert(0, {'id': f'came-in-{tid}', 'role': 'user', 'content': [{'type': 'text', 'text': ''}], 'brief': True,
+                                'createdAt': got[-1].get('CreatedAt'), 'mail': shown(got)})
     # ...and each answer with the summary filed after it (SUMMARY_TYPE): the turn's three parts, drawn under it
-    summ, last = {}, None
-    for c in store.list_comments(tid):
-        if c.get('ActorType') == ASSISTANT_TYPE: last = c['CommentId']
-        elif c.get('ActorType') == SUMMARY_TYPE and last:
-            try: summ[f'comment-{last}'] = json.loads(c.get('Body') or '')
-            except ValueError: continue
+    summ = {f'comment-{k}': v for k, v in turn_summaries(store, tid).items()}
+    # ...and the drafts each turn left, in its own words (store.snap_draft) - never inside the summary
+    snaps = store.draft_snapshots(tid)
     for m in msgs:
         if m['id'] in summ: m['summary'] = summ[m['id']]
+        if (got := snaps.get(_cid(m['id']))): m['drafts_then'] = got
     return msgs
+def _cid(mid):
+    try: return int(str(mid).removeprefix('comment-'))
+    except ValueError: return None
 
 
 def earlier(store, tid: int) -> list:
@@ -421,14 +481,17 @@ def _cut(text, n):
 def take_corrections(store, tid: int, corrections) -> int:
     """What the owner corrected in the chat reaches the learning paths, quietly (no chip, no "Remembered" line): a `redraft` word is kept
     on the pending draft like the draft box's (byrecipient.keep_instruction), an `ask` ("not the ask") is an owner_correction for
-    learn.learn_from. Kept only when `said` is in the owner's newest message - the agent reports, it never invents. Returns how many."""
+    learn.learn_from. The model's statement of the correction is trusted (the owner, 2026-11-05: "the model reads intent") - it used to count
+    only when quoted word for word from the owner's newest message, so "make it warmer" said as "warmer, please" was lost. It still needs an
+    owner's message to correct from, words, and no credential in them (redact.scrub): what is learned is kept for good. Returns how many."""
     try:
-        norm = lambda s: ' '.join(str(s or '').lower().split())
+        from .redact import scrub
         last = next((c for c in reversed(store.list_comments(tid)) if c.get('ActorType') == USER_TYPE and not is_brief(c)), None)
-        n, kept = norm((last or {}).get('Body')), 0
+        if not last: return 0
+        kept = 0
         for c in corrections or []:
             said = ' '.join(str((c or {}).get('said') or '').split())
-            if not said or norm(said) not in n: continue
+            if not said or scrub(said) != said: continue
             if c.get('kind') == 'redraft':
                 rv = store.pending_review(tid, 'draft_reply')
                 if c.get('review') is not None and (not rv or rv.get('ReviewId') != c['review']): rv = next((r for r in store._rows('SELECT * FROM review WHERE ReviewId=? AND TaskId=?', (c['review'], tid))), None)
@@ -447,6 +510,24 @@ def take_corrections(store, tid: int, corrections) -> int:
         return kept
     except Exception as e:
         logger.warning(f'corrections on task {tid} not learned: {e}'); return 0
+
+
+def take_lesson_and_check(store, tid: int, lesson, check) -> None:
+    """The turn summary's lesson goes to its playbook as a proposal for the owner's yes, or to LEARNED.md (playbooks.take_lesson); its
+    check-back is set on the task (checkback.set_check). Never on a stranger's task: their words neither teach a playbook nor wake an agent
+    later. A check-back it could not read is said on the task, so the owner sees it was not set."""
+    if not (lesson or check): return
+    from . import origin
+    if origin.of_task(store, tid)[0] == 'stranger': return
+    if lesson:
+        from . import playbooks
+        try: playbooks.take_lesson(store, tid, lesson, 'assistant')
+        except Exception as e: logger.warning(f'task {tid}: the lesson was not kept - {e}')
+    if check:
+        from . import checkback
+        try: checkback.set_check(store, tid, check.get('when'), check.get('what'), 'assistant')
+        except ValueError as e: store.add_comment(tid, 'assistant', 'agent', f'The check-back was not set: {e}')
+        except Exception as e: logger.warning(f'task {tid}: the check-back was not set - {e}')
 
 
 def is_dock(task: dict | None) -> bool:
@@ -649,23 +730,34 @@ HUB_LINE = ('The Hub is a high-signal commons, not a task log. Only file a reusa
 SOCIAL_LINE = HUB_LINE
 # THE TURN IS THE JOB: nothing wakes a general agent once its answer is filed, so background work it would wait on comes back to
 # nobody - "I'm waiting for the walkthrough to finish, then I'll write the brief" ended a researcher's turn (the owner, 2026-10-21)
-FINISH_LINE = ("Finish the job in this turn. Your answer is what the owner gets: nothing wakes you again until they write. Do not start "
+FINISH_LINE = ("Finish the job in this turn. Your answer is what the owner gets: nothing wakes you again until they write, or a "
+               "check-back you set comes due (CHECK BACK LATER). Do not start "
                "background work, sub-agents or jobs you would have to wait on, and never end with \"I'll get back to you\" or \"waiting for "
                "it to finish\" - wait for it now, or do it now, then answer. If part of it cannot be done, say which part and why.")
+# ...and a turn that ended on that anyway is woken once to finish it (GeneralSession.wake): what the judge says it still waits on, said back
+WAKE = ("TASKUARY: your last answer ended still waiting on {why}. Nothing wakes you once a turn ends, so that result would never come "
+        "back. Do it now, in this turn - wait for it here, or do the work yourself - and answer with the result. If part of it truly cannot "
+        "be done, say which part and why.")
+# SEARCH BEFORE ASKING (the owner, 2026-11-05, from Hermes' session_search): a fact an earlier task already settled - found, confirmed, used
+# - is read from that task's ending (search.outcomes), never asked of the owner again. {where}: how this session reads them
+ASK_AFTER = ("SEARCH BEFORE YOU ASK: before asking the owner for a fact - a vendor id, a login route, the account they prefer - check whether "
+             "an earlier task settled it: {where}. Ask only what none did, and say which task you took it from.")
 # THE OWNER'S OWN HISTORY FIRST (mailsearch.py): a researcher asked about a colleague's email wrote code of its own to find the mail
 # instead of reading what Taskuary already holds (the owner, 2026-10-21). Told only to a session with a shell, on the owner's task.
 HISTORY_LINE = ("THE OWNER'S HISTORY IS IN TASKUARY - SEARCH IT FIRST. For anything about the owner's mail, messages, tasks or people, "
                 'run `taskuary --search "words" --from "name or address" --subject "..." --since YYYY-MM-DD --until YYYY-MM-DD` '
                 '(any of them; each hit prints its id, when, who, subject, thread and a snippet), then `taskuary --message ID` for one '
                 'in full with its thread; `taskuary --memory` prints what Taskuary has learned about the owner. That is the way in: never write scripts or code to read a mailbox, mail files or '
-                "Taskuary's database, and never go around it. If the search finds nothing, say so and say what you searched for.")
+                "Taskuary's database, and never go around it. If the search finds nothing, say so and say what you searched for.\n"
+                + ASK_AFTER.format(where='`taskuary --search "words"` (or the search_tasks tool) lists WHAT EARLIER TASKS SETTLED under the mail'))
 # ...AND A BRAIN WITH NO SEARCH OF ITS OWN IS HANDED IT (the owner, 2026-10-28: "why is prior mail not available"): an API card, or a CLI
 # set to look things up only, has no shell and no Taskuary tools, and answered "Prior mail search was unavailable here". On the owner's
 # own or a trusted task Taskuary searches for it - the sender's earlier mail and mail on the subject (mailsearch.meeting_reads, as
 # Prepare does) - and says so; a stranger's task is told why it gets none instead (origin.no_history_line).
 SEARCHED_LINE = ("THIS AI HAS NO SEARCH OF ITS OWN, SO TASKUARY SEARCHED THE OWNER'S SAVED MAIL FOR YOU: the sender's earlier messages "
                  "and mail on this subject are under EARLIER MAIL in the material{none}. Use them. Never say mail search was unavailable - "
-                 "say what was searched when it matters.")
+                 "say what was searched when it matters.\n"
+                 + ASK_AFTER.format(where='what earlier tasks on this subject settled is under WHAT EARLIER TASKS SETTLED in the material, when any did'))
 
 
 def earlier_mail(store, tid: int) -> str:
@@ -687,9 +779,19 @@ def history_brief(store, tid: int, hands: bool) -> tuple[str, str]:
     from . import origin
     if is_dock(store.get_task(tid)) or origin.of_task(store, tid)[0] == 'stranger': return '', ''
     if hands: return HISTORY_LINE, ''
-    got = earlier_mail(store, tid)
+    got, done = earlier_mail(store, tid), earlier_tasks(store, tid)
     from .terminal import fence
-    return SEARCHED_LINE.format(none='' if got else ' (it found none)'), (f'EARLIER MAIL (Taskuary searched it for you)\n{fence(got)}' if got else '')
+    return SEARCHED_LINE.format(none='' if got else ' (it found none)'), '\n\n'.join(x for x in (
+        f'EARLIER MAIL (Taskuary searched it for you)\n{fence(got)}' if got else '', fence(done) if done else '') if x)
+
+
+def earlier_tasks(store, tid: int) -> str:
+    "What earlier tasks on this task's subject settled (search.outcomes, by its title) - '' with none, or on a stranger's task."
+    from . import origin, search
+    if origin.of_task(store, tid)[0] == 'stranger': return ''
+    try: return search.says_outcomes(search.outcomes(store, (store.get_task(tid) or {}).get('Title') or '', skip=tid, limit=5, loose=True))
+    except Exception as e:
+        logger.debug(f'general: no earlier tasks read for task {tid} - {e}'); return ''
 
 
 def _turn_only(store, tid: int, text: str) -> str:
@@ -758,6 +860,120 @@ LOGIN_SENTENCE = ("A login or secret you find in their files goes only in the re
 # (the floor blocks credential folders for them too)
 STRANGER_GOAL_LINE = _GOAL.format(look='', login='')
 GOAL_LINE = _GOAL.format(look=LOOK_CLAUSE, login=LOGIN_SENTENCE)
+
+
+# DO WHAT YOU CAN DO (the owner, 2026-11-05, over a LinkedIn post left as "For you to do: paste the post into LinkedIn" on a task with LinkedIn
+# connected: "the goal is the action either email or post or web browser pay something, fill out form, generate report etc.. that's the main
+# goal help the user" - then: "next steps some times is not action as well. it can be clarifying question or i will leave this for you to do
+# for whatever reason. but if there is something it can do which is it's core job, be helpful assistant then do it"). Next steps holds one of
+# three: the act set up for the owner's one press, the question it needs answered first, or the part that is theirs and why. The roads are
+# what THIS owner has connected (roads), never a list of words to match.
+_ACTION = ("NEXT STEPS - DO WHAT YOU CAN DO. Be the helpful assistant: whatever part of the work you can do yourself, do it, rather than "
+           "handing it back. When the work calls for an act - an email, a post, a payment, a form, a report - set it up through Taskuary's "
+           "own roads, done up to the one press that sends it; it shows under Next steps as what it is (the email with its Send, the post "
+           "as a post with its Post button, the form filled up to its last button), and nothing goes before the owner presses:\n"
+           "- a reply or an email: propose_reply / propose_email, with any file it carries in `attach`\n"
+           "- a post, send or order on a connected system: propose {{\"action\": \"run_tool\", \"type\": ..., \"connector_id\": ..., ...}} "
+           "(the propose tool; with no tools, a line TASKUARY-PROPOSE {{...}}) - a post's words in `text` and its picture in `image` (a file "
+           "in your task folder), not in a file beside it. {roads}\n"
+           "- a payment, booking or form on a website: fill it in your browser up to the last press, then run that press as usual - "
+           "Taskuary stops it, hands the real page to the owner to press themselves, and tells you when they have\n"
+           "- a report, sheet or picture: make it in your task folder - it shows in the chat with your answer\n"
+           "Never hand the owner a copy-and-paste job (\"paste this into LinkedIn\", \"post it yourself\") for a road that exists. Next steps "
+           "may instead be the one question you need answered first, or a part that is the owner's to do - say why (no road reaches it: "
+           "name the connection that would; or it is theirs to decide). When the work is an answer, a finding or a check, answer it "
+           "plainly: no act is owed.\n"
+           # ...A LADDER WITH A BOUND (the owner, 2026-11-05: "look at open source assistants online and adapt the best parts"): a loop that
+           # retries one call forever burns the turn, one that quits at the first error hands the job back - the bound is the middle
+           "KEEP GOING WHEN A WAY FAILS. A failed tool, a site that blocks you, a file that will not open, an empty search is a reason to "
+           "try the next way, not to stop. Read what the failure told you and change something real: another source, tool or connection, "
+           "the browser instead of the API, the file read another way, a narrower or wider search. Never run the same failing call "
+           "unchanged more than twice. Give a route up only after three genuinely different ways have failed, or when the next one needs "
+           "the owner (a sign-in, a decision, money); then hand back one line per way you tried and what it returned, and the one thing "
+           "only the owner can unblock. A turn that quits at the first error, or calls a half-done job done, is the failure.")
+# HOW A TURN WORKS (the owner, 2026-11-05: "adapt the best parts" of the open-source assistants): a question does not stop the work, each
+# step is judged by what came back, and done is the goal met - not the boxes ticked. Rides with the goal on every task the agent works
+WORK_LINE = ("WHILE A QUESTION WAITS, KEEP WORKING: ask your one question, then do everything that does not hang on its answer - drafts, "
+             "lookups, forms filled - and say which assumption each rests on, so the answer only confirms or swaps it. Never end a turn "
+             "with only a plan or a promise.\n"
+             "CHECK EACH STEP BEFORE THE NEXT: judge it by what the tool returned - the page after the click, the file after the save, the "
+             "record after the write. Never assume a click, an upload or a form fill landed.\n"
+             "DONE MEANS THE GOAL IS MET AND CHECKED, not boxes ticked. A part that is unmet, or that you could not check, is named in your "
+             "summary - nothing_left is false then. You still never close the task: the owner does.")
+# PLAYBOOKS LEARN (the owner, 2026-11-05, from Hermes' skills that patch themselves): a turn that found its way the hard way leaves the next
+# agent the way. The model says whether there is a lesson - no word triggers it; the owner's yes on the playbook's card files it
+# (playbooks.take_lesson), and one with no playbook to go in lands in LEARNED.md, the one road every learned fact takes
+# WHAT IS LEARNED REACHES THE AGENT (the owner, 2026-11-05: "what learned.md goes to the general agent?" - none did; only `taskuary
+# --memory` on its own say): the trusted lines of LEARNED.md nearest this task, a small block - lean, the rest one command away. The
+# hypotheses still under test stay out (learn.injectable), as they do for triage
+LEARNED_CHARS = 1_500
+def learned_block(store, about: str, budget: int = LEARNED_CHARS) -> str:
+    from . import learn, textsim
+    try: doc = learn.injectable(store.doc(learn.DOC) or '')
+    except Exception as e: logger.debug(f'learned block: {e}'); return ''
+    lines = [l.strip() for l in doc.splitlines() if l.strip()[:1] in '-*' and len(l.strip()) > 2]
+    if not lines: return ''
+    try: got = textsim.rank(store, about, [(str(i), l) for i, l in enumerate(lines)], least=0.0)
+    except Exception: got = None
+    order = [lines[int(k)] for k, _ in got] if got else lines
+    out, used = [], 0
+    for l in order:
+        if out and used + len(l) > budget: break
+        out.append(l); used += len(l) + 1
+    return ('WHAT TASKUARY HAS LEARNED ABOUT THE OWNER - the lines nearest this task (`taskuary --memory` prints all of it):\n'
+            + '\n'.join(out))
+
+
+# ...worth keeping, never a log (the owner, 2026-11-05: "it should be things that make sense like general rules about user, or things
+# learnt not just random clicking buttons"): it lands in LEARNED.md's Hypotheses, which keeps only what the evidence holds up
+LESSON_LINE = ('A LESSON FOR NEXT TIME: when this turn found its way only after a dead end, was corrected by the owner, or had to find an '
+               'id, a name or a route the next agent would otherwise hunt for again, add "lesson": {"playbook": "<the slug under PLAYBOOKS it '
+               'belongs to, or null>", "text": "<one or two lines: what works, where it is, what to avoid>"} to your summary. Only what would '
+               "change how the next job like this is done - a lasting fact (a vendor's id in the books, which portal a payroll ask goes "
+               "through), a rule about how the owner wants things, a route that works where the obvious one fails. Never a step-by-step of "
+               "what you clicked or ran, nothing true only today, no dates, no people's names, nothing secret. Most turns have none: leave it "
+               "out then.")
+# CHECK BACK LATER (the owner, 2026-11-05, from OpenClaw's cron): what only time settles is checked by the same agent when it is due
+# (checkback.py), never promised and forgotten - FINISH_LINE's "nothing wakes you" has this one exception, and it is the agent's to set
+CHECK_BACK_LINE = ('CHECK BACK LATER: when the job hangs on something only time settles - a payment that should clear, a reply expected by a '
+                   'date, a form that takes a day - set a check-back: add "check_back": {"when": "<tomorrow 9am | in 2 days | YYYY-MM-DD>", '
+                   '"what": "<what to verify>"} to your summary (mid-turn: the check_back tool or `taskuary --check-back WHEN "WHAT"`). You are '
+                   'woken on this task then with that note; check it and answer. One per task - a new one replaces it. Never for what the '
+                   'owner owes you: ask them.')
+# ...and AGENT.md AS THE OWNER'S COPY MAY STILL READ IT: an edited copy stops tracking its template (store.py), and older wording told every
+# worker to stay at the prompt for an answer, keep to the brief and run `taskuary --done` - a coding session's way, not this agent's
+GENERAL_OVER = ("WHERE AGENT.md READS OTHERWISE, FOR YOU: you never run `taskuary --done` or close the task; a question you ask does not "
+                "stop the work that does not hang on it; and the brief is where you start, not the edge of where you may look for what the "
+                "job needs.")
+
+
+def roads(store) -> str:
+    """The connected systems an act can go out on for this owner: each card that is on and runs an executor that posts, sends or
+    orders (scopes.REACHES), by its own name and id. The generic ones (an MCP tool, a GraphQL call) are no road of their own."""
+    from . import scopes
+    from .proposals import MEDIA
+    from .reports import REGISTRY, card_of
+    try: cards = [c for c in store.list_connectors() if c.get('Active')]
+    except Exception: return ''
+    return '; '.join(f"{c.get('Name') or c['Type']} (connector_id {c['ConnectorId']}): {t} - {scopes.REACHES[t]}" + (', with a picture' if t in MEDIA else '')
+                     + takes(t) for c in cards for t in sorted(REGISTRY) if t in scopes.REACHES and t not in ('mcp', 'graphql') and card_of(t) == c['Type'])
+
+
+def takes(tool) -> str:
+    """What the agent may name on an act its card declares (connectorcatalog `actions`): the fields it fills, and the choices the owner's
+    defaults on the connection fill - named only when the owner asked for one, since the card shows them and the owner may change them."""
+    from . import connectorcatalog as cat
+    act = cat.action_for(tool)
+    if not act: return ''
+    mine = [f['key'] for f in act['fields'] if f.get('agent')]
+    theirs = [f"`{f['key']}` ({' or '.join(str(c['value']) for c in f['choices'])})" for f in act['fields'] if f.get('setting')]
+    return (f"; it takes {', '.join(f'`{k}`' for k in mine)}" if mine else '') + (
+        f"; {' and '.join(theirs)} come from the owner's defaults - name one only when the owner asked for it" if theirs else '')
+
+
+def action_line(store) -> str:
+    r = roads(store)
+    return _ACTION.format(roads=f'Connected for this owner: {r}.' if r else 'Nothing that posts or sends is connected for this owner yet.')
 READING_CHARS = 1_500
 
 
@@ -827,8 +1043,10 @@ def _prompt(store, tid: int) -> tuple[str, str]:
     outsider = _origin.of_task(store, tid)[0] == 'stranger'
     from .workstreams import of_task as _ws_of           # ...JOB.md as this task's workstream reads it (2026-11-01)
     owner_bg = '' if outsider else _brief.background(store, workstream=_ws_of(store, tid) or None)
+    task_ = store.get_task(tid) or {}
+    known = '' if outsider else learned_block(store, f"{task_.get('Title') or ''}\n{task_.get('Summary') or ''}")
     system = (
-        (f'{owner_bg}\n\n' if owner_bg else '') +
+        (f'{owner_bg}\n\n' if owner_bg else '') + (f'{known}\n\n' if known else '') +
         "You are the Taskuary general-work assistant. Help complete research, planning, writing, "
         "marketing, operational, and other non-coding work. The task and source material below are "
         "authoritative. Be direct and useful. Never claim you searched the web, opened a system, sent "
@@ -845,7 +1063,7 @@ def _prompt(store, tid: int) -> tuple[str, str]:
         # nothing wakes this session once its answer is filed (hooks.judge_ended reads a turn that ended short)
         f"{FINISH_LINE}\n\n"
         + (f'{layer}\n\n{TEACH_ME}\n\n' if layer else f'{TEACH_ME}\n\n')
-        + f"RULES (AGENT.md - every worker)\n{agent_rules}\n\nASSISTANT STYLE\n{counsel}"
+        + f"RULES (AGENT.md - every worker)\n{agent_rules}\n\n{GENERAL_OVER}\n\nASSISTANT STYLE\n{counsel}"
     )
     # ...and none on a connector card's walk: it edits no code and has no repository to look in (aisetup.WALK_REF)
     repos = '' if outsider or task.get('SourceRef') == 'connector:setup' else repos_block(store)
@@ -860,10 +1078,13 @@ def _prompt(store, tid: int) -> tuple[str, str]:
         doc = ensure_profile_document(store, role)
         profile_rules = _cut(_brief.rules(store, doc, 10**9), DOC_CHARS)      # THE profile number (doclimits), cut out loud
         if profile_rules: system += f'\n\nPROFILE RULES ({doc.upper()}.md)\n{profile_rules}'
-    # the procedure triage selected for this job rides here exactly as it rides in a coding brief
-    # (playbooks.seed_block) - one task-brief structure for either worker kind (PW-206)
+    # THE PLAYBOOKS AS A MENU (the owner, 2026-11-05): every one's `when` and its file, read whole by the agent when it says one applies
+    # (playbooks.agent_menu). A stranger's task still gets only triage's match, flattened (playbooks.seed_block, PW-206): its session is never
+    # pointed at the owner's files - and a brain with no hands, which cannot open the file, is handed that one whole too (send_prompt)
     from . import playbooks as _pbk
-    pbk = _pbk.seed_block(task)
+    pbm = '' if dock or outsider else _pbk.agent_menu(task, store)
+    pbk = _pbk.seed_block(task) if outsider else ''
+    if pbm: system += f'\n\n{pbm}'
     if pbk: system += '\n\nPROCEDURE FOR THIS JOB\n' + _cut(pbk, 3_000)
     # A setup walkthrough's procedure is a shipped SKILL the worker reads and adapts, never dialogue
     # branching in here or a second assistant system prompt competing with this one (PW-190). It rides
@@ -900,17 +1121,22 @@ def _prompt(store, tid: int) -> tuple[str, str]:
     sources = []
     from . import origin
     stranger = origin.of_task(store, tid)[0] == 'stranger'   # the reviewer reads this as the owner's words: theirs go in a file
-    for m in (detail.get('messages') or [])[-12:]:
+    mails = detail.get('messages') or []
+    # ...each by its id, so a mail cut here is one the agent can open whole
+    if len(mails) > SOURCE_MAILS: sources.append(compacted_mail(mails[:-SOURCE_MAILS]))
+    for m in mails[-SOURCE_MAILS:]:
         who = m.get('FromName') or m.get('FromEmail') or m.get('SourceName') or m.get('Channel') or 'source'
         files = store.list_attachments(m['MessageId'])
         file_line = ('\nATTACHMENTS: ' + '; '.join(
             str(a.get('Name') or 'file') + (f" ({a.get('Path')})" if a.get('Path') else '')
             for a in files[:8])) if files else ''
-        sources.append(f"FROM {who} ({m.get('SentAt') or ''})\n{_cut(m.get('BodyText'), 3_000)}{file_line}")
-    turns = []
-    for c in chat_rows(store, tid, run=True)[-30:]:
+        long = len(str(m.get('BodyText') or '')) > SOURCE_CHARS
+        body = _cut(m.get('BodyText'), SOURCE_CHARS) + (f" - read_message m{m['MessageId']} reads it whole" if long else '')
+        sources.append(f"FROM {who} ({m.get('SentAt') or ''}) [m{m['MessageId']}]\n{body}{file_line}")
+    turns, said = [], chat_rows(store, tid, run=True)
+    for c in said[-TURNS:]:
         role = 'ASSISTANT' if c.get('ActorType') == ASSISTANT_TYPE else 'USER'
-        turns.append(f"{role}: {_cut(c.get('Body'), 4_000)}")
+        turns.append(f"{role}: {_cut(c.get('Body'), TURN_CHARS)}")
     # ...a SECOND agent (new_run) has a conversation of its own, and is told where the earlier one got to: its last answer, not its chat
     before = next((c for c in reversed(_split(store, tid)[0]) if c.get('ActorType') == ASSISTANT_TYPE), None)
     prior = (f"WHERE THE EARLIER AGENT ON THIS TASK GOT TO - its last answer. You are a new agent on the task, with a conversation of "
@@ -944,14 +1170,17 @@ def _prompt(store, tid: int) -> tuple[str, str]:
     # ...and a connector card's walk owes nobody an answer: it ends when the card's Test passes (aisetup.CARD_TOOLS), never by
     # closing the task and drafting a reply to a sender there is not
     owed = sources and task.get('SourceRef') != 'connector:setup'
-    if owed and selfclose.mode(store) != 'off' and not selfclose.stays_open(store, tid): system = system + '\n\n' + selfclose.CHAT_LINE
-    elif not dock and task.get('SourceRef') not in ('connector:setup', SETUP_REF): system = system + '\n\n' + selfclose.owner_closes_line()
+    # THE AGENT NEVER CLOSES A CHAT TASK (the owner, 2026-11-05: "agent should never close once it's open until we hit close"): every
+    # general task is told the owner ends it - Mark done, Send and close, Close with a note - never CHAT_LINE's closing marker
+    if not dock and task.get('SourceRef') not in ('connector:setup', SETUP_REF): system = system + '\n\n' + selfclose.owner_closes_line()
+    if not dock and owner_answered_last(store, tid): system = system + '\n\n' + selfclose.OWNER_ANSWERED_LINE
     if owed: system = system + '\n\n' + selfclose.REPLY_LINE
     if owed and (miss := wrapup.refused_line(store, tid)): system = system + '\n\n' + miss      # a file its reply does not carry (wrapup._told)
     from . import slots
     if slots.all_(store, tid): system = system + '\n\n' + selfclose.DRAFT_LINE
     if not dock and task.get('SourceRef') not in ('connector:setup', SETUP_REF):
-        system += f'\n\n{STRANGER_GOAL_LINE if stranger else GOAL_LINE}\n\n{selfclose.SUMMARY_LINE}'
+        system += (f'\n\n{STRANGER_GOAL_LINE if stranger else GOAL_LINE}' + ('' if stranger else f'\n\n{action_line(store)}')
+                   + f'\n\n{WORK_LINE}\n\n{selfclose.SUMMARY_LINE}' + ('' if stranger else f'\n\n{LESSON_LINE}\n\n{CHECK_BACK_LINE}'))
     if stranger and not dock: system = system + '\n\n' + origin.no_history_line(store, tid)     # closed on purpose, and said so
     md = store.checklist_markdown(tid, ids=True) if hasattr(store, 'checklist_markdown') else ''
     ours = lambda o: '' if stranger else o   # triage's title, summary and checklist about a stranger's mail are the stranger's words
@@ -980,12 +1209,78 @@ def _prompt(store, tid: int) -> tuple[str, str]:
     # first, then the oldest source material. _cut(user) kept the head and dropped exactly the
     # conversation and the instruction, so a task seeded from eight long mails answered the mails
     # and not the owner (audit 2026-09-02).
-    while len(turns) > 1 and len(head) + len('\n\n'.join(turns)) + len(tail) > MAX_CONTEXT: turns.pop(0)
-    conv = "CONVERSATION\n" + '\n\n'.join(turns) + tail
+    # ...and what goes is COMPACTED, not lost (the owner, 2026-11-05: "some sort of compaction if the chats get too long"): the room for it is
+    # kept back first, then the cut turns are read from what the task already holds (compacted_turns)
+    room_for = lambda: len(head) + len('\n\n'.join(turns)) + len(tail) + (COMPACT_CHARS if len(turns) < len(said) else 0)
+    while len(turns) > 1 and room_for() > MAX_CONTEXT: turns.pop(0)
+    earlier = compacted_turns(store, tid, said[:len(said) - len(turns)])
+    conv = "CONVERSATION\n" + (f'{earlier}\n\n' if earlier else '') + '\n\n'.join(turns) + tail
     src, room = '\n\n'.join(sources), MAX_CONTEXT - len(head) - len(conv) - 20
     if stranger and sources: src, room = origin.SEED_LINE.format(path=origin.stranger_file(store, tid, sources)), MAX_CONTEXT
-    if len(src) > room: src = ('[older source material trimmed]\n\n' + src[-room:]) if room > 400 else ''
+    if len(src) > room:
+        cut = f'[older source material trimmed - its first {len(src) - room + 300:,} characters; {READ_WHOLE}]\n\n'
+        src = (cut + src[-(room - 300):]) if room > 700 else ''
     return system, head + (f"SOURCE MATERIAL\n{src}\n\n" if src else '') + conv
+
+
+# COMPACTION (the owner, 2026-11-05: "we probably should have some sort of compaction if the chats get too long ... don't make a new parallel
+# system"): what a long task's brief cannot hold is fed to the model as a short running account built from what the task ALREADY keeps -
+# each turn's own summary (SUMMARY_TYPE: what was asked about, what it did, what was left on the owner) and the owner's words - never a new
+# store, and no model call to write it. The chat still shows every turn; this is only what the model reads. What holds beyond the task (a
+# preference, a correction) goes to LEARNED.md the one road it always has: the summary's `corrections` (take_corrections -> learn.learn_from)
+COMPACT_CHARS, COMPACT_LINE = 8_000, 400
+def _flat(x, n=COMPACT_LINE) -> str:
+    t = ' '.join(str(x or '').split())
+    return t if len(t) <= n else t[:n - 1] + '…'
+
+
+def _lines_fit(head: str, lines: list, budget: int = COMPACT_CHARS) -> str:
+    "`head` and as many of the NEWEST `lines` as fit in `budget`, saying how many older ones were left out."
+    kept, room = [], budget - len(head) - 80
+    for l in reversed(lines):
+        if room - len(l) - 1 < 0: break
+        kept.insert(0, l); room -= len(l) + 1
+    gone = len(lines) - len(kept)
+    return head + (f'\n({gone} older not listed)' if gone else '') + ('\n' + '\n'.join(kept) if kept else '')
+
+
+def turn_summaries(store, tid: int) -> dict:
+    "{an answer's CommentId: its turn summary} - the summaries filed after each answer (SUMMARY_TYPE), as shown_history reads them."
+    out, last = {}, None
+    for c in store.list_comments(tid):
+        if c.get('ActorType') == ASSISTANT_TYPE: last = c['CommentId']
+        elif c.get('ActorType') == SUMMARY_TYPE and last:
+            try: out[last] = json.loads(c.get('Body') or '')
+            except ValueError: continue
+    return out
+
+
+def compacted_turns(store, tid: int, rows) -> str:
+    """The conversation turns the brief had no room for, compacted: one line each - the owner's words (their asks, their decisions), and
+    each answer as its own summary said it (what it did, the paths and figures in it, what it left on the owner). '' with none cut."""
+    if not rows: return ''
+    summ, lines = turn_summaries(store, tid), []
+    for c in rows:
+        if c.get('ActorType') != ASSISTANT_TYPE:
+            lines.append(f"- {'Taskuary' if is_brief(c) else 'the owner'} ({_md(c.get('CreatedAt'), True)}): {_flat(c.get('Body'))}"); continue
+        s = summ.get(c.get('CommentId'))
+        if not isinstance(s, dict): lines.append(f"- you answered: {_flat(c.get('Body'))}"); continue
+        left = '; '.join(_flat(o, 120) for o in s.get('on_you') or [] if isinstance(o, str))
+        lines.append(f"- you did: {_flat(s.get('did'))}" + (f' | left on the owner: {left}' if left else '') + (' | nothing left' if s.get('nothing_left') else ''))
+    return _lines_fit(f'EARLIER IN THIS CONVERSATION, COMPACTED - {len(rows)} older turns, one line each (the full turns are kept on the '
+                      'task; a resumed session still holds them):', lines)
+
+
+def compacted_mail(mails) -> str:
+    "The task's older mails the brief has no room for: one line each, by id, so the agent opens the one it needs whole (READ_WHOLE)."
+    lines = [f"- [m{m['MessageId']}] {m.get('FromName') or m.get('FromEmail') or m.get('Channel') or 'source'} ({_md(m.get('SentAt'), True)}): "
+             f"{_flat(m.get('BodyText'), 200)}" for m in mails]
+    return _lines_fit(f'EARLIER MAIL ON THIS TASK, COMPACTED - {len(mails)} older messages, one line each; {READ_WHOLE}:', lines)
+
+
+# ...a file that is no picture is named as a file (server.prompt_file): "ATTACHED IMAGES" over a PDF told the agent to look at it as one
+def files_head(paths) -> str: return 'ATTACHED IMAGES' if all(_IMAGE_FILE.search(str(p)) for p in paths) else 'ATTACHED FILES'
+_IMAGE_FILE = re.compile(r'\.(png|jpe?g|gif|webp)$', re.I)
 
 
 def _images(paths) -> list:
@@ -1012,8 +1307,8 @@ class GeneralSession:
     agent = 'assistant'
     cli = 'taskuary'
 
-    def __init__(self, store, task_id: int, connector_id=None, model=None, pick=None):
-        self.sid = uuid.uuid4().hex[:12]
+    def __init__(self, store, task_id: int, connector_id=None, model=None, pick=None, sid=None):
+        self.sid = sid or uuid.uuid4().hex[:12]         # `sid`: an idled-out session's own, brought back as the same run (idle_out)
         self.store, self.task_id = store, task_id
         saved = store.saved_session(task_id) or {}
         if connector_id is None and not pick:
@@ -1023,12 +1318,13 @@ class GeneralSession:
             model = saved.get('Model') or None
         self.pick, self.provider, self.model = _selected(store, connector_id, model, pick)
         self.started = datetime.now().isoformat(sep=' ', timespec='seconds')
-        self.buf, self.n, self.ended, self.last = deque(), 0, None, time.time()
+        self.buf, self.n, self.ended, self.last, self.seen = deque(), 0, None, time.time(), 0.0
         self.subs, self.taps = [], []
         self.alive, self.busy = True, False
         self.spoke = False                   # a turn of this session has ended: before one, a session being opened is not an answer
         self.rows, self.cols = 32, 110
         self._input, self._lock = '', threading.Lock()
+        self._waiting, self._wlock = [], threading.Lock()     # the owner's lines waiting for the turn ahead (send_prompt: taken together)
         self._cancel = None                  # the stop switch for the answer being written now
         self.cli_sid = ''                    # the CLI's OWN conversation, resumed turn to turn
         from . import continuity
@@ -1176,8 +1472,10 @@ class GeneralSession:
 
         A person asked a second question while you are mid-sentence expects to be answered
         next, not ignored. So: queue. In slices, so a browser that gives up stops waiting too.
+        `wait` None (WAIT_TURN) is no deadline: it waits out the turn ahead however long it runs, and gives up only on `cancel` or a
+        session that ended under it.
         """
-        end = time.time() + max(0.0, wait)
+        end = None if wait is None else time.time() + max(0.0, wait)
         self.waiting_turns = getattr(self, 'waiting_turns', 0) + 1
         try:
             while True:
@@ -1185,7 +1483,7 @@ class GeneralSession:
                     self.turn_no = getattr(self, 'turn_no', 0) + 1
                     return True
                 if cancel is not None and cancel.is_set(): return False
-                if time.time() >= end: return False
+                if not self.alive or (end is not None and time.time() >= end): return False
         finally: self.waiting_turns -= 1
 
     def write(self, data):
@@ -1219,10 +1517,35 @@ class GeneralSession:
         text = str(text or '').strip()
         if not text: raise ValueError('empty message')
         if not self.alive: raise RuntimeError('this assistant session has ended - reload the page and ask again')
+        # LINES TYPED WHILE IT WORKS ARE ONE TURN (the owner, 2026-11-05: "either or what the model decides if it's clarification"): each
+        # waits here; the first to get the turn files them all and the model reads them together - a later one may correct an earlier one.
+        # The others find theirs already taken and end quietly: the turn that took them answers for them.
+        mine = object() if as_owner and not brief and not kept else None
+        if mine is not None:
+            with self._wlock: self._waiting.append((mine, text))
         if not self._take(WAIT_TURN, cancel):
-            raise RuntimeError(f'the assistant has been answering the previous question for over '
-                               f'{int(WAIT_TURN)}s - something is stuck. Press stop, or reload the page.')
+            if mine is not None:
+                with self._wlock: self._waiting = [w for w in self._waiting if w[0] is not mine]
+            # ...it gave up only because the session ended under it (the caller's 'has ended' road starts a fresh one) or was cancelled
+            if not self.alive: raise RuntimeError('this assistant session has ended - reload the page and ask again')
+            raise RuntimeError('the assistant was still answering the previous question when this one was cancelled - send it again.')
+        # ...it idled out while this waited for the lock (idle_out): the caller's 'has ended' road starts it again (server.assistant_stream)
+        if not self.alive:
+            if mine is not None:
+                with self._wlock: self._waiting = [w for w in self._waiting if w[0] is not mine]
+            self._lock.release(); raise RuntimeError('this assistant session has ended - reload the page and ask again')
+        lines = [text]
+        if mine is not None:
+            with self._wlock:
+                if not any(w[0] is mine for w in self._waiting): self._lock.release(); return ''     # an earlier turn took it with its own
+                lines, self._waiting = [w[1] for w in self._waiting], []
+            text = '\n\n'.join(lines)
+        if len(lines) > 1:
+            together = (f"THE OWNER SENT {len(lines)} MESSAGES while you worked - the last {len(lines)} USER turns. Read them together: a later "
+                        "one may correct or clarify an earlier one. Answer them in one reply, or each in turn, as fits.")
+            delivery_instructions = f'{delivery_instructions}\n\n{together}' if delivery_instructions else together
         self.quick = False                   # a real turn: from here the session is a desk like any other
+        if as_owner: self.woke = False       # ...and a turn the owner's words began may be woken once again (wake)
         self.busy, self.last = True, time.time()
         # A NEW TURN MAY FINISH AGAIN (the email walk, 2026-10-29): the mark a self-close leaves stops two hooks wrapping one turn,
         # and it outlived the turn - Continue on an agent that had closed once refused its next [[TASKUARY-DONE]], parked "waiting on you"
@@ -1242,14 +1565,24 @@ class GeneralSession:
                     self.cli_sid = ''
                     self.resume_notice = 'Continuing from the saved conversation with the selected provider.'
                     self._remember_session()
-            if echo and as_owner: self._emit(f'\x1b[1;34m{"taskuary" if brief else "you"}>\x1b[0m {text}\r\n')
+            if echo and as_owner:
+                for w in lines: self._emit(f'\x1b[1;34m{"taskuary" if brief else "you"}>\x1b[0m {w}\r\n')
             # the owner's words are kept FIRST, and the run says it is working only once it has an AI: with none, the message was
             # lost under "Started the selected agent" and a `working` record for an agent that never could start (2026-10-22 walk)
-            if as_owner and not kept: self.store.add_comment(self.task_id, BRIEF_ACTOR if brief else "owner", USER_TYPE, text)   # `kept`: the door wrote them already (continue-work)
+            if as_owner and not kept:
+                for w in lines: self.store.add_comment(self.task_id, BRIEF_ACTOR if brief else "owner", USER_TYPE, w)   # `kept`: the door wrote them already (continue-work)
             if not self.pick:
                 self.trace = []; self.trace_revision += 1
                 # ...in plain words: the AI CLI agents page's own name read "CLI agent" on the failed card (the 2026-10-21 audit, R2)
                 raise RuntimeError(f"{NO_AI} - connect one on {words.name('ai')} to run this task")
+            # ...a press handed to the owner on its page (browsergate.hand_over) that they answered in words instead: the agent hears it was
+            # not pressed. Before `working`, which overtakes the hand-over
+            if as_owner:
+                from . import browsergate
+                try:
+                    if (note := browsergate.owner_said(self.store, self.task_id, self.sid, text)):
+                        delivery_instructions = f'{delivery_instructions}\n\n{note}' if delivery_instructions else note
+                except Exception as e: logger.debug(f'task {self.task_id}: the hand-over was not read - {e}')
             try:
                 from . import workerstate as ws
                 ws.record(self.store, self.task_id, self.sid, 'working', source='api')
@@ -1356,6 +1689,10 @@ class GeneralSession:
             # by the session itself where it has hands, else for it
             said, prior = history_brief(self.store, self.task_id, hands)
             if said: system = f'{system}\n\n{said}'
+            # ...and with no hands to open a playbook's file, the one triage matched rides whole (the menu still names the rest)
+            if not hands and 'PLAYBOOKS - ' in system:
+                from . import playbooks as _pbk
+                if pbk := _pbk.seed_block(self.store.get_task(self.task_id)): system += '\n\nPROCEDURE FOR THIS JOB\n' + _cut(pbk, 3_000)
             if prior: user = f'{prior}\n\n{user}'
             source_paths = [a.get('Path') for a in _task_files(self.store, self.task_id) if a.get('Path')]
             paths = list(dict.fromkeys(source_paths + list(attachments or [])
@@ -1562,8 +1899,7 @@ class GeneralSession:
         self.quick = True                    # before any event: every event of this turn says 'quick' (quickwork.only_quick)
         if not self.alive: raise RuntimeError('this assistant session has ended - reload the page and ask again')
         # outside the try: without the lock this turn never began - its finally would release a lock it does not hold, and the live turn is no failure
-        if not self._take(WAIT_TURN):
-            raise RuntimeError(f'the assistant has been answering the previous question for over {int(WAIT_TURN)}s - something is stuck.')
+        if not self._take(WAIT_TURN): raise RuntimeError('this assistant session has ended - reload the page and ask again')
         self.busy, self.last = True, time.time()
         selfclose.forget(self.task_id)
         t0 = self.last
@@ -1572,7 +1908,7 @@ class GeneralSession:
             if as_owner: self.store.add_comment(self.task_id, BRIEF_ACTOR if brief else 'owner', USER_TYPE, ask)
             self.trace = [{'type': 'start', 'session': {'provider': self.provider, 'model': self.model}}]; self.trace_revision += 1
             for kind, name, detail in steps or []: self._remember_trace(kind, name, detail)
-            return self._file(quickwork.as_reply(out), [], t0)
+            return self._file(quickwork.as_reply(out, (self.store.task_thread(self.task_id) or {}).get('asking') or ''), [], t0)
         except Exception as e:
             try: ws.record(self.store, self.task_id, self.sid, 'failed', text=str(e)[:4000], source='quick')
             except Exception as skipped: logger.debug(f'quick worker event skipped: {skipped}')
@@ -1674,6 +2010,14 @@ class GeneralSession:
                 ws.record(self.store, self.task_id, self.sid, 'input_needed', request_id=ws.question_id(g, i) if g else ws.request_id_for(q),
                           text=q, source=src)
         except Exception as e: logger.debug(f'api worker event skipped: {e}')
+        # ...AND ONE IT ONLY SAID IN WORDS (the owner, 2026-11-05, an agent that wrote "the sign-in page is open" and ended its turn: the browser
+        # shows only for an open sign-in ask, so nothing showed): a turn that ends with its browser on a page asking for a password raises the
+        # ask itself - the vault's sign-in first, else the page beside the chat
+        if signing is None and turn is None and not asks:
+            from . import signin
+            try:
+                if signin.on_signin_page(self.sid): signing = ''
+            except Exception as e: logger.debug(f'task {self.task_id}: the browser could not be read for a sign-in - {e}')
         if signing is not None:
             from . import signin
             try: signin.needs(self.store, self.task_id, self.sid, signing)
@@ -1682,14 +2026,25 @@ class GeneralSession:
             from . import browserview
             try: browserview.your_turn(self.store, self.task_id, self.sid, turn)
             except Exception as e: logger.warning(f'task {self.task_id}: the page the agent handed over was not raised - {e}')
-        # A TURN THAT ENDED SHORT is not one waiting on the owner: read by the turn judge (hooks.judge_ended), it is filed as the run
-        # failing with its reason, and the session ends with its conversation saved - never parked as "waiting on you"
+        # A TURN THAT ENDED SHORT is not one waiting on the owner: read by the turn judge (hooks.judge_ended), it wakes the agent once to
+        # do what it said it would - never a failure in the chat (the owner, 2026-11-05: "failure means nothing to the user")
         if not asks and signing is None and turn is None and closing is None and not is_dock(self.store.get_task(self.task_id)):
             from . import hooks
-            hooks.judge_ended(self.store, self.task_id, self.sid, reply[:4000], then=lambda: self.close(learn=False, report=False))
+            hooks.judge_ended(self.store, self.task_id, self.sid, reply[:4000], then=self.wake)
         rid = self.store.add_comment(self.task_id, 'assistant', ASSISTANT_TYPE, reply)
         if summ:
             take_corrections(self.store, self.task_id, summ.pop('corrections', None))     # learned quietly, never drawn
+            take_lesson_and_check(self.store, self.task_id, summ.pop('lesson', None), summ.pop('check_back', None))
+            # ...and WHICH draft this turn left - its id, never its words: what goes to the sender lives in the draft alone (2026-11-04). Once a
+            # newer entry comes, the turn is history and that draft stays in it read-only (the owner, 2026-11-05: "it's there but no longer
+            # clickable. it was a draft that is part of the history of the chat")
+            # ...and the draft's words as this turn left them, in a table of their own (store.snap_draft): the next turn rewrites it in place.
+            # A turn that left it untouched names none (`[]`), so one draft is drawn once per turn that wrote it, with that turn's words
+            try:
+                rv = self.store.pending_review(self.task_id)
+                if rv and str(rv.get('DraftText') or '').strip():
+                    summ['drafted'] = [{'review': int(rv['ReviewId'])}] if self.store.snap_draft(int(rv['ReviewId']), rid) else []
+            except Exception as e: logger.debug(f'task {self.task_id}: the turn draft was not kept with it - {e}')
             self.store.add_comment(self.task_id, 'assistant', SUMMARY_TYPE, json.dumps(summ))
             if 'on_you' in summ: self.store.set_on_you(self.task_id, summ['on_you'], 'assistant')     # no list said: the steps stay as they are
         # the turn's working - its tool calls and thinking - was thrown away with the next turn; it is the record now
@@ -1706,8 +2061,9 @@ class GeneralSession:
         # manually is still a conversation after one answer. Enforce that boundary here,
         # even if a resumed model remembers an older close instruction and emits the marker.
         has_source = bool((self.store.task_detail(self.task_id) or {}).get('messages'))
-        if closing is not None and has_source:
-            threading.Timer(0.1, self._close_out, args=(closing,), kwargs={'turn': getattr(self, 'turn_no', 0)}).start()
+        # ...and a closing marker it writes anyway is read and dropped, never acted on: only the owner closes (2026-11-05) - even after the
+        # owner answered the thread themselves, the agent RECOMMENDS closing and the owner does it ("so i recommend close it")
+        if closing is not None and has_source: logger.info(f'task {self.task_id}: its agent said it was done - the task stays open for the owner to close')
         return reply
 
     def _close_out(self, summary: str, turn: int = None):
@@ -1730,6 +2086,50 @@ class GeneralSession:
         if not (out or {}).get('closed') and why and why != selfclose.OWNER_ENDS:
             self.store.add_comment(self.task_id, 'assistant', 'agent', f'The agent said it was finished, but the task was not closed: {why}.')
 
+    def idle_why(self, now: float = None, locked: bool = False) -> str:
+        "'' when this session may idle out now (idle_out), else why it stays: a turn on or waiting, an input on its way, the owner's part on its page."
+        if not self.alive: return 'ended'
+        if is_dock(self.store.get_task(self.task_id)): return "the dock is the app's own chat"
+        if self.busy or getattr(self, 'waiting_turns', 0) or (not locked and self._lock.locked()): return 'a turn is on'
+        if ((now or time.time()) - max(self.last, self.seen)) < idle_for(): return 'not idle long enough'
+        from . import ingest, quickwork, workerstate as ws
+        if self.task_id in OPENING or self.task_id in quickwork.RUNNING or self.task_id in ingest._PASSING: return 'an input is on its way'
+        if self.store.waiting_notes(self.task_id): return 'notes wait for it'
+        if ws.held_for(self.task_id): return 'a question is held for the owner'
+        # ...nor while the owner has a part on its page (a sign-in, a step handed over, a held act): the browser stays up until the agent answers
+        from . import browserview, proposals, signin
+        req = ws.asking_of(self.store, self) or {}
+        if str(req.get('request_id') or '').startswith((browserview.TURN_PREFIX, signin.PREFIX)): return 'the owner has a part on its page'
+        if any(proposals._action(r) in proposals.HELD_ACTS for r in self.store._rows(
+                "SELECT * FROM review WHERE TaskId=? AND Kind='action' AND Status='pending'", (self.task_id,))): return 'an act waits for the owner'
+        return ''
+
+    def idle_out(self, now: float = None) -> bool:
+        """Close QUIETLY after idle_for() with nothing going on (the owner, 2026-11-05: "instead of keeping it open forever it should just shut
+        down keeping the chat same ui ... restart in backend"). Not a close: no report, no learning, no held reply released, no line in the chat,
+        no worker event, the task's state untouched. Its CLI stops, its conversation stays saved, and the next typed line or joined mail starts
+        it again as this same run (IDLED, start_session). Idle time only - a turn running is never cut off."""
+        if not self._lock.acquire(blocking=False): return False
+        try:
+            if self.idle_why(now, locked=True): return False
+            self.alive, self.ended = False, time.time()
+        finally: self._lock.release()
+        from . import browserview, clipool, handraise, terminal
+        clipool.close(f'general:{self.task_id}')
+        try:
+            st = browserview.state(self.sid, fresh=True)
+            if st.get('open'): browserview.keep_page(self.task_id, st.get('url')); browserview.close(self.sid, self.task_id)
+        except Exception as e: logger.debug(f'the browser of task {self.task_id} was not closed on idle: {e}')
+        IDLED[self.task_id] = self.sid
+        terminal.SESSIONS.pop(self.sid, None)
+        for loop, q in list(self.subs):
+            try: loop.call_soon_threadsafe(q.put_nowait, None)
+            except RuntimeError: pass
+        self.store.audit('task', self.task_id, 'agent_idled_out', 'assistant', 'agent', {'sid': self.sid})
+        logger.info(f'task {self.task_id}: its agent was idle for {int(idle_for())}s and closed quietly - the next input starts it again')
+        handraise.moved(self.task_id)
+        return True
+
     def stop(self) -> bool:
         """Stop the answer being written now - the STOP BUTTON, and nothing else.
 
@@ -1742,6 +2142,16 @@ class GeneralSession:
         if c is None: return False
         c.set()
         return True
+
+    def wake(self, why: str):
+        """Wake the agent ONCE after a turn that ended still waiting on work of its own (hooks.judge_ended): it is told to do it now. Never
+        filed as the owner's words, never again until the owner writes - a woken turn that ends short again stays the answer it gave."""
+        if getattr(self, 'woke', False) or not self.alive: return
+        self.woke = True
+        def go():
+            try: self.send_prompt(WAKE.format(why=why or 'work of its own'), as_owner=False, echo=False)
+            except Exception as e: logger.info(f'task {self.task_id}: the agent was not woken to finish - {e}')
+        self.waking = threading.Thread(target=go, daemon=True, name=f'wake-{self.sid}'); self.waking.start()
 
     def close(self, learn=True, report=True):
         self.closing = True          # a turn running now ends because of this, not on its own (send_prompt: stopped, not failed)
@@ -1801,7 +2211,8 @@ class GeneralSession:
         sub = ws.sub_state(waiting, False, req)
         base = {'sid': self.sid, 'label': self.label, 'cwd': '', 'taskId': self.task_id,
                 'agent': self.agent, 'cli': 'taskuary', 'mode': self.mode, 'alive': self.alive,
-                'busy': self.busy,
+                # ...and the TURN's own start while one runs (self.last is set as it takes): the chat's counter ticks from it (GeneralWorkspace RanFor)
+                'busy': self.busy, 'turn_started': self.last if self.busy else None,
                 'started': self.started, 'idle': self.idle(), 'phase': self.phase(),
                 'waiting': waiting, 'request': req, 'state': sub, 'line': ws.says(sub, ws.SHOWN, (req or {}).get('text')) if sub else None,
                 'cmd': f'{self.provider or "AI connector"} {self.model}'.strip(),
@@ -1835,6 +2246,35 @@ def _opening_moved(tid):
     handraise.moved(tid)
 
 OPENING = _Opening()
+
+
+# QUIET WHEN IDLE (the owner, 2026-11-05: "Just good hygiene"): a chat agent nobody has spoken to for clipool's idle period closes without a
+# word (GeneralSession.idle_out) and the next input brings it back. A task here has no agent running and reads so - not working, not waiting
+# on you - while its chat stays exactly as it was.
+IDLED = {}                   # task id -> the sid of its session that idled out
+
+
+def idle_for() -> float:
+    "The same period a live CLI process is kept open for (clipool.IDLE_SECONDS) - read now, so a test can shorten it."
+    from . import clipool
+    return clipool.IDLE_SECONDS
+
+
+def idled(tid, store=None) -> bool:
+    "Did this task's agent idle out, with nothing since? A closed task's is over, not idled (with `store`)."
+    if tid not in IDLED or session_for(tid): return False
+    return store is None or (store.get_task(tid) or {}).get('Status') not in ('done', 'dropped')
+
+
+def idle_sweep(now: float = None) -> list:
+    "Every chat session idle past idle_for(), closed quietly - [task ids]. Run on the waiting room's clock (waitroom.tick)."
+    from . import terminal
+    out = []
+    for s in [x for x in list(terminal.SESSIONS.values()) if isinstance(x, GeneralSession)]:
+        try:
+            if s.idle_out(now): out.append(s.task_id)
+        except Exception as e: logger.debug(f'task {s.task_id}: idle check failed - {e}')
+    return out
 
 
 def session_for(tid: int):
@@ -1891,7 +2331,10 @@ def start_session(store, tid: int, connector_id=None, model=None, actor='owner',
     other = next((s for s in list(terminal.SESSIONS.values()) if s.task_id == tid and s.alive), None)
     if other: raise ValueError(f'this task already has a live {getattr(other, "agent", "") or "terminal"} '
                                'session - close it (the ✕ on its pane) and ask again here')
-    session = GeneralSession(store, tid, connector_id, model, pick)
+    # Idle wake-ups retain the run ID; Skill generation still uses its owned draft directory.
+    back = IDLED.pop(tid, None)
+    session = GeneralSession(store, tid, connector_id, model, pick, sid=back)
+    if back: session.resume_notice, session.spoke = '', True
     if str(task.get('SourceRef') or '').startswith('assistant:skillgen:'):
         from . import skillstate, skillpackages
         try: skill_id = int(task['SourceRef'].rsplit(':', 1)[-1])

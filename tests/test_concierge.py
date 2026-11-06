@@ -358,7 +358,7 @@ class DecisionTests(unittest.TestCase):
         self.assertEqual(_verb(out['decision']), ('reply', 'the file is with the developer, Friday')); self.assertIsNone(out.get('proposal'))
         told = lambda sy, u, **k: "I'll draft that.\nCALL: {\"kind\": \"reply\", \"params\": {\"text\": \"mention the Friday delivery\"}}"
         out = concierge.say(s, 'can you mention the Friday delivery in the response', key=f'review:{r}', llm=told)
-        self.assertEqual(out['decision'], {'verb': 'reply', 'text': 'mention the Friday delivery'})
+        self.assertEqual(_verb(out['decision']), ('reply', 'mention the Friday delivery'))
         # a remark is not a decision
         out = concierge.say(s, 'who is Dana again?', key=f'review:{r}', llm=lambda *a, **k: 'Dana is the vendor contact on the export.')
         self.assertIsNone(out['decision']); self.assertIsNone(out.get('proposal'))
@@ -375,7 +375,7 @@ class DecisionTests(unittest.TestCase):
         with phone(): out = concierge.say(s, 'remind me to renew the Cardinal contract next week', key=None,
                                           llm=lambda *a, **k: 'Noted.\nCALL: {"kind": "mine", "params": {"text": "renew the Cardinal contract next week"}}')
         p = out['proposal']
-        self.assertEqual((p['kind'], p['label'], p['params']['kind']), ('task.create_from_text', 'Put it on my list', 'task'))
+        self.assertEqual((p['kind'], p['label'], p['params']['kind']), ('task.create_from_text', 'Make it a task', 'task'))
         self.assertIn('renew the Cardinal contract', p['params']['text']); self.assertNotIn('Nothing is on the table', out['say'])
 
     def test_the_contract_line_is_parsed_and_the_words_alone_decide_nothing(self):

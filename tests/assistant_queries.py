@@ -256,7 +256,7 @@ BRING_UP = [
     ('where do I change my signature', 'signature', '#settings=config&group=Replies&key=email_signature'),
     ('the sync interval', 'sync interval', '#settings=config&group=Sync%20%26%20startup&key=poll_minutes'),
     ('desktop notifications', 'desktop notification', '#settings=config&group=Notifications&key=hand_desktop'),
-    ('which AI does triage', 'triage brain', '#settings=config&group=How%20mail%20is%20sorted&key=triage_ai'),
+    ('which AI sorts my mail', 'AI that sorts your mail', '#settings=config&group=How%20mail%20is%20sorted&key=triage_ai'),
     ('the assistant model', 'assistant model', '#settings=config&group=How%20mail%20is%20sorted&key=concierge_model'),
     ('stop marking mail read in my inbox setting', 'mark read source', '#settings=config&group=Sync%20%26%20startup&key=mark_read_enabled'),
     ('how many days back it catches up', 'catch-up window', '#settings=config&group=Sync%20%26%20startup&key=startup_sync_days'),
@@ -282,7 +282,7 @@ BRING_UP = [
     ('what it learned', 'learned', '#settings=docs&doc=learned'),
     ('the audit log', 'audit log', '#settings=audit'),
     ('agent profiles', 'profiles', '#profiles'),
-    ('the routing rules', 'routing policies', '#settings=policies'),
+    ('the mail rules', 'mail rules', '#settings=policies'),
     # ...Taskuary's own update, by any words for it: Updates, its button lit - never an agent (the owner, 2026-10-23: "i asked assistant to
     # update taskuary and it pulled up general agent")
     ('check for updates', 'updates', '#settings=updates&key=update'),
@@ -460,6 +460,11 @@ CASES += POWERS
 # THE TASK PAGE, ASKED ABOUT WHILE IT IS UP (the audit, 2026-11-02): Came from, the Agent section, Close out, the action row, the to-dos, the
 # notes, the draft - each ask typed with the task on the table AND its view sent, as the chat does (AssistantView: the table's key + context())
 def _row(*vs): return [{'id': f'row:{v}', 'label': l} for v, l in vs]
+def ticked_step(s):
+    "The 4,180 step already ticked: an untick of an open step changes nothing, and the receipt says so (effects._changed)."
+    s.tick_checklist_item(1, s.task_checklist(1)[1]['id'], True, 'owner')
+
+
 TASK1V = {'area': 'task', 'title': f'{T1} - Month-end close is short by 4,180', 'item': {'kind': 'task', 'id': 1, 'ref': T1, 'title': 'Month-end close is short by 4,180'},
           'fields': [{'key': 'title', 'label': 'Title', 'value': 'Month-end close is short by 4,180'},
                      {'key': 'what_should_the_agent_do', 'label': 'What should the agent do?', 'value': ''}],
@@ -510,7 +515,7 @@ AREA_TASK = [
     Q('task', 'expand this', 'todo', [v(op='press', button='expand_to_the_whole_canvas')], 'view:press:expand_to_the_whole_canvas', tools=('words',), view=TASK1V, freq=2),
     # ── the to-dos and the notes: the task page's own writes, run and said ──
     Q('task', 'tick of the first step', 'todo', c('task.check', item='1'), 'did:task.check', view=TASK1V, freq=4, note='a misspelling: the model reads it'),
-    Q('task', 'untick find the 4,180', 'todo', c('task.check', item='2', done=False), 'did:task.check', view=TASK1V, freq=2),
+    Q('task', 'untick find the 4,180', 'todo', c('task.check', item='2', done=False), 'did:task.check', view=TASK1V, freq=2, seed=ticked_step),
     Q('task', 'add a step: email the bank', 'todo', c('task.checklist', add=['email the bank']), 'did:task.checklist', view=TASK1V, freq=4),
     Q('task', 'add a note: Paula is checking the bank feed', 'todo', c('task.comment', text='Paula is checking the bank feed'), 'did:task.comment', view=TASK1V, freq=4),
     Q('task', 'set the due date to friday', 'todo', c('task.update', due='friday'), 'did:task.update', view=TASK1V, freq=3),
@@ -1290,10 +1295,23 @@ def _scripted(answers, seen):
     return llm
 
 
+_SEEDED = []   # run_all's demo world, built once: each of its turns gets a copy (_copy)
+
+
+def _copy(t):
+    """A new store over a copy of t's rows. Its own __init__ runs - every lock, cache and counter is its own - but over a database
+    that already has the schema, so the ~700 schema statements a blank store runs find nothing to do (0.01 s, not 0.09 s)."""
+    import sqlite3
+    from taskuary import store as S
+    cx = sqlite3.connect(':memory:', check_same_thread=False, timeout=5.0); t.cx.backup(cx)
+    with mock.patch.object(S.sqlite3, 'connect', lambda *a, **k: cx): return S.MemoryStore()
+
+
 def _world():
     from taskuary import demo, funnel, terminal
     from taskuary.store import MemoryStore
     funnel.invalidate(); funnel.forget_states(); funnel._SOURCES.update(at=0.0, by={})
+    if _SEEDED: s = _copy(_SEEDED[0]); funnel.invalidate(); return s
     s = MemoryStore()
     with mock.patch.object(terminal, 'live_sessions', return_value=[]): demo.seed(s)
     for k in ('auto_draft_enabled',): s.set_setting(k, '0', 't')
@@ -1437,10 +1455,12 @@ def demo_turn(q: Q) -> dict:
 
 
 def run_all() -> list:
-    rows = []
-    for q in CASES:
-        rows.append({'q': q, 'ideal': ideal_turn(q), 'demo': demo_turn(q)})
-    return rows
+    # One seeding, not two a turn: seeding ~1,200 worlds was most of run_all's 3 minutes, and past pytest's faulthandler_timeout
+    # (120 s) its watchdog dumps every thread's stack while the main thread runs - which on Windows CI crashed the run with an
+    # access violation in whatever the main thread was doing (_strptime, a store read), or left it too slow for the job's 25 minutes
+    _SEEDED[:] = [_world()]
+    try: return [{'q': q, 'ideal': ideal_turn(q), 'demo': demo_turn(q)} for q in CASES]
+    finally: _SEEDED.clear()
 
 
 def table(rows) -> str:

@@ -46,6 +46,21 @@ class TakingTurnsTests(unittest.TestCase):
         said = [c['Body'] for c in general.chat_rows(self.s, self.tid)]
         self.assertEqual(said.count('one') + said.count('two'), 2)
 
+    def test_lines_typed_while_it_works_are_one_turn(self):
+        """The owner, 2026-11-05: several lines typed during a turn are read together - the model decides if a later one clarifies."""
+        sess, patched = _session(self.s, self.tid, 'answered', delay=0.8)
+        got, prompts = [], []
+        with patched, mock.patch.object(general.llm_mod, 'build_llm', return_value=lambda system, user, **kw: (prompts.append(system), time.sleep(0.8), 'answered')[-1]):
+            first = threading.Thread(target=lambda: got.append(sess.send_prompt('one')))
+            first.start(); time.sleep(0.2)
+            more = [threading.Thread(target=lambda w=w: got.append(sess.send_prompt(w))) for w in ('two', 'actually three')]
+            for t in more: t.start(); time.sleep(0.1)
+            for t in [first, *more]: t.join(15)
+        self.assertEqual(sorted(got), ['', 'answered', 'answered'], 'two turns: the first, and one for both lines behind it')
+        users = [c['Body'] for c in general.chat_rows(self.s, self.tid) if c['ActorType'] == general.USER_TYPE]
+        self.assertEqual(users, ['one', 'two', 'actually three'])
+        self.assertTrue(any('THE OWNER SENT 2 MESSAGES' in p for p in prompts))
+
     def test_the_third_one_lands_too(self):
         """The exact report: two answered, the third silent."""
         sess, patched = _session(self.s, self.tid, 'answered', delay=0.3)
@@ -68,14 +83,26 @@ class TakingTurnsTests(unittest.TestCase):
                 sess.send_prompt('two', cancel=cancel)
             self.assertLess(time.time() - began, 1.0)
 
-    def test_a_stuck_answer_eventually_says_so_rather_than_hanging_forever(self):
+    def test_a_long_answer_never_fails_the_one_behind_it(self):
+        """The owner, 2026-11-05: talking to the agent while it works. A message waited 240 s behind a long turn and then failed "something
+        is stuck"; it waits the turn out now, however long - here past the old limit, made small."""
+        self.assertIsNone(general.WAIT_TURN)
         sess, patched = _session(self.s, self.tid, 'answered', delay=1.0)
-        with patched, mock.patch.object(general, 'WAIT_TURN', 0.2):
+        with patched:
             threading.Thread(target=lambda: sess.send_prompt('one'), daemon=True).start()
             time.sleep(0.2)
-            with self.assertRaises(RuntimeError) as e:
-                sess.send_prompt('two')
-        self.assertIn('stuck', str(e.exception))
+            self.assertEqual(sess.send_prompt('two'), 'answered')
+        self.assertIn('two', [c['Body'] for c in general.chat_rows(self.s, self.tid)])
+
+    def test_a_session_that_ends_under_a_waiting_message_says_so(self):
+        "...and it does not wait forever on a session that is gone: the 'has ended' road starts a fresh one (server.assistant_stream)."
+        sess, patched = _session(self.s, self.tid, 'answered', delay=1.0)
+        with patched:
+            threading.Thread(target=lambda: sess.send_prompt('one'), daemon=True).start()
+            time.sleep(0.2)
+            threading.Timer(0.3, lambda: setattr(sess, 'alive', False)).start()
+            with self.assertRaises(RuntimeError) as e: sess.send_prompt('two')
+        self.assertIn('has ended', str(e.exception))
 
     def test_the_lock_is_given_back_when_the_brain_fails(self):
         """A failed answer must not wedge the conversation shut."""

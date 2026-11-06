@@ -13,14 +13,12 @@ import { cannotStart, useCapabilities } from "./capabilities.js";
 import { choice, label as btn } from "./buttons.js";
 import { useViewExtras } from "./pageView.js";
 import { BORDER, FAINT, INK } from "./theme.jsx";
+import { MESSAGE } from "./kinds.js";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 
-// the box's own placeholder: what the owner is asked, the same words on every door
-export const ASK_WHAT = "What should it do? What about it is the issue? - optional; paste or drop a picture too";
-export const ASK_REPORT = "What should it do? Which part of the report should change? - optional; paste or drop a picture too";
-// ...and on a meeting, what to get ready (the owner, 2026-11-02: "send to agent so i can prep for it")
-export const ASK_MEETING = "What should it get ready? e.g. pull the open issues with these people - optional; paste or drop a picture too";
+// the box's own placeholder: the one prompt wording, the same words on every door (kinds.MESSAGE) - a report or a meeting included
+export const ASK_WHAT = MESSAGE;
 
 // The box itself, drawn the same wherever it opens. `onValue` takes a value or an updater: the mic's words land after the press,
 // so they are appended to what is in the box THEN, not to what was there when recording started.
@@ -35,7 +33,7 @@ export function RunForm({ title, picker, note, value, onValue, pics, placeholder
         {note && <Typography variant="caption" sx={{ color: FAINT }}>{note}</Typography>}
       </Box>
       <TextField fullWidth multiline minRows={2} maxRows={5} size="small" value={value} autoFocus={autoFocus}
-        onChange={(e) => onValue(e.target.value)} placeholder={[ASK_WHAT, ASK_REPORT, ASK_MEETING].includes(placeholder) ? t(placeholder) : placeholder} {...pics.drop}
+        onChange={(e) => onValue(e.target.value)} placeholder={placeholder === ASK_WHAT ? t(placeholder) : placeholder} {...pics.drop}
         InputProps={{ endAdornment: (
           <Box sx={{ display: "flex", alignSelf: "flex-start", gap: 0.25 }}>
             <AttachImage pics={pics} sx={{ width: 30, height: 30 }} />
