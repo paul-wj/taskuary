@@ -100,6 +100,11 @@ export const proposalPresentation = (review) => {
       placeholder: proposal.no_done ? t("Write the comment to post") : t("No comment - only the move to done"),
     };
   }
+  if (proposal?.action === "publish_skill") return {
+    kind: "skill", title: t("Review complete Skill package"), context: t("Only the reviewed package revision will be published."),
+    destinationLabel: t("Publish to"), destination: t("Taskuary Skills and compatible local Agents"),
+    approveLabel: t("Approve and publish"), busyLabel: t("Publishing…"), rejectLabel: t("Discard draft"), readOnly: true,
+  };
   if (co) {
     const pr = proposal.action === "merge_pr";
     return {

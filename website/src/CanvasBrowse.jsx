@@ -20,6 +20,7 @@ const ReportsView = lazyView(() => import("./ReportsView.jsx"));
 const SettingsView = lazyView(() => import("./SettingsView.jsx"));
 import NewSheet from "./NewSheet.jsx";
 const HubView = React.lazy(() => import("./HubView.jsx"));
+const SkillsView = React.lazy(() => import("./SkillsView.jsx"));
 
 const chipSx = (on) => ({ height: 30, px: 1.6, borderRadius: 99, border: `1px solid ${on ? "#55697a" : BORDER}`, cursor: "pointer",
   bgcolor: on ? "#55697a" : PANEL, color: on ? "#fff" : "#4d4a43", fontFamily: "inherit", fontSize: 12, fontWeight: 600, whiteSpace: "nowrap" });
@@ -143,7 +144,8 @@ export default function CanvasBrowse({ area, state, onState, live, onOpenCard, o
       {area === "reports" && <ReportsView {...common} />}
       {area === "settings" && <SettingsView onNavigate={onNavigate} {...common} />}
       {area === "hub" && <Suspense fallback={<CircularProgress size={20} />}><HubView onOpenTask={onOpenTask} {...common} /></Suspense>}
+      {area === "skills" && <Suspense fallback={<CircularProgress size={20} />}><SkillsView onOpenTask={onOpenTask} {...common} /></Suspense>}
     </Box>
   );
 }
-export const AREA_TITLES = { new: "New", connections: "Connections", reports: "Reports", settings: "Settings", hub: "Hub" };
+export const AREA_TITLES = { new: "New", connections: "Connections", reports: "Reports", settings: "Settings", hub: "Hub", skills: "Skills" };

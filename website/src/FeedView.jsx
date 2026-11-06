@@ -71,8 +71,9 @@ export const filterLabel = (cat, pick, cats = CATEGORIES, labels = CHANNEL_LABEL
   return [kind, src].filter(Boolean).join(" \u00b7 ") || t("All items");
 };
 
+import AutoAwesomeOutlinedIcon from "@mui/icons-material/AutoAwesomeOutlined";
 // the sidebar buttons' marks, one per SIDE_NAV key
-const NAV_ICONS = { new: AddIcon, reports: BarChartIcon, connections: PowerOutlinedIcon, hub: TravelExploreIcon, settings: TuneIcon };
+const NAV_ICONS = { new: AddIcon, reports: BarChartIcon, connections: PowerOutlinedIcon, hub: TravelExploreIcon, skills: AutoAwesomeOutlinedIcon, settings: TuneIcon };
 
 function FilterButton({ cat, pick, channels, srcByChannel, srcQ, setSrcQ, onChange }) {
   useLocale();

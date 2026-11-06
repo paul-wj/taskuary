@@ -582,6 +582,9 @@ def build(store, tid: int, msgs: list = None, repo: str = None, general: bool = 
     # ...and only when there is something in it: a fresh LEARNED.md is placeholders, and a pointer at nothing is not context
     doc = '' if stranger else store.doc('learned') or ''
     if any(learned_cut.lines(doc, h) for h in learned_cut.SECTIONS.values()): parts.append("## The owner's memory (LEARNED.md)\n" + (re.sub(r'(?m)^## ', '### ', lrn) + '\n\n' if lrn else '') + MEMORY_LINE)
+    from . import skillcontext
+    skills = '' if stranger else skillcontext.safe_block(store, tid)
+    if skills: parts.append(skills.strip())
     # the documents the owner indexed that speak to this thread - a policy, a contract, a runbook
     from . import knowledge
     kb = knowledge.block(store, ' '.join(f"{t.get('Title') or ''} {m.get('Subject') or ''} {m.get('BodyText') or ''}" for m in msgs)[:4000], budget=2500, limit=6)

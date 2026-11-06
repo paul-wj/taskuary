@@ -77,6 +77,8 @@ ACTIONS = {
     # what the outcome ledger counted about a kind of work, as a block on its playbook (playbook_facts.py): reflection proposes it,
     # the owner's yes writes it - a derived line never edits a playbook on its own (spec 2026-10-12, build step 5)
     'amend_playbook': ('add what the ledger learned to a playbook', ('slug', 'text'), 'playbooks_enabled'),
+    'publish_skill': ('publish this reviewed Skill package and expose it to compatible local Agents',
+                      ('generation_id', 'digest'), None),
     # An instruction that BELONGS in a switch should be written there, not left as a note the
     # classifier merely weighs - but nothing may change a switch on its own. So it arrives as a
     # proposal: the assistant says which switch it means, the owner's click applies it, and only the
@@ -173,6 +175,15 @@ def validate(store, p: dict) -> tuple:
         return True, 'change ' + '; '.join(f"{c['name']} -> {c['value']}" for c in changes)
     missing = [k for k in need if not str(p.get(k) or '').strip()]
     if missing: return False, f'{a} needs {", ".join(missing)}'
+    if a == 'publish_skill':
+        from . import skillstate
+        try: generation = skillstate.get(store, 'generation', int(p['generation_id']))
+        except (TypeError, ValueError): generation = None
+        if not generation: return False, 'the Skill generation no longer exists'
+        if generation.get('state') in ('published', 'discarded', 'failed', 'interrupted'):
+            return False, 'this Skill draft is no longer waiting for publication'
+        if generation.get('draft_digest') != p['digest'] or generation.get('base_digest') != p.get('base_digest'):
+            return False, 'the Skill draft changed - review its new revision'
     from . import trackers
     if (a == 'close_item' or p.get('type') in trackers.TYPES) and (why := trackers.check(p)): return False, why
     # A CLOSE-OUT IS THE OWNER'S OWN ACT (the owner, 2026-09-27: "ask me before merge then do it"): the switches gate what
@@ -218,6 +229,11 @@ def queue(store, task_id: int, p: dict, actor='agent') -> dict | None:
         it = trackers.item_of(store, task_id)
         if it and it['tracker'] == trackers.TYPES[p['type']][0]: p = {**p, 'item': it['item']}
     ok, why = validate(store, p)
+    if ok and p.get('action') == 'publish_skill':
+        from . import skillstate
+        generation = skillstate.get(store, 'generation', int(p['generation_id']))
+        if not generation or generation.get('task_id') != task_id:
+            ok, why = False, 'a task may only propose its own Skill package'
     if not ok:
         store.add_comment(task_id, actor, 'agent', f'PROPOSAL REFUSED ({p.get("action")}): {why}')
         store.audit('task', task_id, 'proposal_refused', actor, detail={'action': p.get('action'), 'why': why})
@@ -406,6 +422,9 @@ def settle(store, rv: dict, verb: str, actor='owner') -> None:
     """After the owner answered a proposal: Approve ran only that act (the owner, 2026-10-18) - the task stays open for Mark
     done, and is said to be on them once nothing else of it waits; "not yet" on a close-out leaves it open and on them."""
     tid = rv.get('TaskId')
+    if tid and _action(rv) == 'publish_skill':
+        from . import skillauthoring
+        return skillauthoring.review_settled(store, rv, verb, actor)
     if tid and _action(rv) == PLAYBOOK: return playbook_answered(store, tid, actor)
     if not tid: return
     if _action(rv) == 'browser_act' and verb not in ('approve', 'edit'):           # dismissed: the waiting agent hears it was not done
@@ -477,7 +496,13 @@ def execute(store, rv: dict, actor='owner', final_text: str = None, skip_checks:
     ok, why = validate(store, p)
     if not ok: raise RuntimeError(f'refused at execution: {why}')
     tid, a = rv.get('TaskId'), p['action']
-    if a in ('land', 'open_pr', 'push_direct'):
+    if a == 'publish_skill':
+        from . import skillstate, skillpackages
+        generation = skillstate.get(store, 'generation', int(p['generation_id']))
+        if not generation or generation.get('task_id') != tid:
+            raise RuntimeError('the review does not belong to this Skill generation task')
+        out = skillpackages.publish(store, int(p['generation_id']), p['digest'], actor=actor)
+    elif a in ('land', 'open_pr', 'push_direct'):
         from . import ci
         fn = {'land': ci.land, 'open_pr': ci.open_for_task, 'push_direct': ci.push_direct}[a]
         r = fn(store, tid, actor)

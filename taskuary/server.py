@@ -10190,6 +10190,14 @@ def advisor_pass(now: float = None) -> bool:
     return True
 
 
+def _skill_library_startup(store_):
+    # Already on the catch-up worker: recovery and package I/O never hold up app startup.
+    from . import skillpackages, skillauthoring, skilldiscovery
+    for operation in (skillpackages.recover, skillauthoring.reconcile, skilldiscovery.tick):
+        try: operation(store_)
+        except Exception as e: logger.warning(f'Skill library background recovery failed ({type(e).__name__})')
+
+
 def reports_forever():
     """The reports' clock. The first pass is the startup one (catch_up_on_startup runs it behind the
     mail), so this waits a tick before its first look."""
@@ -10199,6 +10207,10 @@ def reports_forever():
         except Exception as e: logger.warning(f'scheduled report pass failed: {e}')   # a bad pass must not end the loop
         try: advisor_pass()
         except Exception as e: logger.warning(f"the Advisor's clock failed: {e}")
+        try:
+            from . import skilldiscovery
+            skilldiscovery.tick(store)
+        except Exception as e: logger.warning(f'Skill analysis clock failed ({type(e).__name__})')
 
 
 @app.post('/api/reports/due')
@@ -10227,7 +10239,7 @@ def catch_up_on_startup():
     try: days = int(store.get_setting('startup_sync_days') or 0)
     except ValueError: days = 0
     if days <= 0:
-        t = threading.Thread(target=lambda: (_walk_settled(), _heal_ended(), report_pass(startup=True)), daemon=True)
+        t = threading.Thread(target=lambda: (_walk_settled(), _heal_ended(), report_pass(startup=True), _skill_library_startup(store)), daemon=True)
         t.start()
         return t
     hours = _catchup_hours(days)
@@ -10260,6 +10272,7 @@ def catch_up_on_startup():
         # connector or GitHub project brought noticed - added when sure, else an Advisor card (wsboot.tick, the owner 2026-11-01)
         from . import wsboot
         wsboot.tick(store)
+        _skill_library_startup(store)
     t = threading.Thread(target=_catch_up, daemon=True)
     t.start()
     return t                       # the caller may wait on it; startup itself never does
@@ -10802,6 +10815,12 @@ async def terminal_ws(ws: WebSocket, sid: str):
         t.unsubscribe(q); pump.cancel(); input_pump.cancel()
         if redraw_quiet: redraw_quiet.cancel()
         if redraw_cap: redraw_cap.cancel()
+
+# The library is additive: it shares authentication and review decisions, not Profile import routes.
+from .skillroutes import router as _skill_library_router
+# Register through the public API so existing route/guard audits see every new door, including on FastAPI's lazy-router releases.
+for _skill_route in _skill_library_router.routes:
+    app.add_api_route(_skill_route.path, _skill_route.endpoint, methods=_skill_route.methods, name='skill-library:' + _skill_route.name)
 
 # ── the knowledge base (knowledge.py): the card's Reindex button; searching goes through /api/tools/run (kb_search) ──
 class ReindexBody(BaseModel): connector_id: int | None = None

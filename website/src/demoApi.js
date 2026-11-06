@@ -18,6 +18,7 @@ import { DEMO_ASSISTANT_TIMELINE, createDemoAssistantState, installDemoAssistant
 import { fmtStamp, rebase, shiftDays } from "./demoClock.js";
 import { demoRepair, demoSaveSource, demoStepTest, installDemoWorkflows } from "./demoWorkflows.js";
 import { installNumbersWorkflow, finishNumbersWorkflow, isGuidedDemo, NUMBERS_TASK, NUMBERS_MESSAGE, NUMBERS_REVIEW, NUMBERS_REQUEST, NUMBERS_RESULT } from "./demoNumbers.js";
+import { installDemoSkills, demoSkillFile } from "./demoSkills.js";
 
 const demoRecord = (detail) => {
   const sessions = (detail?.comments || []).filter((c) => /^(?:AGENT|CODER) REPORT/.test(String(c.Body || ""))).map((c, i) => {
@@ -46,6 +47,7 @@ const state = rebase(clone(FIXTURES), FIXTURES?.["/api/version"]?.started);   //
 for (const k of Object.keys(state)) if (/^\/api\/dashboards\/\d+$/.test(k)) shiftDays(state[k]?.data?.sources, FIXTURES?.["/api/version"]?.started);
 installDemoAssistantTimeline(state, scripted(clone(DEMO_ASSISTANT_TIMELINE)));
 installDemoWorkflows(state);          // two workflows built as steps: one ran clean, one failed at its first step
+installDemoSkills(state);             // labeled fictional packages, no live AI, Agent or native-directory writes
 // Two tasks that are the owner's own ("your task": nothing works them) - the recording has none, and
 // the Assistant Game's gym is where they train. Invented, like everything in the demo world.
 // Numbered past the recording's own tasks, which grow whenever the seed does (the tour made them 30).
@@ -114,6 +116,7 @@ const query = (url) => String(url || "").includes("?") ? String(url).split("?").
 // a read: the exact url, then the path alone, then a shape that will not crash a caller
 const read = (url) => {
   const p = path(url);
+  if (p === "/api/skill-library/skills/taskuary-demo-report-check/file" || p === "/api/skill-library/generations/880003/file") return demoSkillFile(url);
   if (p === "/api/assistant/previous-work") {
     const reviews = state["/api/reviews"]?.data || [];
     return { data: taskRows().filter((task) => ["open", "waiting", "in_progress"].includes(task.Status)

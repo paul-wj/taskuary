@@ -1808,6 +1808,8 @@ def task_context(store, task_id: int) -> str:
     # the owner's people (orgchart.py), so "send it to whoever owns payroll" has a name - not on a stranger's task (context.build's rule)
     from . import orgchart, origin
     if (org := orgchart.block(store)) and origin.of_task(store, task_id)[0] != 'stranger': lines += ['', "The owner's people:", org]
+    from . import skillcontext
+    if skills := skillcontext.safe_block(store, task_id): lines += ['', skills.strip()]
     return '\n'.join(lines)
 
 

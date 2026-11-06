@@ -691,6 +691,14 @@ def deliver_findings(store, task_id: int, mid: int, run_id: int, rep: dict, tgt:
         logger.warning(f'findings draft failed for task {task_id}: {e}')
 
 
+def _collect_skill(store, tid, task):
+    if not str(task.get('SourceRef') or '').startswith('assistant:skillgen:'): return
+    try:
+        from . import skillauthoring
+        skillauthoring.collect(store, tid)
+    except Exception as e: logger.warning(f'Skill output collection failed on task {tid} ({type(e).__name__})')
+
+
 def _ended(store, tid: int, close: bool, actor: str):
     """The session is over by the owner's (or the agent's) decision. With the task kept open that is `session saved`: its
     result is written, nobody is working it, and it is not "left without finishing" (A1/A2, 2026-09-25). The pty's own
@@ -784,6 +792,7 @@ def wrap(store, tid: int, close: bool = True, actor: str = 'owner', sid: str = N
         pbd = None if task.get('SourceRef') == 'assistant:playbook' else playbooks.draft(store, tid, job, 'assistant')
         if proposals.playbook_pending(store, tid): proposals.hold_for_playbook(store, tid, 'assistant')     # always in sight
         _ended(store, tid, close, actor)
+        _collect_skill(store, tid, task)
         return {'wrap': 'done', 'taskId': tid, 'report': last, 'proposed': [pbd] if pbd else [],
                 'drafting': bool(fin.get('drafting')), 'can_send': bool(fin.get('can_send')),
                 'send_block': fin.get('send_block') or '', 'freshness': fin.get('freshness') or 'unchecked'}
@@ -1002,6 +1011,7 @@ def _wrap_session(store, tid, task, close, actor, sid, final_message, no_reply, 
     if pbd: proposed.append(pbd)
     store.audit('terminal', tid, 'wrap', actor, detail={'sid': found or sid, 'close': close})
     _ended(store, tid, close, actor)
+    _collect_skill(store, tid, task)
     return {'wrap': 'done', 'taskId': tid, 'report': report, 'proposed': proposed,
             'drafting': bool(fin.get('drafting')), 'can_send': bool(fin.get('can_send')), 'send_block': fin.get('send_block') or '',
             'freshness': fin.get('freshness') or 'unchecked', 'artifacts': [artifact] if artifact else [], 'asks': fin.get('asks')}

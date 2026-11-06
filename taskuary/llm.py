@@ -216,6 +216,11 @@ def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, tra
     # not whether it may write. None preserves the older caller contract where a cwd meant hands.
     no_hands = read_only if read_only is not None else not (cwd or cli_tools)
     raw_args = prof.get('args')          # the profile's own, before any road below restricts them
+    if not no_hands and cli_tools and (extra_env or {}).get('TASKUARY_SKILL_GENERATION'):
+        from . import skillstate, skillpackages
+        generation = skillstate.get(store, 'generation', int(extra_env['TASKUARY_SKILL_GENERATION']))
+        if not generation or generation.get('task_id') != task_id: raise ValueError('Skill workspace does not belong to this task')
+        cwd = str(skillpackages.draft_dir(generation['id']).parent)
     if not no_hands and cwd: prof['cwd'] = cwd
     elif not no_hands and cli_tools:
         # An owner-requested setup walkthrough needs the CLI's browser tool, but it still has no

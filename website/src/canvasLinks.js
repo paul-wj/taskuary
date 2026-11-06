@@ -60,6 +60,12 @@ export function canvasRequestFromHash(hash, n = 0) {
   if ((m = /^#connections=([^&]+)/.exec(h))) return { kind: "browse", area: "connections", state: { section: decodeURIComponent(m[1]), open: null }, n };
   if (/^#connections$/.test(h)) return { kind: "browse", area: "connections", state: { section: null, open: null }, n };
   if (/^#settings$/.test(h)) return { kind: "browse", area: "settings", state: { section: null, open: null }, n };
+  if ((m = /^#skills(?:=([^&]*))?(?:&(.*))?$/.exec(h))) {
+    const section = ["suggestions", "library", "generations"].includes(m[1]) ? m[1] : "suggestions";
+    const selected = new URLSearchParams(m[2] || "").get("open");
+    const open = /^(?:generation:\d+|skill:taskuary-[a-z0-9-]+)$/.test(selected || "") ? selected : null;
+    return { kind: "browse", area: "skills", state: { section, open }, n };
+  }
   // ...and a topic and an open post on it (#hub=<topic>&post=<id>): Back from an opened post left the Hub entirely - the address said
   // #hub whatever was open, so the post's opening was no step of history (2026-10-26)
   if ((m = /^#hub(?:=([^&]*))?(?:&post=(\d+))?$/.exec(h))) {
@@ -99,6 +105,7 @@ const enc = encodeURIComponent;
 export function hashFor(area, s = {}) {
   s = s || {};
   if (area === "new") return "#new-task";
+  if (area === "skills") return `#skills=${["suggestions", "library", "generations"].includes(s.section) ? s.section : "suggestions"}${s.open ? `&open=${enc(s.open)}` : ""}`;
   if (area === "hub") return `#hub${s.section ? `=${enc(s.section)}` : ""}${s.open != null && /^\d+$/.test(String(s.open)) ? `${s.section ? "" : "="}&post=${s.open}` : ""}`;
   if (area === "connections") return s.connector === "cli-agents" ? "#cli-agents"
     : s.connector ? `#connector=${s.connector}${s.chats != null ? `&chats=${enc(s.chats)}` : ""}`

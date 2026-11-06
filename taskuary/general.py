@@ -1408,6 +1408,8 @@ class GeneralSession:
             # the NAME always rides (so a browser this session opens is one the pane can find); the
             # shell and the browser brief ride only for a task that asked for a browser
             if browser_env: build_args.update(extra_env=browser_env)
+            if getattr(self, 'skill_generation_id', None):
+                build_args['extra_env'] = {**(build_args.get('extra_env') or {}), 'TASKUARY_SKILL_GENERATION': str(self.skill_generation_id)}
             # the CLI's own hands, in Taskuary's scratch folder (llm._build_llm), with the session's token in its environment
             if browser_tools or hands or desk: build_args.update(cli_tools=True)
             # ...and the browser hold as this chat's own hook: the user-wide one never knew a headless chat, so Pay went through (2026-10-25)
@@ -1470,6 +1472,8 @@ class GeneralSession:
                                   trace=visible, cancel=cancel, task_id=self.task_id)
                 if browser_tools or hands or desk:
                     build_args.update(cli_tools=True, extra_env=browser_env)
+                if getattr(self, 'skill_generation_id', None):
+                    build_args['extra_env'] = {**(build_args.get('extra_env') or {}), 'TASKUARY_SKILL_GENERATION': str(self.skill_generation_id)}
                 if (browser_tools or desk) and self.holds_browser(): build_args.update(hold_sid=self.sid)
                 build_args['gear'] = 'light' if is_dock(self.store.get_task(self.task_id)) else 'main'
                 brain = llm_mod.build_llm(self.store, **build_args, job='general')
@@ -1888,6 +1892,14 @@ def start_session(store, tid: int, connector_id=None, model=None, actor='owner',
     if other: raise ValueError(f'this task already has a live {getattr(other, "agent", "") or "terminal"} '
                                'session - close it (the ✕ on its pane) and ask again here')
     session = GeneralSession(store, tid, connector_id, model, pick)
+    if str(task.get('SourceRef') or '').startswith('assistant:skillgen:'):
+        from . import skillstate, skillpackages
+        try: skill_id = int(task['SourceRef'].rsplit(':', 1)[-1])
+        except ValueError: skill_id = 0
+        generation = skillstate.get(store, 'generation', skill_id) if skill_id else None
+        if generation and generation.get('task_id') == tid:
+            session.skill_generation_id = skill_id
+            session.cwd = str(skillpackages.draft_dir(skill_id).parent)
     # a quick answer's session is quick BEFORE it is registered: set after, it was one more live agent for an instant, and the width
     # (ingest.agent_load) then held back the quick calls and agent starts that read it in that instant
     session.quick = quick

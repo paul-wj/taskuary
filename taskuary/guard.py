@@ -156,6 +156,7 @@ AGENT_READS = (
 # listed so that test_guard walks app.routes and FAILS on a write route nobody classified: a new
 # door is a decision, not something that inherits whatever the table happened to say.
 OWNER_ONLY = (
+    (r'POST', r'^/api/skill-library(/.*)?$', "Skill analysis, authoring, review revisions and publication are the owner's decisions"),
     # the first thing a cornered model would do is mark the send tool it was denied as one that does not send (sendfilter)
     (r'POST', r'^/api/sendfilter/(correct|scan)$', "which of the owner's own MCP tools count as sends is the owner's word"),
     # the router's rules, a judgement's correction and a step up to the strong model are the owner's (the router, 2026-10-25)

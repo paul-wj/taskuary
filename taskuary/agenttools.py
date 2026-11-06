@@ -43,6 +43,8 @@ TOOLS = {
                _S({'name': _STR}, ('name',)), ('GET', '/api/agent/messages')),
     'search_knowledge': ('read', "Search the documents in the owner's knowledge base (indexed folders and SharePoint libraries). "
                          "Read-only.", _S({'text': _STR}, ('text',)), ('GET', '/api/knowledge/search')),
+    'read_skill': ('read', 'Read an approved Taskuary Skill or one of its bundled text resources; no code runs and no permission is granted.',
+                   _S({'slug': _STR, 'path': _STR}, ('slug',)), ('GET', '/api/skill-library/skills/taskuary-example')),
     'owner_memory': ('read', "What Taskuary has learned about the owner (LEARNED.md): their people, what they care about and what they "
                      "do not, how they work, their promises, what to bring up. Read it when the work turns on what the owner would want; "
                      "`section` (people, care, work, promises, bring) narrows it. Read-only.",
@@ -159,6 +161,9 @@ def call(store, tid: int, name: str, args: dict, doors: dict) -> str:
         from . import knowledge
         hits = knowledge.search(store, a.get('text', ''))
         return _out(_j(hits) if hits else 'nothing in the knowledge base matches that', fence_it=bool(hits))
+    if name == 'read_skill':
+        from . import skillcontext
+        return _out(skillcontext.read_text(store, str(a.get('slug') or ''), str(a.get('path') or 'SKILL.md')), fence_it=True)
     if name == 'owner_memory':
         from . import learned_cut
         s = str(a.get('section') or '').strip().lower()

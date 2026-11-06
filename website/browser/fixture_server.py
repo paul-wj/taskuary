@@ -111,6 +111,8 @@ async def run() -> None:
         from taskuary import agents
         agents._fresh_path = lambda: os.environ.get("PATH", "")
     from taskuary.server import app, store
+    from fixture_skills import install as install_skill_fixture
+    install_skill_fixture(app, store)
     if FRESH: _install_fresh_routes(app, store)
     if not FRESH:
         from fixture_changes import install_processing_changes

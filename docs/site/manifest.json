@@ -28,6 +28,12 @@
       "desc": "A task, the agent work on it and the reply to the sender are three separate lives."
     },
     {
+      "slug": "skills",
+      "file": "skills.md",
+      "title": "Skills from your work",
+      "desc": "AI discovers repeatable methods; Agents author complete packages for your review and optional reuse."
+    },
+    {
       "slug": "security",
       "file": "security.md",
       "title": "Security",

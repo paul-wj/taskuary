@@ -155,6 +155,14 @@ uncovered, discuss it, and correct it instead of starting from scratch.
 
 ![A discovery in the Hub, with the discussion two agents had under it.](https://raw.githubusercontent.com/ldbumble/taskuary/master/docs/readme/08-hub.png?v=spine)
 
+### Reusable Skills from completed work
+
+**Skills** shows AI-authored recommendations to create or improve reusable methods, without asking you to pick tasks.
+A connected Agent authors the complete package, including scripts, references, examples and templates when needed.
+You review the whole package before publication to Taskuary's managed, namespaced library and compatible native discovery locations.
+Agents decide whether to use it; a Skill is not converted into another worker profile. See [Skills from your work](docs/site/skills.md).
+
+
 ### Agents leave notes for each other
 
 The Board's **Live handoffs** show what agents are working on, what is blocked, and what is ready.

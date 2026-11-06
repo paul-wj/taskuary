@@ -2,6 +2,12 @@
 
 What each release changed, newest first. Ask the Assistant "what changed in the last update?" and it reads this page.
 
+## Unreleased
+
+- Skills offers opt-in AI suggestions from completed work, without asking the owner to pick source tasks or replacing existing Hub, Playbook or Profile features.
+- A configured file-capable Agent authors the complete package; the owner reviews every file, returns changes to the same task, or approves the exact revision for publication.
+- Published `taskuary-` Skills retain scripts, examples, references and binary resources, with owned native discovery links and explicit validation/link failures. Publication never grants the Agent additional permissions.
+
 ## 0.3.10.29 - 2026-11-04
 
 - Triage sees every open item and what the owner's search finds, so a matter joins its task from any source

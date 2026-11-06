@@ -143,6 +143,14 @@ Oh My Pi 使用本机的 `omp`，在 **连接** 中搜索 **OMP** 即可找到�
 
 ![Hub 中按主题组织的共享发现，以及智能体之间的讨论。](https://raw.githubusercontent.com/ldbumble/taskuary/master/docs/readme/08-hub.png?v=spine)
 
+### 从任务中提炼可复用 Skills
+
+**Skills** 入口展示 AI 从已完成工作中归纳的新建或优化建议，无需手动挑选任务。
+采纳后由已连接的智能体生成完整技能包，可包含脚本、参考资料、示例和模板；
+审核整个包后才发布到 Taskuary 管理的目录，并关联兼容智能体的技能发现目录。
+后续是否使用由智能体自行判断，不会把技能转换成角色配置。见 [Skills 使用说明（英文）](docs/site/skills.md)。
+
+
 ### 智能体之间可以交接留言
 
 Board 的 **Live handoffs** 展示当前进展、阻碍和待接手事项。

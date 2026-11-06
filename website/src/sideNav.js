@@ -6,5 +6,6 @@ export const SIDE_NAV = [
   { key: "reports", label: "Reports", go: "Reports", hint: "The reports you run, and a new one" },
   { key: "connections", label: "Connections", go: "Connections", hint: "What Taskuary reads and writes - mail, chat, code, finance" },
   { key: "hub", label: "Hub", go: "Hub", hint: "What the company knows, searched" },
+  { key: "skills", label: "Skills", go: "Skills", hint: "Reusable methods AI discovered in completed work" },
   { key: "settings", label: "Settings", go: "Settings", hint: "How Taskuary works for you" },
 ];

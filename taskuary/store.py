@@ -639,6 +639,9 @@ CREATE INDEX IF NOT EXISTS idx_brainroute_task ON brainroute(TaskId, Id);
 -- priority, kept per task (brainroute.judged). `By` is 'owner' once they correct one: their word stands until they change it again.
 CREATE TABLE IF NOT EXISTS task_judged (TaskId INTEGER PRIMARY KEY, Difficulty TEXT, Sure INTEGER, DataClass TEXT, By TEXT, At TEXT);
 """
+from .skillstate import SCHEMA as _SKILL_SCHEMA
+SCHEMA += _SKILL_SCHEMA
+
 # the knowledge base's search index (knowledge.py). A VIRTUAL table, kept out of SCHEMA: a Python
 # built without FTS5 must still open the store - search then falls back to LIKE over kb_chunk.
 KB_FTS = 'CREATE VIRTUAL TABLE IF NOT EXISTS kb_fts USING fts5(Text, ChunkId UNINDEXED, tokenize="porter unicode61")'

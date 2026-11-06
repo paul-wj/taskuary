@@ -9,7 +9,7 @@ import api from "./api";
 import ReplyFiles from "./ReplyFiles.jsx";
 import { holdInView } from "./inView.js";
 import { filesPromised, filesShort } from "./replyFiles.js";
-import { proposalPresentation, reviewText } from "./reviewProposal.js";
+import { proposalFrom, proposalPresentation, reviewText } from "./reviewProposal.js";
 import { withoutSignature } from "./signature.js";
 import { OFFER_HINT, OFFER_LABEL, useCloseoutState } from "./closeoutState.js";
 import { PANEL2, BORDER, DIM, FAINT, INK, label } from "./theme.jsx";
@@ -27,6 +27,7 @@ import { draftCanSend, useCapabilities } from "./capabilities.js";
 import { blankSpans } from "./blanks.js";
 import { t, translateDescriptor } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
+const SkillPackageReview = React.lazy(() => import("./SkillPackageReview.jsx"));
 
 // What they wrote, above what we would say back. The queue used to show only the draft: you
 // approved an answer without the question in front of you, or opened the task to find it. Four
@@ -115,7 +116,7 @@ export const CalendarLine = ({ meta }) => {
 // `toRow`: the decision's buttons are drawn by the action row above the chat line (layout B), not here - the same handlers, registered.
 // `onEmailInstead`: the task's Send out results - a chat reply that has to carry a file is answered by email instead (U17).
 // `answered`: "You already answered <who> at <time>: ..." (agentDraftAsk.alreadyAnswered) - said over the draft, and its Send a second reply.
-export default function ReviewDecision({ review: r, closeout, onChanged, onOpenTask, onMarkDone = null, onSent = null, onRemind = null, closeOnSend = false, liveWork = "", toRow = false, simulated = false, onDrop = null, onEmailInstead = null, why = "",
+function StandardReviewDecision({ review: r, closeout, onChanged, onOpenTask, onMarkDone = null, onSent = null, onRemind = null, closeOnSend = false, liveWork = "", toRow = false, simulated = false, onDrop = null, onEmailInstead = null, why = "",
   answered = "" }) {
   useLocale();
   const [text, setTextNow] = useState(() => heldOf(r)?.text ?? null);   // the owner's edit; null means "the draft as filed"
@@ -770,4 +771,12 @@ export default function ReviewDecision({ review: r, closeout, onChanged, onOpenT
       )}
     </Box>
   );
+}
+
+export default function ReviewDecision(props) {
+  const proposal = proposalFrom(props.review);
+  if (proposal?.action === "publish_skill") {
+    return <React.Suspense fallback={<CircularProgress size={18} />}><SkillPackageReview key={proposal.generation_id} generationId={proposal.generation_id} onChanged={props.onChanged} onOpenTask={props.onOpenTask} /></React.Suspense>;
+  }
+  return <StandardReviewDecision {...props} />;
 }
