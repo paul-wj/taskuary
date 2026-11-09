@@ -63,11 +63,18 @@ CASES = [
     Q('navigation', 'show me the workflows', None, 'Here: [Workflows](#report=workflows).', 'link:#report=workflows', tools=('pages',), freq=2),
     Q('navigation', 'go to reports', None, 'Here: [Reports](#report=reports).', 'link:#report=reports', tools=('pages',), freq=4),
     Q('navigation', 'show me my dashboards', None, 'Here: [Dashboards](#report=dashboards).', 'link:#report=dashboards', tools=('pages',), freq=3),
-    Q('navigation', 'go to the memory page', None, 'Here: [LEARNED.md](#settings=docs&doc=learned).', 'link:#settings=docs&doc=learned', tools=('pages',), freq=2),
+    Q('navigation', 'go to the memory page', None, 'Here: [your memory](#about=memory).', 'link:#about=memory', tools=('pages',), freq=2),
     Q('navigation', 'open the GitHub connection', None, 'Here: [GitHub](#connector=github).', 'link:#connector=github', tools=('pages',), freq=2),
     Q('navigation', 'show me the new starter task', None, [c('tasks.list', contains='new starter'), 'That is [TQ-0002](#task=2).'], 'read:tasks.list', freq=3),
     Q('navigation', 'bring up the census sync bug', None, [c('tasks.list', contains='census sync'), f'That is [{T12}](#task=12).'], 'read:tasks.list', freq=3),
     Q('navigation', 'open the audit log', None, 'Here: [Audit](#settings=audit).', 'link:#settings=audit', tools=('pages',), freq=1),
+    # ...the chats that reach Taskuary from outside, on one page (the owner, 2026-11-06: "it's not clear where that is")
+    Q('navigation', 'how do I talk to my coding agent from WhatsApp', None,
+      'Bind the chat under Agent channels: [Phone & chats](#settings=phone).', 'link:#settings=phone', tools=('pages',), freq=3),
+    Q('navigation', 'walk through my tasks on my phone', None,
+      'Pick your Assistant chat there, then press Walk me through them: [Phone & chats](#settings=phone).', 'link:#settings=phone', tools=('pages',), freq=4),
+    Q('navigation', 'which chats can talk to my coding agents?', None, 'They are listed here: [Phone & chats](#settings=phone).', 'link:#settings=phone',
+      tools=('pages',), freq=2),
     # ── bulk: sets of items ──
     Q('bulk', 'Clear all the FYI, please.', 'todo', c('pipe.clear', select={'kind': 'fyi'}), 'cleared', freq=5),
     Q('bulk', 'mark all the fyi read', 'fyi', c('pipe.clear', select={'kind': 'fyi'}), 'cleared', freq=5),
@@ -278,11 +285,13 @@ BRING_UP = [
     ('the headcount report', 'headcount', '#msg=9'),
     ('open the report about Kesler Medical', 'Kesler Medical', '#msg=10'),
     ('my routines', 'routines', '#report=workflows'),   # the shelf's name since 2026-10-29
-    ('my SOUL doc', 'soul', '#settings=docs&doc=soul'),
-    ('what it learned', 'learned', '#settings=docs&doc=learned'),
+    ('my SOUL doc', 'soul', '#about=docs&doc=soul'),
+    ('what it learned', 'learned', '#about=memory'),     # About you's Memory since 2026-11-06
     ('the audit log', 'audit log', '#settings=audit'),
     ('agent profiles', 'profiles', '#profiles'),
     ('the mail rules', 'mail rules', '#settings=policies'),
+    ('my phone settings', 'phone & chats', '#settings=phone'),
+    ('the agent channels', 'agent channels', '#settings=phone'),
     # ...Taskuary's own update, by any words for it: Updates, its button lit - never an agent (the owner, 2026-10-23: "i asked assistant to
     # update taskuary and it pulled up general agent")
     ('check for updates', 'updates', '#settings=updates&key=update'),
@@ -302,7 +311,7 @@ CASES += [
     Q('connectors', 'set up QuickBooks', None, c('connection.create', type='QuickBooks Online'), 'open:#connector=quickbooks', freq=3),
     Q('connectors', 'I want to hook up my second Outlook', None, c('connection.create', type='outlook'), 'open:#connector=outlook', freq=3),
     Q('connectors', 'conect gmial', None, c('connection.create', type='gmail'), 'open:#connector=gmail', freq=2, note='a misspelling: the model reads it'),
-    Q('connectors', 'connect Frobnitz', None, [c('connection.create', type='frobnitz'), 'There is no Frobnitz connector.'], 'words', freq=1,
+    Q('connectors', 'connect Quuxzig', None, [c('connection.create', type='quuxzig'), 'There is no Quuxzig connector.'], 'words', freq=1,
       note='an unknown one: the miss names the closest cards'),
 ]
 # THE PHONE (the owner, 2026-10-20): every act a desk row offers reachable from a phone chat too - the task page's writes at once, an act
@@ -375,8 +384,8 @@ POWERS = [
     Q('feedback', 'I wish taskuary could read my Teams calls', None,
       [c('issue.draft', kind='feature', trying='have Teams calls read', happened='there is no way to'), 'A feature request is drafted below for your Submit.'],
       'read:issue.draft', freq=2),
-    Q('feedback', 'you need a Frobnitz connector, can you request it', None,
-      [c('issue.draft', kind='feature', trying='connect Frobnitz', happened='there is no Frobnitz card'), 'A feature request is drafted below for your Submit.'],
+    Q('feedback', 'you need a Quuxzig connector, can you request it', None,
+      [c('issue.draft', kind='feature', trying='connect Quuxzig', happened='there is no Quuxzig card'), 'A feature request is drafted below for your Submit.'],
       'read:issue.draft', freq=2,
       note='a missing connection is a feature request on GitHub (the owner, 2026-11-01)'),
     # ── help, and what changed (the help pages ship with the app; What's new, 2026-11-01) ──
@@ -641,8 +650,8 @@ CONNGRID = {'area': 'connections', 'title': 'Connections', 'fields': [{'key': 's
             'buttons': [{'id': 'email', 'label': 'Email'}, {'id': 'messaging', 'label': 'Messaging'}, {'id': 'ai_agents_models', 'label': 'AI · agents & models'},
                         {'id': 'ai_voice', 'label': 'AI · voice'}, {'id': 'corporate_systems', 'label': 'Corporate systems'}, {'id': 'sync_now', 'label': 'Sync now'},
                         {'id': 'slack', 'label': 'Slack - channels and DMs through triage'}, {'id': 'gmail', 'label': 'Gmail - your Google mailbox'}]}
-NOHIT = {**CONNGRID, 'fields': [{'key': 'search_connectors', 'label': 'Search connectors', 'value': 'Frobnitz'}],
-         'buttons': CONNGRID['buttons'][:6] + [{'id': 'request_frobnitz', 'label': 'Request Frobnitz'}], 'text': 'Nothing matches Frobnitz in Connections.'}
+NOHIT = {**CONNGRID, 'fields': [{'key': 'search_connectors', 'label': 'Search connectors', 'value': 'Quuxzig'}],
+         'buttons': CONNGRID['buttons'][:6] + [{'id': 'request_quuxzig', 'label': 'Request Quuxzig'}], 'text': 'Nothing matches Quuxzig in Connections.'}
 SLACKCARD = {'area': 'connections', 'title': 'the Slack card (Connections)', 'item': {'kind': 'connector', 'id': 'slack', 'title': 'Slack'},
              'fields': [{'key': 'name', 'label': 'Name', 'value': 'Slack'}, {'key': 'Secret', 'label': 'Bot token (xoxb-…)', 'value': '', 'secret': True, 'state': 'empty'}],
              'buttons': [{'id': 'messaging', 'label': 'Messaging'}, {'id': 'save', 'label': 'Save'}, {'id': 'test', 'label': 'Test'}]}
@@ -697,10 +706,10 @@ AREA_CONNECTIONS = [
     Q('connections', 'is work mail syncing ok?', None, [c('app.health', name='Work mail'), 'Work mail synced a few minutes ago; nothing is failing.'],
       'read:app.health', view=WORKCARD, freq=3),
     # ── a system with no card: a request for one, the owner's to submit (the owner, 2026-11-01) ──
-    Q('connections', 'connect Frobnitz', None, [c('connection.create', type='frobnitz'),
-      c('issue.draft', kind='feature', trying='connect Frobnitz', happened='a card under Connections for Frobnitz'), 'There is no Frobnitz card - a request for one is drafted below for your Submit.'],
+    Q('connections', 'connect Quuxzig', None, [c('connection.create', type='quuxzig'),
+      c('issue.draft', kind='feature', trying='connect Quuxzig', happened='a card under Connections for Quuxzig'), 'There is no Quuxzig card - a request for one is drafted below for your Submit.'],
       'read:issue.draft', freq=2, note='the miss says a card the catalogue lacks is a feature request (concierge.call_turn, 2026-11-02)'),
-    Q('connections', 'nothing for frobnitz - can you ask for it?', None, [v(op='press', button='Request Frobnitz')], 'view:press:request_frobnitz',
+    Q('connections', 'nothing for quuxzig - can you ask for it?', None, [v(op='press', button='Request Quuxzig')], 'view:press:request_quuxzig',
       tools=('words',), view=NOHIT, freq=2, note="the grid's own Request button, pressed: it opens the drafted request, nothing is filed"),
     # ── data cards feed reports, never the rail ──
     Q('connections', 'will quickbooks put bills on my task list?', None, [c('docs.search', section='help/connections > Data and report sources'),
@@ -845,8 +854,8 @@ AREA_SETTINGS = [
     Q('settings', 'reset all my settings to default', None, 'There is no reset-all - each setting is changed on its own row under Settings.', 'words',
       tools=('words',), freq=1, note='no such button: said, nothing pressed'),
     # ── the docs: brought up, read, and changed through the memory - never retyped whole from the chat ──
-    Q('settings', 'open my JOB.md', None, find('job'), 'link:#settings=docs&doc=job', freq=3),
-    Q('settings', 'where do I tell it about me', None, find('about you'), 'link:#settings=about', freq=2),
+    Q('settings', 'open my JOB.md', None, find('job'), 'link:#about=docs&doc=job', freq=3),
+    Q('settings', 'where do I tell it about me', None, find('about you'), 'link:#about=you', freq=2),
     # ...SOUL, JOB, LEARNED and COUNSEL ride every turn (concierge._system), so they are answered in words; the other docs are read whole
     Q('settings', 'what does my SOUL.md say about me', None, 'That you run AP at Northwind and work in the ledger.', 'words', tools=('words',), freq=2),
     Q('settings', "what's in my STYLE.md", None, [c('docs.search', section='your doc style'), 'Short, plain, signed Alex.'], 'read:docs.search', freq=2),
@@ -946,8 +955,8 @@ AREA_NEW = [
     Q('new', 'find us a time next week', None, [v(op='press', button='Next week') + '\n' + v(op='press', button='Find times')], 'view:press:find_times',
       tools=('words',), view=NEWMEET, freq=4),
     Q('new', 'take the tuesday 10am one', None, ['That drafts the invite on a task of its own, for your Send.\n' + v(op='press', button='Tue 3 Nov, 10:00')],
-      'view:press:tue_3_nov_10_00', tools=('words',), view=NEWMEET, freq=3, note='a pick only drafts the invite - its Send is in Close out'),
-    Q('new', 'send the invite', None, ['A pick drafts it on a task of its own - its Send waits in Close out there. Pick a time first.'], 'words',
+      'view:press:tue_3_nov_10_00', tools=('words',), view=NEWMEET, freq=3, note='a pick only drafts the invite - its Send is in the chat of that task'),
+    Q('new', 'send the invite', None, ['A pick drafts it on a task of its own - its Send waits in the chat there. Pick a time first.'], 'words',
       tools=('words',), view=NEWMEET, freq=3, note='New has no Send: nothing to light, said where it is'),
     Q('new', 'come back to it friday at 9', None, [v(op='set', field='Come back to it', value='2026-11-06T09:00')], 'view:set:when', tools=('words',),
       view=NEWNOTE, freq=3, note='the date box reads as "Come back to it" now (NewSheet.jsx, 2026-11-02) - it had no name and was never sent'),
@@ -1223,7 +1232,7 @@ AREA_SELF_KNOWLEDGE = [
       'read:docs.search', freq=2),
     Q('self-knowledge', 'what rules do the agents work under', None, [c('docs.search', section='your doc agent'), 'AGENT.md: nothing sends without you.'],
       'read:docs.search', freq=1),
-    Q('self-knowledge', 'open my soul doc', None, 'Here: [SOUL.md](#settings=docs&doc=soul).', 'link:#settings=docs&doc=soul', tools=('pages',), freq=2),
+    Q('self-knowledge', 'open my soul doc', None, 'Here: [SOUL.md](#about=docs&doc=soul).', 'link:#about=docs&doc=soul', tools=('pages',), freq=2),
     # ── its help and what version this is ──
     Q('self-knowledge', 'how does the memory work?', None, [c('docs.search', query='memory'), 'It learns from what you do, never a button press.'],
       'read:docs.search', freq=2),
@@ -1313,7 +1322,8 @@ def _world():
     funnel.invalidate(); funnel.forget_states(); funnel._SOURCES.update(at=0.0, by={})
     if _SEEDED: s = _copy(_SEEDED[0]); funnel.invalidate(); return s
     s = MemoryStore()
-    with mock.patch.object(terminal, 'live_sessions', return_value=[]): demo.seed(s)
+    # ...the demo's tasks without its connected cards (demo.CONNECTIONS): this corpus's owner has the one Outlook card, Work mail, below
+    with mock.patch.object(terminal, 'live_sessions', return_value=[]), mock.patch.object(demo, 'seed_connections', lambda s: 0): demo.seed(s)
     for k in ('auto_draft_enabled',): s.set_setting(k, '0', 't')
     s.set_task_checklist(1, ['pull the bank feed', 'find the 4,180', 'send Marcus the answer'], 'owner')
     s.save_connector({'Type': 'outlook', 'Name': 'Work mail', 'Active': 1}, 't')

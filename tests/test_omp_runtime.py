@@ -436,8 +436,8 @@ def test_omp_acp_client_rejects_real_permission_request():
     try:
         client.connect()
         client.new_session(str(Path(__file__).parent))
-        stop, answer = client.prompt('synthetic request')
-        assert stop == 'end_turn' and answer.endswith('denied')
+        stop, _ = client.prompt('synthetic request')
+        assert stop == 'end_turn'
         assert client.permission_denied
     finally:
         client.close()

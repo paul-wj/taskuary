@@ -26,3 +26,4 @@ test("a plain word the card's title writes in lower case names no card, its whol
   assert.equal(connectorNamed("set up a strategy screen")?.type, "screen");
   assert.equal(connectorNamed("connect teams")?.type, "teams");
 });
+

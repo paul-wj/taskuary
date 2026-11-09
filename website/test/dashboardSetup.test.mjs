@@ -3,32 +3,38 @@
 // Taskuary at a glance is an ordinary row, opened and edited in the same editor as any other. The conversions are in setup.js.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { OWN_KEYS, runCfg, freshKey, orphans, sigOf, whereOf, whereText, windowOf, withField, withKind, withWindow } from "../src/dashboard/setup.js";
+import { MAX_COMPONENTS, OWN_KEYS, copyTile, runCfg, freshKey, moveTile, orphans, saidOf, sigOf, swapTile, tileAsk, wantsDrawing, withField } from "../src/dashboard/setup.js";
 
-
-test("a where is typed the way it reads, and only whole pairs are kept", () => {
-  assert.deepEqual(whereOf("state=open, kind = reply"), { state: "open", kind: "reply" });
-  assert.equal(whereOf("state="), undefined);
-  assert.equal(whereOf(""), undefined);
-  assert.equal(whereText({ state: "open", kind: "reply" }), "state=open, kind=reply");
-  assert.deepEqual(whereOf(whereText({ status: "open" })), { status: "open" });
+// A TILE IS ONE SENTENCE (the owner, 2026-11-06: "it's not generalized ... maybe we should just use text to say what it shows")
+test("a tile is its sentence: Enter or leaving the line draws it only when the words changed", () => {
+  const c = { kind: "stat", title: "Open now", said: "How many tasks are open right now", source: "tasks" };
+  assert.equal(saidOf(c), "How many tasks are open right now");
+  assert.equal(saidOf({ kind: "stat", title: "Open now" }), "Open now", "a tile with no sentence yet shows its title, never a blank line");
+  assert.equal(wantsDrawing("How many tasks are open right now ", c), false, "the same words are the same tile: no AI is asked");
+  assert.equal(wantsDrawing("   ", c), false);
+  assert.equal(wantsDrawing("Open tasks by kind", c), true);
+  assert.equal(wantsDrawing("Tokens per model per day, stacked", null), true, "the add box draws any words");
 });
 
-test("a component's own window: the page's range, a fixed window, or what is true now", () => {
-  const c = { kind: "progress", target: 15 };
-  assert.equal(windowOf(c), "");
-  assert.deepEqual(withWindow(c, "7"), { ...c, range: 7 });
-  assert.deepEqual(withWindow(c, "now"), { ...c, range: false });
-  assert.equal(windowOf({ range: false }), "now");
-  assert.deepEqual(withWindow({ ...c, range: 7 }, ""), c, "the page's range is no key at all");
+test("the server is asked with the dashboard's sources, the words and the tile they rewrite", () => {
+  const spec = { type: "dashboard", title: "Desk", sources: [{ key: "tasks", type: "taskuary_data", dataset: "tasks" }], components: [{ kind: "stat" }] };
+  const c = spec.components[0];
+  assert.deepEqual(tileAsk(spec, " open tasks ", c), { config: { type: "dashboard", title: "Desk", sources: spec.sources }, said: "open tasks", current: c });
+  assert.equal("current" in tileAsk(spec, "open tasks"), false, "a new tile rewrites nothing");
 });
 
-test("a field set to nothing is a key gone; a changed preset keeps what every kind reads", () => {
+test("the answer lands on the tile asked about, wherever it was dragged since, and on none once removed", () => {
+  const a = { said: "a" }, b = { said: "b" }, drawn = { said: "b, redrawn" };
+  const moved = moveTile([a, b], 1, 0);
+  assert.deepEqual(moved, [b, a]);
+  assert.deepEqual(swapTile(moved, b, drawn), [drawn, a]);
+  assert.deepEqual(swapTile([a], b, drawn), [a], "removed while drawing: nothing comes back");
+  assert.deepEqual(moveTile([a, b], 0, 5), [a, b]);
+  const two = copyTile([a, b], 0);
+  assert.deepEqual(two, [a, { said: "a" }, b]); assert.notEqual(two[1], a, "a copy is its own tile");
+  const full = Array.from({ length: MAX_COMPONENTS }, (_, i) => ({ said: String(i) }));
+  assert.equal(copyTile(full, 0), full, "one screen: no copy past the cap");
   assert.deepEqual(withField({ kind: "bar", x: "kind", limit: 8 }, "limit", ""), { kind: "bar", x: "kind" });
-  assert.deepEqual(withField({ kind: "table" }, "columns", []), { kind: "table" });
-  const bar = { kind: "bar", title: "Open work", source: "tasks", x: "kind", where: { state: "open" }, range: false, agg: "count", limit: 6 };
-  assert.deepEqual(withKind(bar, "stat"), { kind: "stat", title: "Open work", source: "tasks", where: { state: "open" }, range: false, agg: "count" });
-  assert.deepEqual(withKind(bar, "list"), { kind: "list", title: "Open work", source: "tasks", where: { state: "open" }, range: false });
 });
 
 test("a new source gets a key no other wears; a component reading a gone source is said before Save", () => {
@@ -48,4 +54,3 @@ test("an S3 source on a dashboard keeps its path as object_key: its card's field
   assert.deepEqual(runCfg({ key: "tasks", type: "taskuary_data", dataset: "tasks" }), { type: "taskuary_data", dataset: "tasks" });
   assert.deepEqual(OWN_KEYS, { s3_object: { key: "object_key" } }, "dashboards.OWN_KEYS says the same");
 });
-

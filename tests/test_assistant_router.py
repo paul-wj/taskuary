@@ -155,7 +155,9 @@ class DeskRoutes(unittest.TestCase):
     def test_every_shelf_of_the_reports_page_has_its_address_in_the_page_list(self):
         """The 2026-10-26 sweep: "go to reports" opened the Workflows shelf - #report=workflows was the only shelf the model was told."""
         block = concierge.pages_block(store())
+        # ...playbooks too: About you held them a few hours on 2026-11-06 and gave them back ("how you work, not about you")
         for shelf in ('reports', 'workflows', 'dashboards', 'playbooks'): self.assertIn(f'#report={shelf}', block)
+        self.assertNotIn('#about=playbooks', block)
 
     def test_any_row_button_named_by_its_own_label_lights(self):
         """The 2026-10-26 sweep: button.light {button: 'Remind me'} missed with "has no remind me button - its row has ..., Remind me",
@@ -369,7 +371,7 @@ class DeskRoutes(unittest.TestCase):
         started = {'dispatch': 'assistant', 'agent': 'Codex', 'started': True, 'existing': False, 'taskId': tid, 'ref': f'TQ-{tid:04d}'}
         with mock.patch.object(server, 'store', s), mock.patch('taskuary.server._dispatch_task_to_its_agent', return_value=started):
             got = TestClient(server.app).post(f'/api/tasks/{tid}/dispatch', json={'kind': 'general', 'agent': 'researcher', 'said': line}).json()
-        said = f'Started TQ-{tid:04d} with Taskuary on Codex.'
+        said = f'Started TQ-{tid:04d} with Agent on Codex.'
         self.assertEqual(got['said'], said)
         self.assertEqual(next(c['Body'] for c in s.list_comments(dock) if c['CommentId'] == line), said)
 

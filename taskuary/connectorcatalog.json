@@ -2,11 +2,19 @@
   "_": "THE connector catalogue, once: every card the Connections tab shows - the working ones (seeded as connector rows on first launch, store.py) and the planned ones - with a group, a one-line desc and `match`: the words in mail, chats, tasks and reports that mean this system. The tab reads it (connectorCatalog.js); the Advisor is handed the unconnected cards and judges which one the owner's threads are about (assistant.connect_evidence) - `match` decides nothing there any more.",
   "sources": {
     "_": "Where work comes in: the groups whose working cards are a source of incoming work - mail, chat and task systems. Setup's Connect your main source offers them (email first, the usual one) and is done once one of them is connected and passes its test.",
-    "groups": ["Messaging", "Email", "Project management", "Developer"]
+    "groups": [
+      "Messaging",
+      "Email",
+      "Project management",
+      "Developer"
+    ]
   },
   "own_systems": {
     "_": "Systems the owner signs into that hold their own records - their databases and their books. A report source on one of these groups' cards is marked 'my own system' unless the owner turns it off, and a report run whose every source is marked is trusted (reports.is_own, origin.report_rests_on). Everything else - news, the web, social timelines, a free REST URL - starts unmarked.",
-    "groups": ["Databases", "Corporate systems"]
+    "groups": [
+      "Databases",
+      "Corporate systems"
+    ]
   },
   "actions": {
     "_": "WHAT THE OWNER PRESSES, PER CONNECTOR (the owner, 2026-11-05: \"each connector should have settings what the action view looks like no?\"). A card's `actions` lists the acts it can be set up for under a chat turn's Next steps, and one card (ActionCard.jsx) draws whatever is declared. Each: `kind` (post, email, chat, tracker), `road` (run_tool: a proposal on `tool`; reply: propose_reply / propose_email), the press words (`press`, `busy`, `done`, `undone`, `note`) and `fields`. A field has a `key` (the proposal's own), a `label` and a `type` (text, line, image, choice, people, files); `edit`: the owner may change it on the card before pressing; `agent`: the agent may propose it (general.roads tells it which); `setting`: a per-connection default on the Connections card, saved as default_<key> on the card and filled into the agent's proposal when it names none (connectorcatalog.with_defaults); a choice's own `press` / `busy` / `done` replace the act's while it is picked."
@@ -148,6 +156,46 @@
       "desc": "Paste a personal access token - repos are auto-discovered, feed the Board's repo picker and the coding agent's issue loop. Per repo, choose what issues and PRs do: tasks, feed, or off.",
       "match": [
         "github"
+      ],
+      "actions": [
+        {
+          "kind": "tracker",
+          "road": "run_tool",
+          "tool": "github_issue",
+          "press": "Create issue",
+          "busy": "Creating…",
+          "done": "Created",
+          "undone": "Not created",
+          "note": "Nothing is filed on GitHub until you press Create issue.",
+          "fields": [
+            {
+              "key": "repo",
+              "label": "In",
+              "type": "line",
+              "agent": true
+            },
+            {
+              "key": "title",
+              "label": "Title",
+              "type": "line",
+              "agent": true,
+              "heading": true
+            },
+            {
+              "key": "labels",
+              "label": "Labels",
+              "type": "line",
+              "agent": true
+            },
+            {
+              "key": "body",
+              "label": "Issue",
+              "type": "text",
+              "edit": true,
+              "agent": true
+            }
+          ]
+        }
       ]
     },
     {
@@ -841,6 +889,16 @@
       ]
     },
     {
+      "type": "freshbooks",
+      "title": "FreshBooks",
+      "group": "Corporate systems",
+      "planned": false,
+      "desc": "Invoices, clients, expenses and payments from FreshBooks for the agents and reports, read with your own sign-in - GET /accounting/account/<account id>/invoices/invoices. Reads only.",
+      "match": [
+        "freshbooks"
+      ]
+    },
+    {
       "type": "quickbooks",
       "title": "QuickBooks Online",
       "group": "Corporate systems",
@@ -1308,13 +1366,108 @@
     {
       "type": "runway_image",
       "title": "Runway",
-      "group": "AI — images",
+      "group": "AI — video",
       "planned": false,
-      "desc": "Runway's Gen-4 image model on its developer API — the same account's credits, for campaign pictures drawn from a sentence.",
+      "desc": "Runway's developer API, one key for both: Gen-4 pictures drawn from a sentence, and Gen-4.5 video clips from a sentence or a picture — agents make them with runway_video.",
       "match": [
         "runway",
         "runwayml",
-        "runway image"
+        "runway image",
+        "runway video",
+        "gen-4"
+      ]
+    },
+    {
+      "type": "kling",
+      "title": "Kling AI",
+      "group": "AI — video",
+      "planned": false,
+      "desc": "Kling's video models on its own API key — agents make a 5 or 10 second clip from a sentence or animate a picture (kling_video), filed in the task's outputs.",
+      "match": [
+        "kling",
+        "klingai",
+        "kling ai",
+        "kling video"
+      ]
+    },
+    {
+      "type": "descript",
+      "title": "Descript",
+      "group": "AI — video",
+      "planned": false,
+      "desc": "Descript's own MCP server in your agent CLI — agents edit video and podcasts by editing the transcript. You sign in once with Sign in.",
+      "match": [
+        "descript",
+        "descript mcp",
+        "edit video",
+        "podcast edit"
+      ],
+      "mcp": {
+        "url": "https://api.descript.com/v2/mcp",
+        "docs": "https://help.descript.com/api-and-mcp/mcp"
+      }
+    },
+    {
+      "type": "invideo",
+      "title": "InVideo",
+      "group": "AI — video",
+      "planned": false,
+      "desc": "InVideo's MCP server in your agent CLI — agents turn a script or an idea into a finished video. You sign in once with Sign in.",
+      "match": [
+        "invideo",
+        "invideo ai",
+        "make a video"
+      ],
+      "mcp": {
+        "url": "https://mcp.invideo.io/mcp",
+        "docs": "https://help.invideo.io/en/articles/11316042-invideo-model-context-protocol-server"
+      }
+    },
+    {
+      "type": "vidova",
+      "title": "Vidova",
+      "group": "AI — video",
+      "planned": false,
+      "desc": "Vidova's MCP server and its skill pack in your agent CLI — agents turn raw clips into finished, post-ready videos from a plain request. You sign in once with Sign in.",
+      "match": [
+        "vidova",
+        "vidova ai",
+        "edit my clips"
+      ],
+      "mcp": {
+        "url": "https://mcp.vidova.ai/mcp",
+        "docs": "https://github.com/youneslaaroussi/vidova-skills"
+      }
+    },
+    {
+      "type": "opusclip",
+      "title": "OpusClip",
+      "group": "AI — video",
+      "planned": false,
+      "desc": "OpusClip's own MCP server in your agent CLI — agents cut a long video into short social clips with captions. You sign in once with Sign in.",
+      "match": [
+        "opusclip",
+        "opus clip",
+        "opus pro",
+        "short clips"
+      ],
+      "mcp": {
+        "url": "https://mcp.opus.pro/mcp",
+        "docs": "https://www.opus.pro/mcp"
+      }
+    },
+    {
+      "type": "video_use",
+      "title": "video-use (Browser Use)",
+      "group": "AI — video",
+      "planned": false,
+      "desc": "Browser Use's video-use skill for Claude Code — agents cut and edit video files on this computer with ffmpeg, using the key on your ElevenLabs card for the transcript.",
+      "match": [
+        "video-use",
+        "video use",
+        "browser use video",
+        "cut a video",
+        "ffmpeg"
       ]
     },
     {
@@ -1425,8 +1578,8 @@
       "type": "fireworks_ai",
       "title": "Fireworks AI",
       "group": "AI — agents & models",
-      "planned": true,
-      "desc": "Serverless inference for open models",
+      "planned": false,
+      "desc": "Open models on fast serverless inference - one key, any model in its library.",
       "match": [
         "fireworks ai",
         "fireworks"
@@ -1447,8 +1600,8 @@
       "type": "bedrock",
       "title": "AWS Bedrock",
       "group": "AI — agents & models",
-      "planned": true,
-      "desc": "Claude, Llama and other models through AWS",
+      "planned": false,
+      "desc": "Models in your own AWS account through Bedrock's chat completions - with a Bedrock API key.",
       "match": [
         "aws bedrock",
         "aws",
@@ -1472,8 +1625,8 @@
       "type": "assemblyai",
       "title": "AssemblyAI",
       "group": "AI — voice",
-      "planned": true,
-      "desc": "Hosted transcription and audio intelligence",
+      "planned": false,
+      "desc": "AssemblyAI Universal - strong accuracy across many languages, with free hours to start.",
       "match": [
         "assemblyai"
       ]
@@ -1482,8 +1635,8 @@
       "type": "azure_speech",
       "title": "Azure AI Speech",
       "group": "AI — voice",
-      "planned": true,
-      "desc": "Microsoft speech-to-text and diarization",
+      "planned": false,
+      "desc": "Azure AI Speech fast transcription - your company's own Azure Speech resource, one call per file.",
       "match": [
         "azure ai speech",
         "azure",
@@ -1495,8 +1648,8 @@
       "type": "amazon_transcribe",
       "title": "Amazon Transcribe",
       "group": "AI — voice",
-      "planned": true,
-      "desc": "AWS speech-to-text for recorded audio",
+      "planned": false,
+      "desc": "Voice notes and the mic transcribed on your own AWS account - the clip goes to your S3 bucket, a job reads it, and both are deleted once read.",
       "match": [
         "amazon transcribe",
         "amazon",
@@ -1507,8 +1660,8 @@
       "type": "speechmatics",
       "title": "Speechmatics",
       "group": "AI — voice",
-      "planned": true,
-      "desc": "Multilingual speech recognition",
+      "planned": false,
+      "desc": "Speechmatics batch transcription - 50+ languages, EU or US processing, with free hours each month.",
       "match": [
         "speechmatics"
       ]
@@ -1517,8 +1670,8 @@
       "type": "gladia",
       "title": "Gladia",
       "group": "AI — voice",
-      "planned": true,
-      "desc": "Real-time and recorded transcription",
+      "planned": false,
+      "desc": "Gladia - multilingual transcription with code-switching, with free hours each month.",
       "match": [
         "gladia"
       ]
@@ -1527,8 +1680,22 @@
       "type": "exchange",
       "title": "Exchange Server",
       "group": "Email",
-      "planned": true,
-      "desc": "On-premises Exchange mailboxes",
+      "planned": false,
+      "desc": "An on-premises Exchange mailbox over the server's IMAP and SMTP - in through triage, replies out from the same address, in-thread.",
+      "preset": {
+        "type": "imap",
+        "config": {
+          "imap_host": "",
+          "smtp_host": ""
+        },
+        "secret": "mailbox password",
+        "howto": [
+          "Your Exchange server must have IMAP4 and authenticated SMTP switched on - ask IT for the host names (often mail.yourcompany.com; IMAP 993, SMTP 587).",
+          "Enter the mailbox address, the IMAP host and, if different, the SMTP host; paste the mailbox password (write-only).",
+          "An internal certificate the server signs itself shows its fingerprint on the first Test - paste it into TLS certificate only if IT confirms it.",
+          "Exchange Online / Microsoft 365 no longer takes IMAP passwords: use the Outlook card for those."
+        ]
+      },
       "match": [
         "exchange server",
         "exchange"
@@ -1538,8 +1705,21 @@
       "type": "fastmail",
       "title": "Fastmail",
       "group": "Email",
-      "planned": true,
-      "desc": "Mail, contacts and calendars",
+      "planned": false,
+      "desc": "A Fastmail mailbox over its own IMAP and SMTP - in through triage, replies out from the same address, in-thread.",
+      "preset": {
+        "type": "imap",
+        "config": {
+          "imap_host": "imap.fastmail.com",
+          "smtp_host": "smtp.fastmail.com"
+        },
+        "secret": "app password (Fastmail: Settings → Privacy & Security → Integrations → New app password)",
+        "howto": [
+          "Fastmail wants an app password, not your sign-in password: Settings → Privacy & Security → Integrations → New app password, access IMAP and SMTP.",
+          "Enter your Fastmail address and paste the app password (write-only) - the servers are already filled in.",
+          "Test logs in and adds the mailbox as a source; new mail flows in on the next sync, and replies you approve go out over Fastmail's SMTP."
+        ]
+      },
       "match": [
         "fastmail"
       ]
@@ -1548,8 +1728,25 @@
       "type": "proton_mail",
       "title": "Proton Mail",
       "group": "Email",
-      "planned": true,
-      "desc": "Mail through Proton Mail Bridge",
+      "planned": false,
+      "desc": "A Proton Mail mailbox through Proton Mail Bridge, the app that runs on this computer - in through triage, replies out through the Bridge.",
+      "preset": {
+        "type": "imap",
+        "config": {
+          "imap_host": "127.0.0.1",
+          "imap_port": 1143,
+          "imap_starttls": true,
+          "smtp_host": "127.0.0.1",
+          "smtp_port": 1025
+        },
+        "secret": "Bridge password (shown in Proton Mail Bridge, not your Proton password)",
+        "howto": [
+          "Install Proton Mail Bridge on this computer (a paid Proton plan) and sign in to it - Proton's servers only speak to the Bridge, and Taskuary speaks to the Bridge.",
+          "In the Bridge, open your account's mailbox details: copy the user name (your address) and the Bridge password it shows. The ports are already filled in here (IMAP 1143, SMTP 1025, STARTTLS); change them only if you changed them in the Bridge.",
+          "The Bridge signs its connection with its own certificate, so the first Test names it and gives you its fingerprint - paste that into TLS certificate and Test again.",
+          "Mail flows in while the Bridge runs; replies you approve go out through it."
+        ]
+      },
       "match": [
         "proton mail",
         "proton"
@@ -1559,8 +1756,21 @@
       "type": "yahoo_mail",
       "title": "Yahoo Mail",
       "group": "Email",
-      "planned": true,
-      "desc": "Yahoo mailboxes and folders",
+      "planned": false,
+      "desc": "A Yahoo mailbox over Yahoo's IMAP and SMTP - in through triage, replies out from the same address, in-thread.",
+      "preset": {
+        "type": "imap",
+        "config": {
+          "imap_host": "imap.mail.yahoo.com",
+          "smtp_host": "smtp.mail.yahoo.com"
+        },
+        "secret": "app password (Yahoo: Account info → Account security → Generate app password)",
+        "howto": [
+          "Yahoo wants an app password: Account info → Account security → Generate app password (two-step verification must be on).",
+          "Enter your Yahoo address and paste the app password (write-only) - the servers are already filled in.",
+          "Test logs in and adds the mailbox as a source; new mail flows in on the next sync, and replies you approve go out over Yahoo's SMTP."
+        ]
+      },
       "match": [
         "yahoo mail",
         "yahoo"
@@ -1570,21 +1780,29 @@
       "type": "mailgun",
       "title": "Mailgun",
       "group": "Email",
-      "planned": true,
-      "desc": "Inbound routes and delivery events",
+      "planned": false,
+      "desc": "Mail your Mailgun route stores lands on your work rail through triage - Taskuary polls Mailgun's stored messages, so no public address is needed.",
       "match": [
         "mailgun"
-      ]
+      ],
+      "replies": {
+        "on": true,
+        "says": "an email reply, from your own mailbox"
+      }
     },
     {
       "type": "sendgrid",
-      "title": "SendGrid",
+      "title": "SendGrid Inbound Parse",
       "group": "Email",
-      "planned": true,
-      "desc": "Inbound parse and delivery events",
+      "planned": false,
+      "desc": "Mail SendGrid Inbound Parse receives lands on your work rail through triage. SendGrid pushes it, so it needs a public address that reaches this computer - your own tunnel.",
       "match": [
         "sendgrid"
-      ]
+      ],
+      "replies": {
+        "on": true,
+        "says": "an email reply, from your own mailbox"
+      }
     },
     {
       "type": "google_chat",
@@ -1624,34 +1842,46 @@
       "type": "signal",
       "title": "Signal",
       "group": "Messaging",
-      "planned": true,
-      "desc": "Signal conversations through a local bridge",
+      "planned": false,
+      "desc": "Your Signal messages land on your work rail through triage, read by signal-cli's REST API running beside Taskuary.",
       "match": [
         "signal"
-      ]
+      ],
+      "replies": {
+        "on": true,
+        "says": "a Signal message back, in the same chat or group"
+      }
     },
     {
       "type": "zoom_chat",
       "title": "Zoom Team Chat",
       "group": "Messaging",
-      "planned": true,
-      "desc": "Channels and direct messages",
+      "planned": false,
+      "desc": "Zoom Team Chat direct messages, and channel messages that @mention you, land on your work rail through triage. People in your Zoom account are colleagues; an outside contact is a stranger.",
       "match": [
         "zoom team chat",
         "zoom",
         "team",
         "zoom chat"
-      ]
+      ],
+      "replies": {
+        "on": true,
+        "says": "a reply in the channel's thread, or in the direct chat (the app needs chat_message:write)"
+      }
     },
     {
       "type": "webex",
       "title": "Webex",
       "group": "Messaging",
-      "planned": true,
-      "desc": "Webex spaces and messages",
+      "planned": false,
+      "desc": "Webex direct messages, and space messages that @mention you, land on your work rail through triage. People in your Webex organization are colleagues; anyone else is a stranger.",
       "match": [
         "webex"
-      ]
+      ],
+      "replies": {
+        "on": true,
+        "says": "a reply in the space thread, or in the direct chat (the sign-in needs messages write - sign in again once)"
+      }
     },
     {
       "type": "rocketchat",
@@ -1669,18 +1899,22 @@
       "type": "bitbucket",
       "title": "Bitbucket",
       "group": "Developer",
-      "planned": true,
-      "desc": "Repositories, pull requests and issues",
+      "planned": false,
+      "desc": "Bitbucket pull requests ASKING YOUR REVIEW and issues ASSIGNED TO YOU land on your work rail through triage.",
       "match": [
         "bitbucket"
-      ]
+      ],
+      "replies": {
+        "on": true,
+        "says": "a comment on the pull request or issue"
+      }
     },
     {
       "type": "jenkins",
       "title": "Jenkins",
       "group": "Developer",
-      "planned": true,
-      "desc": "Builds, failures and job status",
+      "planned": false,
+      "desc": "Jobs, builds and their console as reports and an agent tool - GET /api/json, /job/<name>/lastBuild/api/json.",
       "match": [
         "jenkins"
       ]
@@ -1689,8 +1923,8 @@
       "type": "circleci",
       "title": "CircleCI",
       "group": "Developer",
-      "planned": true,
-      "desc": "Pipelines, workflows and test failures",
+      "planned": false,
+      "desc": "Pipelines, workflows and failed jobs as reports and an agent tool - GET /project/<slug>/pipeline, /workflow/<id>/job.",
       "match": [
         "circleci"
       ]
@@ -1699,8 +1933,8 @@
       "type": "buildkite",
       "title": "Buildkite",
       "group": "Developer",
-      "planned": true,
-      "desc": "Build pipelines and agent status",
+      "planned": false,
+      "desc": "Builds, pipelines and agents as reports and an agent tool - GET /organizations/<org>/builds?state=failed.",
       "match": [
         "buildkite"
       ]
@@ -1709,8 +1943,8 @@
       "type": "docker_hub",
       "title": "Docker Hub",
       "group": "Developer",
-      "planned": true,
-      "desc": "Images, tags and build activity",
+      "planned": false,
+      "desc": "Repositories, tags and pull counts as reports and an agent tool - the token is swapped for a short-lived one, then GET /v2/namespaces/<you>/repositories.",
       "match": [
         "docker hub",
         "docker",
@@ -1721,28 +1955,148 @@
       "type": "sonarqube",
       "title": "SonarQube",
       "group": "Developer",
-      "planned": true,
-      "desc": "Quality gates and code findings",
+      "planned": false,
+      "desc": "Quality gates, issues and coverage as reports and an agent tool - GET /api/qualitygates/project_status?projectKey=<key>.",
       "match": [
         "sonarqube"
       ]
     },
     {
+      "type": "sentry_mcp",
+      "title": "Sentry MCP",
+      "group": "Developer",
+      "planned": false,
+      "desc": "Sentry's own MCP server in your agent CLI — agents read issues, stack traces and releases and run Seer on a bug. You sign in once with Sign in.",
+      "match": [
+        "sentry mcp"
+      ],
+      "mcp": {
+        "url": "https://mcp.sentry.dev/mcp",
+        "docs": "https://mcp.sentry.dev/"
+      }
+    },
+    {
+      "type": "postman",
+      "title": "Postman",
+      "group": "Developer",
+      "planned": false,
+      "desc": "Postman's own MCP server in your agent CLI — agents read and run your collections, environments and APIs (the US region). You sign in once with Sign in.",
+      "match": [
+        "postman"
+      ],
+      "mcp": {
+        "url": "https://mcp.postman.com/mcp",
+        "docs": "https://learning.postman.com/docs/developer/postman-api/postman-mcp-remote-server/postman-mcp-remote-server/"
+      }
+    },
+    {
+      "type": "socket_dev",
+      "title": "Socket.dev",
+      "group": "Developer",
+      "planned": false,
+      "desc": "Socket.dev's own MCP server in your agent CLI — agents check a package's supply-chain risk before it is added. You sign in once with Sign in.",
+      "match": [
+        "socket.dev",
+        "socket security"
+      ],
+      "mcp": {
+        "url": "https://mcp.socket.dev/",
+        "docs": "https://github.com/SocketDev/socket-mcp"
+      }
+    },
+    {
+      "type": "stytch",
+      "title": "Stytch",
+      "group": "Developer",
+      "planned": false,
+      "desc": "Stytch's own MCP server in your agent CLI — agents set up projects, redirect URLs and auth settings. You sign in once with Sign in.",
+      "match": [
+        "stytch"
+      ],
+      "mcp": {
+        "url": "https://mcp.stytch.dev/mcp",
+        "docs": "https://stytch.com/docs/resources/workspace-management/stytch-mcp-server"
+      }
+    },
+    {
+      "type": "jam_dev",
+      "title": "Jam.dev",
+      "group": "Developer",
+      "planned": false,
+      "desc": "Jam.dev's own MCP server in your agent CLI — agents read bug reports with their console logs, network calls and repro steps. You sign in once with Sign in.",
+      "match": [
+        "jam.dev",
+        "jam bug"
+      ],
+      "mcp": {
+        "url": "https://mcp.jam.dev/mcp",
+        "docs": "https://jam.dev/docs/debug-a-jam/mcp"
+      }
+    },
+    {
+      "type": "github_mcp",
+      "title": "GitHub MCP",
+      "group": "Developer",
+      "planned": false,
+      "desc": "GitHub's own MCP server in Claude Code — agents read and work on repositories, issues, pull requests and Actions with your token. You paste a personal token on the card once; Add puts it in Claude Code.",
+      "match": [
+        "github mcp"
+      ],
+      "mcp": {
+        "url": "https://api.githubcopilot.com/mcp/",
+        "docs": "https://github.com/github/github-mcp-server/blob/main/docs/installation-guides/install-claude.md",
+        "header": "Authorization: Bearer {token}"
+      }
+    },
+    {
+      "type": "pagerduty_mcp",
+      "title": "PagerDuty MCP",
+      "group": "Developer",
+      "planned": false,
+      "desc": "PagerDuty's own MCP server in Claude Code — agents look up incidents, services, schedules and on-call. You paste a personal token on the card once; Add puts it in Claude Code.",
+      "match": [
+        "pagerduty mcp"
+      ],
+      "mcp": {
+        "url": "https://mcp.pagerduty.com/mcp",
+        "docs": "https://docs.pagerduty.com/ai-automation/advance/pagerduty-mcp-server",
+        "header": "Authorization: Token token={token}"
+      }
+    },
+    {
+      "type": "basecamp_todos",
+      "title": "Basecamp to-dos",
+      "group": "Project management",
+      "planned": false,
+      "desc": "Basecamp to-dos assigned to you, and Pings and @mentions in your Hey! menu, land on your work rail through triage. Your team is known; a client is a stranger.",
+      "match": [
+        "basecamp"
+      ],
+      "replies": {
+        "on": true,
+        "says": "a comment on the to-do, or a line in the Ping"
+      }
+    },
+    {
       "type": "basecamp",
       "title": "Basecamp",
       "group": "Project management",
-      "planned": true,
-      "desc": "Projects, to-dos and messages",
+      "planned": false,
+      "desc": "Basecamp's own MCP server in your agent CLI — agents read and post to-dos, messages and project updates. You sign in once with Sign in.",
       "match": [
         "basecamp"
-      ]
+      ],
+      "mcp": {
+        "url": "https://mcp.basecamp.com/mcp",
+        "docs": "https://basecamp.com/ai"
+      }
     },
     {
       "type": "ms_planner",
       "title": "Microsoft Planner",
       "group": "Project management",
-      "planned": true,
-      "desc": "Plans, buckets and assigned tasks",
+      "planned": false,
+      "desc": "Microsoft Planner tasks ASSIGNED TO YOU land on your work rail, through the Microsoft sign-in your Outlook card already has.",
       "match": [
         "microsoft planner",
         "microsoft",
@@ -1754,53 +2108,190 @@
       "type": "smartsheet",
       "title": "Smartsheet",
       "group": "Project management",
-      "planned": true,
-      "desc": "Sheets, rows and workflow updates",
+      "planned": false,
+      "desc": "Smartsheet rows whose contact column NAMES YOU land on your work rail through triage.",
       "match": [
         "smartsheet"
-      ]
+      ],
+      "replies": {
+        "on": true,
+        "says": "a comment on the row"
+      }
+    },
+    {
+      "type": "smartsheet_mcp",
+      "title": "Smartsheet MCP",
+      "group": "Project management",
+      "planned": false,
+      "desc": "Smartsheet's own MCP server in Claude Code — agents read and update sheets, rows and reports. You paste a personal token on the card once; Add puts it in Claude Code.",
+      "match": [
+        "smartsheet mcp"
+      ],
+      "mcp": {
+        "url": "https://mcp.smartsheet.com",
+        "docs": "https://developers.smartsheet.com/ai-mcp/smartsheet/install-the-smartsheet-mcp-server/connect-claude-code",
+        "header": "Authorization: Bearer {token}"
+      }
     },
     {
       "type": "airtable",
       "title": "Airtable",
       "group": "Project management",
-      "planned": true,
-      "desc": "Bases, records and automations",
+      "planned": false,
+      "desc": "Rows in the Airtable view you choose land on your work rail through triage as they change.",
       "match": [
         "airtable"
-      ]
+      ],
+      "replies": {
+        "on": true,
+        "says": "a comment on the record (the token needs data.recordComments:write)"
+      }
+    },
+    {
+      "type": "airtable_mcp",
+      "title": "Airtable MCP",
+      "group": "Project management",
+      "planned": false,
+      "desc": "Airtable's own MCP server in your agent CLI — agents look up and update what is there. You sign in once with Sign in.",
+      "match": [
+        "airtable mcp"
+      ],
+      "mcp": {
+        "url": "https://mcp.airtable.com/mcp",
+        "docs": "https://support.airtable.com/docs/using-the-airtable-mcp-server"
+      }
     },
     {
       "type": "wrike",
       "title": "Wrike",
       "group": "Project management",
-      "planned": true,
-      "desc": "Projects, requests and assigned work",
+      "planned": false,
+      "desc": "Active Wrike tasks ASSIGNED TO YOU land on your work rail through triage.",
       "match": [
         "wrike"
-      ]
+      ],
+      "replies": {
+        "on": true,
+        "says": "a comment on the task"
+      }
+    },
+    {
+      "type": "wrike_mcp",
+      "title": "Wrike MCP",
+      "group": "Project management",
+      "planned": false,
+      "desc": "Wrike's own MCP server in Claude Code — agents find, create and update tasks, projects and comments. You paste a personal token on the card once; Add puts it in Claude Code.",
+      "match": [
+        "wrike mcp"
+      ],
+      "mcp": {
+        "url": "https://mcp.wrike.com/v2",
+        "docs": "https://developers.wrike.com/docs/setup-other-mcp-clients-with-wrike-mcp",
+        "header": "Authorization: Bearer {token}"
+      }
     },
     {
       "type": "shortcut",
       "title": "Shortcut",
       "group": "Project management",
-      "planned": true,
-      "desc": "Stories, epics and iterations",
+      "planned": false,
+      "desc": "Shortcut stories YOU OWN land on your work rail through triage.",
       "match": [
         "shortcut"
-      ]
+      ],
+      "replies": {
+        "on": true,
+        "says": "a comment on the story"
+      }
     },
     {
       "type": "github_projects",
       "title": "GitHub Projects",
       "group": "Project management",
-      "planned": true,
-      "desc": "Project boards and work items",
+      "planned": false,
+      "desc": "GitHub Projects items ASSIGNED TO YOU - draft items too - land on your work rail through triage.",
       "match": [
         "github projects",
         "github",
         "projects"
-      ]
+      ],
+      "replies": {
+        "on": false,
+        "says": "a comment on the issue or pull request - public on a public repository"
+      }
+    },
+    {
+      "type": "notion_mcp",
+      "title": "Notion MCP",
+      "group": "Project management",
+      "planned": false,
+      "desc": "Notion's own MCP server in your agent CLI — agents search, read and write your Notion pages and databases. You sign in once with Sign in.",
+      "match": [
+        "notion mcp"
+      ],
+      "mcp": {
+        "url": "https://mcp.notion.com/mcp",
+        "docs": "https://developers.notion.com/docs/get-started-with-mcp"
+      }
+    },
+    {
+      "type": "linear_mcp",
+      "title": "Linear MCP",
+      "group": "Project management",
+      "planned": false,
+      "desc": "Linear's own MCP server in your agent CLI — agents find, create and update Linear issues, projects and comments. You sign in once with Sign in.",
+      "match": [
+        "linear mcp"
+      ],
+      "mcp": {
+        "url": "https://mcp.linear.app/mcp",
+        "docs": "https://linear.app/docs/mcp"
+      }
+    },
+    {
+      "type": "atlassian",
+      "title": "Atlassian (Jira & Confluence)",
+      "group": "Project management",
+      "planned": false,
+      "desc": "Atlassian's own MCP server in your agent CLI — agents search, create and update Jira issues and Confluence pages. You sign in once with Sign in.",
+      "match": [
+        "atlassian",
+        "confluence",
+        "rovo",
+        "jira mcp"
+      ],
+      "mcp": {
+        "url": "https://mcp.atlassian.com/v2/mcp",
+        "docs": "https://support.atlassian.com/atlassian-rovo-mcp-server/docs/getting-started-with-the-atlassian-remote-mcp-server/"
+      }
+    },
+    {
+      "type": "monday_mcp",
+      "title": "Monday.com MCP",
+      "group": "Project management",
+      "planned": false,
+      "desc": "Monday.com's own MCP server in your agent CLI — agents read and update boards, items and updates (your monday admin installs the monday MCP app once). You sign in once with Sign in.",
+      "match": [
+        "monday mcp"
+      ],
+      "mcp": {
+        "url": "https://mcp.monday.com/mcp",
+        "docs": "https://github.com/mondaycom/mcp"
+      }
+    },
+    {
+      "type": "todoist_mcp",
+      "title": "Todoist MCP",
+      "group": "Project management",
+      "planned": false,
+      "desc": "Todoist's own MCP server in your agent CLI — agents add, find and complete your Todoist tasks. You sign in once with Sign in.",
+      "match": [
+        "todoist mcp"
+      ],
+      "mcp": {
+        "url": "https://ai.todoist.net/mcp",
+        "docs": "https://github.com/Doist/todoist-mcp"
+      }
     },
     {
       "type": "postgresql",
@@ -1849,8 +2340,8 @@
       "type": "mongodb",
       "title": "MongoDB",
       "group": "Databases",
-      "planned": true,
-      "desc": "Collections, documents and Atlas clusters",
+      "planned": false,
+      "desc": "Find, count and aggregate documents as reports and an agent tool - reads only: $out and $merge are refused.",
       "match": [
         "mongodb"
       ]
@@ -1859,8 +2350,8 @@
       "type": "dynamodb",
       "title": "Amazon DynamoDB",
       "group": "Databases",
-      "planned": true,
-      "desc": "Tables, items and query reports",
+      "planned": false,
+      "desc": "List tables, scan their first rows or read one item by key in Amazon DynamoDB, as reports and an agent tool - reads only.",
       "match": [
         "amazon dynamodb",
         "amazon",
@@ -1881,8 +2372,8 @@
       "type": "redis",
       "title": "Redis",
       "group": "Databases",
-      "planned": true,
-      "desc": "Keys, streams and operational metrics",
+      "planned": false,
+      "desc": "Keys, hashes, lists and streams as reports and an agent tool - one command from a closed list of reads.",
       "match": [
         "redis"
       ]
@@ -1891,8 +2382,8 @@
       "type": "gcp",
       "title": "Google Cloud",
       "group": "Cloud & infrastructure",
-      "planned": true,
-      "desc": "Projects, resources and audit activity",
+      "planned": false,
+      "desc": "Projects, Cloud Run services, Cloud Functions and logs as reports and an agent tool - the path names the service: /run/v2/projects/<p>/locations/-/services, POST /logging/v2/entries:list.",
       "match": [
         "google cloud",
         "google",
@@ -1904,8 +2395,8 @@
       "type": "kubernetes",
       "title": "Kubernetes",
       "group": "Cloud & infrastructure",
-      "planned": true,
-      "desc": "Clusters, workloads and events",
+      "planned": false,
+      "desc": "Namespaces, pods, deployments and events as reports and an agent tool - GET /api/v1/namespaces/<ns>/pods. Reads only.",
       "match": [
         "kubernetes"
       ]
@@ -1914,18 +2405,22 @@
       "type": "cloudflare",
       "title": "Cloudflare",
       "group": "Cloud & infrastructure",
-      "planned": true,
-      "desc": "Zones, Workers and security events",
+      "planned": false,
+      "desc": "Cloudflare's own MCP server in your agent CLI — agents manage zones, DNS and Workers and read their logs. You sign in once with Sign in.",
       "match": [
         "cloudflare"
-      ]
+      ],
+      "mcp": {
+        "url": "https://mcp.cloudflare.com/mcp",
+        "docs": "https://developers.cloudflare.com/agents/model-context-protocol/mcp-servers-for-cloudflare/"
+      }
     },
     {
       "type": "digitalocean",
       "title": "DigitalOcean",
       "group": "Cloud & infrastructure",
-      "planned": true,
-      "desc": "Droplets, apps and managed databases",
+      "planned": false,
+      "desc": "Droplets, apps, databases, domains and billing as reports and an agent tool - GET /v2/droplets, /v2/apps, /v2/customers/my/balance.",
       "match": [
         "digitalocean"
       ]
@@ -1934,28 +2429,36 @@
       "type": "vercel",
       "title": "Vercel",
       "group": "Cloud & infrastructure",
-      "planned": true,
-      "desc": "Deployments, projects and build failures",
+      "planned": false,
+      "desc": "Vercel's own MCP server in your agent CLI — agents check projects and deployments and read build logs. You sign in once with Sign in.",
       "match": [
         "vercel"
-      ]
+      ],
+      "mcp": {
+        "url": "https://mcp.vercel.com",
+        "docs": "https://vercel.com/docs/agent-resources/vercel-mcp"
+      }
     },
     {
       "type": "netlify",
       "title": "Netlify",
       "group": "Cloud & infrastructure",
-      "planned": true,
-      "desc": "Sites, deploys and functions",
+      "planned": false,
+      "desc": "Netlify's own MCP server in your agent CLI — agents create and deploy sites and read deploy status. You sign in once with Sign in.",
       "match": [
         "netlify"
-      ]
+      ],
+      "mcp": {
+        "url": "https://mcp.netlify.com/mcp",
+        "docs": "https://docs.netlify.com/build/build-with-ai/agent-setup-guides/set-up-claude-code-for-netlify/"
+      }
     },
     {
       "type": "heroku",
       "title": "Heroku",
       "group": "Cloud & infrastructure",
-      "planned": true,
-      "desc": "Apps, releases and dynos",
+      "planned": false,
+      "desc": "Apps, dynos, releases and add-ons as reports and an agent tool - GET /apps, /apps/<app>/dynos, /apps/<app>/releases.",
       "match": [
         "heroku"
       ]
@@ -1964,8 +2467,8 @@
       "type": "terraform_cloud",
       "title": "Terraform Cloud",
       "group": "Cloud & infrastructure",
-      "planned": true,
-      "desc": "Runs, workspaces and policy checks",
+      "planned": false,
+      "desc": "Workspaces, runs and their state as reports and an agent tool - GET /organizations/<org>/workspaces, /workspaces/<id>/runs.",
       "match": [
         "terraform cloud",
         "terraform",
@@ -1976,8 +2479,8 @@
       "type": "netsuite",
       "title": "NetSuite",
       "group": "Corporate systems",
-      "planned": true,
-      "desc": "ERP records, saved searches and reports",
+      "planned": false,
+      "desc": "Records and SuiteQL queries as reports and an agent tool - POST /services/rest/query/v1/suiteql {q: \"SELECT ...\"}, GET /services/rest/record/v1/vendor. Token-based auth from your NetSuite admin.",
       "match": [
         "netsuite"
       ]
@@ -1986,8 +2489,8 @@
       "type": "sap",
       "title": "SAP",
       "group": "Corporate systems",
-      "planned": true,
-      "desc": "ERP data and business workflows",
+      "planned": false,
+      "desc": "S/4HANA OData reads as reports and an agent tool - business partners, purchase orders, journal entries: GET /sap/opu/odata/sap/<service>/<entity>?$format=json. Your SAP admin gives the communication user.",
       "match": [
         "sap"
       ]
@@ -1996,38 +2499,52 @@
       "type": "salesforce",
       "title": "Salesforce",
       "group": "Corporate systems",
-      "planned": true,
-      "desc": "CRM records, cases and opportunities",
+      "planned": false,
+      "desc": "Salesforce cases and tasks assigned to you land on your work rail through triage, and agents read any record - GET /services/data/v62.0/query?q=SELECT Id, Name FROM Account.",
       "match": [
         "salesforce"
-      ]
+      ],
+      "replies": {
+        "on": true,
+        "says": "a comment on the case - the contact sees it in your portal - or a post on the task's feed",
+        "note": "Keep case comments private - only your users see them"
+      }
     },
     {
       "type": "hubspot",
       "title": "HubSpot",
       "group": "Corporate systems",
-      "planned": true,
-      "desc": "CRM contacts, deals and tickets",
+      "planned": false,
+      "desc": "HubSpot tickets and tasks assigned to you land on your work rail through triage, and agents read any CRM record - GET /crm/v3/objects/contacts, /crm/v3/objects/deals/<id>.",
       "match": [
         "hubspot"
-      ]
+      ],
+      "replies": {
+        "on": true,
+        "says": "a note on the ticket (sign in again once, for the write scope)"
+      }
     },
     {
       "type": "servicenow",
       "title": "ServiceNow",
       "group": "Corporate systems",
-      "planned": true,
-      "desc": "Incidents, requests and workflows",
+      "planned": false,
+      "desc": "ServiceNow incidents (or any task table) ASSIGNED TO YOU land on your work rail through triage.",
       "match": [
         "servicenow"
-      ]
+      ],
+      "replies": {
+        "on": true,
+        "says": "an additional comment on the record - the caller sees it",
+        "note": "Post it as a work note instead - only the IT staff see it"
+      }
     },
     {
       "type": "dynamics365",
       "title": "Dynamics 365",
       "group": "Corporate systems",
-      "planned": true,
-      "desc": "CRM and finance records",
+      "planned": false,
+      "desc": "Dataverse tables - accounts, contacts, opportunities, cases - as reports and an agent tool: GET /api/data/v9.2/accounts?$top=10. Your own company app; Taskuary ships none.",
       "match": [
         "dynamics 365",
         "dynamics",
@@ -2039,8 +2556,8 @@
       "type": "bamboohr",
       "title": "BambooHR",
       "group": "Corporate systems",
-      "planned": true,
-      "desc": "People, time off and employee data",
+      "planned": false,
+      "desc": "The employee directory, time off and reports as reports and an agent tool - GET /employees/directory, /time_off/whos_out. Your BambooHR admin gives API access.",
       "match": [
         "bamboohr"
       ]
@@ -2049,8 +2566,8 @@
       "type": "workday",
       "title": "Workday",
       "group": "Corporate systems",
-      "planned": true,
-      "desc": "HR, finance and workforce data",
+      "planned": false,
+      "desc": "Workers, organizations and custom reports (RaaS) as reports and an agent tool - GET /ccx/api/v1/<tenant>/workers, /ccx/service/customreport2/<tenant>/<owner>/<report>?format=json.",
       "match": [
         "workday"
       ]
@@ -2059,8 +2576,8 @@
       "type": "adp",
       "title": "ADP",
       "group": "Corporate systems",
-      "planned": true,
-      "desc": "Payroll, workforce and employee data",
+      "planned": false,
+      "desc": "Workers, pay statements and time cards as reports and an agent tool - GET /hr/v2/workers. ADP needs its TLS client certificate on every call: your ADP admin gives the client id, secret and certificate.",
       "match": [
         "adp"
       ]
@@ -2069,8 +2586,8 @@
       "type": "epic",
       "title": "Epic (EMR)",
       "group": "Corporate systems",
-      "planned": true,
-      "desc": "Clinical records and operational reports",
+      "planned": false,
+      "desc": "FHIR R4 reads - Patient, Encounter and what the organization grants - with SMART backend services: a JWT signed with your key, no sign-in screen. Reads only, scoped by the org.",
       "match": [
         "epic (emr)",
         "epic",
@@ -2081,8 +2598,8 @@
       "type": "cerner",
       "title": "Oracle Cerner (EMR)",
       "group": "Corporate systems",
-      "planned": true,
-      "desc": "Clinical and scheduling data",
+      "planned": false,
+      "desc": "FHIR R4 reads - Patient, Encounter and what the organization grants - with SMART backend services: a JWT signed with your key, no sign-in screen. Reads only, scoped by the org.",
       "match": [
         "oracle cerner (emr)",
         "oracle",
@@ -2094,8 +2611,8 @@
       "type": "pointclickcare",
       "title": "PointClickCare (EMR)",
       "group": "Corporate systems",
-      "planned": true,
-      "desc": "Senior-care clinical and operational data",
+      "planned": false,
+      "desc": "Facilities, residents and their census as reports and an agent tool, through PointClickCare's partner API - your partner app, approved by PointClickCare and signed in to once by the organization. Reads only.",
       "match": [
         "pointclickcare (emr)",
         "pointclickcare",
@@ -2103,11 +2620,305 @@
       ]
     },
     {
+      "type": "stripe_mcp",
+      "title": "Stripe MCP",
+      "group": "Corporate systems",
+      "planned": false,
+      "desc": "Stripe's own MCP server in your agent CLI — agents look up customers, payments and invoices and create payment links. You sign in once with Sign in.",
+      "match": [
+        "stripe mcp"
+      ],
+      "mcp": {
+        "url": "https://mcp.stripe.com",
+        "docs": "https://docs.stripe.com/mcp"
+      }
+    },
+    {
+      "type": "close_crm",
+      "title": "Close CRM",
+      "group": "Corporate systems",
+      "planned": false,
+      "desc": "Close CRM's own MCP server in your agent CLI — agents look up and update leads, contacts and opportunities. You sign in once with Sign in.",
+      "match": [
+        "close crm",
+        "close.com"
+      ],
+      "mcp": {
+        "url": "https://mcp.close.com/mcp",
+        "docs": "https://help.close.com/integrations/close-mcp-server"
+      }
+    },
+    {
+      "type": "attio",
+      "title": "Attio",
+      "group": "Corporate systems",
+      "planned": false,
+      "desc": "Attio's own MCP server in your agent CLI — agents search and update records, lists and notes in your CRM. You sign in once with Sign in.",
+      "match": [
+        "attio"
+      ],
+      "mcp": {
+        "url": "https://mcp.attio.com/mcp",
+        "docs": "https://docs.attio.com/mcp/overview"
+      }
+    },
+    {
+      "type": "apollo",
+      "title": "Apollo.io",
+      "group": "Corporate systems",
+      "planned": false,
+      "desc": "Apollo.io's own MCP server in your agent CLI — agents search people and companies and enrich contacts. You sign in once with Sign in.",
+      "match": [
+        "apollo.io",
+        "apollo io"
+      ],
+      "mcp": {
+        "url": "https://mcp.apollo.io/mcp",
+        "docs": "https://docs.apollo.io/docs/apollo-mcp"
+      }
+    },
+    {
+      "type": "lever",
+      "title": "Lever",
+      "group": "Corporate systems",
+      "planned": false,
+      "desc": "Lever candidates you own land on your work rail when they change stage.",
+      "match": [
+        "lever",
+        "hire.lever.co"
+      ]
+    },
+    {
+      "type": "lattice",
+      "title": "Lattice",
+      "group": "Corporate systems",
+      "planned": false,
+      "desc": "Lattice people, review cycles and the tasks due on you as reports and an agent tool - GET /me, /user/<id>/tasks, /reviewCycles.",
+      "match": [
+        "lattice",
+        "latticehq"
+      ]
+    },
+    {
+      "type": "xero",
+      "title": "Xero",
+      "group": "Corporate systems",
+      "planned": false,
+      "match": [
+        "xero"
+      ],
+      "mcp": {
+        "url": "https://api.xero.com/mcp/v1",
+        "docs": "https://developer.xero.com/faq/remote-mcp"
+      },
+      "desc": "Xero's own MCP server in your agent CLI — agents look up invoices, bills, contacts and reports in your Xero organisation. You sign in once with Sign in."
+    },
+    {
+      "type": "bill_com",
+      "title": "BILL",
+      "group": "Corporate systems",
+      "planned": false,
+      "match": [
+        "bill.com",
+        "bill com"
+      ],
+      "mcp": {
+        "url": "https://gateway.prod.bill.com/ai-mcp-server/v1",
+        "docs": "https://developer.bill.com/docs/bill-mcp-server"
+      },
+      "desc": "BILL's own MCP server in your agent CLI — agents read bills, approvals waiting on you, vendors and payments (BILL's server only reads). You sign in once with Sign in."
+    },
+    {
+      "type": "expensify",
+      "title": "Expensify",
+      "group": "Corporate systems",
+      "planned": false,
+      "match": [
+        "expensify"
+      ],
+      "mcp": {
+        "url": "https://www.expensify.com/mcp",
+        "docs": "https://help.expensify.com/articles/new-expensify/connections/connect-ai-assistants/Use-the-Expensify-MCP-Server-With-AI-Assistants"
+      },
+      "desc": "Expensify's own MCP server in your agent CLI — agents read expense reports, expenses and policies (it only reads). You sign in once with Sign in."
+    },
+    {
+      "type": "ramp",
+      "title": "Ramp",
+      "group": "Corporate systems",
+      "planned": false,
+      "match": [
+        "ramp card",
+        "ramp.com"
+      ],
+      "mcp": {
+        "url": "https://mcp.ramp.com/mcp",
+        "docs": "https://docs.ramp.com/llms-guides/ramp-mcp.txt"
+      },
+      "desc": "Ramp's own MCP server in your agent CLI — agents look up card transactions, missing receipts, reimbursements and bills. You sign in once with Sign in."
+    },
+    {
+      "type": "brex",
+      "title": "Brex",
+      "group": "Corporate systems",
+      "planned": false,
+      "match": [
+        "brex"
+      ],
+      "mcp": {
+        "url": "https://api.brex.com/mcp",
+        "docs": "https://developer.brex.com/docs/mcp"
+      },
+      "desc": "Brex's own MCP server in your agent CLI — agents look up expenses, receipts due, cards and budgets. You sign in once with Sign in."
+    },
+    {
+      "type": "avalara",
+      "title": "Avalara",
+      "group": "Corporate systems",
+      "planned": false,
+      "match": [
+        "avalara",
+        "avatax"
+      ],
+      "mcp": {
+        "url": "https://mcp.avalara.com/avatax",
+        "docs": "https://developer.avalara.com/mcp-servers/avatax/"
+      },
+      "desc": "Avalara's own MCP server in your agent CLI — agents work out sales tax and look up AvaTax transactions. You sign in once with Sign in."
+    },
+    {
+      "type": "deel",
+      "title": "Deel",
+      "group": "Corporate systems",
+      "planned": false,
+      "match": [
+        "deel",
+        "letsdeel"
+      ],
+      "mcp": {
+        "url": "https://api.letsdeel.com/mcp",
+        "docs": "https://developer.deel.com/mcp/authorization"
+      },
+      "desc": "Deel's own MCP server in your agent CLI — agents look up people, contracts, time off and payroll. You sign in once with Sign in."
+    },
+    {
+      "type": "greenhouse",
+      "title": "Greenhouse",
+      "group": "Corporate systems",
+      "planned": false,
+      "match": [
+        "greenhouse"
+      ],
+      "mcp": {
+        "url": "https://mcp.greenhouse.io/mcp",
+        "docs": "https://support.greenhouse.io/hc/en-us/articles/52096319906971"
+      },
+      "desc": "Greenhouse's own MCP server in your agent CLI — agents look up candidates, jobs, interviews and scorecards (an admin allows the tool in Greenhouse first). You sign in once with Sign in."
+    },
+    {
+      "type": "ashby",
+      "title": "Ashby",
+      "group": "Corporate systems",
+      "planned": false,
+      "match": [
+        "ashby",
+        "ashbyhq"
+      ],
+      "mcp": {
+        "url": "https://mcp.ashbyhq.com/mcp/v1",
+        "docs": "https://docs.ashbyhq.com/ashby-mcp-server-beta"
+      },
+      "desc": "Ashby's own MCP server in your agent CLI — agents look up candidates, jobs and interview schedules (an admin turns it on in Ashby first). You sign in once with Sign in."
+    },
+    {
+      "type": "pipedrive",
+      "title": "Pipedrive",
+      "group": "Corporate systems",
+      "planned": false,
+      "desc": "Deals, people, organizations and activities as reports and an agent tool - GET /deals?status=open, /activities?done=0.",
+      "match": [
+        "pipedrive"
+      ]
+    },
+    {
+      "type": "copper",
+      "title": "Copper",
+      "group": "Corporate systems",
+      "planned": false,
+      "desc": "People, companies, opportunities and tasks as reports and an agent tool - Copper reads its lists by search: POST /opportunities/search.",
+      "match": [
+        "copper crm",
+        "copper.com"
+      ]
+    },
+    {
+      "type": "paddle",
+      "title": "Paddle",
+      "group": "Corporate systems",
+      "planned": false,
+      "desc": "Subscriptions, transactions, customers and adjustments as reports and an agent tool - GET /subscriptions?status=past_due.",
+      "match": [
+        "paddle"
+      ]
+    },
+    {
+      "type": "chargebee",
+      "title": "Chargebee",
+      "group": "Corporate systems",
+      "planned": false,
+      "desc": "Subscriptions, invoices, dunning and customers as reports and an agent tool - GET /invoices?status[is]=payment_due.",
+      "match": [
+        "chargebee"
+      ]
+    },
+    {
+      "type": "recurly",
+      "title": "Recurly",
+      "group": "Corporate systems",
+      "planned": false,
+      "desc": "Subscriptions, invoices, past-due accounts and transactions as reports and an agent tool - GET /invoices?state=past_due.",
+      "match": [
+        "recurly"
+      ]
+    },
+    {
+      "type": "zuora",
+      "title": "Zuora",
+      "group": "Corporate systems",
+      "planned": false,
+      "desc": "Accounts, subscriptions, invoices and ZOQL query results as reports and an agent tool - POST /v1/action/query.",
+      "match": [
+        "zuora"
+      ]
+    },
+    {
+      "type": "gong",
+      "title": "Gong",
+      "group": "Corporate systems",
+      "planned": false,
+      "desc": "Calls, their transcripts and activity stats as reports and an agent tool - GET /calls?fromDateTime=..., POST /calls/transcript.",
+      "match": [
+        "gong",
+        "gong.io"
+      ]
+    },
+    {
+      "type": "veeva",
+      "title": "Veeva Vault",
+      "group": "Corporate systems",
+      "planned": false,
+      "desc": "Documents, objects and VQL query results as reports and an agent tool - GET /query?q=SELECT id, name__v FROM documents.",
+      "match": [
+        "veeva",
+        "veeva vault"
+      ]
+    },
+    {
       "type": "plaid",
       "title": "Plaid",
       "group": "Markets & finance",
-      "planned": true,
-      "desc": "Bank account and transaction data through a linked-account aggregator",
+      "planned": false,
+      "desc": "Balances, transactions, holdings and liabilities of an account already linked to your Plaid app - you paste the Item's access token; no Link screen here. Reads only.",
       "match": [
         "plaid"
       ]
@@ -2116,8 +2927,8 @@
       "type": "ibkr",
       "title": "Interactive Brokers",
       "group": "Markets & finance",
-      "planned": true,
-      "desc": "Positions, orders and account data",
+      "planned": false,
+      "desc": "Accounts, positions, balances and quotes through your own Client Portal gateway - GET /portfolio/accounts, /portfolio/<id>/positions/0. Reads only: no order is ever placed from this card.",
       "match": [
         "interactive brokers",
         "interactive",
@@ -2129,8 +2940,8 @@
       "type": "schwab",
       "title": "Charles Schwab",
       "group": "Markets & finance",
-      "planned": true,
-      "desc": "Brokerage accounts and market data",
+      "planned": false,
+      "desc": "Accounts, positions, orders placed elsewhere and quotes - GET /trader/v1/accounts?fields=positions, /marketdata/v1/quotes?symbols=AAPL. Reads only: no order is ever placed from this card.",
       "match": [
         "charles schwab",
         "charles",
@@ -2141,8 +2952,8 @@
       "type": "tradier",
       "title": "Tradier",
       "group": "Markets & finance",
-      "planned": true,
-      "desc": "Brokerage market data and trading",
+      "planned": false,
+      "desc": "Quotes, option chains, balances and positions as reports and an agent tool - read only: no order is ever placed from this card.",
       "match": [
         "tradier"
       ]
@@ -2151,8 +2962,8 @@
       "type": "eodhd",
       "title": "EOD Historical Data",
       "group": "Markets & finance",
-      "planned": true,
-      "desc": "End-of-day and fundamental data across global exchanges",
+      "planned": false,
+      "desc": "End-of-day bars with adjusted closes across global exchanges, as reports and an agent tool, on one API token.",
       "match": [
         "eod historical data",
         "eod",
@@ -2165,8 +2976,8 @@
       "type": "marketstack",
       "title": "Marketstack",
       "group": "Markets & finance",
-      "planned": true,
-      "desc": "Historical and intraday stock market data",
+      "planned": false,
+      "desc": "End-of-day stock bars on 70+ exchanges, as reports and an agent tool, on one access key.",
       "match": [
         "marketstack"
       ]
@@ -2175,8 +2986,8 @@
       "type": "intrinio",
       "title": "Intrinio",
       "group": "Markets & finance",
-      "planned": true,
-      "desc": "Financial data feeds and fundamentals for public companies",
+      "planned": false,
+      "desc": "Company data, fundamentals and prices as reports and an agent tool - GET /companies/<ticker>, /securities/<ticker>/prices.",
       "match": [
         "intrinio"
       ]
@@ -2185,28 +2996,57 @@
       "type": "benzinga",
       "title": "Benzinga",
       "group": "Markets & finance",
-      "planned": true,
-      "desc": "Market news, analyst ratings and calendar events",
+      "planned": false,
+      "desc": "Market news and calendars as reports and an agent tool - GET /news?tickers=AAPL, /calendar/earnings.",
       "match": [
         "benzinga"
       ]
     },
     {
+      "type": "mercury",
+      "title": "Mercury",
+      "group": "Markets & finance",
+      "planned": false,
+      "desc": "Mercury bank accounts, balances and transactions as reports and an agent tool - GET /accounts, /account/<id>/transactions.",
+      "match": [
+        "mercury bank",
+        "mercury.com"
+      ]
+    },
+    {
+      "type": "mercury_mcp",
+      "title": "Mercury MCP",
+      "group": "Markets & finance",
+      "planned": false,
+      "match": [
+        "mercury mcp"
+      ],
+      "mcp": {
+        "url": "https://mcp.mercury.com/mcp",
+        "docs": "https://docs.mercury.com/docs/connecting-mercury-mcp"
+      },
+      "desc": "Mercury's own MCP server in your agent CLI — agents look up accounts, balances and transactions (Mercury calls it a beta). You sign in once with Sign in."
+    },
+    {
       "type": "grafana",
       "title": "Grafana",
       "group": "Observability",
-      "planned": true,
-      "desc": "Dashboards, alerts and annotations",
+      "planned": false,
+      "desc": "Grafana Cloud's own MCP server in your agent CLI — agents query dashboards, metrics, logs and alerts. You sign in once with Sign in.",
       "match": [
         "grafana"
-      ]
+      ],
+      "mcp": {
+        "url": "https://mcp.grafana.com/mcp",
+        "docs": "https://grafana.com/docs/grafana-cloud/ai-tools/mcp-servers/cloud-mcp/"
+      }
     },
     {
       "type": "elastic",
       "title": "Elasticsearch",
       "group": "Observability",
-      "planned": true,
-      "desc": "Search, logs and indexed events",
+      "planned": false,
+      "desc": "Indices, cluster health and search results as reports and an agent tool - GET /_cat/indices?format=json, /<index>/_search?q=...",
       "match": [
         "elasticsearch",
         "elastic"
@@ -2216,20 +3056,24 @@
       "type": "new_relic",
       "title": "New Relic",
       "group": "Observability",
-      "planned": true,
-      "desc": "APM incidents, errors and alerts",
+      "planned": false,
+      "desc": "New Relic's own MCP server in your agent CLI — agents query APM data, errors and alerts with NRQL. You sign in once with Sign in.",
       "match": [
         "new relic",
         "new",
         "relic"
-      ]
+      ],
+      "mcp": {
+        "url": "https://mcp.newrelic.com/mcp/",
+        "docs": "https://docs.newrelic.com/docs/agentic-ai/mcp/setup/"
+      }
     },
     {
       "type": "splunk",
       "title": "Splunk",
       "group": "Observability",
-      "planned": true,
-      "desc": "Searches, dashboards and alerts",
+      "planned": false,
+      "desc": "Saved searches, their results and server health as reports and an agent tool, over the management port (8089).",
       "match": [
         "splunk"
       ]
@@ -2238,18 +3082,22 @@
       "type": "honeycomb",
       "title": "Honeycomb",
       "group": "Observability",
-      "planned": true,
-      "desc": "Traces, triggers and SLOs",
+      "planned": false,
+      "desc": "Honeycomb's own MCP server in your agent CLI — agents query traces, triggers and SLOs. You sign in once with Sign in.",
       "match": [
         "honeycomb"
-      ]
+      ],
+      "mcp": {
+        "url": "https://mcp.honeycomb.io/mcp",
+        "docs": "https://docs.honeycomb.io/integrations/mcp/configuration-guide"
+      }
     },
     {
       "type": "dynatrace",
       "title": "Dynatrace",
       "group": "Observability",
-      "planned": true,
-      "desc": "Problems, services and observability data",
+      "planned": false,
+      "desc": "Problems, entities and metrics as reports and an agent tool - GET /api/v2/problems, /api/v2/metrics/query?metricSelector=...",
       "match": [
         "dynatrace"
       ]
@@ -2258,8 +3106,8 @@
       "type": "better_stack",
       "title": "Better Stack",
       "group": "Observability",
-      "planned": true,
-      "desc": "Logs, incidents and uptime checks",
+      "planned": false,
+      "desc": "Uptime monitors, incidents and on-call as reports and an agent tool - GET /monitors, /incidents.",
       "match": [
         "better stack",
         "better",
@@ -2270,11 +3118,25 @@
       "type": "uptimerobot",
       "title": "UptimeRobot",
       "group": "Observability",
-      "planned": true,
-      "desc": "Monitor status and outage alerts",
+      "planned": false,
+      "desc": "Monitors, their uptime and alert contacts as reports and an agent tool - UptimeRobot's reads are POSTs (getMonitors), and only those are sent.",
       "match": [
         "uptimerobot"
       ]
+    },
+    {
+      "type": "datadog_mcp",
+      "title": "Datadog MCP",
+      "group": "Observability",
+      "planned": false,
+      "desc": "Datadog's own MCP server in your agent CLI — agents query logs, metrics, monitors and incidents (the US1 site). You sign in once with Sign in.",
+      "match": [
+        "datadog mcp"
+      ],
+      "mcp": {
+        "url": "https://mcp.datadoghq.com/v1/mcp",
+        "docs": "https://docs.datadoghq.com/bits_ai/mcp_server/setup/"
+      }
     },
     {
       "type": "perplexity",
@@ -2300,8 +3162,8 @@
       "type": "browserbase",
       "title": "Browserbase",
       "group": "Agentic web",
-      "planned": true,
-      "desc": "Managed browsers for web agents",
+      "planned": false,
+      "desc": "Cloud browsers for agents: list projects and sessions, and start a session (POST /sessions) whose connect URL an agent drives. Nothing else is sent.",
       "match": [
         "browserbase"
       ]
@@ -2316,20 +3178,6 @@
         "brave search",
         "brave",
         "search"
-      ]
-    },
-    {
-      "type": "bing_search",
-      "title": "Bing Web Search",
-      "group": "Agentic web",
-      "planned": true,
-      "desc": "Microsoft web and news search",
-      "match": [
-        "bing web search",
-        "bing",
-        "web",
-        "search",
-        "bing search"
       ]
     },
     {
@@ -2356,8 +3204,8 @@
       "type": "oxylabs",
       "title": "Oxylabs",
       "group": "Agentic web",
-      "planned": true,
-      "desc": "Web scraping and proxy-backed collection",
+      "planned": false,
+      "desc": "Web pages and search results fetched through Oxylabs' scraper - POST /v1/queries starts a fetch, GET /v1/queries/<id>/results reads it; /v2/stats is the usage.",
       "match": [
         "oxylabs"
       ]
@@ -2366,8 +3214,8 @@
       "type": "google_drive",
       "title": "Google Drive",
       "group": "Files & sheets",
-      "planned": true,
-      "desc": "Files, folders and shared drives",
+      "planned": false,
+      "desc": "Find and list files in your Google Drive with the Google Sheets card's sign-in - GET /files?q=name contains 'budget'. Nothing to paste here.",
       "match": [
         "google drive",
         "google",
@@ -2378,8 +3226,8 @@
       "type": "onedrive",
       "title": "OneDrive",
       "group": "Files & sheets",
-      "planned": true,
-      "desc": "Files and folders in Microsoft 365",
+      "planned": false,
+      "desc": "Find and list files in your OneDrive with the Outlook card's Microsoft sign-in - GET /me/drive/root/children, /me/drive/root/search(q='budget').",
       "match": [
         "onedrive"
       ]
@@ -2388,18 +3236,22 @@
       "type": "dropbox",
       "title": "Dropbox",
       "group": "Files & sheets",
-      "planned": true,
-      "desc": "Files, folders and shared content",
+      "planned": false,
+      "desc": "Dropbox's own MCP server in your agent CLI — agents find, read and organise your files and folders. You sign in once with Sign in.",
       "match": [
         "dropbox"
-      ]
+      ],
+      "mcp": {
+        "url": "https://mcp.dropbox.com/mcp",
+        "docs": "https://help.dropbox.com/integrations/connect-dropbox-mcp-server"
+      }
     },
     {
       "type": "box",
       "title": "Box",
       "group": "Files & sheets",
-      "planned": true,
-      "desc": "Enterprise files and metadata",
+      "planned": false,
+      "desc": "Your Box files for the agents and reports, read with your own sign-in - GET /search?query=budget, /folders/0/items, /files/<id>. Reads only.",
       "match": [
         "box"
       ]
@@ -2408,18 +3260,22 @@
       "type": "egnyte",
       "title": "Egnyte",
       "group": "Files & sheets",
-      "planned": true,
-      "desc": "Enterprise files and governed content",
+      "planned": false,
+      "desc": "Egnyte's own MCP server in your agent CLI — agents search and read your company files (the MCP server is a paid Egnyte add-on your admin turns on). You sign in once with Sign in.",
       "match": [
         "egnyte"
-      ]
+      ],
+      "mcp": {
+        "url": "https://mcp-server.egnyte.com/mcp",
+        "docs": "https://developers.egnyte.com/integration/cfs/api-docs/remote-mcp-server"
+      }
     },
     {
       "type": "coda",
       "title": "Coda",
       "group": "Files & sheets",
-      "planned": true,
-      "desc": "Docs, tables and rows",
+      "planned": false,
+      "desc": "Docs, tables and rows as reports and an agent tool - GET /docs, /docs/<id>/tables/<table>/rows.",
       "match": [
         "coda"
       ]
@@ -2428,8 +3284,8 @@
       "type": "office365_files",
       "title": "Microsoft 365 files",
       "group": "Files & sheets",
-      "planned": true,
-      "desc": "Word, Excel and PowerPoint content",
+      "planned": false,
+      "desc": "Files shared with you across OneDrive and SharePoint, with the Outlook card's Microsoft sign-in - GET /me/drive/sharedWithMe, /sites?search=...",
       "match": [
         "microsoft 365 files",
         "microsoft",
@@ -2439,11 +3295,22 @@
       ]
     },
     {
+      "type": "obsidian",
+      "title": "Obsidian",
+      "group": "Files & sheets",
+      "planned": false,
+      "desc": "Your Obsidian vault read where it lies on this computer - the latest notes, the ones a word is in, or one note - as a report or an agent tool.",
+      "match": [
+        "obsidian",
+        "obsidian vault"
+      ]
+    },
+    {
       "type": "shopify",
       "title": "Shopify",
       "group": "Everything else",
-      "planned": true,
-      "desc": "Orders, products and customers",
+      "planned": false,
+      "desc": "Open Shopify orders NOT YET FULFILLED land on your work rail through triage.",
       "match": [
         "shopify"
       ]
@@ -2452,8 +3319,8 @@
       "type": "square",
       "title": "Square",
       "group": "Everything else",
-      "planned": true,
-      "desc": "Payments, orders and locations",
+      "planned": false,
+      "desc": "Square disputes WAITING ON YOUR EVIDENCE land on your work rail through triage.",
       "match": [
         "square"
       ]
@@ -2462,28 +3329,46 @@
       "type": "paypal",
       "title": "PayPal",
       "group": "Everything else",
-      "planned": true,
-      "desc": "Payments, disputes and transactions",
+      "planned": false,
+      "desc": "PayPal disputes that NEED YOUR ACTION land on your work rail through triage.",
       "match": [
         "paypal"
       ]
     },
     {
+      "type": "paypal_mcp",
+      "title": "PayPal MCP",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "PayPal's own MCP server in your agent CLI — agents look up and update what is there. You sign in once with Sign in.",
+      "match": [
+        "paypal mcp"
+      ],
+      "mcp": {
+        "url": "https://mcp.paypal.com/http",
+        "docs": "https://developer.paypal.com/ai-tools/mcp-server"
+      }
+    },
+    {
       "type": "twilio",
       "title": "Twilio",
       "group": "Everything else",
-      "planned": true,
-      "desc": "SMS, calls and delivery events",
+      "planned": false,
+      "desc": "Texts to your Twilio number land on your work rail through triage.",
       "match": [
         "twilio"
-      ]
+      ],
+      "replies": {
+        "on": true,
+        "says": "a text back from your Twilio number"
+      }
     },
     {
       "type": "docusign",
       "title": "DocuSign",
       "group": "Everything else",
-      "planned": true,
-      "desc": "Envelopes, signatures and status changes",
+      "planned": false,
+      "desc": "DocuSign envelopes waiting on your signature land on your work rail through triage, and agents read an envelope's status - GET /envelopes/<id>, /envelopes/<id>/recipients.",
       "match": [
         "docusign"
       ]
@@ -2492,8 +3377,8 @@
       "type": "zoom",
       "title": "Zoom",
       "group": "Everything else",
-      "planned": true,
-      "desc": "Meetings, recordings and transcripts",
+      "planned": false,
+      "desc": "Your Zoom meetings and cloud recordings for the agents and reports - GET /users/me/meetings, /users/me/recordings?from=2026-11-01. Reads only.",
       "match": [
         "zoom"
       ]
@@ -2502,40 +3387,721 @@
       "type": "calendly",
       "title": "Calendly",
       "group": "Everything else",
-      "planned": true,
-      "desc": "Scheduled events and invitees",
+      "planned": false,
+      "desc": "New Calendly bookings land on your work rail with who booked and their answers.",
       "match": [
         "calendly"
       ]
     },
     {
+      "type": "calendly_mcp",
+      "title": "Calendly MCP",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Calendly's own MCP server in your agent CLI — agents look up and update what is there. You sign in once with Sign in.",
+      "match": [
+        "calendly mcp"
+      ],
+      "mcp": {
+        "url": "https://mcp.calendly.com",
+        "docs": "https://developer.calendly.com/docs/mcp/calendly-mcp-server"
+      }
+    },
+    {
       "type": "intercom",
       "title": "Intercom",
-      "group": "Everything else",
-      "planned": true,
-      "desc": "Customer conversations and tickets",
+      "group": "Project management",
+      "planned": false,
+      "desc": "Open Intercom conversations ASSIGNED TO YOU land on your work rail through triage.",
       "match": [
         "intercom"
-      ]
+      ],
+      "replies": {
+        "on": true,
+        "says": "a reply in the conversation, as you",
+        "note": "Post it as a note instead - only your teammates see it"
+      }
+    },
+    {
+      "type": "intercom_mcp",
+      "title": "Intercom MCP",
+      "group": "Project management",
+      "planned": false,
+      "desc": "Intercom's own MCP server in your agent CLI — agents look up and update what is there. You sign in once with Sign in.",
+      "match": [
+        "intercom mcp"
+      ],
+      "mcp": {
+        "url": "https://mcp.intercom.com/mcp",
+        "docs": "https://developers.intercom.com/docs/guides/mcp"
+      }
     },
     {
       "type": "zendesk",
       "title": "Zendesk",
-      "group": "Everything else",
-      "planned": true,
-      "desc": "Support tickets and conversations",
+      "group": "Project management",
+      "planned": false,
+      "desc": "Zendesk tickets ASSIGNED TO YOU, and new unassigned ones in your groups, land on your work rail through triage - a customer's words wait for your press.",
       "match": [
         "zendesk"
+      ],
+      "replies": {
+        "on": true,
+        "says": "a public comment on the ticket - the requester gets it by email",
+        "note": "Post it as an internal note instead - only your team sees it"
+      }
+    },
+    {
+      "type": "freshdesk",
+      "title": "Freshdesk",
+      "group": "Project management",
+      "planned": false,
+      "desc": "Freshdesk tickets ASSIGNED TO YOU, and new ones in your groups, land on your work rail through triage.",
+      "match": [
+        "freshdesk"
+      ],
+      "replies": {
+        "on": true,
+        "says": "a reply on the ticket - the requester gets it by email",
+        "note": "Post it as a private note instead - only your agents see it"
+      }
+    },
+    {
+      "type": "front",
+      "title": "Front",
+      "group": "Project management",
+      "planned": false,
+      "desc": "Open Front conversations ASSIGNED TO YOU land on your work rail through triage - a contact's words wait for your press.",
+      "match": [
+        "front",
+        "frontapp"
+      ],
+      "replies": {
+        "on": true,
+        "says": "a reply in the conversation, sent by its own inbox",
+        "note": "Post it as a comment instead - only your teammates see it"
+      }
+    },
+    {
+      "type": "helpscout",
+      "title": "Help Scout",
+      "group": "Project management",
+      "planned": false,
+      "desc": "Active Help Scout conversations ASSIGNED TO YOU land on your work rail through triage - a customer's words wait for your press.",
+      "match": [
+        "help scout",
+        "helpscout"
+      ],
+      "replies": {
+        "on": true,
+        "says": "a reply to the customer in the conversation",
+        "note": "Post it as a note instead - only your team sees it"
+      }
+    },
+    {
+      "type": "gorgias",
+      "title": "Gorgias",
+      "group": "Project management",
+      "planned": false,
+      "desc": "Open Gorgias tickets ASSIGNED TO YOU land on your work rail through triage - a shopper's words wait for your press.",
+      "match": [
+        "gorgias"
+      ],
+      "replies": {
+        "on": true,
+        "says": "an email reply on the ticket, from the address the customer wrote to",
+        "note": "Post it as an internal note instead - only your team sees it"
+      }
+    },
+    {
+      "type": "helpscout_mcp",
+      "title": "Help Scout MCP",
+      "group": "Project management",
+      "planned": false,
+      "match": [
+        "help scout mcp"
+      ],
+      "mcp": {
+        "url": "https://mcp.helpscout.net/mcp",
+        "docs": "https://docs.helpscout.com/article/1779-connect-your-ai-agent-with-help-scout-to-search-conversations-and-pull-reports"
+      },
+      "desc": "Help Scout's own MCP server in your agent CLI — agents search conversations and pull reports. You sign in once with Sign in."
+    },
+    {
+      "type": "gorgias_mcp",
+      "title": "Gorgias MCP",
+      "group": "Project management",
+      "planned": false,
+      "match": [
+        "gorgias mcp"
+      ],
+      "mcp": {
+        "url": "https://mcp.gorgias.com/mcp",
+        "docs": "https://docs.gorgias.com/en-US/connect-your-ai-assistant-to-the-gorgias-mcp-6310546"
+      },
+      "desc": "Gorgias's own MCP server in your agent CLI — agents look up tickets, customers and orders. You sign in once with Sign in."
+    },
+    {
+      "type": "toggl",
+      "title": "Toggl Track",
+      "group": "Project management",
+      "planned": false,
+      "desc": "Time entries, projects and who logged what as reports and an agent tool - GET /me/time_entries?start_date=..., /workspaces/<id>/projects.",
+      "match": [
+        "toggl",
+        "toggl track"
+      ]
+    },
+    {
+      "type": "harvest",
+      "title": "Harvest",
+      "group": "Project management",
+      "planned": false,
+      "desc": "Time entries, projects, budgets and invoices as reports and an agent tool - GET /time_entries?from=..., /reports/project_budget.",
+      "match": [
+        "harvest",
+        "harvestapp",
+        "getharvest"
+      ]
+    },
+    {
+      "type": "clockify",
+      "title": "Clockify",
+      "group": "Project management",
+      "planned": false,
+      "desc": "Time entries, projects and workspaces as reports and an agent tool - GET /workspaces/<id>/user/<id>/time-entries.",
+      "match": [
+        "clockify"
       ]
     },
     {
       "type": "shipstation",
       "title": "ShipStation",
       "group": "Everything else",
-      "planned": true,
-      "desc": "Orders, shipments and delivery status",
+      "planned": false,
+      "desc": "ShipStation orders AWAITING SHIPMENT land on your work rail through triage.",
       "match": [
         "shipstation"
+      ]
+    },
+    {
+      "type": "figma",
+      "title": "Figma",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Figma's own MCP server in your agent CLI — agents read designs, frames and variables to build from them. You sign in once with Sign in.",
+      "match": [
+        "figma"
+      ],
+      "mcp": {
+        "url": "https://mcp.figma.com/mcp",
+        "docs": "https://developers.figma.com/docs/figma-mcp-server/remote-server-installation/"
+      }
+    },
+    {
+      "type": "miro",
+      "title": "Miro",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Miro's own MCP server in your agent CLI — agents read boards and draw diagrams and stickies on them. You sign in once with Sign in.",
+      "match": [
+        "miro",
+        "miro board"
+      ],
+      "mcp": {
+        "url": "https://mcp.miro.com/",
+        "docs": "https://developers.miro.com/docs/connecting-to-miro-mcp"
+      }
+    },
+    {
+      "type": "granola",
+      "title": "Granola",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Granola's own MCP server in your agent CLI — agents search your meeting notes and transcripts. You sign in once with Sign in.",
+      "match": [
+        "granola"
+      ],
+      "mcp": {
+        "url": "https://mcp.granola.ai/mcp",
+        "docs": "https://docs.granola.ai/help-center/sharing/integrations/mcp"
+      }
+    },
+    {
+      "type": "fireflies",
+      "title": "Fireflies.ai",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Fireflies.ai's own MCP server in your agent CLI — agents search meeting transcripts, summaries and action items. You sign in once with Sign in.",
+      "match": [
+        "fireflies",
+        "fireflies.ai"
+      ],
+      "mcp": {
+        "url": "https://api.fireflies.ai/mcp",
+        "docs": "https://docs.fireflies.ai/getting-started/mcp-configuration"
+      }
+    },
+    {
+      "type": "webflow",
+      "title": "Webflow",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Webflow's own MCP server in your agent CLI — agents edit site pages and CMS collections and publish. You sign in once with Sign in.",
+      "match": [
+        "webflow"
+      ],
+      "mcp": {
+        "url": "https://mcp.webflow.com/mcp",
+        "docs": "https://developers.webflow.com/mcp/installing/claude-code"
+      }
+    },
+    {
+      "type": "wix",
+      "title": "Wix",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Wix's own MCP server in your agent CLI — agents manage your Wix site, store and bookings. You sign in once with Sign in.",
+      "match": [
+        "wix"
+      ],
+      "mcp": {
+        "url": "https://mcp.wix.com/mcp",
+        "docs": "https://dev.wix.com/docs/api-reference/articles/ai-tools/wix-mcp/about-the-wix-mcp"
+      }
+    },
+    {
+      "type": "klaviyo",
+      "title": "Klaviyo",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Klaviyo's own MCP server in your agent CLI — agents read campaigns, flows, lists and their results. You sign in once with Sign in.",
+      "match": [
+        "klaviyo"
+      ],
+      "mcp": {
+        "url": "https://mcp.klaviyo.com/mcp",
+        "docs": "https://developers.klaviyo.com/en/docs/connect_to_the_klaviyo_mcp_server"
+      }
+    },
+    {
+      "type": "bitly",
+      "title": "Bitly",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Bitly's own MCP server in your agent CLI — agents shorten links and read their clicks. You sign in once with Sign in.",
+      "match": [
+        "bitly"
+      ],
+      "mcp": {
+        "url": "https://api-ssl.bitly.com/v4/mcp",
+        "docs": "https://dev.bitly.com/bitly-mcp/using-the-bitly-mcp-server/configuration-details/"
+      }
+    },
+    {
+      "type": "sanity_cms",
+      "title": "Sanity (CMS)",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Sanity's own MCP server in your agent CLI — agents query and edit content in your Sanity datasets. You sign in once with Sign in.",
+      "match": [
+        "sanity cms",
+        "sanity.io"
+      ],
+      "mcp": {
+        "url": "https://mcp.sanity.io",
+        "docs": "https://www.sanity.io/docs/ai/mcp-server"
+      }
+    },
+    {
+      "type": "amplitude",
+      "title": "Amplitude",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Amplitude's own MCP server in your agent CLI — agents query charts, cohorts and product analytics (the US site). You sign in once with Sign in.",
+      "match": [
+        "amplitude"
+      ],
+      "mcp": {
+        "url": "https://mcp.amplitude.com/mcp",
+        "docs": "https://amplitude.com/docs/amplitude-ai/amplitude-mcp"
+      }
+    },
+    {
+      "type": "mixpanel",
+      "title": "Mixpanel",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Mixpanel's own MCP server in your agent CLI — agents query events, funnels and reports (the US site). You sign in once with Sign in.",
+      "match": [
+        "mixpanel"
+      ],
+      "mcp": {
+        "url": "https://mcp.mixpanel.com/mcp",
+        "docs": "https://docs.mixpanel.com/docs/mcp"
+      }
+    },
+    {
+      "type": "ringcentral",
+      "title": "RingCentral",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Voicemails (with RingCentral's transcript), texts and missed calls to your extension land on your work rail through triage.",
+      "match": [
+        "ringcentral",
+        "ring central"
+      ],
+      "replies": {
+        "on": true,
+        "says": "a text back from your RingCentral number (the app needs the SMS permission)"
+      }
+    },
+    {
+      "type": "aircall",
+      "title": "Aircall",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Missed calls and voicemails on your Aircall lines land on your work rail through triage, with the transcript where Aircall has one.",
+      "match": [
+        "aircall"
+      ],
+      "replies": {
+        "on": true,
+        "says": "a text back from the line they called (an SMS-enabled Aircall number)"
+      }
+    },
+    {
+      "type": "dialpad",
+      "title": "Dialpad",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Missed calls and voicemails to you on Dialpad land on your work rail through triage, with Dialpad's transcript.",
+      "match": [
+        "dialpad"
+      ],
+      "replies": {
+        "on": true,
+        "says": "a text back from your Dialpad number"
+      }
+    },
+    {
+      "type": "typeform",
+      "title": "Typeform",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "New Typeform responses on the forms you pick land on your work rail with every answer.",
+      "match": [
+        "typeform"
+      ]
+    },
+    {
+      "type": "jotform",
+      "title": "Jotform",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "New Jotform submissions on the forms you pick land on your work rail with every answer.",
+      "match": [
+        "jotform"
+      ]
+    },
+    {
+      "type": "surveymonkey",
+      "title": "SurveyMonkey",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "New SurveyMonkey responses on the surveys you pick land on your work rail with every answer.",
+      "match": [
+        "surveymonkey",
+        "survey monkey"
+      ]
+    },
+    {
+      "type": "tally",
+      "title": "Tally",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "New Tally submissions on the forms you pick land on your work rail with every answer.",
+      "match": [
+        "tally.so",
+        "tally form"
+      ]
+    },
+    {
+      "type": "google_forms",
+      "title": "Google Forms",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "New Google Forms responses on the forms you pick land on your work rail, read with the Google Sheets card's sign-in.",
+      "match": [
+        "google forms",
+        "google form"
+      ]
+    },
+    {
+      "type": "aircall_mcp",
+      "title": "Aircall MCP",
+      "group": "Everything else",
+      "planned": false,
+      "match": [
+        "aircall mcp"
+      ],
+      "mcp": {
+        "url": "https://mcp.aircall.io/mcp",
+        "docs": "https://support.aircall.io/en-gb/articles/39677926959517"
+      },
+      "desc": "Aircall's own MCP server in your agent CLI — agents look up calls, contacts and numbers (Aircall calls it a beta, and it only reads). You sign in once with Sign in."
+    },
+    {
+      "type": "typeform_mcp",
+      "title": "Typeform MCP",
+      "group": "Everything else",
+      "planned": false,
+      "match": [
+        "typeform mcp"
+      ],
+      "mcp": {
+        "url": "https://api.typeform.com/mcp",
+        "docs": "https://www.typeform.com/developers/mcp/"
+      },
+      "desc": "Typeform's own MCP server in your agent CLI — agents read forms and responses. You sign in once with Sign in."
+    },
+    {
+      "type": "jotform_mcp",
+      "title": "Jotform MCP",
+      "group": "Everything else",
+      "planned": false,
+      "match": [
+        "jotform mcp"
+      ],
+      "mcp": {
+        "url": "https://mcp.jotform.com",
+        "docs": "https://www.jotform.com/developers/mcp"
+      },
+      "desc": "Jotform's own MCP server in your agent CLI — agents read forms and submissions. You sign in once with Sign in."
+    },
+    {
+      "type": "tally_mcp",
+      "title": "Tally MCP",
+      "group": "Everything else",
+      "planned": false,
+      "match": [
+        "tally mcp"
+      ],
+      "mcp": {
+        "url": "https://api.tally.so/mcp",
+        "docs": "https://developers.tally.so/api-reference/mcp"
+      },
+      "desc": "Tally's own MCP server in your agent CLI — agents read and build forms and read submissions. You sign in once with Sign in."
+    },
+    {
+      "type": "ups",
+      "title": "UPS",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Where a UPS parcel is, by tracking number, as a report and an agent tool - GET /api/track/v1/details/<number>.",
+      "match": [
+        "ups tracking",
+        "ups.com"
+      ]
+    },
+    {
+      "type": "fedex",
+      "title": "FedEx",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Where a FedEx parcel is, by tracking number, as a report and an agent tool - FedEx looks numbers up by POST /track/v1/trackingnumbers.",
+      "match": [
+        "fedex"
+      ]
+    },
+    {
+      "type": "usps",
+      "title": "USPS",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Where a USPS package is, by tracking number, as a report and an agent tool - GET /tracking/v3/tracking/<number>.",
+      "match": [
+        "usps",
+        "postal service"
+      ]
+    },
+    {
+      "type": "google_analytics",
+      "title": "Google Analytics 4",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Your GA4 property's users, sessions, pages and events as reports and an agent tool, with the Google Sheets card's sign-in - POST /properties/<id>:runReport.",
+      "match": [
+        "google analytics",
+        "ga4"
+      ]
+    },
+    {
+      "type": "search_console",
+      "title": "Google Search Console",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Your sites' search clicks, impressions, queries and positions as reports and an agent tool, with the Google Sheets card's sign-in - POST /sites/<site>/searchAnalytics/query.",
+      "match": [
+        "search console",
+        "google search console",
+        "gsc"
+      ]
+    },
+    {
+      "type": "google_ads",
+      "title": "Google Ads",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Campaigns, spend, clicks and conversions as reports and an agent tool, with the Google Sheets card's sign-in and your developer token - POST /customers/<id>/googleAds:search (GAQL).",
+      "match": [
+        "google ads",
+        "adwords"
+      ]
+    },
+    {
+      "type": "meta_ads",
+      "title": "Meta Ads",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Ad accounts, campaigns and their insights (spend, reach, results) as reports and an agent tool - GET /act_<id>/insights?level=campaign.",
+      "match": [
+        "meta ads",
+        "facebook ads",
+        "ads manager"
+      ]
+    },
+    {
+      "type": "segment",
+      "title": "Segment",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Sources, destinations, tracking plans and their delivery health as reports and an agent tool - GET /sources, /destinations.",
+      "match": [
+        "segment.com",
+        "segment"
+      ]
+    },
+    {
+      "type": "posthog",
+      "title": "PostHog",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "PostHog's own MCP server in your agent CLI — agents query insights, funnels, feature flags and errors (the US cloud). You sign in once with Sign in.",
+      "match": [
+        "posthog"
+      ],
+      "mcp": {
+        "url": "https://mcp.posthog.com/mcp",
+        "docs": "https://posthog.com/docs/model-context-protocol"
+      }
+    },
+    {
+      "type": "ebay",
+      "title": "eBay",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Your eBay orders, what is left to ship and payouts as reports and an agent tool - GET /sell/fulfillment/v1/order?filter=orderfulfillmentstatus:{NOT_STARTED|IN_PROGRESS}.",
+      "match": [
+        "ebay"
+      ]
+    },
+    {
+      "type": "etsy",
+      "title": "Etsy",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Your shop's receipts, listings and reviews as reports and an agent tool - GET /shops/<id>/receipts?was_shipped=false.",
+      "match": [
+        "etsy"
+      ]
+    },
+    {
+      "type": "woocommerce",
+      "title": "WooCommerce",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Orders still to ship land on your work rail through triage; orders, products and customers as reports and an agent tool - GET /orders?status=processing.",
+      "match": [
+        "woocommerce",
+        "woo commerce"
+      ]
+    },
+    {
+      "type": "bigcommerce",
+      "title": "BigCommerce",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Orders awaiting fulfillment land on your work rail through triage; orders, products and customers as reports and an agent tool - GET /v2/orders?status_id=11.",
+      "match": [
+        "bigcommerce"
+      ]
+    },
+    {
+      "type": "toast",
+      "title": "Toast",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "A restaurant's orders, menus, labor and cash entries as reports and an agent tool - GET /orders/v2/ordersBulk?businessDate=20261108.",
+      "match": [
+        "toast pos",
+        "toasttab"
+      ]
+    },
+    {
+      "type": "clover",
+      "title": "Clover",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Orders, payments, refunds and items as reports and an agent tool - GET /orders?filter=state=open, /payments.",
+      "match": [
+        "clover pos",
+        "clover"
+      ]
+    },
+    {
+      "type": "mailchimp",
+      "title": "Mailchimp",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Audiences, campaigns and their reports (opens, clicks, unsubscribes) as reports and an agent tool - GET /reports?count=10.",
+      "match": [
+        "mailchimp"
+      ]
+    },
+    {
+      "type": "kit",
+      "title": "Kit (ConvertKit)",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Subscribers, broadcasts, sequences and their stats as reports and an agent tool - GET /broadcasts, /subscribers?status=active.",
+      "match": [
+        "convertkit",
+        "kit.com"
+      ]
+    },
+    {
+      "type": "canva",
+      "title": "Canva",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Canva's own MCP server in your agent CLI — agents search, make and export your designs. You sign in once with Sign in.",
+      "match": [
+        "canva"
+      ],
+      "mcp": {
+        "url": "https://mcp.canva.com/mcp",
+        "docs": "https://www.canva.dev/docs/connect/canva-mcp-server-setup"
+      }
+    },
+    {
+      "type": "vimeo",
+      "title": "Vimeo",
+      "group": "Everything else",
+      "planned": false,
+      "desc": "Your videos, their plays, folders and comments as reports and an agent tool - GET /me/videos?sort=date.",
+      "match": [
+        "vimeo"
       ]
     },
     {
@@ -2730,30 +4296,38 @@
       "type": "threads",
       "title": "Threads",
       "group": "Social",
-      "planned": true,
-      "desc": "Meta's Threads API - posting to your own profile.",
+      "planned": false,
+      "desc": "Replies to your Threads posts and posts that mention you land on your work rail through triage - always as a stranger's words: Threads has no colleagues.",
       "match": [
         "threads",
         "meta threads"
-      ]
+      ],
+      "replies": {
+        "on": false,
+        "says": "a public reply on Threads (sign in again once, for the publish and reply scopes)"
+      }
     },
     {
       "type": "reddit",
       "title": "Reddit",
       "group": "Social",
-      "planned": true,
-      "desc": "Watch subreddits and your own inbox; post and reply with a script app.",
+      "planned": false,
+      "desc": "Replies, mentions and messages in your Reddit inbox land on your work rail through triage.",
       "match": [
         "reddit",
         "subreddit"
-      ]
+      ],
+      "replies": {
+        "on": false,
+        "says": "a public comment reply, or a reply to the message"
+      }
     },
     {
       "type": "youtube",
       "title": "YouTube",
       "group": "Social",
-      "planned": true,
-      "desc": "Channel statistics and new comments on your videos, as a report.",
+      "planned": false,
+      "desc": "New comments on your YouTube channel's videos land on your work rail through triage.",
       "match": [
         "youtube",
         "yt"
@@ -2763,29 +4337,112 @@
       "type": "discourse",
       "title": "Discourse",
       "group": "Social",
-      "planned": true,
-      "desc": "Forum topics and replies from any Discourse instance.",
+      "planned": false,
+      "desc": "Discourse mentions, replies and messages TO YOU land on your work rail through triage.",
       "match": [
         "discourse",
         "forum"
-      ]
+      ],
+      "replies": {
+        "on": false,
+        "says": "a reply post in the topic - public on a public forum"
+      }
     },
     {
       "type": "substack",
       "title": "Substack",
       "group": "Social",
-      "planned": true,
-      "desc": "Your publication’s subscriber numbers and new posts, as a report.",
+      "planned": false,
+      "desc": "Your publication's posts, read from its public feed, for the agents and reports. Substack has no API: replies and comments reach you as Substack's own emails, through your mail card.",
       "match": [
         "substack"
+      ]
+    },
+    {
+      "type": "instagram",
+      "title": "Instagram",
+      "group": "Social",
+      "planned": false,
+      "desc": "Comments on your recent Instagram posts land on your work rail through triage; posts and their insights as reports and an agent tool - GET /<id>/media.",
+      "match": [
+        "instagram",
+        "insta"
+      ],
+      "replies": {
+        "on": false,
+        "says": "a public reply under the comment"
+      }
+    },
+    {
+      "type": "facebook_pages",
+      "title": "Facebook Pages",
+      "group": "Social",
+      "planned": false,
+      "desc": "Comments on your Page's posts and messages to your Page land on your work rail through triage; posts and insights as reports and an agent tool - GET /<page>/feed.",
+      "match": [
+        "facebook page",
+        "facebook",
+        "messenger"
+      ],
+      "replies": {
+        "on": false,
+        "says": "a public reply under the comment, or a Messenger reply within 24 hours of their message"
+      }
+    },
+    {
+      "type": "tiktok",
+      "title": "TikTok",
+      "group": "Social",
+      "planned": false,
+      "desc": "Your TikTok profile and videos with their views, likes and comments counts as reports and an agent tool - POST /video/list/?fields=id,title,view_count.",
+      "match": [
+        "tiktok"
+      ]
+    },
+    {
+      "type": "x",
+      "title": "X (Twitter)",
+      "group": "Social",
+      "planned": false,
+      "desc": "Posts that mention you land on your work rail through triage; posts and users as reports and an agent tool - GET /users/<id>/mentions. Direct messages need a sign-in as you, which comes later.",
+      "match": [
+        "twitter",
+        "x.com",
+        "tweet"
+      ]
+    },
+    {
+      "type": "wordpress",
+      "title": "WordPress",
+      "group": "Social",
+      "planned": false,
+      "desc": "Comments awaiting your moderation land on your work rail through triage; posts, pages and comments as reports and an agent tool - GET /posts?status=publish.",
+      "match": [
+        "wordpress",
+        "wp-admin"
+      ],
+      "replies": {
+        "on": false,
+        "says": "a public reply under the comment - the comment itself stays held until you approve it"
+      }
+    },
+    {
+      "type": "ghost",
+      "title": "Ghost",
+      "group": "Social",
+      "planned": false,
+      "desc": "Posts, pages, members and newsletters as reports and an agent tool - GET /posts/?filter=status:draft, /members/?filter=status:paid.",
+      "match": [
+        "ghost.io",
+        "ghost blog"
       ]
     },
     {
       "type": "nvidia_nim",
       "title": "NVIDIA NIM",
       "group": "AI — agents & models",
-      "planned": true,
-      "desc": "Open models on NVIDIA-hosted endpoints, OpenAI-compatible",
+      "planned": false,
+      "desc": "Open models served by NVIDIA's NIM microservices, with free credits to start.",
       "match": [
         "nvidia nim",
         "nvidia"
@@ -2795,8 +4452,8 @@
       "type": "sambanova",
       "title": "SambaNova",
       "group": "AI — agents & models",
-      "planned": true,
-      "desc": "Open-weights models on SambaNova hardware, OpenAI-compatible",
+      "planned": false,
+      "desc": "Llama and other open models on SambaNova's own chips - fast, with a free tier.",
       "match": [
         "sambanova"
       ]
@@ -2805,8 +4462,8 @@
       "type": "deepinfra",
       "title": "DeepInfra",
       "group": "AI — agents & models",
-      "planned": true,
-      "desc": "Open models at per-token prices, OpenAI-compatible",
+      "planned": false,
+      "desc": "Open models at low per-token prices, pay as you go.",
       "match": [
         "deepinfra"
       ]
@@ -2815,8 +4472,8 @@
       "type": "novita",
       "title": "Novita AI",
       "group": "AI — agents & models",
-      "planned": true,
-      "desc": "Open models on Novita, OpenAI-compatible",
+      "planned": false,
+      "desc": "Open models on pay-as-you-go GPUs, one key for the whole library.",
       "match": [
         "novita"
       ]
@@ -2825,11 +4482,26 @@
       "type": "hyperbolic",
       "title": "Hyperbolic",
       "group": "AI — agents & models",
-      "planned": true,
-      "desc": "Open-weights inference, OpenAI-compatible",
+      "planned": false,
+      "desc": "Open models on low-cost GPU inference.",
       "match": [
         "hyperbolic"
       ]
+    },
+    {
+      "type": "huggingface",
+      "title": "Hugging Face",
+      "group": "AI — agents & models",
+      "planned": false,
+      "desc": "Hugging Face's own MCP server in your agent CLI — agents search models, datasets, papers and Spaces and run Spaces. You sign in once with Sign in.",
+      "match": [
+        "hugging face",
+        "huggingface"
+      ],
+      "mcp": {
+        "url": "https://huggingface.co/mcp?login",
+        "docs": "https://huggingface.co/learn/context-course/en/unit2/mcp-clients"
+      }
     },
     {
       "type": "treg",
@@ -2865,11 +4537,25 @@
       ]
     },
     {
+      "type": "zapier",
+      "title": "Zapier",
+      "group": "Agent tools",
+      "planned": false,
+      "desc": "Zapier's own MCP server in your agent CLI — agents run the Zapier actions you pick across thousands of apps. You sign in once with Sign in.",
+      "match": [
+        "zapier"
+      ],
+      "mcp": {
+        "url": "https://mcp.zapier.com/api/v1/connect",
+        "docs": "https://docs.zapier.com/mcp/get-started/connect/claude-code"
+      }
+    },
+    {
       "type": "oracle",
       "title": "Oracle Database",
       "group": "Databases",
-      "planned": true,
-      "desc": "Query Oracle through SQLAlchemy",
+      "planned": false,
+      "desc": "Query Oracle Database by service name as a report or an agent tool - SELECTs only, python-oracledb's thin mode, no Oracle client.",
       "match": [
         "oracle"
       ]
@@ -2878,8 +4564,8 @@
       "type": "cockroachdb",
       "title": "CockroachDB",
       "group": "Databases",
-      "planned": true,
-      "desc": "Postgres-compatible distributed SQL",
+      "planned": false,
+      "desc": "Query CockroachDB as a report or an agent tool through the Postgres driver - SELECTs only, the password kept as the card's secret.",
       "match": [
         "cockroach",
         "cockroachdb"
@@ -2889,8 +4575,8 @@
       "type": "duckdb",
       "title": "DuckDB",
       "group": "Databases",
-      "planned": true,
-      "desc": "A local analytical database over a file or parquet",
+      "planned": false,
+      "desc": "Query a DuckDB file on this computer, and the CSV and Parquet files a query names - opened read-only.",
       "match": [
         "duckdb"
       ]
@@ -2899,39 +4585,148 @@
       "type": "neo4j",
       "title": "Neo4j",
       "group": "Databases",
-      "planned": true,
-      "desc": "Cypher queries against a graph database",
+      "planned": false,
+      "desc": "Cypher queries as reports and an agent tool, each in a read transaction the server refuses to write in.",
       "match": [
         "neo4j"
+      ]
+    },
+    {
+      "type": "supabase",
+      "title": "Supabase",
+      "group": "Databases",
+      "planned": false,
+      "desc": "Supabase's own MCP server in your agent CLI — agents query your projects, run SQL and manage tables. You sign in once with Sign in.",
+      "match": [
+        "supabase"
+      ],
+      "mcp": {
+        "url": "https://mcp.supabase.com/mcp",
+        "docs": "https://supabase.com/docs/guides/getting-started/mcp"
+      }
+    },
+    {
+      "type": "neon",
+      "title": "Neon Postgres",
+      "group": "Databases",
+      "planned": false,
+      "desc": "Neon Postgres's own MCP server in your agent CLI — agents create branches, run SQL and manage your Neon projects. You sign in once with Sign in.",
+      "match": [
+        "neon postgres",
+        "neon.tech"
+      ],
+      "mcp": {
+        "url": "https://mcp.neon.tech/mcp",
+        "docs": "https://neon.com/docs/ai/neon-mcp-server"
+      }
+    },
+    {
+      "type": "looker",
+      "title": "Looker",
+      "group": "Databases",
+      "planned": false,
+      "desc": "Looks, dashboards and saved queries' results as reports and an agent tool - GET /looks/<id>/run/json, /dashboards/<id>.",
+      "match": [
+        "looker"
+      ]
+    },
+    {
+      "type": "tableau",
+      "title": "Tableau",
+      "group": "Databases",
+      "planned": false,
+      "desc": "Workbooks, views and their data as reports and an agent tool - GET /sites/<site id>/workbooks, /sites/<site id>/views/<id>/data.",
+      "match": [
+        "tableau"
+      ]
+    },
+    {
+      "type": "powerbi",
+      "title": "Power BI",
+      "group": "Databases",
+      "planned": false,
+      "desc": "Workspaces, reports, datasets and DAX query results as reports and an agent tool, with the Outlook card's Microsoft sign-in - POST /datasets/<id>/executeQueries.",
+      "match": [
+        "power bi",
+        "powerbi"
+      ]
+    },
+    {
+      "type": "metabase",
+      "title": "Metabase",
+      "group": "Databases",
+      "planned": false,
+      "desc": "Saved questions, dashboards and their results as reports and an agent tool - POST /api/card/<id>/query/json runs a saved question.",
+      "match": [
+        "metabase"
+      ]
+    },
+    {
+      "type": "databricks",
+      "title": "Databricks",
+      "group": "Databases",
+      "planned": false,
+      "desc": "Jobs, their runs, clusters and SQL warehouses as reports and an agent tool - GET /api/2.1/jobs/runs/list. No SQL is run from this card.",
+      "match": [
+        "databricks"
+      ]
+    },
+    {
+      "type": "dbt_cloud",
+      "title": "dbt Cloud",
+      "group": "Databases",
+      "planned": false,
+      "desc": "Jobs, runs and their failures as reports and an agent tool - GET /accounts/<id>/runs/?order_by=-id.",
+      "match": [
+        "dbt cloud",
+        "dbt"
+      ]
+    },
+    {
+      "type": "fivetran",
+      "title": "Fivetran",
+      "group": "Databases",
+      "planned": false,
+      "desc": "Connections, their sync state and failures as reports and an agent tool - GET /groups, /connections/<id>.",
+      "match": [
+        "fivetran"
       ]
     },
     {
       "type": "zulip",
       "title": "Zulip",
       "group": "Messaging",
-      "planned": true,
-      "desc": "Threaded team chat you can host yourself - topics inside streams, which is a shape triage would read well.",
+      "planned": false,
+      "desc": "Zulip messages that MENTION YOU and your direct messages land on your work rail through triage.",
       "match": [
         "zulip"
-      ]
+      ],
+      "replies": {
+        "on": true,
+        "says": "a message in the same topic, or a direct message back"
+      }
     },
     {
       "type": "line",
       "title": "LINE",
       "group": "Messaging",
-      "planned": true,
-      "desc": "LINE Messaging API - the default channel for work in Japan, Taiwan and Thailand.",
+      "planned": false,
+      "desc": "Messages to your LINE Official Account land on your work rail through triage - as a stranger's words. LINE pushes them, so it needs a public address that reaches this computer - your own tunnel.",
       "match": [
         "line",
         "line messaging"
-      ]
+      ],
+      "replies": {
+        "on": true,
+        "says": "a LINE message back (a push message - it counts against your plan)"
+      }
     },
     {
       "type": "brightdata",
       "title": "Bright Data",
       "group": "Agentic web",
-      "planned": true,
-      "desc": "Proxy and scraping infrastructure at the scale where a page actively refuses ordinary fetches.",
+      "planned": false,
+      "desc": "A page or a search result fetched through your Web Unlocker or SERP zone - POST /request with {zone, url, format}; GET /zone/get_active_zones lists the zones.",
       "match": [
         "bright data",
         "brightdata",
@@ -2942,8 +4737,8 @@
       "type": "diffbot",
       "title": "Diffbot",
       "group": "Agentic web",
-      "planned": true,
-      "desc": "Turns a page into structured records - articles, products, people - rather than into text to re-read.",
+      "planned": false,
+      "desc": "A web page read into clean article text and fields - GET /v3/article?url=<page>, /v3/analyze?url=<page>.",
       "match": [
         "diffbot"
       ]

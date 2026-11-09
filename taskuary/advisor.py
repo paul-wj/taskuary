@@ -732,8 +732,11 @@ def _prompt(store, event, item, verbs, tier, target_kind, target_id) -> str:
         from . import continuity
         at = continuity.last_agent_turn(store, int(target_id))
         mail = continuity.mail_since(store, int(target_id), at) if at else []
+        # ...how the owner hands them on, in its kind's words: a chat task is typed into, it has no Continue (general.handles, 2026-11-07)
+        from .general import handles
+        hand = 'typing in its chat' if handles(store.get_task(int(target_id))) else buttons.label('continue')
         if mail:
-            lines.append(f"NEW SINCE THE AGENT'S LAST TURN ({at}) - its saved conversation is from BEFORE these; {buttons.label('continue')} hands "
+            lines.append(f"NEW SINCE THE AGENT'S LAST TURN ({at}) - its saved conversation is from BEFORE these; {hand} hands "
                          "them to it first:\n" + '\n'.join(f"- {m.get('FromName') or m.get('FromEmail')} ({m.get('CreatedAt')}): {m.get('Subject') or ''}"
                                                              f" - {' '.join(str(m.get('BodyText') or '').split())[:500]}" for m in mail[-3:]))
         t = store.get_task(int(target_id)) or {}
@@ -744,7 +747,7 @@ def _prompt(store, event, item, verbs, tier, target_kind, target_id) -> str:
         if waiton.waiting(t): lines.append(f"THE AGENT IS WAITING ON {waiton.name_of(t['WaitingOn'])}'S ANSWER - they have not written since; nothing here moves it")
         elif mail and waiton.woke_by(t, mail[-1]):
             lines.append(f"THE AGENT WAS WAITING ON {mail[-1].get('FromName') or mail[-1].get('FromEmail')}'S ANSWER, AND IT IS THE NEWEST LINE ABOVE - "
-                         f"{buttons.label('continue')} hands it to the agent's saved conversation")
+                         f"{hand} hands it to the agent's saved conversation")
         todo = [c.get('text') + (f" (note: {c['note']})" if c.get('note') else '') for c in _checklist(t) if not c.get('done') and c.get('text')]
         if todo: lines.append('STILL TO DO ON THE TASK: ' + ' | '.join(' '.join(str(x).split())[:160] for x in todo[:6]))
         # ...and a list with nothing left on it, said: with no line at all the model could not tell it from a task with no list
@@ -874,14 +877,32 @@ def summary_line(store, tid) -> str:
     or what is on the owner. The Advisor lights Mark done on the first; nothing presses it. '' with no summary."""
     from . import general
     try:
-        last = next((c for c in reversed(store.list_comments(int(tid))) if c.get('ActorType') == general.SUMMARY_TYPE), None)
+        last = next((c for c in reversed(store.list_comments(int(tid), internal=True)) if c.get('ActorType') == general.SUMMARY_TYPE), None)
         summ = json.loads(last['Body']) if last else None
     except (TypeError, ValueError, KeyError): summ = None
     if not isinstance(summ, dict): return ''
     todo = [str(c.get('text')) for c in _checklist(store.get_task(int(tid))) if c.get('on_you') and not c.get('done') and c.get('text')]
     if todo: return "THE AGENT'S LAST SUMMARY: on you - " + '; '.join(' '.join(x.split())[:160] for x in todo[:6])
-    if summ.get('nothing_left') and not _draft(store, {}, 'task', tid): return "THE AGENT'S LAST SUMMARY: nothing left to do here"
+    if summ.get('nothing_left') and not _draft(store, {}, 'task', tid): return NOTHING_LEFT
     return ''
+NOTHING_LEFT = "THE AGENT'S LAST SUMMARY: nothing left to do here"
+
+
+# THE AGENT PICKS THE LIT BUTTON (the owner, 2026-11-08): on a task an agent works, the Advisor lit Reply while the agent's own turn said
+# "press Mark done". There the light is read off what the agent's latest turn left - no model call: the Send of a card it set up that waits
+# (never one whose channel is not connected - its card says Connect instead), Mark done where its summary said nothing is left, else nothing
+# ...the chat's agent, whose turns say where the owner stands; a coding agent's terminal says no such thing, and the Advisor still reads it
+def chat_agent(store, tid) -> bool:
+    from . import general
+    return general.handles(store.get_task(int(tid))) and agent_ran(store, tid)
+def agent_light(store, tid: int, item: dict, verbs: list) -> str | None:
+    if _at_work(store, 'task', tid): return None
+    # ...and a failed run's way past it (offered's lead: the place that fixes it, or Try again) - a fact on the row, no one's opinion
+    if verbs and verbs[0]['verb'] in ('fix', 'continue') and not pressable(store, item, verbs[0]['verb'], verbs): return verbs[0]['verb']
+    if (w := store.waiting_on_owner(tid)) and (w.get('FinalText') or w.get('DraftText')):
+        if unconnected(store, {'tid': tid}): return None
+        return next((v for v in ('send_close', 'approve') if not pressable(store, item, v, verbs)), None)
+    return 'close' if summary_line(store, tid) == NOTHING_LEFT and not pressable(store, item, 'close', verbs) else None
 
 
 def sent_line(store, target_kind, target_id) -> str:
@@ -1173,6 +1194,8 @@ def notice(store, event: str, target_kind: str, target_id, *, tier: int = 1, wai
     Returns the row id when judged inline (tests, `wait=True`), None when skipped or sent to the background."""
     try:
         if str(store.get_setting(ON_KEY, '1') or '1') != '1' or not target_id: return None
+        # ...and nothing read in the background on an agent's task: its own turn picks the light (agent_light)
+        if not wait and target_kind == 'task' and chat_agent(store, target_id): return None
         rev = revision(store, target_kind, target_id)
         # ...a stop is the finish check's moment too: its line is there by the time the owner looks (decide asks for it as well)
         if event == 'agent.stopped' and target_kind == 'task' and BACKGROUND: _spawn(lambda: _check_stopped(store, target_id), f'advise-stop-{target_id}')
@@ -1260,6 +1283,9 @@ def decide(store, key: str, preread: bool = True) -> dict:
     if not item: return {}
     verbs = offered(store, item) + [buttons.chip('next')]
     r = rulebook.facts(store, item, verbs)
+    if tgt[0] == 'task' and chat_agent(store, tgt[1]):
+        return _out(store, key, item, verbs, r, rev, {'key': key, 'state': r['state'], 'verb': agent_light(store, int(tgt[1]), item, verbs), 'line': '',
+                                                      'by': 'agent', 'evidence': [], 'kind': 'other'}, None)
     every = _at(store, tgt[0], tgt[1], rev)
     # the finish check's rows are about the task's agent work, whichever card of it is asked about; the judge's are the item's own
     chk = next((x for x in every if x.get('Event') == CHECK), None) if tgt[0] == 'task' and r['state'] in CHECKED else None
@@ -1354,10 +1380,7 @@ def _out(store, key, item, verbs, r, rev, d, fix, check=False) -> dict:
     verb, line, by, ev = d['verb'], d['line'], d['by'], d['evidence']
     lbl = _label(verbs, verb, item) if verb else ''
     out = {'key': key, **({'fix': fix} if fix else {}), 'state': r['state'], 'verb': verb, 'label': lbl, 'line': line, 'by': by, 'revision': rev, 'pill': lbl, 'evidence': ev,
-           'ask': True, 'needs_ai': True, 'kind': d['kind'], **({'checked': d['checked']} if d.get('checked') else {}),
-           # ...and the section the facts put its settling in (rulebook.SEC - a reply that went is Close out's): the page opens there while
-           # Mark done is the lit move
-           **({'section': r['section']} if r.get('section') and verb == 'close' else {})}
+           'ask': True, 'needs_ai': True, 'kind': d['kind'], **({'checked': d['checked']} if d.get('checked') else {})}
     # a fix is a place, not a proposal: the page opens its href where the row has no '<rid>:fix' of its own to press (a failed act with
     # no draft on the table) - read live, so a fix already made carries no stale link
     if verb == 'fix':
@@ -1379,7 +1402,7 @@ def _out(store, key, item, verbs, r, rev, d, fix, check=False) -> dict:
 # a lit Try again greyed for want of an AI (nothing lit at all), "the draft promises Friday" beside a dark Send, a late line on a drafted
 # task lighting Reply over the draft's own Send, and the survivor of a duplicate pair folded into its own twin. Each refusal is logged.
 AGENT_VERBS = frozenset({'continue', 'regular_agent', 'run_another', 'strong_again'})
-SENDS = frozenset({'approve', 'send_close'})      # the draft's two sends: Send, and Close out's Send and close
+SENDS = frozenset({'approve', 'send_close'})      # the draft's two sends under it in the chat: Send, and Send and close
 AGENT_CHECK = True       # the suite turns this off (tests/conftest.py): a bare store has no brain, and its agents' buttons are not the subject
 
 
@@ -1403,6 +1426,13 @@ def pressable(store, item: dict, verb: str, verbs: list) -> str:
     return _agent_ready(store, item) if verb in AGENT_VERBS else ''
 
 
+def unconnected(store, item: dict) -> bool:
+    "Whether the card waiting on the item says Connect <X> instead of its Send."
+    from . import outbound
+    r = (store.get_review(int(item['rid'])) if item.get('rid') else None) or (store.waiting_on_owner(int(item['tid'])) if item.get('tid') else None)
+    return bool(r) and r.get('Status') == 'pending' and bool(outbound.review_connect(store, r))
+
+
 def checked(store, item: dict, verbs: list, d: dict) -> dict:
     """`d` ({verb, line, by, evidence, kind, state}) as the owner may be shown it: the model's verb, or nothing lit where it is a button the
     owner could not press or one that contradicts its own reason (`checked` says why). A CHECK on what the model proposes - it never swaps
@@ -1411,6 +1441,8 @@ def checked(store, item: dict, verbs: list, d: dict) -> dict:
     if (no := pressable(store, item, verb, verbs)): why = f'{verb}: {no}'
     # ...nothing sends on a reason that says the draft is not ready to send (the Advisor audit's judge, 2026-10-26)
     elif kind in GAPS and verb in SENDS: why = 'a caution about the draft over its Send'
+    # ...nor over a card whose channel is not connected: its card's move is Connect (outbound.review_connect, the owner 2026-11-08)
+    elif verb in SENDS and unconnected(store, item): why = 'its channel is not connected'
     # ...and the one that stays of a duplicate pair is never folded into its own twin: following it would drop the ask
     elif kind == 'same_ask' and verb in ('remove', 'split') and _survives(store, item): why = 'the survivor of a duplicate pair is never folded'
     # ...and a coding agent asking to go further is the owner's call in its pane, never closed under it (the owner, 2026-11-02)

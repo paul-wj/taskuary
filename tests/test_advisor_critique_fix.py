@@ -5,6 +5,14 @@ the decision's kind and whether an agent ran - never the line's words. Invented 
 from taskuary import advisor, funnel
 from taskuary.testing import Factory
 from tests.test_advisor_memory_reason import w, ask, judged       # noqa: F401 - w is the fixture
+import pytest
+
+@pytest.fixture(autouse=True)
+def _mailbox_connected(monkeypatch):
+    """These drafts go by email in a world with no mailbox card: as if one were connected, so the Send is what is judged (a card that says
+    Connect email lights nothing - advisor.unconnected, tests/test_agent_lights.py)."""
+    from taskuary import advisor as _adv
+    monkeypatch.setattr(_adv, 'unconnected', lambda store, item: False)
 
 V = lambda *vs: [{'verb': v, 'label': v} for v in vs]
 GAP = 'The draft leaves her start-date question unanswered.'
@@ -37,15 +45,14 @@ def test_a_critique_of_an_agents_work_lights_continue_with_the_line_as_its_note(
     assert advisor.fix_of(s, item, V('approve', 'reply', 'redraft'), d)['verb'] == 'redraft'
 
 
-def test_a_general_agents_work_found_short_is_continued_from_the_strip_and_its_send_is_not_lit(w):
-    """The owner's report: a general agent's Result, "the draft leaves her question unanswered", and Reply lit. A general agent's row draws
-    no Continue (its chat is the way on), so the strip's own Continue with this carries the fix and the row lights Redraft - never Send."""
+def test_a_general_agents_work_is_not_the_advisors_to_light(w):
+    """Once a general agent's Result read short and the strip's Continue with this carried the fix. Its own turn picks the light now (the owner,
+    2026-11-08: advisor.agent_light) - the model's critique lights nothing on a chat agent's task: the Send of the draft it left is the move."""
     s, _ = w
     t = drafted(s, by_agent=True)
     s.update_task(t, {'Kind': 'general'}, 'owner'); funnel.invalidate()
     d, _ = judged(s, t, {'verb': 'reply', 'line': GAP, 'evidence': [], 'kind': 'work_gap'})
-    assert d['fix'] == {'verb': 'continue', 'label': 'Continue with this', 'note': GAP}, d
-    assert (d['verb'], d['line']) == ('redraft', GAP), d
+    assert (d['verb'], d.get('fix'), d['by'], d['line']) == ('send_close', None, 'agent', ''), d
 
 
 def test_no_gap_or_no_line_carries_no_fix(w):

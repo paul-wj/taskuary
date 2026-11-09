@@ -1,37 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { agentAsks, alreadyAnswered, answeredLine, askWhere, autoPair, draftKey, isAgentDraft, noticeLine } from "../src/agentDraftAsk.js";
+import { alreadyAnswered, answeredLine } from "../src/agentDraftAsk.js";
 
-// THE AGENT'S DRAFT IS SAID WHERE THE AGENT IS AND SENT FROM CLOSE OUT (the owner, 2026-11-02: "in agent we should just say 'agent drafted a
-// message' and take you to the Close out screen"), and a draft the owner already answered says so. Invented people only.
+// AN AGENT'S DRAFT IS A CARD IN THE ONE CHAT (the owner, 2026-11-06), and a draft the owner already answered says so. Invented people only.
 const mine = { ReviewId: 7, Kind: "draft_reply", Status: "pending", DraftText: "Hi Erin - which week should the report cover?", DraftBy: "agent:Claude Code",
   MessageId: 40, FromName: "Erin Blake", FromEmail: "erin@northwind.example" };
-
-test("only a pending draft the agent wrote is said in the agent's pane", () => {
-  assert.equal(isAgentDraft(mine), true);
-  assert.equal(isAgentDraft({ ...mine, Kind: "clarification", DraftBy: "" }), true, "the agent's question to the sender");
-  assert.equal(isAgentDraft({ ...mine, DraftBy: "responder" }), false, "Taskuary's own draft is Close out's alone");
-  assert.equal(isAgentDraft({ ...mine, Status: "approved" }), false, "sent: the notice goes");
-  assert.equal(isAgentDraft({ ...mine, Status: "no_reply" }), false, "dropped: the notice goes");
-  assert.equal(isAgentDraft({ ...mine, DraftText: "  " }), false);
-  assert.equal(isAgentDraft({ ...mine, Kind: "slot" }), false, "an email the task owes is Close out's");
-  const two = { ...mine, ReviewId: 8 };
-  assert.deepEqual(agentAsks([{ ReviewId: 6, Kind: "draft", Status: "pending", DraftText: "Thanks" }, mine, two]).map((r) => r.ReviewId), [7, 8], "one notice per draft");
-  assert.deepEqual(agentAsks(undefined), []);
-});
-
-test("the notice names the agent and the person, never the address", () => {
-  const notice = noticeLine(mine, "Taskuary");
-  assert.ok(notice.includes("Claude Code") && notice.includes("Erin Blake"));
-  assert.ok(!notice.includes("erin@northwind.example"));
-  const question = noticeLine({ ...mine, Kind: "clarification", DraftBy: "" }, "Taskuary");
-  assert.ok(question.includes("Taskuary") && question.includes("Erin Blake"));
-  assert.notEqual(question, notice);
-  assert.equal(askWhere("live"), "popup");
-  assert.equal(askWhere("general"), "chat");
-  for (const m of ["wrapping", "", null, undefined]) assert.equal(askWhere(m), null);
-});
 
 test("already answered: a reply to that person newer than the message the draft answers - outside Taskuary or from here", () => {
   const against = { MessageId: 40, FromEmail: "erin@northwind.example", SentAt: "2026-11-02 09:00:00" };
@@ -53,24 +27,6 @@ test("already answered: a reply to that person newer than the message the draft 
   assert.equal(answeredLine(null), "");
 });
 
-
-test("the reply opens beside an agent once it stopped running, once per draft, never again once the owner closed it", () => {
-  const at = { draft: mine, canPair: true };
-  assert.equal(autoPair(at), true, "stopped or finished: Agent | Close out");
-  // the owner, 2026-11-03: "every 10 seconds it opens the response tab ??? stop opening that until the agent stopped running"
-  assert.equal(autoPair({ ...at, running: true }), false, "a live agent, working or waiting on you, is never squeezed - its notice's press pairs them");
-  assert.equal(autoPair({ ...at, canPair: false }), false, "a work area too narrow for two halves: Close out on its own, as today");
-  assert.equal(autoPair({ ...at, paired: true }), false);
-  assert.equal(autoPair({ ...at, draft: null }), false);
-  assert.equal(autoPair({ ...at, shut: new Set([draftKey(mine)]) }), false, "closed for this draft stays closed");
-  assert.equal(autoPair({ ...at, shut: new Set([draftKey({ ...mine, DraftText: "older words" })]) }), true, "a new letter from the agent is a new draft");
-  assert.equal(autoPair({ ...at, done: new Set([draftKey(mine)]) }), false, "once per draft - a view the page reads again is not a new one");
-  // a running agent's re-reads, one every few seconds, its word flipping between working and waiting: it opens at most once, after it stops
-  const done = new Set(), shut = new Set();
-  const opened = [true, true, true, true, false, false, false].filter((running) => autoPair({ ...at, running, done, shut }) && done.add(draftKey(mine))).length;
-  assert.equal(opened, 1);
-});
-
 // AN EARLIER SESSION'S DRAFT IS NOT THE REPLY (the owner, 2026-11-03: "when you continue on general agent it shows the prior reply on bottom
 // that the agent generated. Don't show that reply if it was based off another general session not the latest one")
 test("a draft an earlier agent session wrote is not drawn while a newer session is live", async () => {
@@ -78,13 +34,11 @@ test("a draft an earlier agent session wrote is not drawn while a newer session 
   const old = { ...mine, DraftSid: "s-old" }, owned = { ...mine, ReviewId: 9, DraftSid: "owner" }, legacy = { ...mine, ReviewId: 10, DraftSid: null };
   assert.equal(earlierSession(old, "s-new"), true, "Continue opened a new session: the old one's words wait");
   assert.equal(earlierSession(old, "s-old"), false, "the same session, a new turn: still its latest");
-  assert.equal(earlierSession(old, ""), false, "no session live: the draft is the task's, in Close out as ever");
+  assert.equal(earlierSession(old, ""), false, "no session live: the draft is the task's, in the chat as ever");
   assert.equal(earlierSession(owned, "s-new"), false, "the owner edited it: theirs");
   assert.equal(earlierSession(legacy, "s-new"), false, "one written before drafts knew their session is the server's call (held there)");
   assert.equal(earlierSession({ ...old, DraftBy: "" }, "s-new"), false, "Taskuary's own draft belongs to no agent session");
   assert.equal(earlierSession({ ...old, Status: "approved" }, "s-new"), false, "what went is history, never hidden");
   const fresh = { ...mine, ReviewId: 11, DraftSid: "s-new" };
   assert.deepEqual(latestDrafts([old, fresh, owned], "s-new").map((r) => r.ReviewId), [11, 9]);
-  assert.equal(agentAsks(latestDrafts([old], "s-new")).length, 0, "no 'drafted a message' notice for it");
-
 });

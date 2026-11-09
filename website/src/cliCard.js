@@ -15,3 +15,7 @@ export const connectionPayload = (draft) => {
   return { cmd: draft.cmd.trim(), args: lines(draft.args), resume_args: lines(draft.resumeArgs),
     timeout: Number(draft.timeout), model_arg: draft.modelArg.trim() };
 };
+// AN OPTIONAL TOOL THAT IS BEHIND npm's latest (clis.tools `update`, checked once a day; the owner, 2026-11-07) - one quiet line on its card,
+// with the command to run: Taskuary never installs or updates agent-browser or agent-desktop itself. "" when it is current or unknown
+export const toolUpdateLine = (t) => (t?.installed && t.update
+  ? `Update available: ${t.name} ${t.version} is here, ${t.update} is out - run ${String(t.install || `npm install -g ${t.name}`).replace(/\s*$/, "")}@latest` : "");

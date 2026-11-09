@@ -24,6 +24,7 @@ import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import api from "./api";
 import { takeLists } from "./connectorLists.js";
+import { SIGN_LABEL, signState } from "./videoSignIn.js";
 import { removeWords, usedBy } from "./connectorUses.js";
 import { nothingMatches } from "./searchHits.js";
 import { connectName, connectionWish, openBugReport } from "./bugReportOpen.js";
@@ -35,7 +36,8 @@ import { GoogleCalendar } from "./GoogleCalendar.jsx";
 import { hasLogo } from "./logos.jsx";
 import { CliConnectionsPage } from "./AgentsPanel.jsx";
 import { TerminalPane } from "./TerminalView.jsx";
-import { matchCards, onceEach, oneOf, plannedFor } from "./connectorCatalog.js";
+import { WAITING_META, waitingIn } from "./waitingMeta.js";
+import { CATALOGUE, PRESETS, matchCards, onceEach, oneOf, plannedFor, presetBody, presetOf, presetsLeft, repliesOf, repliesOn } from "./connectorCatalog.js";
 import { settingsOf } from "./actionCard.js";
 import { isPollField, pollSecondsField } from "./pollFields.js";
 import { githubInboundValue } from "./githubInbound.js";
@@ -47,7 +49,7 @@ import { waLine } from "./waStatus.js";
 import { DraftProvider, Tick, useBoxesSave, useCardDraft, useSaveConnector, useSaveSource } from "./ConnectorDraft.jsx";
 import { cfgPatch, editedBoxes, syncState } from "./connectorDraft.js";
 import { AI_SHELF, needsGateway } from "./aiShelf.js";
-import { cliCardOf } from "./cliCard.js";
+import { cliCardOf, toolUpdateLine } from "./cliCard.js";
 import SavedSignins from "./SavedSignins.jsx";
 import { hint as btnHint, label as btnLabel } from "./buttons.js";
 import { noun, placeName, PLACES } from "./words.js";
@@ -63,6 +65,7 @@ import { DESKTOP_HOW } from "./newTask.js";
 import { openHelp, sayEarlier, viewResult } from "./pageView.js";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
+import { READ_META, READ_TYPES } from "./apiReads.js";
 
 // Keep tab values stable: translated labels are presentation, not navigation state.
 function LocalTabs({ tabs, value, onChange }) {
@@ -81,7 +84,6 @@ const testFailure = (error, fallback) => {
   const detailPresentation = errorPresentation(error, fallback);
   return { ok: false, detail: detailPresentation.message || detailPresentation.source, detailPresentation };
 };
-
 
 /* ── Get AI to set it up: THE ASSISTANT, IN THE CHAT (the owner, 2026-10-30: "don't you think this sort of ai troubleshooting should go
    on in the assistant. it's more intuitive and it will know if you change something in the screen"). The button is the card's door to
@@ -182,7 +184,7 @@ const META = {
       "Remind the owner the bot must be invited into each of those channels (/invite @bot) or the read will fail; then Test (POST {base}/api/connectors/{cid}/test{hdr}), turn the connector on, SETUP DONE."] },
   telegram: { group: "Messaging", channel: "telegram", srcLabel: "Chat IDs — only chats flipped ON become work", srcPh: "-1001234567890",
     fields: [["Assistant chat id", "assistant_chat", "",
-      "Your own private chat with the bot — the assistant walks you through your work there, and the chat here can hand its walk to it"],
+      "Your own private chat with the bot — the assistant walks you through your work there. Easier picked on Settings → Phone & chats"],
       pollSecondsField("telegram")],
     secretLabel: "bot token (from @BotFather)",
     desc: "A Telegram bot as an inbound channel - approved chats flow through triage; approved replies go back into the same chat. Unknown chats never become work: a bot is public.",
@@ -249,6 +251,7 @@ const META = {
   imap: { group: "Messaging", channel: "email", srcLabel: "Mailbox", srcPh: "you@yourdomain.com",
     fields: [["Email address", "address"], ["IMAP host (e.g. imap.yourdomain.com)", "imap_host"],
              ["SMTP host (blank = imap host with imap->smtp)", "smtp_host"],
+             ["IMAP port (blank = 993; 143 or 1143 upgrade with STARTTLS)", "imap_port"], ["SMTP port (blank = 587)", "smtp_port"],
              ["TLS certificate (blank = check it; a sha256 to accept that one; 'any' for none)", "tls_accept"]],
     secretLabel: "Email password",
     desc: "Any mailbox that speaks IMAP - a domain.com address, Yahoo, an ISP, your webhost. In through triage, replies out over its SMTP.",
@@ -391,6 +394,244 @@ const META = {
       "SHARE the pages or databases you care about with the integration (page → ⋯ → Connections) — it sees nothing else.",
       "Paste the secret under Credentials (write-only). Test authenticates the integration.",
       "Every sync surfaces pages edited since the last poll. It ships as a feed; flip the trigger role on if edits should become work."] },
+  // ── helpdesks and the newer trackers (inboxes.py): one road - Test learns who you are, every sync reads what is pointed at you ──
+  zendesk: { group: "Project management", channel: "zendesk", srcLabel: "Help center", srcPh: "added by Test",
+    fields: [["subdomain (the \"yourco\" in yourco.zendesk.com)", "subdomain"], ["agent email (the one the token acts as)", "email"]],
+    secretLabel: "API token",
+    desc: "Zendesk tickets ASSIGNED TO YOU, and new unassigned ones in your groups, come in and are sorted like everything else that comes in.",
+    howto: ["Create an API token: Admin Center → Apps and integrations → APIs → Zendesk API → Add API token.",
+      "Enter the subdomain and your agent email under Credentials, paste the token (write-only).",
+      "Test signs in as you, remembers your groups and adds the help center under Sources.",
+      "Every sync brings in open tickets assigned to you and new unassigned ones in your groups, with status and priority, linking back to Zendesk.",
+      "A ticket from a customer (an end user) is a stranger's words: no agent starts on it by itself until you trust them.",
+      "Nothing is written back to Zendesk; Taskuary only reads."] },
+  freshdesk: { group: "Project management", channel: "freshdesk", srcLabel: "Helpdesk", srcPh: "added by Test",
+    fields: [["domain (the \"yourco\" in yourco.freshdesk.com)", "domain"]],
+    secretLabel: "API key",
+    desc: "Freshdesk tickets ASSIGNED TO YOU, and new ones in your groups, come in and are sorted like everything else that comes in.",
+    howto: ["Find your API key: your avatar → Profile settings → View API key.",
+      "Enter the domain and paste the key (write-only). Test signs in as you and remembers your groups.",
+      "Every sync brings in tickets assigned to you and new unassigned ones in your groups that changed since the last poll.",
+      "A ticket from a contact who is not one of your agents is a stranger's words until you trust them.",
+      "Nothing is written back to Freshdesk; Taskuary only reads."] },
+  intercom: { group: "Project management", channel: "intercom", srcLabel: "Workspace", srcPh: "added by Test",
+    fields: [],
+    secretLabel: "access token",
+    desc: "Open Intercom conversations ASSIGNED TO YOU come in and are sorted like everything else that comes in.",
+    howto: ["Create an app: Intercom → Settings → Integrations → Developer Hub → New app; its Authentication page shows the access token.",
+      "Paste the token under Credentials (write-only) — that is all the config.",
+      "Test signs in as you and adds the workspace under Sources.",
+      "Every sync brings in open conversations assigned to you that changed since the last poll. A customer's message is a stranger's words; a teammate's is not.",
+      "Nothing is written back to Intercom; Taskuary only reads."] },
+  servicenow: { group: "Corporate systems", channel: "servicenow", srcLabel: "Instance", srcPh: "added by Test",
+    fields: [["instance (the \"yourco\" in yourco.service-now.com)", "instance"], ["user name", "username"],
+      ["tables, comma-separated (blank = incident; e.g. incident,sc_task,problem)", "tables"]],
+    secretLabel: "password",
+    desc: "ServiceNow incidents (or any task table) ASSIGNED TO YOU come in and are sorted like everything else that comes in.",
+    howto: ["Use a ServiceNow user that can read the tables (the itil role reads incidents). Enter the instance and the user name, paste the password (write-only).",
+      "Test finds your user and adds the instance under Sources.",
+      "Every sync brings in active records assigned to you that changed since the last poll, with number, state and priority, linking back to ServiceNow.",
+      "A caller from your own directory is a colleague; a customer contact is a stranger's words until you trust them.",
+      "Nothing is written back to ServiceNow; Taskuary only reads."] },
+  shortcut: { group: "Project management", channel: "shortcut", srcLabel: "Workspace", srcPh: "added by Test",
+    fields: [],
+    secretLabel: "API token",
+    desc: "Shortcut stories YOU OWN come in and are sorted like everything else that comes in.",
+    howto: ["Create a token: Shortcut → Settings → Your account → API Tokens → Generate token.",
+      "Paste it under Credentials (write-only). Test signs in as you and adds the workspace under Sources.",
+      "Every sync brings in stories you own that are not done and changed since the last poll, linking back to Shortcut.",
+      "Nothing is written back to Shortcut; Taskuary only reads."] },
+  wrike: { group: "Project management", channel: "wrike", srcLabel: "Account", srcPh: "added by Test",
+    fields: [["host (blank = www.wrike.com; e.g. app-eu.wrike.com for an EU account)", "host"]],
+    secretLabel: "permanent access token",
+    desc: "Active Wrike tasks ASSIGNED TO YOU come in and are sorted like everything else that comes in.",
+    howto: ["Create a permanent token: your avatar → Apps & Integrations → API → Create new → permanent access token.",
+      "Paste it under Credentials (write-only). An EU or other data-centre account sets its host too.",
+      "Every sync brings in active tasks assigned to you that changed since the last poll. A task by an external collaborator is a stranger's words until you trust them.",
+      "Nothing is written back to Wrike; Taskuary only reads."] },
+  smartsheet: { group: "Project management", channel: "smartsheet", srcLabel: "Account", srcPh: "added by Test",
+    fields: [["sheet ids, comma-separated (blank = the sheets changed since the last poll)", "sheet_ids"]],
+    secretLabel: "API access token",
+    desc: "Smartsheet rows whose contact column NAMES YOU come in and are sorted like everything else that comes in.",
+    howto: ["Create a token: Account → Personal settings → API Access → Generate new access token.",
+      "Paste it under Credentials (write-only). List sheet ids to pin the poll down (File → Properties shows the id).",
+      "Every sync brings in rows changed since the last poll whose Assigned To (any contact column) is you. A row by someone the sheet is not shared with is a stranger's words.",
+      "Nothing is written back to Smartsheet; Taskuary only reads."] },
+  airtable: { group: "Project management", channel: "airtable", srcLabel: "Table", srcPh: "added by Test",
+    fields: [["base id (appXXXX, from the base URL)", "base_id"], ["table name or id (tblXXXX)", "table"],
+      ["view (blank = the whole table)", "view"], ["title field (blank = the first text field)", "title_field"]],
+    secretLabel: "personal access token",
+    desc: "Rows in the Airtable view you choose come in as they change and are sorted like everything else that comes in.",
+    howto: ["Create a token: airtable.com/create/tokens → scope data.records:read, and add this base.",
+      "Enter the base id, the table and a view that holds your work (e.g. one filtered to Assignee = you).",
+      "Every sync brings in rows of that view changed since the last poll.",
+      "Airtable never says who in a base is a collaborator, so its rows wait for your press until you choose Trust everyone from this table.",
+      "Nothing is written back to Airtable; Taskuary only reads."] },
+  github_projects: { group: "Project management", channel: "github_projects", srcLabel: "Account", srcPh: "added by Test",
+    fields: [["organizations whose projects to read, comma-separated (blank = only your own)", "owners"]],
+    secretLabel: "token (read:project)",
+    desc: "GitHub Projects items ASSIGNED TO YOU — draft items too — come in and are sorted like everything else that comes in.",
+    howto: ["Create a token: GitHub → Settings → Developer settings → classic token with read:project (and repo for private repos), or a fine-grained one with Projects read.",
+      "Paste it under Credentials (write-only); list the organizations whose boards you work on.",
+      "Every sync brings in open project items assigned to you. An issue in a repo the GitHub card already watches stays that card's — never filed twice.",
+      "Nothing is written back to GitHub; Taskuary only reads."] },
+  bitbucket: { group: "Developer", channel: "bitbucket", srcLabel: "Workspace", srcPh: "added by Test",
+    fields: [["workspace (the first path segment of your Bitbucket URLs)", "workspace"], ["user name (app password) or Atlassian email (API token)", "username"],
+      ["repositories, comma-separated (blank = the 10 most recently updated)", "repos"]],
+    secretLabel: "API token or app password",
+    desc: "Bitbucket pull requests ASKING YOUR REVIEW and issues ASSIGNED TO YOU come in and are sorted like everything else that comes in.",
+    howto: ["Create an API token (Atlassian account → Security → API tokens, Bitbucket scopes: read repositories, pull requests and issues) — or an app password.",
+      "Enter the workspace and the user name / email, paste the token (write-only). Test signs in as you.",
+      "Every sync brings in open PRs where you are a reviewer and open issues assigned to you. A PR from outside the workspace is a stranger's words.",
+      "Nothing is written back to Bitbucket; Taskuary only reads."] },
+  ms_planner: { group: "Project management", channel: "ms_planner", srcLabel: "Plans", srcPh: "added by Test",
+    fields: [["whose plans (their sign-in address) - for a company app, or to pick one of two Microsoft accounts", "user"]],
+    secretLabel: null,
+    desc: "Microsoft Planner tasks ASSIGNED TO YOU come in, through the Microsoft sign-in your Outlook card already has.",
+    howto: ["No key here: Planner reads through your Outlook card's Microsoft sign-in.",
+      "Your company's Microsoft app needs the Tasks.Read permission (Tasks.Read.All for a company app reading someone's plans) — IT adds it once; then sign in again on the Outlook card.",
+      "Test reads your tasks; every sync brings in open tasks assigned to you. A task made by a guest in your tenant is a stranger's words.",
+      "Nothing is written back to Planner; Taskuary only reads."] },
+  // ── people who write from outside, and business systems where something waits on you (inboxes.py, the same road) ──
+  zulip: { group: "Messaging", channel: "zulip", srcLabel: "Organization", srcPh: "added by Test",
+    fields: [["site (https://yourco.zulipchat.com or your own server)", "site"], ["account email (yours, or a bot's)", "email"]],
+    secretLabel: "API key",
+    desc: "Zulip messages that MENTION YOU and your direct messages come in and are sorted like everything else that comes in.",
+    howto: ["Get your API key: Zulip → Personal settings → Account & privacy → Manage your API key.",
+      "Enter the site and your account email, paste the key (write-only). Test signs in as you.",
+      "Every sync brings in new messages that mention you and new direct messages. A member of your organization is a colleague; a guest or a bot is a stranger's words.",
+      "Nothing is written back to Zulip; Taskuary only reads."] },
+  signal: { group: "Messaging", channel: "signal", srcLabel: "Number", srcPh: "added by Test",
+    fields: [["signal-cli REST API address (blank = http://127.0.0.1:8080)", "url"], ["your Signal number (+15551234567)", "number"]],
+    secretLabel: null,
+    desc: "Your Signal messages come in through signal-cli's REST API running beside Taskuary, and are sorted like everything else that comes in.",
+    howto: ["Signal has no official API: run the open-source signal-cli REST API on this computer (github.com/bbernhard/signal-cli-rest-api, a Docker container), in normal or native mode.",
+      "Link it to your phone as a second device (its /v1/qrcodelink page shows the QR; Signal → Settings → Linked devices).",
+      "Enter its address and your number. Test checks the number is linked there.",
+      "Every sync takes the new messages from signal-cli's queue - once taken they are Taskuary's, so let only one reader use it. Every sender is a stranger's words until you trust them.",
+      "Nothing is sent back to Signal; Taskuary only reads."] },
+  twilio: { group: "Everything else", channel: "twilio", srcLabel: "Number", srcPh: "added by Test",
+    fields: [["Account SID (starts AC)", "account_sid"], ["your Twilio number (+15551234567)", "number"]],
+    secretLabel: "auth token",
+    desc: "Texts to your Twilio number come in and are sorted like everything else that comes in.",
+    howto: ["The Twilio console home shows the Account SID and the auth token.",
+      "Enter the SID and the number texts arrive on; paste the auth token (write-only). Test checks both.",
+      "Every sync brings in new inbound texts to that number. Each texter is a stranger's words until you trust them.",
+      "Nothing is sent back over Twilio; Taskuary only reads."] },
+  discourse: { group: "Social", channel: "discourse", srcLabel: "Forum", srcPh: "added by Test",
+    fields: [["forum URL (https://forum.yourco.example)", "base_url"], ["your user name", "username"],
+      ["group whose members count as colleagues (blank = staff only)", "member_group"]],
+    secretLabel: "API key",
+    desc: "Discourse mentions, replies and messages TO YOU come in and are sorted like everything else that comes in.",
+    howto: ["An admin creates the key: Admin → API → New API key, user level Single user (you), scope read.",
+      "Enter the forum URL and your user name, paste the key (write-only).",
+      "Every sync brings in new mentions, replies, quotes and messages from your notifications. Anyone can sign up to a forum, so only staff - or the group you name - count as colleagues.",
+      "Nothing is posted to Discourse; Taskuary only reads."] },
+  reddit: { group: "Social", channel: "reddit", srcLabel: "Account", srcPh: "added by Test",
+    fields: [["script app client id (reddit.com/prefs/apps)", "client_id"], ["script app secret", "client_secret"], ["your Reddit user name", "username"]],
+    secretLabel: "Reddit password",
+    desc: "Replies, mentions and messages in your Reddit inbox come in and are sorted like everything else that comes in.",
+    howto: ["Create a script app at reddit.com/prefs/apps (any redirect URL) - it shows the client id under its name and the secret.",
+      "Enter both and your user name; paste your Reddit password (write-only). An account with two-factor sign-in cannot use a script app.",
+      "Every sync brings in your inbox: replies to your posts and comments, mentions and messages. A Redditor is always a stranger's words.",
+      "Nothing is posted to Reddit; Taskuary only reads."] },
+  youtube: { group: "Social", channel: "youtube", srcLabel: "Channel", srcPh: "added by Test",
+    fields: [["channel id (starts UC - YouTube Studio → Settings → Channel → Advanced)", "channel_id"]],
+    secretLabel: "API key",
+    desc: "New comments on your YouTube channel's videos come in and are sorted like everything else that comes in.",
+    howto: ["Google Cloud console → APIs & Services → enable YouTube Data API v3 → Credentials → Create API key.",
+      "Enter your channel id and paste the key (write-only). Test finds the channel.",
+      "Every sync brings in new comment threads on your videos; your own comments stay out. A commenter is always a stranger's words.",
+      "Nothing is posted to YouTube; Taskuary only reads."] },
+  calendly: { group: "Everything else", channel: "calendly", srcLabel: "Account", srcPh: "added by Test",
+    fields: [],
+    secretLabel: "personal access token",
+    desc: "New Calendly bookings come in with who booked and their answers, and are sorted like everything else that comes in.",
+    howto: ["Calendly → Integrations & apps → API & webhooks → Generate new token.",
+      "Paste it under Credentials (write-only) - that is all the config.",
+      "Every sync brings in upcoming meetings booked since the last poll, with the invitee's answers and the meeting link.",
+      "Nothing is changed in Calendly; Taskuary only reads."] },
+  shipstation: { group: "Everything else", channel: "shipstation", srcLabel: "Account", srcPh: "added by Test",
+    fields: [["API key", "api_key"]],
+    secretLabel: "API secret",
+    desc: "ShipStation orders AWAITING SHIPMENT come in and are sorted like everything else that comes in.",
+    howto: ["ShipStation → Settings → Account → API Settings shows the API key and secret.",
+      "Enter the key and paste the secret (write-only).",
+      "Every sync brings in orders awaiting shipment that changed recently, with their items, notes and ship-by date.",
+      "Nothing is changed in ShipStation; Taskuary only reads."] },
+  shopify: { group: "Everything else", channel: "shopify", srcLabel: "Shop", srcPh: "added by Test",
+    fields: [["shop (yourstore.myshopify.com)", "shop"]],
+    secretLabel: "Admin API access token",
+    desc: "Open Shopify orders NOT YET FULFILLED come in and are sorted like everything else that comes in.",
+    howto: ["Shopify admin → Settings → Apps and sales channels → Develop apps → Create an app → Admin API scope read_orders → Install → reveal the Admin API access token.",
+      "Enter the shop and paste the token (write-only).",
+      "Every sync brings in open orders still to fulfil that changed since the last poll, with their items and note.",
+      "Nothing is changed in Shopify; Taskuary only reads."] },
+  // ...a source that is also a keyed read (apireads.json): the same card's key serves the poll, the reports and the agents
+  woocommerce: { group: "Everything else", channel: "woocommerce", srcLabel: "Shop", srcPh: "added by Test",
+    fields: [["shop address (https://shop.yourco.example)", "host"], ["consumer key (ck_...)", "consumer_key"]],
+    secretLabel: "consumer secret (cs_...)",
+    desc: "WooCommerce orders PAID AND WAITING TO SHIP come in and are sorted like everything else that comes in; reports and agents read orders, products and customers.",
+    howto: ["WordPress admin: WooCommerce, then Settings, then Advanced, then REST API - Add key with Read permission.",
+      "Enter the shop address and the consumer key, paste the consumer secret (write-only). Test reads one order.",
+      "Every sync brings in processing orders that changed since the last poll, with their items and the customer's note. A customer is a stranger until you trust the shop.",
+      "A woocommerce_read report or agent asks any read under /wp-json/wc/v3 (GET /products?stock_status=outofstock). Nothing is changed in the shop."] },
+  bigcommerce: { group: "Everything else", channel: "bigcommerce", srcLabel: "Store", srcPh: "added by Test",
+    fields: [["store hash (the code after /stores/ in the API path)", "store_hash"]],
+    secretLabel: "API account access token",
+    desc: "BigCommerce orders AWAITING FULFILLMENT come in and are sorted like everything else that comes in; reports and agents read orders, products and customers.",
+    howto: ["BigCommerce control panel: Settings, then Store-level API accounts - Create API account with Orders and Products read-only. It shows the API path (with the store hash) and the access token.",
+      "Enter the store hash, paste the access token (write-only). Test reads the store.",
+      "Every sync brings in orders awaiting fulfillment that changed since the last poll. A customer is a stranger until you trust the store.",
+      "A bigcommerce_read report or agent asks any read under the store's API (GET /v3/catalog/products). Nothing is changed in the store."] },
+  instagram: { group: "Social", channel: "instagram", srcLabel: "Account", srcPh: "added by Test",
+    fields: [["Instagram professional account id (a number)", "ig_user_id"]],
+    secretLabel: "access token",
+    desc: "Comments on your recent Instagram posts come in and are sorted like everything else that comes in; reports and agents read your posts and insights.",
+    howto: ["Your Instagram professional account must be linked to a Facebook Page. In Meta Business settings: Users, then System users - add one, give it the Page and the Instagram account, then Generate new token with instagram_basic and instagram_manage_comments. A system user's token does not expire; a sign-in on the card comes later.",
+      "Enter the account id (Graph API Explorer: GET me/accounts?fields=instagram_business_account) and paste the token (write-only). Test finds the account.",
+      "Every sync brings in new comments on your ten latest posts; your own replies stay out. A commenter is always a stranger's words.",
+      "Nothing is posted to Instagram; Taskuary only reads."] },
+  facebook_pages: { group: "Social", channel: "facebook_pages", srcLabel: "Page", srcPh: "added by Test",
+    fields: [["Page id (a number)", "page_id"]],
+    secretLabel: "Page access token",
+    desc: "Comments on your Facebook Page's posts and messages to your Page come in and are sorted like everything else that comes in; reports and agents read posts and insights.",
+    howto: ["In Meta Business settings: Users, then System users - add one, give it the Page, then Generate new token with pages_read_engagement, pages_read_user_content and pages_messaging. A sign-in on the card comes later.",
+      "Enter the Page id and paste the token (write-only). Test finds the Page.",
+      "Every sync brings in new comments on the Page's ten latest posts and conversations whose last message is not the Page's. Everyone who writes is a stranger's words until you trust them.",
+      "Nothing is posted or replied from here; Taskuary only reads."] },
+  x: { group: "Social", channel: "x", srcLabel: "Account", srcPh: "added by Test",
+    fields: [["your X handle, without the @", "username"]],
+    secretLabel: "app bearer token",
+    desc: "Posts on X that mention you come in and are sorted like everything else that comes in; reports and agents read posts and users.",
+    howto: ["developer.x.com: Projects and Apps, then your app, then Keys and tokens - the Bearer Token. Reading mentions needs a paid API plan; the free one cannot.",
+      "Enter your handle and paste the token (write-only). Test finds your account.",
+      "Every sync brings in new posts that mention you. Everyone on X is a stranger's words until you trust them. Direct messages need a sign-in as you, which comes later.",
+      "Nothing is posted to X; Taskuary only reads."] },
+  wordpress: { group: "Social", channel: "wordpress", srcLabel: "Site", srcPh: "added by Test",
+    fields: [["site address (https://blog.yourco.example)", "host"], ["your WordPress user name", "user"]],
+    secretLabel: "application password",
+    desc: "WordPress comments AWAITING YOUR MODERATION come in and are sorted like everything else that comes in; reports and agents read posts, pages and comments.",
+    howto: ["WordPress admin: Users, then Profile, then Application Passwords - add one. The account must be able to moderate comments (an editor or an administrator).",
+      "Enter the site address and your user name, paste the application password (write-only). Test checks you may moderate.",
+      "Every sync brings in comments held for moderation since the last poll. A commenter is always a stranger's words.",
+      "A wordpress_read report or agent asks any read under /wp-json/wp/v2 (GET /posts?status=draft). Nothing is approved, posted or changed from here."] },
+  square: { group: "Everything else", channel: "square", srcLabel: "Business", srcPh: "added by Test",
+    fields: [],
+    secretLabel: "access token",
+    desc: "Square disputes WAITING ON YOUR EVIDENCE come in and are sorted like everything else that comes in.",
+    howto: ["Square Developer Console → your app → Credentials → Production access token (or a personal access token).",
+      "Paste it under Credentials (write-only).",
+      "Every sync brings in disputes in evidence-required, with the amount, reason and due date.",
+      "Nothing is changed in Square; Taskuary only reads."] },
+  paypal: { group: "Everything else", channel: "paypal", srcLabel: "Account", srcPh: "added by Test",
+    fields: [["app client id (developer.paypal.com → Apps & Credentials)", "client_id"], ["sandbox (yes for a sandbox app)", "sandbox"]],
+    secretLabel: "app secret",
+    desc: "PayPal disputes that NEED YOUR ACTION come in and are sorted like everything else that comes in.",
+    howto: ["developer.paypal.com → Apps & Credentials → Live → Create app; under Features keep Disputes on.",
+      "Enter the client id and paste the secret (write-only).",
+      "Every sync brings in disputes waiting on your action, with the amount and reason, linking to the Resolution Center.",
+      "Nothing is changed in PayPal; Taskuary only reads."] },
   discord: { group: "Messaging", channel: "discord", srcLabel: "Channel IDs", srcPh: "1234567890123456789",
     fields: [pollSecondsField("discord")],
     secretLabel: "bot token",
@@ -568,6 +809,48 @@ const META = {
     howto: ["Create a key at perplexity.ai → Settings → API (prepaid credit).",
       "Paste it under Credentials. sonar is the everyday model; sonar-pro searches harder and costs more.",
       "Test runs a real round trip. Useful as the brain for a research report rather than for triage."] },
+  fireworks_ai: { group: "AI — agents & models", channel: "ai", srcLabel: null,
+    fields: [["model (default accounts/fireworks/models/glm-5p3-flash)", "model"], ["base_url", "base_url"]], secretLabel: "API key",
+    desc: "Open models on fast serverless inference - one key, any model in its library.",
+    howto: ["Create a key at app.fireworks.ai → Settings → API Keys.",
+      "Paste it under Credentials. Leave model blank for accounts/fireworks/models/glm-5p3-flash, or name another from the provider's model list.",
+      "Test runs a real round trip. Enable to wire it into triage, drafts and the digest."] },
+  nvidia_nim: { group: "AI — agents & models", channel: "ai", srcLabel: null,
+    fields: [["model (default meta/llama-3.3-70b-instruct)", "model"], ["base_url", "base_url"]], secretLabel: "API key",
+    desc: "Open models served by NVIDIA's NIM microservices, with free credits to start.",
+    howto: ["Create a key at build.nvidia.com → any model → Get API Key.",
+      "Paste it under Credentials. Leave model blank for meta/llama-3.3-70b-instruct, or name another from the provider's model list.",
+      "Test runs a real round trip. Enable to wire it into triage, drafts and the digest."] },
+  sambanova: { group: "AI — agents & models", channel: "ai", srcLabel: null,
+    fields: [["model (default Meta-Llama-3.3-70B-Instruct)", "model"], ["base_url", "base_url"]], secretLabel: "API key",
+    desc: "Llama and other open models on SambaNova's own chips - fast, with a free tier.",
+    howto: ["Create a key at cloud.sambanova.ai → APIs.",
+      "Paste it under Credentials. Leave model blank for Meta-Llama-3.3-70B-Instruct, or name another from the provider's model list.",
+      "Test runs a real round trip. Enable to wire it into triage, drafts and the digest."] },
+  deepinfra: { group: "AI — agents & models", channel: "ai", srcLabel: null,
+    fields: [["model (default meta-llama/Llama-3.3-70B-Instruct-Turbo)", "model"], ["base_url", "base_url"]], secretLabel: "API key",
+    desc: "Open models at low per-token prices, pay as you go.",
+    howto: ["Create a key at deepinfra.com → Dashboard → API Keys.",
+      "Paste it under Credentials. Leave model blank for meta-llama/Llama-3.3-70B-Instruct-Turbo, or name another from the provider's model list.",
+      "Test runs a real round trip. Enable to wire it into triage, drafts and the digest."] },
+  novita: { group: "AI — agents & models", channel: "ai", srcLabel: null,
+    fields: [["model (default meta-llama/llama-3.3-70b-instruct)", "model"], ["base_url", "base_url"]], secretLabel: "API key",
+    desc: "Open models on pay-as-you-go GPUs, one key for the whole library.",
+    howto: ["Create a key at novita.ai → Settings → Key Management.",
+      "Paste it under Credentials. Leave model blank for meta-llama/llama-3.3-70b-instruct, or name another from the provider's model list.",
+      "Test runs a real round trip. Enable to wire it into triage, drafts and the digest."] },
+  hyperbolic: { group: "AI — agents & models", channel: "ai", srcLabel: null,
+    fields: [["model (default glm-5.3-flash)", "model"], ["base_url", "base_url"]], secretLabel: "API key",
+    desc: "Open models on low-cost GPU inference.",
+    howto: ["Create a key at app.hyperbolic.ai → Settings → API Keys.",
+      "Paste it under Credentials. Leave model blank for glm-5.3-flash, or name another from the provider's model list.",
+      "Test runs a real round trip. Enable to wire it into triage, drafts and the digest."] },
+  bedrock: { group: "AI — agents & models", channel: "ai", srcLabel: null,
+    fields: [["model (default openai.gpt-oss-120b-1:0)", "model"], ["base_url", "base_url"]], secretLabel: "API key",
+    desc: "Models in your own AWS account through Bedrock's chat completions - with a Bedrock API key.",
+    howto: ["Create a key at AWS console → Amazon Bedrock → API keys (a Bedrock API key, not an access key pair).",
+      "Paste it under Credentials. Leave model blank for openai.gpt-oss-120b-1:0, or name another from the provider's model list.",
+      "Test runs a real round trip. Enable to wire it into triage, drafts and the digest."] },
   // A decision model, not a brain. It sits in this group because it is an AI card you paste a key
   // on, but it is offered in exactly ONE picker (Settings → How mail is sorted → Where runs go): it
   // emits no text at all, so chosen as the Assistant's brain it would have nothing to say.
@@ -635,6 +918,42 @@ const META = {
     howto: ["Create a key at console.deepgram.com → API Keys (new accounts get free credit).",
       "Paste it under Credentials. Test sends a second of silence through the real endpoint.",
       "Enable to transcribe voice notes and power the mic."] },
+  assemblyai: { group: "AI — voice", channel: "ai", srcLabel: null,
+    fields: [["model (optional, e.g. universal)", "model"], ["language code (optional; detected otherwise)", "language"]],
+    secretLabel: "AssemblyAI API key",
+    desc: "AssemblyAI Universal — strong accuracy across many languages, with free hours to start.",
+    howto: ["Create a key at assemblyai.com → Dashboard → API Keys.",
+      "Paste it under Credentials. Test sends a second of silence through the real endpoint.",
+      "Enable to transcribe voice notes and power the mic."] },
+  speechmatics: { group: "AI — voice", channel: "ai", srcLabel: null,
+    fields: [["region (eu1 or us1, default eu1)", "region"], ["language code (default auto)", "language"], ["operating point (standard or enhanced)", "model"]],
+    secretLabel: "Speechmatics API key",
+    desc: "Speechmatics batch transcription — 50+ languages, EU or US processing, with free hours each month.",
+    howto: ["Create a key at portal.speechmatics.com → API Keys.",
+      "Paste it under Credentials. Test sends a second of silence through the real endpoint.",
+      "Enable to transcribe voice notes and power the mic."] },
+  gladia: { group: "AI — voice", channel: "ai", srcLabel: null,
+    fields: [["language code (optional; detected otherwise)", "language"]],
+    secretLabel: "Gladia API key",
+    desc: "Gladia — multilingual transcription with code-switching, with free hours each month.",
+    howto: ["Create a key at app.gladia.io → API keys.",
+      "Paste it under Credentials. Test sends a second of silence through the real endpoint.",
+      "Enable to transcribe voice notes and power the mic."] },
+  azure_speech: { group: "AI — voice", channel: "ai", srcLabel: null,
+    fields: [["endpoint (https://<resource>.cognitiveservices.azure.com)", "endpoint"], ["or region (e.g. eastus)", "region"], ["locale (default en-US)", "language"]],
+    secretLabel: "Speech resource key",
+    desc: "Azure AI Speech fast transcription — your company's own Azure Speech resource, one call per file.",
+    howto: ["Create a key at Azure portal → your Speech resource → Keys and Endpoint.",
+      "Paste it under Credentials. Test sends a second of silence through the real endpoint.",
+      "Enable to transcribe voice notes and power the mic."] },
+  amazon_transcribe: { group: "AI — voice", channel: "ai", srcLabel: null,
+    fields: [["S3 bucket the audio may go to", "bucket"], ["region (e.g. us-east-1)", "region"], ["access key id (blank = this computer's AWS sign-in)", "access_key_id"],
+             ["language code (optional; detected otherwise, e.g. en-US)", "language"]],
+    secretLabel: "secret access key (write-only; blank = this computer's AWS sign-in)",
+    desc: "Amazon Transcribe on your own AWS account — each clip goes to your S3 bucket, is transcribed there, and both the audio and its transcript are deleted once read.",
+    howto: ["Make an S3 bucket in the region you use, and an IAM user allowed only s3:PutObject, GetObject and DeleteObject on it plus transcribe:StartTranscriptionJob and GetTranscriptionJob.",
+      "Enter the bucket, region and access key id, and paste the secret access key. boto3 is the driver: pip install boto3 (or press Install).",
+      "Test sends a second of silence through a real job. Enable to transcribe voice notes and power the mic."] },
   elevenlabs_stt: { group: "AI — voice", channel: "ai", srcLabel: null,
     fields: [["model (default scribe_v2)", "model"], ["language code (optional)", "language"]],
     secretLabel: "ElevenLabs API key",
@@ -713,14 +1032,22 @@ const META = {
       "core is the cheap default; ultra costs more per image.",
       "Test draws one small grey square. Enable to use it."],
     agent: ["Ask the owner for a Stability AI key, save it as Secret, leave model blank for core, Test, turn it on, SETUP DONE."] },
-  runway_image: { group: "AI — images", channel: "ai", srcLabel: null,
-    fields: [["model (default gen4_image)", "model"]],
+  runway_image: { group: "AI — video", channel: "ai", srcLabel: null,
+    fields: [["image model (default gen4_image)", "model"], ["video model (default gen4.5)", "video_model"]],
     secretLabel: "Runway API key",
-    desc: "Runway's Gen-4 image model, on its developer API — credits bought in the Runway developer portal, apart from a Runway app plan.",
+    desc: "Runway's developer API, one key for both: Gen-4 pictures, and Gen-4.5 video clips your agents make from a sentence or a picture (runway_video) — credits bought in the Runway developer portal, apart from a Runway app plan.",
     howto: ["Create a key in the Runway developer portal (dev.runwayml.com) and paste it under Credentials.",
       "The developer API bills its own credits - add some there before testing.",
       "Test draws one small grey square. Enable to use it."],
     agent: ["Ask the owner for a Runway API key from dev.runwayml.com, save it as Secret, leave model blank for gen4_image, Test, turn it on, SETUP DONE."] },
+  kling: { group: "AI — video", channel: "ai", srcLabel: null,
+    fields: [["model (default kling-2.6)", "model"]],
+    secretLabel: "Kling API key",
+    desc: "Kling's video models on its own API — your agents make a 5 or 10 second clip from a sentence, or animate a picture (kling_video), into the task's outputs.",
+    howto: ["Sign in to the Kling AI developer console (kling.ai) and press + Create a new API Key. It is shown once.",
+      "Paste it under Credentials. The API bills its own resource packs - buy one there first.",
+      "Test reads your task list, which spends nothing. Enable to let agents make clips."],
+    agent: ["Ask the owner for a Kling API key from the Kling AI developer console, save it as Secret, leave model blank for kling-2.6, Test, turn it on, SETUP DONE."] },
   openrouter_image: { group: "AI — images", channel: "ai", srcLabel: null,
     fields: [["model (default google/gemini-3-flash-image)", "model"]],
     secretLabel: "OpenRouter API key",
@@ -737,6 +1064,7 @@ const META = {
       "Put the model in owner/name form. flux-schnell is fast and cheap; flux-dev is slower and better.",
       "Test draws one small grey square — a Replicate run takes a few seconds longer because it queues. Enable to use it."],
     agent: ["Ask the owner for a Replicate API token, save it as Secret, leave model blank for flux-schnell unless they name one, Test, turn it on, SETUP DONE."] },
+  ...WAITING_META,          // shared inboxes, phones, forms, hiring and money that wait on you (waitingMeta.js)
 };
 // a chat card off the fast clock (pollFields.CHAT_CONNECTORS) gets null for its poll field: opening Mattermost, Rocket.Chat, Matrix
 // or Google Chat drew "Something in this view failed to draw" (the setup sweep, 2026-10-27)
@@ -893,6 +1221,65 @@ const DATA_META = {
     howto: ["Install the driver once: pip install sqlalchemy clickhouse-sqlalchemy",
       "Port 8123 is the HTTP interface, not the native 9000 one.",
       "Test runs SELECT 1."] },
+  // CockroachDB, Oracle and DuckDB on the same road (databases.ENGINES, the owner 2026-11-08: "all the ones that say coming soon just add them now")
+  cockroachdb: { title: "CockroachDB", types: ["cockroachdb"],
+    fields: [["host", "host"], ["port (default 26257)", "port"], ["database", "database"], ["user", "user"]],
+    secretLabel: "password",
+    desc: "Query CockroachDB as a report or an agent tool — it speaks the Postgres wire, so the Postgres driver reads it.",
+    howto: ["Install the driver once: pip install sqlalchemy psycopg2-binary",
+      "Fill in host, database and user; the password is the card secret. On CockroachDB Cloud, paste the whole connection string as conn_str instead.",
+      "Point it at a read-only account — the database user is the real ceiling.",
+      "Test runs SELECT 1."] },
+  oracle: { title: "Oracle Database", types: ["oracle"],
+    fields: [["host", "host"], ["port (default 1521)", "port"], ["service name", "database"], ["user", "user"]],
+    secretLabel: "password",
+    desc: "Query Oracle by service name as a report or an agent tool — python-oracledb's thin mode, no Oracle client to install.",
+    howto: ["Install the driver once: pip install sqlalchemy oracledb",
+      "Fill in host, the SERVICE NAME (not a SID) and user; the password is the card secret.",
+      "Point it at a read-only account — the database user is the real ceiling.",
+      "Test runs SELECT 1 FROM DUAL."] },
+  duckdb: { title: "DuckDB", types: ["duckdb"],
+    fields: [["database file (e.g. C:/data/sales.duckdb)", "path"]],
+    secretLabel: null,
+    desc: "Query a DuckDB file on this computer — and the CSV and Parquet files a query names — opened read-only.",
+    howto: ["Install the driver once: pip install duckdb duckdb-engine",
+      "Give the path of the .duckdb file. It is opened read-only, so nothing a query says can change it.",
+      "Test runs SELECT 1."] },
+  obsidian: { title: "Obsidian", types: ["obsidian_read"], noSecret: true,
+    fields: [["vault folder (the folder your notes and its .obsidian folder are in)", "vault"]],
+    desc: "Your Obsidian vault read where it lies on this computer: the latest notes, the ones a word is in, or one note - as a report or an agent tool. Reads only.",
+    howto: ["Give the vault's folder - Obsidian shows it under Manage vaults. No key, no plugin: the notes are plain Markdown files.",
+      "Test counts the notes. The app's own .obsidian folder and the .trash are never read, and nothing outside the vault is.",
+      "A report or an agent asks obsidian_read with {\"search\": \"budget\"}, {\"note\": \"Projects/Q3.md\"} or nothing for the latest. To search by meaning, add the same folder to the Knowledge base card."] },
+  dynamodb: { title: "Amazon DynamoDB", types: ["dynamodb"],
+    fields: [["access key id", "access_key_id"], ["region (e.g. us-east-1)", "region"]],
+    secretLabel: "secret access key (write-only; blank = server env / ~/.aws / instance role)",
+    desc: "List tables, scan their first rows or read one item by key, as a report or an agent tool. Reads only.",
+    howto: ["Give an IAM user AmazonDynamoDBReadOnlyAccess - that is the ceiling; the card ships no write.",
+      "Enter the access key id and region, and paste the secret access key (write-only). boto3 is the driver: pip install boto3.",
+      "Test lists your tables."] },
+  mongodb: { title: "MongoDB", types: ["mongodb"],
+    fields: [["connection string (mongodb+srv://ro-user:{password}@cluster0.example.net/sales)", "conn_str"], ["database (blank = the one in the string)", "database"]],
+    secretLabel: "password for {password} (write-only)",
+    desc: "Find, count and aggregate documents as a report or an agent tool. Reads only: a pipeline with $out or $merge is refused before it is sent.",
+    howto: ["Install the driver once: pip install taskuary[mongodb] (or press Install when Test asks for it).",
+      "Make a database user with the read role only, and paste its connection string - {password} stands for the password below.",
+      "Test lists the collections. A report or an agent gives {collection, filter} to find, or {collection, pipeline} to aggregate."] },
+  redis: { title: "Redis", types: ["redis"],
+    fields: [["host", "host"], ["port (default 6379)", "port"], ["database number (default 0)", "db"], ["user (Redis 6 ACL; blank = default)", "user"],
+             ["TLS (yes for most cloud Redis)", "tls"], ["or a full redis:// / rediss:// URL", "url"]],
+    secretLabel: "password (write-only)",
+    desc: "Read keys, hashes, lists, sets and streams as a report or an agent tool - one command from a closed list of reads (GET, HGETALL, LRANGE, SCAN, INFO...). Nothing that writes is ever sent.",
+    howto: ["Install the driver once: pip install taskuary[redis] (or press Install when Test asks for it).",
+      "Best: an ACL user limited to read commands (+@read). Give its host and port, and paste its password.",
+      "Test counts the keys (DBSIZE). A report or an agent sends {command: \"HGETALL\", args: [\"order:1\"]}; KEYS is refused - use SCAN."] },
+  neo4j: { title: "Neo4j", types: ["neo4j"],
+    fields: [["URI (neo4j+s://xxxx.databases.neo4j.io, or neo4j://host:7687)", "uri"], ["user (default neo4j)", "user"], ["database (blank = the default)", "database"]],
+    secretLabel: "password (write-only)",
+    desc: "Cypher queries as a report or an agent tool, each in a read transaction the server itself refuses to write in.",
+    howto: ["Install the driver once: pip install taskuary[neo4j] (or press Install when Test asks for it).",
+      "Give the URI and a user - one with the reader role is best - and paste its password.",
+      "Test runs RETURN 1. A report or an agent gives {cypher, params}."] },
   snowflake: { title: "Snowflake", types: ["snowflake"],
     fields: [["account identifier (e.g. xy12345.eu-west-1)", "account"], ["database", "database"],
              ["schema", "schema"], ["warehouse", "warehouse"], ["role", "role"], ["user", "user"]],
@@ -953,7 +1340,7 @@ const DATA_META = {
     connect: { label: "Sign in with LinkedIn", status: (cid) => `/api/connectors/${cid}/linkedin/status`,
       start: (cid) => `/api/connectors/${cid}/linkedin/authorize`,
       text: "Opens LinkedIn's consent screen in a new tab. The token returns directly to Taskuary." },
-    desc: "Publish to your own LinkedIn feed. A draft an agent writes never posts itself: the card ships at authority READ, so every post is a proposal you approve on the task.",
+    desc: "Publish to your own LinkedIn feed. A post an agent writes never goes by itself: it waits on the task for your Post.",
     howto: ["Create an app at developer.linkedin.com/apps. It must be associated with a LinkedIn Page you are an admin of — that is LinkedIn's rule, not ours, and there is no way around it.",
       "On the app's Products tab add BOTH: 'Share on LinkedIn' (which lets it post) and 'Sign In with LinkedIn using OpenID Connect' (which lets it read who you are). Both are self-serve and granted immediately. With only the first, the sign-in is refused with “Scope openid is not authorized for your application”.",
       "Do NOT request Community Management. That one needs a registered legal entity and a narrated screencast, and a rejection is terminal for the app — you would have to make a new one.",
@@ -973,7 +1360,7 @@ const DATA_META = {
     howto: ["Sign in at treg.to (GitHub or an emailed code) and create a token. New verified accounts get $1.00 of credit; there is no subscription and no seat.",
       "Paste the token under Credentials. Leave the url blank unless you self-host.",
       "Test lists treg's own tool surface — about ten meta-tools. The 3,600 endpoints are not tools; they are the catalogue those tools search.",
-      "Searching is free and changes nothing, so an agent may do it unattended. CALLING spends real money and can reach endpoints that publish or order, so the card ships at authority READ and every call becomes a proposal you approve on the task.",
+      "Searching is free and changes nothing, so an agent may do it unattended. CALLING spends real money and can reach endpoints that publish or order, so every call an agent makes waits on the task for your approval.",
       "max cost is the only ceiling there is — treg applies none of its own to a direct call. 0.25 is generous for ordinary work (their median endpoint is $0.002) and still refuses the video-generation tail.",
       "Your own credential always wins: if you connect a provider you already pay for, treg uses it and never meters it."],
     agent: ["Search FIRST: run_tool with type treg_search and a `q` that says the JOB, not the vendor (‘find a company's employee count’, not ‘Crunchbase’). The answer gives each endpoint's id, its price and how reliably it has been working.",
@@ -1020,6 +1407,18 @@ const DATA_META = {
       "API \u2192 Token. Paste it here (write-only); Test fetches real price history.",
       "On the REPORTS tab: price history over a date range, or news filtered to your symbols.",
       "Adjusted closes are the point of this one \u2014 a split in the window will not put a false crash in your chart."] },
+  marketstack: { title: "Marketstack", types: ["marketstack_eod"],
+    fields: [], secretLabel: "API access key (write-only)",
+    desc: "End-of-day bars for stocks on 70+ exchanges on one access key.",
+    howto: ["Sign up at marketstack.com \u2014 it has a free plan.",
+      "Dashboard \u2192 Your API access key. Paste it here (write-only); Test fetches the latest bar for AAPL.",
+      "On the REPORTS tab: end-of-day bars for your symbols, from a date or just the latest day."] },
+  eodhd: { title: "EOD Historical Data", types: ["eodhd_eod"],
+    fields: [], secretLabel: "API token (write-only)",
+    desc: "End-of-day bars with adjusted closes across global exchanges - name a symbol with its exchange, AAPL.US or VOD.LSE.",
+    howto: ["Sign up at eodhd.com \u2014 it has a free plan.",
+      "Settings \u2192 API token. Paste it here (write-only); Test fetches a real AAPL.US bar.",
+      "On the REPORTS tab: end-of-day bars for one symbol over a date range. A bare ticker is read as a US one."] },
   fmp: { title: "Financial Modeling Prep", types: ["fmp_fundamentals", "fmp_ratios"],
     fields: [], secretLabel: "API key (write-only)",
     desc: "Fundamentals and ratios \u2014 the balance-sheet side rather than the price side. The card to use when the question is whether a company is sound, not what it traded at.",
@@ -1052,7 +1451,7 @@ const DATA_META = {
       "Connect an agent at robinhood.com/agentic-trading and paste the token it issues under Credentials. Leave the url blank unless Robinhood gives you a different one.",
       "Test lists the tools YOUR account exposes. Robinhood publishes no manifest, so this is how you learn the names — the names it prints are what you put in a report's \"tool\".",
       "Reads: 'robinhood_read' with a tool and its args. It refuses any tool Robinhood has not marked read-only, so it cannot be talked into placing an order.",
-      "The card ships at authority READ, so 'robinhood_order' never runs for an agent — it PROPOSES the trade and you approve it on the task. Raising the card to write removes that click. Robinhood's own warning is worth repeating: AI agents can make errors, misinterpret instructions, and act on incomplete or outdated information."],
+      "An agent never places an order itself - it proposes the trade and you approve it on the task. Robinhood's own warning is worth repeating: AI agents can make errors, misinterpret instructions, and act on incomplete or outdated information."],
     agent: ["Run robinhood_tools FIRST - the tool names are not documented anywhere and differ by account; never guess one.",
       "Reads are yours: run_tool with type robinhood_read, a \"tool\" from that manifest and its \"args\". A tool the server has not marked read-only is refused, by design - do not try to route around it.",
       "You may NOT place a trade. Propose it and say what the analysis was: TASKUARY-PROPOSE {\"action\": \"run_tool\", \"type\": \"robinhood_order\", \"tool\": \"<from the manifest>\", \"args\": {...}}. The owner approves it on the task and it executes then, not before.",
@@ -1349,6 +1748,7 @@ const DATA_META = {
       "Browse, discuss, vote and retire entries on the Hub tab. Keep the bar high: hard-earned discoveries and developed ideas only."],
     agent: ["GET {base}/api/hub{hdr} to browse, or POST {base}/api/tools/run{hdr} with {\"type\": \"hub_search\", \"query\": \"...\"}. Use hub_write only for a reusable discovery backed by substantial investigation/reasoning, or a developed company idea; include why_earned. Use hub_comment and hub_vote as either a coding or general agent. SETUP DONE."] },
 };
+Object.assign(DATA_META, READ_META);       // a vendor's REST API read with a key, one row each in apireads.json
 
 /* A question typed on the Knowledge base card, answered from the index - the same search a
    kb_search report or an agent's tool call gets, so what the card shows is what they would see. */
@@ -1385,7 +1785,7 @@ function KbSearch({ conn }) {
 
 const WINRM_HOWTO = [
   "This card is the CONNECTION only - the machine name. Build the actual reports (script + AI summary + schedule) on the REPORTS tab.",
-  "A box you can RDP into (like AZWEB01) is usually domain-joined and already reachable over WinRM with your Windows login - just enter the machine name and Test.",
+  "A box you can RDP into (like NWWEB01) is usually domain-joined and already reachable over WinRM with your Windows login - just enter the machine name and Test.",
   "If Test fails with 'WinRM unreachable', enable PS remoting on the remote box once: open an elevated PowerShell THERE and run Enable-PSRemoting -Force.",
   "Reports then run any PowerShell you write ON that machine (read a log, query a service, export a CSV) and the output - optionally AI-summarized - lands under Reports on your work rail.",
 ];
@@ -1872,6 +2272,7 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
     : conn.Type === "winrm" ? <WinrmDetail key={conn.ConnectorId} {...shared} />
     : conn.Type === "reason_network" ? <ReasonDetail key={conn.ConnectorId} {...shared} />
     : conn.Type === "agent_desktop" ? <DesktopDetail key={conn.ConnectorId} {...shared} />
+    : AGENT_TOOLS.has(conn.Type) ? <AgentToolDetail key={conn.ConnectorId} {...shared} />
     : DATA_META[conn.Type] ? <DataDetail key={conn.ConnectorId} {...shared} meta={DATA_META[conn.Type]} sources={sources} byType={byType} />
     : <ChannelDetail key={conn.ConnectorId} {...shared} sources={sources} onNavigate={onNavigate} chatsAsk={chatsAsk} />;
   const detail = page && <AgentsDoor.Provider value={() => setOpen({ kind: "agents" })}><Box ref={setScope} data-tq-connector-scope="">{page}</Box></AgentsDoor.Provider>;
@@ -1905,7 +2306,11 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
       desc: desc(c), haystack,
       displayDesc: ["reason_network", "agent_desktop"].includes(type) ? t(desc(c))
         : `${t(c.LastError ? "connection failing" : c.LastSyncAt ? "connection ✓" : "not set up")} · ${t(count === 1 ? "{count} report (built under Reports)" : "{count} reports (built under Reports)", { count })}`,
-      go: () => setOpen({ kind: "connector", id: c.ConnectorId }) };
+      go: () => setOpen({ kind: "connector", id: c.ConnectorId }),
+      // ...and these carry it too (the owner, 2026-11-06): SQL Server, remote Windows, Agent Desktop and Reason Network had Remove only on
+      // their own page - the same channel the page's own Remove says (MssqlDetail, WinrmDetail: data)
+      remove: removable(c) ? { conn: c, channel: type === "mssql" || type === "winrm" ? "data" : "", reload: load } : null,
+    };
   });
   const planned = types.filter((t) => t.status === "planned").map((t) => t.type);
   // `rest` catches whatever the server starts advertising that this file has not been taught
@@ -1913,16 +2318,32 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
   const plannedCards = (keys, rest = false) => (rest ? planned.filter((t) => !PLACED.has(t)) : keys.filter((t) => planned.includes(t)))
     .map((type) => ({ key: `p${type}`, title: PLANNED_TITLES[type] || type.replace(/_/g, " "), desc: t("planned"),
       channel: type, haystack: `${type} planned`, planned: true }));
-  const catalogCards = (category) => plannedFor(category).map((c) => ({
-    key: `catalog-${c.type}`, title: c.title, desc: t("planned — {description}", { description: t(c.desc) }), channel: c.type,
-    haystack: `${c.type} ${c.title} ${c.desc} planned`, planned: true,
-  }));
   const connectedClis = (clis || []).filter((c) => c.configured && c.installed);
   const installedClis = (clis || []).filter((c) => c.installed);
   const cliDisplay = !clis ? t("Claude / Codex / Qwen Code / OpenCode / Kimi / Gemini / Oh My Pi — connect a coding CLI. Choose the default and model in {place}", { place: placeName("sorting") })
     : connectedClis.length ? t("Connected: {names}", { names: connectedClis.map((c) => c.label || c.name).join(", ") })
       : installedClis.length ? t("{count} installed on this computer · none connected - open to connect one", { count: installedClis.length })
         : t("None installed - open to install a coding CLI");
+  // a mailbox preset not yet made into a card: one press makes an IMAP card with its servers filled in, and opens it
+  const presetCards = (types) => presetsLeft(types, connectors).map((type) => ({
+    key: `preset-${type}`, title: PRESETS[type].title, desc: t(PRESETS[type].desc), channel: "email",
+    haystack: `${type} ${PRESETS[type].title} ${PRESETS[type].desc} ${(PRESETS[type].match || []).join(" ")} imap email mail`,
+    go: async () => {
+      try { const { data } = await api.post("/api/connectors", presetBody(type)); await load(); setOpen({ kind: "connector", id: data.connectorId }); }
+      catch { const c = (connectors || []).find((x) => x.Type === PRESETS[type].preset.type && x.Name === PRESETS[type].title); if (c) setOpen({ kind: "connector", id: c.ConnectorId }); }
+    } }));
+  // a vendor's own MCP server (remotemcp.py): a catalogue row with an `mcp` url is a working card in its group, then the planned ones
+  const catalogCards = (category) => [
+    // ...the sources where work waits on you elsewhere (waiting.py), each in its catalogue group
+    ...channelCards(waitingIn(category)),
+    // ...and a vendor's REST API read with a key (apireads.json), in its own catalogue group
+    ...dataCards(READ_TYPES.filter((t) => !META[t] && CATALOGUE.find((c) => c.type === t)?.group === category)),    // a source too: drawn as its channel card
+    ...CATALOGUE.filter((c) => c.mcp && c.group === category).flatMap((c) =>
+      specialCards(c.type, c.title, "", `${c.type} ${c.title} ${c.desc} ${(c.match || []).join(" ")} mcp agent tools`, toolDesc)),
+    ...plannedFor(category).map((c) => ({
+      key: `catalog-${c.type}`, title: c.title, desc: t("planned — {description}", { description: t(c.desc) }), channel: c.type,
+      haystack: `${c.type} ${c.title} ${c.desc} planned`, planned: true,
+    }))];
 
   const groups = onceEach([
     { title: "AI — agents & models", cards: [
@@ -1945,7 +2366,8 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
           desc: t("one system-wide list used by every voice connector and mic"), displayDesc: t("one system-wide list used by every voice connector and mic"),
           haystack: "custom shared voice vocabulary words phrases domain names acronyms",
           go: () => setOpen({ kind: "voice-vocabulary" }) },
-        ...channelCards(["gemini_stt", "groq_stt", "openai_stt", "deepgram", "elevenlabs_stt", "stt_server", "local_whisper"]),
+        ...channelCards(["gemini_stt", "groq_stt", "openai_stt", "deepgram", "elevenlabs_stt", "assemblyai", "speechmatics", "gladia", "azure_speech",
+          "amazon_transcribe", "stt_server", "local_whisper"]),
         ...catalogCards("AI — voice"),
       ] },
     // a picture when something asks for one: an agent drawing a diagram for a report, or the
@@ -1954,17 +2376,26 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
       note: "Without a card here, nothing can draw. With one, an agent asked for a picture generates it and files it on the task, where the timeline shows it inline. Replicate reaches the most models for one token; a local OpenAI-compatible server costs nothing and keeps the prompt on this machine.",
       cards: [
         ...channelCards(["openai_image", "azure_openai_image", "gemini_image", "stability_image",
-          "openrouter_image", "replicate_image", "runway_image", "xai_image", "image_server"]),
+          "openrouter_image", "replicate_image", "xai_image", "image_server"]),
         ...catalogCards("AI — images"),
       ] },
+    // video for the agents (videotools.py): clips from a key card, and editors that live in the agent CLI as MCP servers or skills
+    { title: "AI — video",
+      note: "Runway and Kling make a clip from a sentence with a key on their card. Descript, InVideo, Vidova and OpusClip are the vendor's own MCP server, added to Claude Code or Codex - press Sign in on the card once. video-use is a Claude Code skill that edits video files on this computer.",
+      cards: [
+        ...channelCards(["runway_image", "kling"]),
+        ...catalogCards("AI — video"),
+        ...specialCards("video_use", "video-use", "", "video-use video use browser use skill ffmpeg elevenlabs cut edit", toolDesc),
+      ] },
     // mail and chat are different jobs: one group held nine cards and read as a wall
-    { title: "Email", cards: [...channelCards(["outlook", "gmail", "imap"]), ...catalogCards("Email")] },
+    { title: "Email", cards: [...channelCards(["outlook", "gmail", "imap"]),
+      ...presetCards(["fastmail", "yahoo_mail", "proton_mail", "exchange"]), ...catalogCards("Email")] },
     { title: "Messaging", cards: [...channelCards(["teams", "slack", "telegram", "whatsapp", "imessage", "discord",
-        "mattermost", "rocketchat", "matrix", "google_chat"]), ...catalogCards("Messaging")] },
+        "mattermost", "rocketchat", "matrix", "google_chat", "zulip", "signal"]), ...catalogCards("Messaging")] },
     /* Publishing under your own name is neither a channel nor a data source: nothing arrives
        from here, and the only verb is "post". It gets its own shelf so the Messaging group
        keeps meaning "things that talk to you". */
-    { title: "Social", cards: [...dataCards(["linkedin", "bluesky", "mastodon"]), ...catalogCards("Social")] },
+    { title: "Social", cards: [...dataCards(["linkedin", "bluesky", "mastodon"]), ...channelCards(["discourse", "reddit", "youtube", "instagram", "facebook_pages", "x", "wordpress"]), ...catalogCards("Social")] },
     /* Not a data source and not a channel: these give an AGENT reach. A Zoho card means
        "Taskuary can see this system of ours"; a card here means "an agent can reach outward
        through this". Different question, different shelf. */
@@ -1982,8 +2413,9 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
       cards: [{ key: "signins", title: "Saved sign-ins", guide: true, desc: "Add or remove the sign-ins Taskuary types for your agents",
         haystack: "sign in signin sign-in login log in password vault saved credentials user name site portal",
         go: () => setOpen({ kind: "signins" }) }] },
-    { title: "Developer", cards: [...channelCards(["github", "gitlab", "azdo", "sentry", "pagerduty"]), ...catalogCards("Developer")] },
-    { title: "Project management", cards: [...channelCards(["jira", "asana", "monday", "clickup", "todoist", "linear", "trello", "notion"]), ...catalogCards("Project management")] },
+    { title: "Developer", cards: [...channelCards(["github", "gitlab", "azdo", "bitbucket", "sentry", "pagerduty"]), ...catalogCards("Developer")] },
+    { title: "Project management", cards: [...channelCards(["jira", "asana", "monday", "clickup", "todoist", "linear", "trello", "notion",
+      "shortcut", "wrike", "ms_planner", "smartsheet", "airtable", "github_projects", "zendesk", "freshdesk", "intercom"]), ...catalogCards("Project management")] },
     /* One "Data connections" bucket held eleven cards that have nothing to do with each
        other - a SQL server, a log store and a web-search API are three different jobs, and a
        rail entry saying "11" tells you nothing about which one you came for. Split by what
@@ -1992,16 +2424,17 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
     { title: "Databases", cards: [
       ...specialCards("mssql", "Microsoft SQL Server", "mssql",
         "microsoft sql server mssql connection windows auth " + MSSQL_HOWTO.join(" ")),
-      ...dataCards(["postgresql", "mysql", "clickhouse", "snowflake", "bigquery", "database"]),
+      ...dataCards(["postgresql", "mysql", "clickhouse", "snowflake", "bigquery", "cockroachdb", "oracle", "duckdb", "dynamodb", "mongodb", "redis", "neo4j", "database"]),
       ...plannedCards(["graphql", "sqlite"]), ...catalogCards("Databases"),
     ]},
     { title: "Cloud & infrastructure", cards: [
       ...dataCards(["aws", "azure"]),
       ...specialCards("winrm", "Remote Windows (WinRM)", "winrm",
-        "remote windows winrm rdp powershell remoting azweb01 " + WINRM_HOWTO.join(" ")),
+        "remote windows winrm rdp powershell remoting nwweb01 " + WINRM_HOWTO.join(" ")),
       ...catalogCards("Cloud & infrastructure"),
     ]},
     { title: "Corporate systems", cards: [
+      ...channelCards(["servicenow"]),
       ...dataCards(["intacct", "quickbooks", "zoho_invoice", "amazon_sp", "stripe"]),
       ...catalogCards("Corporate systems"),
     ]},
@@ -2009,7 +2442,7 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
       ...dataCards(["simplefin", "teller", "yahoo", "coingecko", "alchemy", "frankfurter", "sec_edgar", "screen",
         // these eight were reachable from the Reports tab and from nowhere else - the key had no
         // card to live on, so every report built on them failed with nothing to click (2026-09-22)
-        "fred", "twelvedata", "alphavantage", "finnhub", "polygon", "tiingo", "fmp", "alpaca",
+        "fred", "twelvedata", "alphavantage", "finnhub", "polygon", "tiingo", "fmp", "alpaca", "marketstack", "eodhd",
         "robinhood"]),
       ...plannedCards(["stooq"]),
       ...catalogCards("Markets & finance"),
@@ -2024,9 +2457,9 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
     // the web as a source: one REST call and a key each. What is deliberately NOT here is
     // anything that drives a browser - logging in, clicking - which needs CDP, not an API.
     { title: "Agentic web", cards: [...dataCards(["exa", "tavily", "brave_search", "serpapi", "serper", "reader", "firecrawl", "scrapingbee", "apify"]), ...catalogCards("Agentic web")] },
-    { title: "Files & sheets", cards: [...dataCards(["knowledge", "handbook", "sharepoint", "google_sheets", "smb_file", "sftp"]),
+    { title: "Files & sheets", cards: [...dataCards(["knowledge", "handbook", "sharepoint", "google_sheets", "smb_file", "sftp", "obsidian"]),
       ...catalogCards("Files & sheets")] },
-    { title: "Everything else", cards: [...catalogCards("Everything else"), ...plannedCards(KNOWN_PLANNED, true)] },
+    { title: "Everything else", cards: [...channelCards(["calendly", "shopify", "woocommerce", "bigcommerce", "shipstation", "square", "paypal", "twilio"]), ...catalogCards("Everything else"), ...plannedCards(KNOWN_PLANNED, true)] },
  ]);
   const hits = matchCards(groups, q);
   // WORDS TYPED PUT THE OPEN CARD DOWN (the owner, 2026-10-21: "link" typed over the open LinkedIn card, and the page went on
@@ -2456,6 +2889,9 @@ function ThinkingSwitch({ cfg, setCfg }) {
     </Box>
   );
 }
+// a card made from a mailbox preset reads the provider's own steps over the IMAP card's (connectorCatalog.presetOf)
+const metaOf = (conn) => { const p = presetOf(conn), m = META[conn.Type];
+  return p && m ? { ...m, desc: p.desc, secretLabel: p.preset.secret || m.secretLabel, howto: p.preset.howto || m.howto } : m; };
 
 export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, onBack: leave, onCreated, onNavigate, simple = false, onConnected, chatsAsk = null }) {
   useLocale();
@@ -2463,7 +2899,7 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
   const draft = useCardDraft(savedConn, savedSources, reload);
   const { conn, sources } = draft;
   const onBack = leave;      // leaving saves what was still waiting to save (useCardDraft, useBoxesSave)
-  const m = META[conn.Type] || { fields: [], howto: [] };
+  const m = metaOf(conn) || { fields: [], howto: [] };
   const isAI = m.channel === "ai";
   const [tab, setTab] = useState("Setup");
   const [step, setStep] = useState(conn.HasSecret ? (conn.LastSyncAt ? 2 : 1) : 0);
@@ -2651,6 +3087,10 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
             <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 1, maxWidth: 560 }}>
               {t("No chat id to type: message your bot (or add it to a group), hit {sync}, and the chat appears below with its id — switched off. Flip on the chats that are yours; every other chat stays out, because a public bot can be messaged by anyone. The field at the bottom is only for an id you already know.", { sync: t(btnLabel("sync_now")) })}
             </Typography>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1, flexWrap: "wrap" }}>
+              <Typography variant="caption" sx={{ color: FAINT }}>Your private chat with the Assistant, and the chats that reach your coding agents, are set on</Typography>
+              <PhoneChatsLink onNavigate={onNavigate} />
+            </Box>
             {/* one line at any width: wrapped on a phone, it shrank to one line as "Syncing…" and the list under it jumped */}
             {/* the reason sits on a wrapper: a disabled button takes no hover, so its own title never shows */}
             <Box component="span" title={sync.why ? t(sync.why) : ""} data-tq-sync-why={sync.why || undefined} sx={{ display: "inline-flex", maxWidth: "100%", mb: 1 }}>
@@ -2705,8 +3145,9 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
           </Box>
         ) : <RoleStep conn={conn} reload={reload} only={["report", "tool"]} /> },
     ]),
+    ...(repliesOf(conn.Type) ? [{ label: "Replies - your answers go back here", done: creds, body: <RepliesSwitch conn={conn} reload={reload} /> }] : []),
     ...(conn.Type === "github" ? [{ label: "Agent permissions", done: creds, body: <GithubPerms conn={conn} reload={reload} /> },
-      { label: "Close out — what finishing a task does on GitHub", done: creds, body: <GithubCloseout conn={conn} mine={mine} reload={reload} /> }] : []),
+      { label: t("Finishing a task - what it does on GitHub"), done: creds, body: <GithubCloseout conn={conn} mine={mine} reload={reload} /> }] : []),
     { id: "enable", label: "Enable", done: !!conn.Active, body: (
       <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, mt: 1, flexWrap: "wrap" }}>
         <Switch data-tq-card-on="" checked={!!conn.Active} disabled={draft.flipping} onChange={(e) => setActive(e.target.checked)} />
@@ -2985,6 +3426,7 @@ function DesktopDetail({ conn: savedConn, reload, onBack, onCreated }) {
         </Alert>
       )}
       {tool?.installed && <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 1 }}>{t("Found at")} <code>{tool.path}</code></Typography>}
+      {toolUpdateLine(tool) && <Typography variant="caption" data-tool-update="" sx={{ color: DIM, display: "block", mb: 1 }}>{toolUpdateLine(tool)}</Typography>}
       <Typography variant="body2" sx={{ color: INK, fontWeight: 600, mb: 1 }}>{t(DESKTOP_HOW)}</Typography>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, py: .75, borderBottom: `1px solid ${BORDER}`, maxWidth: 720 }}>
         <Switch checked={!!conn.Active} disabled={draft.flipping} onChange={(e) => draft.ctx.stageConn({ ConnectorId: conn.ConnectorId, Active: e.target.checked })} />
@@ -2999,6 +3441,66 @@ function DesktopDetail({ conn: savedConn, reload, onBack, onCreated }) {
       </Box>
       <TestLine test={test} mt={1} />
       {draft.st?.state === "error" && <Typography role="alert" sx={{ mt: 1, color: "#8a3646", fontSize: 12 }}>{draft.st.why}</Typography>}
+      <CardPlaybooks type={conn.Type} />
+      <RemoveConnection conn={conn} reload={reload} onBack={onBack} />
+    </Box>
+  );
+}
+
+/* ── A tool for the agents: a vendor's MCP server added to the agent CLIs here (remotemcp.py), and/or a skill on disk (videotools.py) ── */
+const AGENT_TOOLS = new Set([...CATALOGUE.filter((c) => c.mcp).map((c) => c.type), "video_use"]);
+const toolDesc = (c) => (c.Active ? "added · your agents can use it" : "not added");
+function AgentToolDetail({ conn, reload, onBack, onCreated }) {
+  const [st, setSt] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState(null);         // what the last Add press said, one line per step
+  const look = () => api.get(`/api/connectors/${conn.ConnectorId}/tool`).then(({ data }) => setSt(data || {})).catch(() => setSt({}));
+  useEffect(() => { look(); }, [conn.ConnectorId]);
+  const press = (path, failed) => async () => {
+    setBusy(true);
+    try { const { data } = await api.post(`/api/connectors/${conn.ConnectorId}/tool${path}`); setSt(data); setSaid(data.said || []); }
+    catch (e) { setSaid([e?.response?.data?.detail || failed]); }
+    setBusy(false); reload();
+  };
+  const add = press("", "Add did not run"), signIn = press("/sign-in", "Sign in did not start");
+  // a server that takes a personal token (remotemcp.HEADERS): the token is the card's secret, and Add writes it into Claude Code's config
+  const [tok, setTok] = useState("");
+  const saveTok = async () => {
+    if (!tok.trim()) return;
+    const secret = { ConnectorId: conn.ConnectorId, Secret: tok.trim() };       // a secret saves when its box is left, like every card's
+    try { await api.post("/api/connectors", secret); setTok(""); setSaid(["Token saved - press Add"]); }
+    catch (e) { setSaid([e?.response?.data?.detail || "The token was not saved"]); }
+    look(); reload();
+  };
+  const clis = Object.entries(st?.clis || {}), skill = st?.skill, sign = signState(st);
+  // ...while the vendor's page is open in the browser, the card asks the CLI again until it says signed in (videotools.signed_in)
+  useEffect(() => { if (sign !== "signing") return undefined; const h = setInterval(look, 3000); return () => clearInterval(h); }, [sign, conn.ConnectorId]);
+  const name = { claude: "Claude Code", codex: "Codex" };
+  return (
+    <Box sx={{ maxWidth: 980, mx: "auto" }}>
+      <Crumb section="Connections" onBack={onBack} title={conn.Name} />
+      <ConnectorIdentity conn={conn} reload={reload} onCreated={onCreated} />
+      <Typography variant="body2" sx={{ color: DIM, mb: 1.5, maxWidth: 720 }}>{CATALOGUE.find((c) => c.type === conn.Type)?.desc}</Typography>
+      {st?.url && <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 1 }}>MCP server <code>{st.url}</code>
+        {st.docs && <> · <a href={st.docs} target="_blank" rel="noreferrer">{"the vendor's guide"}</a></>}</Typography>}
+      {clis.map(([c, v]) => (
+        <Typography key={c} variant="body2" sx={{ color: INK }}>{name[c]}: {!v.here ? "not on this computer" : !v.added ? "not added yet"
+          : v.signed_in ? "added · signed in" : v.signing_in ? "added · signing in…" : "added"}</Typography>))}
+      {skill && <Typography variant="body2" sx={{ color: INK }}>Skill <a href={skill.repo} target="_blank" rel="noreferrer">{skill.name}</a>: {skill.here ? "installed" : "not installed"}</Typography>}
+      {(st?.missing || []).map((m) => <Typography key={m} variant="body2" sx={{ color: DIM }}>Still needs {m}.</Typography>)}
+      {st?.token && !clis.some(([, v]) => v.added) && <TextField size="small" type="password" label="Personal token" value={tok} sx={{ bgcolor: "#fff", minWidth: 320, mt: 1 }}
+        onChange={(e) => setTok(e.target.value)} onBlur={saveTok} helperText="Kept as this card's secret and written only into Claude Code's own config" />}
+      {!!st?.sign_in?.length && <Typography variant="body2" sx={{ color: DIM, mt: 1, maxWidth: 720 }}>
+        Sign-in is the vendor's, in the agent: press Sign in, or {st.sign_in.join("; or ")}. Taskuary never sees that sign-in, so it cannot list this server's tools - adding it here is your word that your agents may use all of them.</Typography>}
+      <Box sx={{ display: "flex", gap: 1, alignItems: "center", mt: 1.5 }}>
+        <Button variant="outlined" disabled={busy || !st || st.ready} onClick={add} startIcon={busy ? <CircularProgress size={12} /> : null}>
+          {st?.ready ? "Added" : skill && !st?.url ? "Install" : "Add"}</Button>
+        {/* SIGN IN, ONE PRESS (the owner, 2026-11-08): the agent CLI's own `mcp login` opens the vendor's sign-in in the browser */}
+        {sign && !st?.token && (st?.demo ? <Typography variant="body2" sx={{ color: DIM }}>This is the demo - nothing signs in here.</Typography>
+          : <Button variant="outlined" data-tq-video-sign-in={sign} disabled={busy || sign !== "out"} onClick={signIn}
+            startIcon={sign === "signing" ? <CircularProgress size={12} /> : null}>{SIGN_LABEL[sign]}</Button>)}
+      </Box>
+      {(said || []).map((l) => <Typography key={l} variant="caption" sx={{ color: DIM, display: "block", mt: .5 }}>{l}</Typography>)}
       <CardPlaybooks type={conn.Type} />
       <RemoveConnection conn={conn} reload={reload} onBack={onBack} />
     </Box>
@@ -3035,7 +3537,7 @@ function WinrmDetail({ conn, reload, onBack, onCreated }) {
       {tab === "Agent" && <AgentTab steps={WINRM_AGENT} />}
       {tab === "Setup" && (
         <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, maxWidth: 460, mt: 1 }}>
-          <TextField label={t("machine name")} placeholder="AZWEB01" value={cfg.host || ""} sx={{ bgcolor: "#fff" }}
+          <TextField label={t("machine name")} placeholder="NWWEB01" value={cfg.host || ""} sx={{ bgcolor: "#fff" }}
             onChange={(e) => setCfg({ ...cfg, host: e.target.value })} onBlur={boxes.flush} InputProps={{ endAdornment: boxes.tick("host") }} />
           <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
             <Button variant="contained" disableElevation disabled={busy === "test" || !cfg.host} onClick={runTest}
@@ -3198,6 +3700,20 @@ function CloudObjects({ conn, meta, objects, reload }) {
 
 /* ── shared detail for the DATA_META cards (database / aws / azure): fields + write-only
    secret + live Test; the connection only - reports are built under Reports. ── */
+/* WHERE A VENDOR PUSHES (pushin.py: LINE, SendGrid Inbound Parse): the path to put after the owner's own public address. Read through
+   the owner's door (/inbound) - SendGrid's carries the card's key - and shown once the card is saved, never typed. */
+function PushAddress({ conn }) {
+  const [path, setPath] = useState("");
+  useEffect(() => { api.get(`/api/connectors/${conn.ConnectorId}/inbound`).then((r) => setPath(r.data.path)).catch(() => setPath("")); }, [conn.ConnectorId]);
+  if (!path) return null;
+  return (
+    <Typography variant="caption" sx={{ color: FAINT, display: "block", lineHeight: 1.6, p: 1.25, border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: PANEL2 }}>
+      Point the vendor at your own public https address followed by <Box component="code" sx={{ ...mono, fontSize: 11, color: INK, bgcolor: "#fff", px: 0.6, borderRadius: 0.75, border: `1px solid ${BORDER}` }}>{path}</Box>
+      {" "}- a tunnel of yours (cloudflared, ngrok) to the Taskuary port on this computer. Only that path answers there.
+    </Typography>
+  );
+}
+
 /* A card whose credential is minted by signing in at the provider (QuickBooks): the box says
    what the provider's app must carry (the redirect URI), whether we are connected and to which
    company, and one button that opens the sign-in. The token comes back server-side. */
@@ -3261,8 +3777,9 @@ function OAuthConnect({ conn, meta, reload }) {
     try {
       if (meta.connect.widget === "token") return await pasteToken();
       if (meta.connect.widget === "teller") return await teller();
-      const { data } = await api.get(meta.connect.start(conn.ConnectorId)); setUrl(data.url); window.open(data.url, "_blank", "noopener"); setBusy(true);
-    } catch (e) { setErr(e?.response?.data?.detail || e?.presentation || e?.message || message("could not start the sign-in")); }
+      // ...a POST where the server asks for one (oauth.py's start: only the owner's press, guard.DENIED to an agent)
+      const { data } = await (meta.connect.post ? api.post : api.get)(meta.connect.start(conn.ConnectorId)); setUrl(data.url); window.open(data.url, "_blank", "noopener"); setBusy(true);
+    } catch (e) { setErr(e?.response?.data?.detail || e?.message || message("could not start the sign-in")); }
   };
   return (
     <Box sx={{ p: 1.5, border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: PANEL2 }}>
@@ -3402,7 +3919,7 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
       <Crumb section={t("Connections")} onBack={onBack} title={conn.Name} />
       <ConnectorIdentity conn={conn} reload={reload} onCreated={onCreated} />
       <Typography variant="body2" sx={{ color: DIM, mb: 1.5 }}>
-        {t(meta.desc)} {t("The connection only — build the scheduled reports under Reports.")}
+        {t(meta.desc)}
       </Typography>
       <LocalTabs tabs={["Setup", "Guide", "Agent"]} value={tab} onChange={setTab} />
       {tab === "Guide" && <Steps steps={meta.howto} />}
@@ -3417,6 +3934,7 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
             </Box>
           )}
           {meta.connect && <OAuthConnect conn={conn} meta={meta} reload={reload} />}
+          {meta.push && <PushAddress conn={conn} />}
           {/* a field's 4th entry says where to get what it asks for, under the box */}
           {/* ...and a write-only one (an app's client secret, guard.WRITE_ONLY_CONFIG) is masked: once saved the server never sends it
               back, so the box is empty and says it is saved - typed, it replaces the stored one */}
@@ -3452,6 +3970,7 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
               <Tick st={draft.st} />
             </Typography>
           </Box>
+          {repliesOf(conn.Type) && <RepliesSwitch conn={conn} reload={reload} />}
           {meta.search && <KbSearch conn={conn} />}
           <TestLine test={test} mt={0} />
           {!test && (fresh ? <Typography variant="body2" data-tq-saved-test="" sx={{ color: DIM }}>{t("Saved - press Test to check it.")}</Typography>
@@ -3488,8 +4007,33 @@ const GITHUB_PERMS = [
   ["agents_push", "Agents may push / deploy",
    "On: agents push and deploy as the work needs. Off (default): commits stay local for your review - you push - and only a task whose ask explicitly says to push may. Force-pushes and archived repositories stay forbidden either way."],
   ["reply_comments", "Reply to issue/PR authors",
-   "On: questions from GitHub get a drafted reply, finished work drafts a close-out note, and approving one posts it as a PUBLIC comment on the issue/PR. Off (default): GitHub items never get reply drafts - questions file with their triage reason, finished work just closes with its report, and nothing is ever posted to a public thread on your behalf."],
+   "On: questions from GitHub get a drafted reply, finished work drafts a closing note, and approving one posts it as a PUBLIC comment on the issue/PR. Off (default): GitHub items never get reply drafts - questions file with their triage reason, finished work just closes with its report, and nothing is ever posted to a public thread on your behalf."],
 ];
+
+// REPLIES ON THIS CARD (the owner, 2026-11-08: "do replying back new source as well"): a reply you Send on a task this card filed goes
+// back on the item's own thread - what it becomes is the catalogue's `replies.says`. The switch starts where the catalogue says: on for a
+// helpdesk or a chat, off for a public post. Nothing is ever sent without your Send; this only decides whether Send is offered.
+const RepliesSwitch = ({ conn, reload }) => {
+  const saveConn = useSaveConnector(reload);
+  const cfg = JSON.parse(conn.ConfigJson || "{}"), r = repliesOf(conn.Type), on = repliesOn(conn.Type, cfg);
+  const save = (patch) => saveConn({ ConnectorId: conn.ConnectorId, ConfigJson: JSON.stringify({ ...cfg, ...patch }) });
+  const row = (checked, onChange, label, desc, disabled) => (
+    <Box sx={{ display: "flex", alignItems: "flex-start", gap: 1.5, py: 1.25, borderBottom: `1px solid ${BORDER}` }}>
+      <Switch checked={checked} disabled={disabled} onChange={onChange} sx={{ mt: -0.5 }} />
+      <Box sx={{ minWidth: 0 }}>
+        <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13 }}>{label}</Typography>
+        <Typography variant="body2" sx={{ color: DIM }}>{desc}</Typography>
+      </Box>
+    </Box>
+  );
+  return (
+    <Box sx={{ mt: 1, maxWidth: 620 }}>
+      {row(on, () => save({ replies: !on }), "Replies",
+        `On: a reply you Send on a task from here goes back as ${r.says}. Off: nothing is sent back from here - you answer it there yourself.`)}
+      {r.note && row(!!cfg.reply_note, () => save({ reply_note: !cfg.reply_note }), r.note, "Off: the reply goes to the person who wrote.", !on)}
+    </Box>
+  );
+};
 
 const GithubPerms = ({ conn, reload }) => {
   useLocale();
@@ -3525,7 +4069,7 @@ const GithubPerms = ({ conn, reload }) => {
    The connection holds the defaults; a repository can override them. The keys and defaults are ghcloseout.DEFAULTS. */
 const CLOSEOUT_DEFAULTS = { pr: "merge", method: "squash", red: "merge", anyway: false, update: true, rerun: true, issue: true, comment: true };
 const CLOSEOUT_PICKS = [
-  ["pr", "Close out on a pull request", [["merge", "Merges it"], ["task", "Only closes the task - you merge on GitHub"]]],
+  ["pr", "Finishing a task from a pull request", [["merge", "Merges it"], ["task", "Only closes the task - you merge on GitHub"]]],
   ["method", "Merge method", [["squash", "Squash"], ["merge", "Merge commit"], ["rebase", "Rebase"]],
     "Used when the repository allows it; otherwise the first method it does."],
   ["red", "Red checks the repository does not require", [["merge", "Merge anyway, with a note"], ["ask", "Stop and ask me"]]],
@@ -3533,9 +4077,9 @@ const CLOSEOUT_PICKS = [
 const CLOSEOUT_SWITCHES = [
   ["update", "Offer Update branch", "When a pull request is behind a repository that requires it up to date, and its author allows maintainer edits."],
   ["rerun", "Offer Re-run checks", "When checks failed - re-runs the failed Actions jobs on the pull request."],
-  ["issue", "Close out on an issue closes it", "Your reply is its closing comment."],
-  ["comment", "Post your reply as the close-out's comment", "On the pull request or issue, with the merge or close - even with Reply to issue/PR authors off."],
-  ["anyway", "Close out anyway, past the repository's own rules", "Off by default. Only for a repository where the token is an admin, and only on your press - the card says it is bypassing."],
+  ["issue", "Finishing a task from an issue closes it", "Your reply is its closing comment."],
+  ["comment", "Post your reply as the closing comment", "On the pull request or issue, with the merge or close - even with Reply to issue/PR authors off."],
+  ["anyway", "Finish anyway, past the repository's own rules", "Off by default. Only for a repository where the token is an admin, and only on your press - the card says it is bypassing."],
 ];
 const CLOSEOUT_ACTIONS = {
   pr: "Merge a pull request", update: "Update a behind branch", rerun: "Re-run failed checks",
@@ -3985,6 +4529,11 @@ const WaPair = ({ conn, reload, onStatus, onTurnedAway }) => {
 
 /* ── WhatsApp: the paired account's reachable roster, offered as sources. The catch-all covers
    direct chats; a group only comes into Taskuary once its JID is explicitly added. ── */
+// the Assistant chat and the agent channels are set on one page, Settings > Phone & chats - a WhatsApp or Telegram card links there
+const PhoneChatsLink = ({ onNavigate }) => (
+  <Button size="small" data-tq-phone-chats-link="" sx={{ fontSize: 11 }} onClick={() => { openAppLink("settings=phone"); onNavigate?.("Settings"); }}>
+    Settings → Phone & chats</Button>
+);
 const WaChats = ({ conn, mine, reload, onNavigate, onRoster, toggle, ask = null }) => {
   useLocale();
   const saveConn = useSaveConnector(reload);
@@ -4069,7 +4618,7 @@ const WaChats = ({ conn, mine, reload, onNavigate, onRoster, toggle, ask = null 
     <Box ref={boxRef} data-tq-wa-chats="" sx={{ mb: 1.5, maxWidth: 620 }}>
       {/* THE CHOICE LIVES IN ONE PLACE, and it is not here. "Which chat can the assistant reach me
           in" is one question across WhatsApp and Telegram, and the standing permission is the other
-          half of it - so both are Settings -> Assistant on your phone. This card keeps what is
+          half of it - so both are Settings -> Phone & chats. This card keeps what is
           genuinely the connector's: the pairing, and what comes in (the owner, 2026-09-17). */}
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1.25, py: 0.6, px: 0.8, flexWrap: "wrap",
         border: `1px solid ${guideJid ? "#c3d2c5" : BORDER}`, borderRadius: 1, bgcolor: guideJid ? "#f2f7f2" : "transparent" }}>
@@ -4080,10 +4629,7 @@ const WaChats = ({ conn, mine, reload, onNavigate, onRoster, toggle, ask = null 
           </Typography>
           {guideJid && <Typography variant="caption" sx={{ ...mono, color: FAINT, fontSize: 10, display: "block" }} noWrap>{guideJid}</Typography>}
         </Box>
-        <Button size="small" sx={{ fontSize: 11 }} onClick={() => {
-          openAppLink(`settings=config&group=${encodeURIComponent("Assistant on your phone")}`);
-          onNavigate?.("Settings");
-        }}>{t("Settings → Assistant on your phone")}</Button>
+        <PhoneChatsLink onNavigate={onNavigate} />
       </Box>
       <Typography variant="overline" sx={{ color: DIM, letterSpacing: 1.4, fontSize: 10, fontWeight: 600, display: "block" }}>
         {t("WHAT COMES IN")}

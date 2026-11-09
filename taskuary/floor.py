@@ -18,7 +18,8 @@ _CREDS = ('.ssh', '.aws', '.azure', '.config/gh', '.config/gcloud', '.config/hub
 # the session's own variables, by NAME: expanding them here would read the SERVER's environment, not the session's.
 # Fail-closed on purpose: `grep -r TASKUARY_TOKEN .` in a stranger's repository is refused too - a name match cannot tell
 # reading a value from mentioning it, and a refused search costs less than a printed token
-_SESSION_VARS = re.compile(r'taskuary_(task_)?token|taskuary_url', re.I)
+# ...and the CLI's own sign-in, which a stranger's session inherits so the CLI can start (terminal.STRICT_ENV): its tools must never print it
+_SESSION_VARS = re.compile(r'taskuary_(task_)?token|taskuary_url|anthropic_(api_key|auth_token)|claude_code_oauth_token', re.I)
 _FILE_KEYS = ('file_path', 'notebook_path', 'path')
 _TEXT_KEYS = ('command', 'url', 'pattern', 'glob')
 _HOME_VAR = re.compile(r'\$\{?(?:env:)?(?:home|userprofile)\}?|%userprofile%|(?<![\w~])~(?=/|$|\s)', re.I)
@@ -139,8 +140,8 @@ _SCRIPT_MARKS = re.compile(r'\bunset\s[^\n;|&]*\btaskuary_|^\s*(?:export\s+|set\
 # `rd Env:*`, `Set-Item Env:$n $null`, `-Path:Env:*` - and the narrowed forms above are for everything else
 _PS_MARKS = re.compile(_SCRIPT_MARKS.pattern + '|' + _WIPE, re.I | re.M)
 # cli.STRANGER_ACTS and the options that go with them (test_floor_wave_b keeps the two in step)
-TASKUARY_OK = frozenset({'--reply', '--reply-file', '--draft', '--draft-file', '--attach', '--item', '--tick', '--untick', '--done', '--note', '--waiting-on', '--reply-not-needed'})
-_TASKUARY_WITH = frozenset({'--slot', '--to', '--subject', '--result', '--overlap', '--settled', '--propose', '--no-reply', '--kind', '--follow-up', '--answers'})
+TASKUARY_OK = frozenset({'--reply', '--reply-file', '--draft', '--draft-file', '--attach', '--item', '--tick', '--untick', '--done', '--note', '--waiting-on', '--reply-not-needed', '--withdraw-draft'})
+_TASKUARY_WITH = frozenset({'--slot', '--to', '--subject', '--result', '--overlap', '--settled', '--propose', '--no-reply', '--kind', '--follow-up', '--answers', '--only', '--cc', '--why-to'})
 _TASKUARY_ASK = frozenset({'--help', '-h', '--version'})
 _SEG = re.compile(r'(?:&&|\|\||[;|&\n]|\$\(|`)+')
 _WORD = re.compile(r'(?:"[^"]*"|\'[^\']*\'|[^\s"\']+)+|["\']')     # a quote inside a word stays in it: --opt="a b"

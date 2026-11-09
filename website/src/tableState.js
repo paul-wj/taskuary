@@ -3,6 +3,7 @@
 // their own, so a folded task kept its Advisor strip and its dark button acting on what nobody could see (re-audit item 4).
 import { foldsAs } from "./funnelPile.js";
 import { t } from "./i18n.js";
+import { ASK_ASSISTANT } from "./kinds.js";
 
 // ...SETUP IS QUIET ONLY WHILE IT IS IN VIEW: a task opened over it by its link or by Search (`over`, AssistantView's setupCard) is the
 // item in front of the owner, and it drew its row with nothing lit and no line while the same task in the walk had both (the memory
@@ -13,6 +14,12 @@ export function tableOf({ current = null, cardKey = null, foldedKey = null, brow
   return { key, folded, place, speaks: !!key && !folded && !place && (!setup || !!over) };
 }
 
+// SOMETHING IS OPEN OVER THE CHAT: an item on the table in view (not folded by its X) or a page. Then the Assistant's own icons (read
+// aloud, Past chats, New chat) live in its corner pill, where over a task they cannot read as the task's (2026-11-06); with nothing open
+// the canvas IS the Assistant's chat, and they sit in its head again - the owner could not find New chat there ("there used to be button
+// to clear the chat??", 2026-11-06)
+export const overChat = (t) => !!t?.place || (!!t?.key && !t?.folded);
+
 // WHAT THE RAIL'S TAG AND THE BOX SAY of it (the 2026-10-19 UI walk, G5): a page opened over the item keeps it on the table - its ringed
 // row still brings it back - but it is not in view, and "on the table" and "Ask about this one" said it was while Connections covered it
 // ...and the next ask is about THE PAGE ALONE (the owner, 2026-11-05): it no longer carries the task beneath, so the box names only the page
@@ -21,7 +28,8 @@ export function tableWords(table, ref = "") {
   return { tag: t(under ? "under this page" : "on the table"),
     box: !has ? t("Ask Taskuary anything — a name or a subject pulls it in…")
       : under ? t("Ask about this page…") : t("Ask about this one, tell me what to do with it, or name something else…"),
-    phone: !has ? t("Ask Taskuary anything…") : under ? t("Ask about this page…") : t("Talk to Taskuary…"),
+    // ...the corner pill is the Assistant (the owner, 2026-11-06): it brings you around; the task's own agent has the task's box
+    phone: !has ? t("Ask Taskuary anything…") : under ? t("Ask about this page…") : t(ASK_ASSISTANT),
     // The accessible name identifies the item without altering its reference - the one-row bar's pill, whose words
     // ("Ask…") name no task: its name for a reader and the walk says which one the chat will talk about (the dead-end walk's RING, 2026-10-27)
     name: !has ? t("Ask Taskuary anything") : under ? t("Ask Taskuary about this page") : t("Tell Taskuary what to do with {item}", { item: ref || t("this one") }) };

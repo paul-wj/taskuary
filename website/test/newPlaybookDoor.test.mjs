@@ -10,6 +10,8 @@ import { askPlaybook, takePlaybookAsk } from "../src/playbookOpen.js";
 test("New's link lands on the Playbooks shelf with New playbook asked for - each ask numbered, so a second opens it again", () => {
   assert.deepEqual(canvasRequestFromHash("#report=new-playbook", 4).state, { section: "playbooks", open: null, newPb: 5 });
   assert.deepEqual(canvasRequestFromHash("#report=playbooks").state, { section: "playbooks", open: null });
+  // ...and About you's link of the few hours it held them (2026-11-06) lands on Reports too
+  assert.deepEqual(canvasRequestFromHash(`#about=${NEW_PB}`, 4), { kind: "browse", area: "reports", state: { section: "playbooks", open: null, newPb: 5 }, n: 4 });
 });
 
 test("the words wait for the shelf and are taken once; the dialog starts from them only when Set up with AI was pressed on New", () => {

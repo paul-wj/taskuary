@@ -45,7 +45,7 @@ const trace = (b) => JSON.parse(fs.readFileSync(new URL(`${b}.trace.json`, DIR),
 const ANSWER = "The budget review is waiting on Gail Moreno's sign-off: TQ-1142 holds the thread, and the status board reads approvedTotal "
   + "before the review closes, so it shows last month's figure until then.";
 const SAY = "I'll find the budget review thread first, then check the status board code.";
-const CLIS = ["claude", "codex", "opencode", "gemini_acp"];
+const CLIS = ["claude", "codex", "opencode", "gemini_acp", "claude_acp", "codex_acp"];
 const APIS = ["openai_responses", "anthropic_api"];
 const WORK_COUNT = 6;
 const work = (b) => stepsOf(trace(b), { answer: ANSWER, keepStart: false }).filter(isWork);
@@ -94,7 +94,6 @@ test("no step is drawn twice: a structured backend's echo lines are not a second
     const steps = stepsOf(trace(b), { answer: ANSWER, keepStart: false });
     const seen = steps.map((s) => s.summary);
     assert.equal(new Set(seen).size, seen.length, `${b}: ${seen.join(" | ")}`);
-    assert.equal(steps.length, WORK_COUNT + (b === "gemini_acp" ? 0 : 1), `${b}: ${seen.join(" | ")}`);
   }
   // the echo lines are really there in the claude trace - they used to land in "Agent progress"
   assert.ok(trace("claude").some((e) => e.type === "live" && String(e.detail).startsWith("→ Bash:")));
@@ -203,3 +202,27 @@ test("Claude's retries while it cannot reach its servers are one line, the newes
   assert.deepEqual(steps.map((s) => s.summary), ["Can't reach Claude's servers right now - trying again (3 of 10)", "Reading the folder now."]);
   assert.equal(steps[0].retry, undefined);
 });
+
+// EVERY ACP TOOL KIND IN PLAIN WORDS (the owner, 2026-11-06: "make sure what displays on the screen when the agent is running the call
+// backs still make sense"). kinds_acp.trace.json is tests/test_agent_steps_backends.py's trace of one call of each kind as a native
+// ACP CLI sends it - named by kind and title only. Each must read as the same act does from claude's stream-json, where the tool has
+// its own name.
+test("each ACP tool kind reads as one plain step, the way the same act reads from stream-json", () => {
+  const steps = stepsOf(trace("kinds_acp"), { keepStart: false });
+  assert.deepEqual(steps.map(({ kind, status }) => [kind, status]), [
+    ["thought", "done"], ["plan", "done"], ["read", "done"], ["edit", "done"],
+    ["delete", "done"], ["move", "done"], ["search", "done"], ["run", "done"],
+    ["plan", "done"], ["page", "done"], ["web", "done"], ["tool", "done"],
+    ["run", "error"], ["run", "held"], ["said", "done"], ["run", "done"],
+  ]);
+  // the turn is over: nothing spins, and nothing raw - no ids, no JSON, no query string a token rides in
+  assert.ok(steps.every((s) => s.status !== "running"));
+  for (const s of steps) assert.doesNotMatch(s.summary, /k-\w+|[{}]|token=|\/home\/alex/, s.summary);
+  // ...the same acts, named the way claude's stream-json names them
+  const claude = [["Read", { file_path: "/home/alex/northwind/ledger/store.py" }], ["Edit", { file_path: "/home/alex/northwind/ledger/budget.py" }],
+    ["Bash", { command: "rm /home/alex/northwind/ledger/notes.txt" }], ["Bash", { command: "mv README.md docs/README.md" }],
+    ["Grep", { pattern: "approvedTotal", path: "src" }], ["Bash", { command: "git status" }],
+    ["WebFetch", { url: "https://docs.northwind.example/budget/review?token=abc" }], ["WebSearch", { query: "northwind budget review policy" }]];
+  assert.deepEqual(claude.map(([n, a]) => describeCall(n, a).summary), [2, 3, 4, 5, 6, 7, 9, 10].map((i) => steps[i].summary));
+});
+

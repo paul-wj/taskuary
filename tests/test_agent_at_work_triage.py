@@ -103,7 +103,12 @@ class TheGuide(unittest.TestCase):
         self.assertIn('A different request is its own task, with its own agent', g)
         self.assertIn("whatever `combine.level` says about closeness", g)
         self.assertIn('When unsure with an agent on the task, it is a new task.', g)
-        self.assertIn('the level widens nothing past that agent\'s own work', g)
+        # ...said once, where the agent is (2026-11-09): the levels section's "1 to 4 widen nothing" contradicted "IN A CHAT AT 4 TOO"
+        self.assertIn('How far a level reaches on a task an agent is working is said under **An agent already on it**', g)
+        # ...and at 5 the owner wants one task per subject, agent or not (2026-11-08: "mostly join them unless they are totally unrelated")
+        self.assertIn('AT `combine.level` 5 ALL OF THIS GIVES WAY, AND IN A CHAT AT 4 TOO', g); self.assertIn('JOIN UNLESS IT IS TOTALLY UNRELATED', g)
+        # ...a stream of issues about one product is one agent's work, and a related fyi line stays on its task (2026-11-08)
+        self.assertIn("A STREAM OF ISSUES IS ONE AGENT'S WORK", g); self.assertIn('A LINE THAT IS PART OF A CONVERSATION STAYS IN IT', g)
         self.assertIn('unless an agent is on it (`agent_on_it`, above), when torn means a new one', g)
         self.assertIn('`agent_on_it`, `open_todos`', triage.shipped_section('## 6.'))
         self.assertIs(triage.INTENT_SYSTEM, triage.SHIPPED, 'the fallback is the shipped guide itself, one text')

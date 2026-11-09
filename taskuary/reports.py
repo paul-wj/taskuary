@@ -10,15 +10,14 @@ taking it out of PLANNED - PRs welcome.
 import contextlib, contextvars, io, json, os, re, sqlite3, threading, time
 from datetime import datetime, timedelta
 from loguru import logger
-from . import spawn
+from . import apireads, spawn
 from .timewords import ago_m, plural, span
 
 PLANNED = [
            # systems of record. Intacct is BUILT (see run_intacct); the rest are named because
            # the category is the question people arrive with - "does this reach our ERP / our
            # EMR" - and an empty Corporate systems group answers that worse than a list does.
-           'netsuite', 'sap', 'workday', 'adp',            # quickbooks is BUILT (quickbooks.py)
-           'epic', 'cerner', 'pointclickcare',   # smb_file is BUILT now (files.py), and so is sftp
+           # NetSuite, SAP, Workday, ADP, Epic, Cerner and PointClickCare are BUILT now (apireads.json, 2026-11-08), as are smb_file and sftp
            'stooq']    # its CSV endpoint serves a JS proof-of-work challenge now (2026-09-08) - not reachable from REST
 
 MAX_ROWS, BODY_CHARS, AI_CHARS = 200, 20000, 12000     # per report; override with cfg['max_rows']
@@ -114,7 +113,11 @@ CONNECTION_KEYS = frozenset({'base_url', 'site', 'account', 'gateway', 'server',
                              # a tool call carrying its own share/root would walk straight out of the
                              # folder the owner configured, which is the whole authority of those cards.
                              'share', 'root', 'port', 'hostkey', 'private_key',
-                             '_card'})      # a tracker's whole card, secret and all (trackers.connection) - only ever the saved one
+                             '_card',       # a tracker's whole card, secret and all (trackers.connection) - only ever the saved one
+                             # ...and where a keyed read's sign-in goes (apireads.json, nosql.py, 2026-11-08): a tool call naming its own token URL,
+                             # tenant or connection string would carry the card's secret to an address the owner never typed
+                             'conn_str', 'uri', 'user', 'token_url', 'kid', 'subdomain', 'environment', 'access_token', 'consumer_key',
+                             'consumer_secret', 'token_id', 'tenant', 'org_uuid', 'cert_file', 'key_file'})
 def query_only(body: dict) -> dict:
     """The body minus every connection field - what an agent may say about a tool call. `_write` goes too: whether a
     query may commit is the card's Authority (tools/run) or the owner's approval, never the caller's say-so."""
@@ -767,6 +770,12 @@ REGISTRY = {'sqlite': run_sqlite, 'mssql': run_mssql, 'database': run_database,
             'clickhouse': _lazy('databases', 'runner')('clickhouse'),
             'snowflake': _lazy('databases', 'runner')('snowflake'),
             'bigquery': _lazy('databases', 'runner')('bigquery'),
+            **{e: _lazy('databases', 'runner')(e) for e in ('cockroachdb', 'oracle', 'duckdb')},
+            **{e: _lazy('nosql', f'run_{e}') for e in ('mongodb', 'redis', 'neo4j')},       # reads only, each engine its own way (nosql.py)
+            # a vendor's REST API read with a key, one row each in apireads.json; and DynamoDB's reads on its own card's keys
+            **{f'{t}_read': _lazy('apireads', 'runner')(t) for t in apireads.types()},
+            'dynamodb': _lazy('aws', 'run_dynamodb'),
+            'obsidian_read': _lazy('obsidian', 'run'),        # an Obsidian vault: a folder of notes on this computer, read where it lies
             # treg over its hosted MCP: search the catalogue (free), then call one endpoint.
             # The call is a write whatever the endpoint does - it spends money, and the same
             # door reaches endpoints that publish and order.
@@ -783,6 +792,7 @@ REGISTRY = {'sqlite': run_sqlite, 'mssql': run_mssql, 'database': run_database,
             'mastodon_post': _lazy('social', 'run_mastodon_post'),
             'linkedin_me': _lazy('linkedin', 'run_linkedin_me'),
             'linkedin_post': _lazy('linkedin', 'run_linkedin_post'),
+            'github_issue': _lazy('github', 'run_github_issue'),     # a new issue, on the owner's press (github.run_github_issue)
             # Robinhood over its hosted MCP: the manifest, the reads, and the one write.
             # The write is registered like QuickBooks' bill - PROPOSED on a card narrowed to read, run at FULL.
             'robinhood_tools': _lazy('robinhood', 'run_robinhood_tools'),
@@ -841,6 +851,7 @@ REGISTRY = {'sqlite': run_sqlite, 'mssql': run_mssql, 'database': run_database,
             'finnhub_earnings': _lazy('markets', 'run_finnhub_earnings'), 'finnhub_insiders': _lazy('markets', 'run_finnhub_insiders'),
             'polygon_bars': _lazy('markets', 'run_polygon_bars'), 'polygon_snapshot': _lazy('markets', 'run_polygon_snapshot'),
             'tiingo_history': _lazy('markets', 'run_tiingo_history'), 'tiingo_news': _lazy('markets', 'run_tiingo_news'),
+            'marketstack_eod': _lazy('markets', 'run_marketstack_eod'), 'eodhd_eod': _lazy('markets', 'run_eodhd_eod'),
             'fmp_fundamentals': _lazy('markets', 'run_fmp_fundamentals'), 'fmp_ratios': _lazy('markets', 'run_fmp_ratios'),
             'alpaca_quotes': _lazy('markets', 'run_alpaca_quotes'), 'alpaca_bars': _lazy('markets', 'run_alpaca_bars'),
             # the strategy screen: conditions in config, only the matches out (markets.py)
@@ -861,6 +872,7 @@ REGISTRY = {'sqlite': run_sqlite, 'mssql': run_mssql, 'database': run_database,
             # the knowledge base: documents indexed in this store (knowledge.py) - searched, and refreshed on a schedule
             'kb_search': _lazy('knowledge', 'run_kb_search'), 'kb_reindex': _lazy('knowledge', 'run_kb_reindex'),
             'image_generate': _lazy('images', 'run_image_tool'),   # a picture, filed on its task or message
+            'kling_video': _lazy('videotools', 'run_kling_video'), 'runway_video': _lazy('videotools', 'run_runway_video'),   # a clip, into the task's outputs
             'handbook_search': _lazy('handbook', 'run_handbook_search'), 'handbook_write': _lazy('handbook', 'run_handbook_write'),
             'handbook_vote': _lazy('handbook', 'run_handbook_vote'),
             'hub_search': _lazy('hub', 'run_hub_search'), 'hub_write': _lazy('hub', 'run_hub_write'),
@@ -906,9 +918,11 @@ def executor_for(type_name):
 
 # Which connector CARD owns each executor type: the s3/cloudwatch types run on the aws
 # card's keys, the blob/logs types on the azure card's app - roles and creds resolve there.
-CARD_OF = {'postgresql': 'postgresql', 'mysql': 'mysql', 'clickhouse': 'clickhouse', 'snowflake': 'snowflake', 'bigquery': 'bigquery', 
+CARD_OF = {'postgresql': 'postgresql', 'mysql': 'mysql', 'clickhouse': 'clickhouse', 'snowflake': 'snowflake', 'bigquery': 'bigquery',
+           'cockroachdb': 'cockroachdb', 'oracle': 'oracle', 'duckdb': 'duckdb', 'dynamodb': 'dynamodb', 'mongodb': 'mongodb', 'redis': 'redis', 'neo4j': 'neo4j', 'obsidian_read': 'obsidian',
+           **{f'{t}_read': t for t in apireads.types()}, 
            'treg_tools': 'treg', 'treg_search': 'treg', 'treg_call': 'treg',
-           'linkedin_me': 'linkedin', 'linkedin_post': 'linkedin',
+           'linkedin_me': 'linkedin', 'linkedin_post': 'linkedin', 'github_issue': 'github',
            'bluesky_me': 'bluesky', 'bluesky_timeline': 'bluesky', 'bluesky_post': 'bluesky',
            'mastodon_me': 'mastodon', 'mastodon_timeline': 'mastodon', 'mastodon_post': 'mastodon',
            's3_object': 'aws', 'cloudwatch_logs': 'aws', 'azure_blob': 'azure', 'azure_logs': 'azure', 'calendar': 'outlook',
@@ -932,11 +946,12 @@ CARD_OF = {'postgresql': 'postgresql', 'mysql': 'mysql', 'clickhouse': 'clickhou
            'fred_series': 'fred',
            'finnhub_quotes': 'finnhub', 'finnhub_news': 'finnhub', 'finnhub_earnings': 'finnhub', 'finnhub_insiders': 'finnhub',
            'polygon_bars': 'polygon', 'polygon_snapshot': 'polygon',
-           'tiingo_history': 'tiingo', 'tiingo_news': 'tiingo',
+           'tiingo_history': 'tiingo', 'tiingo_news': 'tiingo', 'marketstack_eod': 'marketstack', 'eodhd_eod': 'eodhd',
            'fmp_fundamentals': 'fmp', 'fmp_ratios': 'fmp',
            'alpaca_quotes': 'alpaca', 'alpaca_bars': 'alpaca',
            'markets_screen': 'screen',
            'kb_search': 'knowledge', 'kb_reindex': 'knowledge',
+           'kling_video': 'kling', 'runway_video': 'runway_image',     # Runway's video spends the same key as its pictures
            'handbook_search': 'handbook', 'handbook_write': 'handbook', 'handbook_vote': 'handbook',
            'hub_search': 'handbook', 'hub_write': 'handbook', 'hub_vote': 'handbook', 'hub_comment': 'handbook',
            **{f'{t}_{v}': t for t in ('jira', 'monday', 'linear') for v in ('comment', 'move', 'assign', 'close')}}
@@ -1062,12 +1077,24 @@ def _apikey_card(typ):
     return lambda store, connector_id=None: _card(store, typ, 'api_key', connector_id)
 
 
+def _read_card(t):
+    """A vendor read's card (apireads.json): its key as `api_key`, with the store - a Google Analytics or Power BI read spends the app's own
+    sign-in beside its card's key - and the card a sign-in by OAuth renews its tokens through (apireads._token)."""
+    return lambda store, connector_id=None: {**_card(store, t, 'api_key', connector_id), 'store': store, 'connector_id': connector_id}
+
+
 def linkedin_connection(store, connector_id=None) -> dict:
     """The access token IS the card's secret, and it arrives as `token` because that is the name
     linkedin._headers reads. Without this the card holds a token nobody can spend: resolve_cfg
     hands the config back untouched and every call answers "LinkedIn needs an access token" with
     the token sitting right there on the card (2026-09-22)."""
     return _card(store, 'linkedin', 'token', connector_id)
+
+
+def github_connection(store, connector_id=None) -> dict:
+    "The GitHub card's token, as `token` - only that: its repos and routes are the poller's, never an issue's say."
+    c = _connector(store, 'github', connector_id, with_secret=True)
+    return {'token': c['Secret']} if c and c.get('Secret') else {}
 
 
 def bluesky_connection(store, connector_id=None) -> dict:
@@ -1132,6 +1159,7 @@ CONNECTION_OF = {'mssql': mssql_connection, 'winrm': winrm_connection, 'database
                  'brave_search': _apikey_card('brave_search'), 'serpapi': _apikey_card('serpapi'),
                  'serper': _apikey_card('serper'), 'scrapingbee': _apikey_card('scrapingbee'),
                  'apify': _apikey_card('apify'),
+                 'kling_video': _apikey_card('kling'), 'runway_video': _apikey_card('runway_image'),
                  # fred needs no entry here - fredgraph.csv is keyless, unlike its JSON api
                  'td_quotes': _apikey_card('twelvedata'), 'td_indicator': _apikey_card('twelvedata'),
                  'av_quotes': _apikey_card('alphavantage'),
@@ -1140,20 +1168,26 @@ CONNECTION_OF = {'mssql': mssql_connection, 'winrm': winrm_connection, 'database
                  'finnhub_earnings': _apikey_card('finnhub'), 'finnhub_insiders': _apikey_card('finnhub'),
                  'polygon_bars': _apikey_card('polygon'), 'polygon_snapshot': _apikey_card('polygon'),
                  'tiingo_history': _apikey_card('tiingo'), 'tiingo_news': _apikey_card('tiingo'),
+                 'marketstack_eod': _apikey_card('marketstack'), 'eodhd_eod': _apikey_card('eodhd'),
                  'fmp_fundamentals': _apikey_card('fmp'), 'fmp_ratios': _apikey_card('fmp'),
                  'alpaca_quotes': alpaca_connection, 'alpaca_bars': alpaca_connection,
                  # the write shares the card, so an approved proposal reaches the same account
                  'robinhood_tools': robinhood_connection, 'robinhood_read': robinhood_connection,
                  'robinhood_order': robinhood_connection,
                  'linkedin_me': linkedin_connection, 'linkedin_post': linkedin_connection,
+                 'github_issue': github_connection,
                  'bluesky_me': bluesky_connection, 'bluesky_timeline': bluesky_connection,
                  'bluesky_post': bluesky_connection,
                  'mastodon_me': mastodon_connection, 'mastodon_timeline': mastodon_connection,
                  'mastodon_post': mastodon_connection,
                  'treg_tools': treg_connection, 'treg_search': treg_connection, 'treg_call': treg_connection,
                  **{e: engine_connection(e) for e in
-                    ('postgresql', 'mysql', 'clickhouse', 'snowflake', 'bigquery')},
+                    ('postgresql', 'mysql', 'clickhouse', 'snowflake', 'bigquery', 'cockroachdb', 'oracle', 'duckdb', 'mongodb', 'redis', 'neo4j')},
                  'aws': aws_connection, 's3_object': aws_connection, 'cloudwatch_logs': aws_connection,
+                 'dynamodb': lambda store, connector_id=None: _card(store, 'dynamodb', 'secret_access_key', connector_id),
+                 'obsidian_read': lambda store, connector_id=None: _card(store, 'obsidian', 'api_key', connector_id),     # its vault folder
+                 **{f'{t}_read': _read_card(t) for t in apireads.types()
+                    if t not in apireads.BORROWED},
                  'azure': azure_connection, 'azure_blob': azure_connection, 'azure_logs': azure_connection,
                  'entra_users': azure_connection, 'entra_groups': azure_connection,
                  'entra_signins': azure_connection, 'entra_licenses': azure_connection,
@@ -1180,7 +1214,9 @@ CONNECTION_OF = {'mssql': mssql_connection, 'winrm': winrm_connection, 'database
 # run_due_reports runs these FIRST for that reason, so keep the two uses of this list together.
 STORE_BACKED = ('onedrive_save', 'taskuary', 'taskuary_data', 'dashboard', 'digest', 'evening_inbox', 'automate', 'assistant', 'agent', 'calendar', 'kb_search', 'kb_reindex',
                 'metric', 'metric_check', 'handbook_search', 'handbook_write', 'handbook_vote',
-                'hub_search', 'hub_write', 'hub_vote', 'hub_comment', 'image_generate')
+                'hub_search', 'hub_write', 'hub_vote', 'hub_comment', 'image_generate',
+                # Google Drive and OneDrive read with the app's own sign-ins, which the store holds (apireads._token)
+                'google_drive_read', 'onedrive_read', 'office365_files_read')
 
 
 def gate(store, cfg: dict) -> None:

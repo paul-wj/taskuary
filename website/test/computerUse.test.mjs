@@ -29,3 +29,4 @@ test("a laptop's pane draws the page at a readable scale", () => {
   assert.equal(viewportFor(900, 600).w, 1200);      // a desktop pane keeps the desktop width
 });
 
+

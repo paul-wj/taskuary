@@ -9,6 +9,7 @@ import contextlib, json, os, re, threading, time
 from loguru import logger
 
 from .store import task_ref
+from .llm import json_of            # a fence anywhere, prose before it: how the gateway's models answer
 
 
 # normpath('') is '.', which is a real relative path and would make every checkout-less note
@@ -65,6 +66,10 @@ def target_cwd(store, tid: int, agent: str) -> str:
     prof = json.loads(row.get('Config') or '{}')
     try: repo, _ = term.guess_repo(store, tid, prof)
     except Exception: repo = None
+    # ...nothing placed it: it opens in its task's own folder until its agent picks a checkout (repochoice), and shares it with nobody
+    if not repo and not (prof.get('cwd') and not prof.get('cwd_map')):
+        from . import repochoice
+        return repochoice.scratch(tid)
     return (prof.get('cwd_map') or {}).get(repo or '') or prof.get('cwd') or os.getcwd()
 
 
@@ -77,8 +82,10 @@ def peers(store, cwd, exclude_tid=None) -> list:
         for t in list(term.SESSIONS.values()):
             if t.alive and t.task_id and t.task_id != exclude_tid and norm(t.cwd) == me:
                 task = store.get_task(t.task_id) or {}
+                # ...and where its hands are NOW, file:line, where its session says (an ACP session's calls name their locations)
                 out.append({'tid': t.task_id, 'ref': task_ref(t.task_id), 'title': task.get('Title') or '',
-                            'agent': t.agent or t.label, 'files': t.files(), 'started': t.started})
+                            'agent': t.agent or t.label, 'files': t.files(), 'started': t.started,
+                            'touching': t.touching() if hasattr(t, 'touching') else []})
     for r in store.running_runs():
         if not r.get('TaskId') or r['TaskId'] == exclude_tid or any(p['tid'] == r['TaskId'] for p in out): continue
         prof = json.loads((store.get_agent(r['AgentName']) or {}).get('Config') or '{}')
@@ -330,12 +337,15 @@ def briefing(store, cwd, exclude_tid=None, assess_for: int = None) -> str:
     who = ' | '.join((f"a stranger's task ({p['ref']}) ({p['agent']})" if _stranger(store, p) else
                       f"{p['ref']} \"{p['title'][:80]}\" ({p['agent']}) - about: {str((store.get_task(p['tid']) or {}).get('Summary') or '')[:160] or 'no summary'}")
                      + f" - files it has modified so far: {', '.join(os.path.basename(x) for x in p['files'][:10]) or 'none yet'}"
+                     + (f" - working in right now: {', '.join(p['touching'][:5])}" if p.get('touching') else '')
                      + (f" - it said: {said[p['tid']]}" if p.get('tid') in said and not _stranger(store, p) else '') for p in ps)
     out = ('OTHER AGENTS are working in this same checkout RIGHT NOW: ' + who + '. They were here '
            'first and have control of their files: never edit, revert, stash or commit them, and '
            'never use git add -A / git commit -a - stage and commit ONLY files you yourself changed '
            '(git status before committing; uncommitted changes that are not yours are their work in '
-           'progress, leave them exactly as they are). Coordinate on the wall (`taskuary --note`) before changing a shared file.')
+           'progress, leave them exactly as they are). Coordinate on the wall (`taskuary --note`) before changing a shared file - and '
+           'BEFORE YOU TOUCH A FILE ANOTHER AGENT HAS MODIFIED, tell it with the note_peers tool (`to`: its TQ ref, or "repo" for all of '
+           'them here): which file, and what you are about to change. Their notes reach you the same way, at your next turn.')
     if assess_for:
         hit, why = likely_overlap(store, assess_for, ps)
         if hit: out += f" SIMILAR WORK (the model's read, not a lock): {hit['ref']} - {why or 'likely the same files'}. Coordinate before you touch what it is on."
@@ -366,7 +376,7 @@ def likely_overlap(store, tid: int, ps: list) -> tuple:
                             + (', '.join(p['files'][:15]) or 'none yet') for p in ps)
         out = llm(OVERLAP_SYSTEM, f"New task: \"{t.get('Title') or ''}\" - {str(t.get('Summary') or '')[:1500]}\n\n"
                                   f'Running in the same checkout:\n{running}', max_tokens=200)
-        j = json.loads(re.sub(r'^```(json)?|```$', '', (out or '').strip(), flags=re.M))
+        j = json_of(out)
         if j.get('overlap'):
             return next((p for p in ps if p['ref'] == str(j.get('with') or '')), ps[0]), str(j.get('why') or '')
         return None, 'assessed: no overlap'      # an answer, as distinct from no assessment (PW-174)
@@ -386,10 +396,15 @@ PERMANENT = ('unknown agent', 'no coding agent is set up', 'repositor', 'repo:',
 
 
 def live_count() -> int:
-    """Every LIVE session, whatever it is doing: working, idle at its prompt, or stopped at an approval.
-    A desk is taken until the process ends (owner, PW-084) - waiting for approval frees nothing."""
+    """The sessions WORKING right now - what the agent cap is read against. One parked at its prompt, waiting on the owner's answer or an
+    approval, holds no slot (the owner, 2026-11-08: "some are waiting on me and that still holds up another agent being opened?? we can't have
+    that" - option 1, replacing PW-084's "a desk is taken until the process ends"). The owner's own lines never wait on the cap (general.say_line
+    checks none), so answering parked agents may run over it for a while; only new starts wait until the working count is back under."""
     from . import terminal as term
-    return len([t for t in list(term.SESSIONS.values()) if t.alive and getattr(t, 'quick', False) is not True])   # a quick answer is one call, no desk
+    def working(t):
+        try: return t.phase() != 'parked'
+        except Exception: return True          # a session that cannot say counts, as before
+    return len([t for t in list(term.SESSIONS.values()) if t.alive and getattr(t, 'quick', False) is not True and working(t)])   # a quick answer is one call, no desk
 
 def subagent_count() -> int:
     "Subagents the live sessions left running at their last Stop (hooks.py keeps them on the session) - light load, ingest.agent_load."

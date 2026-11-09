@@ -13,9 +13,16 @@ const isDraft = (r) => !!r && r.Kind !== "action" && r.Kind !== "slot" && r.Stat
 // words, a mail - makes it history: it folds, its card goes, and the turn that answers draws its own card if it drafts one
 export const lastAnswerSummed = (messages) => { const m = (messages || []).filter((x) => x && !x.held).at(-1); return !!m?.summary; };
 export const turnIsLast = (messages, id) => (messages || []).filter((x) => x && !x.held).at(-1)?.id === id;
+// A NOTHING-NEW TURN IS ONE LINE (the owner, 2026-11-06: "Ray thanked you." - no three parts, the earlier draft not redrawn): the agent judges it
+// and files a summary with only `did`, one line - no `about`, no steps, no draft of its own (selfclose.SUMMARY_LINE, ingest.REPLAN)
+export const oneLine = (s) => { const did = String(s?.did || "").trim();
+  return !!did && !did.includes("\n") &&!String(s?.about || "").trim() && !(s?.on_you || []).length && !(s?.drafted || []).length; };
 export const foldedSummaries = (messages) => {
-  const ids = (messages || []).filter((m) => m?.summary).map((m) => m.id);
-  return new Set(lastAnswerSummed(messages) ? ids.slice(0, -1) : ids);
+  const ms = (messages || []).filter((m) => m?.summary), ids = ms.map((m) => m.id);
+  if (!lastAnswerSummed(messages)) return new Set(ids);
+  // ...and one-line turns after a real answer leave it open, its draft and Send where they were: they answered nothing to fold it under
+  const real = ms.findLastIndex((m) => !oneLine(m.summary)), keep = new Set([ids.at(-1), ...(ms.slice(real + 1).every((m) => oneLine(m.summary)) && real >= 0 ? [ids[real]] : [])]);
+  return new Set(ids.filter((id) => !keep.has(id)));
 };
 
 const isHeld = (r) => !!r && r.Kind === "action" && r.Status === "pending";
@@ -42,5 +49,21 @@ export const hasReply = (reviews) => (reviews || []).some((r) => r && r.Kind !==
 // `answer_is_result`. A turn filed before it could say - or one that did not - reads by the length-or-link rule the pane used until then, so
 // history draws as it always did
 const answerWords = (w) => { const t = String(w || "").trim(); return !!t && (t.length <= 500 || /https?:\/\/|\b[A-Za-z]:\\|(^|\s)\/(Users|home|mnt|tmp)\/|\\\\\S+/.test(t)); };
+// a turn whose agent said something of its own: those words are the turn, and the summary's prose is not drawn beside them (AgentSummary `answered`)
+export const turnAnswered = (words) => !!String(words || "").trim();
 export const answerShown = (summary, words) => !String(words || "").trim() ? false
   : typeof summary?.answer_is_result === "boolean" ? summary.answer_is_result : answerWords(words);
+
+// A DRAFT UNDER ITS OWN TURN (latest-wins): the chat payload says, per pending draft, the turn that wrote it (`turn`, its message id) and whether
+// it is `stale` - made before the owner's newest message - with its time. A stale one stays on its turn with a quiet line, and never stands
+// under the newest turn's Next steps. Read with defaults, so a payload without them draws as before
+export const draftTurn = (r) => r?.turn ?? r?.Turn ?? null;
+export const staleDraft = (r) => !!(r?.stale ?? r?.Stale);
+export const draftAt = (r) => r?.drafted_at ?? r?.DraftedAt ?? r?.at ?? "";
+const pendingReply = (r) => r?.Status === "pending" && r.Kind !== "action" && r.Kind !== "slot" && String(r.DraftText || "").trim();
+// ...the newest turn's Next steps hold the drafts only while one of them is fresh
+export const freshNext = (reviews) => { const ps = (reviews || []).filter(pendingReply); return !ps.length || ps.some((r) => !staleDraft(r)); };
+export const staleOn = (reviews, turnId) => (reviews || []).filter((r) => pendingReply(r) && staleDraft(r) && turnId != null && String(draftTurn(r)) === String(turnId));
+// ...the payload's `drafts` (general.draft_turns: {review, turn, at, stale, before}) read onto the reviews they name
+export const withTurns = (reviews, drafts) => (drafts?.length ? (reviews || []).map((r) => { const d = drafts.find((x) => x?.review === r?.ReviewId);
+  return d ? { ...r, turn: d.turn, stale: !!d.stale, drafted_at: d.at, before: d.before } : r; }) : reviews || []);

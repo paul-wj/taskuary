@@ -19,6 +19,7 @@ below are what each connection could already do before scopes existed, so switch
 version on changes nothing until the owner tightens it.
 """
 import re
+from .apireads import types as read_types
 
 SCOPES = ('read', 'write', 'admin')
 _RANK = {s: i for i, s in enumerate(SCOPES)}
@@ -30,6 +31,7 @@ ACTIONS = {
     # ── read: the connection is a window, nothing upstream moves ──────────────────────
     'poll': 'read', 'fetch': 'read', 'search': 'read', 'list': 'read', 'discover': 'read',
     'image_generate': 'read',      # draws a picture: it spends, but nothing upstream moves
+    'kling_video': 'read', 'runway_video': 'read',     # ...and a clip, the same way
     'sqlite': 'read', 'mssql': 'read', 'database': 'read',
     'taskuary_data': 'read', 'dashboard': 'read',     # a dashboard's own rows and the dashboard: reads (each source is gated on its own card)
     'intacct': 'read', 'intacct_fields': 'read',      # readByQuery and lookup; nothing posts
@@ -64,7 +66,7 @@ ACTIONS = {
     # ships market DATA only, no order/trading executor at all
     'finnhub_quotes': 'read', 'finnhub_news': 'read', 'finnhub_earnings': 'read', 'finnhub_insiders': 'read',
     'polygon_bars': 'read', 'polygon_snapshot': 'read',
-    'tiingo_history': 'read', 'tiingo_news': 'read',
+    'tiingo_history': 'read', 'tiingo_news': 'read', 'marketstack_eod': 'read', 'eodhd_eod': 'read',
     'fmp_fundamentals': 'read', 'fmp_ratios': 'read',
     'alpaca_quotes': 'read', 'alpaca_bars': 'read',
     # Robinhood is the first connection here that can MOVE MONEY. Listing the manifest and
@@ -74,6 +76,8 @@ ACTIONS = {
     # A named database card runs SELECTs. The engine's own user is the real ceiling, so point
     # these at a read-only account and the ladder holds even if everything above it fails.
     'postgresql': 'read', 'mysql': 'read', 'clickhouse': 'read', 'snowflake': 'read', 'bigquery': 'read',
+    'cockroachdb': 'read', 'oracle': 'read', 'duckdb': 'read', 'dynamodb': 'read', 'mongodb': 'read', 'redis': 'read', 'neo4j': 'read', 'obsidian_read': 'read',
+    **{f'{t}_read': 'read' for t in read_types()},       # apireads.json: a GET, or a POST the row names as a read
     # treg: the catalogue is free to read; CALLING spends money and can reach a publish or an
     # order, so it is a write: at a card's read scope every call is a proposal. Cards start at FULL below, so that
     # holds only where the owner narrowed the card.
@@ -81,6 +85,7 @@ ACTIONS = {
     # LinkedIn: reading who you are is a read; putting words on your feed under your name
     # is a write - a proposal you approve only on a card narrowed to read (cards start at FULL below).
     'linkedin_me': 'read', 'linkedin_post': 'write',
+    'github_issue': 'write',     # a new issue: the everyday write a GitHub card is for - and it reaches people (REACHES)
     'bluesky_me': 'read', 'bluesky_timeline': 'read', 'bluesky_post': 'write',
     'mastodon_me': 'read', 'mastodon_timeline': 'read', 'mastodon_post': 'write',
     'robinhood_tools': 'read', 'robinhood_read': 'read', 'robinhood_order': 'write',
@@ -151,6 +156,8 @@ _TRACKERS = {'jira': 'Jira', 'monday': 'Monday', 'linear': 'Linear'}
 REACHES = {
     'linkedin_post': 'posts on LinkedIn under your name', 'bluesky_post': 'posts on Bluesky under your name',
     'mastodon_post': 'posts on Mastodon under your name', 'zoho_invoice_send': 'sends an invoice to a customer',
+    # ...an issue too (2026-11-06): GitHub tells everyone watching the repository - a trusted repository's agent still waits for Create issue
+    'github_issue': 'opens an issue on GitHub - everyone watching the repository is told',
     'robinhood_order': 'places an order with your money', 'treg_call': 'calls a paid endpoint that can publish or order',
     # these two reach whatever the far side does with them, so the call itself decides (reaches below)
     'mcp': "runs a tool its server does not mark read-only - it may send, post or comment",

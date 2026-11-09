@@ -8,11 +8,11 @@ import { noun, placeName } from "./words.js";
 import { BORDER, DIM, ROLES, card, mono } from "./theme.jsx";
 import { Crumb, Empty, TaskuaryMark } from "./ui.jsx";
 import { RecentlyDeleted, UndoLine, removeNow } from "./Removed.jsx";
-import { useCliInstall, InstallLine, UpdateLine } from "./cliInstall.jsx";
+import { useCliInstall, InstallLine, UpdateLine, ConnectorLine } from "./cliInstall.jsx";
 import { useCliSetup, SetupButton, CliPane } from "./cliSetup.jsx";
 import SkillImport from "./SkillImport.jsx";
 import { openAppLink } from "./appLinks.js";
-import { connectionPayload } from "./cliCard.js";
+import { connectionPayload, toolUpdateLine } from "./cliCard.js";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 
@@ -41,7 +41,7 @@ export const CliConnectionsPage = ({ onBack }) => {
     try { await removeNow(() => api.delete(`/api/cli/connections/${encodeURIComponent(cli.name)}?detach=1`), "cli", cli.label || cli.name, "Disconnected"); await load(); }
     catch (e) { setErr(failure(e)); }
   };
-  const { install, update, busy, note, pane: installPane, setPane: setInstallPane } = useCliInstall({ terminal: true });
+  const { install, update, connector, busy, note, pane: installPane, setPane: setInstallPane } = useCliInstall({ terminal: true });
   const installerRef = useRef(null);
   useEffect(() => { if (installPane) installerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }); }, [installPane]);
   const { openSetup, opening, pane, note: setupNote } = useCliSetup();
@@ -50,6 +50,14 @@ export const CliConnectionsPage = ({ onBack }) => {
     catch (e) { setErr(e?.response?.status === 404 ? { source: "Restart Taskuary to load the updated CLI connections configuration." } : failure(e)); }
   }, []);
   useEffect(() => { load(); }, [load]);
+  // ...and the optional tools the agents drive (agent-browser, agent-desktop): a line only when one is behind npm's latest (clis.tools)
+  const [behind, setBehind] = useState(null);
+  useEffect(() => { api.get("/api/cli/detect").then(({ data }) => setBehind((data.tools || []).map(toolUpdateLine).filter(Boolean))).catch(() => {}); }, []);
+  // a connector installing beside a Set it up (acpadapter.start) is read again until it lands - its line says it meanwhile
+  useEffect(() => {
+    if (!(clis || []).some((c) => c.connector?.status === "installing")) return undefined;
+    const t = setTimeout(load, 3000); return () => clearTimeout(t);
+  }, [clis, load]);
   // CONNECT, in one press: the CLI's own known command saved as its connection. A card only ever becomes connected through this
   // (or Edit command → Save) - an installed CLI is found, never connected for you (the owner, 2026-10-07)
   const [connecting, setConnecting] = useState("");
@@ -96,7 +104,7 @@ export const CliConnectionsPage = ({ onBack }) => {
       <Typography variant="body2" sx={{ color: DIM, flex: 1 }}>{t("Configure each CLI once. Its command and arguments are shared by every profile that chooses it.")}</Typography>
       <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDraft({ ...BLANK_CONNECTION })}>{t("Add CLI connection")}</Button>
     </Box>
-    <Button size="small" onClick={() => { openAppLink("profiles"); }} sx={{ mb: 2 }}>{t("Manage profiles in Docs")}</Button>
+    <Button size="small" onClick={() => { openAppLink("profiles"); }} sx={{ mb: 2 }}>{t("Manage profiles in Settings")}</Button>
     {err && !draft && <Alert severity="error" sx={{ mb: 2 }}>{errorText(err)}</Alert>}
     <UndoLine kinds={["cli"]} onRestored={load} />
     {!clis && !err && <CircularProgress size={22} />}
@@ -123,18 +131,20 @@ export const CliConnectionsPage = ({ onBack }) => {
             : cli.installed && <Button size="small" variant="outlined" disabled={!!connecting} onClick={() => connect(cli)}>{t(connecting === cli.name ? "Connecting…" : "Connect")}</Button>}
           {cli.configured && <Button size="small" disabled={tests[cli.name]?.busy} onClick={() => runTest(cli.name)}>{t(tests[cli.name]?.busy ? "Testing..." : "Test")}</Button>}
           {cli.installed ? <>
-            <SetupButton cli={cli} opening={opening} onOpen={openSetup} />
+            <SetupButton cli={cli} opening={opening} onOpen={async (c) => { if ((await openSetup(c))?.connector) await load(); }} />
             <UpdateLine cli={cli} busy={busy} onUpdate={async () => { if (await update(cli)) await load(); }} />
           </> : <InstallLine cli={cli} busy={busy} onInstall={async () => { if (await install(cli)) await load(); }} />}
           {cli.configured && <Button size="small" color="error" onClick={() => disconnect(cli)}>{t("Disconnect")}</Button>}
         </Box>
+        <ConnectorLine cli={cli} busy={busy} onInstall={async () => { if (await connector(cli)) await load(); }} />
         {tests[cli.name] && !tests[cli.name].busy && <Alert severity={tests[cli.name].ok ? "success" : "error"} sx={{ mt: 1 }}>{tests[cli.name].ok ? tests[cli.name].result || t("Connection works") : errorText(tests[cli.name].error)}</Alert>}
       </Box>)}
     </Box>
+    {(behind || []).map((l) => <Typography key={l} variant="caption" data-tool-update="" sx={{ color: DIM, display: "block", mt: 1.5 }}>{l}</Typography>)}
     {[note, setupNote].filter(Boolean).map((message, i) => <Alert key={i} severity={message.bad ? "error" : "success"} sx={{ mt: 2 }}>{message.text}</Alert>)}
     {installPane && <Box ref={installerRef} sx={{ mt: 2, ...card, p: 2 }}>
       <Box sx={{ display: "flex", alignItems: "center", mb: 1 }}>
-        <Typography sx={{ flex: 1, fontWeight: 600 }}>{t(installPane.verb === "update" ? "Update {name} — terminal" : "Install {name} — terminal", { name: installPane.name })}</Typography>
+        <Typography sx={{ flex: 1, fontWeight: 600 }}>{installPane.verb === "connector" ? t("Agent connector for {name} — terminal", { name: installPane.name }) : installPane.verb === "update" ? t("Update {name} — terminal", { name: installPane.name }) : t("Install {name} — terminal", { name: installPane.name })}</Typography>
         <Button size="small" onClick={async () => {
           try { await api.post(`/api/terminals/${encodeURIComponent(installPane.sid)}/wrap`, { task_id: installPane.taskId, close: true }); setInstallPane(null); await load(); }
           catch (e) { setErr(failure(e)); }

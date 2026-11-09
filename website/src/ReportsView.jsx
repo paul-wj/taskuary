@@ -246,7 +246,7 @@ const TYPE_GROUPS = [
     "teller_transactions", "teller_accounts", "teller_balances", "teller_spend",
     "yahoo_quotes", "yahoo_history", "coingecko_prices", "alchemy_prices", "alchemy_wallet", "fx_rates", "edgar_filings", "edgar_facts", "fred_series",
     "td_quotes", "td_indicator", "av_quotes", "finnhub_quotes", "finnhub_news", "finnhub_earnings", "finnhub_insiders",
-    "polygon_bars", "polygon_snapshot", "tiingo_history", "tiingo_news", "fmp_fundamentals", "fmp_ratios",
+    "polygon_bars", "polygon_snapshot", "tiingo_history", "tiingo_news", "marketstack_eod", "eodhd_eod", "fmp_fundamentals", "fmp_ratios",
     "alpaca_quotes", "alpaca_bars", "markets_screen"]],
   ["The AI itself", ["agent"]],
   ["Research the web", ["tavily", "exa", "reader", "firecrawl"]],
@@ -642,7 +642,7 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
     const missing = typeof browseState.open === "number" && !sources.some((x) => x.SourceId === browseState.open);
     return browse({
       title: t("Reports"), wide: true,
-      summary: t("{reports} · {dashboards} · {workflows} · {playbooks} · reports read and summarise, dashboards show the numbers, workflows write, playbooks say how a kind of job is done", { reports: plural(reportSources.length, "report"), dashboards: plural(dashboardSources.length, "dashboard"), workflows: plural(workflowSources.length, "workflow"), playbooks: plural(pbs.books.length, "playbook") }),
+      summary: t("{reports} · {dashboards} · {workflows} · {playbooks} · reports read and summarise, dashboards show the numbers, workflows write, playbooks say how a kind of job is done", { reports: plural(reportSources.length, "report"), dashboards: plural(dashboardSources.length, "dashboard"), workflows: plural(workflowSources.length, "routine"), playbooks: plural(pbs.books.length, "playbook") }),
       // DASHBOARDS BESIDE REPORTS (the owner, 2026-10-23): Reports, Dashboards, Workflows, Playbooks - and the + New chips in that order
       sections: [{ key: "reports", label: t("Reports"), n: reportSources.length },
         { key: "dashboards", label: t(placeName("dashboards").split(" → ").pop()), n: dashboardSources.length },
@@ -664,7 +664,7 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
       },
       // the tab's own tools, beside its list: run what is due, and describe one for the AI to draft
       tools: section === "playbooks" ? (browseState.open == null ? <Box sx={{ display: "flex", flexDirection: "column" }}>
-        <NewPlaybook key={browseState.newFor || browseState.newPb || ""} connectorType={browseState.newFor || ""} asked={!!browseState.newPb} onDone={pbs.load}
+        <NewPlaybook key={browseState.newFor || browseState.newPb || ""} connectorType={browseState.newFor || ""} asked={!!browseState.newPb} onDone={pbs.load} button={false}
           onManual={() => onBrowseState?.({ section: "playbooks", open: `${PB_OPEN}new` })} />
         {!!pbs.err && <Typography variant="body2" sx={{ mt: 1, fontWeight: 600, color: "#6b2733" }}>✗ {pbs.err}</Typography>}</Box> : null)
       : section && browseState.open == null ? (

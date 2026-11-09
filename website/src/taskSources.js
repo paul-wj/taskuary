@@ -5,11 +5,14 @@ import { routeIntent, routeWhy } from "./triageVerdict.js";
 import { level } from "./priority.js";
 import { t } from "./i18n.js";
 import { repoLabel } from "./repoNames.js";
+import { CATALOGUE } from "./connectorCatalog.js";
 
 const CHANNEL_NAMES = { email: "Email", whatsapp: "WhatsApp", telegram: "Telegram", slack: "Slack", teams: "Teams", github: "GitHub",
   monday: "Monday", jira: "Jira", linear: "Linear", imessage: "iMessage", discord: "Discord", report: "Report", assistant: "Assistant",
   google_chat: "Google Chat", sms: "SMS", calendar: "Calendar" };
-export const channelName = (ch) => CHANNEL_NAMES[ch] ? t(CHANNEL_NAMES[ch]) : (ch ? ch[0].toUpperCase() + ch.slice(1).replace(/_/g, " ") : t("Message"));
+// ...a source card's own title past the named channels (Zendesk, Help Scout, Zoom Team Chat): the card's own title, else a title-cased word
+export const channelName = (ch) => CHANNEL_NAMES[ch] ? t(CHANNEL_NAMES[ch]) : CATALOGUE.find((c) => c.type === ch)?.title
+  || (ch ? ch[0].toUpperCase() + ch.slice(1).replace(/_/g, " ") : t("Message"));
 const CHATS = new Set(["whatsapp", "teams", "slack", "telegram", "imessage", "discord", "mattermost", "rocketchat", "matrix", "google_chat", "sms"]);
 export const isChat = (ch) => CHATS.has(ch);
 
@@ -202,7 +205,8 @@ export function headerFacts({ verdict = null, route = null, task = {}, workflow 
   const said = run ? ""
     : String(verdict?.intent || routeIntent(route?.Reason) || (route?.Decision === "create" ? (kind === "reply" ? "reply_only" : "task") : "")).toLowerCase();
   const intent = INTENT[said] || "";
-  const repo = kind === "coding" ? repoTag(task?.Tags) || repoTag(task?.Tags, "triage-repo") || verdict?.repository || "" : "";
+  // the owner's pick, else the coding agent's own (use_repo, repochoice.py) - triage names none any more (the owner, 2026-11-06)
+  const repo = kind === "coding" ? repoTag(task?.Tags) || repoTag(task?.Tags, "agent-repo") || "" : "";
   const profile = kind === "general" ? assignedAgent(task?.Assignee) || verdict?.profile || "" : "";
   const pri = level(task?.Priority);
   const by = run ? startedBy(task, workflow) : "";

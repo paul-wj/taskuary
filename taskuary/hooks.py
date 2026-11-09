@@ -380,6 +380,7 @@ def _events(t, p: dict) -> None:
                 ws.record(st, tid, sid, 'answered', request_id=r['RequestId'], text=why, source='hook')
     try:
         if ev == 'UserPromptSubmit':
+            t.turn_at = time.time()             # the turn at work began now: its clock in the chat (codingchat.live_of `turnStarted`)
             # ...including a turn Claude took because a background job reported. That one is marked: it is the agent
             # working again, not the owner speaking, so it must not overtake a question still open (open_requests)
             from .background import is_wake
@@ -567,7 +568,8 @@ ENDED_SYSTEM = ('You read the last message an agent wrote before its turn ended.
                 'back with the result later? An answer that delivers the work, a question to the owner, or a plain statement that '
                 'something cannot be done is not that - and neither is waiting on a PERSON: the owner, the sender, or someone a reply '
                 'it drafted asks for more (their output, their notes, their answer). That turn delivered its step; the next one comes '
-                'when they write back. Reply with JSON only: {"unfinished": true or false, "why": "what it is still '
+                'when they write back. Waiting for the owner\'s Send or decision is finished, not unfinished. Reply with JSON only: '
+                '{"unfinished": true or false, "why": "what it is still '
                 'waiting on, in a few plain words; empty when unfinished is false"}')
 ENDED_WANT = {'type': 'object', 'properties': {'unfinished': {'type': 'boolean'}, 'why': {'type': 'string'}}, 'required': ['unfinished']}
 _ENDED = {}
@@ -593,9 +595,17 @@ def held_for(store, tid: int, sid: str) -> bool:
     return False
 
 
-def judge_ended(store, tid: int, sid: str, said: str, brain=None, wait: bool = False, then=None):
-    "Read a headless turn's last message for work it left unfinished; hand `then` what it still waits on, when it did - never a failure."
+# ...and never on a turn its own summary says is finished (the owner, 2026-11-09: a complete answer "ready for your Mark done" went back to
+# "Working on this..." by itself). Only the turn's own nothing_left is taken as read: whether what is left is just the owner's press is the
+# judge's call (ENDED_SYSTEM says so), never a word list
+def finished(summ) -> bool: return isinstance(summ, dict) and summ.get('nothing_left') is True
+
+
+def judge_ended(store, tid: int, sid: str, said: str, brain=None, wait: bool = False, then=None, summ=None):
+    """Read a headless turn's last message for work it left unfinished; hand `then` what it still waits on, when it did - never a failure.
+    `summ`: the turn's own summary - one that says it is finished (nothing_left) is never read."""
     import hashlib
+    if finished(summ): return
     key = (str(sid), hashlib.sha1(said.encode('utf-8', 'replace')).hexdigest())
     def go():
         from . import workerstate as ws
@@ -636,6 +646,11 @@ def _same_dir(a: str, b: str) -> bool:
     except OSError: return os.path.normcase(os.path.normpath(str(a or ''))) == os.path.normcase(os.path.normpath(str(b or '')))
 
 
+def _here(t, cwd: str) -> bool:
+    "The folder a hook names is the pane's: where its process started, or the checkout it moved to with use_repo (repochoice)."
+    return _same_dir(t.cwd, cwd) or _same_dir(getattr(t, 'opened_in', '') or t.cwd, cwd)
+
+
 def receive(payload: dict, cli: str) -> dict:
     """A hook fired: find the session it belongs to (same checkout, same CLI, most recently active unless
     already bound to this CLI session id) and hand its observations to the witness."""
@@ -645,7 +660,7 @@ def receive(payload: dict, cli: str) -> dict:
     # process - no argv, no checkout - so reading argv[0] to judge it raised IndexError and took the
     # whole hook with it, costing the coding agent beside it its said-and-did (2026-09-07).
     mine = [t for t in list(term.SESSIONS.values()) if t.alive and t.task_id and getattr(t, 'argv', None)
-            and cli in os.path.basename(str(t.argv[0])).lower() and _same_dir(t.cwd, cwd)]
+            and cli in os.path.basename(str(t.argv[0])).lower() and _here(t, cwd)]
     if not mine: return {'bound': False}
     # the pane's own id, or the one it was resumed from (Codex forks a resumed thread: terminal.open_session)
     t = next((x for x in mine if sid and sid in (getattr(x, 'ext_id', ''), getattr(x, 'resumed_from', ''))), None)
@@ -677,6 +692,12 @@ def receive(payload: dict, cli: str) -> dict:
                 claude_artifacts.capture_doc(getattr(t, 'store', None), t.task_id, payload['tool_input'], payload.get('tool_response'),
                                              by=getattr(t, 'agent', '') or 'agent')
     _events(t, payload)
+    # ...and a commit or an edit it made is the task's own work, the only work its landing card counts (landing.saw)
+    if payload.get('hook_event_name') == 'PostToolUse':
+        try:
+            from . import landing
+            landing.saw(getattr(t, 'store', None), t.task_id, str(payload.get('tool_name') or ''), payload.get('tool_input'))
+        except Exception as e: logger.debug(f'task {t.task_id}: a tool call was not noted for its landing - {e}')
     # ...and whatever Reason Network showed this agent goes on its task (reasonnet.on_hook): never a reason to fail the hook
     try:
         from . import reasonnet
@@ -693,7 +714,7 @@ def _pane(payload: dict, cli: str):
     from . import terminal as term
     cwd, sid = str(payload.get('cwd') or ''), str(payload.get('session_id') or '')
     return next((t for t in list(term.SESSIONS.values()) if t.alive and t.task_id and getattr(t, 'argv', None)
-                 and cli in os.path.basename(str(t.argv[0])).lower() and _same_dir(t.cwd, cwd)
+                 and cli in os.path.basename(str(t.argv[0])).lower() and _here(t, cwd)
                  and sid and sid in (getattr(t, 'ext_id', ''), getattr(t, 'resumed_from', ''))), None)
 
 

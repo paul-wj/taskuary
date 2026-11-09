@@ -1,5 +1,6 @@
 import React, { Suspense, lazy, useEffect, useRef, useState } from "react";
-import { Alert, Box, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, TextField, Typography } from "@mui/material";
+import { Alert, Box, Button, CircularProgress, Dialog, DialogContent, DialogTitle, TextField, Typography } from "@mui/material";
+import { ButtonBar } from "./ButtonBar.jsx";
 import MailOutlineIcon from "@mui/icons-material/MailOutline";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import api from "./api";
@@ -122,18 +123,18 @@ export default function NewPlaybookDialog({ connectorType = "", initialText = ""
       {error && <Alert severity="error" sx={{ mt: 2, alignItems: "center" }} action={noAi ? <ConnectAi variant="outlined" onGo={onClose} /> : null}>{typeof error === "object" ? t(error.key) : error}</Alert>}
       {mode && <Typography sx={{ color: "text.secondary", fontSize: 12, mt: 1.5 }}>{t("The assistant will help you define the steps, connections, and what needs your approval.")}</Typography>}
     </DialogContent>}
-    <DialogActions sx={{ px: 3, pb: 2, flexWrap: "wrap", gap: 1 }}>
+    <ButtonBar>
       {task ? <>
         <Button href={`#task=${task.TaskId}`} onClick={onClose}>{t("Open task")}</Button>
-        <Typography sx={{ mr: "auto", fontSize: 12, color: "text.secondary" }}>{t("Saved as {ref} - search finds it when you want to come back.", { ref: task.ref || `TQ-${String(task.TaskId).padStart(4, "0")}` })}</Typography>
         <Button onClick={onClose}>{t("Close")}</Button>
+        <Typography sx={{ fontSize: 12, color: "text.secondary" }}>{t("Saved as {ref} - search finds it when you want to come back.", { ref: task.ref || `TQ-${String(task.TaskId).padStart(4, "0")}` })}</Typography>
       </> : <>
-        <Button onClick={onManual} disabled={busy} sx={{ mr: "auto" }}>{t("Write manually")}</Button>
-        <Button onClick={onClose} disabled={busy}>{t("Cancel")}</Button>
         {/* a door to the chat, never pressed from it (data-tq-view-skip, the owner, 2026-11-02) */}
         <Button variant="contained" onClick={start} data-tq-view-skip="" disabled={busy || !mode || (mode === "email" ? !selected : !text.trim())}
-          startIcon={busy ? <CircularProgress size={16} color="inherit" /> : <AutoAwesomeIcon />}>{busy ? t("Starting…") : t("Set up with AI")}</Button>
+          startIcon={busy ? <CircularProgress size={14} color="inherit" /> : <AutoAwesomeIcon sx={{ fontSize: 15 }} />}>{busy ? t("Starting…") : t("Set up with AI")}</Button>
+        <Button onClick={onManual} disabled={busy}>{t("Write manually")}</Button>
+        <Button onClick={onClose} disabled={busy}>{t("Cancel")}</Button>
       </>}
-    </DialogActions>
+    </ButtonBar>
   </Dialog>;
 }

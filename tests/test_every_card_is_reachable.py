@@ -33,7 +33,8 @@ KEYLESS = {'reader', 'coingecko', 'frankfurter', 'yahoo', 'sec_edgar', 'fred', '
 # Two executors that reach for their own card instead of taking a resolved cfg - Calendar reads
 # whichever mailbox card carries the OAuth fields, and the Zoho report drives its own token
 # refresh. They predate this guard; they are named rather than quietly skipped.
-SELF_FETCHING = {'calendar', 'zoho_monthly_invoices', 'onedrive_save'}   # onedrive_save reads the Outlook sign-in from the store itself (STORE_BACKED)
+SELF_FETCHING = {'calendar', 'zoho_monthly_invoices', 'onedrive_save',
+                 'google_drive_read', 'onedrive_read', 'office365_files_read'}   # the app's own Google / Microsoft sign-ins (apireads._token)   # onedrive_save reads the Outlook sign-in from the store itself (STORE_BACKED)
 
 
 class ASavedSecretReachesItsExecutor(unittest.TestCase):
@@ -75,8 +76,12 @@ class EveryCardCanBeTested(unittest.TestCase):
         src = (ROOT / 'taskuary' / 'channels.py').read_text(encoding='utf-8')
         region = src[src.index('def test_connector'):src.index('no test for connector type')]
         out = set(re.findall(r"'([a-z0-9_]+)'", region))
-        for name in ('RESEARCH', 'PAGE_READERS', 'DB_ENGINES', 'CHAT_SERVERS', 'AI_TYPES'):
+        for name in ('RESEARCH', 'PAGE_READERS', 'DB_ENGINES', 'NOSQL', 'CHAT_SERVERS', 'AI_TYPES', 'INBOXES'):
             if name in region: out |= set(getattr(channels, name))
+        if "c['Type'] in READS" in region: out |= set(channels.READS) | {'dynamodb'}
+        if 'remotemcp.road(' in region:               # every vendor MCP server and video skill tests on its road (remotemcp.test)
+            from taskuary import remotemcp, videotools
+            out |= set(remotemcp.MCPS) | set(videotools.SKILLS)
         return out
 
     def test_every_seeded_card_has_a_branch(self):
@@ -119,6 +124,17 @@ class EveryCardIsOnThePage(unittest.TestCase):
             listed |= set(re.findall(r'"([a-z0-9_]+)"', call))
         if 'channelCards(AI_SHELF)' in groups: listed |= ai_shelf()
         catalogue = json.loads((ROOT / 'taskuary' / 'connectorcatalog.json').read_text(encoding='utf-8'))
+        if 'c.mcp && c.group === category' in src:    # catalogCards draws every catalogue row with an `mcp` url in its own group
+            listed |= {r['type'] for r in catalogue['cards'] if r.get('mcp')}
+        if 'dataCards(READ_TYPES' in src:             # ...and every vendor REST read (apireads.json) in its catalogue group
+            from taskuary import apireads
+            listed |= set(apireads.types())
+        if 'channelCards(waitingIn(category))' in src:   # ...and every source where work waits on you (waitingMeta.js), each card described there
+            meta = (ROOT / 'website' / 'src' / 'waitingMeta.js').read_text(encoding='utf-8')
+            from taskuary import waiting
+            drawn = set(re.findall(r'^  ([a-z0-9_]+): \{', meta, re.M))
+            self.assertEqual(drawn, set(waiting.NAMES), 'waitingMeta.js describes each waiting.py source, no more')
+            listed |= drawn
         working = {r['type'] for r in catalogue['cards'] if not r['planned']}
         missing = sorted(t for t in {c['Type'] for c in MemoryStore().list_connectors()} & working
                          if t not in listed)

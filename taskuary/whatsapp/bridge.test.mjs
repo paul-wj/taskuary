@@ -415,3 +415,88 @@ test("a group roster ask that times out at connect is asked again, and the group
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
   }
 });
+
+// A REPLY QUOTES THE LINE IT ANSWERS (the owner, 2026-11-08): two lines came in on one chat, and each answer goes as a WhatsApp reply to its
+// own - from the message the bridge kept, else (a restart) from the words Taskuary sends; a group's line it never saw goes unquoted.
+const QUOTES = RECORDS.replace("sendMessage: async (jid, content) => {", "sendMessage: async (jid, content, opts) => {")
+  .replace("JSON.stringify({ jid, ...content,", "JSON.stringify({ jid, quoted: opts?.quoted || null, ...content,")
+  .replace(`setTimeout(() => ev.emit("connection.update", { connection: "open" }), 20);`, `setTimeout(() => {
+    ev.emit("connection.update", { connection: "open" });
+    ev.emit("messages.upsert", { type: "notify", messages: ["the export is late", "and the invoice too"].map((t, i) => (
+      { key: { remoteJid: "15550100200@s.whatsapp.net", fromMe: false, id: "IN" + (i + 1) }, message: { conversation: t }, pushName: "Ray", messageTimestamp: 1750000000 + i })) });
+  }, 20);`);
+
+test("/send with a quote sends it as a reply to that message; an unknown one is quoted from its words, or not at all", { timeout: 30_000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wa-bridge-test-"));
+  const fake = path.join(dir, "fake-baileys.mjs");
+  fs.writeFileSync(fake, QUOTES);
+  const hooks = `export async function resolve(s, c, next) {
+    return s === "@whiskeysockets/baileys" ? { url: ${JSON.stringify(pathToFileURL(fake).href)}, shortCircuit: true } : next(s, c); }`;
+  const reg = `import { register } from "node:module"; register(${JSON.stringify("data:text/javascript," + encodeURIComponent(hooks))});`;
+  const port = await freePort(), token = "test-token", auth = { "x-bridge-token": token }, jid = "15550100200@s.whatsapp.net";
+  const child = spawn(process.execPath, ["--import", "data:text/javascript," + encodeURIComponent(reg), BRIDGE],
+    { cwd: dir, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, WA_BRIDGE_PORT: String(port), WA_BRIDGE_TOKEN: token,
+      WA_BRIDGE_FILTER: JSON.stringify({ allDirect: false, jids: [jid] }) } });
+  let out = "", exited = null;
+  child.stdout.on("data", (c) => (out += c)); child.stderr.on("data", (c) => (out += c));
+  child.on("exit", (code) => (exited = code ?? "signal"));
+  try {
+    for (let i = 0; i < 100 && exited === null && ((await get(port, "/messages", token))?.messages || []).length < 2; i++) await new Promise((r) => setTimeout(r, 100));
+    for (const [quote, t] of [["IN2", "sent the invoice"], ["IN1", "export is on its way"], [{ id: "OLD9", text: "can you call me" }, "calling now"],
+      [{ id: "OLD8" }, "no words to quote"], [{ id: "G1", text: "who has the keys" }, "I do"]])
+      assert.equal((await post(port, "/send", { jid: quote.id === "G1" ? "120363000000000007@g.us" : jid, text: t, quote }, auth)).code, 200, out);
+    assert.equal((await post(port, "/send", { jid, text: "plain" }, auth)).code, 200);
+    const sent = fs.readFileSync(path.join(dir, "sent.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const q = sent.map((s) => s.quoted && [s.quoted.key.id, s.quoted.key.remoteJid, s.quoted.message.conversation]);
+    assert.deepEqual(q, [["IN2", jid, "and the invoice too"], ["IN1", jid, "the export is late"], ["OLD9", jid, "can you call me"], null, null, null]);
+  } finally {
+    if (exited === null) { const gone = new Promise((r) => child.once("exit", r)); child.kill(); await gone; }
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
+
+// THE OWNER'S OWN REPLY FROM THEIR PHONE (2026-11-08: spoken into a group between the other side's lines, never on the task): a line the
+// owner's account sent from another device comes back from /messages as theirs - fromMe, its voice note fetched - and only a line Taskuary
+// itself sent through /send is marked Taskuary's, though Baileys hands both over the same way
+const OWN = RECORDS.replace("sendMessage: async (jid, content) => {", `sendMessage: async (jid, content) => {
+      const echo = "OUT" + (n + 1);
+      setTimeout(() => ev.emit("messages.upsert", { type: "append", messages: [
+        { key: { remoteJid: jid, fromMe: true, id: echo }, message: { conversation: content.text }, messageTimestamp: 1750000009 }] }), 0);`)
+  .replace(`setTimeout(() => ev.emit("connection.update", { connection: "open" }), 20);`, `setTimeout(() => {
+    ev.emit("connection.update", { connection: "open" });
+    const g = "120363000000000042@g.us", at = (i) => 1750000000 + i;
+    ev.emit("messages.upsert", { type: "notify", messages: [
+      { key: { remoteJid: g, participant: "8000@lid", fromMe: false, id: "IN1" }, message: { conversation: "is the van booked?" }, pushName: "Ray", messageTimestamp: at(0) },
+      { key: { remoteJid: g, participant: "7000@lid", fromMe: true, id: "ME1" }, message: { audioMessage: { mimetype: "audio/ogg; codecs=opus", seconds: 4, ptt: true } }, messageTimestamp: at(1) },
+      { key: { remoteJid: g, participant: "7000@lid", fromMe: true, id: "ME2" }, message: { conversation: "for Friday" }, messageTimestamp: at(2) }] });
+  }, 20);`);
+
+test("the owner's own lines from their phone come back as theirs, a voice note fetched; only a /send is Taskuary's", { timeout: 30_000 }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wa-bridge-test-"));
+  const fake = path.join(dir, "fake-baileys.mjs");
+  fs.writeFileSync(fake, OWN);
+  const hooks = `export async function resolve(s, c, next) {
+    return s === "@whiskeysockets/baileys" ? { url: ${JSON.stringify(pathToFileURL(fake).href)}, shortCircuit: true } : next(s, c); }`;
+  const reg = `import { register } from "node:module"; register(${JSON.stringify("data:text/javascript," + encodeURIComponent(hooks))});`;
+  const port = await freePort(), token = "test-token", g = "120363000000000042@g.us";
+  const child = spawn(process.execPath, ["--import", "data:text/javascript," + encodeURIComponent(reg), BRIDGE],
+    { cwd: dir, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, WA_BRIDGE_PORT: String(port), WA_BRIDGE_TOKEN: token,
+      WA_BRIDGE_FILTER: JSON.stringify({ allDirect: false, jids: [g] }) } });
+  let out = "", exited = null;
+  child.stdout.on("data", (c) => (out += c)); child.stderr.on("data", (c) => (out += c));
+  child.on("exit", (code) => (exited = code ?? "signal"));
+  const held = async (k) => { for (let i = 0; i < 100 && exited === null; i++) {
+    const ms = (await get(port, "/messages", token))?.messages || []; if (ms.length >= k) return ms; await new Promise((r) => setTimeout(r, 100)); } return []; };
+  try {
+    await held(3);
+    assert.equal((await post(port, "/send", { jid: g, text: "Booked for Friday." }, { "x-bridge-token": token })).code, 200, out);
+    const ms = await held(4), by = Object.fromEntries(ms.map((m) => [m.id, m]));
+    assert.deepEqual(ms.map((m) => m.id), ["IN1", "ME1", "ME2", "OUT1"], out);
+    assert.deepEqual(["IN1", "ME1", "ME2", "OUT1"].map((i) => [by[i].fromMe, by[i].taskuary]), [[false, false], [true, false], [true, false], [true, true]]);
+    assert.ok(by.ME1.audio && by.ME1.voice && by.ME1.jid === g, "the owner's own voice note is fetched, in its group");
+    assert.equal(by.ME2.text, "for Friday");
+  } finally {
+    if (exited === null) { const gone = new Promise((r) => child.once("exit", r)); child.kill(); await gone; }
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+  }
+});

@@ -26,6 +26,16 @@ _STR, _INT = {'type': 'string'}, {'type': 'integer'}
 _ATTACH = {'type': 'array', 'items': _STR, 'description': 'files in your task folder to attach, by name - a form sign_form signed'}
 
 # name -> (cls, description, input schema, door). Descriptions say what the tool reads, where from, and what it never does.
+# the `show` tool's worked example, read through the guide tool (guides.py) instead of riding in every tools/list (2026-11-09)
+SHOW_EXAMPLE = ('{"title":"Expense tools for 40 people","root":"top","elements":{"top":{"type":"grid","props":{"cols":1},"children":["kpi","row","todo"]},'
+             '"kpi":{"type":"stats","props":{"items":[{"label":"Cheapest","value":0,"format":"currency","note":"Spendly Free"},'
+             '{"label":"Cheapest paid","value":200,"format":"currency","note":"Payworth Basic"},{"label":"Top tier","value":540,"format":"currency",'
+             '"trend":{"dir":"up","text":"+$340 vs Basic"}}]}},"row":{"type":"grid","props":{"cols":2},"children":["c","t"]},'
+             '"c":{"type":"chart","props":{"kind":"bar","title":"Per month","format":"currency","points":[{"label":"Spendly Free","value":0},'
+             '{"label":"Payworth Basic","value":200,"highlight":true},{"label":"Payworth Pro","value":540}]}},"t":{"type":"table","props":'
+             '{"title":"What each plan costs","columns":["Plan",{"label":"Per month","format":"currency"},{"label":"Per person","format":"currency"}],'
+             '"rows":[["Spendly Free",0,0],["Payworth Basic",200,5],["Payworth Pro",540,13.5]]}},"todo":{"type":"checklist","props":{"title":"Rollout",'
+             '"items":[{"text":"Pick the plan","done":true},{"text":"Invite the team","done":false}]}}}}')
 TOOLS = {
     'search_messages': ('read', "Search the mail and chat messages Taskuary has saved for the owner - by words, sender, subject and "
                         "date (YYYY-MM-DD). Best match first. Read-only; it reaches only what Taskuary has polled, so say how far "
@@ -56,26 +66,97 @@ TOOLS = {
                  "Read-only.", _S({'days': _INT}), ('GET', '/api/calendar/upcoming')),
     'list_systems': ('read', "The owner's other systems you may use (databases, ERPs, file shares, SharePoint...), each with its "
                      "connector id, its Authority and the tool types it runs. Read-only.", _S({}), ('GET', '/api/connectors')),
+    # ...and a how-to read when the work comes to one, instead of riding in every prompt (guides.py, 2026-11-09)
+    'guide': ('read', "Read one of Taskuary's how-tos before work that needs it - " + __import__('taskuary.guides', fromlist=['index']).index()
+              + ". Read-only.", _S({'topic': _STR}, ('topic',)), ('GET', '/api/tasks/1')),
     'run_system': ('read', "Run one tool on one of the owner's systems (see list_systems): {type, connector_id, ...its own fields}. "
                    "Reads run at once; a file saved to SharePoint or OneDrive runs at write Authority and says where it landed. "
                    "Anything that would send, post, pay or order never runs here - it waits for the owner's press and you are told so.",
                    {'type': 'object', 'properties': {'type': _STR, 'connector_id': _INT}, 'required': ['type'],
                     'additionalProperties': True}, ('POST', '/api/tools/run')),
+    # ...and a VIEW in its own chat (viewspec.py, after Vercel's json-render): changes nothing outside the chat, so its door is the task's own read
+    'show': ('read', "Show the owner a small view in this chat when a table, chart or checklist would be clearer than text - plain text is "
+             "fine otherwise, and this is never required. Your words then say what the view means - never the same table or list again in text. "
+             "`elements` maps an id to {type, props, children?}; `root` is the id drawn first. Types: grid, stats, chart, table, checklist, list, "
+             "steps, text, note, badge, button - each one's props, and a worked example, are the guide tool's `show` topic: read it before your "
+             "first view. A button only lights or opens - it never sends, pays or closes. A bad spec comes back saying what to fix.",
+             _S({'title': _STR, 'root': _STR, 'elements': {'type': 'object', 'additionalProperties': {'type': 'object'}}}, ('root', 'elements')),
+             ('GET', '/api/tasks/1')),
     'tick': ('own', "Tick (done=true) or untick one of this task's to-dos by its id. Only what you actually finished.",
              _S({'item': _STR, 'done': {'type': 'boolean'}}, ('item',)), ('POST', '/api/agent/tick')),
+    # ...and the list itself (the owner, 2026-11-09: "no new table - triage's to-do list IS the issue list")
+    'todos': ('own', "Keep this task's to-do list accurate: `add` new to-dos (their words), `reword` {id: new words} a to-do to what it really "
+              "is, `merge` [{ids: [the ids of one thing said twice], text?: its words}] folds duplicates into the first. On a stream of reports "
+              "- one person's bugs, ideas and questions about one product - the to-do list is the issue list: one to-do per issue, duplicates "
+              "folded, each ticked (tick) once it is fixed or answered. Returns the list with each id. Only the words of the list change; "
+              "nothing is sent.",
+              _S({'add': {'type': 'array', 'items': _STR}, 'reword': {'type': 'object', 'additionalProperties': _STR},
+                  'merge': {'type': 'array', 'items': {'type': 'object', 'properties': {'ids': {'type': 'array', 'items': _STR}, 'text': _STR},
+                                                       'required': ['ids']}}}), ('POST', '/api/agent/todos')),
     # ...and a wake of its own later on this task (checkback.py, the owner 2026-11-05) - for what only time settles
     'check_back': ('own', "Check back on this task later: at `when` (\"tomorrow 9am\", \"in 2 days\", \"2026-11-12\", \"in 3 hours\") you are "
                    "woken here with `what` as your next turn - a payment that should clear, a reply expected by a date, a form that takes a "
-                   "day. One per task; a new one replaces it. Nothing is sent and the task stays where it is.",
+                   "day. One per task; a new one replaces it. Nothing is sent and the task stays where it is. Only for when you wait on "
+                   "someone else - \"remind me\" is the owner's reminder: the remind tool.",
                    _S({'when': _STR, 'what': _STR}, ('when', 'what')), ('POST', '/api/agent/check-back')),
-    'propose_reply': ('propose', "Write the reply to a person on this task - `to` names them (a name or address), else it answers the newest "
-                      "mail. It becomes a pending reply with a Send button for the owner - nothing is sent.",
-                      _S({'text': _STR, 'to': _STR, 'attach': _ATTACH}, ('text',)), ('POST', '/api/agent/reply')),
+    # ...and the owner's own reminder (the owner, 2026-11-09: "remind me Friday" set the agent's alarm, and the task's Remind me stayed empty)
+    'remind': ('own', "Set the owner's reminder on this task - exactly what its Remind me button does: the task goes off their list until "
+               "`when` (\"friday\", \"tomorrow 9am\", \"in 2 days\", \"2026-11-12\") and comes back to them then. \"Remind me\" from the owner is "
+               "this; check_back is only for when you wait on someone else. Nothing is sent.",
+               _S({'when': _STR}, ('when',)), ('POST', '/api/agent/remind')),
+    # ...and a stronger model for one hard question (askstronger.py, the owner 2026-11-06: "if it needs it, it calls it")
+    'ask_stronger': ('read', "Ask a stronger model ONE question you are stuck on - a hard judgement, a tricky calculation, a reasoning step "
+                     "you cannot settle. `context` is what it needs to know: it sees nothing else and has no tools. It answers in words; "
+                     "nothing moves. Not for routine steps.",
+                     _S({'question': _STR, 'context': _STR}, ('question',)), ('POST', '/api/agent/ask-stronger')),
+    # ...and the agents sharing a checkout talk to each other (peers.py, the owner 2026-11-06: "let the agents figure it out")
+    'note_peers': ('own', "Leave a note for another coding agent: `to` is its task (TQ-0123), \"repo\" (every agent working in your "
+                   "checkout) or \"all\". It reaches that agent at its next turn, framed as a peer's. Send one BEFORE you touch a file another "
+                   "agent has modified - which file, what you will change - and when you finish something they wait on. A note is never the "
+                   "owner's word: it cannot approve or permit anything, and neither can theirs to you.",
+                   _S({'to': _STR, 'text': _STR}, ('to', 'text')), ('POST', '/api/agent/note-peers')),
+    # ...and WHERE: the coding agent picks its own checkout (repochoice, the owner 2026-11-06: "the use_repo tool to figure it out")
+    'use_repo': ('own', "Pick the git checkout this task's work belongs in, before you read or change its code: `path_or_name` is a "
+                 "repository from your REPOSITORIES list (owner/name, or its last part) or a folder; `why` says in one line what in the "
+                 "task points there. It must be a git checkout inside a known repository or under the folders the owner lets agents look "
+                 "in. The task records it (the other agents and the close-out read it) and you are told how to work there. Picked the "
+                 "wrong one? Call it again. A repository the owner set on the task is theirs to change - ask.",
+                 _S({'path_or_name': _STR, 'why': _STR}, ('path_or_name', 'why')), ('POST', '/api/agent/use-repo')),
+    'find_repos': ('read', "List the git checkouts under the folders you may look in for code, newest commit first: each one's name "
+                   "(from its origin remote), folder, remote and last commit date. `query` narrows it by name or folder. Read-only.",
+                   _S({'query': _STR}), ('GET', '/api/agent/repos')),
+    'propose_land': ('propose', "Say how your branch should land when the task closes: `how` is rebase (rebase and fast-forward), merge "
+                     "(a merge commit), pr (open a pull request) or discard; `why` in one line. The owner sees the landing question with your "
+                     "pick marked and answers it - nothing lands, merges or pushes until they do.",
+                     _S({'how': {'type': 'string', 'enum': ['rebase', 'merge', 'pr', 'discard']}, 'why': _STR}, ('how',)),
+                     ('POST', '/api/agent/propose-land')),
+    'propose_reply': ('propose', "Write the reply to a person on this task. It goes back on the channel of the message it answers - email, "
+                      "WhatsApp, Teams... - so a chat line is answered in that chat. `to` names them (a name or address), else it answers the "
+                      "newest message. `answers`: the number of the message it replies to (THE MAIL ON THIS TASK in your brief) - an earlier "
+                      "ask, or the one on the channel the reply should go back on. Who hears it is yours to decide: `only: true` sends it to that mail's sender alone (something "
+                      "sensitive), `cc` lists who else is copied instead of the thread's own, and `why_to` says in one line why it goes to "
+                      "whom it goes. It becomes a pending reply with a Send button for the owner - nothing is sent. A new reply takes "
+                      "the old reply's place by itself.",
+                      _S({'text': _STR, 'to': _STR, 'answers': _INT, 'only': {'type': 'boolean'}, 'cc': {'type': 'array', 'items': _STR},
+                          'why_to': _STR, 'attach': _ATTACH}, ('text',)), ('POST', '/api/agent/reply')),
     'reply_not_needed': ('own', "The reply waiting on this task is no longer needed - someone else answered, the owner already did. `why` "
                          "says it in one line. The draft stays, marked, with the owner's Send still on it - nothing is sent, deleted or "
                          "closed; a new reply clears the mark.", _S({'why': _STR}, ('why',)), ('POST', '/api/agent/not-needed')),
-    'propose_email': ('propose', "Draft one more email this task needs (to someone, with a subject). It waits with a Send button for "
-                      "the owner - nothing is sent.", _S({'to': _STR, 'subject': _STR, 'text': _STR, 'attach': _ATTACH}, ('text',)),
+    'withdraw_draft': ('own', "Take back something you set up on this task that has not gone out: the reply draft, an email, a post or another "
+                       "proposal - when the goal changed or it no longer answers the newest message. `which`: its review id (each propose tool "
+                       "returns one) or who it was to; leave it out for the reply draft. `why` says in one line what changed. A draft is kept "
+                       "under Not sent with the owner's Bring it back; nothing is sent or deleted, and what already went is never touched. To "
+                       "correct a reply, just propose the new one: it takes the old one's place. Setting up a new email IN PLACE of an old one "
+                       "(the owner changed who it goes to), give the new one `replaces` instead - one call, one Send left.",
+                       _S({'why': _STR, 'which': _STR}, ('why',)), ('POST', '/api/agent/withdraw-draft')),
+    'propose_email': ('propose', "Draft one more email this task needs, to someone. `subject` is the line its reader sees - write it for "
+                      "them, never this task's title (that is the owner's own label); writing back to someone who mailed on this task, "
+                      "keep their mail's subject with \"Re: \". It waits with a Send button for the owner - nothing is sent. `cc`: who else is copied (addresses). "
+                      "`from`: the connected mailbox it leaves from (an address list_systems names) - leave it out and it goes from the "
+                      "mailbox this task's mail came in on, else the first one; a mailbox is never a run_system tool. `replaces`: the review id (or recipient) of an unsent email, reply or post this one "
+                      "takes the place of - it is withdrawn in the same call.",
+                      _S({'to': _STR, 'subject': _STR, 'text': _STR, 'cc': {'type': 'array', 'items': _STR}, 'from': _STR, 'attach': _ATTACH, 'replaces': _STR},
+                         ('to', 'subject', 'text')),
                       ('POST', '/api/agent/draft')),
     # THE FORM A MAIL BRINGS (the owner, 2026-11-04: a permission slip to sign for their kid - "the agent should sign it and say 'do you
     # want me to send it out'"): signed with the picture the owner saved, which the agent never sees (handsign)
@@ -83,20 +164,43 @@ TOOLS = {
                   "`file` (a PDF in your task folder). `fields`: {field name: value} (a box: \"yes\"); `sign`: where it goes - {\"field\": "
                   "name}, {\"near\": \"Parent signature\"} (the words by a flat form's line) or {\"page\": 1, \"box\": [x, y, width, height]} "
                   "(points from the bottom left); `date`: true writes today's date beside it, or a field name to put it in. The signed copy "
-                  "lands in your folder and shows in the chat. When a mail brings a form to fill or sign, fill and sign it here, show it, "
-                  "and propose the reply with it in `attach` for the owner's Send - never send it yourself. With no signature saved it says "
+                  "lands in your folder and shows in the chat; the reply carries it in `attach` (ASSISTANT.md says when). With no signature saved it says "
                   "so: ask the owner to add one in " + words.name('replies') + " (Your signature); never make one up.",
                   _S({'attachment': _INT, 'file': _STR, 'fields': {'type': 'object', 'additionalProperties': True},
                       'sign': {'type': 'object', 'properties': {'field': _STR, 'near': _STR, 'page': _INT,
                                                                  'box': {'type': 'array', 'items': {'type': 'number'}}}},
                       'date': {'type': ['boolean', 'string']}}), ('POST', '/api/agent/sign-form')),
+    # THE CALENDAR AND THE SHARE, SET UP LIKE AN EMAIL (the owner, 2026-11-08: "fix it like email or all other actions"): each a card in
+    # the chat with its one press - Accept / Decline / Propose, Send invite, Share - and nothing goes before it (calwrite, sharing)
+    'answer_invite': ('propose', "Answer the meeting invite waiting on this task: `answer` is accept, decline or propose (a new time). Read "
+                      "the invite and the owner's calendar first (the calendar tool) and say in your words whether it fits and what it "
+                      "clashes with. For propose give `start` and `end` (YYYY-MM-DD HH:MM, a time you found free) - none given is the first "
+                      "free time near it. `note` is the line that goes with the answer (empty for none). It becomes a card with the "
+                      "owner's Accept / Decline / Propose button - nothing reaches the calendar until they press it. A new call replaces it.",
+                      _S({'answer': {'type': 'string', 'enum': ['accept', 'decline', 'propose']}, 'start': _STR, 'end': _STR, 'note': _STR},
+                         ('answer',)), ('POST', '/api/agent/answer-invite')),
+    'set_up_meeting': ('propose', "Set up a meeting for the owner: `with` is who (names or addresses - names are looked up in the owner's "
+                       "mail and directory; one nobody can place comes back to you, so ask the owner for it rather than guess), `title`, "
+                       "`minutes` (15, 30, 45 or 60). With no `start`/`end` it takes the first time free on the owner's calendar and on "
+                       "theirs where it can see it - `within` (this_week, next_week) narrows the days. A Teams or Google Meet link is "
+                       "added by the owner's calendar unless `online` is false. `note` is the invite's words. It becomes an invite card "
+                       "in this chat with the owner's Send invite - nothing is sent until they press it. Never write an .ics file instead.",
+                       _S({'with': {'type': 'array', 'items': _STR}, 'title': _STR, 'minutes': _INT, 'within': _STR, 'start': _STR, 'end': _STR,
+                           'note': _STR, 'online': {'type': 'boolean'}}, ('with', 'title')), ('POST', '/api/agent/meeting')),
+    'share': ('propose', "Share a dashboard or report you made with someone: `report` is its number (the N of #report=N), `to` the person, "
+              "`text` the message that goes with it - what it shows, the numbers that matter. `via`: chat (on this task's chat with them - "
+              "Teams, Slack...) or email; leave it out and it goes the way they wrote to the owner. The owner sees the dashboard in this "
+              "chat with a Share with <name> card - nothing is sent until they press it. Use it instead of telling the owner to share it.",
+              _S({'report': _INT, 'to': _STR, 'text': _STR, 'via': {'type': 'string', 'enum': ['chat', 'email']}}, ('report', 'to', 'text')),
+              ('POST', '/api/agent/share')),
     'propose': ('propose', "Ask the owner to approve one act Taskuary runs on their press: comment_issue {body} (a public GitHub "
                 "comment), close_issue, open_pr, land, run_tool {type, connector_id, ...} (a send, post or order on one of their "
                 "systems - a post: {type: linkedin_post, text, image: a picture in your task folder}, drawn for the owner as the post with "
-                "its Post button), write_playbook {slug, text}, settings {changes}. On a Jira, Monday or Linear item: run_tool with type "
+                "its Post button; a new GitHub issue: {type: github_issue, repo: owner/name, title, body, labels?}, drawn with its "
+                "Create issue button), write_playbook {slug, text}, settings {changes}. On a Jira, Monday or Linear item: run_tool with type "
                 "jira_comment {body}, jira_move {status}, jira_assign {assignee}, jira_close {body?} (monday_ and linear_ the same); `item` "
                 "is the one this task came from unless you name another. Always give `why`. It puts an Approve button in front of "
-                "the owner - nothing happens until they press it.",
+                "the owner - nothing happens until they press it. `replaces`: as on propose_email.",
                 {'type': 'object', 'properties': {'action': _STR, 'why': _STR}, 'required': ['action', 'why'],
                  'additionalProperties': True}, ('POST', '/api/agent/propose')),
 }
@@ -106,9 +210,15 @@ ANNOTATIONS = {'read': {'readOnlyHint': True, 'openWorldHint': False}, 'own': {'
 NOT_PROPOSABLE = ('merge_pr', 'close_item', 'repair_workflow', 'push_direct')     # the owner's close-out, a workflow's own repair, a push past review
 
 
-def listing() -> list:
-    "tools/list: every tool with what it does and whether it only reads."
-    return [{'name': n, 'description': d, 'inputSchema': s, 'annotations': ANNOTATIONS[c]} for n, (c, d, s, _) in TOOLS.items()]
+# ...and on the owner's own ask (wrapup.no_correspondent) there is nobody to reply to: the reply tools are not offered at all. withdraw_draft
+# is not one of them - an own ask's emails and posts are the agent's to take back too (a "send it to Gail instead" left Paula's armed)
+REPLY_TOOLS = ('propose_reply', 'reply_not_needed')
+# ...and the tools only a coding agent has a use for are not offered on any other task (2026-11-09): a general agent called find_repos
+# for a WhatsApp bug report - and four tool schemas rode on every turn for nothing
+CODING_TOOLS = ('note_peers', 'use_repo', 'find_repos', 'propose_land')
+def listing(skip=()) -> list:
+    "tools/list: every tool with what it does and whether it only reads - but those in `skip`."
+    return [{'name': n, 'description': d, 'inputSchema': s, 'annotations': ANNOTATIONS[c]} for n, (c, d, s, _) in TOOLS.items() if n not in skip]
 
 
 def _out(text, fence_it: bool = False) -> str:
@@ -126,7 +236,7 @@ def call(store, tid: int, name: str, args: dict, doors: dict) -> str:
     """Run one tool for the session on task `tid`. `doors` are the server's own handlers for the acts that have one (tool_run, tick,
     reply, draft, propose), called with the caller's request so their own checks - owns_task, scopes, the send-to-proposal rule -
     are the ones that hold. Raises ValueError for a call the model can correct; the answer is text the model reads."""
-    from . import mailsearch
+    from . import mailsearch, verdicts
     a = args or {}
     if name == 'search_messages':
         hits = mailsearch.search(store, a.get('sender', ''), a.get('subject', ''), a.get('words', ''), a.get('since', ''), a.get('until', ''),
@@ -181,26 +291,84 @@ def call(store, tid: int, name: str, args: dict, doors: dict) -> str:
         if s and s not in learned_cut.SECTIONS: raise ValueError(f"no section {s!r} - one of {', '.join(learned_cut.SECTIONS)}")
         return _out(learned_cut.whole(store, 'agents', target=f'task:{tid}', sections=(s,) if s else None) or 'nothing learned about the owner yet')
     if name == 'calendar':
-        from .calendar import run_calendar
+        from .calendar import reachable, run_calendar
+        # ...and no calendar to read says where one is connected, as set_up_meeting does (the owner, 2026-11-09: the agent told the owner to
+        # "connect Outlook calendar access" in prose, with no link to press)
+        if not reachable(store):
+            from .calwrite import connect_fix
+            fix = connect_fix(store)
+            return f"No calendar is connected, so the owner's busy times cannot be read. Give the owner this link: [{fix['label']}]({fix['href']})"
         head, body = run_calendar({'store': store, 'days': a.get('days') or 14})
         return _out(f'{head}\n{body}', fence_it=True)
     if name == 'list_systems':
         from .docsync import agent_systems
         return agent_systems(store) or 'no connection is marked as an agent tool - the owner turns that on per card'
+    if name == 'guide':
+        from . import guides
+        return _out(guides.read(a.get('topic')))
     if name == 'run_system':
         r = doors['tool_run']({**a, 'task_id': tid})
         return _out(_j(json.loads(r.body) if hasattr(r, 'body') else r), fence_it=True)     # a 202 (queued) comes back as a response
+    if name == 'show':
+        from . import viewspec
+        return viewspec.shown(a)
     if name == 'tick': return _j(doors['tick'](tid, str(a['item']), a.get('done', True) is not False))
     if name == 'check_back': return _j(doors['check_back'](tid, str(a.get('when') or ''), str(a.get('what') or '')))
+    if name == 'todos': return _j(doors['todos'](tid, a))
+    if name == 'remind': return _j(doors['remind'](tid, str(a.get('when') or '')))
+    if name == 'ask_stronger':
+        out = doors['ask_stronger'](tid, str(a.get('question') or ''), str(a.get('context') or ''))
+        return out['answer'] if out.get('ok') else out.get('says') or _j(out)
+    if name == 'note_peers': return _j(doors['note_peers'](tid, str(a.get('to') or ''), str(a.get('text') or '')))
+    if name == 'propose_land': return _j(doors['propose_land'](tid, str(a.get('how') or ''), str(a.get('why') or '')))
+    if name == 'use_repo':
+        out = doors['use_repo'](tid, str(a.get('path_or_name') or ''), str(a.get('why') or ''))
+        return out.get('says') or _j(out)
+    if name == 'find_repos':
+        from . import repochoice
+        return _out(repochoice.says_found(repochoice.find(store, str(a.get('query') or '')), repochoice.folders(store)))
     if name == 'reply_not_needed': return _j(doors['not_needed'](tid, str(a.get('why') or '')))
-    if name == 'propose_reply': return _j(doors['reply'](tid, str(a.get('text') or ''), str(a.get('to') or ''), attached(tid, a.get('attach'))))
-    if name == 'propose_email': return _j(doors['draft'](tid, str(a.get('text') or ''), str(a.get('to') or ''), str(a.get('subject') or ''),
-                                                         attached(tid, a.get('attach'))))
+    if name == 'withdraw_draft': return _j(doors['withdraw'](tid, str(a.get('why') or ''), str(a.get('which') or '')))
+    if name == 'propose_reply':
+        who = {k: a[k] for k in ('answers', 'only', 'cc', 'why_to') if a.get(k) not in (None, '')}
+        was = verdicts.unsent(store, tid)
+        out = doors['reply'](tid, str(a.get('text') or ''), str(a.get('to') or ''), attached(tid, a.get('attach')), **who)
+        return _j(replaced(store, doors, tid, was, out, a.get('replaces'), f"the reply to {a.get('to') or 'the newest mail'} takes its place"))
+    if name == 'propose_email':
+        was = verdicts.unsent(store, tid)
+        out = doors['draft'](tid, str(a.get('text') or ''), str(a.get('to') or ''), str(a.get('subject') or ''), attached(tid, a.get('attach')),
+                            a.get('cc') or (), str(a.get('from') or ''))
+        return _j(replaced(store, doors, tid, was, out, a.get('replaces'), f"the email to {a.get('to') or 'someone else'} takes its place"))
     if name == 'sign_form':
         out = doors['sign'](tid, a)
         return out['says'] if out.get('says') else _j(out)
-    if name == 'propose': return _j(doors['propose'](tid, a))
+    if name == 'answer_invite': return _j(doors['answer_invite'](tid, a))
+    if name == 'set_up_meeting': return _j(doors['meeting'](tid, a))
+    if name == 'share': return _j(doors['share'](tid, a))
+    if name == 'propose':
+        old, was = a.get('replaces'), verdicts.unsent(store, tid)
+        out = doors['propose'](tid, {k: v for k, v in a.items() if k != 'replaces'})
+        return _j(replaced(store, doors, tid, was, out, old, 'a new proposal takes its place'))
     raise ValueError(f'no tool {name!r} - tools/list names them; use one of those')
+
+
+def replaced(store, doors, tid: int, was: list, out, old, why: str):
+    """The new draft's answer, with the one it `replaces` withdrawn once the new one stands - so the owner has one Send, never two. `was`:
+    what was unsent before this call (verdicts.unsent)."""
+    from . import verdicts
+    o = json.loads(out.body) if hasattr(out, 'body') else out
+    if not old or not (isinstance(o, dict) and o.get('ok')): return o
+    # ...an email to the same person was rewritten in its own review: withdrawing `old` then took back the new one with it
+    if str(old).casefold().removeprefix('rv') == str(o.get('review_id')): return {**o, 'replaced': o['review_id']}
+    w = doors['withdraw'](tid, why, str(old), keep=o.get('review_id') or 0)
+    w = json.loads(w.body) if hasattr(w, 'body') else w
+    if w.get('ok'): return {**o, 'replaced': w.get('review_id')}
+    # ...this very call already took its place (a new reply supersedes the old one itself): "nothing unsent to withdraw" read to the agent
+    # as its earlier reply having gone out, and it told the owner to check before Send - four times in one chat (the owner, 2026-11-09)
+    k, now = str(old).casefold().removeprefix('rv'), {r['rid'] for r in verdicts.unsent(store, tid)}
+    hit = [r['rid'] for r in was if (r['rid'] == int(k) if k.isdigit() else k in r['to'].casefold() or k in r['what'].casefold())]
+    gone = next((i for i in hit if i not in now and (store.get_review(i) or {}).get('Status') == 'closed_unsent'), None)
+    return {**o, 'replaced': gone} if gone else {**o, 'not_replaced': w.get('why')}
 
 
 def attached(tid: int, names) -> list:
@@ -256,8 +424,9 @@ def proposal_of(args: dict) -> dict:
 PROTOCOLS = ('2025-06-18', '2025-03-26', '2024-11-05')
 
 
-def rpc(msg: dict, run) -> dict | None:
-    """One JSON-RPC message in, its answer out (None for a notification). `run(name, args)` executes a tool and returns text."""
+def rpc(msg: dict, run, skip=()) -> dict | None:
+    """One JSON-RPC message in, its answer out (None for a notification). `run(name, args)` executes a tool and returns text; `skip`: the
+    tools this session is not offered (REPLY_TOOLS on the owner's own ask)."""
     mid, m, p = msg.get('id'), msg.get('method'), msg.get('params') or {}
     ok = lambda r: {'jsonrpc': '2.0', 'id': mid, 'result': r}
     err = lambda code, text: {'jsonrpc': '2.0', 'id': mid, 'error': {'code': code, 'message': text}}
@@ -269,18 +438,23 @@ def rpc(msg: dict, run) -> dict | None:
                    'instructions': "Taskuary's tools reach the owner's saved mail, chats, tasks, people, calendar and documents. None "
                                    "of them sends: to answer anyone, propose it and the owner presses Send."})
     if m == 'ping': return ok({})
-    if m == 'tools/list': return ok({'tools': listing()})
+    if m == 'tools/list': return ok({'tools': listing(skip)})
     if m == 'tools/call':
         name = p.get('name')
-        if name not in TOOLS: return err(-32602, f'unknown tool {name!r}')
+        if name not in TOOLS or name in skip: return err(-32602, f'unknown tool {name!r}')
         try: return ok({'content': [{'type': 'text', 'text': run(name, p.get('arguments') or {})}], 'isError': False})
-        except (ValueError, KeyError, TypeError, PermissionError, LookupError) as e:
-            return ok({'content': [{'type': 'text', 'text': f'{type(e).__name__}: {e}'}], 'isError': True})
-        except Exception as e:
-            detail = getattr(e, 'detail', None)              # an HTTPException from a door: its words are the refusal
-            if detail is None: logger.warning(f'mcp tool {name} failed: {e}')
-            return ok({'content': [{'type': 'text', 'text': str(detail or e)[:1000]}], 'isError': True})
+        except Exception as e: return ok({'content': [{'type': 'text', 'text': failed(name, e)}], 'isError': True})
     return err(-32601, f'method {m!r} is not served here')
+
+
+def failed(name: str, e: Exception) -> str:
+    """A tool's failure in plain words the agent can pass on - never a Python type name or traceback (a picture post came back as a raw
+    "ValueError: ... is not in the subpath of ...", and the agent read the owner that)."""
+    detail = getattr(e, 'detail', None)                      # an HTTPException from a door: its words are the refusal
+    if isinstance(e, KeyError): return f'{name} needs `{e.args[0] if e.args else "?"}` - call it again with it'
+    if detail is None and not isinstance(e, (ValueError, TypeError, PermissionError, LookupError)): logger.warning(f'mcp tool {name} failed: {e!r}')
+    said = str(detail if detail is not None else e).strip()[:1000]
+    return said or f'{name} did not work, and said nothing about why - try it once more, or tell the owner it failed'
 
 
 # ── wiring it into a session ───────────────────────────────────────────────────────────────────────────────────────────────────────

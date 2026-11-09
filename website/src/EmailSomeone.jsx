@@ -5,8 +5,9 @@
 // (outbox.task_email). It waits in Close out as one of the task's outputs - edit it, attach more, Send - and the task
 // stays open until Mark done (slots._left). Nothing is sent from here.
 import React, { useEffect, useState } from "react";
-import { Box, Button, Checkbox, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel,
+import { Box, Button, Checkbox, CircularProgress, Dialog, DialogContent, DialogTitle, FormControlLabel,
   MenuItem, Select, TextField, Typography } from "@mui/material";
+import { ButtonBar } from "./ButtonBar.jsx";
 import api from "./api";
 import { ChatRecipient, EmailRecipients } from "./NewSheet.jsx";
 import { ACCENT, BORDER, DIM, FAINT, INK } from "./theme.jsx";
@@ -77,7 +78,7 @@ export default function EmailSomeone({ open, task, detail, onClose, onDrafted })
       <DialogTitle>{t(label("share"))} · {detail?.ref || ""}</DialogTitle>
       <DialogContent sx={{ pt: "8px !important", display: "flex", flexDirection: "column", gap: 1.6 }}>
         <Typography variant="body2" sx={{ color: DIM }}>
-          {t("The AI writes a short summary of what this task's work delivered, for the person you pick. It waits in Close out for you to edit and send - nothing is sent now. Sending it leaves the task open until you Mark done.")}
+          {t("The AI writes a short summary of what this task's work delivered, for the person you pick. It waits in the task's chat for you to edit and send - nothing is sent now. Sending it leaves the task open until you Mark done.")}
         </Typography>
         {targets.length > 1 && (
           <Box sx={{ display: "flex", gap: 0.75, flexWrap: "wrap" }}>
@@ -132,12 +133,12 @@ export default function EmailSomeone({ open, task, detail, onClose, onDrafted })
         )}
         {err && <Typography variant="body2" sx={{ color: "#a33b3b" }}>{err.text || t(err.key)}</Typography>}
       </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose} disabled={busy}>{t("Cancel")}</Button>
+      <ButtonBar>
         <Button variant="contained" disableElevation onClick={go} disabled={busy || !ready}>
           {busy ? <CircularProgress size={15} /> : t(label("redraft", "none"))}
         </Button>
-      </DialogActions>
+        <Button onClick={onClose} disabled={busy}>Cancel</Button>
+      </ButtonBar>
     </Dialog>
   );
 }

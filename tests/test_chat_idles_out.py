@@ -54,6 +54,18 @@ class IdleOut(unittest.TestCase):
 
     def later(self, secs=61): return self.ses.last + secs
 
+    def test_a_cli_that_died_while_idle_closes_the_session_at_the_next_sweep(self):
+        # the product audit, 2026-11-08: its CLI tree killed, the session read alive - "waiting on you" over an agent that did not exist
+        self.ses.cli_up = True
+        with mock.patch.object(clipool, 'is_live', return_value=True):
+            self.assertNotIn(self.tid, general.idle_sweep(self.ses.last + 1))       # alive and not idle long enough: it stays
+        # ...and its browser goes with it, its view answering or not (the product audit, 2026-11-08: the daemon and Chrome outlived it)
+        from taskuary import browserview
+        with mock.patch.object(clipool, 'is_live', return_value=False), mock.patch.object(browserview, 'state', return_value={'open': False}),              mock.patch.object(browserview, 'close') as shut:
+            self.assertIn(self.tid, general.idle_sweep(self.ses.last + 1))          # gone: closed quietly, as idle time would
+        self.assertFalse(self.ses.alive); self.assertTrue(general.idled(self.tid, self.s))
+        shut.assert_called_once_with(self.sid, self.tid)
+
     def test_an_idle_session_closes_quietly_after_the_period(self):
         s, tid = self.s, self.tid
         before = (chat(s, tid), len(s.list_comments(tid)), len(s.worker_events(tid)), s.get_task(tid)['Status'],
@@ -76,8 +88,32 @@ class IdleOut(unittest.TestCase):
         from taskuary import funnel, taskstate
         general.idle_sweep(self.later())
         item = {'tid': self.tid, 'lane': 'yours', 'kind': 'task'}
-        self.assertEqual(funnel.paused_conversation(self.s, item), item)
-        self.assertNotIn(taskstate.state(self.s, self.s.get_task(self.tid)), ('stopped', 'saved', 'blocked', 'working', 'queued'))
+        # ...and as it read live (the owner, 2026-11-07): a turn that asked nothing is done for now, never "waiting on you"
+        self.assertEqual({k: funnel.paused_conversation(self.s, item).get(k) for k in ('lane', 'chat_done')}, {'lane': 'report', 'chat_done': True})
+        self.assertEqual(taskstate.state(self.s, self.s.get_task(self.tid)), 'agentdone')
+
+    def test_the_task_reads_the_same_live_or_idled_out(self):
+        """The audit, 2026-11-07: the agent asked, idled out, and the question vanished from the chip, the rail and the Assistant though nobody
+        answered it; after the restart a turn that asked nothing read "waiting on you" until the next idle-out. Its question is the run's own
+        recorded ask - open until answered - and a turn that asked nothing is done for now, whether its process is alive or not."""
+        from taskuary import funnel, server, taskstate
+        s, tid = self.s, self.tid
+        state = lambda: taskstate.state(s, s.get_task(tid), (general.session_for(tid) or mock.Mock(info=lambda: None)).info())
+        self.assertEqual(state(), 'agentdone')                                     # live, asked nothing
+        ws.record(s, tid, self.sid, 'input_needed', text='Which site goes first?', source='api')
+        self.assertEqual(state(), 'blocked')                                       # live, asking
+        general.idle_sweep(self.later())
+        self.assertEqual(state(), 'blocked')                                       # idled out: still asking...
+        self.assertEqual(taskstate.open_question(s, tid)['text'], 'Which site goes first?')
+        row = funnel.paused_conversation(s, {'tid': tid, 'lane': 'yours', 'kind': 'task'})
+        self.assertEqual((row['lane'], row['tail']), ('blocked', ['Which site goes first?']))      # ...on the rail...
+        with mock.patch.object(server, 'store', s):
+            asked = server._assistant_payload(tid)['asking']
+        self.assertEqual((asked['text'], asked['resting']), ('Which site goes first?', True))     # ...and on the page, answered by typing
+        general.start_session(s, tid, actor='owner').send_prompt('Riverside first.')
+        self.assertEqual(state(), 'agentdone')                                     # answered, and the turn after it asked nothing
+        general.idle_sweep(general.session_for(tid).last + 61)
+        self.assertEqual(state(), 'agentdone')                                     # ...the same once idled out again
 
     def test_a_turn_running_is_never_cut_off(self):
         self.ses.busy = True
@@ -137,7 +173,7 @@ class IdleOut(unittest.TestCase):
         self.assertEqual(ses.sid, self.sid)
         self.assertEqual(self.built[-1]['resume'], 'cli-conv-1')
         self.assertIn('Riverside', self.brain.calls[-1])
-        self.assertTrue(any(general.is_brief(c) and 'Riverside' in c['Body'] for c in s.list_comments(tid)))
+        self.assertTrue(any(general.is_brief(c) and 'Riverside' in c['Body'] for c in s.list_comments(tid, internal=True)))
 
     def test_a_closed_task_is_not_idled_but_over(self):
         general.idle_sweep(self.later())

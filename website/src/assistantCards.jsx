@@ -33,6 +33,8 @@ import { Md, looksMd } from "./md.jsx";
 import { jsonRows, nameAndRest } from "./reportRows.js";
 import DigestText from "./DigestText.jsx";
 import ReportRows from "./ReportRows.jsx";
+import ReportBrief from "./ReportBrief.jsx";
+import { briefOf } from "./reportBrief.js";
 import TodayMeetingsStrip from "./TodayMeetingsStrip.jsx";
 import { useCalendarToday } from "./calendarToday.js";
 import { ROLES, ASSISTANT, ALERT, ALERT_INK } from "./theme.jsx";
@@ -41,7 +43,8 @@ import { age, ago, plural } from "./timeWords.js";
 import { SECTION, WORD, ideaWord } from "./lanes.js";
 import { kindLabel, AGENT_SHOWN } from "./kinds.js";
 import { sendBlockLine, draftState } from "./sendState.js";
-import { blankSpans } from "./blanks.js";
+import { blankAsk, blankSpans } from "./blanks.js";
+import { BlankAsk } from "./ReviewDecision.jsx";
 import { openReply, useDraftJob } from "./replyDraft.js";
 import { agentRuns } from "./taskFilter.js";
 import { progressLine } from "./checklist.js";
@@ -63,8 +66,10 @@ import ItemSections, { ItemLay, ItemPart, handToItem } from "./ItemSections.jsx"
 import { withImages } from "./promptImages.jsx";
 import { PaneMoves } from "./TaskPage.jsx";   // an FYI's Came from carries its pane's moves as a task's does
 import { TYPE_LABELS, reportSchedule } from "./reportWords.js";
-import { SECTIONS as STEPS } from "./taskLayout.js";   // a task's three sections, by name (ItemSections)
+import { SECTIONS as STEPS } from "./taskLayout.js";   // a task's sections, by name (ItemSections)
 import { WorkstreamLabel } from "./Workstream.jsx";   // the idea's workstream, a small label (the owner, 2026-11-01)
+import { channelName } from "./taskSources.js";
+import { repliesOf } from "./connectorCatalog.js";
 
 const errText = (e) => e?.response?.data?.detail || e?.message || { source: "That did not work" };
 const shownErr = (err) => err?.source ? translateDescriptor(err) : err;
@@ -508,6 +513,9 @@ function FullText({ mid, revision, report = null }) {
   // ...a report's table sits in a panel its own width (the owner, 2026-10-28): full width, a two-column table left it 3/4 empty
   const rows = !morning && jsonRows(text);
   if (report && rows) return <ReportRows rows={rows} name={report.name} mid={none ? null : mid} />;
+  // ...and a brief of the End of day checkup's shape - roll-ups, groups of bullets - is laid out as one, not a wall of markdown (ReportBrief)
+  const brief = report && !morning && !rows && briefOf(text);
+  if (brief) return <ReportBrief brief={brief} mid={none ? null : mid} />;
   // ...and a message with no words of its own (a picture-only mail) is said by its pictures and files, never "(empty)" (Attachments `bare`)
   const bare = !none && !morning && !text.trim() ? { remote: remotePicture(raw) } : null;
   return (
@@ -637,7 +645,11 @@ export function CardShell({ card, kicker, title, lead, sub, children, err }) {
 // how the reply leaves: "emails" said of a WhatsApp answer told the owner it would go somewhere it would not
 const SENDS_ON = { whatsapp: "on WhatsApp", teams: "in Teams", slack: "in Slack", telegram: "on Telegram", sms: "by text",
   github: "on GitHub", discord: "on Discord", google_chat: "in Google Chat" };
-export const sendsBy = (channel, who) => { const on = SENDS_ON[String(channel || "").toLowerCase()]; return on ? t("answers {who} {channel}", { who, channel: t(on) }) : t("emails {who}", { who }); };
+// ...and a source that answers on its own thread (a Zendesk ticket, a Zulip topic) says its own name: "emails" was never true of those
+export const sendsBy = (channel, who) => {
+  const ch = String(channel || "").toLowerCase(), on = SENDS_ON[ch] || (ch && ch !== "email" && repliesOf(ch) ? `on ${channelName(ch)}` : "");
+  return on ? t("answers {who} {channel}", { who, channel: t(on) }) : t("emails {who}", { who });
+};
 
 // a reply drafted, or an action proposed - the owner's yes is the only thing that moves it
 export function ReplyCard({ card, onDone, onSent, onOpenTask, onTimeline }) {
@@ -695,15 +707,20 @@ export function ReplyCard({ card, onDone, onSent, onOpenTask, onTimeline }) {
   // a GitHub author is their login - their "address" is GitHub's own noreply mailbox, which nobody reads
   const onGithub = String(rv?.Channel || "").toLowerCase() === "github";
   const who = rv ? (rv.FromName && rv.FromEmail && !onGithub ? `${rv.FromName} <${rv.FromEmail}>` : rv.FromName || rv.FromEmail || t("them")) : "";
-  const decide = async (verb) => {
-    setBusy(verb); setErr("");
+  // a reply still holding a blank asks once before it goes (ReviewDecision's BlankAsk, the owner 2026-11-08)
+  const [asked, setAsked] = useState(null);
+  useEffect(() => { setAsked(null); }, [value]);
+  const decide = async (verb, blanksOk = false) => {
+    const ask = verb !== "reject" && (!action || mate) && !blanksOk ? blankAsk(value) : "";
+    if (ask) { setAsked({ verb, line: ask }); return; }
+    setAsked(null); setBusy(verb); setErr("");
     try {
-      // Decline and Close out anyway belong to the close-out, whichever card is showing; the reply rides with them
+      // Decline and Finish anyway belong to the GitHub finish, whichever card is showing; the reply rides with them
       const onCo = ["close_pr", "merge_anyway"].includes(verb) && coRv ? coRv.ReviewId : card.rid;
       const withReply = mate || (onCo !== card.rid && !action);
       const { data } = await api.post(`/api/reviews/${onCo}/decide`, withReply
-        ? { verb, final_text: null, note: null, reply_text: verb !== "reject" ? value : null }
-        : { verb, final_text: verb === "approve" ? value : null, note: null });
+        ? { verb, final_text: null, note: null, reply_text: verb !== "reject" ? value : null, blanks_ok: blanksOk }
+        : { verb, final_text: verb === "approve" ? value : null, note: null, blanks_ok: blanksOk });
       if (data.refused) reloadGh();
       if (data.send_error) throw new Error(data.send_error);
       const ran = ["approve", "merge_anyway"].includes(verb) || verb === co?.alt?.verb;
@@ -780,11 +797,11 @@ export function ReplyCard({ card, onDone, onSent, onOpenTask, onTimeline }) {
   // YOUR MOVE, named: what the block decides, in its own words (the canvas's A+B, the owner 2026-09-28)
   const replyTo = String(mate ? mate.FromName || t("them") : who).replace(/\s*<[^>]*>/g, "");
   const stopped = conflict || ((co || card.tid) && blocked);
-  const moveTitle = stopped ? t("GitHub won't merge it yet") : action && !co ? t("run what the agent proposed") : co ? t("close out")
+  const moveTitle = stopped ? t("GitHub won't merge it yet") : action && !co ? t("run what the agent proposed") : co ? t("finish it")
     : rv && !value.trim() && !stale ? t("no reply drafted yet") : stale ? t("the thread moved on") : t("reply to {name}", { name: replyTo });
   const via = t(SENDS_ON[String(mate?.Channel || rv?.Channel || "").toLowerCase()] || "by email");
   return (
-    <CardShell card={card} kicker={(co || card.tid) && blocked ? t("can't close out yet") : co || (card.tid && value.trim()) ? t(READY) : action ? t("an agent asks to act") : value.trim() ? t("reply · draft ready") : t("reply · no draft yet")}
+    <CardShell card={card} kicker={(co || card.tid) && blocked ? t("can't finish yet") : co || (card.tid && value.trim()) ? t(READY) : action ? t("an agent asks to act") : value.trim() ? t("reply · draft ready") : t("reply · no draft yet")}
       lead={action && !co ? <Lead text={rv?.Subject || card.title} /> : <Story card={card} state={card.summary ? t("finished") : undefined} fallback={rv?.Subject} tail />} err={err}>
       <YourMove title={moveTitle} tone={stopped ? "alert" : null} go={verb} then={then}>
         {/* what GitHub says about this pull request now - why Close out is off, or the red it will merge past */}
@@ -801,6 +818,7 @@ export function ReplyCard({ card, onDone, onSent, onOpenTask, onTimeline }) {
         {!action && rv && !drafting && draftState({ ...rv, HasDraft: value.trim() ? 1 : 0 }).line && <div className={draftState(rv).state === "failed" ? "tq-card-err" : "tq-card-excerpt"}>{draftState({ ...rv, HasDraft: value.trim() ? 1 : 0 }).line}</div>}
         {!action && !card.closeout && sendBlockLine(rv) && <div className="tq-card-excerpt">{sendBlockLine(rv)}</div>}
         {gh && !blocked && gh.note && <div className="tq-card-excerpt">{capital(gh.note)}.</div>}
+        {asked && <BlankAsk line={asked.line} onSend={() => decide(asked.verb, true)} onCancel={() => setAsked(null)} />}
       </YourMove>
       {/* WHAT YOU ARE ANSWERING, said to be that (the owner, 2026-09-14: "though you need to see what
           you are responding to") - one press away, under the move */}
@@ -867,12 +885,11 @@ export function MeetingCard({ card, table = null }) {
             <div className="tq-thr-h"><b>{t("No agent yet")}</b></div>
             <div className="tq-thr-did muted">{t("Nobody is preparing for this.")}</div>
             <div className="tq-item-note">{t("{agent} asks what you want first - it gets the meeting: when, who, where and what the invite says. {prepare} starts one at once on its people and subject through your saved mail.", { agent: btn("regular_agent"), prepare: btn("prepare") })}</div>
-          </ItemPart> },
-        { key: "close", n: 3, name: t(STEPS[2].name), lines: [t("Nothing owed"), join ? t("Join opens the meeting link") : t("Nothing to decide")],
-          body: <ItemPart data-tq-meeting-close="">
+          </ItemPart> }]}
+        moves={<ItemPart data-tq-meeting-close="">
             <RowMoves on={t("on its panes")} />
             <Foot verb={join} then={join ? t("Join opens the meeting link.") : null} />
-          </ItemPart> }]} />;
+          </ItemPart>} />;
   }
   return (
     <CardShell card={card} kicker={t("coming up · {age}", { age: age(e.start) })} title={e.subject || card.title}
@@ -960,18 +977,13 @@ export function ReportCard({ card, onOpenTask, onTimeline, onDone, table = null 
             {card.brief_today && <TodayMeetingsStrip />}
             {card.mid && <FullText mid={card.mid} revision={card.presentation_revision} report={{ name }} />}
             {share}
-          </ItemPart> },
-        // ...an Agent tab of its own, where its box is (the owner, 2026-11-05: "chat box is only on the agent tab ... report or dashboard as well")
-        { key: "agent", n: 3, name: t(STEPS[1].name), icon: <TerminalIcon aria-hidden sx={{ fontSize: 17, color: "#746e64" }} />, lines: [t("not started")],
-          // ...nothing but the chat and its box (ItemSections ItemAsk): an empty chat over the box IS "no agent yet" (the owner, 2026-11-05)
-          body: null },
-        { key: "close", n: 3, name: t(STEPS[2].name), lines: [t("Nothing owed"), t("Its moves are on the report")],
-          body: <ItemPart data-tq-report-close="">
+          </ItemPart> }]}
+        moves={<ItemPart data-tq-report-close="">
             <RowMoves close={card} on={t("at the top of the report")} />
             <Foot close={card} onDone={onDone} promote={card.bad ? "rerun" : null}
               then={card.bad ? t("Running it again runs the report in the background - its result goes where the report sends it, and if it fails the bell says why.") : null}
               where={<Where card={card} onOpenTask={onOpenTask} onTimeline={onTimeline} />} />
-          </ItemPart> }]} />;
+          </ItemPart>} />;
   }
   return (
     <CardShell card={card} kicker={card.bad ? t("a report failed") : t("report")} title={card.title}
@@ -1031,13 +1043,8 @@ export function DashboardCard({ card, onOpenTask, onDone, table = null }) {
         { key: "report", n: 2, name: t("Dashboard"), icon: <InsertChartOutlinedIcon aria-hidden sx={{ fontSize: 18, color: "#746e64" }} />,
           lines: [card.title],
           // ...its white cards straight on the section's warm ground, as on the Dashboards page: no card around the cards
-          body: <div data-tq-dash-body="">{drawn}{share}</div> },
-        // ...an Agent tab of its own, where its box is (the owner, 2026-11-05: "chat box is only on the agent tab ... report or dashboard as well")
-        { key: "agent", n: 3, name: t(STEPS[1].name), icon: <TerminalIcon aria-hidden sx={{ fontSize: 17, color: "#746e64" }} />, lines: [t("not started")],
-          // ...nothing but the chat and its box (ItemSections ItemAsk): an empty chat over the box IS "no agent yet" (the owner, 2026-11-05)
-          body: null },
-        { key: "close", n: 3, name: t(STEPS[2].name), lines: [t("Nothing owed"), t("Its moves are on the dashboard")],
-          body: <ItemPart data-tq-dash-close=""><RowMoves close={card} on={t("at the top of the dashboard")} /><Foot close={card} onDone={onDone} /></ItemPart> }]} />;
+          body: <div data-tq-dash-body="">{drawn}{share}</div> }]}
+        moves={<ItemPart data-tq-dash-close=""><RowMoves close={card} on={t("at the top of the dashboard")} /><Foot close={card} onDone={onDone} /></ItemPart>} />;
   }
   return (
     <CardShell card={card} kicker={t("dashboard")} title={card.title}
@@ -1168,7 +1175,7 @@ export function IdeaCard({ card, onOpenTask, onTimeline, onNavigate, onDone, tab
   // should go in the coming from tab like fyi's"): what the Advisor noticed opens in Came from - the idea, its suggestion and the mail it is
   // based on - Agent and Close out beside it; its moves are the same ones, on its panes (ItemLay), and the bar is Back and Next
   if (table != null) return (
-    <ItemSections kind="idea" itemKey={card.key} label={look ? `${t("Advisor")} · ${t(ideaWord(card.idea_kind))}` : t("Advisor")} height={table} about="from" lays ask={ask} title={card.title}
+    <ItemSections kind="idea" itemKey={card.key} label={look ? `${t("Advisor")} · ${t(ideaWord(card.idea_kind))}` : t("Advisor")} height={table} about="from" lays ask={ask} title={card.title} noAgent
       aside={<><SourceMark item={card} size={13} />{card.when && ago(card.when)}{card.workstream && <WorkstreamLabel slug={card.workstream} sx={{ ml: 0.75 }} />}</>}
       sections={[
         { key: "from", n: 1, name: t(STEPS[0].name), lines: [card.title, `${chip[0].toUpperCase()}${chip.slice(1)}`],
@@ -1178,12 +1185,8 @@ export function IdeaCard({ card, onOpenTask, onTimeline, onNavigate, onDone, tab
                 habits row lists its habits instead, with no Whose move or Suggestion */}
             {habits ? <HabitList card={card} onDone={onDone} />
               : <Facts rows={rows} />}
-          </ItemPart><CardErr err={err} /></> },
-        { key: "agent", n: 2, name: t(STEPS[1].name), icon: <TerminalIcon aria-hidden sx={{ fontSize: 17, color: "#746e64" }} />, lines: [t("not started")],
-          // ...nothing but the chat and its box (ItemSections ItemAsk): an empty chat over the box IS "no agent yet" (the owner, 2026-11-05)
-          body: null },
-        { key: "close", n: 3, name: t(STEPS[2].name), lines: [t("Nothing owed"), t("Its moves are on its panes")],
-          body: <ItemPart data-tq-idea-close=""><RowMoves on={t("on its panes")} />{foot}</ItemPart> }]} />);
+          </ItemPart><CardErr err={err} /></> }]}
+        moves={<ItemPart data-tq-idea-close=""><RowMoves on={t("on its panes")} />{foot}</ItemPart>} />);
   return (
     <CardShell card={card} kicker={<>{t(ideaWord(card.idea_kind))}<span className="tq-card-chip">{chip}</span></>} title={card.title}>
       {habits && <HabitList card={card} onDone={onDone} />}
@@ -1624,7 +1627,8 @@ export function FyiMessage({ item, onHead = null, open: held = null, moved = nul
 function FyiSections({ card, table, items, msgs, foot, err, next }) {
   useLocale();
   const nav = React.useContext(CardNav), n = items.length, batch = card.kind === "fyis";
-  const ask = useItemAsk(!batch && card, "fyi");
+  // ...A HANDFUL GETS THE SAME BOX A SINGLE ONE DOES, by the same road (the owner, 2026-11-06): its ask, under Came from
+  const ask = useItemAsk(card, "fyi");
   return <ItemSections kind={batch ? "fyis" : "fyi"} itemKey={card.key} label={t("FYI")} height={table} about="from" lays={!batch} ask={ask} hands={batch}
     title={batch ? t("{count} - nothing to decide", { count: plural(n, "message") }) : card.title}
     aside={<><SourceMark item={card} size={13} />{card.when && ago(card.when)}</>}
@@ -1634,16 +1638,12 @@ function FyiSections({ card, table, items, msgs, foot, err, next }) {
         // ...and triage's miss said where a task's Not a task is (the owner, 2026-10-29): Should be a task, from the row's own verbs
         ...(batch ? {} : { moves: <PaneMoves sec="from" /> }),
         // ...the handful as ONE list in one card (the owner, 2026-10-28: "too much space in fyi"): a hairline between messages, not a card each
-        body: <><ItemPart className="tq-item-msgs" sx={{ py: 0.25 }}>{msgs}</ItemPart><CardErr err={shownErr(err)} /></> },
-      { key: "agent", n: 2, name: t(STEPS[1].name), icon: <TerminalIcon aria-hidden sx={{ fontSize: 17, color: "#746e64" }} />, lines: [t("not started")],
-        // ...an empty chat over the box is "no agent yet" (the owner, 2026-11-05); a handful, which has no box until a line is handed on, says how
-        body: batch ? <div className="tq-item-note" data-tq-fyi-agent="">{t("To hand them to an agent, press a line under Came from - {agent} is among its moves; every line comes here, and you take off the ones it should not read.", { agent: btn("regular_agent") })}</div> : null },
-      { key: "close", n: 3, name: t(STEPS[2].name), lines: [t("Nothing owed"), batch ? t(n === 1 ? "{next} marks it read" : "{next} marks all {count} read", { next: btn("next", "batch"), count: n }) : t("Nothing to decide")],
-        body: <ItemPart data-tq-fyi-close="">
+        body: <><ItemPart className="tq-item-msgs" sx={{ py: 0.25 }}>{msgs}</ItemPart><CardErr err={shownErr(err)} /></> }]}
+      moves={<ItemPart data-tq-fyi-close="">
           <div className="tq-card-note">{t(n === 1 ? "Nothing to decide - it only wants you to know." : "Nothing to decide - they only want you to know.")}</div>
           <RowMoves next={next} on={batch ? "" : t("on its panes")} />
           {foot}
-        </ItemPart> }]} />;
+        </ItemPart>} />;
 }
 
 // how many fyi a card can show whole before every line folds to one (FyisCard)

@@ -21,7 +21,7 @@ what keeps a slow tab looking at the current page instead of ten seconds of hist
 proxy generating acks itself would leave frames queued on the far side (agent-browser's
 streaming notes say exactly this).
 """
-import base64, contextlib, json, os, re, shutil, socket, subprocess, tempfile, threading, time
+import base64, contextlib, json, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
 from datetime import datetime
 from pathlib import Path
 from loguru import logger
@@ -100,9 +100,23 @@ IDLE_MS = '0'
 # owner typed survives a session that ends cleanly, and not one whose daemon is killed. Still required on
 # 0.38.2, as is the env-borne idle timeout above (re-measured 2026-10-02).
 AUTOSAVE_MS = '0'
+# ...AND A USER-AGENT THAT DOES NOT SAY "HeadlessChrome". Headless Chrome sends `HeadlessChrome/<v>` in its
+# User-Agent header, and Akamai-fronted sites reset the HTTP/2 stream on it: fidelity.com and its sign-in page
+# both failed with net::ERR_HTTP2_PROTOCOL_ERROR (TQ-1359, 2026-11-08; curl with that UA alone gets the same
+# reset, the identical request as `Chrome/<v>` gets 200). The client hints already say plain Chromium, so the
+# fix is the same engine version under its ordinary name - read from agent-browser's own Chrome build, so it
+# never drifts from what the browser really is. It rides in env() for the reason IDLE_MS does: the UA is in
+# agent-browser's launch fingerprint, and a launch that set it alone would be replaced by the next plain command.
+def user_agent() -> str:
+    "Chrome's ordinary UA for the newest Chrome build agent-browser installed; '' (agent-browser's own) when there is none."
+    vs = [tuple(map(int, m[1].split('.'))) for p in (home()/'browsers').glob('chrome-*') if (m := re.fullmatch(r'chrome-(\d+(?:\.\d+)*)', p.name))]
+    if not vs: return ''
+    plat = 'Windows NT 10.0; Win64; x64' if os.name=='nt' else 'Macintosh; Intel Mac OS X 10_15_7' if sys.platform=='darwin' else 'X11; Linux x86_64'
+    return f'Mozilla/5.0 ({plat}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{max(vs)[0]}.0.0.0 Safari/537.36'
 def env(sid: str) -> dict:
-    return {'AGENT_BROWSER_SESSION': session_name(sid), 'AGENT_BROWSER_IDLE_TIMEOUT_MS': IDLE_MS,
-            'AGENT_BROWSER_AUTOSAVE_INTERVAL_MS': AUTOSAVE_MS}
+    e = {'AGENT_BROWSER_SESSION': session_name(sid), 'AGENT_BROWSER_IDLE_TIMEOUT_MS': IDLE_MS, 'AGENT_BROWSER_AUTOSAVE_INTERVAL_MS': AUTOSAVE_MS}
+    if not os.environ.get('AGENT_BROWSER_USER_AGENT') and (ua := user_agent()): e['AGENT_BROWSER_USER_AGENT'] = ua    # the owner's own setting wins
+    return e
 def _cli_env(sid: str) -> dict: return {**os.environ, **env(sid)}    # the server's own calls match the pty's
 def home() -> Path: return Path(os.environ.get('AGENT_BROWSER_HOME') or Path.home() / '.agent-browser')
 
@@ -345,7 +359,7 @@ def close(sid: str, tid: int = None):
         if exe and _read(session_name(sid), 'stream'):
             try: spawn.run([exe, '--session', session_name(sid), 'close'], env=_cli_env(sid), timeout=20, capture_output=True)
             except (OSError, subprocess.SubprocessError) as e: logger.debug(f'could not close the browser of {sid}: {e}')
-        _CACHE.pop(sid, None); LAST.pop(sid, None)
+        _CACHE.pop(sid, None); LAST.pop(sid, None); listed(sid, False)
     with _START_LOCKS_GUARD:
         if _START_LOCKS.get(sid) is lock: _START_LOCKS.pop(sid, None)
 
@@ -547,6 +561,7 @@ def start(sid: str, url: str = 'about:blank') -> bool:
         # exactly what makes agent-browser replace this daemon with a blank default one (see IDLE_MS).
         cmd = [exe, '--session', session_name(sid), '--restore', RESTORE_KEY,
                '--args', LAUNCH_ARGS, 'open', url or 'about:blank']
+        listed(sid, True)
         try:
             # detached and HEADLESS: the live pane is the visible browser. --headed opens a second
             # desktop window outside Taskuary and defeats the side-by-side surface.
@@ -560,6 +575,38 @@ def start(sid: str, url: str = 'about:blank') -> bool:
             if state(sid, fresh=True)['open']: return True
         logger.warning(f'the browser for {sid} did not come up within {LAUNCH_WAIT:.0f}s')
         return False
+
+
+# A BROWSER OUTLIVES A KILLED TASKUARY: agent-browser's daemon is detached, outside our process tree, so a server killed without its
+# orderly close (terminal.shutdown_sessions) left Chrome and agent-browser's helper running with nothing able to reach them (agent-flow
+# audit, 2026-11-07). Each browser start() launches is listed in this data folder - never another install's, which shares agent-browser's
+# own folder - and the next launch of Taskuary closes what the last one left (close_orphans).
+_LISTED_LOCK = threading.Lock()
+def _listed_file() -> Path:
+    from .config import home
+    return home() / 'browser_sessions.json'
+
+def _listed() -> list:
+    try: return [str(x) for x in json.loads(_listed_file().read_text(encoding='utf-8')) or []]
+    except (OSError, ValueError, TypeError): return []
+
+def listed(sid: str, on: bool) -> None:
+    with _LISTED_LOCK:
+        had = _listed(); now = sorted(set(had) | {str(sid)}) if on else [x for x in had if x != str(sid)]
+        if now == had: return
+        try: _listed_file().write_text(json.dumps(now), encoding='utf-8')
+        except OSError as e: logger.debug(f'the browser list was not saved: {e}')
+
+def close_orphans() -> int:
+    """At start, before any session of this run exists: close every browser the last run listed and never closed. Returns how many."""
+    exe, n = program(), 0
+    for sid in _listed():
+        if exe and _read(session_name(sid), 'stream'):
+            try: spawn.run([exe, '--session', session_name(sid), 'close'], env=_cli_env(sid), timeout=20, capture_output=True); n += 1
+            except (OSError, subprocess.SubprocessError) as e: logger.debug(f'could not close the left-over browser {sid}: {e}')
+        listed(sid, False)
+    if n: logger.info(f'closed {n} browser(s) the last run left open')
+    return n
 
 
 def set_viewport(sid: str, w: int, h: int) -> bool:
@@ -709,6 +756,22 @@ def brief(held: bool = True, open_now: bool = True) -> str:
             'browser command at all until they answer. Do not re-open the page, reload it, navigate, '
             'snapshot or poll to "check whether they are done" - a sign-in in progress is theirs, and '
             'touching the tab throws away what they have typed. Their answer is what tells you to look.')
+
+
+# A BROWSER OFFERED IS A LINE, ITS RULES A GUIDE (2026-11-09, the owner: "the tools should be progressive disclosure"): the whole brief
+# rode on every task an agent MIGHT open a page on - 4,500 characters on a WhatsApp bug report. The offer keeps what must hold from the
+# first command (only this browser, no password or CAPTCHA, the last press) and names the guide; the rest is read when a page is needed.
+GUIDE_LINE = ('Before your first browser command, read the guide `browser` (the guide tool, or `taskuary --guide browser`): how to look '
+              'at a page, sign in, and hand the owner a step only they can do. NEVER type a password, a 2FA code or a card number, and never '
+              'solve or work around a CAPTCHA. ')
+
+def offer(held: bool = True) -> str:
+    "The browser OFFERED, short: brief()'s head and the rules that hold from the first command, the rest in guide()."
+    return OFFER_HEAD + OWN_ONLY + GUIDE_LINE + (HOLD_LINE if held else ASK_FIRST_LINE)
+
+def guide() -> str:
+    "How to drive the browser - brief() without its head, and without the hold line, which the offer says for this session's own hook."
+    return "TASKUARY'S BROWSER - how to drive it\n" + brief(open_now=False)[len(OFFER_HEAD):].replace(HOLD_LINE, '')
 
 
 def hint() -> str:

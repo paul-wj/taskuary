@@ -2,8 +2,9 @@
 // nothing - so the owner can see the purpose AND the body before any of it becomes a session's
 // instructions; /import is the one call that actually writes, and only for the rows it is handed.
 import React, { useEffect, useMemo, useState } from "react";
-import { Alert, Box, Button, Checkbox, Chip, CircularProgress, Dialog, DialogActions, DialogContent,
+import { Alert, Box, Button, Checkbox, Chip, CircularProgress, Dialog, DialogContent,
   DialogTitle, FormControlLabel, TextField, Typography } from "@mui/material";
+import { ButtonBar } from "./ButtonBar.jsx";
 import api from "./api";
 import { buildPayload, chosen, clashText, cutBy, isLink, reconcileImport, slug, toRows } from "./skillImport.js";
 import { BORDER, FAINT, INK, ROLES, mono } from "./theme.jsx";
@@ -262,17 +263,16 @@ export default function SkillImport({ onClose, onImported }) {
           </>
         )}
       </DialogContent>
-      <DialogActions>
-        <Button disabled={busy} onClick={onClose}>{t(done && !pending.length ? "Done" : "Close")}</Button>
-        <Box sx={{ flex: 1 }} />
-        {step > 0 && <Button disabled={busy} onClick={() => setStep(step - 1)}>{t("Back")}</Button>}
+      <ButtonBar>
         {step === 1 && <Button variant="contained" disableElevation disabled={busy || !pending.length || !allNamed} onClick={() => setStep(2)}>{t("Next")}</Button>}
         {step === 2 && pending.length > 0 && (
           <Button variant="contained" disableElevation disabled={busy} onClick={runImport}>
-            {busy ? <CircularProgress size={16} sx={{ color: "#fff" }} /> : t("Import")}
+            {busy ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : t("Import")}
           </Button>
         )}
-      </DialogActions>
+        {step > 0 && <Button disabled={busy} onClick={() => setStep(step - 1)}>{t("Back")}</Button>}
+        <Button disabled={busy} onClick={onClose}>{t(done && !pending.length ? "Done" : "Close")}</Button>
+      </ButtonBar>
       <Confirm open={overwrite !== null} confirmLabel={t("Overwrite")} onClose={() => setOverwrite(null)}
         title={rows[overwrite]?.clash?.doc
           ? t("Overwrite {doc}.md?", { doc: rows[overwrite].clash.doc.toUpperCase() })

@@ -85,7 +85,7 @@ class PlaybooksLearnTests(unittest.TestCase):
         self.assertIn(general.LESSON_LINE, seen['prompt']); self.assertIn(general.CHECK_BACK_LINE, seen['prompt'])
         self.assertTrue(any('Payworth is vendor 4471' in c[0][1] for c in lf.call_args_list), 'the lesson went to LEARNED.md')
         t = s.get_task(tid); self.assertEqual(t['CheckBackWhat'], 'the bill shows paid'); self.assertTrue(t['CheckBackAt'])
-        kept = [json.loads(c['Body']) for c in s.list_comments(tid) if c['ActorType'] == general.SUMMARY_TYPE]
+        kept = [json.loads(c['Body']) for c in s.list_comments(tid, internal=True) if c['ActorType'] == general.SUMMARY_TYPE]
         self.assertTrue(kept and not any('lesson' in k or 'check_back' in k for k in kept))     # taken off the summary, never drawn
 
 
@@ -176,6 +176,18 @@ class CheckBackTests(unittest.TestCase):
         s.update_task(tid, {'Status': 'done'}, 'owner')
         self.assertFalse(s.get_task(tid).get('CheckBackAt'))                         # a closed task is checked back on by nobody
 
+    def test_the_owner_cancels_it_and_a_session_cannot(self):
+        s = MemoryStore(); tid = owner_task(s); checkback.set_check(s, tid, 'tomorrow 9am', 'the refund cleared on the card')
+        srv, c = config.load()['server'], TestClient(server.app)
+        hdr = {'X-Taskuary-Token': srv['agent_token'], guard.TASK_HDR: guard.task_proof(srv, tid)}
+        with mock.patch.object(server, 'store', s):
+            self.assertEqual(c.delete(f'/api/tasks/{tid}/check-back', headers=hdr).status_code, 403)   # never the agent's own press
+            self.assertTrue(s.get_task(tid)['CheckBackAt'])
+            self.assertEqual(c.delete(f'/api/tasks/{tid}/check-back').json(), {'ok': True, 'cancelled': True})
+            self.assertFalse(s.get_task(tid).get('CheckBackAt')); self.assertFalse(s.get_task(tid).get('CheckBackWhat'))
+            self.assertEqual(c.delete(f'/api/tasks/{tid}/check-back').json()['cancelled'], False)
+            self.assertEqual(c.delete('/api/tasks/99999/check-back').status_code, 404)
+
     def test_it_comes_due_on_the_reminders_clock_once(self):
         s = MemoryStore(); tid = owner_task(s)
         checkback.set_check(s, tid, 'in 2 hours', 'Erin Blake answered the invite')
@@ -233,7 +245,8 @@ def test_the_general_agent_reads_the_learned_lines_nearest_its_task():
     s.save_doc(learn.DOC, '# LEARNED.md\n\n## How you work\n- Payworth is vendor 4471 in QuickBooks\n- Vendor replies are short, signed Alex\n', 't')
     system = general._prompt(s, tid)[0]
     assert 'WHAT TASKUARY HAS LEARNED ABOUT THE OWNER' in system and 'Payworth is vendor 4471' in system and '--memory' in system
-    assert len(general.learned_block(s, 'x', budget=10)) < 200, 'held to its budget: the first line, never the whole doc'
+    # ...counted in learned lines, not characters: the head now says how to lean on them too (2026-11-09)
+    assert general.learned_block(s, 'x', budget=10).count('\n- ') == 1, 'held to its budget: the first line, never the whole doc'
     with mock.patch('taskuary.origin.of_task', return_value=('stranger', 'unknown sender')):
         assert 'WHAT TASKUARY HAS LEARNED' not in general._prompt(s, tid)[0], "a stranger's task is never told who the owner is"
 

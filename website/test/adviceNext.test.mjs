@@ -47,6 +47,7 @@ test("the strip gives the suggestion, not the move's name: a lead-in that is the
 });
 
 
+
 // ...and a greyed one says why it is off rather than drawing nothing: the strip went blank with nothing lit when the draft was cleared
 // (the advisor matrix, 2026-10-19)
 test("a move the row cannot make lights nothing: a greyed button says why it is off on its own title, and nothing joins the row for it", () => {

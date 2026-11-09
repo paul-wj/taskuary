@@ -15,6 +15,7 @@ from loguru import logger
 
 from .timewords import plural
 from . import redact, words
+from .inboxes import TYPES as INBOXES, REPLY as INBOX_REPLY, NAMES as INBOX_NAMES
 
 GRAPH = 'https://graph.microsoft.com/v1.0'
 
@@ -32,7 +33,7 @@ class Fixable(RuntimeError):
 def fix_of(e) -> dict | None: return getattr(e, 'fix', None) or auth_fix(e)
 # A REFUSED SIGN-IN is fixed by signing in again, never by sending again: an SMTP 535 or a Graph 401/403 left the Advisor
 # advising Send, with no button to the mailbox (error sweep, 2026-10-18)
-_AUTH = re.compile(r'\((401|403)\)|535|authentication (unsuccessful|failed)|invalid_grant|AADSTS\d+|token (has )?expired', re.I)
+_AUTH = re.compile(r'\((401|403)\)|\b535\b|authentication (unsuccessful|failed)|invalid_grant|AADSTS\d+|token (has )?expired', re.I)
 def auth_fix(e) -> dict | None:
     return {'label': 'Sign in again', 'href': MAIL[1]} if isinstance(e, smtplib.SMTPAuthenticationError) or _AUTH.search(str(e)) else None
 MAIL = ('Connect a mailbox', words.href('mail'))          # the places, by their one link (words.json)
@@ -51,14 +52,14 @@ def _source_connector_id(store, channel, address):
     return src.get('ConnectorId') if src else None
 
 
-def _graph_token(store, kind='outlook', connector_id=None):
+def _graph_token(store, kind='outlook', connector_id=None, scope=''):
     from .channels import graph_creds, graph_token
     c = store.get_connector(int(connector_id), with_secret=True) if connector_id else \
         store.get_connector_by_type(kind, with_secret=True)
     if c and c.get('Type') != kind: c = None
     if not c or not c.get('Active'): raise Fixable(f'the {kind} connection is not set up', f'Set up {kind}', f'#connector={kind}')
     cfg, sec, _ = graph_creds(store, c)
-    return graph_token(cfg, sec)
+    return graph_token(cfg, sec, scope)
 
 
 def _mailbox(store, msg=None):
@@ -137,8 +138,11 @@ def _attach_to_draft(hdr: dict, box: str, draft_id: str, f: dict):
             raise RuntimeError(f'uploading {f["name"]} failed at {start} ({rr.status_code}): {rr.text[:200]}')
 
 
+def _rcpts_of(xs) -> list: return [{'emailAddress': {'address': a}} for a in xs]
+
+
 def _send_with_files(hdr: dict, box: str, to: list, cc: list, subject: str, body: str,
-                     reply_to_graph_id: str, files: list, html: str = None) -> dict:
+                     reply_to_graph_id: str, files: list, html: str = None, bcc: list = (), retitle: bool = False) -> dict:
     """A mail that carries files is composed as a DRAFT and then sent.
 
     Graph's one-shot /reply and /sendMail take a body and nothing else, so anything with an
@@ -156,11 +160,14 @@ def _send_with_files(hdr: dict, box: str, to: list, cc: list, subject: str, body
         patch = {'body': {'contentType': 'HTML', 'content': said + quoted}}
         if to: patch['toRecipients'] = [{'emailAddress': {'address': a}} for a in to]
         if cc: patch['ccRecipients'] = [{'emailAddress': {'address': a}} for a in cc]
+        if bcc: patch['bccRecipients'] = _rcpts_of(bcc)
+        if retitle and subject: patch['subject'] = subject
         r = requests.patch(f'{GRAPH}/users/{box}/messages/{did}', headers=hdr, timeout=30, data=json.dumps(patch))
     else:
         msg = {'subject': subject or '(no subject)', 'body': {'contentType': 'HTML', 'content': said},
                'toRecipients': [{'emailAddress': {'address': a}} for a in to]}
         if cc: msg['ccRecipients'] = [{'emailAddress': {'address': a}} for a in cc]
+        if bcc: msg['bccRecipients'] = _rcpts_of(bcc)
         r = requests.post(f'{GRAPH}/users/{box}/messages', headers=hdr, timeout=30, data=json.dumps(msg))
         did = (r.json() or {}).get('id') if r.status_code < 300 else None
     if r.status_code >= 300: raise RuntimeError(f'graph could not compose the mail ({r.status_code}): {r.text[:200]}')
@@ -170,12 +177,12 @@ def _send_with_files(hdr: dict, box: str, to: list, cc: list, subject: str, body
     if r.status_code >= 300:
         error = UncertainDelivery if r.status_code >= 500 else RuntimeError
         raise error(f'graph sendMail failed ({r.status_code}): {r.text[:300]}')
-    return {'channel': 'email', 'to': to, 'cc': cc, 'mailbox': box, 'threaded': bool(reply_to_graph_id),
+    return {'channel': 'email', 'to': to, 'cc': cc, 'bcc': list(bcc), 'mailbox': box, 'threaded': bool(reply_to_graph_id),
             'attached': [f['name'] for f in files]}
 
 
 def send_email(store, to: list, subject: str, body: str, reply_to_graph_id: str = None, mailbox: str = None,
-               connector_id=None, cc: list = None, attachments: list = None, html: str = None) -> dict:
+               connector_id=None, cc: list = None, attachments: list = None, html: str = None, bcc: list = None, retitle: bool = False) -> dict:
     """Reply in thread when we know the Graph message id, otherwise a new mail. Plain text:
     these are answers from a person, not marketing.
 
@@ -187,11 +194,11 @@ def send_email(store, to: list, subject: str, body: str, reply_to_graph_id: str 
     box = mailbox or _mailbox(store)
     connector_id = connector_id or _source_connector_id(store, 'email', box)
     tok = _graph_token(store, connector_id=connector_id)
-    to, cc = addrs(to), addrs(cc)
+    to, cc, bcc = addrs(to), addrs(cc), addrs(bcc)       # `bcc`: copied out of sight - one road with To and CC (the owner, 2026-11-08)
     if not to and not reply_to_graph_id: raise RuntimeError('no recipient')
     hdr = {'Authorization': f'Bearer {tok}', 'Content-Type': 'application/json'}
     files = read_attachments(attachments)
-    if files: return _send_with_files(hdr, box, to, cc, subject, body, reply_to_graph_id, files, html=None if reply_to_graph_id else html)
+    if files: return _send_with_files(hdr, box, to, cc, subject, body, reply_to_graph_id, files, html=None if reply_to_graph_id else html, bcc=bcc, retitle=retitle)
     if reply_to_graph_id:
         # Graph reads the reply `comment` as HTML, so plain-text newlines collapse into one long
         # line - greeting, body and signature all jammed together. Escape and give the breaks back.
@@ -202,6 +209,8 @@ def send_email(store, to: list, subject: str, body: str, reply_to_graph_id: str 
         m = {}
         if to: m['toRecipients'] = [{'emailAddress': {'address': a}} for a in to]
         if cc: m['ccRecipients'] = [{'emailAddress': {'address': a}} for a in cc]
+        if bcc: m['bccRecipients'] = _rcpts_of(bcc)
+        if retitle and subject: m['subject'] = subject          # a reply keeps Graph's own "RE:" unless the owner changed it
         r = requests.post(f'{GRAPH}/users/{box}/messages/{reply_to_graph_id}/reply', headers=hdr, timeout=30,
                           data=json.dumps({'message': m, 'comment': comment}))
     else:
@@ -209,15 +218,16 @@ def send_email(store, to: list, subject: str, body: str, reply_to_graph_id: str 
                           data=json.dumps({'message': {'subject': subject or '(no subject)',
                                                        'body': {'contentType': 'HTML', 'content': html} if html else {'contentType': 'Text', 'content': body},
                                                        'toRecipients': [{'emailAddress': {'address': a}} for a in to],
-                                                       **({'ccRecipients': [{'emailAddress': {'address': a}} for a in cc]} if cc else {})},
+                                                       **({'ccRecipients': [{'emailAddress': {'address': a}} for a in cc]} if cc else {}),
+                                                       **({'bccRecipients': _rcpts_of(bcc)} if bcc else {})},
                                            'saveToSentItems': True}))
     if r.status_code >= 300:
         error = UncertainDelivery if r.status_code >= 500 else RuntimeError
         raise error(f'graph sendMail failed ({r.status_code}): {r.text[:300]}')
-    return {'channel': 'email', 'to': to, 'cc': cc, 'mailbox': box, 'threaded': bool(reply_to_graph_id)}
+    return {'channel': 'email', 'to': to, 'cc': cc, 'bcc': bcc, 'mailbox': box, 'threaded': bool(reply_to_graph_id)}
 
 
-def send_teams(store, chat_id: str, body: str, connector_id=None) -> dict:
+def send_teams(store, chat_id: str, body: str, connector_id=None, want_id: bool = False) -> dict:
     """Post into a chat. App-only posting needs ChatMessage.Send on the app registration,
     which reading does NOT include - say so plainly rather than failing with a 403 blob."""
     # the card that owns the chat, and only a person's sign-in: an app's token is refused every time (NO_SENDER)
@@ -246,7 +256,10 @@ def send_teams(store, chat_id: str, body: str, connector_id=None) -> dict:
                            + (f' Graph said: "{said[:200]}"' if said else ''))
     if r.status_code >= 300:
         raise RuntimeError(f'graph chat post failed ({r.status_code}): {r.text[:300]}')
-    return {'channel': 'teams', 'chat': chat_id}
+    if not want_id: return {'channel': 'teams', 'chat': chat_id}
+    try: mid = (r.json() or {}).get('id')            # the post's own id: a bound chat reads it back as the owner's line (agentchannels)
+    except ValueError: mid = None
+    return {'channel': 'teams', 'chat': chat_id, 'id': mid}
 
 
 def _user_id(tok: str, who: str) -> str:
@@ -294,7 +307,12 @@ SENDABLE = ('email', 'teams', 'slack', 'telegram', 'whatsapp', 'imessage', 'disc
 # without them here a prep task closing drafted a reply, signed it in the owner's name, and put
 # it on the task addressed to no one at all.
 NEVER = {'report', 'own', 'assistant', 'jira', 'asana', 'monday', 'clickup', 'todoist', 'gitlab',
-         'azdo', 'linear', 'trello', 'notion', 'sentry', 'pagerduty', 'aws', 'azure'}
+         'azdo', 'linear', 'trello', 'notion', 'sentry', 'pagerduty', 'aws', 'azure', *(set(INBOXES) - set(INBOX_REPLY))}
+# THE SOURCES THAT ANSWER ON THEIR OWN THREAD (inboxes.REPLY - a ticket's comment, a chat's message, a text back): each card's own Replies
+# switch decides, never Settings → Replies - one card, one switch, the way GitHub's 'Reply to issue/PR authors' sits on its card
+def _inbox_off(store, ch) -> bool:
+    from .inboxes import replies_ok
+    return ch in INBOX_REPLY and not replies_ok(store, ch)
 # READ HERE, ANSWERED THERE: a channel Taskuary reads but has no sender for. Slack sat in SENDABLE and the default reply
 # switch, so its Send was offered, approved - and every one ended "slack messages are read-only here" (2026-09-29 audit).
 # The draft is still written (the words are worth having); the button says where to send them.
@@ -399,6 +417,7 @@ def can_reply(store, channel) -> bool:
     ch = (channel or '').lower()
     if not ch or ch in NEVER or no_sender(store, ch): return False
     if ch in SENDABLE and ch not in reply_channels(store): return False
+    if _inbox_off(store, ch): return False
     if ch == 'github': return store.github_replies_ok()
     if ch == 'email' and send_probe(store, ch): return False
     return True
@@ -412,11 +431,54 @@ def send_block(store, channel) -> str:
     if not ch: return 'this message has no channel to reply on'
     if ch in NEVER: return f'{ch} items cannot be replied to from here'
     if ch == 'github': return '' if store.github_replies_ok() else 'GitHub replies are off (GitHub card)'
+    if _inbox_off(store, ch): return f"replies are off for {INBOX_NAMES[ch]} (the Replies switch on its card)"
     if ch in SENDABLE and ch not in reply_channels(store):
         return f"replies are off for {ch} ({words.name('replies')})"
     if no_sender(store, ch): return no_sender(store, ch)     # switched on, and still no road out of here
     if ch == 'email': return send_probe(store, ch)
     return ''
+
+def connect_fix(store, kind) -> dict | None:
+    """A SEND CARD WHOSE CHANNEL IS NOT CONNECTED SAYS SO (the owner, 2026-11-08): {says, label, href} - "LinkedIn isn't connected" and its
+    Connect LinkedIn, which opens that connection's card - else None. `kind`: a reply's channel or an act's connector type (a post's
+    `linkedin`). One answer for every card: the reply, an agent's email, a post, a chat reply. An email with no mailbox at all had Send lit,
+    and the press came back "no mailbox is connected"."""
+    k = str(kind or '').lower()
+    if not k or k in NEVER: return None
+    from .imapmail import HOSTS
+    from . import connectorcatalog
+    cards = store.list_connectors()
+    live = {str(c.get('Type') or '').lower() for c in cards if c.get('Active')}
+    if k == 'email':
+        if live & {*MAILBOXES, *HOSTS}: return None
+        # ...its button opens the mailbox's own card - one set up and switched off, else Email's section, where each mailbox has its card
+        had = next((str(c.get('Type')).lower() for c in cards if str(c.get('Type') or '').lower() in (*MAILBOXES, *HOSTS)), '')
+        return {'says': 'No mailbox is connected', 'label': 'Connect email', 'href': f'#connector={had}' if had else MAIL[1]}
+    card = connectorcatalog.by_type(k)
+    if not card or k in live: return None
+    name = card.get('title') or k
+    return {'says': f"{name} isn't connected", 'label': f'Connect {name}', 'href': f'#connector={k}'}
+
+
+def review_connect(store, r: dict, memo: dict = None) -> dict | None:
+    """connect_fix for one waiting card: an agent's act by its connector's card (a post's `linkedin`), a draft by its channel - None for an
+    act on a road of its own (an invoice, a meeting) or a card whose channel is connected. `memo`: one answer per channel for a list."""
+    try: p = json.loads((r.get('FinalText') or r.get('DraftText') or '{}') if r.get('Kind') == 'action' else (r.get('Deliver') or '{}')) or {}
+    except (TypeError, ValueError): p = {}
+    p = p if isinstance(p, dict) else {}
+    if r.get('Kind') == 'action':
+        from . import connectorcatalog
+        act = connectorcatalog.action_for(p.get('type')) if p.get('action') == 'run_tool' else None
+        k = act['card'] if act else None
+    # ...a bare review row (rv.*) carries no Channel: the mail it answers says it
+    else:
+        m = store.get_message(r['MessageId']) if r.get('MessageId') and not (r.get('Channel') or p.get('channel')) else None
+        k = None if p.get('kind') in OWN_ROAD else str(r.get('Channel') or p.get('channel') or (m or {}).get('Channel') or '').lower()
+    if not k: return None
+    memo = {} if memo is None else memo
+    if ('connect', k) not in memo: memo[('connect', k)] = connect_fix(store, k)
+    return memo[('connect', k)]
+
 
 def block_fix(store, channel) -> dict | None:
     """...and the button that lifts it, branch for branch with send_block: the reason named a place ("(Settings → Replies)",
@@ -424,6 +486,7 @@ def block_fix(store, channel) -> dict | None:
     ch = (channel or '').lower()
     if not ch or ch in NEVER: return None
     if ch == 'github': return None if store.github_replies_ok() else {'label': 'Open the GitHub card', 'href': '#connector=github'}
+    if _inbox_off(store, ch): return {'label': f'Open the {INBOX_NAMES[ch]} card', 'href': f'#connector={ch}'}
     if ch in SENDABLE and ch not in reply_channels(store): return dict(zip(('label', 'href'), REPLIES))
     if ch == 'email' and send_probe(store, ch):
         return {'label': 'Sign in again', 'href': '#connector=outlook'} if 'Mail.Send' in send_probe(store, ch) else dict(zip(('label', 'href'), MAIL))
@@ -499,7 +562,7 @@ def sending_mailbox(store, rv: dict, msg: dict = None) -> str | None:
 
 
 def send_out(store, channel: str, to, subject: str, body: str, cc: list = None, attachments: list = None,
-             mailbox: str = None, html: str = None) -> dict:
+             mailbox: str = None, html: str = None, bcc: list = None) -> dict:
     """Send something nobody asked for: a report going OUT, to an address the owner chose.
 
     reply_to_message answers a message - it reads the mailbox, thread id and chat id off the row
@@ -510,8 +573,8 @@ def send_out(store, channel: str, to, subject: str, body: str, cc: list = None, 
     """
     _no_placeholder(body, subject)
     to = [t.strip() for t in (to if isinstance(to, (list, tuple)) else str(to or '').split(',')) if str(t).strip()]
-    ch, cc = (channel or 'email').lower(), addrs(cc)
-    if cc and ch != 'email':
+    ch, cc, bcc = (channel or 'email').lower(), addrs(cc), addrs(bcc)
+    if (cc or bcc) and ch != 'email':
         raise RuntimeError(f'{ch} has no cc - only mail can copy somebody in')
     # the files on the draft go with it: a message the owner STARTED (outbox, a task's own emails) sent here without them
     # while its card listed them as attached (2026-10-09) - and a channel that cannot carry a file says so, before sending
@@ -529,19 +592,19 @@ def send_out(store, channel: str, to, subject: str, body: str, cc: list = None, 
             if not box: raise Fixable(f'{mailbox} is not a connected mailbox any more - pick another one to send from', *MAIL)
             if box['kind'] == 'outlook':
                 return send_email(store, to, subject or '(no subject)', body, mailbox=box['address'], connector_id=box['connector_id'],
-                                  cc=cc, attachments=attachments, **({'html': html} if html else {}))
+                                  cc=cc, bcc=bcc, attachments=attachments, **({'html': html} if html else {}))
             from .imapmail import send_smtp
             return send_smtp(store, store.get_connector(box['connector_id'], with_secret=True), to, subject or '(no subject)', body,
-                             cc=cc, attachments=attachments, **({'html': html} if html else {}))
+                             cc=cc, bcc=bcc, attachments=attachments, **({'html': html} if html else {}))
         # Graph when the Outlook card is connected, otherwise the IMAP mailbox's own SMTP
         c = store.get_connector_by_type('outlook')
         if c and c.get('Active'):
-            return send_email(store, to, subject or '(no subject)', body, cc=cc, attachments=attachments, **({'html': html} if html else {}))
+            return send_email(store, to, subject or '(no subject)', body, cc=cc, bcc=bcc, attachments=attachments, **({'html': html} if html else {}))
         from .imapmail import send_smtp
         box = next((store.get_connector(x['ConnectorId'], with_secret=True) for x in store.list_connectors()
                     if x['Type'] in ('gmail', 'imap') and x['Active']), None)
         if not box: raise Fixable('no mailbox is connected to send from', *MAIL)
-        return send_smtp(store, box, to, subject or '(no subject)', body, cc=cc, attachments=attachments, **({'html': html} if html else {}))
+        return send_smtp(store, box, to, subject or '(no subject)', body, cc=cc, bcc=bcc, attachments=attachments, **({'html': html} if html else {}))
     if ch == 'teams':
         if not to: raise RuntimeError('no chat id - a Teams message needs one to land in')
         return send_teams(store, to[0], f'**{subject}**\n\n{body}' if subject else body)
@@ -734,8 +797,16 @@ UNKNOWN_ERRORS = (requests.exceptions.Timeout, requests.exceptions.ConnectionErr
                   smtplib.SMTPServerDisconnected, requests.exceptions.JSONDecodeError, UncertainDelivery)
 
 
+# A REFUSAL BEFORE ANYTHING WENT IS NOT "DELIVERY UNKNOWN" (the owner, 2026-11-08: a WhatsApp reply read "Delivery has not been confirmed -
+# Check delivery" when the bridge had answered 503 {"error": "not connected to WhatsApp"}): a channel that SAYS it is not connected, not
+# signed in or refused the connection sent nothing - the owner reconnects and sends again. A bare 5xx stays unknown: a provider may have
+# sent before it failed (test_review_delivery_safety)
+NOT_SENT = re.compile(r'\bnot (connected|logged in|linked|signed in|paired|authenticated)\b|connection refused|ECONNREFUSED|actively refused', re.I)
+def refused_before_send(error) -> bool: return isinstance(error, ConnectionRefusedError) or bool(NOT_SENT.search(str(error)))
+
 def delivery_uncertain(error):
-    """Transport loss, server errors and partial sends do not establish non-delivery."""
+    """Transport loss, server errors and partial sends do not establish non-delivery - a refusal before anything went does."""
+    if refused_before_send(error) and not isinstance(error, UncertainDelivery): return False
     if isinstance(error, UNKNOWN_ERRORS): return True
     response = getattr(error, 'response', None)
     code = getattr(response, 'status_code', None) if response is not None else getattr(error, 'status', None)
@@ -851,15 +922,24 @@ def re_subject(s) -> str:
     return s if s.lower().startswith('re:') else f'Re: {s}'.strip()
 
 
-def reply_to_message(store, msg: dict, body: str, to: list = None, cc: list = None, attachments: list = None) -> dict:
+def wa_quote(msg: dict) -> dict | None:
+    "The WhatsApp message a reply answers, as the bridge quotes it: {id, text} off its 'whatsapp:<jid>:<id>' - None for one with no id."
+    ext = str(msg.get('ExternalId') or '')
+    if not ext.startswith('whatsapp:') or ext.count(':') < 2: return None
+    return {'id': ext.rsplit(':', 1)[-1], 'text': ' '.join(str(msg.get('OwnText') or msg.get('BodyText') or '').split())[:300]}
+
+
+def reply_to_message(store, msg: dict, body: str, to: list = None, cc: list = None, attachments: list = None, bcc: list = None,
+                     subject: str = None) -> dict:
     """Answer wherever the request came from. The message row carries everything needed:
     the mailbox it arrived in, the Graph id for threading, or the chat id."""
     _no_placeholder(body)
     ch, ext = msg.get('Channel'), str(msg.get('ExternalId') or '')
-    cc = addrs(cc)
+    cc, bcc = addrs(cc), addrs(bcc)
+    subj = ' '.join(str(subject or '').split()) or re_subject(msg.get('Subject'))     # the card's subject where the owner changed it
     # cc is a mail idea. A chat has members, not recipients, and quietly dropping the person the
     # owner meant to loop in is the one outcome worth refusing over
-    if cc and ch != 'email':
+    if (cc or bcc) and ch != 'email':
         raise RuntimeError(f'a {ch} message has no cc - answer by email to copy somebody, '
                            'or add them to the chat itself')
     # Graph chat messages carry no bytes: a file in a Teams chat is a file in that chat's SharePoint
@@ -876,8 +956,8 @@ def reply_to_message(store, msg: dict, body: str, to: list = None, cc: list = No
                   if x['Type'] in ('gmail', 'imap') and x['Active']
                   and json.loads(x.get('ConfigJson') or '{}').get('address', '').lower() == box.lower()), None)
         if not c: raise Fixable(f'no mail connection is set up for {box}', *MAIL)
-        return send_smtp(store, c, to or [msg.get('FromEmail')], re_subject(msg.get('Subject')),
-                         body, cc=cc, attachments=read_attachments(attachments), **reply_headers(msg))
+        return send_smtp(store, c, to or [msg.get('FromEmail')], subj,
+                         body, cc=cc, bcc=bcc, attachments=read_attachments(attachments), **reply_headers(msg))
     # ...and mail that came in another way (a forward, the push door) leaves through the SMTP mailbox it was addressed to - or
     # the only one there is when no Outlook is connected: the Graph road alone answered "the outlook connection is not set
     # up" with an IMAP mailbox connected and working (2026-10-06)
@@ -886,13 +966,13 @@ def reply_to_message(store, msg: dict, body: str, to: list = None, cc: list = No
         from .imapmail import send_smtp, reply_headers
         # in-thread only when the row kept the mail's own Message-ID: this road's conversation key is no mail id at all
         hdrs = reply_headers(msg)
-        return send_smtp(store, smtp, to or [msg.get('FromEmail')], re_subject(msg.get('Subject')),
-                         body, cc=cc, attachments=read_attachments(attachments), **(hdrs if hdrs.get('references') else {}))
+        return send_smtp(store, smtp, to or [msg.get('FromEmail')], subj,
+                         body, cc=cc, bcc=bcc, attachments=read_attachments(attachments), **(hdrs if hdrs.get('references') else {}))
     if ch == 'email':
-        return send_email(store, to or [msg.get('FromEmail')], re_subject(msg.get('Subject')),
+        return send_email(store, to or [msg.get('FromEmail')], subj,
                           body, ext[6:] if ext.startswith('graph:') else None, msg.get('SourceName'),
-                          _source_connector_id(store, 'email', msg.get('SourceName')), cc=cc,
-                          attachments=attachments)
+                          _source_connector_id(store, 'email', msg.get('SourceName')), cc=cc, bcc=bcc,
+                          attachments=attachments, retitle=bool(subject))
     if ch == 'teams':
         chat = (msg.get('ConversationId') or '')[6:]        # 'teams:19:...'
         if not chat: raise RuntimeError('this chat message has no chat id to answer in')
@@ -908,7 +988,11 @@ def reply_to_message(store, msg: dict, body: str, to: list = None, cc: list = No
         # as punctuation and folds a long bubble behind "Read more". Spell it for the channel and
         # send it whole; the first piece is the reply, so its receipt is the one that answers.
         said = [p for p in chatformat.split(chatformat.render(body, ch)) if p.strip()] or [body]
-        return _send_parts(lambda p: send(store, chat, p, connector_id) if connector_id else send(store, chat, p), said)
+        # ...and on WhatsApp as a REPLY to the very line it answers (the owner, 2026-11-08: two answers in one chat, neither said which
+        # message it was for): the first piece quotes it, so each reply quotes its own
+        q = wa_quote(msg) if ch == 'whatsapp' else None
+        kw = {'connector_id': connector_id} if connector_id else {}
+        return _send_parts(lambda p: send(store, chat, p, **kw, **({'quote': q} if q and p is said[0] else {})), said)
     if ch == 'slack':
         from . import chatformat
         chat = str(msg.get('ConversationId') or '').split(':', 1)[-1]   # 'slack:<channel id>'
@@ -959,6 +1043,9 @@ def reply_to_message(store, msg: dict, body: str, to: list = None, cc: list = No
         from .github import comment_issue
         url = comment_issue(c['Secret'], repo, int(num), body)
         return {'channel': 'github', 'to': [f'{repo}#{num}'], 'url': url}
+    if ch in INBOX_REPLY:
+        from . import inboxes
+        return inboxes.reply(store, msg, body)                          # on the item's own thread, through the card it came in on
     raise RuntimeError(f"nothing to answer on: {ch or 'unknown'} messages are read-only here")
 
 

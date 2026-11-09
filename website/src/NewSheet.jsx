@@ -14,9 +14,10 @@ import {
   Alert, Autocomplete, Box, Button, Chip, CircularProgress, Dialog, DialogContent, DialogTitle, IconButton,
   TextField, Typography,
 } from "@mui/material";
+import { ButtonBar } from "./ButtonBar.jsx";
 import CloseIcon from "@mui/icons-material/Close";
 import api from "./api";
-import { ACCENT, ACCENT2, BORDER, DIM, FAINT, GRADIENT, INK, PANEL, PANEL2, ROLES, mono } from "./theme.jsx";
+import { ACCENT, ACCENT2, BORDER, DIM, FAINT, INK, PANEL, ROLES, mono } from "./theme.jsx";
 import { ChannelIcon, AgentPicker, MicButton, useAgents, codingProfile, TaskuaryMark, usePeopleSearch } from "./ui.jsx";
 import { withFound } from "./peopleSearch.js";
 import { outcomeOf } from "./dispatchOutcome.js";
@@ -41,8 +42,10 @@ import { openAppLink } from "./appLinks.js";
 import { NEW_PB, askPlaybook } from "./playbookOpen.js";
 import { DASH, place } from "./words.js";
 import { label as btn } from "./buttons.js";
-import { useCapabilities } from "./capabilities.js";
+import { capabilities, useCapabilities } from "./capabilities.js";
+import { PromptBox } from "./AgentSummary.jsx";
 import { FOCUS_RING, pressable } from "./pressable.js";
+import { askAssistant } from "./askAssistant.js";
 
 const KINDS = [
   { key: "send",   mark: "✉️", label: "Send something", hint: "a message you start, drafted in your voice and approved by you" },
@@ -61,6 +64,9 @@ const KINDS = [
   // ...and the third thing Reports keeps (the owner, 2026-10-22: "this is not playbook ui?" - asked for one, the Assistant handed it to a
   // general agent as its job). Its words go to the shelf's own New playbook, which sets it up with AI there (playbookOpen.askPlaybook)
   { key: "playbook", mark: "📖", label: "Playbook", hint: "how one kind of request is handled from now on — triage matches new mail to it, and its steps are followed your way" },
+  // ...and the door for what fits none of them (Gabi, TQ-1358: "some things dont fit into these categories"): the words go to the Assistant's
+  // chat as a line typed there (askAssistant.js), and it works out what it is - nothing is filed here
+  { key: "chat", mark: "💬", label: "Chat with Taskuary", hint: "anything that fits none of these — say it and the Assistant takes it from there" },
 ];
 const REPEATS = ["report", "dashboard", "workflow"];
 
@@ -168,7 +174,7 @@ const AboutField = React.memo(forwardRef(function AboutField({ kind, how, onRead
     if (bus?.current || onWords) { clearTimeout(timer.current); timer.current = setTimeout(() => { bus?.current?.(next); onWords?.(next); }, 200); }
   };
   // ...and a picture pasted or dropped into it goes with the words (a note to self keeps words only)
-  const withPics = pics && kind !== "note" && kind !== "playbook";     // ...and New playbook takes words (POST /api/playbooks/setup)
+  const withPics = pics && !["note", "playbook", "chat"].includes(kind);     // ...New playbook and the chat hand-off take words only
   return (
     <>
     <TextField fullWidth multiline minRows={kind === "note" ? 2 : 3} value={value} autoFocus
@@ -181,6 +187,7 @@ const AboutField = React.memo(forwardRef(function AboutField({ kind, how, onRead
         : kind === "agent" ? (how === "general" ? t("why did Site 3's census move four points in July?")
           : t("work out why the nightly export drops the last facility"))
         : kind === "playbook" ? t("when someone asks for their leave balance, gather it from payroll and draft the reply for my review")
+        : kind === "chat" ? t("what's still open with Payworth, and which of it comes first?")
         : t("chase the Payworth AP replacement")}
       // SAID, NOT TYPED (the owner, 2026-09-30: "can't ... use voice notes to write this prompt?"): the composer's own mic,
       // its words appended where the typing would go
@@ -201,8 +208,9 @@ const AboutField = React.memo(forwardRef(function AboutField({ kind, how, onRead
 // `line`: the Assistant's line that wrote this card (concierge._new) - its press says that line again as what it started (`onSaid`)
 // `initialChannel` / `initialTo`: Send something already addressed - a People hit's Message them (SearchEverything, trust audit F6)
 // `start`: the Assistant pressed the agent's Send to agent for the owner - the card presses it once it can go (concierge._new)
+// `chat`: offer Chat with Taskuary - off where the Assistant is not on screen to take it (the Board)
 export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = false, initialKind = "send", initialHow = "", initialText = "", line = null, onSaid, start = false,
-  initialChannel = "", initialTo = "", initialMeeting = null, initialRoutine = null }) {
+  initialChannel = "", initialTo = "", initialMeeting = null, initialRoutine = null, chat = true }) {
   const locale = useLocale();
   const [kind, setKind] = useState(initialKind);
   const said = useRef(null);      // the words, for the repository picker (see NewRepo)
@@ -273,7 +281,10 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
   }, [open]);
   // A CONNECTOR NAMED IN AN AGENT'S JOB is offered its card on the row, beside Start (connectorCatalog.connectorNamed): "connect taskuary
   // to linkedin" was only ever an agent job, with no way to Connections (a tester, 2026-10-20). The words still go to an agent if pressed.
-  const [words, setWords] = useState(initialText);
+  const [words, setText] = useState(initialText);
+  // ...a general agent's job is typed into the agent chat's own box (PromptBox) - its words are read at the press from here
+  const agentBox = kind === "agent" && how === "general", wordsRef = useRef(words), agentBoxRef = useRef(agentBox);
+  wordsRef.current = words; agentBoxRef.current = agentBox;
   const named = kind === "agent" ? connectorNamed(words) : null;
   // each sheet registers as ITSELF: the Feed's closed dialog and the chat's open card both said "new-send", one cleared what the
   // other put, and every put re-drew both - the Send something tab died in that loop (React #185, the UI audit 2026-10-21)
@@ -291,7 +302,7 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
 
   const submit = useCallback(async () => {
     setBusy(true); setErr(""); setErrAi(false); setOk("");
-    const about = String(aboutRef.current?.value || "").trim();
+    const about = String((agentBoxRef.current ? wordsRef.current : aboutRef.current?.value) || "").trim();
     try {
       if (kind === "send") {
         const { data } = await api.post("/api/outbox", {
@@ -308,9 +319,8 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
         const general = how === "general";
         // NOTHING TO RUN IT ON, SAID HERE AND THE SHEET STAYS OPEN (owner-approved, 2026-10-21): the task was made, its agent failed a
         // second later, and it sat on the rail under "waiting on you". Read fresh - the list loaded with the sheet may be from before
-        if (general && !((await api.get("/api/agents")).data?.general_brains || []).length) {
-          setErr({ key: NO_AI_LINE }); setErrAi(true); setBusy(false); return;
-        }
+        // ...read off the one capability (capabilities.has_ai): the demo's agents work with no AI connected, and its box said "No AI connected"
+        if (general && (await capabilities()).ai === false) { setErr({ key: NO_AI_LINE }); setErrAi(true); setBusy(false); return; }
         // a session opens where the picker says (auto = the repository the words name, else the server guesses as ever);
         // the choice is the task's `repo:` tag, the override that always wins
         const pickd = general ? null : repoPick.current?.(about) || null;
@@ -347,6 +357,9 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
         // the line leads with the ref: said once, not twice
         setOk({ key: "{ref} — {outcome}.", values: { ref: data.ref }, outcome: out });
         aboutRef.current?.clear(); setHasAbout(false); pics.clear(); onDone?.(); onOpenTask?.(data.taskId);
+      } else if (kind === "chat") {
+        // said in the chat as if typed there: the Assistant answers, or files it as whatever it turns out to be
+        askAssistant(about); aboutRef.current?.clear(); setHasAbout(false); onClose?.();
       } else if (kind === "playbook") {
         // the one road to a playbook is the shelf's New playbook: this press is its Set up with AI, made there once with these words
         askPlaybook(about, true); onClose?.(); openAppLink(`report=${NEW_PB}`);
@@ -379,7 +392,7 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
   // a hand-off is the one Send to agent / Send to coding agent (buttons.json); the others are this form's own words
   const verb = kind === "send" ? (mode === "task" ? t(btn("regular_agent")) : t("Draft it"))
     : kind === "agent" ? t(btn(how === "general" ? "regular_agent" : "coding_agent")) : kind === "goal" ? (plan ? t("Plan it") : t("Track it"))
-    : kind === "playbook" ? t("Set up with AI") : t("Note it");
+    : kind === "playbook" ? t("Set up with AI") : kind === "chat" ? t("Ask Taskuary") : t("Note it");
   // THE ASSISTANT PRESSED IT (`start`, concierge._new - the owner, 2026-11-02: "why can't assistant start an agent. i'm okay with that"):
   // an agent's job it wrote here is started by this card's own button, once, the moment the card can go - the same press the owner's is
   const autoPressed = useRef(false);
@@ -390,7 +403,7 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
 
   const aboutLabel = kind === "goal" ? "What does done look like" : kind === "send" ? "What's this about"
     : kind === "agent" ? (how === "general" ? "What should it find out or write" : "What should it do")
-    : kind === "playbook" ? "What should this playbook do" : "What do you want to remember";
+    : kind === "playbook" ? "What should this playbook do" : kind === "chat" ? "What's on your mind" : "What do you want to remember";
 
   // the card: a bordered block in the conversation's width, Esc closes it, nothing floats over the page
   const Shell = inline ? Box : Dialog;
@@ -408,8 +421,10 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
 
       {/* the kinds are tabs, not a select: three doors that all exist is the point of the sheet,
           and a closed dropdown hides two of them behind a click */}
-      <Box sx={{ display: "flex", gap: 0.25, px: { xs: 1, sm: 3 }, borderBottom: `1px solid ${BORDER}`, overflowX: "auto", scrollbarWidth: "none" }}>
-        {KINDS.map((k) => (
+      {/* ...every one in sight: a row that scrolled with no scrollbar cut the last at 1440px ("Playbo...") and hid four on a phone, with nothing
+          to say there were more (the product audit, 2026-11-08) - the row wraps instead */}
+      <Box data-tq-new-kinds="" sx={{ display: "flex", flexWrap: "wrap", gap: 0.25, px: { xs: 1, sm: 3 }, borderBottom: `1px solid ${BORDER}` }}>
+        {KINDS.filter((k) => chat || k.key !== "chat").map((k) => (
           <Box key={k.key} {...pressable(() => { setKind(k.key); setErr(""); setOk(""); })} role="tab"
             aria-selected={kind === k.key} title={t(k.hint)}
             sx={{ ...FOCUS_RING, display: "flex", alignItems: "center", gap: 0.75, px: { xs: 1, sm: 1.5 }, py: 1, cursor: "pointer", flexShrink: 0,
@@ -481,17 +496,8 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
                   hint={t("a researcher, analyst or writer on its own. It looks things up, drafts and reports back.")} />
               </Box>
             </Box>}
-            {how === "general" && (
-              <Box>
-                <Label>{t("Agent")}</Label>
-                {/* the task page's hand-off, the same three questions: which profile, which brain, which model */}
-                <Box sx={{ display: "flex", alignItems: "center", gap: 1.25, flexWrap: "wrap" }}>
-                  <AgentPicker agents={agents} models={models} kinds={kinds} agent={role} model={model}
-                    generalBrains={generalBrains} brainsRead={agentsRead} pick={pick} onPick={setPick}
-                    onAgent={(a) => { setRole(a); setModel(""); }} onModel={setModel} size={30} />
-                </Box>
-              </Box>
-            )}
+            {/* A GENERAL AGENT'S JOB IS TYPED INTO THE AGENT CHAT'S OWN BOX (the owner, 2026-11-08): no AI picker, no model picker, no Connect an AI -
+                Settings decides the AI. Its box is below, where the words go (AgentBox) */}
             {how === "terminal" && (
               <Box>
                 <Label>{t("Agent")}</Label>
@@ -529,9 +535,18 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
             onPicked={(d) => { setOk({ key: "{ref} — the invite is drafted in Close out, waiting for your {approve}. Nothing went out.", values: { ref: d.ref }, approve: true }); onDone?.(); onOpenTask?.(d.taskId); }} />
         )}
 
-        {!REPEATS.includes(kind) && kind !== "meeting" && <Box>
+        {agentBox ? <Box data-tq-new-agent-box="">
+          <Label>{aboutLabel}</Label>
+          {/* ...THE CHAT'S OWN BOX (AgentSummary.PromptBox): paperclip, words, mic, Send - typing and Send make the task, start its agent and open
+              its chat. With no AI connected it says so, with the way to connect one */}
+          <PromptBox text={words} setText={setText} pics={pics} busy={busy} onSend={submit} label={aboutLabel} title={verb} autoFocus
+            placeholder="why did Site 3's census move four points in July?" sendOff={noAi} />
+          {noAi && <Typography data-tq-new-no-ai="" variant="caption" sx={{ color: DIM, display: "block", mt: 0.75 }}>
+            {t("No AI is connected, so an agent can't run this yet -")} <Box component="a" href={place("ai").href}
+              onClick={(e) => { e.preventDefault(); onClose?.(); openAppLink(place("ai").href); }} sx={{ color: "inherit", fontWeight: 600 }}>{t("connect one")}</Box>.</Typography>}
+        </Box> : !REPEATS.includes(kind) && kind !== "meeting" && <Box>
           <Label>{t(aboutLabel)}</Label>
-          <AboutField ref={aboutRef} kind={kind} how={how} onReady={setHasAbout} bus={said} pics={pics} initial={initialText} onWords={setWords} label={aboutLabel} />
+          <AboutField ref={aboutRef} kind={kind} how={how} onReady={setHasAbout} bus={said} pics={pics} initial={initialText} onWords={setText} label={aboutLabel} />
           {kind === "send" && (
             <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.75 }}>
               {t("Shorthand is fine — this is what you are telling the drafter, not what they read.")}
@@ -540,6 +555,11 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
           {kind === "playbook" && (
             <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.75 }}>
               {t("It opens under Reports → Playbooks, where your assistant drafts the steps with you — Approve there saves it.")}
+            </Typography>
+          )}
+          {kind === "chat" && (
+            <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.75 }}>
+              It goes to your Assistant's chat. It answers, or turns it into whatever it really is — a task, a draft, a reminder — and asks before anything goes out.
             </Typography>
           )}
         </Box>}
@@ -603,15 +623,13 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
         {ok && <Alert severity="success" sx={{ py: 0.25, fontSize: 12.5 }}>{t(ok.key, { ...ok.values, ...(Object.hasOwn(ok, "outcome") ? { outcome: outcomeOf(ok.outcome).text } : {}), ...(ok.approve ? { approve: t(btn("approve")) } : {}) })}</Alert>}
       </DialogContent>
 
-      <Box sx={{ display: "flex", gap: 1, justifyContent: "flex-end", px: 3, py: 1.75,
-        borderTop: `1px solid ${BORDER}`, bgcolor: PANEL2 }}>
-        <Button size="small" onClick={close} sx={{ color: DIM }}>{t("Cancel")}</Button>
+      <ButtonBar>
         {/* ...a playbook's Set up with AI opens the build in the chat: a door, out of the Assistant's view (the owner, 2026-11-02) */}
-        {!REPEATS.includes(kind) && kind !== "meeting" && <Button size="small" variant="contained" disableElevation disabled={!canGo || busy} onClick={submit}
+        {!REPEATS.includes(kind) && kind !== "meeting" && !agentBox && <Button size="small" variant="contained" disableElevation disabled={!canGo || busy} onClick={submit}
           {...(kind === "playbook" ? { "data-tq-view-skip": "" } : {})}
-          startIcon={busy ? <CircularProgress size={12} sx={{ color: "#fff" }} /> : null}
-          sx={{ background: GRADIENT }}>{busy ? t("Working…") : verb}</Button>}
-      </Box>
+          startIcon={busy ? <CircularProgress size={12} sx={{ color: "#fff" }} /> : null}>{busy ? t("Working…") : verb}</Button>}
+        <Button size="small" onClick={close}>{t("Cancel")}</Button>
+      </ButtonBar>
     </Shell>
   );
 }

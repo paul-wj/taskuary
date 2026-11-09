@@ -452,7 +452,7 @@ def isolated_runtime_boundaries():
                  mock.patch.object(server, 'quick_forever', stopped('chat poll scheduler')), \
                  mock.patch.object(server, 'doorway_forever', stopped('assistant doorway')), \
                  mock.patch.object(server, 'share_start', stopped('share port')), \
-                 mock.patch.object(server, 'resume_asking', stopped('asking agents resumed')), \
+                 mock.patch.object(server, 'resume_asking', stopped('asking agents resumed')),                  mock.patch.object(server, 'close_orphan_browsers', stopped('orphan browsers closed')), \
                  mock.patch.object(blackboard, 'schedule_due', stopped('dispatch retry scheduler')), \
                  mock.patch.object(waitroom, 'watch', stopped('waitroom watcher')), \
                  mock.patch.object(asks, 'watch', stopped('asks watcher')), \
@@ -496,6 +496,20 @@ def isolated_runtime_boundaries():
     # is best effort and never widens to a parent supplied by the environment.
     try: shutil.rmtree(_TEST_ROOT)
     except OSError: pass
+
+
+def pytest_configure(config):
+    config.addinivalue_line('markers', 'acp: the test drives the ACP road itself, so it keeps clis.ADAPTERS (no_real_acp_adapters)')
+
+
+@pytest.fixture(autouse=True)
+def no_real_acp_adapters(request, monkeypatch):
+    """The ACP road (agents._acp_road) launches claude and codex through npm adapters (clis.ADAPTERS): a test driving a fake `claude`
+    would fetch and start the real adapter instead - minutes on CI, and the argv road's own behaviour never tested. Only the ACP
+    road's own tests see the adapters."""
+    if request.module.__name__.rsplit('.', 1)[-1] in ('test_acp_road',) or request.node.get_closest_marker('acp'): return
+    from taskuary import clis
+    monkeypatch.setattr(clis, 'ADAPTERS', {})
 
 
 @pytest.fixture(autouse=True)

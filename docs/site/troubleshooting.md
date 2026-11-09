@@ -102,6 +102,19 @@ it comes back to you rather than disappearing. Only **Later** holds it.
 approve; it leaves the task state alone and sends nothing. If you want the task closed, **Mark
 done** does both.
 
+## An agent is slow to start
+
+Claude Code and Codex agents start through a small **agent connector** (an npm package). Installing
+the CLI from its card under **Connections → AI CLI agents** installs the connector too, as one more
+step. Without it, every start fetches the connector through `npx`: a few seconds more each time,
+and a download on the first one.
+
+A card whose CLI was already here says so in one quiet line: **Faster agent start: install the
+connector**, with **Install connector**. After a Taskuary update moves to a newer connector, the same line
+offers **Update connector** (the CLI's own **Update** beside it updates the CLI); an older copy is never used, so until then agents fetch the right one through
+`npx`. With no npm on the computer, the line says so and agents still work: Taskuary starts the CLI
+directly. Ask the Assistant "why is my Claude agent slow to start" and it checks this for you.
+
 ## A report returned nothing
 
 Open the report row: the last run shows what it read, what came out, and the error if it failed.
@@ -116,7 +129,7 @@ Open the report row: the last run shows what it read, what came out, and the err
 
 ## Reading the audit log
 
-**Settings → Activity log** is the answer to "why did this happen" and "who did this". Every
+**Settings → Activity log** (Developer mode) is the answer to "why did this happen" and "who did this". Every
 consequential action is one row: routed, filed, replied, opened, saved, deleted — with the actor,
 the time, and the thing it happened to.
 

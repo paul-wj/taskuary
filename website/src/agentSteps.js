@@ -81,6 +81,26 @@ const LISTS = new Set(["ls", "dir", "find", "tree", "get-childitem", "gci", "fd"
 const FETCH = new Set(["curl", "wget", "iwr", "invoke-webrequest", "irm", "invoke-restmethod", "http", "https"]);
 const SNIPPET = { python: "Python", python3: "Python", py: "Python", node: "Node", deno: "Deno", ruby: "Ruby", perl: "Perl" };
 const LEAD = new Set(["do", "then", "else", "time", "sudo", "env", "!", "{", "(", "exec", "nohup", "xargs"]);
+// WHAT A FILE COMMAND DID, in words (ACP step 1, 2026-11-06: an agent's own PowerShell read "Ran remove-item notes.txt", "Ran rename-item
+// README.md"). Its targets are its words that are not options. A delete, move or copy is the least step in a line (`minor`: below even
+// a snippet - `mkdir out && cp a out && python build.py` reads as the build, as it did when cp was QUIET), but alone it says what it did
+const DELETES = new Set(["rm", "del", "erase", "rmdir", "rd", "remove-item", "ri", "unlink"]);
+const MOVES = new Set(["mv", "move", "move-item", "mi", "ren", "rename", "rename-item", "rni"]);
+const COPIES = new Set(["cp", "copy", "copy-item", "cpi"]);
+const APPENDS = new Set(["add-content", "ac"]), WRITES = new Set(["set-content", "sc", "out-file", "new-item", "ni"]);
+// where a move went: its new name, or - the same name in another folder - that folder ("Moved README.md to docs/")
+const whither = (f, t) => (baseName(f) === baseName(t) && parent(t) ? `${parent(t)}/` : baseName(t));
+const fileStep = (p, plain) => {
+  const targets = plain.filter((x) => !/^\d+$/.test(x)), [a, b] = targets, n = (x) => (named(x) ? baseName(x) : t("a file"));
+  if (DELETES.has(p)) return { kind: "delete", summary: targets.length > 1 ? t("Deleted {count} files", { count: targets.length }) : named(a) ? t("Deleted {file}", { file: baseName(a) }) : t("Deleted a file"), file: a, minor: true };
+  if (MOVES.has(p)) {
+    const renamed = /^ren/.test(p) || (a && b && parent(a) === parent(b));
+    return { kind: "move", summary: a && b ? t(renamed ? "Renamed {from} to {to}" : "Moved {from} to {to}", { from: n(a), to: named(b) ? whither(a, b) : t("a file") }) : named(a) ? t("Moved {file}", { file: baseName(a) }) : t("Moved a file"), file: a, minor: true };
+  }
+  if (COPIES.has(p)) return { kind: "move", summary: a && b ? t("Copied {from} to {to}", { from: n(a), to: named(b) ? whither(a, b) : t("a file") }) : t("Copied a file"), file: a, minor: true };
+  if (APPENDS.has(p) || WRITES.has(p)) return { kind: "edit", summary: a && named(a) ? t(APPENDS.has(p) ? "Edited {file}" : "Wrote {file}", { file: baseName(a) }) : t("Wrote a file"), file: a, vague: !named(a) };
+  return null;
+};
 
 const taskuaryCall = (path, cmd) => {
   const [where, query = ""] = path.split("?");
@@ -132,6 +152,7 @@ const commandStep = (cmd, depth = 0) => {
     let w = words(seg.text);
     if (/^[A-Za-z_]\w*=\(/.test(w[0] || "")) continue;                       // an array being set up: H=(-H "...")
     while (w.length && (LEAD.has(w[0]) || /^[A-Za-z_]\w*=/.test(w[0]))) w = w.slice(1);
+    if (w.length && /^\(+[\w-]/.test(w[0])) w = [w[0].replace(/^\(+/, ""), ...w.slice(1)];       // `(Get-ChildItem ...).Count`
     if (!w.length || !/^[\w.:\/~+-]+$/.test(w[0])) continue;                 // only a word that can name a program
     const p = prog(w[0]), args = w.slice(1), plain = args.filter((a) => !a.startsWith("-"));
     if (SHELLS.has(p) && depth < 2) {
@@ -139,6 +160,8 @@ const commandStep = (cmd, depth = 0) => {
       const inner = at >= 0 ? args.slice(at + 1).join(" ") : "";
       if (inner) { const s = commandStep(inner, depth + 1); if (s) found.push(s); continue; }
     }
+    const f = fileStep(p, plain);
+    if (f) { found.push(f); continue; }
     if (QUIET.has(p)) continue;
     if (p === "agent-browser" || (["npx", "pnpm", "bunx"].includes(p) && prog(plain[0]) === "agent-browser")) {
       found.push(browserStep(p === "agent-browser" ? args : args.slice(args.indexOf(plain[0]) + 1))); continue;
@@ -173,8 +196,8 @@ const commandStep = (cmd, depth = 0) => {
     found.push({ kind: "run", summary: t("Ran {command}", { command: `${p}${sub}` }), filler: !!SNIPPET[p] });
   }
   // a snippet that only reshapes what a fetch brought back is not a step of its own
-  const real = found.filter((s) => !s.filler);
-  const use = real.length ? real : found;
+  const real = found.filter((s) => !s.filler && !s.minor), more = found.filter((s) => !s.minor);
+  const use = real.length ? real : more.length ? more : found;
   if (!use.length) return null;
   return { ...use[0], summary: use.length > 1 ? t("{summary}, and {count} more", { summary: use[0].summary, count: use.length - 1 }) : use[0].summary };
 };
@@ -192,6 +215,10 @@ const TOOLS = {
   edit: ["edit", "multiedit", "replace", "strreplace", "strreplacebasededittool", "applypatch", "notebookedit", "filechange", "patch"],
   write: ["write", "writefile", "createfile"],
   helper: ["task", "agent", "subagent", "dispatchagent"],
+  // ACP's own kinds for a tool call (agents.ACPSteps names a call by its kind when the agent gives no tool name)
+  delete: ["delete", "deletefile", "removefile"],
+  move: ["move", "movefile", "renamefile"],
+  think: ["think"],
   plan: ["todowrite", "updateplan", "plan", "todoread"],
   sync: ["syncmessages"],
 };
@@ -216,6 +243,11 @@ const OWN = {
   replynotneeded: () => ({ kind: "plan", summary: t("Marked the reply as not needed") }),
   signform: () => ({ kind: "edit", summary: t("Filled in and signed a form") }),
   propose: () => ({ kind: "plan", summary: t("Asked for your yes") }),
+  show: () => ({ kind: "plan", summary: t("Showed you a view") }),
+  // ...and where it works (repochoice.py): the one line the chat shows for the agent's pick - "Working in northwind/ledger - <why>"
+  userepo: (a) => { const w = String(a.path_or_name || "").trim(), at = /[\\/]/.test(w) && !/^[\w.-]+\/[\w.-]+$/.test(w) ? baseName(w) : w;
+    return { kind: "plan", summary: `${t("Working in {checkout}", { checkout: at || t("a checkout") })}${a.why ? ` - ${clip(a.why, 100)}` : ""}` }; },
+  findrepos: (a) => { const q = a.query || ""; return { kind: "list", summary: q ? t("Looked for the code on this computer for {what}", { what: quoted(q) }) : t("Looked for the code on this computer") }; },
 };
 const KIND = Object.fromEntries(Object.entries(TOOLS).flatMap(([k, names]) => names.map((n) => [n, k])));
 
@@ -246,8 +278,14 @@ export const describeCall = (name, args = {}) => {
     const changes = Array.isArray(a.changes) ? a.changes : [];
     if (changes.length > 1) return { kind: "edit", summary: t("Changed {count} files", { count: changes.length }) };
     const f = fileOf(a) || changes[0]?.path || "";
-    return { kind: "edit", summary: f ? t(kind === "write" ? "Wrote {file}" : "Edited {file}", { file: baseName(f) }) : t("Changed a file"), file: f };
+    return { kind: "edit", summary: f ? t(kind === "write" ? "Wrote {file}" : "Edited {file}", { file: baseName(f) }) : t("Changed a file"), file: f }; }
+  if (kind === "delete") { const f = fileOf(a); return { kind, summary: named(f) ? t("Deleted {file}", { file: baseName(f) }) : t("Deleted a file"), file: f }; }
+  if (kind === "move") {
+    const f = fileOf(a) || a.source || a.from, dst = a.to || a.destination || a.new_path || a.newPath;
+    return { kind, summary: named(f) && named(dst) ? t("Moved {from} to {to}", { from: baseName(f), to: whither(f, dst) }) : named(f) ? t("Moved {file}", { file: baseName(f) }) : t("Moved a file"), file: f };
   }
+  // a model's planning step: the agent's own title for it says what it thought about ("Planning the budget summary")
+  if (kind === "think") return { kind: "plan", summary: a.title && !/^think$/i.test(a.title) ? clip(a.title, 80) : t("Thought it through") };
   if (kind === "helper") return { kind, summary: a.description ? t("Handed part of the work to a helper: {description}", { description: clip(a.description, 70) }) : t("Handed part of the work to a helper") };
   if (kind === "plan") { const n = (a.todos || a.plan || []).length; return { kind, summary: n ? t("Updated its plan ({count} steps)", { count: n }) : t("Updated its plan") }; }
   // ...whatever channel the task came in on - a WhatsApp task read "Checking for new mail" (the owner, 2026-11-05: "this is not mail")
@@ -268,7 +306,8 @@ const ING = { Read: "Reading", Searched: "Searching", Wrote: "Writing", Edited: 
   Listed: "Listing", Changed: "Changing", Typed: "Typing", Clicked: "Clicking", Used: "Using", Handed: "Handing", Updated: "Updating",
   Checked: "Checking", Went: "Going", Reloaded: "Reloading", Scrolled: "Scrolling", Closed: "Closing", Pressed: "Pressing", Ticked: "Ticking",
   Unticked: "Unticking", Chose: "Choosing", Uploaded: "Uploading", Saved: "Saving", Started: "Starting", Drafted: "Drafting", Marked: "Marking",
-  Filled: "Filling", Asked: "Asking" };
+  Filled: "Filling", Asked: "Asking", Showed: "Showing", Deleted: "Deleting", Moved: "Moving", Renamed: "Renaming", Copied: "Copying",
+  Thought: "Thinking" };
 export const present = (s) => { const t = String(s || ""), m = /^([A-Z][a-z]+)\b/.exec(t); return m && ING[m[1]] ? ING[m[1]] + t.slice(m[1].length) : t; };
 // the row's words: what it is doing while it runs, what it did once done
 export const stepLabel = (s) => (s?.status === "running" ? s.doing || present(s.summary) : s?.summary || "");
@@ -304,6 +343,9 @@ const ECHO = /^(→ |· |✗ |session started\b)/;            // agents._live_li
 // CLI's readable `live` line was the object cut at 300 characters, drawn under Taskuary (the owner, 2026-11-03)
 const RETRY = /^Can't reach Claude's servers right now/;      // agents._live_line's line for Claude's own api_retry
 const QUICK_RAW =/^\s*(?:```(?:json)?\s*)?\{\s*"(?:report|draft|question|done|escalate|why)"\s*:/i;
+// a CLI's own plumbing, never a step of the work: Claude's ToolSearch loads a tool it has not loaded yet ("Used Tool Search on
+// 'select:WebSearch'", ACP step 1, 2026-11-06) - the call it loads it for is the step
+const MACHINERY = new Set(["toolsearch"]);
 export function stepsOf(trace, { answer = "", keepStart = true } = {}) {
   const events = trace || [];
   // A structured backend says everything twice: its tool call and text as events, and the same again as readable `live` lines for
@@ -328,11 +370,18 @@ export function stepsOf(trace, { answer = "", keepStart = true } = {}) {
   for (const e of events) {
     if (!e) continue;
     if (e.type === "tool_call") {
+      if (MACHINERY.has(key(e.name))) continue;
       const args = e.detail?.args || e.detail || {};
       const id = e.detail?.tool_call_id || `${e.name}-${steps.length}`;
       const d = describeCall(e.name, args);
-      const step = { id, ...d, raw: rawOf(e.name || "tool", args), output: "", status: "running" };
-      byId.set(id, step); steps.push(step);
+      const step = { id, ...d, raw: rawOf(e.name || "tool", args), output: String(e.detail?.output || ""), status: "running",
+        ...(d.kind === "helper" && args.description ? { task: clip(args.description, 70) } : {}) };
+      // A HELPER'S OWN CALLS GO UNDER ITS ROW (the owner, 2026-11-06: "it's spinning but not the last thing ... shouldn't it be in order? unless
+      // it's in parallel"): a call naming the helper call it runs under (`parent`: stream-json's parent_tool_use_id, ACP's parentToolUseId)
+      // is that helper's step, never one of the main agent's interleaved with it
+      const host = e.detail?.parent && byId.get(e.detail.parent);
+      byId.set(id, step);
+      if (host) (host.kids ||= []).push(step); else steps.push(step);
     } else if (e.type === "tool_result") {
       const step = byId.get(e.detail?.tool_call_id || e.name);
       if (!step) continue;
@@ -363,11 +412,20 @@ export function stepsOf(trace, { answer = "", keepStart = true } = {}) {
   // A failed call the same step later did without error is `recovered` - a quiet word; red stays for a failure nothing made good
   steps.forEach((s, i) => { if (s.status === "error" && "raw" in s
     && steps.slice(i + 1).some((x) => "raw" in x && x.kind === s.kind && x.summary === s.summary && x.status === "done")) s.status = "recovered"; });
+  // ...and a call STILL AT WORK while a later one already finished runs ALONGSIDE them - in parallel, said so; steps stay in the order they began
+  steps.forEach((s, i) => { if (s.status === "running" && "raw" in s && steps.slice(i + 1).some((x) => "raw" in x && x.status !== "running")) s.alongside = true; });
   const said = flat(forScreen(answer));
   const inAnswer = (t) => { const ps = String(t || "").split(/\n\s*\n/).map(flat).filter(Boolean); return ps.length > 0 && ps.every((p) => said.includes(p)); };
   const kept = said ? steps.filter((s) => s.kind !== "said" || !inAnswer(s.summary)) : steps;
-  return group(kept).map(({ raw, output, live, q, host, file, pattern, count, asked, retry, ...s }) => s);
+  return group(kept).map(tidy);
 }
+const tidy = ({ raw, output, live, q, host, file, pattern, count, asked, retry, kids, task, ...s }) => {
+  if (s.kind !== "helper" || !(kids?.length || task)) return s;
+  // ...a helper reads by its own work: at it, "Handing part of the work to a helper: …"; done, "Helper: … (done, 4 steps)" - its steps under it
+  const ks = kids?.length ? group(kids).map(tidy) : [], n = ks.filter(isWork).length;
+  const summary = s.status === "running" ? s.summary : `Helper: ${task || "part of the work"} (${s.status === "error" ? "failed" : "done"}${n ? `, ${plural(n, "step")}` : ""})`;
+  return { ...s, summary, ...(ks.length ? { kids: ks } : {}) };
+};
 
 // ── consecutive calls of one kind read as one line ───────────────────────────────────────────────
 const listOf = (xs, n = 3) => { const u = [...new Set(xs.filter(Boolean))]; return u.length > n ? t("{items} and {count} more", { items: u.slice(0, n).join(", "), count: u.length - n }) : u.join(", "); };
@@ -397,9 +455,9 @@ function group(steps) {
   const out = [];
   for (let i = 0; i < steps.length;) {
     const s = steps[i];
-    if (!("raw" in s)) { out.push(s); i += 1; continue; }
+    if (!("raw" in s) || s.kids?.length) { out.push(s); i += 1; continue; }
     let j = i + 1;
-    while (j < steps.length && "raw" in steps[j] && steps[j].kind === s.kind
+    while (j < steps.length && "raw" in steps[j] && !steps[j].kids?.length && steps[j].kind === s.kind
            && (["read", "search", "web", "page", "edit"].includes(s.kind) || steps[j].summary === s.summary
                || (s.kind === "mail" && s.q !== undefined && steps[j].q !== undefined))) j += 1;
     const run = steps.slice(i, j);

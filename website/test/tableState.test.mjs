@@ -18,6 +18,7 @@ test("folded by its X or under a page, the item stays on the table and the Advis
 });
 
 
+
 // NO "THINKING..." (the owner, 2026-10-23): the server answers at once with the Advisor's one decision - a lit verb, silent or with its
 // fact - and the page keeps every answer it reads for the key it asked about
 test("the Advisor's decision is read whole, silent or not, and nothing is ever a spinner", () => {
@@ -37,4 +38,5 @@ test("a task opened by name hears the Advisor's event, which names it by the rai
   assert.equal(adviceKeyFor({ key: "msg:4", target_kind: "message", target_id: 4 }, { key: "task:4" }), null, "a message is not task 4");
   assert.equal(adviceKeyFor(ev, { key: "review:3", tid: 12 }), "review:3", "the walk's item knows its task too");
 });
+
 

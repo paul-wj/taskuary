@@ -14,6 +14,7 @@ import {
   Alert, Box, Button, Chip, CircularProgress, Dialog, DialogContent, DialogTitle,
   IconButton, MenuItem, Select, TextField, Typography,
 } from "@mui/material";
+import { ButtonBar } from "./ButtonBar.jsx";
 import AddIcon from "@mui/icons-material/Add";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
@@ -23,7 +24,7 @@ import CloseIcon from "@mui/icons-material/Close";
 import SearchIcon from "@mui/icons-material/Search";
 import api from "./api";
 import { nothingMatches } from "./searchHits.js";
-import { ago } from "./timeWords.js";
+import { ago, plural } from "./timeWords.js";
 import { Md } from "./md.jsx";
 import { looksMd } from "./mdText.js";
 import { pollWhileVisible } from "./visible.js";
@@ -108,23 +109,6 @@ const Post = ({ p, onChanged, onOpenTask, onRemoved, onOpen = null, defaultOpen 
     <Box sx={{ border: `1px solid ${BORDER}`, borderLeft: `2px solid ${removed ? BORDER : ROLES[k.role].solid}`,
       borderRadius: 2, bgcolor: PANEL, mb: 1.25, overflow: "hidden", opacity: removed ? 0.8 : 1 }}>
       <Box sx={{ display: "flex", gap: 1.25, p: 1.5 }}>
-        {/* the score column, forum-style: what the room found useful is what the next agent is
-            handed first (the Hub ranks by it), and what it voted down is gone */}
-        <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 0, flexShrink: 0 }}>
-          <IconButton size="small" onClick={() => vote(true)} title={t("holds up — agents are handed this sooner")} aria-label={t("Vote up {name}", { name: named })}
-            sx={{ p: { xs: 0.9, md: 0.25 }, color: mine > 0 ? ACCENT : FAINT, "&:hover": { color: ACCENT } }}>
-            <ArrowUpwardIcon sx={{ fontSize: { xs: 20, md: 16 } }} />
-          </IconButton>
-          <Typography sx={{ ...mono, fontSize: 11.5, fontWeight: 600, lineHeight: 1,
-            color: score > 0 ? ACCENT : score < 0 ? ALERT_INK : FAINT }}>{score}</Typography>
-          <Typography sx={{ ...mono, fontSize: 7.5, lineHeight: 1.2, color: FAINT, mt: 0.3 }}>
-            {t(voteLabel)}
-          </Typography>
-          <IconButton size="small" onClick={() => vote(false)} title={t("wrong or stale — below zero it is removed")} aria-label={t("Vote down {name}", { name: named })}
-            sx={{ p: { xs: 0.9, md: 0.25 }, color: mine < 0 ? ALERT_INK : FAINT, "&:hover": { color: ALERT_INK } }}>
-            <ArrowDownwardIcon sx={{ fontSize: { xs: 20, md: 16 } }} />
-          </IconButton>
-        </Box>
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Box sx={{ display: "flex", alignItems: "center", gap: 0.85, mb: 0.4, flexWrap: "wrap" }}>
             <Box component="span" aria-hidden sx={{ fontSize: 13, lineHeight: 1 }}>{k.mark}</Box>
@@ -150,7 +134,8 @@ const Post = ({ p, onChanged, onOpenTask, onRemoved, onOpen = null, defaultOpen 
           <Box sx={{ display: "flex", alignItems: "center", gap: 1.25, mt: 0.85, flexWrap: "wrap" }}>
             <Typography variant="caption" sx={{ color: FAINT, display: "flex", alignItems: "center", gap: 0.55 }}>
               <TaskuaryMark size={13} />
-              {byOwner(p.Author) ? t("written by you") : t("agent {author}", { author: p.Author || t("unknown") })} · {ago(p.UpdatedAt)}
+              {/* ...an agent is Agent, never its profile or tool ("agent coding", the product audit 2026-11-08) */}
+              {byOwner(p.Author) ? t("written by you") : t("written by an agent")} · {ago(p.UpdatedAt)}
             </Typography>
             {p.TaskId ? (
               <Button size="small" variant="outlined" onClick={() => onOpenTask?.(p.TaskId)}
@@ -158,9 +143,9 @@ const Post = ({ p, onChanged, onOpenTask, onRemoved, onOpen = null, defaultOpen 
                   color: "#55697a", borderColor: BORDER }}>
                 {t("from TQ-{id}", { id: String(p.TaskId).padStart(4, "0") })}
               </Button>
-            ) : (
+            ) : byOwner(p.Author) ? (
               <Typography variant="caption" sx={{ color: FAINT }}>{t("posted by hand")}</Typography>
-            )}
+            ) : null}
             <Button size="small" data-tq-post-open="" aria-label={t("{comments} on {name}", { comments: t(commentCount === 1 ? "{count} comment" : "{count} comments", { count: commentCount }), name: named })} onClick={() => (onOpen ? onOpen() : setOpen((v) => !v))}
               startIcon={<ChatBubbleOutlineIcon sx={{ fontSize: 14 }} />}
               sx={{ fontSize: 11.5, color: commentCount ? ACCENT2 : DIM, minWidth: 0,
@@ -168,6 +153,20 @@ const Post = ({ p, onChanged, onOpenTask, onRemoved, onOpen = null, defaultOpen 
               {t(commentCount === 1 ? "{count} comment" : "{count} comments", { count: commentCount })}
             </Button>
             <Box sx={{ flex: 1 }} />
+            {/* the vote is a quiet control on a reference, not a forum's score column (TQ-1353): it still ranks what agents are handed
+                first, and below zero the entry is gone */}
+            <Box sx={{ display: "flex", alignItems: "center", gap: 0.25 }}>
+              <IconButton size="small" onClick={() => vote(true)} title="holds up — agents are handed this sooner" aria-label={`Vote up ${named}`}
+                sx={{ p: { xs: 0.75, md: 0.2 }, color: mine > 0 ? ACCENT : FAINT, "&:hover": { color: ACCENT } }}>
+                <ArrowUpwardIcon sx={{ fontSize: { xs: 18, md: 14 } }} />
+              </IconButton>
+              <Typography title={voteLabel} sx={{ ...mono, fontSize: 11, minWidth: 14, textAlign: "center",
+                color: score > 0 ? ACCENT : score < 0 ? ALERT_INK : FAINT }}>{score}</Typography>
+              <IconButton size="small" onClick={() => vote(false)} title="wrong or stale — below zero it is removed" aria-label={`Vote down ${named}`}
+                sx={{ p: { xs: 0.75, md: 0.2 }, color: mine < 0 ? ALERT_INK : FAINT, "&:hover": { color: ALERT_INK } }}>
+                <ArrowDownwardIcon sx={{ fontSize: { xs: 18, md: 14 } }} />
+              </IconButton>
+            </Box>
             {removed ? (
               <Button size="small" onClick={restore} aria-label={t("Restore {name}", { name: named })} startIcon={<RestoreIcon sx={{ fontSize: 14 }} />}
                 sx={{ fontSize: 11, color: DIM, minWidth: 0 }}
@@ -206,6 +205,70 @@ const Post = ({ p, onChanged, onOpenTask, onRemoved, onOpen = null, defaultOpen 
       )}
     </Box>
   );
+};
+
+/* ── the company and its people, above the systems ─────────────────────────── */
+// The entries are the systems half of what a newcomer needs; the company and its people are already written down - JOB.md and
+// the memory's "Your people" - so they are SHOWN here, read-only, never kept twice (TQ-1353, 2026-11-08). Edited where they live.
+const AboutCard = ({ title, where, empty, children, has }) => {
+  const [all, setAll] = useState(false);
+  return (
+    <Box data-tq-hub-about={title} sx={{ border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: PANEL, p: 1.5, minWidth: 0 }}>
+      <Box sx={{ display: "flex", alignItems: "baseline", gap: 1, mb: 0.75 }}>
+        <Typography sx={{ fontSize: 13.5, fontWeight: 600, color: INK, flex: 1 }}>{title}</Typography>
+        <Typography variant="caption" sx={{ color: FAINT }}>{where}</Typography>
+      </Box>
+      {!has ? <Typography variant="caption" sx={{ color: FAINT, lineHeight: 1.6 }}>{empty}</Typography> : (<>
+        <Box sx={{ fontSize: 12.5, color: DIM, ...(all ? {} : { maxHeight: "11em", overflow: "hidden",
+          maskImage: "linear-gradient(to bottom, #000 70%, transparent)", WebkitMaskImage: "linear-gradient(to bottom, #000 70%, transparent)" }) }}>
+          {children}
+        </Box>
+        <Button size="small" onClick={() => setAll((v) => !v)} sx={{ fontSize: 11, color: DIM, minWidth: 0, mt: 0.25, px: 0 }}>
+          {all ? "show less" : "show all"}
+        </Button>
+      </>)}
+    </Box>
+  );
+};
+const About = () => {
+  const [a, setA] = useState(null);
+  useEffect(() => { api.get("/api/hub/about").then((r) => setA(r.data || {})).catch(() => setA({})); }, []);
+  if (!a) return null;
+  const people = Array.isArray(a.people) ? a.people : [];
+  return (
+    <Box sx={{ display: "grid", gap: 1.25, mb: 2, gridTemplateColumns: { xs: "minmax(0,1fr)", md: "minmax(0,1fr) minmax(0,1fr)" } }}>
+      <AboutCard title="The company" where="from JOB.md" has={!!a.company}
+        empty="Nothing written yet. JOB.md under About you says what the company does and what your job is.">
+        <Md text={a.company} />
+      </AboutCard>
+      <AboutCard title="People" where="from your memory" has={!!people.length}
+        empty="Nothing learned yet. Who matters and who owns what is learned from your mail into your memory.">
+        {people.map((t, i) => <Typography key={i} sx={{ fontSize: 12.5, color: DIM, lineHeight: 1.6, mb: 0.4 }}>{t}</Typography>)}
+      </AboutCard>
+    </Box>
+  );
+};
+
+// "everything" reads as a reference by system, not a feed: each system's best few, and a press opens the rest of it
+const SHOWN_PER_SYSTEM = 3;
+// [{key, node}] - one group per system, so the tab draws them in its column and the side-menu Hub as its cards
+const bySystem = (posts, topics, onTopic, render) => {
+  const by = {};
+  posts.forEach((p) => { (by[p.Topic] = by[p.Topic] || []).push(p); });
+  const order = [...topics.map((t) => t.Topic).filter((t) => by[t]), ...Object.keys(by).filter((t) => !topics.some((x) => x.Topic === t))];
+  return order.map((t) => {
+    const n = topics.find((x) => x.Topic === t)?.n || by[t].length;
+    return { key: `system-${t}`, node: (
+      <Box key={t} data-tq-hub-system={t} sx={{ mb: 2, minWidth: 0 }}>
+        <Box sx={{ display: "flex", alignItems: "baseline", gap: 1, mb: 0.75 }}>
+          <Typography sx={{ fontSize: 13.5, fontWeight: 600, color: INK }}>{t}</Typography>
+          <Typography variant="caption" sx={{ color: FAINT, flex: 1 }}>{plural(n, "entry", "entries")}</Typography>
+          {n > SHOWN_PER_SYSTEM && <Button size="small" onClick={() => onTopic(t)} sx={{ fontSize: 11.5, color: ACCENT2, minWidth: 0 }}>all {n}</Button>}
+        </Box>
+        {by[t].slice(0, SHOWN_PER_SYSTEM).map(render)}
+      </Box>
+    ) };
+  });
 };
 
 /* ── write one yourself ─────────────────────────────────────────────────────── */
@@ -264,12 +327,11 @@ const NewEntry = ({ open, onClose, onDone, topics }) => {
         </Box>
         {err && <Alert severity="error" sx={{ py: 0.25, fontSize: 12.5 }}>{typeof err === "string" ? err : t("That did not save")}</Alert>}
       </DialogContent>
-      <Box sx={{ display: "flex", gap: 1, justifyContent: "flex-end", px: 3, py: 1.75,
-        borderTop: `1px solid ${BORDER}`, bgcolor: PANEL2 }}>
-        <Button size="small" onClick={onClose} sx={{ color: DIM }}>{t("Cancel")}</Button>
+      <ButtonBar>
         <Button size="small" variant="contained" disableElevation data-tq-send="" disabled={busy || !title.trim() || title.length > 140 || body.length > 700} onClick={save}
           sx={{ background: GRADIENT }}>{t("Post it")}</Button>
-      </Box>
+        <Button size="small" onClick={onClose}>{t("Cancel")}</Button>
+      </ButtonBar>
     </Dialog>
   );
 };
@@ -291,13 +353,16 @@ export default function HubView({ onOpenTask, browse = null, browseState = {}, o
   // A HUB THAT DID NOT LOAD IS NOT AN EMPTY HUB. Catching into an empty list told the owner nothing
   // had ever been posted; what is already on screen stays, and the failure is said above it.
   const [loadErr, setLoadErr] = useState("");
+  // the front of the Hub: the company and its people, then the systems - only before a filter narrows it
+  const grouped = !topic && !q && !kind && !removed;
   const load = useCallback(async () => {
     try {
+      // ...the whole Hub when it is read by system, so no system loses its best entries to a newer one elsewhere
       const { data } = await api.get("/api/hub", { params: { topic: topic || undefined, q: q || undefined,
-        kind: kind || undefined, sort, status: removed ? "removed" : "live" } });
+        kind: kind || undefined, sort, status: removed ? "removed" : "live", limit: grouped ? 200 : undefined } });
       setD(data); setLoadErr("");
     } catch (e) { setLoadErr(errorInfo(e, "The Hub didn't load just now.")); }
-  }, [topic, q, kind, sort, removed]);
+  }, [topic, q, kind, sort, removed, grouped, browse]);
   const { say, note } = useSaveNote();
   // a receipt, never an Undo (the owner, 2026-10-19: "no take it back button"): Removed keeps it, and its own button puts it back
   // ...and under Recently deleted (the owner, 2026-11-02), whose list is read again after any press on a post (`bin`)
@@ -318,6 +383,8 @@ export default function HubView({ onOpenTask, browse = null, browseState = {}, o
   useEffect(() => { if (browse) setTopic(browseState.section ?? ""); }, [browse, browseState.section]);
   if (browse) {
     const one = posts.find((x) => x.LoreId === browseState.open);
+    const card = (x) => <Post key={x.LoreId} p={x} onChanged={changed} onOpenTask={onOpenTask} onRemoved={onRemoved}
+      onOpen={() => onBrowseState?.({ ...browseState, open: x.LoreId })} />;
     return browse({
       title: t("Hub"), wide: true,
       summary: !d ? (loadErr ? t("couldn't load") : t("loading…")) : t("{posts} posts · {topics} topics · {comments} comments", { posts: d.count.posts, topics: d.count.topics, comments: d.count.comments }),
@@ -330,8 +397,8 @@ export default function HubView({ onOpenTask, browse = null, browseState = {}, o
           InputProps={{ startAdornment: <SearchIcon sx={{ fontSize: 16, color: FAINT, mr: 0.75 }} /> }}
           sx={{ mt: 1.5, "& .MuiInputBase-root": { fontSize: 12.5, bgcolor: "#fff" } }} />
       ),
-      cards: [...posts.map((x) => ({ key: String(x.LoreId), node: <Post p={x} onChanged={changed} onOpenTask={onOpenTask} onRemoved={onRemoved}
-        onOpen={() => onBrowseState?.({ ...browseState, open: x.LoreId })} /> })), ...(posts.length ? [{ key: "recently-deleted", node: shelf }] : [])],
+      cards: [...(grouped ? [{ key: "about", node: <About /> }, ...bySystem(posts, topics, (t) => onBrowseState?.({ section: t, open: null }), card)]
+        : posts.map((x) => ({ key: String(x.LoreId), node: card(x) }))), ...(posts.length ? [{ key: "recently-deleted", node: shelf }] : [])],
       detail: one ? <Post key={`open-${one.LoreId}`} p={one} onChanged={changed} onOpenTask={onOpenTask} onRemoved={onRemoved} defaultOpen /> : null,
       onBack: () => onBrowseState?.({ ...browseState, open: null }),
       openLabel: one ? t('the Hub post "{title}" ({topic})', { title: one.Title, topic: one.Topic || t("Hub") }) : "",
@@ -368,7 +435,7 @@ export default function HubView({ onOpenTask, browse = null, browseState = {}, o
 
       {/* topics down the side - the shelves, and how full each one is */}
       <Box sx={{ position: { md: "sticky" }, top: { md: 70 } }}>
-        <Label>{t("Topics")}</Label>
+        <Label>{t("Systems")}</Label>
         <Box sx={{ border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: PANEL, overflow: "hidden" }}>
           {[{ Topic: "", n: d?.count?.posts || 0 }, ...topics].map((item, i) => (
             <Box key={item.Topic || "all"}
@@ -428,7 +495,10 @@ export default function HubView({ onOpenTask, browse = null, browseState = {}, o
         </Box>
 
         {failed}
+        {grouped && <About />}
         {!d ? (loadErr ? null : <CircularProgress size={22} sx={{ m: 4 }} />)
+          : posts.length && grouped ? bySystem(posts, topics, setTopic,
+              (p) => <Post key={p.LoreId} p={p} onChanged={changed} onOpenTask={onOpenTask} onRemoved={onRemoved} />).map((g) => g.node)
           : posts.length ? posts.map((p) => <Post key={p.LoreId} p={p} onChanged={changed} onOpenTask={onOpenTask} onRemoved={onRemoved} />)
           : (
             <Box sx={{ border: `1px dashed ${BORDER}`, borderRadius: 2, p: 4, textAlign: "center" }}>

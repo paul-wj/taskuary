@@ -24,8 +24,37 @@ def _general_waiting(store, t) -> bool:
     kind the rule can hold."""
     if str(t.get('Kind') or '') != 'general' or t.get('Status') not in ('open', 'in_progress'): return False
     from .general import ASSISTANT_TYPE, USER_TYPE
-    talked = any(c.get('ActorType') in (USER_TYPE, ASSISTANT_TYPE) for c in store.list_comments(t['TaskId']) or [])
+    talked = any(c.get('ActorType') in (USER_TYPE, ASSISTANT_TYPE) for c in store.list_comments(t['TaskId'], internal=True) or [])
     return funnel.general_not_started(t, talked, store.list_routes(t['TaskId']) or [])
+
+
+def chat_moved_on(store, tid: int) -> bool:
+    """THE CHAT AGENT IS DONE FOR NOW (the owner, 2026-11-06: one cycle - agent working, agent waiting on you, and after you Send "agent done"
+    until you type again): the owner answered the agent's newest turn - its reply sent from here, or their own answer on the thread - and
+    nothing is pending. The rail (funnel.from_agents), the task's state and the page's chip all read this, so they cannot disagree."""
+    if store.waiting_on_owner(tid): return False
+    from .general import ASSISTANT_TYPE
+    last = (store._one('SELECT MAX(CreatedAt) AS at FROM comment WHERE TaskId=? AND ActorType=?', (tid, ASSISTANT_TYPE)) or {}).get('at') or ''
+    sent, own = store.sent_reply(task_id=tid), store.own_reply_on_thread(task_id=tid)
+    went = max(str((sent or {}).get('DecidedAt') or (sent or {}).get('CreatedAt') or ''), str((own or {}).get('SentAt') or ''))
+    return bool(went) and went >= str(last)
+
+
+def open_question(store, tid: int) -> dict | None:
+    """THE AGENT'S OPEN QUESTION, AS SAVED WITH THE TASK (the owner, 2026-11-07: an idled-out agent's question vanished from the chip, the rail
+    and the Assistant though nobody answered it): its run's own recorded ask, open until the owner speaks - whether its process is alive or
+    not. None when none is open."""
+    return workerstate.shown_ask([r for r in workerstate.status(store, tid)['requests'] if workerstate.own_question(r)])
+
+
+def _chat_resting(store, t: dict) -> str | None:
+    "An open chat task with no live agent: 'blocked' while its question is open, 'agentdone' once it has answered, else None."
+    from .general import ASSISTANT_TYPE, handles, is_dock
+    if not handles(t) or is_dock(t) or t.get('Status') not in ('open', 'in_progress'): return None
+    if open_question(store, t['TaskId']): return 'blocked'
+    if store.waiting_on_owner(t['TaskId']): return 'approve'          # an email it set up waits for your Send, never "agent done"
+    spoke = store._one('SELECT 1 AS x FROM comment WHERE TaskId=? AND ActorType=? LIMIT 1', (t['TaskId'], ASSISTANT_TYPE))
+    return 'agentdone' if spoke else None
 
 
 def state(store, t: dict, session=None, queued=None) -> str:
@@ -38,7 +67,12 @@ def state(store, t: dict, session=None, queued=None) -> str:
         if not session.get('waiting'): return 'working'
         # ...but an agent PARKED - it answered, asked nothing - over a reply it drafted is the reply waiting, as the rail says: the Board
         # put it under "agent waiting on you" with "ready to send" on the same card, and the header said so until a reload (email walk 2026-10-29)
-        if (session.get('state') or 'parked') == 'parked' and not session.get('request') and t.get('ReviewStatus') == 'pending': return 'approve'
+        parked = (session.get('state') or 'parked') == 'parked' and not session.get('request')
+        if parked and (t.get('ReviewStatus') == 'pending' or store.waiting_on_owner(t['TaskId'])): return 'approve'
+
+        # ...and a CHAT agent whose turn asked nothing is done for now, never waiting on you (the owner, 2026-11-07) - as it reads once idled out
+        from .general import handles
+        if parked and handles(t): return 'agentdone'
         return 'blocked'
     st = t.get('Status')
     if st == 'dropped': return 'dropped'
@@ -53,10 +87,13 @@ def state(store, t: dict, session=None, queued=None) -> str:
     # ...and HOW ITS LAST RUN ENDED, in the run's own word (workerstate.ended) - the reading the rail takes too: a run that failed
     # or was stopped read "on you", and one that finished read "waiting to start", while the worker said what happened (G7)
     end = None if left else workerstate.ended(store, t['TaskId'])
-    if end == 'finished': return 'agentdone'
+    if end == 'finished': return 'approve' if store.waiting_on_owner(t['TaskId']) else 'agentdone'     # a post or an act left for your press
     if end: left = 'stopped'
     if not left and str(t.get('Assignee') or '').startswith('agent:') and store.last_transcript(t['TaskId']): left = 'stopped'
     if left: return left
+    # A CHAT AGENT NOT RUNNING - idled out, or the server restarted - reads as it did live (the owner, 2026-11-07): its open question still
+    # waits on you, and a turn that asked nothing is done for now. Read off the task's saved record, never the in-memory IDLED
+    if (chat := _chat_resting(store, t)): return chat
     if str(t.get('Assignee') or '').startswith('agent:') or _general_waiting(store, t): return 'queued'
     if st == 'waiting': return 'theirs'
     return 'yours'
@@ -75,7 +112,7 @@ def closed_why(store, t: dict, comments=None) -> str | None:
     ev = finish_evidence(store, t['TaskId'])
     if not ev or str(ev.get('who') or '').startswith('Its '): return None
     from .wrapup import is_report, report_body
-    rep = next((report_body(c.get('Body')) for c in reversed(comments if comments is not None else store.list_comments(t['TaskId']) or [])
+    rep = next((report_body(c.get('Body')) for c in reversed(comments if comments is not None else store.list_comments(t['TaskId'], internal=True) or [])
                 if is_report(c.get('Body'))), '')
     said = ' '.join(str(ev.get('summary') or '').split()) or next((ln.strip() for ln in rep.splitlines() if ln.strip()), '')
     return f'Closed by the agent: {said[:300]}' if said else 'Closed by the agent - it said it was finished.'

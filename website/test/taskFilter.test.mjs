@@ -49,6 +49,7 @@ test("mark done advances to the next in-progress task and never back to the clos
 
 
 
+
 // THE CUT BELONGS TO THE ROW. Applying it per pill gave `in progress` a wider window than `all`
 // (live work of any age vs today only), so "all 5" sat over "in progress 4 · done 2" and the
 // arithmetic could not close (the owner, 2026-09-22: "that doesn't add up?").

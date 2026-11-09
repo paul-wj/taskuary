@@ -75,10 +75,32 @@ def _target(args) -> str:
     return _cut(' '.join(str(v).split()), TARGET_N)
 
 
+# THE CODING CHAT DRAWS A STEP FROM ITS OWN ARGUMENTS (chatStream.js -> agentSteps.describeCall: "Read store.py", "Ran pytest"), and an
+# edit as its diff ("Edited budget.py (+12 −3)", the owner 2026-11-06: "i do like you can review the code diffs"). Kept small: the strings
+# a step line is built from, each cut short, and an edit's own before/after - never a tool's output
+ARG_N, EDIT_N = 300, 20000
+_ARG_KEYS = _TARGET_KEYS + ('glob', 'title', 'dir_path', 'directory', 'q', 'search_term', 'regex', 'notebook_path')
+
+
+def _args(a: dict) -> dict: return {k: _cut(v, ARG_N) for k, v in a.items() if k in _ARG_KEYS and isinstance(v, str) and v.strip()}
+
+
+def _edit(a: dict) -> dict | None:
+    "An edit's before/after as the tool was handed it: {parts: [{old, new}]} - a Write is all new, a MultiEdit each of its edits."
+    one = lambda o, n: {'old': str(o or '')[:EDIT_N], 'new': str(n or '')[:EDIT_N]}
+    if isinstance(a.get('edits'), list): parts = [one(e.get('old_string'), e.get('new_string')) for e in a['edits'] if isinstance(e, dict)]
+    elif 'old_string' in a or 'new_string' in a: parts = [one(a.get('old_string'), a.get('new_string'))]
+    elif isinstance(a.get('content'), str): parts = [one('', a['content'])]
+    else: return None
+    return {'parts': parts[:20]} if parts else None
+
+
 def _tool(name, args, at=None) -> dict:
     args = hide_draft(name, args)
     s = {'k': 'tool', 'name': str(name or 'tool'), 'text': _target(args), 'at': at}
     a = args if isinstance(args, dict) else {}
+    if (kept := _args(a)): s['args'] = kept
+    if name in _FILE_TOOLS and (e := _edit(a)): s['edit'] = e
     # a command the agent DESCRIBED reads as what it was for; the command itself stays one click away
     if str(a.get('description') or '').strip() and (a.get('command') or a.get('cmd')):
         s['text'], s['detail'] = _cut(a['description'], TARGET_N), _cut(a.get('command') or a.get('cmd'), 4000)
@@ -111,22 +133,32 @@ def _newest(base: Path, pattern: str):
 def _claude_file(ext: str): return _newest(_home() / '.claude' / 'projects', f'*/{ext}.jsonl')
 
 
+def _hunks(sp) -> list:
+    "Claude's own structuredPatch for an edit (its toolUseResult): the hunks with their real line numbers, as git writes them."
+    keep = ('oldStart', 'oldLines', 'newStart', 'newLines')
+    return [{**{k: h.get(k) for k in keep}, 'lines': [str(l) for l in h.get('lines') or []][:2000]}
+            for h in (sp or [])[:50] if isinstance(h, dict) and isinstance(h.get('lines'), list)]
+
+
 def _claude(path: Path) -> list:
-    out = []
+    out, uses = [], {}
     for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
         try: j = json.loads(line)
         except ValueError: continue
         if j.get('isMeta') or j.get('isSidechain') or j.get('type') not in ('user', 'assistant'): continue
         at, msg = j.get('timestamp'), j.get('message') or {}
+        # ...an edit's result carries the patch Claude wrote, line numbers and all: it replaces the before/after its call was handed
+        res = j.get('toolUseResult') if isinstance(j.get('toolUseResult'), dict) else {}
         for b in _blocks(msg.get('content')):
             t = b.get('type')
+            if t == 'tool_result' and (s := uses.get(b.get('tool_use_id'))) and (h := _hunks(res.get('structuredPatch'))): s['edit'] = {'hunks': h}
             if j['type'] == 'user':
                 # the owner's words - not a tool result coming back, not a slash command's or a hook's plumbing
                 if t == 'text' and (x := str(b.get('text') or '').strip()) and not x.startswith(('<command-', '<local-command', '<system-reminder', 'Caveat:')):
                     out.append({'k': 'you', 'text': _cut(x, YOU_N), 'at': at})
             elif t == 'thinking' and str(b.get('thinking') or '').strip(): out.append({'k': 'thought', 'text': _cut(b['thinking'], THOUGHT_N), 'at': at})
             elif t == 'text' and str(b.get('text') or '').strip(): out.append({'k': 'said', 'text': _cut(b['text'], SAID_N), 'at': at})
-            elif t == 'tool_use': out.append(_tool(b.get('name'), b.get('input'), at))
+            elif t == 'tool_use': out.append(s := _tool(b.get('name'), b.get('input'), at)); uses[b.get('id')] = s
     return out
 
 
@@ -153,8 +185,10 @@ def _codex(path: Path) -> list:
         elif t in ('function_call', 'custom_tool_call', 'local_shell_call'):
             args = p.get('arguments') or p.get('input') or (p.get('action') or {})
             if t == 'custom_tool_call' and p.get('name') == 'apply_patch':
-                files = re.findall(r'^\*\*\* (?:Update|Add|Delete) File: (.+)$', str(args), re.M)
-                out += [{'k': 'tool', 'name': 'apply_patch', 'text': _cut(f, TARGET_N), 'file': f, 'at': at} for f in files] or [_tool('apply_patch', '', at)]
+                # ...each file with its own part of the patch, the diff the coding chat draws (chatStream.js)
+                cuts = re.split(r'^\*\*\* (?:Update|Add|Delete) File: (.+)$', re.sub(r'\n?\*\*\* End Patch\s*$', '', str(args)), flags=re.M)
+                out += [{'k': 'tool', 'name': 'apply_patch', 'text': _cut(f, TARGET_N), 'file': f, 'at': at, 'edit': {'patch': p.strip('\n')[:EDIT_N]}}
+                        for f, p in zip(cuts[1::2], cuts[2::2])] or [_tool('apply_patch', '', at)]
             elif t == 'custom_tool_call' and (cmds := re.findall(r'\bcmd:\s*"((?:[^"\\]|\\.)*)"', str(args))):
                 out += [{'k': 'tool', 'name': 'shell', 'text': _cut(_hide_flags(c.replace('\\"', '"')), TARGET_N), 'at': at} for c in cmds]   # codex's js harness: the commands it ran
             else: out.append(_tool(p.get('name') or 'shell', args, at))
@@ -335,6 +369,30 @@ def cli_usage(cli: str, ext: str, since: str = '') -> dict:
         logger.debug(f'session record: {cli} usage for {ext} unreadable - {e}'); return {}
 
 
+def _models(cli: str, f: Path) -> list:
+    "Each model the run's log names, in order: claude's assistant messages, codex's turn contexts, gemini's messages."
+    if cli == 'gemini':
+        try: j = json.loads(f.read_text(encoding='utf-8', errors='replace'))
+        except ValueError: return []
+        return [m.get('model') for m in (j.get('messages') if isinstance(j, dict) else j) or [] if isinstance(m, dict) and m.get('model')]
+    out = []
+    for line in f.read_text(encoding='utf-8', errors='replace').splitlines():
+        try: j = json.loads(line)
+        except ValueError: continue
+        if cli == 'claude' and j.get('type') == 'assistant': out.append((j.get('message') or {}).get('model'))
+        elif cli == 'codex' and j.get('type') == 'turn_context': out.append((j.get('payload') or {}).get('model'))
+    return [m for m in out if m and m != '<synthetic>']
+
+
+def run_model(cli: str, ext: str) -> str:
+    "The model a run's own log says answered last - '' when its CLI keeps no log we read, or the log names none."
+    name = str(cli or '').split('/')[-1].removesuffix('.exe')
+    if not (ext and name in USAGE): return ''
+    try: f = READERS[name][0](str(ext)); ms = _models(name, f) if f else []
+    except Exception as e: logger.debug(f'session record: {cli} model for {ext} unreadable - {e}'); return ''
+    return ms[-1] if ms else ''
+
+
 def took(steps: list, started: str, ended: str = '') -> int | None:
     """Seconds from the run's start to the last thing it did - not to when its pane closed, which can be hours of waiting on the
     owner later. A run whose log has no times is measured to `ended`; None when the start is unknown."""
@@ -354,6 +412,28 @@ def screen_steps(text: str) -> list:
 def _gen_path(tid: int) -> Path:
     d = session_artifacts.root() / str(int(tid)); d.mkdir(parents=True, exist_ok=True)
     return d / 'general-steps.jsonl'
+
+
+def _live_path(tid: int) -> Path: return _gen_path(tid).with_name('general-live.json')
+# A TURN UNDER WAY IS ON DISK TOO (the product audit, 2026-11-08): its words and steps lived only in the process until the turn filed its
+# reply, so a restart mid-turn erased 70 seconds of work and said nothing. The trace so far is written as it grows; the turn's own end
+# takes it away (drop_live), and one still there at start-up is a turn the restart cut (general.keep_cut_turns)
+def keep_live(tid: int, trace: list):
+    p = _live_path(tid); tmp = p.with_suffix('.tmp')
+    tmp.write_text(json.dumps(trace, default=str), encoding='utf-8'); tmp.replace(p)
+def drop_live(tid: int): _live_path(tid).unlink(missing_ok=True)
+def cut_turns() -> list:
+    "[(task id, its trace)] of every turn a restart cut, each taken off disk as it is read."
+    out = []
+    for p in session_artifacts.root().glob('*/general-live.json'):
+        try: out.append((int(p.parent.name), json.loads(p.read_text(encoding='utf-8')) or []))
+        except (ValueError, OSError) as e: logger.debug(f'cut turn {p} unreadable - {e}')
+        p.unlink(missing_ok=True)
+    return out
+def said(trace: list) -> str:
+    "What a turn said so far: its text, in order."
+    return '\n\n'.join(str(e.get('detail')).strip() for e in trace or []
+                       if e.get('type') == 'progress' and e.get('name') in ('text', 'agent_message') and str(e.get('detail') or '').strip())
 
 
 def keep_turn(tid: int, reply_id, trace: list):
@@ -448,6 +528,9 @@ def save(store, tid: int, sid: str, cli: str, ext: str, screen: str = '', starte
     if started and (use := cli_usage(cli, ext, _when(started))): rec['usage'] = use
     try: _saved_path(tid, sid).write_text(json.dumps(rec), encoding='utf-8')
     except OSError as e: logger.warning(f'session record for task {tid} not kept: {e}')
+    # ...and on the task's AI use: this run's model, tokens and time (aiusage.session), once per session however often it is saved
+    from . import aiusage
+    aiusage.session(store, tid, sid, cli, _when(started), rec, run_model(cli, ext))
     return rec
 
 
@@ -564,7 +647,7 @@ def record(store, tid: int) -> dict:
                          'at': _when(chat[-1].get('CreatedAt')), 'source': 'conversation', 'steps': general_steps(store, tid),
                          **({'took': spent} if spent else {})})
     sessions.sort(key=lambda s: s['at'])
-    for c in store.list_comments(tid):
+    for c in store.list_comments(tid, internal=True):
         if str(c.get('Body') or '').startswith(REPORTS) and (s := _nearest(sessions, c.get('CreatedAt'))):
             rep = parse_report(c['Body'])
             if _keeps_last(s, rep): rep['last'] = s['report']['last']

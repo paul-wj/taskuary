@@ -238,3 +238,33 @@ def test_a_close_whose_save_fails_keeps_the_task_open_and_says_why(world):
     assert (s.get_task(tid) or {}).get('Status') not in ('done', 'dropped')
     assert any(str(x.get('Body') or '').startswith(writeup.FAILED) and 'still open' in x['Body'] for x in s.list_comments(tid))
     wrapup.forget(tid)
+
+
+# A SESSION WITH NOTHING WRITTEN CLOSES (the owner, 2026-11-08: "i can't close tasks now... it comes right back"): a session restored
+# at a restart had no transcript, the write-up said "nothing to wrap up", and every Mark done kept the task open
+def test_mark_done_on_a_session_with_nothing_to_wrap_up_closes_it(world):
+    make, _ = world
+    s, tid = make(); c = TestClient(server.app)
+    with mock.patch('taskuary.wrapup.wrap', side_effect=ValueError('nothing to wrap up - this task has no session transcript')):
+        c.post(f'/api/tasks/{tid}/wrap', json={'close': False, 'no_reply': True, 'background': True, 'then_close': True})
+        assert writeup.wait_for(tid, 30)
+    assert (s.get_task(tid) or {}).get('Status') in ('done', 'dropped')
+    assert not [x for x in s.list_comments(tid) if str(x.get('Body') or '').startswith(writeup.FAILED)]
+    wrapup.forget(tid)
+
+
+# THE WALK GOES ON PAST A CLOSE ON ITS WAY (the owner, 2026-11-08: "tasks are still coming back after mark done ... the walk does not work"):
+# Mark done on a live agent writes it up first and closes after; the walk's 'left', read meanwhile, found the task still on the line and
+# re-presented it - the page went back to the task just closed
+def test_a_close_on_its_way_counts_as_closed_for_the_walk(world):
+    make, _ = world
+    s, tid = make()
+    job = writeup._begin(tid, 'reading', True)
+    with writeup._LOCK: writeup._JOBS[tid] = __import__('threading').Event()
+    try:
+        assert writeup.closing(tid)
+        from taskuary import railwalk
+        assert railwalk._act(s, {'key': f'task:{tid}', 'tid': tid}, 'left', 'owner', None, None)['closed'] is True
+    finally:
+        writeup._JOBS[tid].set(); writeup._set(tid, job, running=False)
+    assert not writeup.closing(tid)

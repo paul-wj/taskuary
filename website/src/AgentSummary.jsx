@@ -1,20 +1,19 @@
 // EACH TURN ENDS IN THREE PARTS (the closeout-in-chat spec, 2026-11-04): what this is about, what the agent did, and the next steps - the
 // drafts waiting on Send, the steps only the owner can take ("On you: …"), or "Nothing left to do here". Where the chat is the task's home the
-// drafts are their cards, inside Next steps (Task 4.2: `next`, what Close out held - TaskPage's own, so each draft is drawn once); elsewhere a
+// drafts are their cards, inside Next steps (`next`, TaskPage's chat cards, so each draft is drawn once); elsewhere a
 // line each. An On you step's mark says whose it is, never a press.
-import React, { useState } from "react";
-import { Box, CircularProgress, Typography } from "@mui/material";
+import React, { useRef, useState } from "react";
+import { Box, CircularProgress, IconButton, Tooltip, Typography } from "@mui/material";
+import AttachFileIcon from "@mui/icons-material/AttachFile";
 import SendIcon from "@mui/icons-material/ArrowUpward";
 import api from "./api.js";
-import { hasReply, nextSteps } from "./agentSummary.js";
+import { draftAt, hasReply, nextSteps, oneLine, staleOn } from "./agentSummary.js";
+import { fmtTime12 } from "./dates.js";
 import { isCardReview } from "./actionCard.js";
 import { Md } from "./md.jsx";
-import { readingOf } from "./threadReading.js";
-import { dayLabel, fmtTime12 } from "./dates.js";
-const dayWord = (at) => { const d = dayLabel(at); return d && d !== "Today" ? `${d} ` : ""; };
 import { MicButton } from "./ui.jsx";
 import { MESSAGE } from "./kinds.js";
-import { AttachImage, AttachRow, fileChips, fileState, usePromptImages, withImages } from "./promptImages.jsx";
+import { AttachRow, IMAGE_ACCEPT, INLINE_CHIPS, fileChips, fileState, usePromptImages, withImages } from "./promptImages.jsx";
 import { ALERT_INK, BORDER, DIM, FAINT, INK } from "./theme.jsx";
 
 // ...a chatbot's answer, split into sections to read (the owner, 2026-11-05): a short bold heading over each, no rules, no boxes but the email's
@@ -41,8 +40,10 @@ const DraftHead = () => <Head>Next steps</Head>;
 // `lead`: what this turn SET UP for the owner's press, drawn as itself (a post, ActionCard) - it leads Next steps, the action section (the owner,
 // 2026-11-05: "Next steps is the action section"). `made`: the files the turn made, inline under What I did (TurnFiles). `kept`: the drafts this
 // turn wrote, as it wrote them (draft_snapshot)
+// `answered`: the turn has words of its own - they ARE the turn (the owner, 2026-11-08: "never show anything twice in a turn"), so the summary's
+// prose (About, What I did, On you) stays out and only what is drawn as a card is here: the files, the post, the drafts and their Send
 export default function AgentSummary({ summary, reviews = [], checklist = [], acts = [], cards = true, next = null, folded = false, lastAnswered = false,
-  kept = null, lead = null, made = null }) {
+  kept = null, lead = null, made = null, turnId = null, answered = false }) {
   if (!summary) return null;
   const did = String(summary.did || "").trim(), about = String(summary.about || "").trim();
   // ...a turn that is history keeps the draft it left, read-only: what was drafted and to whom, no Send (the owner, 2026-11-05)
@@ -57,11 +58,19 @@ export default function AgentSummary({ summary, reviews = [], checklist = [], ac
     const r = (reviews || []).find((x) => x.ReviewId === id), k = (kept || []).filter((x) => x?.review === id).at(-1);
     return k ? { ...(r || {}), ReviewId: id, DraftText: k.text, FromName: k.to || r?.FromName, FromEmail: r?.FromEmail } : r;
   }).filter((r) => r && String(r.DraftText || "").trim());
+  // ...a draft this turn wrote that the owner's newer message overtook: here, quietly, never under the newest turn (agentSummary.staleOn)
+  const stale = staleOn(reviews, turnId);
+  const Stale = () => <StaleDrafts reviews={reviews} turnId={turnId} />;
   const fate = (r) => r.Status === "sent" || r.DeliveryState === "sent" ? "sent" : r.Status === "pending" ? "" : "not sent";
   const Drafted = () => drafted.map((r) => <Box key={r.ReviewId} data-tq-drafted-then="" sx={{ mt: 1, px: 1.5, py: 1, borderLeft: "3px solid #dcd6ca", color: DIM, fontSize: 13, lineHeight: 1.5 }}>
     <Typography component="span" sx={{ display: "block", fontSize: 11.5, fontWeight: 700, color: FAINT, mb: 0.25 }}>
       {["Drafted", who(r) && `to ${who(r)}`, fate(r)].filter(Boolean).join(" · ")}</Typography>
     <Box sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: 220, overflow: "auto" }}>{r.DraftText}</Box></Box>);
+  if (answered) return made || lead || next || stale.length || (folded && drafted.length) ? (
+    <Box data-tq-summary="cards" className="tq-aui-summary">{made}{(lead || next) && <DraftHead />}{lead}
+      {next ? <Box sx={{ mt: 0.75 }}>{next}</Box> : null}{folded && <Drafted />}<Stale /></Box>) : null;
+  // ...a nothing-new turn is its one line, folded or not: no heads, no Next steps, and the draft stays on the turn that wrote it (oneLine)
+  if (oneLine(summary)) return <>{<Box data-tq-summary="line" className="tq-aui-summary" sx={LINE}><Md text={did} /></Box>}{made}{lead}</>;
   if (folded) return did || drafted.length ? (<>
     {did && <Box component="details" data-tq-summary="folded" className="tq-aui-summary" sx={{ mt: 0.75 }}>
       {/* ...one line: what it did, cut where the line ends - the whole of it a press away */}
@@ -70,7 +79,7 @@ export default function AgentSummary({ summary, reviews = [], checklist = [], ac
       <Box sx={{ ...LINE, color: DIM }}><Md text={did} /></Box>
     </Box>}
     {made}{lead}
-    <Drafted /></>) : made || lead ? <>{made}{lead}</> : null;
+    <Drafted /><Stale /></>) : made || lead || stale.length ? <>{made}{lead}<Stale /></> : null;
   const { drafts, onYou, held: heldAll, nothing } = nextSteps({ summary, reviews, checklist, acts, cards });
   const held = heldAll.filter((r) => !isCardReview(r));        // an act with its card (a post) leads Next steps - never "a step waits, below"
   return (
@@ -86,21 +95,27 @@ export default function AgentSummary({ summary, reviews = [], checklist = [], ac
       {!next && drafts.map((r) => <Typography key={r.ReviewId} data-tq-summary-draft={r.ReviewId} sx={LINE}>
         {who(r) ? `A reply to ${who(r)} is drafted and waits for your Send.` : "A reply is drafted and waits for your Send."}</Typography>)}
       {next ? <Box sx={{ mt: 0.75 }}>{next}</Box> : null}
+      <Stale />
       {nothing && !lead && <Typography data-tq-nothing-left="" sx={{ ...LINE, color: DIM }}>Nothing left to do here.</Typography>}
     </Box>
   );
 }
 
-// WHEN NO AGENT RAN (the spec's reply the drafter wrote): triage's reading, the drafter's why as "What I did", then the card - TaskPage's Close
-// out body (`cards`) - and the box. The box is Send to agent's road (the dispatch, which makes the task the general agent's) with the owner's
-// own words; from its first turn on the chat is the agent's. `box` off where the task's own agent form already starts it (a general task not begun).
-export function NoAgentChat({ task, reviews = [], checklist = [], mails = [], cards = null, box = true, onStarted }) {
+// A DRAFT THE OWNER'S NEWER MESSAGE OVERTOOK (general.draft_turns `stale`): under the turn that wrote it, "Drafted at 2:48 PM, before your last
+// message", read-only - never under the newest turn's Next steps
+export const StaleDrafts = ({ reviews, turnId }) => staleOn(reviews, turnId).map((r) => <Box key={r.ReviewId} data-tq-stale-draft={r.ReviewId}
+  sx={{ mt: 1, px: 1.5, py: 1, borderLeft: "3px solid #dcd6ca", color: DIM, fontSize: 13, lineHeight: 1.5 }}>
+  <Typography component="span" sx={{ display: "block", fontSize: 11.5, fontWeight: 700, color: FAINT, mb: 0.25 }}>
+    {[draftAt(r) && `Drafted at ${fmtTime12(draftAt(r))}`, "before your last message"].filter(Boolean).join(", ")}</Typography>
+  <Box sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: 220, overflow: "auto" }}>{r.DraftText}</Box></Box>);
+
+// A TO-DO NO AGENT HAS TOUCHED (the owner, 2026-11-06): under what came in - which says the ask and the To do already - the cards the chat would
+// hold (`cards`: a draft and its Send, an email owed), the drafter's why over them, and the one box. The box is Send to agent's road (the
+// dispatch, which makes the task the general agent's) with the owner's own words; from its first turn on, the chat is the agent's.
+export function NoAgentChat({ task, reviews = [], cards = null, closed = "", onStarted }) {
   const [text, setText] = useState(""), [busy, setBusy] = useState(false), [err, setErr] = useState("");
   const pics = usePromptImages({ files: true });          // ...a dropped, pasted or picked file goes with the words (the owner, 2026-11-05)
   const why = String((reviews || []).find((r) => r?.Status === "pending" && r.DraftWhy)?.DraftWhy || "").trim();
-  const { onYou } = nextSteps({ reviews, checklist, cards: false });
-  // ...the ask in one plain paragraph: what the thread wants (triage's reading), never its labelled lines
-  const ask = readingOf(task?.ThreadJson)?.asking || "";
   const send = async () => {
     const words = text.trim();
     if ((!words && !pics.paths.length) || busy || pics.busy) return;
@@ -112,53 +127,57 @@ export function NoAgentChat({ task, reviews = [], checklist = [], mails = [], ca
     catch (e) { setErr(e?.response?.data?.detail || "Could not start the agent - check that an AI is connected under Connections, then send it again."); }
     finally { setBusy(false); }
   };
-  // WHAT CAME IN, ON THE RIGHT, as every input in the chat is (the owner, 2026-11-05): each message of the task, oldest first - theirs by name,
-  // the owner's own as You - with its time; the read of it and the box under them
-  const said = (mails || []).filter((m) => m && (m.OwnText || m.ReadText || m.BodyText || m.Subject)).slice(-8);
-  const mine = (m) => m.Direction === "out" || m.Status === "context";
   return (
-    <Box data-tq-no-agent-chat="" sx={{ minWidth: 0, display: "flex", flexDirection: "column", mt: 1, flex: "1 1 auto", minHeight: 0 }}>
-      {!!said.length && <div className="tq-aui-chat" style={{ display: "contents" }}><div className="tq-aui-message tq-aui-brief" data-tq-no-agent-inputs="">
-        {said.map((m) => <div key={m.MessageId} className="tq-aui-arrived" data-tq-chat-arrived="">
-          <span className="tq-aui-arrived-head">{[mine(m) ? "You" : (m.FromName || m.FromEmail || "Someone"), m.SentAt && `${dayWord(m.SentAt)}${fmtTime12(m.SentAt)}`].filter(Boolean).join(" · ")}</span>
-          <span className="tq-aui-arrived-words" title={String(m.OwnText || m.ReadText || m.BodyText || "")}>{String(m.OwnText || m.ReadText || m.BodyText || m.Subject || "").trim().slice(0, 600)}</span>
-        </div>)}
-      </div></div>}
-      <Box sx={{ pb: 1 }}>
-        {!!ask && <><Head first>What this is about</Head><Typography data-tq-chat-ask="" sx={LINE}>{ask}</Typography></>}
-        {!!why && <><Head first={!ask}>What I did</Head><Typography data-tq-draft-why="" sx={LINE}>{why}</Typography></>}
+    <Box data-tq-no-agent-chat="" sx={{ minWidth: 0, display: "flex", flexDirection: "column" }}>
+      {!!(cards || why) && <Box sx={{ pb: 1 }}>
+        {!!why && <><Head first>What I did</Head><Typography data-tq-draft-why="" sx={LINE}>{why}</Typography></>}
         {cards ? <Box>{hasReply(reviews) && <DraftHead />}{cards}</Box> : null}
-        {onYou.length ? <><Head>Next steps</Head><OnYou items={onYou} /></> : null}
-      </Box>
-      {/* ...the attachments and the box together at the pane's foot: a spacer above them takes the room (the owner, 2026-11-05) */}
-      {box && <Box aria-hidden sx={{ flex: "1 1 auto" }} />}
-      {box && <PromptBox text={text} setText={setText} pics={pics} busy={busy} onSend={send} placeholder={MESSAGE}
-        label="Send to the agent" title="Starts the agent on this task with your words" boxAttrs={{ "data-tq-no-agent-box": "" }} sendAttrs={{ "data-tq-no-agent-send": "" }} />}
+      </Box>}
+      {/* ...a closed one says how it closed over the box - typing there reopens it (server._refuse_closed_chat) */}
+      {!!closed && <div className="tq-aui-closed" data-tq-chat-closed="">{closed}</div>}
+      <PromptBox text={text} setText={setText} pics={pics} busy={busy} onSend={send} placeholder={MESSAGE}
+        label="Send to the agent" title="Starts the agent on this task with your words" boxAttrs={{ "data-tq-no-agent-box": "" }} sendAttrs={{ "data-tq-no-agent-send": "" }} />
       {!!err && <Typography role="alert" sx={{ px: 1.5, pb: 1, fontSize: 12.5, color: ALERT_INK }}>{err}</Typography>}
     </Box>
   );
 }
 
-// ONE PROMPT BOX (the owner, 2026-11-05: "the box should be where it always is, not moved up. Don't have separate code. It's the same prompt box,
-// just with the Came from attached and your prompt in one"): a task's chat before its first agent and an item's Agent tab type into this one, at
-// the foot of their pane - what it goes with as chips on it (`chips`), the words, a file, the mic, Send. `cannot`: why a file cannot go (ImageTray)
-export function PromptBox({ text, setText, pics, busy = false, onSend, placeholder, label = "", title, chips = null, inputRef = null, cannot = null,
-  boxAttrs = {}, sendAttrs = {} }) {
-  const empty = !(text.trim() || pics.imgs.length);
-  return <>
-    {/* ...and it LOOKS the one box too: the chat's own composer classes (generalWorkspace.css) - paperclip left, the words, the mic, the filled
-        Send - so the first word typed into a task, which starts its agent, leaves the box where and as it was (the scenario run, 2026-11-06:
-        this box had its paperclip on the right and a bare arrow, and changed shape the moment the agent came) */}
-    <Box component="form" className="tq-aui-composer" data-tq-prompt-box="" onSubmit={(e) => { e.preventDefault(); onSend(); }} {...pics.drop}
-      sx={{ flexShrink: 0, minWidth: 0 }}>
-      {/* ...what goes with the words, in one line inside the box: the item it came from first, then the files (AttachRow) */}
-      {!!(chips || pics.imgs.length || pics.busy || pics.err) && <AttachRow sx={{ flex: "0 0 100%", pt: 0.25, px: 0.5 }}>{chips}{fileChips(pics, cannot)}{fileState(pics)}</AttachRow>}
-      <AttachImage pics={pics} size={18} sx={{ width: 30, height: 30, mb: "2px" }} />
-      <Box component="textarea" className="tq-aui-input" ref={inputRef} {...boxAttrs} rows={1} value={text} disabled={busy} onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSend(); } }} placeholder={placeholder} aria-label={label} />
-      <MicButton size={18} sx={{ color: "#6b5f45", p: 0.5 }} onText={(t) => setText((w) => (w.trim() ? `${w.trimEnd()} ${t}` : t))} />
-      <button type="submit" className="tq-aui-send" {...sendAttrs} aria-label={label} title={title} disabled={busy || pics.busy || empty}>
-        {busy ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : <SendIcon fontSize="small" />}</button>
-    </Box>
-  </>;
+// ONE BOX, ONE COMPONENT (the owner, 2026-11-06: "you moved the attached thing to the same line but you removed mic and attach icons???" - the
+// coding chat's box was a form of its own with a bare textarea). Every prompt box is this: left to right the paperclip, the chips (what it came
+// from, the files), the words, the mic, the box's own buttons (`extra`: a Terminal toggle, a stop), Send. The paperclip and the mic are not
+// props to leave out. `root`: the form element (assistant-ui's Composer root in the general chat), `input` and `send` the box's own; `onFiles`
+// takes what the paperclip picked, `accept` narrows it, `onMic` the words dictated
+export function OneBox({ root = "form", rootProps = {}, onFiles, accept, attachBusy = false, attachTitle = "Attach a file - or paste or drop one here",
+  chips = null, input, onMic, extra = null, send }) {
+  const Root = root, pick = useRef(null);
+  return <Root className="tq-aui-composer" data-tq-one-box="" {...rootProps}>
+    <Tooltip title={attachBusy ? "Uploading…" : attachTitle}><span>
+      <IconButton size="small" className="tq-aui-attach" data-tq-box-attach="" aria-label={attachTitle.replace(/ - .*/, "")} disabled={attachBusy} onClick={() => pick.current?.click()}
+        sx={{ width: 30, height: 30, p: 0, color: "#6e685f" }}><AttachFileIcon sx={{ fontSize: 18 }} /></IconButton></span></Tooltip>
+    <input ref={pick} hidden type="file" multiple accept={accept} onChange={(e) => { onFiles([...(e.target.files || [])]); e.target.value = ""; }} />
+    {/* ...what goes with the words, in one line inside the box, left of them: the item it came from first, then the files (AttachRow) */}
+    {chips && <AttachRow className="tq-aui-attachments" sx={INLINE_CHIPS}>{chips}</AttachRow>}
+    {input}
+    <MicButton size={18} sx={{ color: "#6b5f45", p: 0.5 }} onText={onMic} />
+    {extra}
+    {send}
+  </Root>;
+}
+export const micInto = (put) => (t) => put((w) => (w.trim() ? `${w.trimEnd()} ${t}` : t));   // dictated words after the typed ones
+
+// ...a task's chat before its first agent, an item's Agent tab, the coding chat: words in a textarea, files through usePromptImages
+// (`chips`: what it goes with; `cannot`: why a file cannot go; `extra`: the box's own buttons; `emptyOk`: Send with nothing typed - the item alone
+// is the job; `onSend` null: a box whose press is the form's own (RunForm's Start), so Enter adds nothing and no Send is drawn)
+export function PromptBox({ text, setText, pics, busy = false, onSend = null, placeholder, label = "", title, chips = null, inputRef = null, cannot = null,
+  boxAttrs = {}, sendAttrs = {}, extra = null, sendOff = false, emptyOk = false, autoFocus = false }) {
+  const empty = !emptyOk && !(text.trim() || pics.imgs.length), any = !!(chips || pics.imgs.length || pics.busy || pics.err), go = () => onSend?.();
+  return <OneBox rootProps={{ "data-tq-prompt-box": "", onSubmit: (e) => { e.preventDefault(); go(); }, ...pics.drop, style: { flexShrink: 0, minWidth: 0 } }}
+    onFiles={pics.add} accept={pics.files ? undefined : IMAGE_ACCEPT} attachBusy={pics.busy} attachTitle={`Attach ${pics.files ? "a file" : "an image"} - or paste or drop one here`}
+    chips={any ? <>{chips}{fileChips(pics, cannot)}{fileState(pics)}</> : null}
+    input={<Box component="textarea" className="tq-aui-input" ref={inputRef} {...boxAttrs} rows={1} value={text} disabled={busy} autoFocus={autoFocus} onChange={(e) => setText(e.target.value)}
+      onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent?.isComposing) { e.preventDefault(); go(); } }}
+      placeholder={placeholder} aria-label={label} />}
+    onMic={micInto(setText)} extra={extra}
+    send={onSend && <button type="submit" className="tq-aui-send" {...sendAttrs} aria-label={label} title={title} disabled={busy || pics.busy || empty || sendOff}>
+      {busy ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : <SendIcon fontSize="small" />}</button>} />;
 }

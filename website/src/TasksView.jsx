@@ -5,8 +5,9 @@ import { t, translateDescriptor } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 import { useCapabilities } from "./capabilities.js";
 import {
-  Alert, Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, LinearProgress, IconButton, InputAdornment, MenuItem, Select, TextField, Typography,
+  Alert, Box, Button, Chip, CircularProgress, Dialog, DialogContent, DialogTitle, LinearProgress, IconButton, InputAdornment, MenuItem, Select, TextField, Typography,
 } from "@mui/material";
+import { ButtonBar } from "./ButtonBar.jsx";
 import AddIcon from "@mui/icons-material/Add";
 import CloseIcon from "@mui/icons-material/Close";
 import SearchIcon from "@mui/icons-material/Search";
@@ -497,11 +498,11 @@ export default function TasksView({ selected, onSelect, onChanged, autostart, on
           <Typography variant="caption" sx={{ color: DIM }}>{nextStep(nt.Kind)}</Typography>
           {newErr && <Alert severity="error" onClose={() => setNewErr("")}>{translateDescriptor(newErr)}</Alert>}
         </DialogContent>
-        <DialogActions>
-          <Button onClick={() => { setNewOpen(false); setNewErr(""); }}>{t("Cancel")}</Button>
+        <ButtonBar>
           <Button variant="contained" disabled={!nt.Title.trim() || creating} onClick={create}
             startIcon={creating ? <CircularProgress size={13} /> : null}>{creating ? t("Creating…") : t("Create")}</Button>
-        </DialogActions>
+          <Button onClick={() => { setNewOpen(false); setNewErr(""); }}>{t("Cancel")}</Button>
+        </ButtonBar>
       </Dialog>
     </Box>
   );

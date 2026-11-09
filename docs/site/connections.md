@@ -253,24 +253,24 @@ The token is sealed in the existing vault and never returned by connector APIs. 
 rotated token by typing it in the same box, saving and testing again. No personal `.env` file
 is automatically imported. Cloud retains its existing owner-approved write-back below.
 
-### GitHub: what Close out does
+### GitHub: what finishing a task does
 
-The GitHub connection has a **Close out** step: what finishing a task does on GitHub when you press
-**Close out**. These are your choices - what each repository *requires* (branch protection, required checks
+The GitHub connection has a **Finishing a task** step: what finishing a task does on GitHub when you press
+**Approve** on its card in the task's chat. These are your choices - what each repository *requires* (branch protection, required checks
 and reviews) is read from GitHub for every pull request, and the card only offers what it allows.
 
 | Setting | Choices (default first) | The token needs |
 |---|---|---|
-| Close out on a pull request | Merges it · Only closes the task | Contents: write |
+| Finishing a task from a pull request | Merges it · Only closes the task | Contents: write |
 | Merge method | Squash · Merge commit · Rebase - used when the repository allows it | (same) |
 | Red checks the repository does not require | Merge anyway, with a note · Stop and ask me | - |
 | Offer Update branch | on - when the pull request is behind and its author allows maintainer edits | Pull requests: write |
 | Offer Re-run checks | on - re-runs the failed Actions jobs | Actions: write |
-| Close out on an issue closes it | on | Issues: write |
-| Post your reply as the close-out's comment | on - even with *Reply to issue/PR authors* off | Issues / Pull requests: write |
-| Close out anyway, past the repository's own rules | **off** - admin tokens only, and only on your press | Administration |
+| Finishing a task from an issue closes it | on | Issues: write |
+| Post your reply as the closing comment | on - even with *Reply to issue/PR authors* off | Issues / Pull requests: write |
+| Finish anyway, past the repository's own rules | **off** - admin tokens only, and only on your press | Administration |
 
-A repository you follow can override the pull-request choice, the merge method and Close out anyway.
+A repository you follow can override the pull-request choice, the merge method and Finish anyway.
 **Check the token** asks GitHub, per repository, whether the token may do what these settings turn on.
 
 ### Jira, Monday.com and Linear: what goes back
@@ -286,8 +286,8 @@ the people following an item when it moves or changes hands. Jira Data Center is
 | Assign | One person Jira can assign it to | One person, set on the item's People column | One person in the workspace |
 | Close | The transition to a status in Jira's *done* category | The label the status column marks as done | The team's first *completed* state |
 
-**Close out on a tracker task.** When the agent on a task from one of these items finishes, Close
-out proposes **comment and move to done**, with the comment drafted from the agent's result. You can
+**Finishing a tracker task.** When the agent on a task from one of these items finishes, its chat
+proposes **comment and move to done**, with the comment drafted from the agent's result. You can
 edit the comment, then press **Approve**. Taskuary reads the item again when the card is drawn. If
 the tracker has no done state, or the workflow offers no move to it from the item's current status,
 the card says so and Approve posts the comment alone. If the item is already done, it posts only the
@@ -301,6 +301,48 @@ offer, is refused and nothing is changed. A scheduled report never runs them.
 
 Monday's board can have several status and People columns. The first of each is used unless the
 card's settings name one (`status_column`, `people_column`).
+
+## Shared inboxes, phones, forms and candidates
+
+| System | What comes in |
+|---|---|
+| **Front, Help Scout, Gorgias** | Open conversations and tickets assigned to you |
+| **RingCentral, Aircall, Dialpad** | Missed calls and voicemails to you (with the vendor's transcript where it has one); RingCentral texts too |
+| **Typeform, Jotform, SurveyMonkey, Tally, Google Forms** | New responses on the forms you pick - Test lists your forms and their ids |
+| **Lever** | Candidates you own, when they change |
+
+Each card's Test finds you in that system, so only what points at you comes in. A customer, a caller,
+a form respondent or a candidate is a stranger's words: nothing starts on them by itself until you
+trust the source. A Front or Help Scout message written by one of your own teammates is a colleague's.
+Google Forms needs no key of its own - it reads with the Google Sheets card's sign-in, minted with the
+forms scopes. Nothing is approved or changed in any of them; the one thing that goes back is a reply you
+Send (below).
+
+## Replies go back where the work came from
+
+A reply drafted on a task that a helpdesk, a chat, a phone line or a social account filed goes back on
+that item's own thread when you press Send - never before. Each of those cards has a **Replies** switch:
+
+| Card | What your reply becomes | Replies start |
+|---|---|---|
+| Zendesk, Freshdesk, Intercom, ServiceNow, Front, Help Scout, Gorgias | A reply on the ticket or conversation - or, with the card's note switch, an internal note | On |
+| Shortcut, Wrike, Smartsheet, Airtable, Bitbucket, Basecamp | A comment on the story, task, row, record, pull request or to-do | On |
+| HubSpot, Salesforce | A note on the ticket; a comment on the case (or a post on the task's feed) | On |
+| Zulip, Webex, Zoom Team Chat, Signal, LINE | A message in the same topic, thread or chat | On |
+| Twilio, RingCentral, Aircall, Dialpad | A text back from your number | On |
+| Mailgun, SendGrid Inbound Parse | An email reply, from your own mailbox | On |
+| GitHub Projects, Discourse, Reddit, Threads, Instagram, Facebook Pages, WordPress | A public comment or reply (a Page message within Messenger's 24 hours) | Off |
+
+A public reply is something you turn on, card by card. With Replies off, Send is not offered and the
+card says why, with the way to the switch. A card that is not connected, or a key that may not write,
+comes back as **Not sent** with Reconnect; a vendor that failed mid-answer is **delivery unknown**, and
+nothing is sent twice. Some sign-ins need one more scope to write - Webex, Threads and HubSpot ask for it
+now, so sign those cards in again once.
+
+No reply goes back to YouTube (its card reads on an API key, and posting needs a Google sign-in), X (its
+card holds an app token, and X takes a post only from your own sign-in), Microsoft Planner (Graph keeps no
+task comments), or the cards whose items nobody wrote to you: bookings, orders, disputes, envelopes, form
+responses and candidates.
 
 ## Data and report sources
 
@@ -317,12 +359,17 @@ in, the default port known and the missing driver named in the error you actuall
 including raw ODBC through pyodbc. All of them are reads — these cards ship no write verb at all,
 and the engine's own user is the ceiling, so point them at a read-only account.
 
+**MongoDB**, **Redis** and **Neo4j** read too, each in its own way: MongoDB finds, counts and
+aggregates, and refuses a pipeline that carries `$out` or `$merge`; Redis sends one command from a
+closed list of reads (`GET`, `HGETALL`, `SCAN`, ...), never `KEYS` or a write; Neo4j runs every query
+in a read transaction. Each driver is an extra: `pip install taskuary[mongodb]`, `[redis]` or `[neo4j]`.
+
 **Cloud and monitoring** — AWS (S3 buckets, CloudWatch log groups, arbitrary service calls),
 Azure (blob containers, Log Analytics, arbitrary ARM paths, and it can reuse the Outlook app
 registration), Microsoft Entra ID, Prometheus, Datadog, WinRM for PowerShell on a remote Windows
 machine.
 
-**Finance** — Sage Intacct, QuickBooks Online, Zoho Invoice, and bank and card feeds through
+**Finance** — Sage Intacct, QuickBooks Online, FreshBooks (signed in by OAuth), Zoho Invoice, and bank and card feeds through
 SimpleFIN or Teller. These are the cards where the read/write distinction bites: each ships at
 `read`, so an agent proposes a bill or an invoice and you approve it on the task. Raising a card to
 `write` is what lets a routing policy pass small, known items through without you.
@@ -536,7 +583,9 @@ A card under **AI · voice** turns speech into text: a voice note that arrives (
 message) and the microphone beside each box. Groq (Whisper), OpenAI transcription, Google Gemini
 transcription, Deepgram and ElevenLabs Scribe take a key; **Any Whisper server** points at one you
 run; **Local Whisper** runs on this computer with no key, and the audio never leaves it
-(`pip install taskuary[voice]`). With no voice card a voice note still lands, filed with a line
+(`pip install taskuary[voice]`). **Amazon Transcribe** runs on your own AWS account: each clip goes
+to the S3 bucket named on the card, a job transcribes it, and the clip and its transcript are both
+deleted once read. With no voice card a voice note still lands, filed with a line
 saying it was not transcribed and why, its audio attached so one click transcribes it later.
 
 Open **Windows / browser voice** under **AI · voice** to choose and test built-in dictation.
@@ -553,6 +602,100 @@ before enabling it. Failed availability checks can be retried on the card withou
 app. Windows and browser speech may use their own online services. The microphone test keeps its
 words on the card. These built-in services handle live dictation; voice-note files still use a
 transcription card. On a Mac, click in the box and press the Dictation key (or Fn twice).
+
+## A vendor's own MCP server
+
+Many cards — Notion MCP, Linear MCP, Atlassian, Airtable, Dropbox, Figma, Stripe MCP, Sentry MCP,
+Cloudflare, Vercel, Supabase, Zapier, Canva, PostHog, and for money and people Xero, BILL, Expensify, Ramp, Brex,
+Mercury, Avalara, Deel, Greenhouse and Ashby, and about thirty more — are the vendor's own hosted MCP server,
+added to your agent CLI. **Add** registers it in Claude Code and Codex on this computer; **Sign in**
+opens the vendor's own sign-in page in your browser, once. Taskuary never holds that sign-in, so it
+cannot list the server's tools: adding the card is your word that your agents may use all of them.
+Where a card for the same vendor already brings work in (Notion, Linear, Jira, Monday.com, Todoist,
+Stripe, Sentry, Datadog), that card is unchanged and the MCP card sits beside it.
+
+A few servers sign in with a personal token instead — GitHub MCP, PagerDuty MCP, Smartsheet and Wrike.
+Paste the token on the card and press **Add**: it goes into Claude Code's own configuration as the
+header the vendor names. Codex reads such a token only from an environment variable, so these cards
+add to Claude Code alone.
+
+## A vendor's API, read with a key
+
+DigitalOcean, Terraform Cloud, Better Stack, CircleCI, Buildkite, Coda, Intrinio, Benzinga, Tradier,
+Diffbot, Mercury, Lattice, and the self-hosted Jenkins, SonarQube, Elasticsearch, Splunk, Dynatrace and Kubernetes each
+take a key (and, when self-hosted, the address). Google Drive, OneDrive and Microsoft 365 files take
+nothing: they read with the Google Sheets card's and the Outlook card's sign-ins. **Test** makes one
+cheap read. A report or an agent then asks any address under that vendor's API by its path, and only
+ever reads: a GET, or a POST only where the vendor reads that way (a search, a report query, a tracking
+lookup), so a Tradier key on this card places no order.
+
+The same road carries CRMs (Pipedrive, Copper), time tracking (Toggl Track, Harvest, Clockify), parcel
+tracking (UPS, FedEx, USPS), analytics and BI (Google Analytics 4, Search Console and Google Ads on the
+Google sign-in, Power BI on the Microsoft one, Meta Ads, Segment, Looker, Tableau, Metabase, Databricks,
+dbt Cloud, Fivetran), commerce and billing (eBay, Etsy, WooCommerce, BigCommerce, Paddle, Chargebee,
+Recurly, Zuora, Toast, Clover), publishing and marketing (TikTok, Ghost, Mailchimp, Kit, Vimeo) and
+Gong and Veeva Vault. Where a vendor swaps your client id and secret for a short-lived session first,
+the card does that itself. eBay, Etsy and TikTok take a user token that expires within a day for now -
+a sign-in on the card comes later.
+
+Some of these cards bring work in as well: WooCommerce orders waiting to ship, BigCommerce orders
+awaiting fulfillment, comments on your Instagram posts and Facebook Page, messages to your Page, posts on
+X that mention you, and WordPress comments held for moderation. Everyone who writes from outside is a
+stranger until you trust them, and an order carries no author at all.
+
+An **Obsidian** card takes the folder your vault is in and reads the notes there - never its .obsidian
+folder, its trash, or anything outside it.
+
+Some take more than a key, and the card asks for each piece:
+
+- **A token swapped first** — Docker Hub (a personal access token), Charles Schwab, Workday and
+  PointClickCare (a refresh token), Dynamics 365, SAP and ADP (a client id and secret). Dynamics 365
+  uses your company's own Microsoft app; ADP also needs its TLS client certificate and key files.
+- **A key signed into each call** — NetSuite's token-based auth (account, consumer key and secret,
+  token id and secret), Google Cloud's service-account key file (`pip install taskuary[gcp]`), and
+  Epic and Oracle Cerner's SMART backend services: a private key whose public half the organization
+  registered (`pip install taskuary[fhir]`). Their FHIR reads are only what the organization granted.
+- **Credentials in the body** — Plaid, on the access token of an Item already linked to your app.
+- **Your own gateway** — Interactive Brokers through the Client Portal gateway on this computer.
+
+A few vendors read by POST — UptimeRobot, Plaid, NetSuite's SuiteQL, Cloud Logging, and the fetches
+of Browserbase, Oxylabs and Bright Data. Each card lists those paths, and a body goes nowhere else.
+Each card says what your organization's admin has to give you; for an EMR or HR system that is
+usually an approved app and a read-only role, set up on their side.
+
+## Cards that sign in with your own app
+
+Basecamp to-dos, Box, DocuSign, HubSpot, Salesforce, Threads, Webex, Zoom and Zoom Team Chat sign in
+by OAuth, through an app **you** register at the vendor — Taskuary has no shared app anywhere. The
+card names the vendor's developer console and shows the redirect URL to add there, which points back
+at Taskuary on this computer (`http://127.0.0.1:<port>/api/oauth/callback`), so no public address
+is needed. Paste the app's Client ID and Client Secret (each saves itself) and press **Sign in**: the
+consent screen opens in a new tab, and the tokens come back here, sealed like every secret, and renew
+themselves. Only you can press Sign in — an agent is refused it.
+
+Threads accepts only an https redirect. Give your own tunnel's address under **redirect address** on
+the card and the redirect URL follows it.
+
+What comes in: Webex and Zoom Team Chat direct messages and the messages that @mention you; replies to
+your Threads posts and posts that mention you (always as a stranger's words); HubSpot tickets and tasks,
+and Salesforce cases and tasks, assigned to you; DocuSign envelopes waiting on your signature; Basecamp
+to-dos assigned to you, and Pings and @mentions. People the vendor itself calls your colleagues are
+known; a customer, a client or an outside contact is a stranger. Agents and reports read with the same
+sign-in — Box files, Zoom meetings and recordings, HubSpot and Salesforce records, an envelope's status —
+and only ever read.
+
+## Mail and messages a vendor pushes
+
+**Mailgun** keeps the mail a route stores, and Taskuary polls it: give the private API key and the
+receiving domain, and no public address is needed. **LINE** (its Messaging API only pushes) and
+**SendGrid Inbound Parse** post each message to Taskuary, so they need a public https address that
+reaches this computer — a tunnel of your own, such as cloudflared or ngrok, pointed at Taskuary's
+port. The card shows the path to put after that address. Each push proves itself before anything is
+kept: LINE's signature with your channel secret, SendGrid's secret path (and its signature, when you
+add the security policy's key). Only those paths answer under the tunnel's name — never the app.
+
+**Substack** has no API. Replies and comments reach you as Substack's own emails, through your mail
+card; give the card your publication's address and agents and reports read your posts from its feed.
 
 ## A system with no card
 

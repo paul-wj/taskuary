@@ -68,7 +68,9 @@ class TheDoorsThatAreNotChats(unittest.TestCase):
         t = _task(d['taskId'])
         self.assertEqual(t['Kind'], 'task')
         self.assertFalse(general.handles(t))
-        self.assertEqual(c.get(f"/api/tasks/{d['taskId']}/assistant").status_code, 422)
+        # ...its chat may be READ (the owner, 2026-11-06: one box everywhere) - empty, and reading it makes nothing a conversation
+        self.assertEqual(c.get(f"/api/tasks/{d['taskId']}/assistant").json()['messages'][-1]['role'], 'user')
+        self.assertEqual(_task(d['taskId'])['Kind'], 'task')
 
     def test_send_it_to_a_coding_agent_still_makes_a_coding_task(self):
         mid = _msg('export is broken', 'the nightly export dropped a facility')
@@ -135,14 +137,14 @@ class TheDoorsThatAreNotChats(unittest.TestCase):
     def test_an_uncertain_repo_asks_for_a_choice_and_keeps_the_new_task_id(self):
         mid = _msg('security app account', 'the login screen is empty')
         with mock.patch('taskuary.server.start_session',
-                        side_effect=HTTPException(422, 'I could not tell which checkout this belongs in')):
+                        side_effect=HTTPException(422, 'no local path for org/app, and a search of your code folders found no checkout with that git remote')):
             response = c.post(f'/api/messages/{mid}/dispatch', json={'agent': 'coding'})
         self.assertEqual(response.status_code, 200)
         d = response.json()
         self.assertEqual(d['dispatch'], 'needs_repo')
         self.assertEqual(d['agent'], 'coding')
         self.assertEqual(_task(d['taskId'])['Kind'], 'coding')
-        self.assertIn('which checkout', d['reason'])
+        self.assertIn('no local path', d['reason'])
 
 
 class TheConversationWorks(unittest.TestCase):
@@ -237,3 +239,16 @@ class ItClosesAndSaysSo(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TypingIsTheStart(unittest.TestCase):
+    def test_what_is_typed_in_a_reply_tasks_box_makes_it_the_general_agents_and_a_coding_task_stays(self):
+        """ONE PROMPT BOX (the owner, 2026-11-06): no Send to agent form - the box's words start the general agent, as the dispatch did."""
+        from taskuary import server
+        tid = c.post('/api/tasks', json={'Title': 'confirm the cutover', 'Kind': 'reply'}).json()['taskId']
+        server._chat_kind(tid)
+        self.assertEqual(_task(tid)['Kind'], 'general')
+        code = c.post('/api/tasks', json={'Title': 'fix the import', 'Kind': 'coding'}).json()['taskId']
+        server._chat_kind(code)
+        self.assertEqual(_task(code)['Kind'], 'coding')
+        self.assertEqual(c.get(f'/api/tasks/{code}/assistant').status_code, 422)

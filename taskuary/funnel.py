@@ -65,6 +65,7 @@ def lane_word(item: dict) -> str:
     move, any action, "agent ready for you" (build marks its row `chat`; the owner, 2026-11-05), on the phone and in the Assistant's words as
     on the rail. A coding task keeps its own."""
     it = item or {}
+    if it.get('chat_done'): return lanes.word('chat_done')
     if it.get('chat') and it.get('lane') in CHAT_READY_LANES: return lanes.word('chat_ready')
     return lanes.word('owed') if owed_no_draft(item) else (LANE_WORDS.get(str(it.get('lane') or '')) or ('',))[0]
 
@@ -519,8 +520,9 @@ def held_clause(reason) -> str | None:
 # A START THAT ASKED "WHICH REPOSITORY?" (the owner, 2026-10-12: "if i don't fill it out it should warn me at least?"): the
 # answer was a line on a sheet that closed at once, and the task said "nobody on it" as if nothing had been asked for
 HELD_REPO = 'held:repo'
-# ...and how a start's refusal says it: the checkout guard's own sentences (terminal.open_session), read by every door that starts one
-NEEDS_REPO = re.compile(r'could not tell which checkout|no local path|does not exist|choose one', re.I)
+# ...and how a start's refusal says it: the checkout guard's own sentences (terminal.open_session), read by every door that starts one. Only a
+# repository somebody NAMED and nobody can find is asked about now - one nothing placed opens in its task's folder and the agent picks (repochoice)
+NEEDS_REPO = re.compile(r'no local path|does not exist', re.I)
 
 def held_for_repo(t) -> bool: return HELD_REPO in re.split(r'[\s,]+', str((t or {}).get('Tags') or ''))
 
@@ -966,6 +968,16 @@ def agent_found(store, tid) -> str:
     return _short(m.group(1) if m else rep['Body'].split('\n', 1)[-1], 300)
 
 
+def chat_done(store, task: dict, when=None) -> dict:
+    "A chat agent done for now - its turn asked nothing - as the task's wrap-up row: after a Send, that the reply went (taskstate.chat_moved_on)."
+    from . import taskstate
+    tid = task['TaskId']
+    why = ('your reply went out - the agent is done for now, and the task is still open' if taskstate.chat_moved_on(store, tid)
+           else 'the agent is done for now - type to carry on, and the task is still open')
+    return _item(f"wrap:{tid}", 'wrapup', 'report', task.get('Title') or f'task {tid}', who='you', when=when, tid=tid,
+                 priority=task.get('Priority'), chat_done=True, why=why)
+
+
 def paused_conversation(store, item: dict) -> dict:
     """Render resumable general work as a paused agent conversation, never as an unowned task."""
     tid = item.get('tid')
@@ -977,7 +989,16 @@ def paused_conversation(store, item: dict) -> dict:
         if not general.handles(task) or tid in general.OPENING or general.session_for(tid): return item
         # ...nor one that IDLED OUT (general.idle_out): nothing stopped and nothing was saved - its agent is just not running until the next
         # input, and the task reads as the task (a reply ready, on you), never "agent stopped" or "conversation saved" (the owner, 2026-11-05)
-        if general.idled(tid, store): return item
+        # ...and AS IT READ LIVE (the owner, 2026-11-07): its open question still asks you, and a turn that asked nothing is done for now
+        if general.idled(tid, store):
+            from . import taskstate
+            if (q := taskstate.open_question(store, tid)):
+                return item | {'key': f'agent:{tid}', 'kind': 'agent', 'lane': 'blocked', 'asking': True, 'agent': 'assistant', 'mode': 'assistant',
+                               'tail': [str(q.get('text') or '')[:300]], 'request_id': q.get('request_id'), 'request_kind': q.get('kind'),
+                               'since': _ts(q.get('at')) or item.get('since'), 'why': request_line(None, q)}
+            if item.get('lane') in ('yours', 'queued') and not store.waiting_on_owner(tid) and taskstate.state(store, task) == 'agentdone':
+                return item | {k: v for k, v in chat_done(store, task).items() if k in ('key', 'kind', 'lane', 'who', 'why', 'chat_done')}
+            return item
     except Exception:
         return item
     replies = [c for c in store.list_comments(tid) if c.get('ActorType') == 'assistant_agent']
@@ -1041,6 +1062,11 @@ def from_agents(store, live_state=_LIVE_UNSET, now: datetime = None) -> list:
         # Timeline, reading the session, said "is waiting on you". No words on the tail decide it any more (2026-10-11):
         # a session with no state of its own is parked, never "asked you" from a "?" in what it wrote.
         asking = t.get('state') == 'asking'
+        # ...A CHAT AGENT THAT ASKED NOTHING is done for now (the owner, 2026-11-07; after a Send too, 2026-11-06): its row said "Taskuary is
+        # waiting on you" - it is the task's wrap-up, "agent done", until something is typed again. A reply or an email it drafted still waits on you
+        from . import general
+        if not asking and t.get('mode') == 'assistant' and general.handles(task) and not store.waiting_on_owner(tid):
+            out.append(chat_done(store, task, t.get('started'))); continue
         out.append(_item(f"agent:{tid}", 'agent', 'blocked', task.get('Title') or f'task {tid}', who=agent, when=t.get('started'),
                          tid=tid, agent=agent, priority=task.get('Priority'), asking=asking, tail=tail[-4:], sid=t.get('sid'), mode=t.get('mode') or 'terminal',
                          channel=src,
@@ -1187,7 +1213,8 @@ def from_wrapped(store, now: datetime, busy: set) -> list:
         # in_progress means an agent has it: there is nothing to close yet, whether or not a session
         # is alive right now (the same rule build() uses to put such a task on the shelf)
         if t.get('Status') not in ('open', 'waiting') or tid in busy or t.get('SourceRef') == 'assistant:dock': continue
-        if t.get('ReviewStatus') == 'pending' or store.pending_review(tid): continue
+        if t.get('ReviewStatus') == 'pending' or store.waiting_on_owner(tid): continue
+
         from . import slots
         if slots.open_(store, tid): continue           # its emails still wait (slots.py): not a task to wrap up yet
         sent = store.sent_reply(task_id=tid)
@@ -1947,8 +1974,15 @@ def next_item(store, key: str = None, include_surfaced: bool = False, items: lis
         if item is None and getattr(store, 'processing_reads_active', lambda: False)():
             item = next((i for i in build(store, keep_surfaced=True, full_history=True, keys=[key])['items']
                          if i['key'] == key or key in i.get('aliases', [])), None)
-        return _present_one(store, item) or batch_item(store, key)
+        return shut(store, _present_one(store, item)) or batch_item(store, key)
     return None
+
+
+def shut(store, it):
+    """A CLOSED TASK SAYS SO: brought up by its ref it carried no `closed`, so its row offered Mark done, Close with a note and Remove
+    beside Reopen task, and a typed close ran task.complete on it a second time (2026-10-26). Only Reopen task reopens it. ...And opened, it is
+    only shown - the page draws no row for it under Tasks (funnelPile.pulledRow, the owner 2026-11-08) - whichever road found it."""
+    return it if not it or not it.get('tid') or (store.get_task(int(it['tid'])) or {}).get('Status') not in ('done', 'dropped') else it | {'closed': True}
 
 
 def batch_item(store, key: str) -> dict | None:
@@ -1983,9 +2017,6 @@ def item_for_key(store, key: str) -> dict | None:
     Recent list pulls into the chat by hand. The pile's own producers run on that one row with the
     quiet filter off; the concierge can then talk about it like anything else."""
     t = re.match(r'^task:(\d+)$', key or '')
-    # A CLOSED TASK SAYS SO: brought up by its ref it carried no `closed`, so its row offered Mark done, Close with a note and Remove
-    # beside Reopen task, and a typed close ran task.complete on it a second time (2026-10-26). Only Reopen task reopens it.
-    shut = lambda it: it if not it or not it.get('tid') or (store.get_task(int(it['tid'])) or {}).get('Status') not in ('done', 'dropped')         else it | {'closed': True}
     if t:
         tid = int(t.group(1))
         task = store.get_task(tid)
@@ -1996,8 +2027,8 @@ def item_for_key(store, key: str) -> dict | None:
         row = next(iter(store.feed(limit=1, days=FEED_DAYS, task_id=tid) or store.feed(limit=1, days=3650, task_id=tid)), None)
         if row:
             got = from_feed(store, [row | {'Category': 'info' if row.get('Category') in _QUIET else row.get('Category')}])
-            if got: return shut(_present_one(store, got[0] | {'lane': got[0]['lane'] if got[0]['lane'] != 'fyi' else 'asked'}))
-        return shut(_present_one(store, _item(f'task:{tid}', 'task', 'asked', task.get('Title'), when=task.get('UpdatedAt') or task.get('CreatedAt'), tid=tid,
+            if got: return shut(store, _present_one(store, got[0] | {'lane': got[0]['lane'] if got[0]['lane'] != 'fyi' else 'asked'}))
+        return shut(store, _present_one(store, _item(f'task:{tid}', 'task', 'asked', task.get('Title'), when=task.get('UpdatedAt') or task.get('CreatedAt'), tid=tid,
                                                summary=agent_found(store, tid), why=f"{STATUS_SAYS.get(task.get('Status'), 'Open')} - you asked about it")))
     m = re.match(r'^(msg|report):(\d+)$', key or '')
     if not m: return None
@@ -2009,7 +2040,7 @@ def item_for_key(store, key: str) -> dict | None:
     items = from_feed(store, [row | {'Category': 'info' if row.get('Category') in _QUIET else row.get('Category')}])
     it = next((i for i in items if i.get('mid') == mid), None)
     if it and it['kind'] == 'fyi': it = it | {'lane': 'fyi', 'why': row.get('RouteReason') or it['why']}
-    return shut(_present_one(store, it))
+    return shut(store, _present_one(store, it))
 
 
 def message_item(store, key: str) -> dict | None:

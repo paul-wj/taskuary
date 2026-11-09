@@ -10,13 +10,14 @@ from html import unescape
 from datetime import datetime, timedelta
 from loguru import logger
 
-from . import msauth, net, spawn
+from . import msauth, net, remotemcp, spawn
 from .timewords import plural
 requests = net      # pooled Session + (connect, read) timeouts; the name keeps patches of channels.requests.get biting
 from .github import _h as gh_headers, list_accessible_repos
 from .ingest import ingest_message, rev_id, seen_before
 from .counsel import is_invite
 from .llm import AI_TYPES        # every brain picker and every brain Test read the one list
+from .inboxes import TYPES as INBOXES      # helpdesks and the newer project tools: one road (inboxes.py)
 # THIS RUN OF TASKUARY CAME UP: a connector's LastError stamped before it is last session's, not yet retried (evening.sources)
 BOOT = datetime.now().isoformat(sep=' ', timespec='seconds')
 
@@ -62,7 +63,9 @@ def graph_creds(store, c):
     ocfg = _cfg(o)
     out = {**ocfg, **{k: v for k, v in cfg.items() if v}, '_cid': o['ConnectorId'], '_kind': 'outlook'}
     # the same person's Outlook sign-in, asked for chats: one sign-in, two tokens (msauth.access_token keys on the scope)
-    if ocfg.get('auth') == 'user': out |= {'auth': 'user', '_scope': msauth.TEAMS_CHAT, '_for': 'teams'}
+    # ...and a Planner card the same sign-in for tasks - granted only where the company's app lists Tasks.Read (msauth.refresh says so)
+    if ocfg.get('auth') == 'user':
+        out |= {'auth': 'user', '_scope': msauth.PLANNER if c['Type'] == 'ms_planner' else msauth.TEAMS_CHAT, '_for': c['Type']}
     return out, sec or o.get('Secret'), True
 
 
@@ -78,6 +81,11 @@ def _outlook_for(store, c):
     def boxes(o): return {str(s['Address']).lower() for s in store.list_sources(active_only=False)
                           if s.get('Channel') == 'email' and s.get('ConnectorId') == o['ConnectorId'] and s.get('Address')}
     dom = lambda a: a.rpartition('@')[2]
+    # a Planner card reads through the one Microsoft account there is - or, with two, the one its `user` names
+    if c.get('Type') == 'ms_planner':
+        want = str(_cfg(c).get('user') or '').lower()
+        hit = [o for o in cards if want and want in {str(_cfg(o).get('account') or '').lower(), *boxes(o)}]
+        return (hit or (cards if len(cards) == 1 else [None]))[0]
     for o in cards if ups else ():
         k = _cfg(o)
         if k.get('auth') == 'user' and str(k.get('account') or '').lower() in ups: return o
@@ -85,19 +93,20 @@ def _outlook_for(store, c):
     return cards[0] if len(cards) == 1 and _cfg(cards[0]).get('auth') != 'user' else None
 
 
-def graph_token(cfg: dict, secret: str = None) -> str:
+def graph_token(cfg: dict, secret: str = None, scope: str = '') -> str:
     """An access token for Graph. Two roads: the card's owner signed in with their own account
     (auth=user: the secret is a refresh token, msauth turns it into access tokens) or a tenant
-    app registration (client credentials, app-only). The callers cannot tell them apart."""
+    app registration (client credentials, app-only). The callers cannot tell them apart.
+    `scope`: another Microsoft API than Graph on the same sign-in (Power BI's, apireads.py)."""
     if (cfg or {}).get('auth') == 'user':
         from . import msauth
-        return msauth.access_token(cfg, secret)
+        return msauth.access_token({**cfg, '_scope': f'offline_access {scope}'} if scope else cfg, secret)
     tid = cfg.get('tenant_id') or os.getenv('AZURE_TENANT_ID')
     cid = cfg.get('client_id') or os.getenv('AZURE_CLIENT_ID')
     sec = secret or os.getenv('AZURE_CLIENT_SECRET')
     if not (tid and cid and sec):
         raise RuntimeError('need tenant_id + client_id + a secret (or AZURE_* env vars on the server)')
-    scope = 'https://graph.microsoft.com/.default'
+    scope = scope or 'https://graph.microsoft.com/.default'
     def mint():
         r = requests.post(f'https://login.microsoftonline.com/{tid}/oauth2/v2.0/token', timeout=20,
                           data={'client_id': cid, 'client_secret': sec, 'grant_type': 'client_credentials', 'scope': scope})
@@ -333,6 +342,9 @@ def test_connector(store, cid: int, draft: dict | None = None) -> dict:
         elif c['Type'] in ('gitlab', 'azdo', 'linear', 'trello', 'notion', 'discord', 'sentry', 'pagerduty'):
             from . import devtools
             detail = devtools.test(store, store.get_connector(c['ConnectorId'], with_secret=True))
+        elif c['Type'] in INBOXES:
+            from . import inboxes
+            detail = inboxes.test(store, store.get_connector(c['ConnectorId'], with_secret=True))
         elif c['Type'] in CHAT_SERVERS:
             from . import chatservers
             detail = chatservers.test(store, store.get_connector(c['ConnectorId'], with_secret=True))
@@ -406,7 +418,7 @@ def test_connector(store, cid: int, draft: dict | None = None) -> dict:
             from .reports import _card
             detail = probe(_card(store, 'alchemy', 'api_key', cid))
         elif c['Type'] in ('coingecko', 'frankfurter', 'yahoo', 'sec_edgar', 'fred', 'screen',
-                           'twelvedata', 'alphavantage', 'finnhub', 'polygon', 'tiingo', 'fmp'):
+                           'twelvedata', 'alphavantage', 'finnhub', 'polygon', 'tiingo', 'fmp', 'marketstack', 'eodhd'):
             # every market card probes the same way: one cheap real call, through markets.py's
             # probe_<type> - a keyless card (coingecko/frankfurter/yahoo/sec_edgar/fred/screen)
             # runs with whatever ConfigJson carries; a keyed one resolves its saved api_key first,
@@ -433,7 +445,7 @@ def test_connector(store, cid: int, draft: dict | None = None) -> dict:
             detail = f'API key valid on {site}' + ('' if dd.get('app_key') else ' - add the application key for monitor reads')
         elif c['Type'] == 'winrm':
             host = cfg.get('host')
-            if not host: raise RuntimeError('no host set - enter the machine name (e.g. AZWEB01)')
+            if not host: raise RuntimeError('no host set - enter the machine name (e.g. NWWEB01)')
             from .reports import winrm_argv
             argv, env = winrm_argv(host)
             p = spawn.run(argv, env=env, capture_output=True, text=True, encoding='utf-8',
@@ -484,18 +496,37 @@ def test_connector(store, cid: int, draft: dict | None = None) -> dict:
         elif c['Type'] == 'agent_desktop':
             from . import agentdesktop
             detail = agentdesktop.test()
+        elif (road := remotemcp.road(c['Type'])):    # a vendor's MCP server / a video skill
+            detail = road.test(store, c['Type'])
+        elif c['Type'] == 'kling':
+            from . import videotools
+            detail = videotools.test_kling(c)
         elif c['Type'] == 'treg':
             from .treg import run_treg_tools
             from .reports import resolve_cfg
             head, _body = run_treg_tools(resolve_cfg(store, {'type': 'treg_tools', 'max_rows': 5, 'connector_id': cid}))
             detail = f'treg answered: {head}'
+        elif c['Type'] in READS:
+            from . import apireads
+            detail = apireads.test(store, c)                       # its one cheap GET (apireads.json `probe`)
+        elif c['Type'] == 'obsidian':
+            from . import obsidian
+            detail = obsidian.test(store, c)                        # the vault folder is there and holds notes
+        elif c['Type'] == 'dynamodb':
+            from . import aws
+            from .reports import _card
+            head, _ = aws.run_dynamodb({**_card(store, 'dynamodb', 'secret_access_key', cid), 'max_rows': 1})
+            detail = f'DynamoDB answered: {head}'
+        elif c['Type'] in NOSQL:
+            from . import nosql
+            detail = nosql.test(store, c)                          # its cheapest read: the collections, the key count, RETURN 1
         elif c['Type'] in DB_ENGINES:
             # SELECT 1 through the real driver: a card that cannot reach the server, or is missing
             # its driver, says so here rather than in a scheduled report nobody is watching
             from . import databases
             from .reports import _card
             cfg = _card(store, c['Type'], 'password', cid)
-            head, _body = databases.runner(c['Type'])({**cfg, 'query': 'SELECT 1', 'max_rows': 1})
+            head, _body = databases.runner(c['Type'])({**cfg, 'query': databases.PROBE.get(c['Type'], 'SELECT 1'), 'max_rows': 1})
             detail = f"{c['Type']} answered: {head}"
         elif c['Type'] == 'sharepoint':
             from . import sharepoint
@@ -509,7 +540,8 @@ def test_connector(store, cid: int, draft: dict | None = None) -> dict:
         elif c['Type'] in ('smb_file', 'sftp'):
             from . import files
             detail = files.test_smb(store, c) if c['Type'] == 'smb_file' else files.test_sftp(store, c)
-        elif c['Type'] in ('gemini_stt', 'groq_stt', 'openai_stt', 'deepgram', 'elevenlabs_stt', 'stt_server', 'local_whisper'):
+        elif c['Type'] in ('gemini_stt', 'groq_stt', 'openai_stt', 'deepgram', 'elevenlabs_stt', 'stt_server', 'local_whisper',
+                           'assemblyai', 'speechmatics', 'gladia', 'azure_speech', 'amazon_transcribe'):
             from . import voice
             detail = voice.test(store, store.get_connector(cid, with_secret=True))   # a second of silence through the real endpoint
         elif c['Type'] in ('openai_image', 'azure_openai_image', 'xai_image', 'image_server',
@@ -661,6 +693,13 @@ def save_attachments(store, mid: int, items: list, ext_prefix: str) -> int:
                               'Inline': 1 if a.get('isInline') else 0, 'Path': path})
         n += 1
     return n
+
+
+def att_marks(atts) -> dict:
+    """What senders.outsider reads off a mail's attachments, kept on its mail_meta: how many files rode on it, and who wrote each mail
+    attached whole ('' when it cannot be read - Graph's itemAttachment names nobody without another request, so it is nobody known)."""
+    mail = [a for a in atts if a.get('contentType') == 'message/rfc822' or 'itemAttachment' in str(a.get('@odata.type') or '')]
+    return {'atts': sum(not a.get('isInline') for a in atts if a not in mail), **({'attached': [str(a.get('from') or '') for a in mail]} if mail else {})}
 
 
 def wants_attachments(m: dict) -> bool:
@@ -960,13 +999,53 @@ def _same_words(a: str, b: str, n: int = 160) -> bool:
     return bool(x) and x == y
 
 
-def retire_draft_answered_elsewhere(store, tid: int | None, sent: dict) -> list:
+REREAD_SYSTEM = ('You read a reply drafted for the owner, not sent yet, and one line the owner has since written themselves on the same chat. '
+                 'Decide how much of what the draft answers the owner\'s line already covers: "covered" (all of it - nothing more to send), '
+                 '"partly" (some of it) or "none". For "partly", `left` is the draft cut to only what the owner\'s line left unanswered - in '
+                 'the draft\'s own voice, language and greeting, nothing new added, nothing the owner\'s line already said. Reply with JSON '
+                 'only: {"covered": "covered" | "partly" | "none", "left": "the cut draft for partly, else empty"}')
+REREAD_WANT = {'type': 'object', 'properties': {'covered': {'type': 'string', 'enum': ['covered', 'partly', 'none']}, 'left': {'type': 'string'}},
+               'required': ['covered']}
+COVERED, CHECK_IT = 'Your line covers this, nothing more to send.', 'You wrote on the thread since - check the draft still fits.'
+
+
+def reread_draft(store, tid, rv: dict, sent: dict, brain=None) -> str:
+    """A pending draft on a chat, re-read against the line the owner wrote there since - one small model call that reads only the two:
+    covered -> retired (COVERED), partly -> its text cut to what is still unanswered (same recipient, same quote), none -> left as it is.
+    Unreadable, or no AI: the draft stays untouched and the task says CHECK_IT. Returns which it was."""
+    from .llm import build_llm, ask_json
+    from .sessionrecord import NOTE_ACTOR
+    from . import funnel
+    line, draft = ' '.join(str(sent.get('BodyText') or '').split())[:2000], str(rv.get('DraftText') or '').strip()
+    note = lambda t: tid and store.add_comment(tid, NOTE_ACTOR, 'assistant_agent', t)
+    if not draft: return 'none'
+    try:
+        b = brain or build_llm(store, job='judge', task_id=tid)
+        v = (ask_json(b, REREAD_SYSTEM, f"THE DRAFT:\n{draft[:6000]}\n\nTHE OWNER'S LINE SINCE:\n{line}", want=REREAD_WANT, need=('covered',)).data
+             if b else None) or {}
+    except Exception as e: logger.debug(f'task {tid}: the draft was not re-read against the owner\'s line - {e}'); v = {}
+    got, left = v.get('covered') if isinstance(v, dict) else None, str((v or {}).get('left') or '').strip() if isinstance(v, dict) else ''
+    if got == 'covered':
+        store.decide_review(rv['ReviewId'], 'superseded', None, 'you', COVERED)
+        if tid:
+            from . import verdicts
+            verdicts._settle_task_after_sent_reply(store, rv, 'you', True)
+        note(f'You wrote on the chat: "{line[:180]}". {COVERED}')
+    elif got == 'partly' and left and store.update_review_draft(rv['ReviewId'], left, rv.get('RunId'), by=rv.get('DraftBy')):
+        note(f'You wrote on the chat: "{line[:180]}". The draft now says only what your line left unanswered.')
+    elif got != 'none': got = 'unread'; note(CHECK_IT)
+    funnel.invalidate(); store._poke('feed-changed', 'task-changed', task_id=tid)
+    return got or 'unread'
+
+
+def retire_draft_answered_elsewhere(store, tid: int | None, sent: dict, later: bool = False) -> list:
     """Resolve reply drafts made obsolete by a reply the owner sent in the native app.
 
     A provider sync can land well after triage wrote its draft.  The draft belongs to the
     inbound message it was written against, so an owner line later on that same conversation
     is the missing verdict: the reply already went out.  Action approvals are deliberately
-    excluded -- sending a chat line cannot approve an unrelated proposed action.
+    excluded -- sending a chat line cannot approve an unrelated proposed action. On a chat the
+    line is re-read against each draft instead (reread_draft) - on its own thread when `later`.
     """
     conv, sent_at = sent.get('ConversationId'), sent.get('SentAt')
     if not conv or not sent_at:
@@ -981,6 +1060,19 @@ def retire_draft_answered_elsewhere(store, tid: int | None, sent: dict) -> list:
              and (not rv.get('SentAt') or rv['SentAt'] <= sent_at)]
     if not stale:
         return []
+    # ...A CHAT LINE IS ONE LINE, NOT THE REPLY (the owner, 2026-11-09): "voice to text is fixed in 18" from the phone retired a draft that
+    # answered six points, five of which never went out. On a chat the draft is re-read against the owner's line (reread_draft); email keeps
+    # the retire below - a mail sent from the mailbox is the whole answer. A draft with no words yet (its writer still at work when the
+    # owner answered) has nothing to re-read: the owner's line is the reply it was going to be, retired as before
+    from .ingest import CHAT_CHANNELS
+    if str(sent.get('Channel') or '').lower() in CHAT_CHANNELS:
+        worded = [rv for rv in stale if str(rv.get('DraftText') or '').strip()]
+        if worded:
+            go = lambda: [reread_draft(store, tid, rv, sent) for rv in worded]
+            if later: threading.Thread(target=go, daemon=True, name=f'reread-draft-{tid}').start()
+            else: go()
+        stale = [rv for rv in stale if rv not in worded]
+        if not stale: return []
 
     place = SENT_FROM.get(sent.get('Channel'), 'outside Taskuary')
     for rv in stale:
@@ -1047,6 +1139,8 @@ def ingest_own_message(store, msg: dict, why: str, keep_unmatched: bool = True) 
     yesterday. The router only ever matched OPEN tasks, so both of those replies were dropped on
     the floor - the row kept saying nothing had happened, forever (owner, 2026-09-02)."""
     if store.message_exists(msg['external_id']): return 0
+    from . import agentchannels
+    if agentchannels.swallows(store, msg): return 0          # a chat bound to an agent: the owner's line there was the agent's (heard)
     conv = msg.get('conversation_id')
     on = [s['task_id'] for s in store.snapshots() if conv and conv in s['conversation_ids']]
     # TWO OPEN TASKS IN ONE ROOM: the first snapshot was arbitrary, and a group's answer to a new voice note was filed on the
@@ -1076,6 +1170,9 @@ def ingest_own_message(store, msg: dict, why: str, keep_unmatched: bool = True) 
         # ...and the task's assistant hears that you already answered, wherever you did (Task 4.5): what is left is its to re-plan.
         # Never Taskuary's own acknowledgement, which promises an answer and is not one
         from . import ingest
+        # ...but A LINE THE OWNER SAID IN A CHAT is context, never a turn (the owner, 2026-11-08: "it should show what i sent ... even if it
+        # does not trigger as a prompt"): it stands in the task's chat as theirs, and the agent hears it on its next turn (general.latest_block)
+        if ingest.is_chat(msg): return 1
         if not ingest.is_ack(store, sent):
             ingest.thread_moved(store, tid, msg, mid, None, 'router', own=True)
             # ...and every OTHER open task on the thread hears it too (the stress run, 2026-11-05): a follow-up that was a new ask made a
@@ -1383,6 +1480,13 @@ def ingest_teams_chats(store, upn: str, tok: str, since, llm=None, file_only=Fal
             continue
         if m.get('messageType') != 'message' or not user.get('id') or not body: continue
         cid = m.get('chatId') or ''
+        # A CHAT BOUND TO AN AGENT (agentchannels.py): its members' lines go to the agent, and nobody's become work
+        from . import agentchannels
+        if cid and agentchannels.bound(store, 'teams', cid):
+            addr_ = _graph_user(tok, user['id'], users)[1]
+            agentchannels.heard(store, 'teams', cid, [user['id'], addr_], body, f'teams:{cid}:{m["id"]}', from_me=user['id'] == me,
+                                name=user.get('displayName') or '')
+            continue
         topic, kind = _chat_meta(tok, cid, chats) if cid else ('', 'chat')
         name, addr = _graph_user(tok, user['id'], users)
         name = user.get('displayName') or name
@@ -1445,7 +1549,9 @@ CHAT_SERVERS = ('mattermost', 'rocketchat', 'matrix', 'google_chat')
 # answers "no test for connector type 'x'" - a working connector that looks broken.
 PAGE_READERS = ('firecrawl', 'reader', 'scrapingbee')
 RESEARCH = ('exa', 'tavily', 'brave_search', 'serpapi', 'serper', 'apify') + PAGE_READERS
-DB_ENGINES = ('postgresql', 'mysql', 'clickhouse', 'snowflake', 'bigquery')
+READS = tuple(json.loads((__import__('pathlib').Path(__file__).with_name('apireads.json')).read_text(encoding='utf-8'))['services'])
+NOSQL = ('mongodb', 'redis', 'neo4j')                  # nosql.py: reads only, each engine its own way
+DB_ENGINES = ('postgresql', 'mysql', 'clickhouse', 'snowflake', 'bigquery', 'cockroachdb', 'oracle', 'duckdb')
 
 CH2SRC = {'outlook': 'email', 'teams': 'teams', 'slack': 'slack', 'github': 'github',
           'telegram': 'telegram', 'whatsapp': 'whatsapp', 'imessage': 'imessage',
@@ -1455,7 +1561,7 @@ CH2SRC = {'outlook': 'email', 'teams': 'teams', 'slack': 'slack', 'github': 'git
           'gitlab': 'gitlab', 'azdo': 'azdo', 'linear': 'linear', 'trello': 'trello',
           'notion': 'notion', 'discord': 'discord', 'sentry': 'sentry', 'pagerduty': 'pagerduty',
           'mattermost': 'mattermost', 'rocketchat': 'rocketchat', 'matrix': 'matrix',
-          'google_chat': 'google_chat',
+          'google_chat': 'google_chat', **{t: t for t in INBOXES},
           # cloud objects are DISCOVERED sources: each carries its own mode (report/feed/tasks/off)
           'aws': 'aws', 'azure': 'azure'}
 # One small mark per source, so a brief's line says where it came from without an '[Outlook mail]' label (the owner,
@@ -1463,7 +1569,7 @@ CH2SRC = {'outlook': 'email', 'teams': 'teams', 'slack': 'slack', 'github': 'git
 CH_ICON = {'email': '✉️', 'teams': '👥', 'calendar': '🗓️', 'github': '🔧', 'gitlab': '🔧', 'azdo': '🔧',
            **dict.fromkeys(('slack', 'whatsapp', 'telegram', 'imessage', 'discord', 'mattermost', 'rocketchat', 'matrix', 'google_chat', 'sms'), '💬'),
            **dict.fromkeys(('jira', 'asana', 'monday', 'clickup', 'todoist', 'linear', 'trello', 'notion'), '📋'),
-           'sentry': '🚨', 'pagerduty': '🚨'}
+           'sentry': '🚨', 'pagerduty': '🚨', **dict.fromkeys(INBOXES, '📋')}
 def ch_icon(ch) -> str: return CH_ICON.get(str(ch or 'email'), '🔗')
 # A cloud object's mode lives on the SOURCE, not the connector - one bucket can feed the
 # Timeline while the next is only a report. 'report' (the default) polls nothing at all.
@@ -1473,7 +1579,7 @@ CLOUD = ('aws', 'azure')
 # per-source dimension at all. Their source row is a label, so the poll must not depend
 # on one existing - see poll_channels.
 PER_CONNECTOR = ('telegram', 'whatsapp', 'imessage', 'jira', 'asana', 'monday', 'clickup', 'todoist',
-                 'gitlab', 'azdo', 'linear', 'trello', 'notion', 'sentry', 'pagerduty')
+                 'gitlab', 'azdo', 'linear', 'trello', 'notion', 'sentry', 'pagerduty', *INBOXES)
 
 def _cloud_explicit(store, channel) -> bool:
     """Any discovered object set to feed or tasks? Then the connector is polled even
@@ -1920,6 +2026,8 @@ def _poll_jobs(store, only=None):
         # tool-only card, a Sync that pulled nothing, and no error anywhere).
         from . import remote_assistant
         phone_guide = remote_assistant.polls(store, c)      # the card carries the Assistant chat: read it regardless
+        from . import agentchannels
+        phone_guide = phone_guide or agentchannels.polls(store, c)     # ...and so does a chat bound to an agent
         if (not roles & {'trigger', 'feed'} and not phone_guide
                 and not (c['Type'] == 'github' and _gh_explicit(store, c['ConnectorId']))
                 and not (c['Type'] in CLOUD and _cloud_explicit(store, CH2SRC[c['Type']]))): continue
@@ -1964,14 +2072,22 @@ def _poll_one(store, c, file_only, backfill_hours, llm, read_it) -> int:
             elif c['Type'] in ('jira', 'asana', 'monday', 'clickup', 'todoist'):
                 from . import pm
                 n += pm.poll(store, full, since, llm, file_only)
+            elif c['Type'] in INBOXES:
+                from . import inboxes
+                n += inboxes.poll(store, full, since, llm, file_only)
             else:
                 from . import devtools
                 n += devtools.poll(store, full, since, llm, file_only)
             for s in mine: store.touch_source(s['SourceId'])
             store.touch_connector(c['ConnectorId'])
             return n
+        if c['Type'] == 'slack':                    # a Slack channel bound to an agent is read on its own cursor, never triaged
+            from . import agentchannels
+            try: agentchannels.poll_slack(store, full, tok)
+            except Exception as e: logger.warning(f'slack agent channels not read: {e}')
         for s in store.list_sources():
             if s['Channel'] != CH2SRC[c['Type']]: continue
+            if c['Type'] == 'slack' and agentchannels.bound(store, 'slack', s['Address']): continue
             # a source belongs to ONE connector: outlook and an IMAP mailbox are both
             # channel 'email', and without this the Graph poller tried the Gmail address.
             # (Orphans are adopted at startup, so ownership is always present now.)
@@ -2039,7 +2155,7 @@ def _poll_one(store, c, file_only, backfill_hours, llm, read_it) -> int:
                             **_header_marks(m),
                             'mail_meta': {'folder': folder, 'focus': m.get('inferenceClassification'),
                                           'flag': (m.get('flag') or {}).get('flagStatus'),
-                                          'invite': inv, **({'cal': cal_} if cal_ else {}),
+                                          'invite': inv, **({'cal': cal_} if cal_ else {}), **att_marks(atts),
                                           **({'links': ln} if (ln := mail_links((m.get('body') or {}).get('content'))) else {})}}, llm=llm)
                         if atts and out.get('message_id') and out['status'] != 'duplicate':
                             try: save_attachments(store, out['message_id'], atts, f"graph:{m['id']}")
@@ -2205,7 +2321,10 @@ def poll_channels(store, backfill_hours: float = 0, progress=None, only=None) ->
     Independent HTTP waits overlap. SQLite writes hop onto one writer thread. Drain of
     the same conversation stays sequential - that is a later pass, not this one."""
     from .llm import build_llm
-    try: llm = build_llm(store, job='triage')
+    from .ingest import _deferring
+    # ...and no brain at all for a DEFERRED poll - the chat doorway's once-a-second read (server._poll_quick): what it reads is stored
+    # for the drain, which builds its own brain to judge it, so the one built here every second was never called (2026-11-06)
+    try: llm = None if _deferring() else build_llm(store, job='triage')
     except Exception: llm = None
     read_it = wants_read(store)   # asked once per run, not once per message
     # a mailbox card whose source row was never created polls nothing at all, and looks connected

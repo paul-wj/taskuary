@@ -56,6 +56,16 @@ const CHANNEL_LABELS = { email: "Mailboxes", teams: "Teams chats", slack: "Slack
   clickup: "ClickUp tasks", todoist: "Todoist tasks",
   trello: "Trello cards", notion: "Notion pages", azdo: "Azure DevOps items",
   sentry: "Sentry errors", pagerduty: "PagerDuty incidents",
+  zendesk: "Zendesk tickets", freshdesk: "Freshdesk tickets", intercom: "Intercom conversations", servicenow: "ServiceNow records",
+  shortcut: "Shortcut stories", wrike: "Wrike tasks", smartsheet: "Smartsheet rows", airtable: "Airtable rows",
+  github_projects: "GitHub Projects items", bitbucket: "Bitbucket PRs & issues", ms_planner: "Planner tasks",
+  zulip: "Zulip messages", signal: "Signal messages", twilio: "Texts", discourse: "Discourse notifications", reddit: "Reddit inbox",
+  youtube: "YouTube comments", calendly: "Calendly bookings", shipstation: "ShipStation orders", shopify: "Shopify orders",
+  square: "Square disputes", paypal: "PayPal disputes", woocommerce: "WooCommerce orders", bigcommerce: "BigCommerce orders",
+  front: "Front conversations", helpscout: "Help Scout conversations", gorgias: "Gorgias tickets", ringcentral: "RingCentral calls & texts",
+  aircall: "Aircall calls", dialpad: "Dialpad calls", typeform: "Typeform responses", jotform: "Jotform submissions",
+  surveymonkey: "SurveyMonkey responses", tally: "Tally submissions", google_forms: "Google Forms responses", lever: "Lever candidates",
+  instagram: "Instagram comments", facebook_pages: "Facebook Page comments & messages", x: "X mentions", wordpress: "WordPress comments",
   aws: "AWS buckets & log groups", azure: "Azure containers & workspaces" };
 
 

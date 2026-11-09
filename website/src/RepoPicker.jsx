@@ -1,7 +1,7 @@
-// Which checkout does this task belong in? Taskuary decides it (the `repo:` tag, else the ask
-// matched against the SOUL.md repo map) - but it can be wrong, and a wrong answer means an agent
-// editing the wrong tree in good faith. So the decision is visible on the task, with its reason,
-// and one click overrides it: the tag is what always wins, and the new session's prompt says so.
+// Which checkout does this task belong in? What the task itself says (a GitHub item's own repository), else the coding agent's own pick
+// once it starts (use_repo, repochoice.py) - triage no longer decides it (the owner, 2026-11-06). Either can be wrong, and a wrong answer
+// means an agent editing the wrong tree in good faith. So the answer is visible on the task, with its reason, and one click overrides it:
+// the owner's tag is what always wins, and the new session's prompt says so.
 import React, { useEffect, useState } from "react";
 import { Box, Button, Chip, CircularProgress, TextField, Typography } from "@mui/material";
 import AccountTreeIcon from "@mui/icons-material/AccountTree";
@@ -119,7 +119,7 @@ export const RepoPicker = ({ taskId, agent = "", hasSession, onDone }) => {
       <Typography variant="caption" sx={{ color: DIM, display: "block", mb: 0.75 }}>
         {general ? t("Not code work — this one is a question, and the agent is told so.")
           : picked ? <>{t("Working in")} <b style={mono}>{repoLabel(picked)}</b>{why ? ` — ${why}` : ""}.</>
-            : t("No code chosen yet — the agent works in its own folder until you pick one.")}
+            : t("No code chosen yet — the agent picks it when it starts, from what the task asks.")}
         {" "}{t("Pick another and the agent starts again there, told where it is.")}
       </Typography>
       {rows.map((r) => {
@@ -183,7 +183,7 @@ export const RepoPicker = ({ taskId, agent = "", hasSession, onDone }) => {
       {picked && (
         <Button size="small" sx={{ fontSize: 10.5, color: DIM }} disabled={busy}
           onClick={async () => { setBusy(true); await api.put(`/api/tasks/${taskId}/repo`, { repo: null, ...(agent ? { agent } : {}) }); setBusy(false); load(); onDone?.({}); }}>
-          {t("unpin — let Taskuary choose again")}
+          {t("unpin — let the agent choose")}
         </Button>
       )}
     </Box>
@@ -194,7 +194,8 @@ export const RepoPicker = ({ taskId, agent = "", hasSession, onDone }) => {
 // picker above only appeared once a start had already failed or guessed (the owner, 2026-09-24: "when i hit start
 // coding agent then the repo picker showed up, but it should be there always"). This is that choice as a
 // dropdown beside the brain: the repository the instruction NAMES ("check this in ledger") first, else the one
-// pinned on the task, else Taskuary's own pick - and the parent pins the choice before it starts the session.
+// pinned on the task, else what the task itself says - and the parent pins the choice before it starts the session. Left
+// empty, the agent picks it (use_repo).
 export { namedRepo };   // now in repoNames.js, so the New card's picker and a test can import it without JSX
 
 export const RepoSelect = ({ taskId, agent = "", instruction = "", value, onChange }) => {
@@ -219,14 +220,14 @@ export const RepoSelect = ({ taskId, agent = "", instruction = "", value, onChan
       <Typography variant="caption" sx={{ color: DIM, fontWeight: 600 }}>{t("code")}</Typography>
       <select className="tq-start-repo" aria-label={t("which code")} value={value || ""} onChange={(e) => { setManual(true); onChange?.(e.target.value); }}
         style={{ fontSize: 12.5, padding: "4px 6px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", color: INK, minWidth: 220 }}>
-        {!value && <option value="">{t("choose the code…")}</option>}
+        {!value && <option value="">{t("the agent picks…")}</option>}
         {rows.map((r) => <option key={r.repo} value={r.repo}>{r.repo.startsWith("local:") ? r.path || repoLabel(r.repo) : r.repo}{r.has_path ? "" : t(" (not {local})", { local: t(LOCAL) })}</option>)}
       </select>
       <Typography variant="caption" sx={{ color: FAINT }}>
-        {!value ? t("not clear from the task - choose one to start")
+        {!value ? t("the agent picks it when it starts - or choose one")
           : value === namedRepo(rows, instruction) ? t("named in your instruction")
           : value === tagged ? t("pinned on this task")
-          : manual ? t("your choice") : (data.why || t("Taskuary's pick"))}
+          : manual ? t("your choice") : (data.why || t("from the task"))}
         {row && !row.has_path ? t(" - no local folder yet: you will be asked for it") : ""}
       </Typography>
     </Box>

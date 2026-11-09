@@ -4,12 +4,13 @@ over STDIN (argv length limits are real on Windows), JSON output parsed when ava
 (Claude-style {result, session_id} -> resumable sessions), git diff captured around the
 run so code changes are first-class, every run traced + audited.
 """
-import json, os, re, shutil, subprocess, threading, time
+import contextlib, contextvars, json, os, re, shutil, subprocess, threading, time
 from datetime import datetime
 from pathlib import Path
 from loguru import logger
 
-from . import acp as acp_mod, pathcache, redact, spawn
+from . import acp as acp_mod, acpadapter, aiusage, pathcache, redact, spawn
+from . import clis as clis_mod
 from .store import task_ref
 from .clis import preset_args
 from .clipool import TimedOut
@@ -524,6 +525,8 @@ def runs_here(profile: dict) -> bool:
     read as claude, so a role row synced before any brain was chosen "ran here" on a machine where only Codex was set up."""
     cmd = (profile or {}).get('cmd')
     if not cmd: return False
+    from . import demo
+    if demo.enabled(): return demo.here(cmd)                  # the demo's invented machine, never the visitor's PATH
     try: return bool(_resolve_cmd(cmd))
     except (FileNotFoundError, OSError): return False
 
@@ -679,6 +682,8 @@ def availability_failure(error) -> bool:
     text = str(error or '')
     from .clipool import MID_TURN
     if MID_TURN in text: return False
+    # ...and an AI card resting on its spent budget (llm.BudgetSpent) says so itself
+    if getattr(error, 'unavailable', False) is True: return True
     return isinstance(error, (FileNotFoundError, PermissionError)) or bool(
         _UNAVAILABLE.search(text) or _SIGNED_OUT.search(text) or _DENIED.search(text) or _NO_HOME.search(text))
 
@@ -1158,60 +1163,434 @@ def repair_role_assignees(store) -> int:
     return fixed
 
 
-def acp_tracer(trace, name: str):
-    """An ACP session/update as the SAME trace events the argv road emits - tool_call with its arguments, tool_result with its
-    output - so a general agent on gemini reads like one on claude. Over ACP it was a `live` line only ("ReadFile (completed)"),
-    and the canvas drew it as raw text in the progress box (2026-10-21). The line still goes out, for the pane and the Board."""
-    seen = set()
-    def show(u):
-        # the agent's words arrive one TOKEN per update ("Hello", "!", "Shell", "command") and are
-        # returned whole as the result; traced one by one they buried the tool calls between them
-        # (a copilot turn left 40 one-word trace lines, measured 2026-09-20). Tools and plans are the
-        # progress worth a line.
+def parent_of(u: dict) -> str:
+    """The helper call an ACP tool call runs under, when its adapter says (claude-code-acp: _meta.claudeCode.parentToolUseId) - so the
+    helper's own steps nest under its row instead of interleaving with the main agent's (the owner, 2026-11-06: parallel work read wrong)."""
+    m = u.get('_meta') or {}
+    return str((m.get('claudeCode') or {}).get('parentToolUseId') or m.get('parentToolUseId') or m.get('parentToolCallId') or '')
+
+
+class ACPSteps:
+    """ACP session/update as the SAME trace events the argv road emits - tool_call with its arguments, tool_result with its output,
+    progress for what it said and thought - so a general agent on any CLI reads alike on the canvas (website/src/agentSteps.js).
+
+    An update is not a step. Claude's adapter announces a call with NO input and a generic title ("Read File", "Terminal") and then
+    streams its input in a run of tool_call_updates; Codex's announces a web search with an empty query and fills it at the end, and
+    streams a command's output as terminal deltas. Traced update by update that read "Read File" with no file, then the same call
+    again. So a call is held until its input SETTLES - a permission asked for it, a status that says it runs or ran, the next thing
+    the agent does - and traced once, by the tool's own name (Claude's `Read`, `Bash`, `mcp__taskuary__my_task`; Codex's command)
+    with its full input, exactly as stream-json names it. Words and thoughts arrive a token at a time and are traced as whole
+    paragraphs. `flush` at the end of the turn closes whatever is still open, so no step spins after the turn is over."""
+
+    def __init__(self, trace, name: str, held: dict = None):
+        self.trace, self.name, self.held = trace, name, held if held is not None else {}
+        self.calls, self.said, self.thought, self.plans = {}, [], [], 0
+
+    # ── words ───────────────────────────────────────────────────────────────────────────────
+    def _words(self):
+        if self.thought:
+            t = ''.join(self.thought).strip(); self.thought = []
+            if t: self.trace('progress', 'thinking', t)
+        if self.said:
+            t = ''.join(self.said).strip(); self.said = []
+            if t: self.trace('progress', 'text', t); self.trace('live', self.name, ' '.join(t.split())[:400])
+
+    # ── tool calls ──────────────────────────────────────────────────────────────────────────
+    def _merge(self, u: dict) -> dict:
+        iid = str(u.get('toolCallId') or f'acp-{len(self.calls)}')
+        c = self.calls.setdefault(iid, {'id': iid, 'raw': {}, 'out': [], 'shown': False, 'done': False})
+        if isinstance(u.get('rawInput'), dict) and u['rawInput']: c['raw'] = dict(u['rawInput'])
+        for k in ('title', 'kind', 'name', 'status'):
+            if u.get(k): c[k] = u[k]
+        if (tn := ((u.get('_meta') or {}).get('claudeCode') or {}).get('toolName')): c['tool'] = tn
+        if (par := parent_of(u)): c['parent'] = par
+        if u.get('locations'): c['locations'] = u['locations']
+        for b in u.get('content') or []:
+            if isinstance(b, dict) and b.get('type') == 'content': c['text'] = acp_mod._text_of(b.get('content'))
+        meta = u.get('_meta') or {}
+        if (d := (meta.get('terminal_output_delta') or {}).get('data')) and sum(map(len, c['out'])) < 20000: c['out'].append(str(d))
+        if 'terminal_exit' in meta: c['exit'] = (meta['terminal_exit'] or {}).get('exit_code')
+        if isinstance(u.get('rawOutput'), str): c['raw_out'] = u['rawOutput']
+        return c
+
+    @staticmethod
+    def _call(c: dict) -> tuple:
+        "(the tool's name, its arguments) in the vocabulary describeCall reads - the same names stream-json and codex JSONL use."
+        raw, kind = dict(c['raw']), c.get('kind') or ''
+        if raw.get('type') == 'webSearch':                     # codex: one item for a search and for a page it opened
+            act = raw.get('action') or {}
+            if act.get('type') in ('openPage', 'findInPage'): return 'fetch', {'url': act.get('url') or raw.get('query') or ''}
+            return 'web search', {'query': raw.get('query') or act.get('query') or ''}
+        if raw.get('server') and raw.get('tool'):              # codex MCP: {server, tool, arguments}
+            return f"mcp__{raw['server']}__{raw['tool']}", dict(raw.get('arguments') or {})
+        paths = [l.get('path') for l in c.get('locations') or [] if isinstance(l, dict) and l.get('path')]
+        if paths and not any(raw.get(k) for k in ('path', 'file_path', 'absolute_path', 'filePath')): raw['path'] = paths[0]
+        if len(paths) > 1 and kind == 'move': raw.setdefault('to', paths[1])
+        if c.get('title'): raw.setdefault('title', c['title'])
+        return c.get('tool') or c.get('name') or kind or c.get('title') or 'tool', raw
+
+    @staticmethod
+    def _settled(c: dict) -> bool: return any(v not in (None, '', [], {}) for k, v in c['raw'].items() if k not in ('type', 'id', 'cwd'))
+
+    def _show(self, c: dict):
+        if c['shown']: return
+        c['shown'] = True
+        name, args = self._call(c)
+        self.trace('tool_call', name, {'tool_call_id': c['id'], 'args': args, **({'parent': c['parent']} if c.get('parent') else {})})
+        self.trace('live', self.name, f"→ {c.get('title') or name}"[:400])
+
+    def _finish(self, c: dict, failed: bool = None):
+        if c['done']: return
+        self._show(c); c['done'] = True
+        out = ''.join(c['out']).strip() or c.get('text') or c.get('raw_out') or ''
+        bad = (c.get('status') == 'failed' or c.get('exit') not in (None, 0)) if failed is None else failed
+        if c['id'] in self.held: out, bad = self.held[c['id']], True          # Taskuary's own answer, not the adapter's "user refused"
+        self.trace('tool_result', c['id'], {'result': out, 'is_error': bool(bad)})
+
+    def _settle_others(self, but=None):
+        for c in self.calls.values():
+            if c['id'] != but and not c['shown'] and self._settled(c): self._show(c)
+
+    def asked(self, tc: dict):
+        "A permission request for a call: its input is final, so it is traced now - before the answer is."
+        if not isinstance(tc, dict) or not tc.get('toolCallId'): return
+        # ...what the call announced, not the ask's copy, which only fills gaps: Codex asks with its own kind ("execute" for a file
+        # it announced as a read) and the command wrapped in `powershell.exe -Command '...'`
+        if (c := self.calls.get(str(tc['toolCallId']))):
+            tc = {k: v for k, v in tc.items() if k in ('toolCallId', 'locations') or (k == 'rawInput' and not c['raw']) or not c.get(k)}
+        self._words(); self._show(self._merge(tc))
+
+    def __call__(self, u: dict):
         kind = u.get('sessionUpdate')
-        if kind == 'agent_message_chunk': return
+        if kind == 'agent_message_chunk':
+            if self.thought: self._words()
+            self._settle_others(); self.said.append(acp_mod._text_of(u.get('content'))); return
+        if kind == 'agent_thought_chunk':
+            if self.said: self._words()
+            self._settle_others(); self.thought.append(acp_mod._text_of(u.get('content'))); return
         if kind in ('tool_call', 'tool_call_update'):
-            iid = u.get('toolCallId') or f'acp-{len(seen)}'
-            if iid not in seen and (kind == 'tool_call' or u.get('rawInput') or u.get('title')):
-                seen.add(iid)
-                args = dict(u['rawInput']) if isinstance(u.get('rawInput'), dict) else {}
-                loc = next((l.get('path') for l in u.get('locations') or [] if isinstance(l, dict) and l.get('path')), None)
-                if loc and not any(args.get(k) for k in ('path', 'file_path', 'absolute_path', 'filePath')): args['path'] = loc
-                if u.get('title'): args.setdefault('title', u['title'])
-                trace('tool_call', u.get('kind') or u.get('title') or 'tool', {'tool_call_id': iid, 'args': args})
-            if iid in seen and u.get('status') in ('completed', 'failed'):
-                out = ' '.join(acp_mod._text_of(c.get('content')) for c in u.get('content') or [] if isinstance(c, dict)).strip()
-                trace('tool_result', iid, {'result': out, 'is_error': u.get('status') == 'failed'})
-        elif kind == 'plan':
+            self._words()
+            c = self._merge(u)
+            self._settle_others(but=c['id'])
+            st = u.get('status')
+            if st in ('completed', 'failed'): self._finish(c)
+            elif (st == 'in_progress' or (kind == 'tool_call_update' and c.get('out'))) and self._settled(c): self._show(c)
+            return
+        if kind == 'plan':
+            self._words(); self._settle_others()
             steps = [str((e or {}).get('content') or '') for e in u.get('entries') or []]
             if any(steps):
-                iid = f'plan-{len(seen)}'; seen.add(iid)
-                trace('tool_call', 'update_plan', {'tool_call_id': iid, 'args': {'plan': [s for s in steps if s]}})
-                trace('tool_result', iid, {'result': ''})
-        line = acp_mod.trace_line(u)
-        if line: trace('live', name, line)
-    return show
+                iid = f'plan-{self.plans}'; self.plans += 1
+                self.trace('tool_call', 'update_plan', {'tool_call_id': iid, 'args': {'plan': [s for s in steps if s]}})
+                self.trace('tool_result', iid, {'result': ''})
+
+    def flush(self, stop: str = None):
+        "The turn is over: what it said is traced, and every call still open ends - done at a normal end, failed at any other."
+        self._words()
+        for c in list(self.calls.values()):
+            if c['shown'] or self._settled(c) or c.get('title'): self._finish(c, failed=None if c.get('status') in ('completed', 'failed') else stop not in (None, 'end_turn'))
+
+
+def acp_tracer(trace, name: str, held: dict = None) -> ACPSteps: return ACPSteps(trace, name, held)
+
+
+# ── the ACP road ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ACP_SETTING = 'acp_cli'
+_FELL_BACK: set = set()
+# THE STORE AND TASK A RUN IS FOR, beside run_cli's arguments rather than in them: the ACP road's permission answers need both
+# (acpgate - the send filter's verdicts, a step held on this task), and run_cli's signature is the one every caller and test fake
+# shares. make_cli_llm sets it around its call; a run with none reads the switch's default and holds nothing on a task.
+_RUN = contextvars.ContextVar('taskuary_run', default=(None, None))
+
+
+@contextlib.contextmanager
+def run_context(store, task_id=None):
+    tok = _RUN.set((store, task_id))
+    try: yield
+    finally: _RUN.reset(tok)
+
+
+def acp_on(store) -> bool:
+    "The owner's 'Run CLI agents over ACP' (Settings, Agents). On unless switched off; a run with no store reads the default."
+    try: v = store.get_setting(ACP_SETTING) if store is not None else None
+    except Exception: v = None
+    return str('1' if v is None else v).strip().lower() not in ('0', 'false', 'off', 'no')
+
+
+def _acp_road(profile: dict, store=None) -> bool:
+    "Does this run go over ACP: a run marked for it (llm: a general agent's run with hands), the switch on, and a way to launch it."
+    if not (profile.get('acp_ok') and acp_on(store if store is not None else _RUN.get()[0])): return False
+    # ...never a stranger's run, whatever acp_ok says: its trimmed environment (strict_env) marks the floor argv carries (llm.make_cli_llm)
+    if profile.get('strict_env'): return False
+    return bool(profile.get('acp') or profile.get('acp_cmd') or clis_mod.acp_adapter(profile.get('cmd') or ''))
+
+
+# A HEADLESS CLAUDE'S ARGV, AS WHAT THE ADAPTER TAKES. Everything make_cli_llm put on the command line still has to reach the run:
+# Taskuary's own tools (--mcp-config), the owner's send tools left out (--disallowedTools), the agent's instructions (the system
+# prompt file), the browser hold (--settings). The adapter takes them as Claude Agent SDK options in _meta.claudeCode.options;
+# the ones the protocol owns itself - print mode, the output format, the bypass, the model, resume - are its, and dropped.
+_CLAUDE_DROP = {'-p', '--print', '--verbose', '--dangerously-skip-permissions', '--allow-dangerously-skip-permissions', '--include-partial-messages'}
+_CLAUDE_DROP_VALUED = {'--output-format', '--input-format', '--model', '--resume', '-r', '--permission-mode', '--fallback-model'}
+_CODEX_DROP = {'exec', 'e', '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust', '--full-auto'}
+_CODEX_DROP_VALUED = {'--sandbox', '-s', '--model', '-m', '--ask-for-approval', '-a'}
+
+
+def _read(path) -> str:
+    try: return Path(path).read_text(encoding='utf-8')
+    except OSError: return ''
+
+
+def claude_acp_options(args: list) -> dict:
+    """claude's -p argv -> the SDK options the claude-agent-acp adapter spreads into its query (_meta.claudeCode.options)."""
+    opt, extra, it = {}, {}, iter(list(args or []))
+    for a in it:
+        a = str(a)
+        if a in _CLAUDE_DROP: continue
+        if a in _CLAUDE_DROP_VALUED: next(it, None); continue
+        if not a.startswith('-'): continue                                        # a prompt or a stray value: never an option
+        if a == '--disallowedTools': opt.setdefault('disallowedTools', []).extend(x for x in str(next(it, '')).split(',') if x)
+        elif a == '--allowedTools': opt.setdefault('allowedTools', []).extend(x for x in str(next(it, '')).split(',') if x)
+        elif a == '--append-system-prompt-file': opt['systemPrompt'] = {'type': 'preset', 'preset': 'claude_code', 'append': _read(next(it, ''))}
+        elif a == '--system-prompt-file': opt['systemPrompt'] = _read(next(it, ''))
+        elif a == '--add-dir': opt.setdefault('additionalDirectories', []).append(str(next(it, '')))
+        elif a == '--settings': opt['settings'] = str(next(it, ''))
+        elif a == '--setting-sources': opt['settingSources'] = [x for x in str(next(it, '')).split(',') if x]
+        else:
+            # --mcp-config <file>, --strict-mcp-config: passed through as Claude's own flags (the SDK's extraArgs), so the CLI
+            # reads the file and expands its ${TASKUARY_TOKEN} from the environment - no token is written anywhere
+            nxt = next(it, None)
+            if nxt is not None and not str(nxt).startswith('-'): extra[a.lstrip('-')] = str(nxt)
+            else:
+                extra[a.lstrip('-')] = None
+                if nxt is not None: it = iter([nxt, *it])
+    if extra: opt['extraArgs'] = extra
+    return opt
+
+
+def _toml_value(v: str):
+    try: import tomllib
+    except ImportError: import tomli as tomllib
+    try: return tomllib.loads(f'v = {v}')['v']
+    except Exception: return v                                                   # a bare word: codex reads it as a string too
+
+
+def codex_acp_config(args: list) -> dict:
+    """codex exec's argv -> CODEX_CONFIG, which the codex-acp adapter hands Codex as the session's config: every `-c key=value`
+    (Taskuary's MCP server with its headers named by env var, the owner's send tools disabled - agenttools.codex_args,
+    sendfilter.codex_args) as the same dotted key. The rest is the protocol's: the mode replaces the sandbox and approval flags."""
+    cfg, it = {}, iter(list(args or []))
+    for a in it:
+        a = str(a)
+        if a in ('-c', '--config'):
+            kv = str(next(it, ''))
+            if '=' in kv: k, v = kv.split('=', 1); cfg[k.strip()] = _toml_value(v.strip())
+        elif a in _CODEX_DROP_VALUED: next(it, None)
+        elif a not in _CODEX_DROP and a.startswith('-'): logger.debug(f'acp: codex flag {a} has no ACP spelling - left out')
+    return cfg
+
+
+def acp_launch(profile: dict) -> dict:
+    """How this profile's CLI is started as an ACP agent: {'cmd', 'env', 'mode', 'meta', 'adapter'}.
+    A native CLI is its own binary with its ACP arguments (`gemini --acp`); claude and codex are their adapter (clis.ADAPTERS)
+    driving the binary the owner already has - the one _resolve_cmd finds, so it is the same login, settings and hooks."""
+    name, family = profile['cmd'], _cli_name(profile['cmd'])
+    ad = {} if profile.get('acp') else clis_mod.acp_adapter(name)
+    if not ad:
+        cmd = _resolve_cmd(name) + list(profile.get('acp') or [])
+        if profile.get('model'):
+            from .climodels import split_pick
+            model, _ = split_pick(profile['model'])
+            if model: cmd += [profile.get('model_arg') or '--model', model]
+        return {'cmd': cmd, 'env': {}, 'mode': '', 'meta': None, 'adapter': ''}
+    # the adapter's own command when it is installed (`npm i -g` puts it on PATH: ~2.3 s a start quicker, measured), else npx, pinned
+    own = pathcache.which(ad['bin'])
+    # ...but only the PINNED one (acpadapter.runs_pinned): a global left by an older release speaks what that release spoke, so npx
+    # fetches the pinned version instead and the card's line offers Update
+    if own and not acpadapter.runs_pinned(ad, own): own = None
+    # ...and no npx is a start failure, not a missing CLI: the owner's claude is there, and the argv road runs it (a machine with no
+    # Node on PATH answered every general turn "'npx' not found on PATH" and nothing else - 2026-11-06)
+    try: cmd = list(profile.get('acp_cmd') or ([own] if own else _resolve_cmd('npx') + ['-y', ad['pkg']]))
+    except FileNotFoundError as e: raise acp_mod.ACPStartError(f"{ad['pkg']} cannot launch: {e}") from e
+    cli = (_resolve_cmd(name) or [name])[-1]
+    env = {k: v.replace('{cli}', cli) for k, v in ad['env'].items()}
+    args = list(profile.get('args') or clis_mod.preset_args(name) or [])
+    meta = None
+    if family == 'claude':
+        opts = claude_acp_options(args)
+        if opts: meta = {'claudeCode': {'options': opts}}
+    elif family == 'codex' and (cfg := codex_acp_config(args)): env['CODEX_CONFIG'] = json.dumps(cfg)
+    return {'cmd': cmd, 'env': env, 'mode': ad['mode'], 'meta': meta, 'adapter': ad['pkg']}
+
+
+def _long(cwd):
+    """The folder by its real, long name. Codex's Windows sandbox refused every command in a folder named by its 8.3 short name
+    (a temp folder under a long user name) with "Access to the path is denied", and the agent asked to escalate each one (2026-11-06)."""
+    return os.path.realpath(cwd) if cwd and os.path.isdir(cwd) else cwd
+
+
+def _acp_sig(launch: dict, cwd, env: dict) -> tuple:
+    "What a kept connection was opened with: a different command, folder, environment's names, options or mode is a new one (clipool._sig)."
+    return (tuple(launch['cmd']), str(cwd or ''), hash(tuple(sorted(env))), json.dumps(launch['meta'], sort_keys=True, default=str), launch['mode'])
+
+
+def _acp_open(name: str, launch: dict, cwd, env: dict, resume, timeout, trace):
+    """A connected session, ready for a prompt: started, initialized, the conversation opened (resumed where there is one),
+    its mode, model and effort set. ACPStartError for anything before the session exists - nothing has run, so run_cli takes
+    the argv road instead."""
+    try: client = acp_mod.ACPClient(launch['cmd'][0], launch['cmd'][1:], cwd=cwd, env=env, timeout=timeout)
+    except PermissionError as e:
+        if launch['adapter']: raise acp_mod.ACPStartError(f"{launch['adapter']} was refused: {e}") from e   # the adapter, not the CLI
+        raise FileNotFoundError(denied_msg(name, launch['cmd'][0], e)) from e
+    try:
+        caps = client.connect()
+        try:
+            if resume and (caps.get('loadSession') or client.can_resume()): client.load_session(resume, cwd, meta=launch['meta'])
+            else:
+                if resume: trace('progress', 'acp', f'{name} cannot reload a session; starting a fresh one')
+                client.new_session(cwd, meta=launch['meta'])
+        except acp_mod.ACPAgentError as e:
+            # a CLI that is not signed in answers session/new in its own words: said as a sign-in, not as a broken app (2026-10-25)
+            if _SIGNED_OUT.search(str(e)): raise RuntimeError(signed_out_msg(name, str(e), launch['cmd'][0])) from e
+            raise acp_mod.ACPStartError(f'session: {e}') from e
+        if launch['mode'] and not client.set_option('mode', launch['mode']):
+            logger.warning(f"acp: {name} has no '{launch['mode']}' mode - it runs in {client.option('mode').get('currentValue') or 'its own'}")
+        return client
+    except BaseException:
+        client.close(); raise
+
+
+# OUR MODEL ID, THE AGENT'S SPELLING (the owner's chat, 2026-11-06: "claude offers no model 'claude-opus-5-5' over ACP - it runs on opus"
+# as an agent step). claude-agent-acp offers aliases - default, opus, sonnet, haiku, opus[1m] - and may offer dated ids; codex-acp offers
+# Codex's own ids. Ours is matched to the closest one quietly: plumbing is a debug line, never the owner's chat. Only a model the agent
+# has nothing near - one this sign-in cannot run - is said, in plain words.
+_FAMILIES = ('opus', 'sonnet', 'haiku')
+def _bare(v) -> str: return re.sub(r'(\[[^\]]*\]|-\d{8})$', '', str(v or '').lower())
+def _parts(v) -> list: return re.split(r'[^a-z0-9]+', str(v or '').lower())
+
+
+def offered_model(want: str, vals: list) -> str:
+    """The value the agent offers for model `want`: the same id; else it without a date or [1m] suffix; else claude's family
+    (claude-opus-5-5 -> opus, the bare alias first); else the offered id that begins `want` or that `want` begins. '' when none is near."""
+    vals, w = [str(v) for v in vals or [] if v], _bare(want)
+    if not (w and vals): return ''
+    if (x := next((v for v in vals if v.lower() == str(want).lower()), '')): return x
+    if (same := [v for v in vals if _bare(v) == w]): return min(same, key=lambda v: ('[' in v, len(v)))
+    if (fam := next((f for f in _FAMILIES if f in _parts(w)), '')):
+        c = [v for v in vals if fam in _parts(v)]
+        return min(c, key=lambda v: (v.lower() != fam, '[' in v, len(v))) if c else ''
+    near = [v for v in vals if _bare(v).startswith(w) or w.startswith(_bare(v))]
+    return min(near, key=lambda v: (abs(len(_bare(v)) - len(w)), len(v))) if near else ''
+
+
+def offered_effort(want: str, vals: list) -> str:
+    "The offered effort nearest `want` on the one scale (brainroute.EFFORTS), a lower one on a tie - '' when it offers none we know."
+    from .brainroute import EFFORTS
+    vals = [str(v) for v in vals or [] if v]
+    if want in vals: return want
+    if want not in EFFORTS: return ''
+    known = [v for v in vals if v in EFFORTS]
+    return min(known, key=lambda v: (abs(EFFORTS.index(v) - EFFORTS.index(want)), EFFORTS.index(v))) if known else ''
+
+
+def _acp_gears(client, profile: dict, name: str, trace):
+    """The run's model and effort as session config options, each as the agent spells it (offered_model, offered_effort). A model it has
+    nothing near is said to the owner; everything else is a debug line, and it runs on its own."""
+    if not profile.get('model'): return
+    from .climodels import split_pick
+    for cat, want in zip(('model', 'thought_level'), split_pick(profile['model'])):
+        if not want or not client.option(cat): continue
+        vals = client.values(cat)
+        to = (offered_model if cat == 'model' else offered_effort)(want, vals) if vals else want
+        if to and client.set_option(cat, to):
+            if to != want: logger.debug(f'acp: {name} {cat} {want!r} runs as its {to!r}')
+            continue
+        now = client.option(cat).get('currentValue') or 'its default'
+        logger.debug(f'acp: {name} offers no {cat} near {want!r} (it offers {vals}) - it runs on {now}')
+        if cat == 'model': trace('progress', 'acp', f"{want} is not available on this {_cli_name(name)} sign-in, so this ran on {now}")
 
 
 def run_acp(profile: dict, prompt: str, trace, resume: str = None, cancel=None, extra_env: dict = None, store=None):
     """One headless turn over ACP. Returns (result, session_id, diff) - run_cli's own contract, so
     nothing upstream can tell which road a run took.
 
-    Two things are better here than on the argv road, and they are the reason this exists. The
-    session id is RETURNED by session/new rather than scraped out of a vendor's temp directory
-    afterwards, and the agent's progress arrives as typed events rather than as text to parse.
-
-    It fails loudly on purpose. There is no fallback to the argv road: a silent fallback would
-    hide which of the two is broken, and this transport is new.
+    The session id is RETURNED by session/new rather than scraped out of a vendor's temp directory, the progress arrives as typed
+    events, and every tool call the agent asks to make is answered by acpgate - Taskuary's rules, not a bypass flag. A kept
+    conversation (keep_alive: a general agent's task, the Assistant) holds its connection between turns in clipool, as the argv
+    road holds its claude process, so a turn after the first pays no start-up. ACPStartError means nothing ran: run_cli falls back.
     """
     profile = with_cmd(profile, store); name = profile['cmd']
+    if _cli_name(name) == 'omp':
+        # Oh My Pi is a one-turn host that verifies its native session, refuses every permission ask,
+        # and must not leave its process tree behind - a different road from the clipool ACP below.
+        return _run_acp_omp(profile, prompt, trace, resume=resume, cancel=cancel, extra_env=extra_env, store=store)
+    launch, cwd, keep = acp_launch(profile), _long(profile.get('cwd')), profile.get('keep_alive')
+    env = {**spawn_env(profile, extra_env), **launch['env']}
+    from . import acpgate, clipool
+    sig = _acp_sig(launch, cwd, env)
+    opener = lambda: acp_mod.Conversation(_acp_open(name, launch, cwd, env, resume, profile.get('timeout'), trace), sig)
+    conv = clipool.take(keep, sig, opener, resume) if keep else opener()
+    client = conv.client
+    trace('prompt', 'prompt_sent_to_agent', prompt)
+    trace('tool', 'cli', f"{name} over acp{' via ' + launch['adapter'] if launch['adapter'] else ''} cwd={cwd or os.getcwd()}"
+                         + (f' resume={resume}' if resume else '') + (f' live={keep}' if keep else ''))
+    head0 = _git(cwd, 'rev-parse', 'HEAD')
+    held = {}
+    steps = ACPSteps(trace, name, held)
+    ctx_store, task_id = _RUN.get()
+    gate = acpgate.answerer({'store': store if store is not None else ctx_store, 'task_id': task_id, 'cli': _cli_name(name), 'cwd': cwd,
+                             'sid': client.session_id}, trace, held)
+    client.on_update, client.permit = steps, lambda params: (steps.asked(params.get('toolCall')), gate(params))[1]
+    with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.add(client.p)
+    if cancel is not None:
+        def _cancel():
+            cancel.wait()
+            if cancel.is_set() and conv.lock.locked(): client.cancel(); time.sleep(2); clipool.drop(keep, conv) if keep else client.close()
+        threading.Thread(target=_cancel, daemon=True).start()
+    stop, ok = None, False
+    try:
+        with conv.lock:
+            if launch['adapter']: _acp_gears(client, profile, name, trace)     # a native CLI took its model on its command line
+            since = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            stop, said = client.prompt(prompt)
+            conv.turns += 1; conv.used = time.time()
+        ok = True
+        # WHAT THE TURN USED, onto its route row (aiusage.Metered's meter): the adapter's count, else the CLI's own log (aiusage.acp_turn)
+        aiusage.note_turn(aiusage.acp_turn(_cli_name(name), client.last_turn, client.session_id, since))
+        if stop and stop not in ('end_turn', 'cancelled'): trace('progress', 'acp', f'the turn ended early: {stop}')
+        diff = ''
+        if cwd:
+            head1 = _git(cwd, 'rev-parse', 'HEAD')
+            if head1 and head1 != head0: diff = _git(cwd, 'diff', f'{head0}..{head1}')
+            unc = _git(cwd, 'diff', 'HEAD')
+            if unc: diff = '\n'.join(x for x in (diff, unc) if x).strip()
+        return said, client.session_id, (diff[:150000] or None)
+    except acp_mod.ACPAgentError as e:
+        if _SIGNED_OUT.search(str(e)): raise RuntimeError(signed_out_msg(name, str(e), launch['cmd'][0])) from e
+        raise
+    finally:
+        steps.flush(stop if ok else 'error')
+        client.on_update, client.permit = None, None
+        with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.discard(client.p)
+        if not keep: client.close()
+        elif not ok: clipool.drop(keep, conv)          # a turn that failed part-way is never sent again on that connection (MID_TURN)
+
+
+def _run_acp_omp(profile: dict, prompt: str, trace, resume: str = None, cancel=None, extra_env: dict = None, store=None):
+    """One Oh My Pi turn over ACP, one-shot: a dedicated connection per turn (no clipool conversation), a
+    foreground-only tool overlay (this one-turn host cannot receive later async wakeups), an explicit deny
+    policy on every permission ask, and a process tree that is killed (and verified killed) at the end. The
+    session is verified against its native session store before and after the turn - an unverified or
+    incomplete turn is never reported as a success, and a turn that fails after it has started is not replayed
+    (OmpTurnError carries the native session id for continuation). It fails loudly on purpose: there is no
+    fallback to the argv road."""
+    profile = with_cmd(profile, store); name = profile['cmd']
     cmd = _resolve_cmd(name) + list(profile.get('acp') or [])
-    if _cli_name(name) == 'omp' and any(a == '--session-dir' or str(a).startswith('--session-dir=') for a in cmd[1:]):
+    if any(a == '--session-dir' or str(a).startswith('--session-dir=') for a in cmd[1:]):
         raise ValueError('Oh My Pi ACP cannot resume sessions from a custom --session-dir. '
                          'Remove that ACP option to use its normal session store.')
     if profile.get('model'):
         from .climodels import split_pick
-        model, _ = split_pick(profile['model'], _cli_name(name))
+        model, _ = split_pick(profile['model'], 'omp')
         if model: cmd += [profile.get('model_arg') or '--model', model]
     cwd = profile.get('cwd')
     trace('prompt', 'prompt_sent_to_agent', prompt)
@@ -1219,21 +1598,20 @@ def run_acp(profile: dict, prompt: str, trace, resume: str = None, cancel=None, 
     head0 = _git(cwd, 'rev-parse', 'HEAD')
     env = spawn_env(profile, extra_env)
     overlay = None
-    if _cli_name(name) == 'omp':
-        # ACP returns before running background jobs finish. This one-turn host cannot
-        # receive their later wakeups, so keep its tool work foreground-only.
-        import tempfile
-        fd, overlay = tempfile.mkstemp(prefix='taskuary-omp-acp-', suffix='.yml')
-        try:
-            with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                json.dump({'async': {'enabled': False}}, f)
-        except Exception:
-            os.remove(overlay)
-            raise
-        cmd += ['--config', overlay]
+    # ACP returns before running background jobs finish. This one-turn host cannot
+    # receive their later wakeups, so keep its tool work foreground-only.
+    import tempfile
+    fd, overlay = tempfile.mkstemp(prefix='taskuary-omp-acp-', suffix='.yml')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump({'async': {'enabled': False}}, f)
+    except Exception:
+        os.remove(overlay)
+        raise
+    cmd += ['--config', overlay]
 
     try:
-        policy = {'permission_policy': 'deny', 'process_tree': True} if _cli_name(name) == 'omp' else {}
+        policy = {'permission_policy': 'deny', 'process_tree': True}
         client = acp_mod.ACPClient(cmd[0], cmd[1:], cwd=cwd, env=env,
                                    timeout=profile.get('timeout'), on_update=acp_tracer(trace, name), **policy)
     except PermissionError as e:
@@ -1265,16 +1643,13 @@ def run_acp(profile: dict, prompt: str, trace, resume: str = None, cancel=None, 
             caps = client.connect()
             if resume and caps.get('loadSession'): client.load_session(resume, cwd)
             else:
-                if resume and _cli_name(name) == 'omp':
-                    raise RuntimeError(f'{name} cannot reload this session')
-                if resume: trace('progress', 'acp', f'{name} cannot reload a session; starting a fresh one')
+                if resume: raise RuntimeError(f'{name} cannot reload this session')
                 client.new_session(cwd)
-            if _cli_name(name) == 'omp':
-                from . import sessionfiles
-                native_file = sessionfiles.omp_acp_file(client.session_id, env, cmd, spawn.cwd_for(cwd))
-                if not native_file:
-                    raise RuntimeError('Oh My Pi ACP session cannot be verified in its native session store.')
-                native_checkpoint = sessionfiles.omp_acp_checkpoint(native_file)
+            from . import sessionfiles
+            native_file = sessionfiles.omp_acp_file(client.session_id, env, cmd, spawn.cwd_for(cwd))
+            if not native_file:
+                raise RuntimeError('Oh My Pi ACP session cannot be verified in its native session store.')
+            native_checkpoint = sessionfiles.omp_acp_checkpoint(native_file)
             prompt_started = True
             stop, said = client.prompt(prompt)
         except acp_mod.ACPAgentError as e:
@@ -1283,16 +1658,15 @@ def run_acp(profile: dict, prompt: str, trace, resume: str = None, cancel=None, 
             raise
         if cancel is not None and cancel.is_set() or stop == 'cancelled':
             raise RuntimeError('cancelled')
-        if _cli_name(name) == 'omp' and client.permission_denied:
+        if client.permission_denied:
             raise RuntimeError('Oh My Pi requested permission that this unattended session cannot approve. '
                                'Open an interactive coding terminal to review the request; this turn did not complete.')
-        if _cli_name(name) == 'omp' and (stop != 'end_turn' or not str(said or '').strip() or not client.session_id):
+        if (stop != 'end_turn' or not str(said or '').strip() or not client.session_id):
             raise RuntimeError(f'{name}: incomplete ACP turn ({stop or "missing stop reason"})')
-        if _cli_name(name) == 'omp':
-            reason, detail = sessionfiles.omp_acp_outcome(native_file, native_checkpoint)
-            if reason != 'stop':
-                why = redact.scrub(detail) if detail else f'unverified native turn outcome ({reason or "missing"})'
-                raise RuntimeError(f'{name}: {why}')
+        reason, detail = sessionfiles.omp_acp_outcome(native_file, native_checkpoint)
+        if reason != 'stop':
+            why = redact.scrub(detail) if detail else f'unverified native turn outcome ({reason or "missing"})'
+            raise RuntimeError(f'{name}: {why}')
         if stop and stop not in ('end_turn', 'cancelled'):
             trace('progress', 'acp', f'the turn ended early: {stop}')
         diff = ''
@@ -1303,26 +1677,33 @@ def run_acp(profile: dict, prompt: str, trace, resume: str = None, cancel=None, 
             if unc: diff = '\n'.join(x for x in (diff, unc) if x).strip()
         return said, client.session_id, (diff[:150000] or None)
     except Exception as e:
-        if prompt_started and _cli_name(name) == 'omp':
+        if prompt_started:
             raise OmpTurnError(e, client.session_id) from e
         raise
     finally:
         finished.set()
         with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.discard(client.p)
         try:
-            if _cli_name(name) == 'omp' and cancel_thread:
+            if cancel_thread:
                 cancel_thread.join(15)
                 if cancel_thread.is_alive():
                     raise OmpTurnError('Oh My Pi process cleanup did not finish', client.session_id)
             try: client.close()
             except Exception as e:
-                if prompt_started and _cli_name(name) == 'omp':
+                if prompt_started:
                     raise OmpTurnError(e, client.session_id) from e
                 raise
         finally:
             if overlay:
                 try: os.remove(overlay)
                 except OSError: pass
+
+
+def _fell_back(name: str, why, trace):
+    "An ACP start that failed: said once in the log per CLI, and on this run's launch line; the run goes on over argv."
+    if name not in _FELL_BACK:
+        _FELL_BACK.add(name); logger.warning(f'acp: {name} did not start over ACP ({why}) - running it on its command line instead')
+    trace('tool', 'acp', f'{name} over acp did not start ({str(why)[:200]}) - this run uses the command line')
 
 
 def spawn_env(profile: dict, extra_env: dict = None) -> dict:
@@ -1359,11 +1740,13 @@ def _run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None,
     # in the run's own trace two lines below. task_context() writes each message's BodyText in
     # verbatim, so mail is the likeliest way one arrives here. See redact.py.
     prompt = redact.scrub(prompt)
-    # The ACP road, for the profiles marked for it: the general agent's tool-using runs on a CLI
-    # that speaks the protocol natively. Everything else - triage, the drafter, coding sessions,
-    # every pane - stays on the argv road below. See docs/acp-transport.md.
-    if profile.get('acp') and profile.get('acp_ok'):
-        return run_acp(profile, prompt, trace, resume=resume, cancel=cancel, extra_env=extra_env, store=store)
+    # The ACP road, for the profiles marked for it: the general agent's tool-using runs, on a CLI that speaks the protocol natively
+    # or through its adapter (claude, codex), while the owner's 'Run CLI agents over ACP' is on. Triage, the drafter, coding
+    # sessions and every pane stay on the argv road below - and so does a run whose agent did not start over ACP (ACPStartError:
+    # nothing ran), said once in the log. See docs/acp-transport.md.
+    if _acp_road(profile, store):
+        try: return run_acp(profile, prompt, trace, resume=resume, cancel=cancel, extra_env=extra_env, store=store)
+        except acp_mod.ACPStartError as e: _fell_back(str(profile.get('cmd') or ''), e, trace)
     profile = with_cmd(profile, store); name = profile['cmd']
     family = _cli_name(name)
     args = list(profile.get('args') or preset_args(name) or ['-p'])
@@ -1585,6 +1968,7 @@ def _run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None,
             # Normalize both into one stream so assistant-ui does not care which CLI is logged in.
             if isinstance(j, dict) and j.get('type') == 'thread.started':
                 streamed_sid = j.get('thread_id') or streamed_sid
+            if isinstance(j, dict) and j.get('type') == 'turn.completed': aiusage.codex_turn(j.get('usage'))     # what the turn used
             if isinstance(j, dict) and j.get('type') in ('item.started', 'item.updated', 'item.completed'):
                 item = j.get('item') or {}
                 iid = item.get('id') or f"item-{len(raw)}"
@@ -1643,7 +2027,7 @@ def _run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None,
     if omp_error: raise RuntimeError(f'{name}: {redact.scrub(omp_error)[:500]}')
     if family == 'omp' and (omp_invalid or not omp_terminal or not streamed_out or not streamed_sid):
         raise RuntimeError(f'{name}: incomplete or invalid JSON response')
-    if final is not None: out, sid = str(final.get('result') or '').strip(), final.get('session_id')
+    if final is not None: aiusage.claude_result(final); out, sid = str(final.get('result') or '').strip(), final.get('session_id')
     elif streamed_out: out, sid = streamed_out, streamed_sid
     elif structured_stream: out, sid = '', streamed_sid
     else: out, sid = parse_cli_json('\n'.join(raw))
@@ -1721,11 +2105,27 @@ def warm_cli(profile: dict, resume: str = None, extra_env: dict = None, store=No
     brain, a CLI with no stream-json input): there is nothing to have ready."""
     profile = with_cmd(profile, store); name = profile['cmd']
     args = list(profile.get('args') or preset_args(name) or ['-p'])
+    if profile.get('keep_alive') and _acp_road(profile, store) and (ok := _warm_acp(profile, resume, extra_env, store, swap)) is not None: return ok
     if not _keeps(profile, _cli_name(name), args): return False
     from . import clipool
     try: return clipool.warm(profile['keep_alive'], _resolve_cmd(name) + args + _model_args(profile, name) + _own_settings(profile, name),
                              cwd=profile.get('cwd'), env=spawn_env(profile, extra_env), resume=resume, swap=swap)
     except PermissionError as e: raise FileNotFoundError(denied_msg(name, name, e)) from e
+
+
+def _warm_acp(profile: dict, resume, extra_env, store, swap: bool) -> bool:
+    """warm_cli for a kept conversation on the ACP road: its connection opened and its session ready before the first turn - the
+    adapter's start-up (3-5 s, measured) paid while the owner reads. None for a start that fails: warm_cli warms the argv
+    process instead, the one the turn will fall back to."""
+    from . import clipool
+    try:
+        name, launch, cwd = profile['cmd'], acp_launch(profile), _long(profile.get('cwd'))
+        env = {**spawn_env(profile, extra_env), **launch['env']}
+        sig = _acp_sig(launch, cwd, env)
+        return clipool.warm_with(profile['keep_alive'], sig, lambda: acp_mod.Conversation(
+            _acp_open(name, launch, cwd, env, resume, profile.get('timeout'), lambda *a: None), sig), resume, swap=swap)
+    except acp_mod.ACPStartError as e:
+        logger.info(f"acp: {profile['cmd']} not warmed over ACP - {e}"); return None
 
 
 def _run_live(profile: dict, name: str, cmd: list, prompt: str, trace, keep: str, resume, cancel, extra_env):
@@ -1753,7 +2153,8 @@ def _run_live(profile: dict, name: str, cmd: list, prompt: str, trace, keep: str
         if j.get('type') == 'assistant':
             for c in (j.get('message') or {}).get('content') or []:
                 if c.get('type') == 'tool_use':
-                    trace('tool_call', c.get('name') or 'tool', {'tool_call_id': c.get('id') or 'tool', 'args': c.get('input') or {}})
+                    trace('tool_call', c.get('name') or 'tool', {'tool_call_id': c.get('id') or 'tool', 'args': c.get('input') or {},
+                                                                  **({'parent': j['parent_tool_use_id']} if j.get('parent_tool_use_id') else {})})
                 elif c.get('type') == 'text' and str(c.get('text') or '').strip():
                     trace('progress', 'text', str(c['text']).strip())
             _published(j, trace)
@@ -1780,6 +2181,7 @@ def _run_live(profile: dict, name: str, cmd: list, prompt: str, trace, keep: str
         if limit: raise RateLimited(rate_limit_msg(name, limit), limit)
         if _SIGNED_OUT.search(said): raise RuntimeError(signed_out_msg(name, said, cmd[0] if cmd else ''))
         raise RuntimeError(f'{name}: {said[:500]}')
+    aiusage.claude_result(final)                       # a turn that failed still used what it used
     if final.get('is_error'):
         said = str(final.get('result') or final.get('subtype') or 'the CLI reported an error')
         limit = rate_limited(raw) or rate_limited(said)

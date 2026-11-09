@@ -21,7 +21,8 @@ import collections, json, re, threading, time
 from loguru import logger
 from . import kinds as task_kinds
 from .timewords import plural
-from . import buttons, lanes
+from . import buttons, devphone, lanes
+from .inboxes import NAMES as INBOX_NAMES
 # the row's words (who, state, your move) and when a For later row comes back are worked out ONCE, in funnel_presentation
 from .funnel_presentation import back_in as _back_in, is_own, move_of as move_title, shows, story_who
 
@@ -159,32 +160,14 @@ def candidates(store, connector) -> list:
     says it: Telegram gives groups, supergroups and channels a NEGATIVE id and a person a positive
     one, which is the only thing about a Telegram chat that cannot be faked by naming it.
 
-    Returns [{'to', 'name', 'mine'}]. A bridge that will not answer yields nothing rather than
+    Returns [{'to', 'name', 'mine', 'kind'}] (chatpick.chats, the rows the owner is alone in). A bridge that will not answer yields nothing rather than
     raising: the panel still has to render, and the chat already chosen is shown whatever happens.
     """
     kind = (connector or {}).get('Type')
-    if kind == 'whatsapp':
-        from . import messengers
-        try: rows = messengers.wa_chats(connector, store)
-        except Exception as e:
-            logger.debug(f'whatsapp roster unavailable for the doorway picker: {e}')
-            return []
-        guide = chat_of(connector)
-        from . import wanames
-        return [{'to': r['jid'], 'name': wanames.label(r['jid'], r.get('name')), 'phone': r.get('phone') or '', 'mine': bool(r.get('self'))}
-                for r in rows if own_thread(store, connector, r, guide)]
-    if kind == 'telegram':
-        seen = {}
-        for src in store.list_sources(active_only=False):
-            if (src.get('Channel') or '') != 'telegram': continue
-            cid = str(src.get('Address') or '').strip()
-            if not cid or cid == '*' or cid.startswith('-') or not cid.lstrip('-').isdigit(): continue
-            # the poller writes "discovered: <the chat's title>" when it first sees one
-            name = str(src.get('Owner') or '')
-            seen[cid] = name.split(':', 1)[1].strip() if name.startswith('discovered:') else cid
-        return [{'to': cid, 'name': name, 'mine': True} for cid, name in seen.items()]
-    return []
-
+    if kind not in ('whatsapp', 'telegram'): return []
+    # the one chat list every picker reads (chatpick.py) - the Assistant takes the rows the owner is alone in
+    from . import chatpick
+    return [{k: o[k] for k in ('to', 'name', 'phone', 'mine', 'kind') if k in o} for o in chatpick.chats(store, kind, connector) if o['mine']]
 
 def doorway_state(store) -> list:
     """Every channel the assistant can be reached on, whether it is set up, and what it could use.
@@ -251,8 +234,8 @@ def greet_unchosen(store, connector, chat: str) -> bool:
     store.set_setting(key, str(time.time()), 'telegram-poll')
     mine = chat_of(connector) == str(chat)
     text = (f'This is your Assistant chat. To walk here, press "Walk me through them in Telegram" on the desktop, or let it listen any time '
-            f'under {words.name("settings")} → Assistant on your phone.' if mine else
-            f'To talk to Taskuary here, choose this chat on the desktop: {words.name("settings")} → Assistant on your phone.')
+            f'under {words.name("phone")}.' if mine else
+            f'To talk to Taskuary here, choose this chat on the desktop: {words.name("phone")}.')
     try: messengers.tg_send(store, str(chat), text, connector_id=connector.get('ConnectorId'))
     except Exception as e:
         logger.warning(f'telegram: the first-contact line did not go - {e}'); return False
@@ -996,7 +979,8 @@ def respond(store, channel: str, chat: str, question: str, connector_id: int, po
         welcome.touch(store)                  # a word on the phone is the owner here: "while you were away" ends with it
         store.audit('task', tid, 'assistant_chat_question', f'owner-{channel}',
                     detail={'channel': channel, 'chat': chat, 'chars': len(question)})
-        with concierge.delivering(concierge.PHONE):
+        # ...and in Developer mode the coding agents' tools are this turn's too (devphone.py) - only here, only while armed
+        with concierge.delivering(concierge.PHONE), devphone.armed(store):
             # the item on the table is the walk's own, persisted and validated here - a phone has no
             # client state to send, and the key is all say() needs to build the item afresh
             item = concierge.restore_current(store, tid)
@@ -1092,6 +1076,11 @@ def respond(store, channel: str, chat: str, question: str, connector_id: int, po
                 if not picked: forget_offered(store, channel, chat)
                 send(store, channel, chat, straight, connector_id)
                 return
+            # a landing answer typed instead of tapped is the same pick (devphone.typed) - the owner's own words, never the model's read
+            if not picked and (land_pick := devphone.typed(question, offered, acts)):
+                forget_offered(store, channel, chat)
+                send(store, channel, chat, run_act(store, land_pick, item), connector_id)
+                return
             out = concierge.say(store, question, key=concierge.current_key(store, tid) or None, actor='owner', cancel=cancel)
             if cancel is not None and cancel.is_set(): return          # a pick came in behind it and answers instead
             if out.get('no_brain') and not picked:
@@ -1109,7 +1098,7 @@ def respond(store, channel: str, chat: str, question: str, connector_id: int, po
                     send(store, channel, chat, f'Pick 1 to {len(offered)} - the choices are below.', connector_id, choices=offered)
                     return
             if not picked: forget_offered(store, channel, chat)
-            text = carry_out(store, out, item, picked=picked)
+            text = carry_out(store, out, item, picked=picked, extra=devphone.take() or None)    # a landing question's answers, as picks
             if out.get('no_brain') and not _CHOICES_BLOCK.search(text):
                 # ...and with nothing waiting either, still a way on (a fresh install's first "hi" was a dead end): the AI cards, everything else
                 text = turn_text({'say': text.replace(concierge.NO_BRAIN, concierge.NO_BRAIN_BARE), 'item': None}, store=store,
@@ -1709,6 +1698,7 @@ def run_act(store, act: dict, item: dict | None, actor: str = 'owner') -> str:
 def _run_act(store, act: dict, item: dict | None, actor: str = 'owner') -> str:
     from . import asks, concierge, funnel, operations
     t = act.get('t')
+    if t == devphone.LAND_ACT: return devphone.picked(store, act, actor)        # the owner's answer to the landing question (devphone)
     from . import doorway_browse
     try:
         if t == 'section':
@@ -2072,7 +2062,7 @@ def _cut(text: str, n: int) -> str:
 
 BOX, TICKED = '☐', '☑'
 # the few sources whose own spelling title() would get wrong; everything else title-cases fine
-_SOURCE_WORDS = {'github': 'GitHub', 'gitlab': 'GitLab', 'pagerduty': 'PagerDuty', 'imessage': 'iMessage'}
+_SOURCE_WORDS = {'github': 'GitHub', 'gitlab': 'GitLab', 'pagerduty': 'PagerDuty', 'imessage': 'iMessage', **INBOX_NAMES}
 
 
 _CODE = re.compile(r'`+([^`\n]+?)`+')

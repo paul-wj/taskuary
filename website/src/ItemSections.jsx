@@ -1,7 +1,7 @@
-// AN ITEM IN A TASK'S THREE SECTIONS (the owner, 2026-10-28: "even reports should come in with the 3 sections of came in-close out but they
-// should be small on the side like active agent. Want this to be consistent across. even fyi"): a report or an FYI on the table is the same
-// card a task is - its header line, then Came from | the middle | Close out left to right - with the section it is about open and the other
-// two the SLIM tabs a live agent leaves (TaskPage MINI_W): an arrow, a mark, a dot for where it stands, the words on hover. A tab's press opens
+// AN ITEM IN A TASK'S SECTIONS (the owner, 2026-10-28: "even reports should come in with the 3 sections ... Want this to be consistent across.
+// even fyi"): a report or an FYI on the table is the same card a task is - its header line, then Came from | the middle left to right (no Close
+// out, 2026-11-05) - with the section it is about open and the others the SLIM tabs a live agent leaves (TaskPage MINI_W): an arrow, a mark,
+// a dot for where it stands, the words on hover. A tab's press opens
 // its section; the one the item is about folds to its full tab while another is open, as a live agent's does. The pieces are the task's own
 // (TaskPage SectionTab, SECTION, SLOT, SectionHead), so the two read as one design. Every section stays mounted: the card's verbs (Foot) ride
 // the dock's row from wherever they are drawn, whichever section is open
@@ -42,7 +42,8 @@ const SAYS = { says: "What this says", matters: "What matters to you" };
 const HANDS = new Map();
 export const handToItem = (key, hand) => { const f = key && HANDS.get(key); if (!f) return false; f(hand); return true; };
 const ASK_ONLY = "the answer here reads the item only";
-export function ItemAsk({ ask, hand = null, onHand = null }) {
+// `came`: what the item is, a chip on the box while nothing is handed on (the owner, 2026-11-06: Came-from rides the one box as a chip)
+export function ItemAsk({ ask, hand = null, onHand = null, came = "" }) {
   const ls = itemLines(readingOf(ask?.reading));
   const [text, setText] = useState(""), [said, setSaid] = useState([]), [busy, setBusy] = useState(false), [err, setErr] = useState("");
   const pics = usePromptImages({ files: true }), input = useRef(null);
@@ -81,7 +82,7 @@ export function ItemAsk({ ask, hand = null, onHand = null }) {
         placeholder={MESSAGE}
         label={hand ? btn(hand.verb) : "Ask about this"} sendAttrs={{ "data-tq-item-send": hand ? "agent" : "ask" }}
         chips={hand?.items.length ? hand.items.map((i) => <AttachChip key={i.key} data-tq-item-chip={i.key} name={i.title} onRemove={busy ? null : () => drop(i.key)}
-          title={`${btn(hand.verb)} - it gets ${i.title}`} />) : null} />
+          title={`${btn(hand.verb)} - it gets ${i.title}`} />) : came ? <AttachChip data-tq-came-chip="" name={came} icon={false} title={`Came from: ${came}`} /> : null} />
       {err && <Typography role="alert" sx={{ fontSize: 12.5, color: "#a33", pt: 0.5 }}>{err}</Typography>}
     </Box>
   </Box>;
@@ -92,20 +93,25 @@ export function ItemAsk({ ask, hand = null, onHand = null }) {
 // `lays`: its moves ride the `about` section on a desk (ItemLay); `ask`: what it says and the box, in the AGENT section only (the owner, 2026-11-05:
 // "chat is on the came from tab. that's weird ... chat box is only on the agent tab") - the item still opens on what came in, never on Agent
 // `hands`: it takes a Send to agent with no box of its own to answer from (an FYI handful: ask null) - the box is drawn while a chip is on
-export default function ItemSections({ kind, label, title, aside, sections: all, about, here = about, height, itemKey, lays = false, ask = null, hands = false }) {
-  // NO CLOSE OUT ON AN ITEM (the owner, 2026-11-05: "reports/advisor/fyi to chat thing as well without close out"): every one said "Nothing
-  // owed". Its body stays mounted, unseen - the moves it registers (RowMoves, Foot) still ride the item's strip and the row
-  const sections = all.filter((s) => s.key !== "close"), closed = all.find((s) => s.key === "close");
+// `noAgent`: no Send to agent on its strip (an Advisor idea - the owner, 2026-11-06)
+// `moves`: what registers the item's row verbs (RowMoves, Foot), mounted out of sight - a section of its own once, "Nothing owed" on its tab
+const AGENT_STARTS = new Set(["regular_agent", "coding_agent", "send-general", "start-agent"]);
+export default function ItemSections({ kind, label, title, aside, sections: all, about, here = about, height, itemKey, lays = false, ask = null, hands = false, noAgent = false,
+  moves = null }) {
+  // NO AGENT COLUMN WITH NOTHING OF ITS OWN (the owner, 2026-11-06: "the one bottom box with Came-from as a chip, with no side-column Agent"): the
+  // box is at the foot of the section the item is about, its Came-from a chip on it
+  const sections = all.filter((s) => !(s.key === "agent" && !s.body));
   const [open, setOpen] = useState(about), [hand, setHand] = useState(null);
   useEffect(() => { setOpen(about); setHand(null); }, [itemKey, about]);
-  const takes = (!!ask || hands) && sections.some((s) => s.key === "agent");
+  const takes = !!ask || hands, boxAt = sections.some((s) => s.key === "agent") ? "agent" : about;
   useEffect(() => {
     if (!takes) return undefined;
-    const f = (h) => { setHand(h); setOpen("agent"); };
+    const f = (h) => { setHand(h); setOpen(boxAt); };
     HANDS.set(itemKey, f);
     return () => { if (HANDS.get(itemKey) === f) HANDS.delete(itemKey); };
-  }, [itemKey, takes]);
-  const box = (ask || hand) && <ItemAsk ask={ask} hand={hand} onHand={setHand} />;
+  }, [itemKey, takes, boxAt]);
+  const box = (ask || hand) && <ItemAsk ask={ask} hand={hand} onHand={setHand} came={typeof title === "string" ? title : label} />;
+  const skip = (v) => noAgent && AGENT_STARTS.has(String(v?.id || "").split(":").pop());
   const body = useRef(null), [w, setW] = useState(0);
   useLayoutEffect(() => {
     const el = body.current;
@@ -147,7 +153,7 @@ export default function ItemSections({ kind, label, title, aside, sections: all,
             <Box role="region" aria-label={s.name} className="tq-item-sec" sx={{ display: "flex", flexDirection: "column", gap: 1.5, minWidth: 0 }}>
               <SectionHead sec={s} moves={s.moves} />
               {s.body}
-              {s.key === "agent" && box}
+              {s.key === boxAt && box}
             </Box>
           </Box>
         ) : (
@@ -156,16 +162,16 @@ export default function ItemSections({ kind, label, title, aside, sections: all,
             sx={{ ...SLOT(open === s.key, closedW(s.key)), ...(i ? { borderLeft: `1px solid ${FOCUS_EDGE}` } : {}), "& > [role=region]": { top: `${STRIP_H}px` } }}>
             {open !== s.key && <SectionTab sec={s} lines={s.lines || []} foot={s.foot || ""} icon={s.icon} here={here === s.key && open !== here}
               mini={closedW(s.key) === MINI_W} before={at(s.key) < at(open)} onOpen={() => setOpen(s.key)} />}
-            {open === s.key && <PaneStrip sec={s.key} name={s.name} keys={keys} fold={(to) => (s.key === about ? to : about)} onFold={setOpen} />}
+            {open === s.key && <PaneStrip sec={s.key} name={s.name} keys={keys} skip={skip} fold={(to) => (s.key === about ? to : about)} onFold={setOpen} />}
             <Box role="region" aria-label={s.name} aria-hidden={open !== s.key ? true : undefined} className="tq-item-sec"
               sx={{ ...SECTION(open === s.key, w ? openW(s.key) : "100%"), gap: 1.5 }}>
               {s.body}
-              {s.key === "agent" && box}
+              {s.key === boxAt && box}
             </Box>
           </Box>
         ))}
       </Box>
-      {closed && <Box data-tq-item-close-moves="" aria-hidden sx={{ display: "none" }}>{closed.body}</Box>}
+      {moves && <Box data-tq-item-moves="" aria-hidden sx={{ display: "none" }}>{moves}</Box>}
     </Box>
     </ItemLay.Provider>
   );

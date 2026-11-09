@@ -116,6 +116,11 @@ def record(store, tid: int, sid: str, kind: str, request_id: str = None, text: s
             from . import batch
             batch.turn_ended(store, tid)
         except Exception as e: logger.debug(f'task {tid}: the turn end was not passed on - {e}')
+    if kind == 'turn_end' or kind in REQUESTS:    # ...and its answer, or what it waits on, to the chats bound to it (agentchannels.py)
+        try:
+            from . import agentchannels
+            agentchannels.on_event(store, tid, kind, text, source)
+        except Exception as e: logger.debug(f'task {tid}: not said on its channel - {e}')
     if kind in REQUESTS:                          # the Advisor on the event (advisor.py): an agent asked
         try:
             from . import advisor
@@ -378,12 +383,26 @@ def _answer_held(store, tid, h, answers: dict, actor) -> dict:
             'left': 0 if done else len(h['rids']) - len(h['answers'])}
 
 
+def _stranger_held(store, tid, rids=()) -> dict:
+    """An answer refused because the task turned a stranger's under a full session (terminal.stranger_now) - a hook's held ask included:
+    letting it go is the agent's next step with full tools. {} when the answer may go.
+    A PERMIT is no relay: Allow/Deny is the owner's own ruling on the one tool call its card shows and puts no words in the session,
+    so answers to permits only always go - held, a stranger's pane sat on its permit with no way left to refuse it."""
+    from . import terminal as term
+    if rids:
+        kinds = {e['RequestId']: e['Kind'] for e in events(store, tid) if e['Kind'] in REQUESTS}
+        if all(kinds.get(r) == 'approval_needed' for r in rids): return {}
+    why = term.stranger_now(store, tid)
+    return {'delivered': False, 'state': 'held_stranger', 'why': why} if why else {}
+
+
 def answer_group(store, tid: int, answers: dict, actor: str = 'owner') -> dict:
     """ALL the answers to one ask, together (request_id -> words). Held by a hook: handed to it. A general agent: one
     message naming each question. A pane standing on Claude's form: its keys, as measured (terminal.answer_form).
     Anything else: each answer on its own road."""
     answers = {str(k): ' '.join(str(v or '').split()) for k, v in (answers or {}).items() if str(v or '').strip()}
     if not answers: raise ValueError('say something')
+    if (held := _stranger_held(store, tid, list(answers))): return held
     groups = {group_of(r) for r in answers}
     for g in groups:
         h = HELD.get(g) if g else None
@@ -442,6 +461,7 @@ def answer(store, tid: int, request_id: str, text: str, actor: str = 'owner', ow
     from . import terminal as term
     text = ' '.join(str(text or '').split())
     if not text: raise ValueError('say something')
+    if (held := _stranger_held(store, tid, [request_id])): return held
     # the request is looked up across every run of the task: one that belongs to a run that is no longer the
     # task's is STALE, not silently forwarded to whatever worker has the task now (PW-139)
     evs = events(store, tid)
@@ -570,7 +590,18 @@ def asking_of(store, t):
     open_ = open_requests(evs)
     if not open_: return None
     approvals = [e for e in open_ if e['Kind'] == 'approval_needed']
-    return _public_request((approvals or open_)[-1])
+    return _public_request(approvals[-1]) if approvals else shown_ask([_public_request(e) for e in open_])
+
+
+def shown_ask(reqs: list) -> dict | None:
+    """The ask to SHOW of these open requests (public, oldest first): the newest one - or, when that turn asked several, its FIRST question
+    with "(+N more)" and every one in `questions`. The rail and the chip held only the last of four, and "where from?" was hidden behind
+    "any airline?" (agent-flow audit, 2026-11-07). What an answer binds to is the whole set either way (answer_open, question_group)."""
+    if not reqs: return None
+    g = group_of(reqs[-1]['request_id'])
+    grp = [r for r in reqs if g and group_of(r['request_id']) == g] or reqs[-1:]
+    one = grp[0]
+    return one if len(grp) < 2 else {**one, 'text': f"{one['text']} (+{len(grp) - 1} more)", 'questions': [r['text'] for r in grp]}
 
 
 def request_line(agent: str, req: dict) -> str:

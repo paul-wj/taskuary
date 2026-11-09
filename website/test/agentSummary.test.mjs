@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { answerShown, chatReplyShown, foldedSummaries, hasReply, lastAnswerSummed, nextSteps } from "../src/agentSummary.js";
+import { answerShown, chatReplyShown, foldedSummaries, hasReply, lastAnswerSummed, nextSteps, oneLine } from "../src/agentSummary.js";
 
 const read = (name) => readFileSync(fileURLToPath(new URL(`../src/${name}`, import.meta.url)), "utf8");
 
@@ -26,6 +26,23 @@ test("a newest answer with no summary folds every summary, so the cards follow i
   assert.equal(lastAnswerSummed([{ id: "a", role: "assistant", summary: {} }, { id: "w", role: "user", brief: true }]), false);
   assert.deepEqual([...foldedSummaries([{ id: "a", role: "assistant", summary: {} }, { id: "w", role: "user", brief: true }])], ["a"]);
   assert.equal(lastAnswerSummed([{ id: "a", role: "assistant", summary: {} }, { id: "t", role: "user", content: [] }]), false);
+});
+
+// A NOTHING-NEW TURN IS ONE LINE (the owner, 2026-11-06): the agent's own judgement, filed as a summary with only `did`
+test("a one-line turn is its line, and the real answer before it keeps its draft open", () => {
+  assert.equal(oneLine({ did: "Ray thanked you." }), true);
+  assert.equal(oneLine({ did: "Ray thanked you.", about: "" , on_you: [] }), true);
+  assert.equal(oneLine({ about: "Ray wants the renewal term", did: "Drafted it." }), false);
+  assert.equal(oneLine({ did: "Checked it.\nDrafted the reply." }), false);
+  assert.equal(oneLine({ did: "Drafted it.", drafted: [{ review: 4 }] }), false);
+  assert.equal(oneLine({ did: "" }), false); assert.equal(oneLine(null), false);
+  const msgs = [{ id: "a", role: "assistant", summary: { about: "Ray asks", did: "Drafted Ray a reply." } }, { id: "w", role: "user", brief: true },
+    { id: "b", role: "assistant", summary: { did: "Ray thanked you." } }];
+  assert.deepEqual([...foldedSummaries(msgs)], []);
+  // ...but a real answer after it folds both, as ever
+  assert.deepEqual([...foldedSummaries([...msgs, { id: "c", role: "assistant", summary: { about: "x", did: "y" } }])], ["a", "b"]);
+  const src = read("AgentSummary.jsx");
+  assert.ok(src.indexOf("oneLine(summary)") < src.indexOf("if (folded)"), "a one-line turn draws before any heads or Next steps");
 });
 
 test("Next steps: nothing left only when no draft waits and no On you step is unticked", () => {
@@ -62,14 +79,14 @@ test("Next steps: an Approve still pending is never Nothing left to do here", ()
 
 test("the chat draws the summary, and the turn's working is one line with its steps folded under it", () => {
   const view = read("GeneralWorkspace.jsx");
-  assert.match(view, /import AgentSummary from "\.\/AgentSummary\.jsx";/);
+  assert.match(view, /import AgentSummary, \{ OneBox, StaleDrafts \} from "\.\/AgentSummary\.jsx";/);
   assert.match(view, /foldedSummaries\(/);
   assert.match(view, /data-tq-working=""/);
   assert.match(view, /Working on this…/);
   const card = read("AgentSummary.jsx");
   for (const h of ["What this is about", "What I did", "Next steps", "Nothing left to do here", "data-tq-summary", "data-tq-on-you"])
     assert.ok(card.includes(h), h);
-  assert.doesNotMatch(card, /<Button|onClick/, "the summary draws no press of its own yet (Task 4.2 brings the cards)");
+  assert.doesNotMatch(card.slice(0, card.indexOf("export function NoAgentChat")), /<Button|onClick/, "the summary draws no press of its own yet (Task 4.2 brings the cards)");
   assert.doesNotMatch(card + view.slice(view.indexOf("<AgentSummary")), /onChanged=\{work/, "no prop nothing reads yet (Task 4.2 adds it with the cards)");
 });
 
@@ -121,4 +138,22 @@ test("the agent's answer_is_result decides whether its prose shows beside the su
   assert.equal(answerShown({}, long + " https://northwind.example/brief"), true);
   assert.equal(answerShown({ answer_is_result: true }, "  "), false);
   assert.doesNotMatch(read("GeneralWorkspace.jsx"), /answerWords/, "the pane asks the agent's say, never its own rule");
+});
+
+// NEVER TWICE IN A TURN (the owner, 2026-11-08): the post text, "Before you post" and the to-do were drawn in the agent's words and again in
+// What I did / Next steps under them. The words are the turn; the summary's prose is drawn only for a turn with none, its cards either way
+test("a turn with words of its own draws them once, and the summary keeps only its cards", async () => {
+  const { turnAnswered } = await import("../src/agentSummary.js");
+  const { readFileSync } = await import("node:fs");
+  assert.equal(turnAnswered("Posted text below - press Post."), true);
+  assert.equal(turnAnswered("   "), false); assert.equal(turnAnswered(undefined), false);
+  const ws = readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
+  const sum = readFileSync(new URL("../src/AgentSummary.jsx", import.meta.url), "utf8");
+  assert.match(ws, /components=\{\{ Text: AssistantText,/, "the words are always drawn");
+  const text = ws.slice(ws.indexOf("const AssistantText"), ws.indexOf("const CameIn"));
+  assert.doesNotMatch(text, /return null/, "words equal to the summary's did are still drawn - the summary prose is out, so hiding them emptied the turn");
+  assert.match(ws, /answered=\{answered\} \/>/);
+  const cardsOnly = sum.slice(sum.indexOf("if (answered)"), sum.indexOf("// ...a nothing-new turn"));
+  assert.ok(cardsOnly.length > 0, "an answered turn returns before the prose");
+  assert.doesNotMatch(cardsOnly, /about|What I did|OnYou|did\b/, "no About, What I did or On you beside the words");
 });

@@ -14,7 +14,7 @@ Nothing here executes. On the desk a CALL brings up the button that does it, lit
 (concierge.routes, the owner 2026-10-19) - the press is the confirmation; on a phone it is a yes-or-no (PW-123/124).
 """
 import json, re
-from . import buttons, operations, roles
+from . import buttons, devphone, operations, roles
 L = buttons.label        # a button is named by its one label (buttons.json) - never retyped in a tool's sentence
 
 # the roles a role.apply call may name, from roles.ROLES - a list in prose here would drift from what applies
@@ -54,7 +54,7 @@ PURPOSE = {
                                  'picks the time, or says there is none to pick from - never a day guessed instead, or "none" to bring it back now; `ref` names the task (TQ-0123) when it is not '
                                  'the one on the table. "Remind me about <a task that exists>" - named by ref, sender or '
                                  'subject - is this, never a new to-do'),
-    'review.approve':           ("the owner's yes to what is drafted: sends the reply as it stands - and on a task's close-out merges the pull "
+    'review.approve':           ("the owner's yes to what is drafted: sends the reply as it stands - and on a task's finish card merges the pull "
                                  "request (or closes the issue) FIRST, sending the reply only if that worked. The task stays open: "
                                  "task.complete (Mark done) is the close"),
     'agent.answer':             ('answer the agent that is waiting - `text`; `ref` names its task when it is not the one on the table. With no '
@@ -413,7 +413,7 @@ def block(store=None) -> str:
 _DECIDE = {
     'reply':           ("write a reply to the sender - `text`: the gist, in the owner's words; `cc`: people to loop in on it, by name "
                         "or address (\"loop Gail in and ask her\" is a reply with Gail copied, never an agent). Nothing is sent"),
-    'approve':         ("the owner's yes to what is drafted on the item: sends the reply as it stands - on a task's close-out it merges "
+    'approve':         ("the owner's yes to what is drafted on the item: sends the reply as it stands - on a task's finish card it merges "
                         "the pull request or closes the issue FIRST, then sends the reply; on an agent's proposal it runs that action and only "
                         "that. It never closes the task - that is send_close, or close, the owner's own Mark done - and never continues an "
                         "agent's session - that is agent.continue"),
@@ -464,7 +464,7 @@ _DECIDE = {
     'elsewhere':       "they answered elsewhere - `text`: where (a call, a meeting); the step somebody owed closes as done, or the follow-up is put down",
 }
 # ...each decision that IS a button says the button's name, read from buttons.json, so the model is told exactly today's buttons
-_STATES = {'action': "on an agent's proposal or a task's close-out", 'closeout': "on a task's close-out with its reply", 'none': 'when nothing is drafted yet'}
+_STATES = {'action': "on an agent's proposal or a task's finish card", 'closeout': "on a task's finish card with its reply", 'none': 'when nothing is drafted yet'}
 def button_words(v: str) -> str:
     """'the "Send" button ("Approve" on an agent's proposal...)' - '' for a decision that is no button."""
     if v not in buttons.VERBS: return ''
@@ -675,7 +675,8 @@ READS = {
     # THE APP'S OWN TROUBLE, looked into in the chat (troubleshoot.py, the owner 2026-10-23) - never a task, never an agent
     'app.health':       ('why a part of Taskuary itself is not working, read now - the connection, the WhatsApp bridge asked directly, '
                          'its log, the last sync and error - and the simple repair it has, if any. `name` optional: the connection '
-                         '(whatsapp, telegram, outlook...), or none for everything failing. `chat` optional: one WhatsApp chat or group '
+                         '(whatsapp, telegram, outlook...), claude or codex for a slow agent start (is its agent connector installed), '
+                         'or none for everything failing. `chat` optional: one WhatsApp chat or group '
                          'by its name - whether it is switched on under Chats, and where its messages went'),
     'agents.list':      'the agents and profiles, and which brain answers which job',
     'repos.list':       'the repositories a coding agent can work in, and what each one is for',
@@ -711,11 +712,13 @@ NOW = {'app.repair': ('run the simple repair app.health named for a part of Task
                        'companies or task titles; `happened`: what went wrong (a bug) or what would help (a feature), the same way. It is '
                        'scrubbed and comes up under your answer for them to read, edit and submit on GitHub themselves - nothing is filed from here')}
 NOW_NEEDS = {'app.repair': (('name',), ('how',)), 'issue.draft': (('kind',), ('trying', 'happened'))}     # each tuple: one of these
-def runs_now(kind: str) -> bool: return kind in READS or kind in NOW
+# ...and the coding agents' tools, on the owner's phone in Developer mode alone (devphone.py): with it off they are no tool at all
+def runs_now(kind: str) -> bool: return kind in READS or kind in NOW or devphone.runs(kind)
 
 
 def valid(kind: str, params: dict) -> str:
     """'' when this CALL is one the registry actually runs, otherwise why not."""
+    if devphone.runs(kind): return devphone.valid(kind, params)
     if kind in NOW:
         miss = [' or '.join(ns) for ns in NOW_NEEDS[kind] if not any(str((params or {}).get(n) or '').strip() for n in ns)]
         if kind == 'issue.draft' and not miss and str(params.get('kind')).strip().lower() not in ('bug', 'feature'): miss = ['kind: bug or feature']

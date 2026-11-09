@@ -56,6 +56,9 @@ DENIED = (
     (r'POST', r'^/api/tasks/\d+/(resume|continue-session)$', 'resuming previous work is the owner\'s choice'),
     # an agent never answers its own question - and an answer now lets a held ask go (hooks.ask, 2026-09-28)
     (r'POST', r'^/api/tasks/\d+/worker/(answer|answers|release)$', 'answering an agent\'s question is the owner\'s'),
+    (r'POST', r'^/api/tasks/\d+/permission$', "answering an agent's permission request is the owner's (permissions.py)"),
+    # a chat bound to an agent is a door other people talk through, and the agent's words leave by it (agentchannels.py)
+    (r'POST|DELETE', r'^/api/agent-channels(/\d+)?$', "which chats reach an agent - and hear it - is the owner's to open and close"),
     # anything that puts a message in front of a human somewhere else
     (r'POST', r'^/api/reviews/\d+/decide$', 'approving a reply sends it - that is the owner\'s'),
     (r'POST', r'^/api/tasks/\d+/handoff$', 'handing work to a person sends them a message'),
@@ -63,6 +66,8 @@ DENIED = (
     (r'POST', r'^/api/messages/\d+/reply$', 'opening a reply is the first half of sending one'),
     (r'POST', r'^/api/tasks/\d+/clarify$', 'opening a clarification is the first half of sending one'),
     (r'POST|PUT|PATCH|DELETE', r'^/api/(connectors|sources)', 'credentials and where mail goes'),
+    # a vendor's push (pushin.py) proves itself by its signature; a session that posted one would be writing its own next prompt
+    (r'POST', r'^/api/inbound/', "a vendor's push is the vendor's - an agent never puts a message in the inbox"),
     (r'GET', r'^/api/send-targets$', 'the address book of everywhere this install can send'),
     (r'POST|DELETE', r'^/api/shares(/\d+)?$', 'sharing a result puts it in front of someone else - a draft, a link, an upload (sharing.py)'),
     # a sign-in is typed by the server and only on the owner's say-so: no session mints a fill page, reads which sites are kept, removes
@@ -87,7 +92,9 @@ DENIED = (
     (r'POST|PUT|PATCH|DELETE', r'^/api/(invoice-batches|reports/\d+/invoice-batches)(/|$)',
      'preparing or changing an invoice batch is the owner\'s decision'),
     (r'POST', r'^/api/deps/', 'installing software on this machine is the owner\'s decision'),
-    (r'POST', r'^/api/cli/(install|update)', "installing or updating a coding CLI runs a vendor installer on this machine - the owner's decision"),
+    (r'POST', r'^/api/cli/(install|update|connector)', "installing or updating a coding CLI or its agent connector runs an installer on this machine - the owner's decision"),
+    (r'POST', r'^/api/connectors/\d+/tool(/sign-in)?$', "adding an agent tool registers an MCP server in the owner's CLIs and installs a skill, and "
+                                                        "signing in to it is the owner's own account - the owner's decision"),
     (r'POST', r'^/api/cli/setup', "setting a coding CLI up runs it on this machine, and signs in as the owner - their decision"),
     (r'POST', r'^/api/setup/first-run/', "choosing the AI that reads the mail, or the mailbox it reads, is the owner's decision"),
     (r'POST', r'^/api/signature(/|$)', "the signature under the owner's email is theirs to read off their mail and check"),
@@ -98,14 +105,14 @@ DENIED = (
     # ...and the doors the 2026-09-02 audit found standing open: releasing the held task of the very
     # sender the hold exists for, landing work, running an executor or a query with a card's
     # credentials, and rewriting the documents that govern the agent
-    (r'POST', r'^/api/tasks/\d+/(release|land|ci)$', 'releasing a held task or landing its work is the owner\'s decision'),
+    (r'POST', r'^/api/tasks/\d+/(release|land|landing(/revert)?|ci)$', 'releasing a held task, landing its work or reverting part of it is the owner\'s decision'),
     (r'POST', r'^/api/tasks/\d+/dispatch/retry$', 'retrying a queued start is the owner\'s decision'),
     (r'POST', r'^/api/tasks/\d+/offer$', 'accepting what triage offered an agent could do is the owner\'s press'),
     (r'DELETE', r'^/api/tasks/\d+/dispatch$', 'cancelling a queued start is the owner\'s decision'),
     (r'POST', r'^/api/(soul|learn|learned/mark)(/|$)', 'SOUL.md and LEARNED.md are the owner\'s word - propose, do not write'),
     (r'PUT|PATCH', r'^/api/(owner|whoami)$', 'who the owner is'),
     (r'POST', r'^/api/(mcp|mssql)/', 'runs a command, or sends saved credentials to a host of the caller\'s choosing'),
-    (r'POST', r'^/api/(reports/(preview|compose|compose-sources)|workflows/compose|dashboards/(compose|preview))$',
+    (r'POST', r'^/api/(reports/(preview|compose|compose-sources)|workflows/compose|dashboards/(compose|preview|tile))$',
      'the report/workflow composer may read a connected system with the card\'s credentials'),
     # testing a step reads a connected system with the card's credentials; a repair rewrites a saved workflow
     (r'POST', r'^/api/workflows/(step-test|\d+/repair)$',
@@ -129,9 +136,15 @@ AGENT_WRITES = (
     (r'POST', r'^/api/hooks/claude/(floor|permit)$', "a stranger's session asking the floor, or the owner, before a tool call"),
     (r'POST', r'^/api/hooks/claude/reason$', "the Reason Network hook - a message to someone untrusted is refused, an approval goes to the owner"),
     (r'POST', r'^/api/hooks/claude/browser$', "the browser hook - an act that can't be undone is held for the owner (browsergate)"),
-    (r'POST', r'^/api/agent/(reply|done|draft|item|tick|waiting|not-needed|check-back)$',
-     "`taskuary --reply/--done/--draft/--item/--tick/--waiting-on/--reply-not-needed/--check-back` on the session's OWN task (owns_task); nothing leaves"),
+    (r'POST', r'^/api/agent/(reply|done|draft|item|tick|waiting|not-needed|withdraw-draft|check-back|todos|remind)$',
+     "`taskuary --reply/--done/--draft/--item/--tick/--waiting-on/--reply-not-needed/--withdraw-draft/--check-back`, the todos and remind "
+     "tools, on the session's OWN task (owns_task); nothing leaves"),
     (r'POST', r'^/api/agent/propose$', "an act only the owner's press runs (proposals.queue), filed on the session's OWN task; nothing runs"),
+    (r'POST', r'^/api/agent/(answer-invite|meeting|share)$', "an invite's answer, a new meeting or a share set up on the session's OWN task - a card the owner presses; nothing leaves"),
+    (r'POST', r'^/api/agent/ask-stronger$', "the session's own question to a stronger model (askstronger), on its OWN task - an answer in words, nothing moves"),
+    (r'POST', r'^/api/agent/note-peers$', "a note to another agent (peers.py), from the session's OWN task - framed as a peer's, it approves nothing"),
+    (r'POST', r'^/api/agent/use-repo$', "the checkout the session's OWN task is worked in (repochoice.use) - inside the folders the owner allows, never over their pick"),
+    (r'POST', r'^/api/agent/propose-land$', "how the session's OWN branch should land, marked on the owner's question (landing.propose) - it lands nothing"),
     (r'POST', r'^/api/agent/sign-form$', "`taskuary --sign-form`: a PDF on the session's OWN task filled and signed into its folder (handsign) - nothing leaves"),
     (r'POST', r'^/api/mcp$', "Taskuary's own tools for the session (agenttools): each one is a door on this list or a read, on its OWN task"),
     (r'POST', r'^/api/board/notes$', 'the wall agents leave lines for each other on'),
@@ -148,6 +161,7 @@ AGENT_WRITES = (
 AGENT_READS = (
     (r'GET', r'^/api/agent/messages(/[mM]?\d+)?$',
      "`taskuary --search/--message`: the owner's mail and messages, read-only (mailsearch.py) - never a stranger's task"),
+    (r'GET', r'^/api/agent/repos$', "the find_repos tool: the git checkouts under the folders agents may look in (repochoice.find) - never a stranger's task"),
     (r'GET', r'^/api/agent/memory$', "`taskuary --memory`: LEARNED.md, read on demand (context.MEMORY_LINE) - never a stranger's task"),
 )
 
@@ -162,6 +176,7 @@ OWNER_ONLY = (
     # the router's rules, a judgement's correction and a step up to the strong model are the owner's (the router, 2026-10-25)
     (r'POST', r'^/api/ai/route_rules$', "which AI reads what is the owner's setting"),
     (r'POST', r'^/api/tasks/\d+/(judged|strong-again)$', "correcting how hard a task is, or re-running it on the strong model, is the owner's press"),
+    (r'POST', r'^/api/task-outputs/\d+/open$', "only the owner's click opens a task's files folder on their desktop"),
     (r'POST', r'^/api/(bug-report/draft|open-url)$', "a bug report is drafted from the owner's own screen, and only the owner's click opens a page on their desktop"),
     (r'POST', r'^/api/messages/\d+/unsubscribe$', "leaving a mailing list is the owner's press - a newsletter's words never reach it (unsubscribe.py)"),
     (r'POST', r'^/api/messages/\d+/calendar$',"answering an invite or drafting one is the owner's - drafted for their Send (calwrite)"),
@@ -172,6 +187,8 @@ OWNER_ONLY = (
     (r'POST', r'^/api/advice/press$', "the owner's own press, recorded against what the Advisor lit (presses.py)"),
     (r'POST', r'^/api/launch-key$', "a launch key opens a page that carries the owner token (launchkey.py, R29)"),
     (r'PUT', r'^/api/tasks/\d+/workstream$', "which of the owner's workstreams a task belongs to is the owner's word - it teaches where its people belong"),
+    (r'PUT', r'^/api/about/workstreams$', "what the owner works on - kept, renamed, personal - is the owner's word, as at setup"),
+    (r'DELETE', r'^/api/tasks/\d+/check-back$', "cancelling the agent's check-back is the owner's press - the agent sets its own"),
     (r'POST', r'^/api/tasks/\d+/desktop$', "marking a task 'needs desktop' hands its agent the owner's desktop - never its own agent's press"),
     (r'POST', r'^/api/tasks/\d+/trust$', "raising a task's origin is the owner's decision (origin.raise_to) - never a session's"),
     (r'POST', r'^/api/tasks/\d+/assistant/seen$', "the owner's open task keeps its agent's process warm - a session never keeps itself alive (clipool.touch)"),
@@ -186,7 +203,7 @@ OWNER_ONLY = (
     (r'POST', r'^/api/walk/(start|next|back|open|leave)$', "the walk's moves are the owner's presses, as /api/concierge/next was - a leave closes the row"),
     (r'POST', r'^/api/assistant/(dock(/new)?|doorways(/listens)?|ideas/[^/]+/[^/]+)$', "the assistant's dock, doorways and ideas"),
     (r'POST|PATCH', r'^/api/tasks(/purge-dropped|/\d+)?$', 'making, editing and purging tasks'),
-    (r'POST|PUT|PATCH', r'^/api/tasks/\d+/(agent/stop|assistant/(browser|cancel|messages|session|stream)|checklist(/\d+)?'
+    (r'POST|PUT|PATCH', r'^/api/tasks/\d+/(agent/(stop|cancel)|assistant/(browser|cancel|messages|session|stream)|checklist(/\d+)?'
                         r'|batch/\d+|batch-combine|code|comments|continue|continue-work|discussion|dispatch|merge|not-a-task|not-coding|pause|remind|repo'
                         r'|split|wrap|answer|read-ask|steps/\w+/start)$', 'steering a task - and a comment here is written as the owner'),
     (r'POST|DELETE', r'^/api/tasks/\d+/waitroom(/bulk|/image|/\d+)?$', 'the waiting room is what the owner tells the agent'),
@@ -275,7 +292,7 @@ def stranger_tid(server: dict, presented) -> int | None:
 # --draft/--item/--tick`, whose task id owns_task checks in the handler - and `taskuary --note`, whose note the board door pins to
 # the token's own task, so it never reaches another session's seed (blackboard.live_notes, wave B). Not the Hub, the data
 # tools or a report rerun: each of those reaches past its own task.
-_STRANGER_WRITES = (re.compile(r'^/api/hooks/[a-z]+$'), re.compile(r'^/api/agent/(reply|done|draft|item|tick|waiting|not-needed)$'), re.compile(r'^/api/board/notes$'))
+_STRANGER_WRITES = (re.compile(r'^/api/hooks/[a-z]+$'), re.compile(r'^/api/agent/(reply|done|draft|item|tick|waiting|not-needed|withdraw-draft)$'), re.compile(r'^/api/board/notes$'))
 _STRANGER_TASK_HOOK = re.compile(r'^/api/hooks/claude/(floor|permit)$')
 _STRANGER_FILE = re.compile(r'^/api/(attachments|task-artifacts)/(\d+)$')
 STRANGER_WHY = "a session working a stranger's task reaches its own task and nothing else"
@@ -298,6 +315,34 @@ def stranger_denied(method: str, path: str, query, tid: int, owner_of) -> str:
         return STRANGER_WHY
     if _STRANGER_TASK_HOOK.match(path): return '' if str((query or {}).get('task') or '') == str(int(tid)) else STRANGER_WHY
     return '' if any(p.match(path) for p in _STRANGER_WRITES) else STRANGER_WHY
+
+
+# ── A SESSION READS ITS OWN TASK (M7 + F46, 2026-11-08) ─────────────────────────────────────────────────────────────────
+# Every GET was 'read' to the shared agent token, so any session could read every other task, its mail and comments, and the live
+# screen of every terminal pane - the owner's own shells, which hold whatever was pasted there, included. A task's own parts - the
+# task and its routes, its messages, attachments, artifacts and output files, and its agents' terminal screens - now answer only the
+# session whose task proof (owns_task) names that task - a session started on a task always sends it (cli, agenttools); one started on
+# none (a pane the owner opened) sends none and keeps its reads, but no pane's screen. The pane list is refused: it names every session.
+# NOT a wall against a session that drops its proof - same OS user, it can read config.toml (module docstring); the wall for a
+# stranger's words is the stranger token (stranger_denied), which H1-H3 now hand to forwards, outsiders, alerts and teammate chats.
+# The Assistant's guide chat
+# (general.is_dock) reads across the work, as it is for. Searches the session is told of (AGENT_READS) and the feed are unchanged.
+_OWN_READS = ((re.compile(r'^/api/tasks/(\d+)(/.*)?$'), 'task'), (re.compile(r'^/api/task-outputs/(\d+)(/.*)?$'), 'task'),
+              (re.compile(r'^/api/messages/(\d+)(/.*)?$'), 'message'), (re.compile(r'^/api/attachments/(\d+)$'), 'attachment'),
+              (re.compile(r'^/api/task-artifacts/(\d+)$'), 'artifact'), (re.compile(r'^/api/terminals/([^/]+)/screen$'), 'terminal'))
+AGENT_SCOPE_WHY = "a session reads its own task - its messages, files and agents' screens - never another task's or your own panes"
+
+def agent_read_denied(server: dict, headers, method: str, path: str, owner_of, dock=None) -> str:
+    "'' when an agent-scope session may make this read, else why not. `owner_of(kind, id)`: the task a message, file or pane is on."
+    if (method or '').upper() not in READS or (str(dock or '').isdigit() and owns_task(server, headers, int(dock))): return ''
+    if path in ('/api/terminals', '/api/terminals/'): return AGENT_SCOPE_WHY
+    # a session started on no task (a pane the owner opened) carries no proof and keeps its reads - but never a pane's screen
+    bound = bool(headers.get(TASK_HDR))
+    for p, kind in _OWN_READS:
+        if (m := p.match(path or '')) and (bound or kind == 'terminal'):
+            tid = int(m[1]) if kind == 'task' else owner_of(kind, m[1])
+            return '' if tid and owns_task(server, headers, tid) else AGENT_SCOPE_WHY
+    return ''
 
 
 def token_matches(got, *want) -> bool:
@@ -456,12 +501,19 @@ def without_config_secrets(row: dict) -> dict:
 # the card's form like any field, but once saved it is never sent back to the browser - like the
 # Secret column, it can be replaced and not read. The server keeps spending the stored value.
 # LinkedIn's refresh token lives in ConfigJson too (linkedin._save), so it is held back the same way.
-WRITE_ONLY_CONFIG = {'linkedin': ('client_secret', 'refresh_token'),
+WRITE_ONLY_CONFIG = {'linkedin': ('client_secret', 'refresh_token'), 'reddit': ('client_secret',),
                      'quickbooks': ('client_secret',), 'amazon_sp': ('client_secret',), 'zoho_invoice': ('client_secret',),
                      # the Google cards' OAuth client secret and the Gmail card's calendar refresh token came back readable in plain
                      # boxes on reopen, beside an App Password that was masked (the UI audit, 2026-10-21)
                      'gmail': ('google_client_secret', 'google_refresh_token'),
-                     'google_sheets': ('google_client_secret',), 'google_chat': ('google_client_secret',)}
+                     'google_sheets': ('google_client_secret',), 'google_chat': ('google_client_secret',),
+                     # a keyed read with a second secret beside its key (apireads.json `write_only`): Schwab's app secret, NetSuite's consumer secret, Plaid's access token
+                     **__import__('taskuary.apireads', fromlist=['write_only']).write_only(),
+                     # the cards that sign in by OAuth (oauth.py) keep their app's secret here; LINE its channel secret, which checks
+                     # every push; SendGrid the key in its push address - the owner reads that through its own door, never the card
+                     **dict.fromkeys(('box', 'zoom', 'zoom_chat', 'webex', 'threads', 'hubspot', 'salesforce', 'docusign', 'basecamp_todos'),
+                                     ('client_secret',)),
+                     'line': ('channel_secret',), 'sendgrid': ('inbound_key',)}
 
 
 def masked_config(row: dict) -> dict:

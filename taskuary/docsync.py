@@ -58,38 +58,40 @@ def sync_connections(store, actor='system'):
         cfg = json.loads(s.get('ConfigJson') or '{}')
         sched = reports.schedule_words(cfg)
         lines.append(f"- Report \"{cfg.get('title') or s['Address']}\" ({cfg.get('type', 'rest')}, {sched})")
-    # the tool role is only real if the agents know how to reach it - spell out the call
-    if any('tool' in roles_of(c) for c in store.list_connectors() if c['Active']):
+    # the tool role is only real if the agents know how to reach it - spell out the call, with the types THIS install's cards run.
+    # It listed the whole registry - some 200 types (QuickBooks, Epic, Stripe...) to an owner who had connected WhatsApp - and
+    # `.replace('{auth}', ...)` bound to the last literal only, so the agents read a literal {auth} in the URL (the 2026-11-08 audit, F8)
+    if (have := tool_cards(store)):
         from . import config
         srv = config.load().get('server') or {}
         auth = ' (header X-Taskuary-Token)' if srv.get('token') else ''
-        lines.append(f"- To USE one of the systems above, POST http://{srv.get('host', '127.0.0.1')}:{srv.get('port', 7787)}"
-                     '/api/tools/run{auth} with {"type": "mssql|database|aws|s3_object|cloudwatch_logs|'
-                     'azure|azure_blob|azure_logs|winrm|mcp|rest|sqlite|rss|kb_search|'
-                     # intacct was reachable all along (the card carries the tool role by default) and
-                     # was the one system this list never named, so the only road an agent could SEE
-                     # to the ERP was "get a report pipeline saved first"
-                     'intacct|intacct_fields|quickbooks|quickbooks_vendors|quickbooks_accounts|teller_accounts|teller_transactions|teller_balances|teller_spend|simplefin_accounts|simplefin_transactions|simplefin_balances|simplefin_spend|amazon_report|amazon_sales_traffic|amazon_orders|amazon_inventory|amazon_settlement|amazon_marketplaces|amazon_business_transactions|amazon_invoice_pdf'
-                     '|stripe_balance|stripe_balance_transactions|stripe_charges|stripe_payments|stripe_payouts|stripe_refunds|'
-                     'stripe_disputes|stripe_customers|stripe_subscriptions|stripe_invoices'
-                     '|yahoo_quotes|yahoo_history|edgar_filings|edgar_facts|coingecko_prices|alchemy_prices|alchemy_wallet|fx_rates|'
-                     'td_quotes|td_indicator|av_quotes|fred_series|markets_screen|'
-                     'finnhub_quotes|finnhub_news|finnhub_earnings|finnhub_insiders|'
-                     'polygon_bars|polygon_snapshot|tiingo_history|tiingo_news|'
-                     'fmp_fundamentals|fmp_ratios|alpaca_quotes|alpaca_bars", ...} — '
-                     'saved credentials are filled in for you; if several cards have that type, pass '
-                     '"connector_id": <the id named above>; the raw output comes back. '
-                     # the writes exist and are named, and the road to them is the proposal - an agent
-                     # that finds no way to post a bill invents one
-                     'WRITES to the books (quickbooks_bill, quickbooks_expense) are never yours to run directly: '
-                     'propose one - TASKUARY-PROPOSE {"action": "run_tool", "type": "quickbooks_bill", "vendor": ..., '
-                     '"amount": ..., "account": ..., "date": ..., "memo": ..., "doc_number": ...} in your session - '
-                     'and the owner approves it on the task.'.replace('{auth}', auth))
+        kinds = '|'.join(sorted({k for _, ks in have for k in ks}))
+        books = ' WRITES to the books (quickbooks_bill, quickbooks_expense) are never yours to run directly: propose one - TASKUARY-PROPOSE ' \
+                '{"action": "run_tool", "type": "quickbooks_bill", "vendor": ..., "amount": ..., "account": ..., "date": ..., "memo": ..., ' \
+                '"doc_number": ...} in your session - and the owner approves it on the task.' if any(c['Type'] == 'quickbooks' for c, _ in have) else ''
+        lines.append(f"- To USE one of the systems above, POST http://{srv.get('host', '127.0.0.1')}:{srv.get('port', 7787)}/api/tools/run{auth} "
+                     f'with {{"type": "{kinds}", ...}} - saved credentials are filled in for you; if several cards have that type, pass '
+                     f'"connector_id": <the id named above>; the raw output comes back.{books}')
     block = '\n'.join(lines) or '_(no connections yet — add them in the Connections tab)_'
     head, rest = doc.split(CONN_START, 1)
     _, tail = rest.split(CONN_END, 1)
     new = f'{head}{CONN_START}\n{block}\n{CONN_END}{tail}'
     if new != doc: store.save_doc('soul', new, actor)
+
+
+def _kinds(c):
+    "The TOOL types a card runs, by name - never the card's own type when its tools are named apart from it (agent_systems)."
+    from .reports import REGISTRY, card_of
+    return sorted(t for t in REGISTRY if card_of(t) == c['Type'] and not t.startswith('_'))
+
+def tool_cards(store) -> list:
+    "[(card, its tool types)] for every card that is on, an agent tool, and runs at least one tool."
+    from .store import roles_of
+    return [(c, k) for c in store.list_connectors() if c['Active'] and 'tool' in roles_of(c) and (k := _kinds(c))]
+
+def data_cards(store) -> list:
+    "The tool cards that hold the owner's own data - every one but the Hub's, which is notes, not figures (general.NUMBER_LINE)."
+    return [c for c, _ in tool_cards(store) if c['Type'] != 'handbook']
 
 
 def agent_systems(store) -> str:
@@ -99,14 +101,19 @@ def agent_systems(store) -> str:
     from .store import roles_of
     from . import scopes
     from .reports import REGISTRY, card_of
-    tools = [c for c in store.list_connectors() if c['Active'] and 'tool' in roles_of(c)]
-    if not tools: return ''
+    from .outbound import mailboxes
     # the TOOL types each card runs, by name: a card's own type is not one when its tools are named apart from it - the Hub card
-    # is `handbook` and its tools handbook_search/..., so "type handbook" came back "unknown tool type" (2026-10-05)
-    def kinds(c): return sorted(t for t in REGISTRY if card_of(t) == c['Type'] and not t.startswith('_')) or [c['Type']]
-    lines = [f"- {c['Name'] or c['Type']} (connector_id {c['ConnectorId']}, authority {scopes.scope_of(c)}) - tools: {', '.join(kinds(c))}"
-             for c in tools]
-    return ('YOUR SYSTEMS (the owner\'s connections you may use)\n' + '\n'.join(lines) + '\n'
+    # is `handbook` and its tools handbook_search/..., so "type handbook" came back "unknown tool type" (2026-10-05). A card with
+    # no tool at all is not listed as one: the Gmail card read "tools: gmail" and the agent sending from it got "unknown tool type:
+    # gmail" (TQ-1354) - a mailbox is sent FROM with propose_email, named below
+    tools = tool_cards(store)
+    boxes = mailboxes(store)
+    mail = ('MAILBOXES you can send FROM (an email waits for the owner\'s Send): ' + ', '.join(f"{m['address']} ({m['kind']})" for m in boxes)
+            + ' - propose_email with `from` set to one (taskuary --draft ... --from <address>); they are not run_system tools.') if boxes else ''
+    if not tools: return mail
+    lines = [f"- {c['Name'] or c['Type']} (connector_id {c['ConnectorId']}, authority {scopes.scope_of(c)}) - tools: {', '.join(k)}"
+             for c, k in tools]
+    return ('YOUR SYSTEMS (the owner\'s connections you may use)\n' + '\n'.join(lines) + '\n' + (mail + '\n' if mail else '') +
             'Call one: curl -s -X POST "$TASKUARY_URL/api/tools/run" -H "X-Taskuary-Token: $TASKUARY_TOKEN" '
             '-H "X-Taskuary-Task-Token: $TASKUARY_TASK_TOKEN" -H "Content-Type: application/json" '
             '-d \'{"type": "<one of its tools>", "connector_id": <id>, "task_id": \'"$TASKUARY_TASK"\', ...}\' - saved credentials are '
@@ -118,6 +125,33 @@ def agent_systems(store) -> str:
             'writes is rolled back). To change something on a read-level system, PROPOSE it and the owner approves it on the '
             'task: TASKUARY-PROPOSE {"action": "run_tool", "type": "<one of its tools>", "connector_id": <id>, ...} - say in '
             'your reply what it will change and why. At write you may make the change yourself; say what you changed.')
+
+
+def not_a_tool(store, t) -> str:
+    """WHAT A CALL TO A NAME THAT IS NO TOOL IS TOLD (TQ-1354, 2026-11-08: an agent sending from a Gmail mailbox called run_system with
+    "gmail" and read only "unknown tool type: gmail", a dead end it could not reason past). Every connection the agent can see is one of a
+    few kinds, and each has its own way in - the answer names that way, so the next call is the right one, whatever the card."""
+    import difflib
+    from .reports import REGISTRY, card_of
+    from .outbound import MAILBOXES, mailboxes
+    from . import connectorcatalog
+    t = str(t or '').strip()
+    real = sorted(k for k in REGISTRY if not k.startswith('_'))
+    own = [k for k in real if card_of(k) == t]
+    cat = next((c for c in connectorcatalog.cards() if c['type'] == t), None)
+    if own: why = f'"{t}" is a connection, not a tool - call one of its tools: {", ".join(own)}.'
+    elif t in MAILBOXES:
+        boxes = ', '.join(m['address'] for m in mailboxes(store) if m['kind'] == t)
+        why = (f'"{t}" is a mailbox, not a tool - an email from it is propose_email with `from` set to its address'
+               f'{" (" + boxes + ")" if boxes else ""}; it waits for the owner\'s Send.')
+    elif cat and cat.get('mcp'): why = f'"{t}" is {cat["title"]}\'s own MCP server in your CLI, not a run_system tool - call its MCP tools directly.'
+    elif cat and cat.get('planned'): why = f'"{t}" ({cat["title"]}) is not built yet - say so to the owner instead of working round it.'
+    elif cat: why = (f'"{t}" ({cat["title"]}) brings work in or sends replies, it is no tool - an answer on it is a draft the owner sends '
+                     '(propose_reply / propose_email).')
+    else:
+        near = difflib.get_close_matches(t, real, 3, 0.6)
+        why = f'unknown tool type: {t}' + (f' - did you mean {", ".join(near)}?' if near else '')
+    return why + ' YOUR SYSTEMS in your brief lists every tool you can call.'
 
 
 def sync_projects(store, actor='system'):

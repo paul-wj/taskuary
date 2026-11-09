@@ -59,6 +59,7 @@ test("a WhatsApp source hit in Ctrl K reads its JID as the small grey line", () 
 });
 
 
+
 test("a switched-on chat's last message is one line under its name, an off one says nothing", async () => {
   const { waSaid } = await import("../src/waChats.js");
   const said = { from: "Gail Moreno", text: "standup moved", at: "2026-11-02 09:00:00" };

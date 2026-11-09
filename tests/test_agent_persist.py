@@ -28,6 +28,10 @@ def answered(s, tid, did, on_you=()):
 # ── the brief ───────────────────────────────────────────────────────────────────────────────
 def test_the_brief_carries_the_ladder_the_work_line_and_the_override():
     s = MemoryStore(); system = general._prompt(s, task(s))[0]
+    # the override rides only for an AGENT.md copy that still tells a worker to run --done: the shipped one no longer does (2026-11-09)
+    assert general.GENERAL_OVER not in system
+    s.save_doc('agent', (s.doc('agent') or '') + '\n- When the work is over, run `taskuary --done "<one sentence>"`.', 'owner')
+    system = general._prompt(s, task(s))[0]
     for want in (general.WORK_LINE, general.GENERAL_OVER, 'more than twice', 'three genuinely different ways', 'one line per way you tried',
                  'WHILE A QUESTION WAITS, KEEP WORKING', 'CHECK EACH STEP BEFORE THE NEXT', 'DONE MEANS THE GOAL IS MET AND CHECKED'):
         assert want in system, want
@@ -38,8 +42,9 @@ def test_agent_md_no_longer_tells_a_general_agent_to_stop_hunting_wait_or_close(
     text = (TEMPLATES / 'agent.md').read_text(encoding='utf-8')
     for gone in ('Do not go hunting for the task', 'stay at the prompt until the answer comes', 'Do not widen the job'):
         assert gone not in text, gone
-    assert 'A general assistant never\n  closes its task' in text and "When a coding session's work is over" in text
-    assert 'taskuary --done' in text                       # ...the coding road is unchanged
+    # ...and `--done` is a coding session's alone, so it lives in CODING.md; the general agent hears who closes from owner_closes_line
+    assert '--done' not in text and '--done' in (TEMPLATES / 'coding.md').read_text(encoding='utf-8')
+    assert 'taskuary --done' in (TEMPLATES / 'coding.md').read_text(encoding='utf-8')      # ...the coding road is unchanged
 
 
 def test_the_windows_are_large():
@@ -57,7 +62,7 @@ def test_a_long_task_is_compacted_and_still_names_its_earlier_decisions():
     for i in range(30):
         s.add_comment(tid, 'owner', general.USER_TYPE, f'question {i}'); answered(s, tid, f'answer {i}')
     s.add_comment(tid, 'owner', general.USER_TYPE, 'Where did we land?')
-    before = len(s.list_comments(tid))
+    before = len(s.list_comments(tid, internal=True))
     with mock.patch.object(general, 'MAX_CONTEXT', 30_000), mock.patch('taskuary.learn.learn_from') as lf:
         user = general._prompt(s, tid)[1]
     assert 'EARLIER IN THIS CONVERSATION, COMPACTED' in user
@@ -66,7 +71,7 @@ def test_a_long_task_is_compacted_and_still_names_its_earlier_decisions():
     assert user.rstrip().endswith('Do not repeat the task context.') and 'Where did we land?' in user
     assert len(user) <= 30_000 + 200
     # ...nothing new is stored, and nothing goes around LEARNED.md: the chat keeps every turn, compaction is only what the model reads
-    assert len(s.list_comments(tid)) == before and len(general.chat_rows(s, tid)) == 63
+    assert len(s.list_comments(tid, internal=True)) == before and len(general.chat_rows(s, tid)) == 63
     lf.assert_not_called()
     assert not [n for n in s.doc_names() if n not in ('soul', 'job', 'agent', 'coding', 'digest', 'learned', 'triage', 'style', 'counsel',
                                                       'researcher', 'analyst', 'coordinator', 'marketer', 'trader', 'assistant')]
@@ -109,6 +114,17 @@ def test_answer_is_result_rides_the_summary_only_when_said():
     assert selfclose.summary_marker(f'The list.\n{block(answer_is_result=False)}')[1]['answer_is_result'] is False
     assert 'answer_is_result' not in selfclose.summary_marker(f'The list.\n{block(answer_is_result="yes")}')[1]
     assert 'answer_is_result' not in selfclose.summary_marker(f'The list.\n{block()}')[1]
+
+
+# ── a nothing-new turn is one line (the owner, 2026-11-06) ────────────────────────────────────
+def test_a_one_line_turn_files_its_line_alone_and_the_agent_is_told_it_may():
+    said = f"Ray thanked you.\n{selfclose.SUMMARY_OPEN}{json.dumps({'did': 'Ray thanked you.', 'about': '', 'on_you': []})}{selfclose.SUMMARY_CLOSE}"
+    rest, out = selfclose.summary_marker(said)
+    assert rest == 'Ray thanked you.' and out['did'] == 'Ray thanked you.' and out['about'] == '' and out['on_you'] == []
+    # ...the model judges it: the instructions say ONE line and no draft, and never hand it a list of words to match
+    from taskuary import ingest
+    for words in (selfclose.SUMMARY_LINE, ingest.REPLAN):
+        assert 'ONE' in words and 'no draft' in words
 
 
 # ── a refusal says why, and what to do next ─────────────────────────────────────────────────

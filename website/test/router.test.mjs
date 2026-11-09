@@ -42,7 +42,8 @@ test("the address of a place reads back as the same place", () => {
     ["connections", {}], ["connections", { section: "Email", open: null }], ["connections", { section: "Email", open: "c3", connector: "3" }],
     ["connections", { connector: "cli-agents" }], ["settings", { section: null }], ["settings", { section: "config", open: null }],
     ["settings", { section: "config", open: "Sync & startup", knob: "poll_minutes" }], ["settings", { section: "policies", open: "policies" }],
-    ["settings", { section: "docs", open: "d:learned", view: "changes" }], ["settings", { section: "profiles", open: null }],
+    ["about", { section: "docs", open: "d:learned", view: "changes" }], ["settings", { section: "profiles", open: null }],
+    ["about", {}], ["about", { section: "you", open: "you" }], ["about", { section: "memory", open: null }], ["about", { section: "docs", open: null }],
     ["reports", { section: "reports", open: 17 }], ["reports", { section: "reports", open: "new-report" }], ["reports", { section: "workflows", open: null }],
     ["reports", { section: "workflows", open: "new-agent" }], ["reports", { section: "playbooks", open: null }],
     ["reports", { section: "playbooks", open: "pb:weekly-close" }], ["hub", {}], ["new", {}],
@@ -57,6 +58,8 @@ test("the address of a place reads back as the same place", () => {
   assert.equal(placeOf("#connector="), placeOf("#connections"));
   assert.equal(placeOf("#playbook=weekly-close"), "#playbook=weekly-close");
   assert.equal(placeOf("#settings=playbooks"), "#report=playbooks");
+  assert.equal(placeOf("#about=playbooks"), "#report=playbooks", "About you held them a few hours on 2026-11-06");
+  assert.equal(placeOf("#settings=docs"), "#about=docs");
   assert.equal(placeOf("#report=17&fix=9"), "#report=17");
   // a message link is a place until the canvas writes the table's own address over it (a reload then lands on that table)
   assert.equal(placeOf("#msg=4"), "#msg=4");

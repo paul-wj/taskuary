@@ -31,6 +31,8 @@ import { runOperation } from "./taskOps.js";
 import { draftJob, openReply, rewriteReceipt } from "./replyDraft.js";
 import { DEMO } from "./demoApi.js";
 import { lazyView } from "./lazyView.jsx";
+import AllDone from "./AllDone.jsx";
+import { burstsNow } from "./allDone.js";
 import { loadGeneral } from "./lazyGeneral.js";
 // the static demo's guided journey: nothing outside the demo build ever draws it, so nothing there fetches it
 const DemoJourney = DEMO ? lazyView(() => import("./DemoJourney.jsx")) : () => null;
@@ -64,7 +66,7 @@ import { ALERT, DIM, FAINT, INK, LEVEL_COLOR, LEVEL_TINT, PRIORITY_COLOR, ROLES 
 import { dangerLine } from "./strangerLine.js";
 import { railShort } from "./batchItems.js";
 import ProposalCard from "./ProposalCard.jsx";
-import { adviceRead, tableOf, tableWords } from "./tableState.js";
+import { adviceRead, overChat, tableOf, tableWords } from "./tableState.js";
 import { ReportLink } from "./BugReportDialog.jsx";
 import { openBugReport, shownError } from "./bugReportOpen.js";
 import { AgentSteps } from "./AgentStepRows.jsx";
@@ -77,7 +79,7 @@ import CloseNote from "./CloseNote.jsx";
 import { AttachImage, ImageTray, usePromptImages, withImages } from "./promptImages.jsx";
 import { handToItem } from "./ItemSections.jsx";
 import { afterCancel, afterConfirm, afterExecute, followUps, holdsProposal, markExecuted, proposalSay } from "./proposalCard.js";
-import { LEVEL_ROLE, arrivals, isUrgent, arrivedAt, asPressed, putDownLanded, bandsOf, canAdvance as canWalkOn, cardFor, currentItemFromPile, displayRevision, drawOrder, fillCaps, followsItem, foldsAs, inOrder, interactiveCardIndex, tableCardIndex, keysOf, lastActIndex, furtherIndex, chipsOf, receiptChips, CAPPED, FLOOR, FOOT_PX, levelHint, levelLabel, nextMarkerKey, trimCaps, ROW_PX, refreshCurrentPresentation, refreshPilePresentation, rowMeta, settledHistory, sinceOpener, walkOf } from "./funnelPile.js";
+import { LEVEL_META, LEVEL_ROLE, arrivals, isUrgent, arrivedAt, asPressed, putDownLanded, bandsOf, canAdvance as canWalkOn, cardFor, currentItemFromPile, displayRevision, drawOrder, fillCaps, followsItem, foldsAs, inOrder, interactiveCardIndex, tableCardIndex, keysOf, lastActIndex, furtherIndex, chipsOf, receiptChips, CAPPED, FLOOR, FOOT_PX, levelHint, levelLabel, nextMarkerKey, trimCaps, ROW_PX, refreshCurrentPresentation, refreshPilePresentation, rowMeta, settledHistory, sinceOpener, walkOf } from "./funnelPile.js";
 import { FYI_PAGE, ageHover, fyiCap, answersTo, awayFromClear, coveredByReload, fyiHasRoom, fyiTail, heldSince, latestLine, pileRows, rowKeys, sameKey, sameRow, sentChips } from "./funnelPile.js";
 import { railStatus, rowWhy } from "./railStatus.js";
 import { UndoLine } from "./Removed.jsx";
@@ -88,7 +90,7 @@ import { lightOf, litAfter, litOn, litPick, litPull } from "./assistantLight.js"
 import * as pageView from "./pageView.js";
 import DigestText from "./DigestText.jsx";
 import { canGoBack, firstAppLink, linkName, onStep, openAppLink, recordPlace } from "./appLinks.js";
-import { BOARD, hashFor } from "./canvasLinks.js";
+import { BOARD, hashFor, opensTask } from "./canvasLinks.js";
 import { canSend, cannotStart, useCapabilities } from "./capabilities.js";
 import { place } from "./words.js";
 import ConnectAi, { CONNECT_AI, connectAi } from "./ConnectAi.jsx";
@@ -101,7 +103,7 @@ import { summarize } from "./walkSummary.js";
 import { refreshToday, useCalendarToday } from "./calendarToday.js";
 import { onFirstRun, readFirstRun } from "./firstRunState.js";
 import FeedView from "./FeedView.jsx";
-import { MORE_PX, backAt, dueWord, levelOf, placed, pulledRow } from "./funnelPile.js";
+import { MORE_PX, backAt, dueWord, levelOf, placed, pressOnto, pulledRow, withWalk } from "./funnelPile.js";
 import { STAYS, dropHeld, ghostsOf, keepHeld, movedEntry } from "./movedFyi.js";
 import { isImportant, level as priorityOf } from "./priority.js";
 import { age, ago, band, bandUntil, plural } from "./timeWords.js";
@@ -119,7 +121,6 @@ import { revealRing } from "./railReveal.js";
 import { pressable } from "./pressable.js";
 import { coalesce } from "./coalesce.js";
 import { takeAsk } from "./askAssistant.js";
-import { WorkstreamLabel } from "./Workstream.jsx";   // a task row's workstream, a small label (the owner, 2026-11-01)
 import { digestLabel } from "./digestLabel.js";
 import "./assistantView.css";
 
@@ -402,7 +403,7 @@ function Pile({ pile, current, onPull, error, onRetry, onSection, onCurrent, onM
   // working agent under Your task until the next chat read refreshed it (the owner, 2026-09-28). A row from outside the pile takes
   // its place in the order (inOrder), never the top of its section.
   const drawn = inOrder(drawOrder(visibleItems).map((i) => (i.key === curKey && !i.moved ? { ...placed(i, current), key: i.key } : i)),
-    [...(curKey && !known ? [pulledRow(current)] : []), ...onTable, ...ghosts.filter((g) => !stillFyi.has(g.key))]);
+    [...(curKey && !known ? [pulledRow(current)].filter(Boolean) : []), ...onTable, ...ghosts.filter((g) => !stillFyi.has(g.key))]);
   const ringed = (i) => i.key === curKey && !twin(i), batched = (i) => batchKeys.has(i.key) && !twin(i);
   const prev = useRef(null);
   const [landing, setLanding] = useState(new Set());
@@ -485,8 +486,8 @@ function Pile({ pile, current, onPull, error, onRetry, onSection, onCurrent, onM
   // funnel", so from fifteen: the count is the encouragement - no header, no total)
   // ...and it is THE HEADINGS ADDED UP, the table's rows with them until they are put down (funnelPile.awayFromClear)
   const left = awayFromClear(bands, tail);
-  const cheer = !left || left > 15 ? "" : left === 1 ? t("One more and you're clear.")
-    : left <= 5 ? t("{count} to go, then you're clear.", { count: left }) : t("{count} away from clear.", { count: left });
+  // ...in ONE phrase, whatever the count (the product audit, 2026-11-08: "2 to go, then you're clear" one moment, "8 away from clear" the next)
+  const cheer = !left || left > 15 ? "" : left === 1 ? t("{count} to go, then you're clear.", { count: 1 }) : t("{count} to go, then you're clear.", { count: left });
   const sig = bands.map((b) => `${b.level}:${b.items.length}`).join(",");
   const wrapRef = useRef(null);
   // what is on the table is ringed WHERE THE OWNER CAN SEE IT (railReveal.js): once per change, after the rows' .55s glide
@@ -660,6 +661,11 @@ function Pile({ pile, current, onPull, error, onRetry, onSection, onCurrent, onM
     if (free > 0) setTrim((was) => Math.max(0, was - free));
   });
 
+  // ...the rows it drew last time, so reaching clear in front of the owner plays its burst once (AllDone) - null until the pile has loaded,
+  // so a reload onto a clear rail stays quiet
+  const lastN = useRef(null), burst = !!pile && burstsNow(lastN.current, drawn.length);
+  useEffect(() => { if (pile) lastN.current = drawn.length; }, [pile, drawn.length]);
+
   return (
     <div className="tq-pile" data-tq-keep ref={wrapRef} role="listbox" aria-label={t("Your list")} onKeyDown={railKey} data-tq-left={left}
       onFocus={(e) => { if (!wrapRef.current?.contains(e.relatedTarget)) kbdBack.current = e.relatedTarget || null; }}>
@@ -686,7 +692,7 @@ function Pile({ pile, current, onPull, error, onRetry, onSection, onCurrent, onM
           <button type="button" className="tq-pile-retry" data-tq-connect-ai="" onClick={connectAi}>{CONNECT_AI}</button>
         </div>
       ) : !drawn.length ? (
-        <div className="tq-pile-empty"><span className="mark">✓</span><b>{t("All done")}</b>{t("Nothing is waiting on you. New things land here as they arrive, and Taskuary speaks up.")}</div>
+        <AllDone burst={burst}><span className="mark">✓</span><b>{t("All done")}</b>{t("Nothing is waiting on you. New things land here as they arrive, and Taskuary speaks up.")}</AllDone>
       ) : bands.map(({ level, items: rows }) => {
         const open = opened.has(level);
         const extra = level === "fyi" ? tail : 0;           // the band's rows not here yet - counted, never dropped
@@ -798,8 +804,9 @@ function Pile({ pile, current, onPull, error, onRetry, onSection, onCurrent, onM
                 const word = i.settling ? ""
                   : i.kind === "meeting" ? t("invite · {time}", { time: fmtTime12(i.when) })
                     // a goal says only that it SLIPPED (red); on track or not started, its steps say enough (the owner, 2026-10-21)
-                    // ...and a slipped one says the day it slipped past in the same red word, "slipped Dec 11" - its due date (2026-10-28)
-                    : goal ? (i.kind === "goal_slipped" ? [t(meta.word), dueWord(i.due)].filter(Boolean).join(" ") : "") : "";
+                    // ...and a slipped one says the day it slipped past in the same red word, "slipped Dec 11" - its due date (2026-10-28), or its
+                    // late step's while the goal's own is still ahead (`slipped_at`, 2026-11-08: "slipped Dec 23" on Nov 8 read as nonsense)
+                    : goal ? (i.kind === "goal_slipped" ? [t(meta.word), dueWord(i.slipped_at || i.due)].filter(Boolean).join(" ") : "") : "";
                 return (
                   <div key={i.key} className={cls} data-tq-key={i.key} data-tq-urgent={urgentDot ? "" : undefined} data-tq-important={imp ? "" : undefined}
                     style={{ top: falls(i.key) ? -ROW_H : top }}>
@@ -834,8 +841,7 @@ function Pile({ pile, current, onPull, error, onRetry, onSection, onCurrent, onM
                             and on the card (B3, 2026-10-29) - a warning in the row's own height, never a gate */}
                         {!!i.danger && <span className="tq-pile-danger" data-tq-danger="" style={{ color: ALERT }} aria-label={dangerLine(i.danger, i.danger_aim)}>⚠</span>}
                         <b className={goal ? "goal-t" : undefined}>{i.title}</b>
-                        {/* WHICH WORKSTREAM it is under, small after the title (the owner, 2026-11-01) - it gives way first on a narrow rail */}
-                        {!!i.workstream && <WorkstreamLabel slug={i.workstream} sx={{ ml: 0.5, flexShrink: 1, minWidth: 0, overflow: "hidden", fontSize: 10.5 }} />}
+                        {/* NO WORKSTREAM CHIP ON THE RAIL (the owner, 2026-11-08: "little card taskuary AI .... on rail. hate that") - the task's own page still says it */}
                         {/* ONE FYI ROW PER EMAIL THREAD (trust audit P2, 2026-10-28): the newest mail speaks, the rest are its "+N" */}
                         {i.thread_n > 0 && <span className="tq-pile-ref" data-tq-thread-n={i.thread_n} title={t("{count} more on this thread - it opens on all of them", { count: i.thread_n })}>+{i.thread_n}</span>}
                         {/* a goal's row is "🎯 title · 2 of 5 steps" - its count, never its TQ number (the owner, 2026-10-21) */}
@@ -966,6 +972,8 @@ function RetryVerbs({ item, failed, onSaid, onDone }) {
 // WHAT THE CHAT'S ROAD CANNOT CARRY, said on the chip (the owner, 2026-11-05): the turn names a file's path - an AI on this computer opens it,
 // an API one is handed pictures only (general._images)
 const dockCannot = (i) => (i.image ? "" : "read only by an AI on this computer");
+// ...and its chips ride the box's own line, beside the paperclip, never a row over it (the owner, 2026-11-06: every box, chips left of the words)
+const DOCK_CHIPS = { flex: "0 1 auto", maxWidth: 220, minWidth: 0, pb: 0 };
 function Line({ m, lastBrief = false, live, last, further = false, actions, fresh, tableChips = [], barHolds = false, pageOver = false, canvas = null }) {
   useLocale();
   if (m.role === "user") return <div className="tq-msg you"><div className="body">{m.text}
@@ -1472,8 +1480,10 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
     // EVERY WALK MOVE IS ONE POST TO /api/walk/* (railwalk, 2026-10-30): a row opened by key, the row below, the row above, the top, a close -
     // never the stream, which words a turn around a move instead of making it
     const walkRoute = { next: body.key ? "open" : "next", back: "back", start: "start", leave: "leave", section: "open" }[body.mode];
+    // ...the LIGHT answer (the owner, 2026-11-06: Next turns blue as soon as the move saves): the move and the walk's word, never the rail
+    // rebuilt for it - that rail is read behind the answer (landed), and the press after it is free at once
     if (walkRoute) return (await api.post(`/api/walk/${walkRoute}`, { key: body.key || null, from_key: body.from_key || null, press: body.press || null,
-      read: body.read || [], fyi: fyiWant.current, ...(body.level ? { level: body.level } : {}), ...(body.how ? { how: body.how, note: body.note || null, until: body.until || null, pressed: body.pressed || null } : {}) })).data;
+      read: body.read || [], fyi: fyiWant.current, light: true, ...(body.level ? { level: body.level } : {}), ...(body.how ? { how: body.how, note: body.note || null, until: body.until || null, pressed: body.pressed || null } : {}) })).data;
     const stop = new AbortController(); stopRef.current = stop;
     const plain = async () => {
       const endpoint = body.mode === "open" ? "/api/concierge/open" : "/api/concierge/say";
@@ -1862,7 +1872,9 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
     // ...and the first read answers both: the open and the rail's todo were two GETs of the same answer at every start (the overnight
     // setup walk, 2026-10-26)
     // ...and the read is setup's one shared read (firstRunState.js): every answer setup's canvas and rail take moves the todo too
-    readFirstRun().then((data) => { if (data?.step && data.dismissed === false) setFirstRun(true); }).catch(() => {});
+    // ...and a #task link opens its task over setup (the owner, 2026-11-08): read before setup said it was open, it landed under the canvas,
+    // the agent's question on it out of reach
+    readFirstRun().then((data) => { if (!(data?.step && data.dismissed === false)) return; setFirstRun(true); if (opensTask(window.location.hash)) setOverSetup(true); }).catch(() => {});
     const offRead = onFirstRun((data) => setSetupTodo(data?.todo || ""));
     const todo = () => readFirstRun().catch(() => {});
     window.addEventListener("tq-first-run", show); window.addEventListener("tq-setup-changed", todo);
@@ -2068,8 +2080,9 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
         if (fresh) holdPile(fresh); else loadPile(true);
       });
     }
-    // ...no rail rides along: read it, with the walk beside it
-    else loadPile(true);
+    // ...no rail rides along (a light answer, 2026-11-06): the rail on screen takes the walk's word from it - the same object in the ref and
+    // the state, so a read the press took off stays off (readGone.after) - and the rail is read behind it, never waited on
+    else { const p = withWalk(pileRef.current, data.walk); if (p !== pileRef.current) { pileRef.current = p; setPile(p); } loadPile(true); }
   }, [holdPile, loadPile, putOnTable, say]);
 
   // a line of the assistant's own that needs no turn
@@ -2117,14 +2130,9 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
     // done waited a whole round trip (400-600 ms against ~100 before)
     // ...the walk's row and the one put down are ONE ROW by key or alias (sameKey): a report that re-ran on the table has a new key
     const walkNow = walkOf(pileRef.current), railNow = pileRef.current?.items || [];
-    const onIt = !!putDown && sameKey(railNow, walkNow?.on, putDown, currentRef.current);
-    const below = onIt && walkNow.below ? walkNow.below
-      // ...AND BACK THE SAME WAY, the row above (walk.above) at its press (the owner, 2026-11-02: "the Back button takes way too long, not like
-      // the Next button"): it waited the whole round trip, the server's rail build with it, before the table moved
-      : how === "back" && fromKey && walkNow?.on === fromKey && walkNow.above ? walkNow.above
-      // ...AND A RAIL ROW PRESSED IS DRAWN AT ITS PRESS the same way, its task read since the pointer came down (taskDetail.js): the move's
-      // answer waited on the server's whole rail build, and a big task's row put nothing on the table for seconds (the owner, 2026-11-01)
-      : key && how === "next" && key !== currentRef.current?.key && !key.startsWith("fyis:") ? key : null;
+    // ...AND BACK THE SAME WAY, the row above (walk.above) at its press (the owner, 2026-11-02: "the Back button takes way too long, not like
+    // the Next button"), AND A RAIL ROW PRESSED, its task read since the pointer came down (taskDetail.js, 2026-11-01) - pressOnto
+    const { onIt, below } = pressOnto(walkNow, railNow, { putDown, how, fromKey, key, card: currentRef.current });
     // ...AN FYI BATCH TOO, from its rows (railwalk.as_item's shape): it stood as dots for the whole round trip, Next from the last task into
     // FYI slow where task to task was not (the owner, 2026-11-03: "next between task going into fyi still takes a while")
     const fyis = below?.startsWith("fyis:") ? below.slice(5).split(",").map((k) => railNow.find((r) => answersTo(r, k) && !r.settling)) : null;
@@ -3333,7 +3341,7 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
   useEffect(() => () => navEnd(false), []);
   const navOn = shown.find((x) => x.id === browsing)?.area || "";
   // Settings and Connections have their own ← back to your tasks: the bar's Back and Next stand greyed under them (actionRow.navOff)
-  const ownBack = navOn === "settings" || navOn === "connections";
+  const ownBack = navOn === "settings" || navOn === "about" || navOn === "connections";   // ...and About you, Settings' own split (2026-11-06)
   useEffect(() => { navOff(ownBack ? "Back to your tasks with ← at the top" : ""); }, [ownBack]);
   useEffect(() => () => navOff(""), []);
   // WHAT THE PAGE ASKS THE CANVAS TO OPEN (TaskHubPage canvasReq): once each, and only once the chat has loaded - the
@@ -3640,6 +3648,11 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
   const grow = chatApart && !boxWide && (hover || !!text.trim());
   const growIn = () => { clearTimeout(hoverT.current); setHover(true); };
   const growOut = () => { clearTimeout(hoverT.current); hoverT.current = setTimeout(() => setHover(false), 350); };
+  const iconsInPill = chatApart && overChat(table);   // ...never both: in the pill only while a task or page is open over the chat
+  const ownIcons = <>
+    <Tooltip title={t(speakOnState ? "Reading replies aloud — click to stop" : "Read replies aloud")}><IconButton size="small" className="tq-phone-hide" data-tq-speak="" onClick={toggleSpeak}>{speakOnState ? <VolumeUpIcon sx={{ fontSize: 18, color: "#526b53" }} /> : <VolumeOffIcon sx={{ fontSize: 18, color: DIM }} />}</IconButton></Tooltip>
+    <Tooltip title={t("Past chats")}><IconButton size="small" data-tq-past-chats="" onClick={openChats}><HistoryIcon sx={{ fontSize: 18, color: DIM }} /></IconButton></Tooltip>
+    <Tooltip title={t("New chat — archives this one")}><IconButton size="small" data-tq-new-chat="" onClick={newChat} disabled={busy || resetting}><EditNoteIcon sx={{ fontSize: 19, color: DIM }} /></IconButton></Tooltip></>;
   const composeBox = (
     <div className="tq-compose-box" style={firstRun ? { display: "none" } : undefined} ref={boxRef} data-tq-open={boxWide ? "" : undefined}
     data-tq-continue={!boxWide && isMini && winLines.length ? "" : undefined} data-tq-grow={grow ? "" : undefined}
@@ -3652,6 +3665,7 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
     <div className="tq-compose-field" onMouseDown={(e) => { if (e.target === e.currentTarget) { e.preventDefault(); composeRef.current?.focus(); } }}>
     <div className="tq-compose-tools">
     <AttachImage pics={pics} sx={{ color: DIM }} />
+    <ImageTray pics={pics} cannot={dockCannot} sx={DOCK_CHIPS} />
     <MicButton size={18} sx={{ width: 34, height: 34, p: 0, color: DIM }} onActive={setDictating} ctl={micRef} onInterim={setHeard}
       onText={(t) => setText((v) => (v.trim() ? `${v.trimEnd()} ${t}` : t))} />
     <Tooltip title={t("Send an emoji response")}>
@@ -3660,6 +3674,7 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
         <SentimentSatisfiedAltIcon sx={{ fontSize: 18 }} />
       </IconButton>
     </Tooltip>
+    {iconsInPill && <span className="tq-compose-own">{ownIcons}</span>}
     </div>
     {/* a phone's composer is one line tall and the long hint wrapped under its own edge, cut
         mid-word ("name or a subject pulls it in" lost its tail, 2026-09-20): the short hint there - and the pill's at rest, and the open
@@ -3698,11 +3713,11 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
         <div className="who" style={{ minWidth: 0 }}><b>Taskuary</b>{old && <span>{t("An earlier chat · {time}", { time: fmtDateTime(old.at) })}</span>}</div>
         <div className="grow" />
         <Tooltip title={t("Your work")}><IconButton size="small" onClick={() => setRailOpen(true)} sx={{ display: { xs: "inline-flex", md: "none" } }}><ViewSidebarIcon sx={{ fontSize: 18, color: DIM }} /></IconButton></Tooltip>
-        <Tooltip title={t(speakOnState ? "Reading replies aloud — click to stop" : "Read replies aloud")}><IconButton size="small" className="tq-phone-hide" onClick={toggleSpeak}>{speakOnState ? <VolumeUpIcon sx={{ fontSize: 18, color: "#526b53" }} /> : <VolumeOffIcon sx={{ fontSize: 18, color: DIM }} />}</IconButton></Tooltip>
         {/* ONE AI PICKER, THE COMPOSER'S (the owner, 2026-10-29): the header's own AI popover is gone - the model picker at the foot of
             the box chooses this chat's AI, a new chat starts on Settings -> AI defaults, and the default is changed there */}
-        <Tooltip title={t("Past chats")}><IconButton size="small" onClick={openChats}><HistoryIcon sx={{ fontSize: 18, color: DIM }} /></IconButton></Tooltip>
-        <Tooltip title={t("New chat — archives this one")}><IconButton size="small" onClick={newChat} disabled={busy || resetting}><EditNoteIcon sx={{ fontSize: 19, color: DIM }} /></IconButton></Tooltip>
+        {/* ...and THE ASSISTANT'S OWN ICONS ARE IN ITS PILL on a desk while a task or page is open (the owner, 2026-11-06): over the task
+            they read as the task's. On the home screen the pane is the Assistant's chat, and they are here, top right (overChat) */}
+        {!iconsInPill && ownIcons}
       </div>
       {remindOn && <RemindPicker task={remindOn.task} path={remindOn.path} anchor={remindOn.anchor || document.body} live={remindOn.live} said={remindOn.said} onClose={() => setRemindOn(null)}
         act={remindOn.key ? async (until) => { const { error, data } = await leave(remindOn.key, "remind", { until }); if (error) throw error; return data?.left || { remindAt: until }; } : null}
@@ -3885,7 +3900,6 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
                 by it (advice.stripWord's quiet pick), so it leaves the same mark */}
             {!shownAdvice && !litNow && stripPick?.verb === "next" && advice?.none && advice.for === onTable && <div hidden data-tq-advice="" data-tq-silent="" data-tq-advice-verb="next" />}
           </>}
-          {!firstRun && !chatApart && <ImageTray pics={pics} cannot={dockCannot} sx={{ width: "100%", mb: 0.75 }} />}
           {/* ONE ROW: the row's groups and the box share a line (the one-row chat bar, 2026-10-26) - the box a pill at its end while at rest,
               widened while it is used, the groups folding into their ▾ for the room (ActionRow measures what is left; Next and the lit
               move never fold). With no row - the day's opener, a phone, whose row rides with its task view - the box is the whole line */}
@@ -3898,7 +3912,7 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
           {!chatApart && composeBox}
           </div>
           </div>
-          {chatApart && <div className="tq-chat-unit" data-tq-chat-unit=""><ImageTray pics={pics} cannot={dockCannot} sx={{ width: "100%", mb: 0.75 }} />{composeBox}</div>}
+          {chatApart && <div className="tq-chat-unit" data-tq-chat-unit="">{composeBox}</div>}
           <Popover open={!!emojiEl} anchorEl={emojiEl} onClose={() => setEmojiEl(null)}
             anchorOrigin={{ vertical: "top", horizontal: "left" }} transformOrigin={{ vertical: "bottom", horizontal: "left" }}
             slotProps={{ paper: { sx: { p: 1.1, borderRadius: 2.5 } } }}>

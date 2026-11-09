@@ -2,10 +2,21 @@
 // the tabs are gone, so a link that named one - a notification, the digest, a card's "change the judge", a bookmark -
 // becomes a request for the assistant canvas: open this task's view, or post this browse card at this place.
 // Pure, so test/canvasLinks.test.mjs can hold every link the app writes. `n` numbers the request; null = not ours.
+import { PHONE_GROUP } from "./phoneChats.js";
 const REPORT_BUCKETS = ["workflows", "new-invoices", "new-agent"];
 // Settings' pages (SettingsView NAV): a link to any other opens the section list - "#settings=foo" crashed the app on
 // every reload (the final review, 2026-09-29)
-export const SETTINGS_PAGES = ["about", "docs", "config", "policies", "audit", "updates"];
+// ...and Phone & chats (the owner, 2026-11-06), which holds the "Assistant on your phone" group: a link to that group lands there
+export const SETTINGS_PAGES = ["config", "policies", "phone", "audit", "updates"];
+// ABOUT YOU's sections (the owner, 2026-11-06): You, Docs and Memory left Settings for one page of their own; every old link to them
+// lands here (aboutAt). `you` is the identity page, opened at once
+// ...and PLAYBOOKS WENT BACK TO REPORTS the same day (the owner: "it's more about how you work, not about you"): pbAt
+export const ABOUT_PAGES = ["you", "docs", "memory"];
+const aboutAt = (section, n, more = {}) => ({ kind: "browse", area: "about",
+  state: { section: ABOUT_PAGES.includes(section) ? section : null, open: section === "you" ? "you" : null, ...more }, n });
+// a document by name: LEARNED.md's own view is Memory's sentences, its What changed list is still the document's
+const pbAt = (n, more = {}) => ({ kind: "browse", area: "reports", state: { section: "playbooks", open: null, ...more }, n });
+const docAt = (doc, view, n) => (doc === "learned" && !view ? aboutAt("memory", n) : aboutAt("docs", n, { open: `d:${doc}`, ...(view ? { view } : {}) }));
 
 // WHO A REPORT IS SENT TO, ASKED IN THE CHAT (the owner, 2026-11-02: "send this report to gail@northwind.example every run"): the
 // Assistant brings the builder up as #report=<id>&line=send&to=<address>[&how=always] (concierge.report_page) and the route card's box is
@@ -15,6 +26,9 @@ export function routeOfHash(hash) {
   const line = q.get("line"), to = (q.get("to") || "").trim(), how = q.get("how");
   return ["send", "alert"].includes(line) && to ? { line, to, ...(["always", "never"].includes(how) ? { how } : {}) } : null;
 }
+
+// a link to one task - opened over setup, never under it (AssistantView's first read of setup)
+export const opensTask = (hash) => canvasRequestFromHash(hash)?.kind === "task";
 
 export function canvasRequestFromHash(hash, n = 0) {
   const h = String(hash || "");
@@ -59,6 +73,12 @@ export function canvasRequestFromHash(hash, n = 0) {
   // one section of Connections, its cards open ("#connections=AI — voice": the crossed-out mic's Set up voice AI)
   if ((m = /^#connections=([^&]+)/.exec(h))) return { kind: "browse", area: "connections", state: { section: decodeURIComponent(m[1]), open: null }, n };
   if (/^#connections$/.test(h)) return { kind: "browse", area: "connections", state: { section: null, open: null }, n };
+  // About you, and one section of it (#about=docs&doc=soul[&view=changes]); its few hours' Playbooks (#about=playbooks, #about=new-playbook)
+  // land on Reports again
+  if ((m = /^#about(?:=([\w-]*))?(?:&doc=(\w+))?(?:&view=(\w+))?/.exec(h))) {
+    if (m[1] === "docs" && m[2]) return docAt(m[2], m[3], n);
+    return m[1] === "new-playbook" ? pbAt(n, { newPb: n + 1 }) : m[1] === "playbooks" ? pbAt(n) : aboutAt(m[1] || "", n);
+  }
   if (/^#settings$/.test(h)) return { kind: "browse", area: "settings", state: { section: null, open: null }, n };
   if ((m = /^#skills(?:=([^&]*))?(?:&(.*))?$/.exec(h))) {
     const section = ["suggestions", "library", "generations"].includes(m[1]) ? m[1] : "suggestions";
@@ -73,26 +93,30 @@ export function canvasRequestFromHash(hash, n = 0) {
     return { kind: "browse", area: "hub", state: section || open != null ? { section, open } : {}, n };
   }
   // one document, and the view to open it on (the opening screen's "learned this week" -> LEARNED.md, What changed)
-  if ((m = /^#settings=docs&doc=(\w+)(?:&view=(\w+))?/.exec(h))) return { kind: "browse", area: "settings", state: { section: "docs", open: `d:${m[1]}`, ...(m[2] ? { view: m[2] } : {}) }, n };
+  // ...on About you now (2026-11-06)
+  if ((m = /^#settings=docs&doc=(\w+)(?:&view=(\w+))?/.exec(h))) return docAt(m[1], m[2], n);
   if ((m = /^#settings=([^&]*)(?:&group=([^&]*))?/.exec(h))) {
-    const page = decodeURIComponent(m[1] || "config") || "config", group = m[2] ? decodeURIComponent(m[2]) : "";
+    const asked = decodeURIComponent(m[1] || "config") || "config", g = m[2] ? decodeURIComponent(m[2]) : "";
+    // the phone's knobs left Configuration for Phone & chats: search and the Assistant still say their group, and land on the page
+    const [page, group] = asked === "config" && g === PHONE_GROUP ? ["phone", ""] : [asked, g];
     // Profiles is a section of its own (2107f0d2): its link opens that section's list. PLAYBOOKS LEFT SETTINGS for the Reports page
     // (the owner, 2026-10-21) - an old link to them still lands, on their new shelf
-    if (page === "playbooks") return { kind: "browse", area: "reports", state: { section: "playbooks", open: null }, n };
+    // ...and About you took them, with Docs, Memory and the identity page (2026-11-06)
+    if (page === "playbooks") return pbAt(n);
+    if (page === "docs" || page === "memory") return aboutAt(page, n);
+    if (page === "about") return aboutAt("you", n);
     if (page === "profiles") return { kind: "browse", area: "settings", state: { section: page, open: null }, n };
-    // ...and the old Verdicts & notes page is LEARNED.md now (the owner, 2026-10-27): its old link lands there
-    if (page === "memory") return { kind: "browse", area: "settings", state: { section: "docs", open: "d:learned" }, n };
     if (!SETTINGS_PAGES.includes(page)) return { kind: "browse", area: "settings", state: { section: null, open: null }, n };
     // Docs is a shelf of files: its link opens the shelf, not whichever document happens to be first
     // ...and &key=<knob>: the one setting the Assistant brought the page up for (concierge._route), outlined and in view
     // ...and on a page of its own, its one button (#settings=updates&key=update: "update taskuary" brings Updates up with its button lit)
     const knob = (page !== "config" || group) && /&key=([^&]+)/.test(h) ? decodeURIComponent(/&key=([^&]+)/.exec(h)[1]) : "";
-    return { kind: "browse", area: "settings", state: { section: page, open: page === "config" ? (group || null) : page === "docs" ? null : page, ...(knob ? { knob } : {}) }, n };
+    return { kind: "browse", area: "settings", state: { section: page, open: page === "config" ? (group || null) : page, ...(knob ? { knob } : {}) }, n };
   }
   // a connector card's "new playbook for this connection" (#playbook=new:<type>): the Playbooks shelf, its New playbook asked for that card
-  if ((m = /^#playbook=new:([\w-]+)/.exec(h))) return { kind: "browse", area: "reports", state: { section: "playbooks", open: null, newFor: m[1] }, n };
+  if ((m = /^#playbook=new:([\w-]+)/.exec(h))) return pbAt(n, { newFor: m[1] });
   // a playbook: Reports -> Playbooks, that one open in its editor (#playbook=new is a new one)
-  if ((m = /^#playbook=([\w.-]+)/.exec(h))) return { kind: "browse", area: "reports", state: { section: "playbooks", open: `pb:${m[1]}` }, n };
+  if ((m = /^#playbook=([\w.-]+)/.exec(h))) return pbAt(n, { open: `pb:${m[1]}` });
   // "Manage profiles": the Profiles section, where every profile is a card beside Manage profiles and + New profile
   if (/^#profiles(?:$|=)/.test(h)) return { kind: "browse", area: "settings", state: { section: "profiles", open: null }, n };
   return null;
@@ -110,16 +134,20 @@ export function hashFor(area, s = {}) {
   if (area === "connections") return s.connector === "cli-agents" ? "#cli-agents"
     : s.connector ? `#connector=${s.connector}${s.chats != null ? `&chats=${enc(s.chats)}` : ""}`
     : s.section ? `#connections=${enc(s.section)}` : "#connections";
+  if (area === "about") {
+    const p = s.section;
+    if (p === "docs") return /^d:\w+$/.test(String(s.open || "")) ? `#about=docs&doc=${s.open.slice(2)}${s.view ? `&view=${s.view}` : ""}` : "#about=docs";
+    return ABOUT_PAGES.includes(p) ? `#about=${p}` : "#about";
+  }
   if (area === "settings") {
     const p = s.section;
     if (!p) return "#settings";
-    if (p === "docs") return /^d:\w+$/.test(String(s.open || "")) ? `#settings=docs&doc=${s.open.slice(2)}${s.view ? `&view=${s.view}` : ""}` : "#settings=docs";
     if (p === "config") return s.open ? `#settings=config&group=${enc(s.open)}${s.knob ? `&key=${enc(s.knob)}` : ""}` : "#settings=config";
     return `#settings=${p}${s.knob ? `&key=${enc(s.knob)}` : ""}`;
   }
   if (area === "reports") {
-    if (s.section === "workflows") return s.open === "draft" ? "#report=draft-workflow" : REPORT_BUCKETS.includes(s.open) ? `#report=${s.open}` : "#report=workflows";
     if (s.section === "playbooks") return /^pb:[\w.-]+$/.test(String(s.open || "")) ? `#playbook=${s.open.slice(3)}` : "#report=playbooks";
+    if (s.section === "workflows") return s.open === "draft" ? "#report=draft-workflow" : REPORT_BUCKETS.includes(s.open) ? `#report=${s.open}` : "#report=workflows";
     if (s.section === "dashboards") return typeof s.open === "number" ? `#report=${s.open}` : s.open === "draft" ? "#report=draft-dashboard"
       : s.open === "new-dashboard" ? "#report=new-dashboard" : "#report=dashboards";
     // ...a run's Fix with AI (&fix=) is an act the link asks for once, not a place: Back to it must not ask again

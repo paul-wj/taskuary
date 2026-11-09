@@ -11,9 +11,10 @@ import { nothingMatches } from "./searchHits.js";
 import { placeName } from "./words.js";
 import { focusPlace, openAppLink, ownerHref } from "./appLinks.js";
 import {
-  Alert, Autocomplete, Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent,
+  Alert, Box, Button, Chip, CircularProgress, Dialog, DialogContent,
   DialogTitle, IconButton, InputAdornment, MenuItem, Select, Switch, TextField, Typography,
 } from "@mui/material";
+import { ButtonBar } from "./ButtonBar.jsx";
 import AddIcon from "@mui/icons-material/Add";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import { SOUNDS, playSound } from "./handraise.js";
@@ -37,7 +38,8 @@ import SystemUpdateAltIcon from "@mui/icons-material/SystemUpdateAlt";
 import api from "./api";
 import { useSaveNote } from "./SaveNote.jsx";
 import { PANEL2, BORDER, DIM, FAINT, INK, ACCENT2, card, mono, ACTION_COLORS } from "./theme.jsx";
-import { ChannelIcon, Empty } from "./ui.jsx";
+import { ChannelIcon, Empty, useAgents } from "./ui.jsx";
+import MemoryLines from "./MemoryLines.jsx";
 import { RecentlyDeleted, UndoLine, removeNow } from "./Removed.jsx";
 import { normalizeBrainOptions } from "./brainOptions.js";
 import { WORKING_ROWS } from "./workingNumbers.js";
@@ -46,7 +48,15 @@ import { ABOUT_SECTIONS, AUDIT_SECTIONS, secId, pageId, scrollToSection, section
 import MenuBookIcon from "@mui/icons-material/MenuBook";
 import DocsView, { OPERATOR_DOCS } from "./DocsView.jsx";
 import RoleStart from "./RoleStart.jsx";
-import { recipientLabel, recipientOptions } from "./recipientOptions.js";
+import LinesSetting from "./LinesSetting.jsx";
+import DetailSlider, { chatDefaultsChanged } from "./DetailSlider.jsx";
+import { asLevel } from "./chatDetail.js";
+import { label as btnLabel } from "./buttons.js";
+import PhoneChats from "./PhoneChats.jsx";
+import ChatPicker from "./ChatPicker.jsx";
+import { noChats } from "./chatPicker.js";
+import { CHANNEL_NAME, PHONE_GROUP, PHONE_PAGE, SETUP_STEPS, canHandOver, doorwayStatus } from "./phoneChats.js";
+import SmartphoneIcon from "@mui/icons-material/Smartphone";
 
 function LanguageSelector() {
   const locale = useLocale();
@@ -178,10 +188,10 @@ const KNOB_META = schema.knobs;
 
    Only chats you are ALONE in are offered, and that is enforced again on the way in
    (remote_assistant.use_chat) - the picker is a convenience, not the guard. */
-// the service's own spelling: capitalize made "Whatsapp", and the button said "Open the whatsapp card"
-const CHANNEL_NAME = { whatsapp: "WhatsApp", telegram: "Telegram" };
+// the service's own spelling (phoneChats.CHANNEL_NAME): capitalize made "Whatsapp", and the button said "Open the whatsapp card"
 const PhoneDoorways = ({ onLoaded, onNavigate }) => {
   const [rows, setRows] = useState(null);
+  const [handoff, setHandoff] = useState(null);   // the walk handed to a chat right now ({channel, chat}), or null
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");     // could not READ the channels
   const [wErr, setWErr] = useState("");   // could not WRITE a choice
@@ -190,7 +200,7 @@ const PhoneDoorways = ({ onLoaded, onNavigate }) => {
   // or Telegram connection", which is a lie about the owner's own setup, and the one thing a
   // settings page must never tell you (2026-09-17: "don't see anything there just one setting?").
   const load = useCallback(async () => {
-    try { setRows((await api.get("/api/assistant/doorways")).data.data || []); setErr(""); onLoaded?.(true); }
+    try { const { data } = await api.get("/api/assistant/doorways"); setRows(data.data || []); setHandoff(data.handoff || null); setErr(""); onLoaded?.(true); }
     catch (e) {
       setRows(null);
       setErr(e?.response?.status === 404
@@ -219,11 +229,17 @@ const PhoneDoorways = ({ onLoaded, onNavigate }) => {
     catch (e) { setWErr(e?.response?.data?.detail || { key: "could not change that" }); }
     setBusy("");
   };
+  // HAND THE WALK TO THE PHONE, from here too - the Assistant tab's "Walk me through them in …" by the same road (remote_assistant.start_handoff):
+  // it says hello in that chat and the desktop keeps working. Taking it back is the same press the tab's Walk it here makes.
+  const walk = async (channel, back = false) => {
+    setBusy(channel); setWErr("");
+    try { await api.post(back ? "/api/concierge/handoff/end" : "/api/concierge/handoff", back ? {} : { channel }); await load(); }
+    catch (e) { setWErr(e?.response?.data?.detail || (back ? "could not take the walk back" : "could not hand the walk over")); }
+    setBusy("");
+  };
   return (
     <Box sx={{ mb: 2 }}>
       {(rows || []).map((r) => {
-        const picked = r.options.find((o) => o.to === r.chat)
-          || (r.chat ? { to: r.chat, name: recipientLabel({ to: r.chat }), mine: true } : null);
         return (
           <Box key={`${r.channel}-${r.connectorId}`} sx={{ py: 2, borderBottom: `1px solid ${BORDER}` }}>
             <Box sx={{ display: "flex", gap: 1.5, alignItems: "center", flexWrap: "wrap" }}>
@@ -237,27 +253,12 @@ const PhoneDoorways = ({ onLoaded, onNavigate }) => {
                 </Box>
               ) : (
                 <>
-                  <Autocomplete size="small" sx={{ flex: 1, minWidth: 260 }} autoHighlight disabled={busy === r.channel}
-                    options={r.options} value={picked}
-                    getOptionLabel={(o) => (o ? recipientLabel(o) : "")}
-                    isOptionEqualToValue={(o, v) => o.to === v.to}
-                    filterOptions={(o, st) => recipientOptions(o, st.inputValue, o.length)}
-                    onChange={(_e, v) => choose(r.channel, v?.to || "")}
-                    noOptionsText={t(r.channel === "whatsapp"
-                      ? "no private chat seen yet — message yourself on WhatsApp, then press Look again"
-                      : "no private chat seen yet — send your bot a direct message, then press Look again")}
-                    renderOption={(props, o) => (
-                      <li {...props} key={o.to} style={{ display: "block", paddingTop: 4, paddingBottom: 4 }}>
-                        <Typography variant="body2" sx={{ fontSize: 12.5, color: INK, fontWeight: 600 }}>{recipientLabel(o)}</Typography>
-                        <Typography variant="caption" sx={{ color: FAINT, fontSize: 10, fontFamily: "monospace" }}>{o.to}</Typography>
-                      </li>
-                    )}
-                    renderInput={(params) => <TextField {...params} sx={{ bgcolor: "#fff" }}
-                      placeholder={t("not connected — pick the chat that is only you")} />} />
+                  {/* the one chat picker (ChatPicker.jsx) - Agent channels below draw the same one */}
+                  <ChatPicker options={r.options} value={r.chat || ""} disabled={busy === r.channel} onChange={(to) => choose(r.channel, to)}
+                    onLook={r.chat ? null : lookAgain} looking={looking} noOptionsText={noChats(r.channel)}
+                    placeholder={t("not connected — pick the chat that is only you")} />
                   {r.chat && <Button size="small" disabled={busy === r.channel}
                     onClick={() => choose(r.channel, "")} sx={{ fontSize: 11.5 }}>{t("disconnect")}</Button>}
-                  {!r.chat && <Button size="small" disabled={looking} onClick={lookAgain} sx={{ fontSize: 11.5 }}
-                    title={t("Read the chats again - after you message yourself or your bot")}>{t(looking ? "Looking…" : "Look again")}</Button>}
                 </>
               )}
             </Box>
@@ -278,6 +279,24 @@ const PhoneDoorways = ({ onLoaded, onNavigate }) => {
                 </Typography>
               </Box>
             )}
+            {/* WHERE IT STANDS, in words - and the steps while no chat is picked, since a chat is offered only once Taskuary has seen it */}
+            {(() => {
+              const st = doorwayStatus(r, handoff), steps = st.state === "unset" ? SETUP_STEPS[r.channel] || [] : [];
+              if (st.state === "off") return null;          // the row above already says so, beside the button to its card
+              return (
+                <Box data-tq-doorway-state={st.state} sx={{ mt: 1, ml: { sm: 12.5 } }}>
+                  <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
+                    <Typography variant="body2" sx={{ color: st.state === "off" || st.state === "unset" ? DIM : "#47654a", fontWeight: 600, fontSize: 12.5 }}>{st.line}</Typography>
+                    {canHandOver(r, handoff) && <Button size="small" variant="outlined" disabled={busy === r.channel} data-tq-hand-walk={r.channel}
+                      startIcon={<ChannelIcon channel={r.channel} sx={{ fontSize: 14 }} />} onClick={() => walk(r.channel)}
+                      title={`I say hello in ${CHANNEL_NAME[r.channel] || r.channel} and take you through what is waiting there; the desktop keeps working beside it`}>
+                      Walk me through them in {CHANNEL_NAME[r.channel] || r.channel}</Button>}
+                    {st.state === "walking" && <Button size="small" disabled={busy === r.channel} onClick={() => walk(r.channel, true)}>{btnLabel("walk_here")}</Button>}
+                  </Box>
+                  {!!steps.length && <Box component="ol" sx={{ m: 0, mt: 0.5, pl: 2.25, color: DIM, fontSize: 12.5, lineHeight: 1.6 }}>
+                    {steps.map((s) => <li key={s}>{s}</li>)}</Box>}
+                </Box>);
+            })()}
           </Box>
         );
       })}
@@ -354,7 +373,7 @@ const PANEL_OWNED = new Set(schema.panel_owned);
 // settings senders.py reads, they just are not their own rows any more. Plus two one-shot
 // migration sentinels that end in _fixed and _dropped rather than _seeded and so slipped the
 // suffix rule - the second of which was the only thing keeping "Other" on the page at all.
-const STATE = new Set(["trust_sent_history", "trust_non_email", "triage_pr_rule_fixed",
+const STATE = new Set(["trust_sent_history", "trust_non_email", "trust_trackers", "triage_pr_rule_fixed",
   "whatsapp_star_dropped",
   "handbook_on_by_default", "processing_membership_rules", "voice_vocabulary",
   "assistant_card", "counsel_enabled",
@@ -416,6 +435,7 @@ const PAGES = {
   docs: { title: "Docs", icon: MenuBookIcon, desc: "The documents the system writes from and writes to — how you sound, what triage is told, and what it has learned." },
   config: { title: "Configuration", icon: TuneIcon, desc: "How mail is sorted, replies, agents and display - how Taskuary behaves." },
   policies: { title: "Mail rules", icon: AltRouteIcon, desc: "Rules the AI always follows — ignore a sender, escalate, auto-answer." },
+  phone: { title: "Phone & chats", icon: SmartphoneIcon, desc: "The chats that reach Taskuary from outside — your Assistant on WhatsApp or Telegram, and in Developer mode the chats that talk to your coding agents." },
   audit: { title: "Activity log", icon: VerifiedIcon, desc: "Who did what, when — a record of every action, and a check that proves nobody edited it." },
   updates: { title: "Updates", icon: SystemUpdateAltIcon, desc: "Which build is running, which is the latest release, and one button that installs it and reopens — connections and settings untouched." },
 };
@@ -457,6 +477,7 @@ const PageHead = ({ page, first }) => (
 function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDocSel, onCatalog, only = null }) {
   const locale = useLocale();
   const canCode = useCapabilities().coding;                   // no coding tool connected: coding is not offered (capabilities.js)
+  const { devMode } = useAgents();                            // Phone & chats' Agent channels are a developer's
   const [policies, setPolicies] = useState(null);
   const [settings, setSettings] = useState([]);
   // A PAGE THAT READS ITS OWN (the canvas's one page - About you, a document, Updates) needs none of the rules, settings and notes below:
@@ -532,7 +553,8 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
   const saveSetting = async (name, value, el) => {
     const { ok } = await run(() => api.patch("/api/settings", { name, value }));
     if (!ok && el) el.value = settings.find((s) => s.Name === name)?.Value ?? "";
-    if (ok && name === "developer_mode") refreshCapabilities();     // coding comes or goes on every screen, this one's Coding agent group too
+    if (ok && name === "developer_mode") refreshCapabilities();
+    if (ok) chatDefaultsChanged(name, value);                        // an open chat follows its kind's new default     // coding comes or goes on every screen, this one's Coding agent group too
     load();
   };
   const [jsonBad, setJsonBad] = useState({});           // a JSON knob's problem, said under its box until fixed
@@ -671,6 +693,9 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
     }
     // THE EMAIL SIGNATURE (responder.signed): the exact block under every email, read off the sent mail and checked here
     if (m.type === "signature") return <SignatureSetting value={s.Value || ""} save={(v) => saveSetting(s.Name, v)} />;
+    // ...the chat's detail level, the one slider every chat corner draws too (DetailSlider)
+    if (m.type === "detail") return <DetailSlider value={asLevel(s.Value) || asLevel(s.Default) || "summary"} label={m.label} says={false} onChange={(v) => saveSetting(s.Name, v)} />;
+    if (m.type === "lines") return <LinesSetting value={s.Value || ""} fallback={s.Default || ""} save={(v) => saveSetting(s.Name, v)} />;
     if (m.type === "sound") {
       return (
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -739,7 +764,6 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
     && !(panelOk && PANEL_OWNED.has(s.Name)));
   const panels = {
     "How mail is sorted": <AiDefaults brains={brainOptions} agents={agentOptions} onGo={goFromPanel} onLoaded={setPanelOk} />,
-    "Assistant on your phone": <PhoneDoorways onLoaded={setPanelOk} onNavigate={onNavigate} />,
     "Agent permissions": <AgentPermissions />,
   };
   // ...and what a section lists UNDER its knobs: the share links still open sit below the switch that allows them
@@ -749,7 +773,8 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
     "Agent permissions": <><SavedSignins /><SendFilter /></>,
   };
   // no coding tool connected: the Coding agent section has nothing to set (capabilities.js)
-  const cfgGroups = GROUPS.filter((g) => (panels[g] || rowsOf(g).length) && (g !== "Coding agent" || canCode));
+  // ...and the phone's knobs are Phone & chats' (the owner, 2026-11-06: "it's not clear where that is"), never a Configuration group too
+  const cfgGroups = GROUPS.filter((g) => g !== PHONE_GROUP && (panels[g] || rowsOf(g).length) && (g !== "Coding agent" || canCode));
   const cfgKey = cfgGroups.join("|");
   useEffect(() => { onSections(cfgKey ? cfgKey.split("|") : []); }, [cfgKey, onSections]);
 
@@ -759,6 +784,41 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
     ? <Alert severity="error" sx={{ m: 1 }}>{typeof err === "string" ? err : t(err.key)}</Alert>
     : <CircularProgress size={22} sx={{ m: 4 }} />;
 
+  // ...and the panel's own keys are suppressed wherever they would otherwise land. Scoping this
+  // to the panel's tab was fine while every owned key had a KNOB_META entry in that group -
+  // then `assistant_ai` lost its entry when it became a card, fell to "Other" by default, and
+  // came back as a bare unlabelled text box (d3bde8bd). `panelOk` still puts the plain rows
+  // back if the panel fails to load, which is why they keep their KNOB_META entries.
+  // A FUNCTION, NOT A COMPONENT: a component declared in here is a new type on every render,
+  // so React would remount every row and the box you are typing in would lose the caret.
+  const knobRow = (s) => {
+    const m = meta(s.Name);
+    // THE KNOB THE ASSISTANT BROUGHT THE PAGE UP FOR (#settings=config&group=..&key=..): outlined and scrolled into view - the setting's
+    // own control is the button to press (the owner, 2026-10-19: "like the assistant surfaces a settings ui")
+    const asked = only?.knob === s.Name;
+    return (
+      <Box key={s.Name} data-tq-knob={s.Name} {...(asked ? { "data-tq-asked": "" } : {})}
+        sx={{ display: "flex", alignItems: { xs: "stretch", sm: "center" }, flexDirection: { xs: "column", sm: "row" },
+        gap: { xs: 1, sm: 3 }, py: 2.5, borderBottom: `1px solid ${BORDER}`, ...(asked ? { outline: "2px solid #6f8a6e", outlineOffset: 4, borderRadius: 1 } : {}) }}>
+        <Box sx={{ flex: 1, minWidth: 0, cursor: m.help ? "pointer" : "default" }}
+          onClick={() => m.help && setHelp({ title: t(m.label), body: t(m.help) })}>
+          <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13.5, display: "flex", alignItems: "center", gap: 0.75 }}>
+            {t(m.label)}
+            {m.help && <HelpOutlineIcon sx={{ fontSize: 15, color: "#cfc9bf" }} />}
+          </Typography>
+          <Typography variant="body2" sx={{ color: DIM, mt: 0.25 }}>{m.desc ? t(m.desc) : s.Description}</Typography>
+          {/* the line every description was missing: what shipped, and whether this is
+              still it. Quiet on purpose - it is a fact you check, not a thing to read. */}
+          {defaultNote(s, m) && (
+            <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.3 }}>
+              {defaultNote(s, m)}
+            </Typography>
+          )}
+        </Box>
+        <Box sx={{ flexShrink: 0 }}>{control(s)}</Box>
+      </Box>
+    );
+  };
   // WHAT ONE PAGE OF THE DOCUMENT DRAWS. Every one of them is drawn, every time: Settings is
   // one long page you scroll from About you to Updates, so a page is a place in it rather than
   // something that replaces what was there before (the owner, 2026-09-22: "we should have header
@@ -766,41 +826,6 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
   // pages cost the same requests one page did.
   const body = (page) => {
     if (page === "config") {
-      // ...and the panel's own keys are suppressed wherever they would otherwise land. Scoping this
-      // to the panel's tab was fine while every owned key had a KNOB_META entry in that group -
-      // then `assistant_ai` lost its entry when it became a card, fell to "Other" by default, and
-      // came back as a bare unlabelled text box (d3bde8bd). `panelOk` still puts the plain rows
-      // back if the panel fails to load, which is why they keep their KNOB_META entries.
-      // A FUNCTION, NOT A COMPONENT: a component declared in here is a new type on every render,
-      // so React would remount every row and the box you are typing in would lose the caret.
-      const knobRow = (s) => {
-        const m = meta(s.Name);
-        // THE KNOB THE ASSISTANT BROUGHT THE PAGE UP FOR (#settings=config&group=..&key=..): outlined and scrolled into view - the setting's
-        // own control is the button to press (the owner, 2026-10-19: "like the assistant surfaces a settings ui")
-        const asked = only?.knob === s.Name;
-        return (
-          <Box key={s.Name} data-tq-knob={s.Name} {...(asked ? { "data-tq-asked": "" } : {})}
-            sx={{ display: "flex", alignItems: { xs: "stretch", sm: "center" }, flexDirection: { xs: "column", sm: "row" },
-            gap: { xs: 1, sm: 3 }, py: 2.5, borderBottom: `1px solid ${BORDER}`, ...(asked ? { outline: "2px solid #6f8a6e", outlineOffset: 4, borderRadius: 1 } : {}) }}>
-            <Box sx={{ flex: 1, minWidth: 0, cursor: m.help ? "pointer" : "default" }}
-              onClick={() => m.help && setHelp({ title: m.label, body: m.help })}>
-              <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13.5, display: "flex", alignItems: "center", gap: 0.75 }}>
-                {t(m.label)}
-                {m.help && <HelpOutlineIcon sx={{ fontSize: 15, color: "#cfc9bf" }} />}
-              </Typography>
-              <Typography variant="body2" sx={{ color: DIM, mt: 0.25 }}>{m.desc ? t(m.desc) : s.Description}</Typography>
-              {/* the line every description was missing: what shipped, and whether this is
-                  still it. Quiet on purpose - it is a fact you check, not a thing to read. */}
-              {defaultNote(s, m) && (
-                <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.3 }}>
-                  {defaultNote(s, m)}
-                </Typography>
-              )}
-            </Box>
-            <Box sx={{ flexShrink: 0 }}>{control(s)}</Box>
-          </Box>
-        );
-      };
       // ONE PAGE, NOT ELEVEN TABS. Every group is a section you scroll past and the rail holds the
       // same eleven names, so nothing runs off the right edge and a knob you half remember is found
       // by reading rather than by guessing which tab it was hiding on (the owner, 2026-09-18).
@@ -905,6 +930,11 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
       );
     }
 
+    // PHONE & CHATS: the Assistant chat and its knobs, then - Developer mode only - the chats bound to coding agents (PhoneChats.jsx)
+    if (page === PHONE_PAGE) return (
+      <PhoneChats devMode={devMode} head={(name) => <SectionHead page={PHONE_PAGE} name={name} />}
+        assistant={<><PhoneDoorways onLoaded={setPanelOk} onNavigate={onNavigate} />{rowsOf(PHONE_GROUP).map(knobRow)}</>} />
+    );
     if (page === "about") return <AboutYou />;
     if (page === "docs") return <DocsView sel={docSel} onSel={setDocSel} onCatalog={onCatalog} />;
     // ...its Update button lit when the Assistant brought the page up for it (#settings=updates&key=update), the way a knob row is
@@ -1009,7 +1039,7 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
 // where About you leaves off, and moving it in keeps the top strip symmetric about the
 // Assistant now that Review is gone (the owner, 2026-09-22).
 // no "memory" page: the notes it listed are LEARNED.md lines now, under Docs (the owner, 2026-10-27: "probably garbage, remove it")
-const NAV = ["about", "docs", "config", "policies", "audit", "updates"];
+const NAV = ["about", "docs", "config", "policies", PHONE_PAGE, "audit", "updates"];
 
 // DOCS IS A TREE, not a list of scroll anchors: its rail entries SWITCH the document rather than
 // scrolling to a heading, because a document is not a heading you scroll past. Groups are headers
@@ -1041,9 +1071,14 @@ const RAIL = 236, GUTTER = 24;   // the rail's own width, and the grid gap besid
 
 // `browse` (the assistant canvas, CanvasBrowse.jsx): the pages are the sections, Configuration's groups its cards, and one
 // group (or one page) opens with its own controls - drawn through the canvas's frame instead of this tab's rail.
-export default function SettingsView({ onNavigate, browse = null, browseState = {}, onBrowseState = null }) {
+// `area` "about": the same view as ABOUT YOU (the owner, 2026-11-06: "general things you care about, how you do your job, personality,
+// goals") - You, Docs and Memory on one page of their own; Settings keeps the knobs, Profiles, Mail rules and Updates. Playbooks are
+// how you work, not who you are: they live on Reports (the owner, the same day; PlaybookShelf.jsx)
+export default function SettingsView({ onNavigate, browse = null, browseState = {}, onBrowseState = null, area = "settings" }) {
   useLocale();
+  const about = area === "about";
   const canCode = useCapabilities().coding;                   // no coding tool connected: no Coding agent section (capabilities.js)
+  const { devMode } = useAgents();                            // the Activity log is a developer's (the owner, 2026-11-06)
   const [page, setPage] = useState(NAV[0]);      // the rail's first entry is where Settings opens - About you
   // Docs' rail entries switch the document, so the selection belongs here beside `page` - and the
   // catalog they draw comes from DocsView, which already fetches and derives both lists.
@@ -1173,20 +1208,26 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
     // a page or a group this install does not have (an old link) opens the list, and says why - never a crash or a blank card
     // PROFILES AND PLAYBOOKS ARE SECTIONS OF THEIR OWN up here, beside Docs - not shelves inside it (the owner, 2026-10-07: "separate
     // docs and profiles ... it should have separate section on the top level settings thing"). They open in the Docs page's editor.
+    // ...and ABOUT YOU is its own page now (the owner, 2026-11-06): You, Docs, Memory - Settings keeps the rest, the Activity
+    // log only in Developer mode
     const SHELF = { docs: ["g:documents", "g:how"], profiles: ["g:profiles"] };
-    const section = PAGES[browseState.section] || SHELF[browseState.section] ? browseState.section : null;
-    const page = SHELF[section] ? "docs" : section;
+    const mine = about ? ["you", "docs", "memory"] : ["config", "profiles", "policies", PHONE_PAGE, ...(devMode ? ["audit"] : []), "updates"];
+    const section = mine.includes(browseState.section) ? browseState.section : null;
+    // ...and SAYS WHY (the product audit, 2026-11-08: #settings=audit with Developer mode off drew the list with no pill and no word)
+    const hidden = !about && browseState.section === "audit" && !section ? "The Activity log shows only in Developer mode." : "";
+    const page = SHELF[section] ? "docs" : section === "you" ? "about" : section;
     const gone = section === "config" && browseState.open && !GROUPS.includes(browseState.open);
     const knobsIn = (g) => Object.values(schema.knobs || {}).filter((k) => k.group === g).length;
     // SEARCH, as the tab had it: a setting you half remember is found by its words, and opens the group it lives in
-    const needle = q.trim().toLowerCase();
+    const needle = about ? "" : q.trim().toLowerCase();
     const hits = needle ? Object.entries(schema.knobs || {}).filter(([k, m]) => `${k} ${m.label || ""} ${m.desc || ""} ${t(m.label || "")} ${t(m.desc || "")}`.toLowerCase().includes(needle)) : [];
     // DOCS IS A SHELF OF FILES, not one page (the owner, 2026-09-29: "I don't see the rest of the docs ... we need sub
     // settings to see all the files soul.md/counsel"): the same tree the tab's rail drew - the operator documents, the
     // profiles, the playbooks and their New / Manage entries, How it works - each a card that opens that document
     // ...each card saying what it is, not which shelf it is on ("Operator documents" in grey under every name)
-    const what = { ...Object.fromEntries(OPERATOR_DOCS.map((d) => [`d:${d.name}`, t(d.blurb.split(/(?<=\.)\s/)[0])])),
-      ...Object.fromEntries((docCat.profiles || []).map((r) => [`p:${r.name}`, String(r.purpose || "").split(/(?<=\.)\s/)[0]])),
+    // ...and LEARNED.md is Memory's, as sentences (2026-11-06): not a card of raw lines beside it
+    const what = { ...Object.fromEntries(OPERATOR_DOCS.map((d) => [`d:${d.name}`, d.blurb])),
+      ...Object.fromEntries((docCat.profiles || []).map((r) => [`p:${r.name}`, r.purpose])),
       "a:new-profile": t("A new worker with its own rules"), "a:manage-profiles": t("Add, rename or remove workers"),
       "g:how": t("The assistant and the gates a message passes") };
     let shelf = "";
@@ -1196,44 +1237,53 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
       return [{ key: e.key, shelf, title: e.key.startsWith("p:") || e.key.startsWith("pp:") ? e.label : t(e.label), sub: what[e.key] || "", sel: e.sel }];
     }).filter((c) => (SHELF[section] || []).includes(c.shelf));
     // ...a hit keeps the knob it found: it opened its group at the top, the setting itself somewhere below (the 2026-10-19 UI walk)
-    const cards = needle ? hits.map(([k, m]) => ({ key: m.group, title: m.label ? t(m.label) : k, sub: `${t(m.group)} · ${m.desc ? t(m.desc) : ""}`, section: "config", knob: k }))
+    // ...a phone knob opens Phone & chats, where its group is drawn now
+    const cards = needle ? hits.map(([k, m]) => (m.group === PHONE_GROUP ? { key: PHONE_PAGE, title: m.label || k, sub: `${t(PAGES[PHONE_PAGE].title)} · ${m.desc || ""}`, section: PHONE_PAGE, knob: k }
+      : { key: m.group, title: m.label ? t(m.label) : k, sub: `${t(m.group)} · ${m.desc ? t(m.desc) : ""}`, section: "config", knob: k }))
       // ...a group the schema puts nothing in is not a card: "Other" said "its own panel" over an empty page once strays stopped drawing
-      : section === "config" ? GROUPS.filter((g) => knobsIn(g) && (g !== "Coding agent" || canCode)).map((g) => ({ key: g, title: t(g), sub: t("{count} settings", { count: knobsIn(g) }) }))
-      : SHELF[section] ? docCards
-      : section ? [{ key: section, title: t(PAGES[section].title), sub: t(PAGES[section].desc) }] : [];
+      : section === "config" ? GROUPS.filter((g) => g !== PHONE_GROUP && knobsIn(g) && (g !== "Coding agent" || canCode)).map((g) => ({ key: g, title: t(g), sub: t("{count} settings", { count: knobsIn(g) }) }))
+      : SHELF[section] ? docCards.filter((c) => c.key !== "d:learned")
+      : section === "memory" ? [{ key: "memory", node: <MemoryLines /> }]
+      : section ? [{ key: section, title: t(PAGES[page].title), sub: t(PAGES[page].desc) }] : [];
     const open = gone || !section ? null : browseState.open;
+    const label = (k) => (k === "you" ? "You" : k === "profiles" ? "Profiles" : k === "memory" ? "Memory" : PAGES[k].title);
+    const where = about ? "About you" : "Settings";
     return browse({
-      title: t("Settings"),
-      summary: t("how Taskuary works for you · pick a section"),
-      sections: NAV.flatMap((k) => [{ key: k, label: t(PAGES[k].title) }, ...(k === "docs" ? [{ key: "profiles", label: t("Profiles") }] : [])]),
+      title: about ? t("About you") : t("Settings"), wide: about && section === "memory", noBack: section === PHONE_PAGE || section === "you",
+      summary: about ? t("how you sound, how you do your job, and what Taskuary has learned · pick a section") : t("how Taskuary works for you · pick a section"),
+      sections: mine.map((k) => ({ key: k, label: t(label(k)) })),
       section: needle ? "" : section,
-      onSection: (key) => { setQ(""); onBrowseState?.({ section: key, open: null }); },
+      // You is one page: its chip opens it, with no card to press first - and so is Phone & chats
+      onSection: (key) => { setQ(""); onBrowseState?.({ section: key, open: key === "you" || key === PHONE_PAGE ? key : null }); },
       cards: cards.map((c, i) => ({ ...c, key: needle ? `${c.key}-${i}` : c.key,
-        onOpen: () => {
+        onOpen: c.node ? undefined : () => {
           setQ("");
           // a document is picked the way the rail picked it; an action entry (New profile) is a one-shot, so it carries a nonce
           if (c.sel) { const e = c; setDocSel(e.sel.action ? { ...e.sel, n: Date.now() } : e.sel); }
           onBrowseState?.({ ...browseState, section: c.section || section, open: c.key, knob: c.knob || "", at: c.knob ? Date.now() : browseState.at });
         } })),
-      query: q,
-      search: (
+      query: about ? "" : q,
+      search: about ? null : (
         <TextField fullWidth size="small" placeholder={t("Search settings…")} value={q} onChange={(e) => setQ(e.target.value)}
           inputProps={{ "aria-label": t("Search settings"), "data-tq-browse-search": "" }}
           InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon sx={{ fontSize: 17, color: FAINT }} /></InputAdornment> }}
           sx={{ mt: 1.5, bgcolor: "#fff", borderRadius: 2 }} />
       ),
       // what the assistant changed here - the tab drew it over Configuration
-      tools: <><LanguageSelector />{section === "config" && !open && !needle ? <Box sx={{ mt: 1.5 }}><AssistantChanges /></Box>
+      tools: <>{hidden && <Typography data-tq-settings-hidden="" variant="body2" sx={{ mt: 1.5, color: DIM }}>{hidden}</Typography>}<LanguageSelector />{section === "config" && !open && !needle ? <Box sx={{ mt: 1.5 }}><AssistantChanges /></Box>
         // the shelf's profiles come from DocsView's own reads - mounted unseen, as the tab's rail had it
         : SHELF[section] && !open ? <>
           {/* the one-click road to a whole role - worker, playbooks, where the mail goes (roles.py) - offered beside the workers */}
           {section === "profiles" && !needle && <Box sx={{ mt: 1.5 }}><RoleStart onApplied={() => setCatN((n) => n + 1)} /></Box>}
           <Box key={catN} sx={{ display: "none" }}><DocsView onCatalog={onCatalog} catalogOnly /></Box></> : null}</>,
-      detail: open ? <SettingsPages only={{ page, group: section === "config" ? open : null, knob: browseState.knob || "", at: browseState.at }} q="" setQ={() => {}} onNavigate={onNavigate}
+      detail: open && section !== "memory" ? <SettingsPages only={{ page, group: section === "config" ? open : null, knob: browseState.knob || "", at: browseState.at }} q="" setQ={() => {}} onNavigate={onNavigate}
         onJump={() => {}} onSections={setCfgSecs} docSel={docSel} setDocSel={setDocSel} onCatalog={onCatalog} /> : null,
-      onBack: () => onBrowseState?.({ ...browseState, open: null }),
-      openLabel: !open ? "" : SHELF[section] ? t('the document "{document}" (Settings - {section})', { document: docCards.find((c) => c.key === open)?.title || t("Docs"), section: t(section === "docs" ? "Docs" : "Profiles") })
+      onBack: () => (section === "you" || section === PHONE_PAGE ? onBrowseState?.({ section: null, open: null }) : onBrowseState?.({ ...browseState, open: null })),
+      openLabel: !open ? "" : SHELF[section] ? t('the document "{document}" ({where} - {section})', { document: docCards.find((c) => c.key === open)?.title || (open === "d:learned" ? "LEARNED.md" : t("Docs")), where: t(where), section: t(section === "docs" ? "Docs" : "Profiles") })
+        : section === "you" ? t("who you are - your name, your identity on each channel, what the agents are told (About you)")
+        : section === PHONE_PAGE ? t("Phone & chats (Settings) - your Assistant chat on WhatsApp or Telegram{dev}", { dev: devMode ? ", and the chats bound to coding agents" : "" })
         : t('the settings group "{group}" (Settings)', { group: t(section === "config" ? open : PAGES[section]?.title) }),
+      empty: null,
       note: gone ? t("“{group}” is not a settings group any more - here are the ones there are.", { group: browseState.open }) : "",
     });
   }
@@ -1326,10 +1376,13 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
 const ACTOR_LABEL = { owner: "you", router: "the router", triage: "triage", report: "a report", system: "the app", startup: "startup", "connector-test": "a Test", msauth: "sign-in" };
 // WHAT THE ASSISTANT CHANGED - a setting, a report's clock, a connection switched off - kept visible on the page that owns the knobs
 // (2026-09-18). A record, with no undo (the owner, 2026-10-19: "no take it back button"): a knob set wrong is set again here. Hidden when empty.
+const CHANGED = ["setting", "source", "connector"];
 const AssistantChanges = () => {
   const [rows, setRows] = useState([]);
   const load = useCallback(async () => {
-    try { const { data } = await api.get("/api/audit/assistant", { params: { limit: 8 } }); setRows(data.data || []); }
+    // ...only what it CHANGED in the app - a setting, a report, a connection: its other acts ("review attached", "hub post", a demo's seeding)
+    // read in raw internal words under this heading (the product audit, 2026-11-08)
+    try { const { data } = await api.get("/api/audit/assistant", { params: { limit: 24 } }); setRows((data.data || []).filter((r) => CHANGED.includes(r.entity)).slice(0, 8)); }
     catch { /* the list is a nicety */ }
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -1431,7 +1484,7 @@ const HelpDialog = ({ help, onClose }) => (
         <DialogContent>
           <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", color: INK, lineHeight: 1.6 }}>{t(help.body)}</Typography>
         </DialogContent>
-        <DialogActions><Button variant="contained" onClick={onClose}>{t("Got it")}</Button></DialogActions>
+        <ButtonBar><Button variant="contained" onClick={onClose}>{t("Got it")}</Button></ButtonBar>
       </>
     )}
   </Dialog>

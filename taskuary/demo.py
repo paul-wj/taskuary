@@ -12,7 +12,7 @@ by one middleware over the METHOD and PATH, before any handler sees the request,
 capability added next month is refused by default rather than discovered later.
 
 What is left is everything worth showing: a rail of work arriving, led by a tour to try, triage
-verdicts with their reasons, drafts waiting in Close out, a board with agents on it, reports,
+verdicts with their reasons, drafts waiting in their chats, a board with agents on it, reports,
 the assistant's posts, the wall. All of it invented, all of it already in the database, and the
 coding sessions REPLAY a recorded transcript so the board is alive without a CLI existing.
 """
@@ -22,7 +22,7 @@ import random
 import re
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from loguru import logger
@@ -56,6 +56,7 @@ ALLOWED_WRITES = (
     r'^/api/(hub|handbook)',                           # durable Hub posts and compatibility route
     r'^/api/settings$',                                # display preferences
     r'^/api/advice/press$',                            # what was lit and what was pressed: a row in the demo's own database
+    r'^/api/dashboards/tile$',                         # a sentence turned into a tile: nothing saved, only Taskuary's own tables read
     # the checklist's "leave me alone", and the scripted walk - a tour of the app that touches
     # nothing real, which is what a visitor is here for. Its writes are two settings in the demo's
     # own database, which is what everything else on this list has in common.
@@ -109,6 +110,7 @@ OFF = 'This is the demo - that would reach something real, so it is switched off
 
 # What is refused, and the sentence the visitor sees. Order matters: the first match wins.
 REFUSALS = (
+    (r'^/api/(cli|deps|update)(/|$)', 'This is the demo - nothing happens. Its AI tools are pretend, and nothing on your computer is touched.'),
     (r'^/api/connectors', 'This is the demo - these connections are invented, and there is nothing real behind them to change.'),
     (r'^/api/(tools/run|agents/[^/]+/test)', 'This is the demo - nothing runs, because there are no real systems here to run against.'),
     (r'^/api/(reviews?/\d+/(send|decide)|tasks/\d+/(handoff|clarify)|board/send|messages/\d+/send)', SENDS),
@@ -189,7 +191,7 @@ CANNED = [
     "Here is what I would do: read the thread, pull the numbers it refers to, and come back with "
     "the two lines that decide it. In the demo I answer from a script - in your own Taskuary this "
     "is your own AI doing the work.",
-    "I looked at your list. {list} Ask me to draft a reply and it lands in the task's Close out.",
+    "I looked at your list. {list} Ask me to draft a reply and it lands in the task's chat, its Send under it.",
     "That is a report, not a question - give me the schedule and I will write it every morning "
     "before you are up.",
 ]
@@ -344,7 +346,7 @@ PROMPTS = (
     ('month_end', 'Open the month-end close', 'Here: {task:Month-end close is short by 4,180}.'),
     ('reports', 'Show me the reports', 'Here: [Reports](#report=reports).'),
     ('reply', 'How does a reply get written?',
-     'Open the item and press Reply - the draft lands in its Close out, and nothing goes out until you press Send. In the demo the drafts '
+     'Open the item and press Reply - the draft lands in its chat, and nothing goes out until you press Send under it. In the demo the drafts '
      'are written ahead of time; in your own Taskuary your own AI writes them from the thread.'),
     ('schedule', 'Can you send me a report every morning?',
      'Yes - in your own Taskuary that is a report: say what it covers and when, and it is written every morning before you are up. '
@@ -406,6 +408,7 @@ def brain(seed: int = 0, store=None):
     def llm(system, user, max_tokens=None, images=None, **kw):
         text = str(user or '')
         if _field(text, VERBS_OFFERED): return _advice(text)
+        if str(system or '').startswith(TILE_SAYS): return _tile(text)
         if str(system or '').startswith('You ARE '): return _draft(text)       # responder.SYSTEM: the owner's own reply
         # ...a report asked for (issue.draft): the tool's own words say where its button is - the canned lines are about the list
         if 'You looked up issue.draft and it says:' in text:
@@ -421,6 +424,83 @@ def brain(seed: int = 0, store=None):
         said = pick.choice(CANNED)
         return said.format(list=_list_line(store if store is not None else _store())) if '{list}' in said else said
     return llm
+
+
+# A SENTENCE ON A DASHBOARD, ANSWERED FROM A SCRIPT (compose.TILE_SYSTEM): the demo reads no sentence, so every one is drawn as the
+# count of the first source, under the owner's own words - enough to see a tile draw, and the rewrite and the remove that follow it
+TILE_SAYS = 'You turn ONE sentence'
+
+
+def _tile(text):
+    try: ask = json.loads(text)
+    except ValueError: ask = {}
+    src = next((s for s in ask.get('sources') or [] if s.get('key')), None)
+    if not src: return json.dumps({'cannot': 'The dashboard reads no source yet.'})
+    return json.dumps({'component': {'kind': 'stat', 'title': str(ask.get('sentence') or 'Rows')[:38], 'source': src['key'], 'agg': 'count'}})
+
+
+# ── the demo's machine (F47) ──────────────────────────────────────────────────────────────
+# What is installed is a fact about the VISITOR'S computer: an AI tool's card read it through GET routes the deny list lets by - "Installed",
+# Update, Connect - in a demo that says nothing real is reachable. Here the machine is invented too: every read of install state answers
+# from these, and no GET below touches the host (answer(), the middleware's one guard; clis.detect/tools and agents.runs_here ask here()).
+CLIS_HERE = {'claude': '2.1.4', 'codex': '0.152.0'}         # name -> the version "installed"
+CLIS_ON = ('claude',)                                       # ...and connected, as Claude Code
+TOOLS_HERE = {'agent-browser': '0.9.1'}
+NOT_HERE = 'This is the demo - nothing is installed here.'
+
+def here(cmd) -> bool: return re.split(r'[\\/]', str(cmd or ''))[-1].lower().rsplit('.', 1)[0] in {**CLIS_HERE, **TOOLS_HERE}
+
+def cli_rows() -> list:
+    from . import clis
+    return [{**k, 'installed': k['name'] in CLIS_HERE, 'path': '', 'runs': '', 'store': False, 'install': k['name'], 'installable': False,
+             'configured': k['name'] in CLIS_ON, 'updatable': False, 'why_not': '' if k['name'] in CLIS_HERE else NOT_HERE, 'setup': '',
+             'version': CLIS_HERE.get(k['name'], '')} for k in clis.KNOWN]
+
+def tool_rows() -> list:
+    from . import clis
+    return [{**t, 'installed': t['name'] in TOOLS_HERE, 'path': '', 'version': TOOLS_HERE.get(t['name'], ''),
+             'latest': TOOLS_HERE.get(t['name'], ''), 'update': ''} for t in clis.TOOLS]
+
+def cli_connections() -> dict: return {n: {'cmd': n} for n in CLIS_ON}
+
+def _cli_conns() -> dict:
+    return {'data': [{**r, 'config': {'cmd': r['name']}, 'used_by': [], 'models': {'models': [], 'current': {}, 'choices': [], 'source': 'the demo'}}
+                     for r in cli_rows() if r['installed']]}
+
+def _deps() -> dict:
+    from . import deps
+    return {'can_install': False, 'why': NOT_HERE, 'python': '', 'frozen': False, 'where': '',
+            'packages': {k: {'name': deps.pip_name(k), 'installed': True, 'bundled': False} for k in deps.OPTIONAL}}
+
+def _update() -> dict:
+    from . import __version__ as v
+    return {'current': v, 'how': 'demo', 'latest': v, 'newer': False, 'url': None, 'notes': None, 'error': None, 'waits': '', 'queued': False, 'queued_error': None}
+
+def _wa() -> dict:
+    from .messengers import wa_status_line
+    st = {'connected': True, 'me': OWNER, 'jid': '', 'phone': '', 'pairing_code': '', 'qr_svg': '', 'reconnect': {}, 'filter': {}, 'admitted': None,
+          'turned_away': None, 'last_inbound_at': 0, 'last_failure': None, 'contact_sync': {}, 'logged_out': False, 'bridge': True, 'node': True, 'manager': {}}
+    return {**st, **wa_status_line(st)}
+
+# GET path -> the demo's answer. Every route that reads the machine, or reaches past a connection to its system, is answered here and never
+# reaches its handler: the deny list shuts the writes, this the reads.
+ANSWERS = (
+    (r'^/api/cli/detect$', lambda: {'data': cli_rows(), 'tools': tool_rows()}),
+    (r'^/api/cli/connections$', _cli_conns),
+    (r'^/api/deps$', _deps),
+    (r'^/api/update$', _update),
+    (r'^/api/connectors/\d+/wa/status$', _wa),
+    (r'^/api/connectors/\d+/wa/chats$', lambda: {'data': [{'jid': 'ops@g.us', 'group': True, 'name': 'Ops chat', 'n': 12, 'last': 0, 'snippet': '', 'people': 6, 'self': False}]}),
+    (r'^/api/connectors/\d+/linkedin/status$', lambda: {'redirect_uri': '', 'connected': True, 'has_app': True, 'member': OWNER, 'days_left': 58}),
+    (r'^/api/connectors/\d+/mail/folders$', lambda: {'data': [{'id': 'inbox', 'name': 'Inbox', 'count': 214, 'well_known': 'inbox'},
+                                                             {'id': 'vendors', 'name': 'Vendors', 'count': 38, 'well_known': ''}]}),
+    (r'^/api/connectors/\d+/(google|ms|quickbooks|zoho|teller|simplefin)/', lambda: {'detail': OFF, 'demo': True}),
+)
+
+def answer(method: str, path: str):
+    "The demo's own answer to a GET that would read the host or a real system - None for every other request, and outside the demo."
+    if not enabled() or method.upper() not in READ_ONLY_METHODS: return None
+    return next((f() for pattern, f in ANSWERS if re.match(pattern, path)), None)
 
 
 # ── the world, invented ──────────────────────────────────────────────────────────────────
@@ -440,6 +520,29 @@ DIRECTORY = [{'email': 'lortiz@dynamo.example', 'name': 'Lena Ortiz', 'company':
              {'email': 'gmoreno@northwind.example', 'name': 'Gail Moreno', 'company': 'Northwind', 'title': 'Controller'},
              {'email': 'eblake@northwind.example', 'name': 'Erin Blake', 'company': 'Northwind', 'title': 'Payroll lead'}]
 
+# THE WORLD IS CONNECTED (F31): its tasks post to LinkedIn and read Teams, WhatsApp and GitHub, so Connections says so - each card on and
+# checked, never "0 connected" beside them, and no send card says "LinkedIn isn't connected" (outbound.connect_fix reads these rows)
+CONNECTIONS = (    # (Type, Name, ConfigJson, a stand-in secret: a card reads "signed in" off one; nothing ever uses it)
+    ('outlook', 'Northwind mail', {'auth': 'user', 'client_id': 'northwind-demo-app', 'account': OWNER_EMAIL, 'name': OWNER}, 'demo'),
+    # ...Teams as the company's app, as most are: it reads the ops chat, and a reply there is copied into Teams (outbound.no_sender)
+    ('teams', 'Northwind Teams', {'client_id': 'northwind-demo-app', 'tenant_id': 'northwind-demo-tenant'}, 'demo'),
+    ('whatsapp', 'WhatsApp', {}, None),
+    ('linkedin', 'LinkedIn', {'member_name': OWNER}, 'demo'),
+    ('github', 'GitHub', {}, 'demo'),
+)
+SOURCES = (('outlook', 'email', OWNER_EMAIL), ('teams', 'teams', OWNER_EMAIL), ('github', 'github', 'northwind/ledger'))
+
+def seed_connections(store) -> int:
+    ids = {}
+    for typ, name, conf, secret in CONNECTIONS:
+        had = store.get_connector_by_type(typ)                    # the catalogue's own card, switched on - never a second one beside it
+        ids[typ] = store.save_connector({**({'ConnectorId': had['ConnectorId']} if had else {}), 'Type': typ, 'Name': name,
+                                         'ConfigJson': json.dumps(conf), 'Secret': secret, 'Active': 1}, 'demo')
+        store._exec('UPDATE connector SET LastSyncAt=? WHERE ConnectorId=?', (_at(4), ids[typ]))
+    for typ, ch, addr in SOURCES: store.save_source({'Channel': ch, 'Address': addr, 'ConnectorId': ids[typ], 'Active': 1}, 'demo')
+    return len(ids)
+
+
 SEEDS = [
     # (channel, who, subject, body, what triage did, why)
     ('email', 0, 'Month-end close is short by 4,180',
@@ -453,7 +556,7 @@ SEEDS = [
     ('email', 2, 'Invoice 88213 - past due', 'This invoice is 46 days past due. Please advise.',
      'reply', 'a vendor chasing payment: an answer, not a project'),
     ('email', 0, 'FW: Quarterly newsletter', 'Sharing for visibility. No action needed.', 'fyi',
-     'cc-for-visibility, nothing asked'),
+     'copied to keep you in the loop - nothing asked of you'),
     ('teams', 1, '', 'thanks!! that fixed it', 'fyi', 'a thank-you closes a thread, it does not open one'),
 ]
 
@@ -541,7 +644,7 @@ ASSIST = [
     ('assistant', """Six things came in, four are handled. What is actually yours:
 
 - **{gl} - month-end short by 4,180.** An agent is on it; it found the four transfers between our own companies that the export leaves out.
-- **{cutover} - AP cutover Thursday.** Ruth needs a yes or a date. A reply is drafted in its Close out.
+- **{cutover} - AP cutover Thursday.** Ruth needs a yes or a date. A reply is drafted in its chat.
 - **{q3} - Sam wants the Q3 numbers.** Also drafted.
 
 The newsletter, the thank-you and the maintenance notice are filed. Nothing there needs you."""),
@@ -616,7 +719,7 @@ HISTORY = [
     (5, 11, 'teams', 2, '', 'the Riverside export ran clean last night', 'fyi',
      'a green run is not work'),
     (5, 9, 'email', 1, 'FW: Regional operations newsletter',
-     'Sharing for visibility.', 'fyi', 'cc-for-visibility, nothing asked'),
+     'Sharing for visibility.', 'fyi', 'copied to keep you in the loop - nothing asked of you'),
 ]
 
 # WHAT TRIAGE MADE OF AN FYI (the verdict's `thread`, kept on its own route - store.message_thread): what an FYI's middle opens with,
@@ -656,6 +759,9 @@ def agenda() -> list:
             ev(d3, '11:00', '12:00', 'Site leads sync')]
 
 
+SET_UPS = {}                            # what the agent sets up at the end of the seed (seed_set_ups): the invite, the dashboard's share
+
+
 def seed_calendar(store, f) -> int:
     """An invite waiting on Dana's answer that clashes with her planning block, and a thread asking for half an hour - the
     two rows whose buttons answer the calendar. Returns how many it made."""
@@ -672,6 +778,7 @@ def seed_calendar(store, f) -> int:
                     body='A dry run of the AP cutover before Thursday - we walk the export end to end with the team.',
                     conversation_id='email:ap-dry-run', MailMetaJson=json.dumps({'invite': True, 'cal': c}))
     f.route(mid, tid, 'create', f"{ruth[0]} invited you - {at}" + (f' - {clash}' if clash else ''))
+    SET_UPS['invite'] = dict(task=tid, mid=mid, cal=c, clash=clash, at=at, who=ruth)          # ...answered by the agent (seed_set_ups)
     # the ask: half an hour on the audit list, the day after - triage's `meet` on the message (store.add_route)
     t2 = f.task(title='Half an hour on the audit list', status='open', kind='reply', source='email')
     m2 = f.message(task_id=t2, subject='Audit list - 30 minutes?', from_name=priya[0], from_email=priya[1], sent_at=f.ago(hours=2),
@@ -683,6 +790,44 @@ def seed_calendar(store, f) -> int:
 
 
 SPREAD_MIN = 25                          # minutes between the morning's arrivals (seed)
+
+
+def seed_set_ups(store, f):
+    """THE AGENT SETS IT UP LIKE AN EMAIL (the owner, 2026-11-08: "fix it like email or all other actions"): the invite that clashes, answered
+    with a new time - the card calwrite.draft makes, Propose this time waiting on the press - and the dashboard shared with Gail on her own
+    Teams chat, drawn over its Share with Gail (sharing.agent_share). Made LAST, so every id the recording had before stays as it was."""
+    from . import calwrite, general
+    from .ingest import INVITE_JOB
+    def say(tid, mins, actor, typ, body):
+        cid = store.add_comment(tid, actor, typ, body); store._exec('UPDATE comment SET CreatedAt=? WHERE CommentId=?', (_at(mins), cid)); return cid
+    if (iv := SET_UPS.pop('invite', None)):
+        t, mid, c, (who, email) = iv['task'], iv['mid'], iv['cal'], iv['who']
+        free = calwrite.free_slots(store, 60, date.fromisoformat(c['start'][:10]), None, avoid=(c['start'], c['end']), events=agenda())[0]
+        at = calwrite.when(free['start'], free['end'])
+        env = {'kind': 'calendar', 'channel': 'calendar', 'act': 'propose', 'provider': 'outlook', 'connector_id': 0, 'mailbox': 'demo',
+               'subject': c['subject'], 'to': [email], 'clash': '', 'event_id': c['event_id'], 'ical_uid': c['ical_uid'], 'start': c['start'],
+               'end': c['end'], 'new_start': free['start'], 'new_end': free['end'], 'when': at, 'was': iv['at']}
+        rv = f.review(t, mid, kind='outbound', draft=f"I'm in quarter-end planning that morning - would {at} work instead?", Deliver=json.dumps(env),
+                      reason=f"Propose {at} for {c['subject']} - press {calwrite.send_word()} and the calendar is told")
+        store.update_task(t, {'Kind': 'general', 'Status': 'in_progress', 'Assignee': 'agent:general'}, 'triage')
+        # ...the invite came in, the agent was handed it, and its turn said why this time
+        store._exec('UPDATE message SET CreatedAt=? WHERE MessageId=?', (_at(56), mid)); store._exec('UPDATE route SET CreatedAt=? WHERE MessageId=?', (_at(56), mid))
+        say(t, 55, general.BRIEF_ACTOR, general.USER_TYPE, INVITE_JOB.format(line=f"{who} invited you to {c['subject']}, {iv['at']}"))
+        summ = {'about': f"{who} invited you to the {c['subject']}, {iv['at']}.",
+                'did': f"Checked your calendar: it {iv['clash']}. The first free hour after it is **{at}**, so I set up a new time with a short note - "
+                       'or accept or decline it instead.', 'drafted': [{'review': rv}]}
+        cid = say(t, 54, 'assistant', general.ASSISTANT_TYPE, summ['did']); say(t, 53.99, 'assistant', general.SUMMARY_TYPE, json.dumps(summ))
+        store.snap_draft(rv, cid)
+    if (sh := SET_UPS.pop('share', None)):
+        t = sh['task']; gail = store.list_messages(t)[0]
+        rv = f.review(t, gail['MessageId'], kind='draft_reply', reason='the dashboard Gail asked for, to share with her',
+                      Deliver=json.dumps({'share': {'report': sh['report'], 'title': sh['title'], 'to': 'Gail Moreno'}}),
+                      draft=f"Hi Gail - vendor spend is a dashboard now, refreshed every Monday at 7:00. The last 7 days came to ${sh['last']:,.0f}; "
+                            f"Alvarez Supply is the biggest vendor at {sh['alvarez']:.0%} of all spend. Top vendors and categories are on it too.")
+        store._exec('UPDATE review SET CreatedAt=? WHERE ReviewId=?', (_at(285.7), rv))
+        turn = next(x for x in reversed(store.list_comments(t, internal=True)) if x.get('ActorType') == general.SUMMARY_TYPE)
+        store._exec('UPDATE comment SET Body=? WHERE CommentId=?', (json.dumps({**json.loads(turn['Body']), 'drafted': [{'review': rv}]}), turn['CommentId']))
+        store.snap_draft(rv, next(x for x in reversed(store.list_comments(t, internal=True)) if x.get('ActorType') == general.ASSISTANT_TYPE)['CommentId'])
 
 
 def seed(store) -> int:
@@ -697,6 +842,7 @@ def seed(store) -> int:
     # what a connected directory named once, so To and Cc can find a vendor's people by their company (peoplesearch.DIR_KEY)
     from . import peoplesearch
     peoplesearch.remember(store, DIRECTORY)
+    seed_connections(store)
     made = 0
     refs = {}
     for i, (channel, who, subject, body, verdict, why) in enumerate(SEEDS):
@@ -902,9 +1048,12 @@ def seed(store) -> int:
             store.lore_comment(lid, 'Try it on the next two launches and compare escaped issues.', 'owner')
         elif kind == 'technical_solve':
             store.lore_comment(lid, 'The same elapsed-time budget should apply to report polling.', 'assistant')
+    seed_ai_usage(store)
     seed_dashboard(store)
     made += seed_agent_day(store, f)
     made += seed_tour(store, f)
+    seed_set_ups(store, f)
+    seed_ai_usage(store)          # ...and the morning's asks, for their "AI used" folds
     logger.info(f'demo: seeded {made} items of invented work')
     return made
 
@@ -944,6 +1093,10 @@ AGENT_DAY = {
 # ...and what is typed into one of those chats: kept, and answered in words that say why nothing ran (server._demo_turn)
 CHAT_TURN = ('This is the demo, so no agent runs here - the turns above were written in advance to show what it does. In your own '
              'Taskuary, what you type here goes straight to the agent on this task, and its answer lands in this chat.')
+# ...and on a task the visitor just made there are no turns above to point at (agent-flow audit, 2026-11-07)
+NEW_CHAT_TURN = ('This is the demo, so no agent runs here. In your own Taskuary, what you type here goes straight to the agent on this '
+                 'task, and its answer lands in this chat.')
+def chat_turn(had_turns: bool) -> str: return CHAT_TURN if had_turns else NEW_CHAT_TURN
 
 
 def _at(mins: float) -> str: return (datetime.now() - timedelta(minutes=mins)).strftime('%Y-%m-%d %H:%M:%S')
@@ -1061,7 +1214,9 @@ def seed_agent_day(store, f) -> int:
     export = config.home() / 'exports' / 'ap-payments-daily.csv'; export.parent.mkdir(parents=True, exist_ok=True)
     export.write_text('day,vendor,category,amount\n' + ''.join(f'{a},{b},{c},{d}\n' for a, b, c, d in rows), encoding='utf-8')
     week = str(today - timedelta(days=6)); last = sum(d for a, *_, d in rows if a >= week)
-    spec = {'type': 'dashboard', 'title': 'Vendor spend, weekly', 'weekly_at': 'Mon 07:00',
+    # ...on Mondays at 7:00, as the agent says it refreshes - in a key the scheduler reads: `weekly_at` was no clock at all, and the page
+    # framed the dashboard red with "No schedule" (the product audit, 2026-11-08)
+    spec = {'type': 'dashboard', 'title': 'Vendor spend, weekly', 'cron': '0 7 * * 1',
             'sources': [{'key': 'spend', 'label': 'AP payments', 'type': 'local_file', 'path': str(export), 'date': 'day'}],
             'filters': {'range': 90},
             'components': [{'kind': 'stat', 'title': 'Last 90 days', 'source': 'spend', 'agg': 'sum', 'y': 'amount', 'unit': 'USD'},
@@ -1073,12 +1228,12 @@ def seed_agent_day(store, f) -> int:
     try: reports.run_one(store, store.get_source(sid), None, 'schedule')
     except Exception as e: logger.warning(f'demo: the vendor spend dashboard did not run - {e}')
     alvarez = sum(d for _, v, _, d in rows if v == 'Alvarez Supply') / sum(d for *_, d in rows)
+    SET_UPS['share'] = dict(task=t, report=sid, title=spec['title'], last=last, alvarez=alvarez)  # ...shared with Gail (seed_set_ups)
     said(t, 285.6, 'turn', None,
          {'about': 'Gail would rather see vendor spend weekly, on a dashboard, than in the monthly PDF.',
           'did': f'Built **[Vendor spend, weekly](#report={sid})** on six months of AP payments, beside your reports. It refreshes Mondays at 7:00. '
-                 f'The last 7 days came to **${last:,.0f}**; Alvarez Supply is the biggest vendor, **{alvarez:.0%}** of all spend.',
-          'on_you': ['Share the dashboard with Gail, or say if she would rather get it by mail each Monday']})
-    store.set_on_you(t, ['Share the dashboard with Gail, or say if she would rather get it by mail each Monday'], 'assistant')
+                 f'The last 7 days came to **${last:,.0f}**; Alvarez Supply is the biggest vendor, **{alvarez:.0%}** of all spend. '
+                 'She asked on Teams, so it is set up to share with her there.'})
 
     # 4. A RESEARCH ANSWER with its sources, and the decision it leaves with the owner
     t = tids['research']
@@ -1310,6 +1465,40 @@ def seed_history_work(store, f, past) -> None:
         for kind, t in (('working', start), (end, at(start, mins))):
             eid = store.add_worker_event({'TaskId': tid, 'Sid': sid, 'Kind': kind, 'Source': 'demo', 'EventId': f'demo-{sid}-{kind}'})
             store._exec('UPDATE worker_event SET CreatedAt=? WHERE Id=?', (t, eid))
+
+
+# WHAT THE AI USED (aiusage.py): the demo has no AI, so each task's calls are written out - triage on the quick model, a draft or a
+# summary on the normal one, and on the asks an agent worked a run on the normal or hard model, with tokens and minutes that look like
+# a real week's. Derived from the task id, so every demo draws the same numbers.
+AI_MODELS = {'light': 'claude-haiku-4-5', 'standard': 'claude-sonnet-4-5', 'strong': 'claude-opus-4-1'}
+
+
+def seed_ai_usage(store) -> int:
+    """Route rows with usage for every task that has none yet. Returns how many were written."""
+    n, have = 0, {r['TaskId'] for r in store._rows('SELECT DISTINCT TaskId FROM brainroute WHERE TaskId IS NOT NULL')}
+    for t in store._rows("""SELECT t.TaskId, t.Kind, COALESCE((SELECT MIN(m.SentAt) FROM message m WHERE m.TaskId=t.TaskId), t.CreatedAt) Born
+                            FROM task t ORDER BY t.TaskId"""):
+        tid = t['TaskId']
+        if tid in have: continue
+        try: born = datetime.strptime(str(t['Born'] or '')[:19].replace('T', ' '), '%Y-%m-%d %H:%M:%S')
+        except ValueError: born = datetime.now()
+        from .kinds import AGENT
+        k = tid * 7919
+        calls = [('triage', 'light', 2600 + k % 2400, 140 + k % 160, 1800 + k % 2600, 0)]
+        if tid % 3: calls.append(('draft', 'standard', 5200 + k % 5000, 380 + k % 420, 6500 + k % 7000, 4))
+        if t['Kind'] in AGENT or tid % 4 == 0:
+            hard = tid % 5 == 0
+            job = 'coding' if t['Kind'] == 'coding' else 'general'
+            calls.append((job, 'strong' if hard else 'standard', 60000 + k % 340000, 4000 + k % 22000, (6 + k % 40) * 60000, 9))
+            calls.append(('summary', 'light', 3800 + k % 3000, 260 + k % 200, 2400 + k % 1800, 60))
+        for job, tier, i, o, ms, after in calls:
+            at = (born + timedelta(minutes=after)).strftime('%Y-%m-%d %H:%M:%S')
+            store.add_brain_route({'At': at, 'Job': job, 'TaskId': tid, 'Pick': 'cli:claude', 'Model': '', 'Tier': tier, 'Rule': 'demo',
+                                   'Why': 'Written for the demo - no AI ran', 'Outcome': 'ok', 'Ran': AI_MODELS[tier], 'TokensIn': i,
+                                   'Cached': int(i * 0.6) if job in AGENT else 0, 'TokensOut': o, 'Ms': ms, 'Calls': 1,
+                                   'Sid': f'demo-run-{tid}' if job in AGENT else None})
+            n += 1
+    return n
 
 
 class Replay:

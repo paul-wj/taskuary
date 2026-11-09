@@ -135,6 +135,11 @@ def poll_telegram(store, c, sources: list, llm=None, file_only=False) -> int:
                 and remote_assistant.enabled(store, 'telegram', cid, c)):
             m, heard = {**m, 'text': _tg_hear(store, c, cid, v, m.get('message_id'))}, True
             if not m['text']: continue
+        # A CHAT BOUND TO AN AGENT (agentchannels.py): a listed member's words go to the agent, anyone else's nowhere - never work
+        from . import agentchannels
+        if agentchannels.heard(store, 'telegram', cid, [str(frm.get('id') or '')], m.get('text') or m.get('caption') or '',
+                               f"telegram:{cid}:{m.get('message_id')}", name=' '.join(x for x in (frm.get('first_name'), frm.get('last_name')) if x)):
+            continue
         # the owner's own words in the ONE private chat their card names as the Assistant chat go to
         # the same walk the desktop is on. A bot only ever hears the other side of a chat, so that
         # named private chat is what says the words are the owner's - there is no fromMe to read.
@@ -532,6 +537,8 @@ def poll_whatsapp(store, c, sources: list, llm=None, file_only=False) -> int:
     # Control chats do not have to be inbound sources. Notification replies and Assistant
     # questions are different opt-ins, but both must reach the bridge's pre-decryption gate.
     bridge_want = want | ({notify_chat} if notify_chat else set()) | ({assistant_chat} if assistant_chat else set())
+    from . import agentchannels
+    bridge_want |= set(agentchannels.chats(store, 'whatsapp'))          # ...and a chat bound to an agent
     # Filtering here alone was too late: Baileys had already decrypted and downloaded media from
     # every chat. Give the same policy to its pre-decryption hook before asking for messages.
     # Sent when the list CHANGES, not on every read: the doorway reads once a second, and a /filter
@@ -591,6 +598,11 @@ def poll_whatsapp(store, c, sources: list, llm=None, file_only=False) -> int:
             text, heard = _hear(store, c, jid, m), True
             if not text:
                 took.append(m.get('id')); continue
+        # A CHAT BOUND TO AN AGENT (agentchannels.py): the owner's (fromMe) and listed teammates' lines go to the agent, nobody's are work
+        if agentchannels.bound(store, 'whatsapp', jid):
+            if text: agentchannels.heard(store, 'whatsapp', jid, [m.get('sender') or jid, _wa_alias(m)], text, f"whatsapp:{jid}:{m.get('id')}",
+                                         from_me=bool(m.get('fromMe')), name=m.get('name') or '')
+            took.append(m.get('id')); continue
         # A natural message the owner types in their designated private chat goes to the SAME
         # guide conversation as the desktop bubble. Bridge-stamped Taskuary output is swallowed
         # here too, so a notification or answer can never loop back as a fresh question.
@@ -601,22 +613,9 @@ def poll_whatsapp(store, c, sources: list, llm=None, file_only=False) -> int:
         if m.get('group') or jid.endswith('@g.us'):
             if jid not in want: continue                      # groups are opt-in, always
         elif jid not in want: continue                        # a direct chat is listed too, or it does not come in
-        if m.get('fromMe'):
-            # the owner's OWN line in a chat the funnel reads - typed on their phone, not here. It
-            # used to be dropped, so a WhatsApp thread the owner had answered still read as waiting
-            # on them, and the reader that splits a room into asks never saw our half of it
-            # (channels.ingest_own_message: context on the thread, never work, never counted)
-            if (m.get('text') or '').strip():
-                ingest_own_message(store, {
-                    'external_id': f"whatsapp:{jid}:{m.get('id')}", 'channel': 'whatsapp', 'subject': None,
-                    'body': m['text'].strip(), 'from_email': None, 'conversation_id': f'whatsapp:{jid}',
-                    'sent_at': datetime.fromtimestamp(m.get('ts') or 0).strftime('%Y-%m-%d %H:%M:%S'),
-                    'source_name': where(m, jid), 'quoted': (m.get('quoted') or '').strip() or None},
-                    'your line in this chat - kept for context')
-            took.append(m.get('id'))
-            continue
         body, audio, image = (m.get('text') or '').strip(), m.get('audio'), m.get('image')
-        doc = m.get('doc')
+        doc, ext_id = m.get('doc'), f"whatsapp:{jid}:{m.get('id')}"
+        if m.get('fromMe') and store.message_exists(ext_id): took.append(m.get('id')); continue     # kept already: never heard twice
         # a DOCUMENT counts. Without it in this list a .docx with no caption was dropped whole -
         # the owner watched a file they had just been sent never reach the Timeline (2026-09-01).
         if not body and not audio and not image and not doc: continue
@@ -647,7 +646,22 @@ def poll_whatsapp(store, c, sources: list, llm=None, file_only=False) -> int:
                 name = m.get('docName') or os.path.basename(doc)
                 atts.append({'id': f"doc:{m.get('id')}", 'name': name, 'contentType': mime,
                              'size': len(data), 'contentBytes': base64.b64encode(data).decode()})
-        ext_id = f"whatsapp:{jid}:{m.get('id')}"
+        if m.get('fromMe'):
+            # the owner's OWN line in a chat the funnel reads - typed on their phone, not here. It
+            # used to be dropped, so a WhatsApp thread the owner had answered still read as waiting
+            # on them, and the reader that splits a room into asks never saw our half of it
+            # (channels.ingest_own_message: context on the thread, never work, never counted)
+            # ...SAID AS A VOICE NOTE, A PHOTO OR A FILE TOO (the owner, 2026-11-08: two replies spoken into a group between the other side's
+            # lines, and the chat showed only theirs): only typed words were kept, so a spoken answer never reached the task at all
+            if ingest_own_message(store, {
+                    'external_id': ext_id, 'channel': 'whatsapp', 'subject': None, 'body': body or '(no text - see the attachment)', 'from_email': None,
+                    'conversation_id': f'whatsapp:{jid}', 'sent_at': datetime.fromtimestamp(m.get('ts') or 0).strftime('%Y-%m-%d %H:%M:%S'),
+                    'source_name': where(m, jid), 'quoted': (m.get('quoted') or '').strip() or None},
+                    'your line in this chat - kept for context') and atts:
+                try: save_attachments(store, store.message_by_external(ext_id)['MessageId'], atts, ext_id)
+                except Exception as e: logger.warning(f'whatsapp attachment failed: {e}')
+            took.append(m.get('id'))
+            continue
         # a person's JID, not a group's, is the one-to-one mark; `alias` is the same person's other id (phone vs LID), so
         # the group member the owner answers is the one they talk with directly (senders.chat_aliases)
         meta = {**({} if m.get('group') or jid.endswith('@g.us') else {'dm': True}), **({'alias': a} if (a := _wa_alias(m)) else {})}
@@ -760,13 +774,14 @@ def wa_jid(chat) -> str:
     raise RuntimeError(f'{j!r} is not a WhatsApp chat - pick the Assistant chat again on the WhatsApp card')
 
 
-def wa_send(store, jid: str, body: str, connector_id=None, poll: list = None) -> dict:
+def wa_send(store, jid: str, body: str, connector_id=None, poll: list = None, quote: dict = None) -> dict:
     """`poll`: the choices numbered in `body`, sent again under it as a WhatsApp poll - one tap picks (the bridge
-    turns the vote back into the option's words)."""
+    turns the vote back into the option's words). `quote`: {id, text} of the message this answers - sent as a WhatsApp reply to it."""
     c = store.get_connector(int(connector_id), with_secret=True) if connector_id else \
         store.get_connector_by_type('whatsapp', with_secret=True)
     if c and c.get('Type') != 'whatsapp': c = None
     if not c: raise RuntimeError('the WhatsApp connection is not set up')
     jid = wa_jid(jid)
-    _wa(c, '/send', {'jid': jid, 'text': body[:4000], **({'poll': {'name': 'Pick one', 'values': list(poll)}} if poll else {})})
+    _wa(c, '/send', {'jid': jid, 'text': body[:4000], **({'poll': {'name': 'Pick one', 'values': list(poll)}} if poll else {}),
+                     **({'quote': quote} if quote and quote.get('id') else {})})
     return {'channel': 'whatsapp', 'chat': jid}

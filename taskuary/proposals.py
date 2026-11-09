@@ -293,14 +293,18 @@ def queue(store, task_id: int, p: dict, actor='agent', refused: list | None = No
         generation = skillstate.get(store, 'generation', int(p['generation_id']))
         if not generation or generation.get('task_id') != task_id:
             ok, why = False, 'a task may only propose its own Skill package'
+    # ...a new GitHub issue names its repository and a title, said to the agent now rather than at the press
+    if ok and p.get('action') == 'run_tool' and p.get('type') == 'github_issue':
+        from .github import issue_check, issue_labels
+        if why := issue_check(p): ok = False
+        elif p.get('labels'): p = {**p, 'labels': ', '.join(issue_labels(p['labels']))}
     # ...a picture on a post is one in the task's own folder, named - never a path the agent wrote (execute resolves it again)
     if ok and p.get('action') == 'run_tool':
         p = {k: v for k, v in p.items() if k != 'image_path'}
         if why := picture_why(task_id, p): ok = False
         elif p.get('image'):                     # ...kept as its name in the folder: an agent names it by its full path as often as not
             from . import outputs
-            f = outputs.named(int(task_id), p['image'])
-            p = {**p, 'image': f.relative_to(outputs.folder(int(task_id))).as_posix()}
+            p = {**p, 'image': outputs.rel(int(task_id), outputs.named(int(task_id), p['image']))}
     # ...and what the agent left unnamed on a card's choices comes from the connection's own defaults (Connections), so the card shows them
     if ok and p.get('action') == 'run_tool':
         from . import connectorcatalog as cat
@@ -323,7 +327,7 @@ def queue(store, task_id: int, p: dict, actor='agent', refused: list | None = No
     reason = (f"held before it ran, in the agent's browser: {p.get('what') or p.get('command')}" + (f" - {p['why']}" if p.get('why') else '') if p['action'] == 'browser_act' else
               f"held before it ran, in the agent's shell: {p.get('what') or 'a step'}" + (f" - {p['why']}" if p.get('why') else '') if p['action'] == 'shell_act' else
               f"held before it ran, on your desktop: {p.get('what') or p.get('command')}" + (f" - {p['why']}" if p.get('why') else '') if p['action'] == 'desktop_act' else
-              f"the close-out: {'merge pull request #' + str(p.get('number')) if p['action'] == 'merge_pr' else trackers.words(p) if p['action'] == 'close_item' else 'close the issue it came from'}"
+              f"finishing it: {'merge pull request #' + str(p.get('number')) if p['action'] == 'merge_pr' else trackers.words(p) if p['action'] == 'close_item' else 'close the issue it came from'}"
               if p.get('closeout') else f"the {'workflow asks' if actor == 'workflow' else 'agent proposes'} to {said}" + (f" - {p['why'][:200]}" if p.get('why') else ''))
     rid = store.add_review({'TaskId': task_id, 'Kind': 'action', 'Status': 'pending', 'DraftText': json.dumps(p), 'Reason': reason})
     store.audit('review', rid, 'proposed', actor, detail={'action': p['action']})

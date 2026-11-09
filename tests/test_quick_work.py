@@ -96,7 +96,7 @@ def test_the_prompt_carries_what_the_general_agent_reads_plus_the_mail_history()
     with mock.patch('taskuary.context.for_prompt', return_value='TODAY 14:00 partner day prep'), \
          mock.patch.object(general, 'earlier_mail', return_value='Erin Blake wrote on Monday about the agenda'):
         system, user = quickwork.prompt(s, tid, ASK, lookups=True)
-    assert 'RULES (AGENT.md - every worker)' in system and quickwork.QUICK_LINE in system
+    assert 'RULES (AGENT.md - every worker)' in system and user.endswith(quickwork.QUICK_LINE)
     assert 'what counts as a task' not in system.lower()   # triage's sorting rules stay with triage; _prompt gives workers the SOUL/JOB background (brief.TRIAGE_ONLY)
     assert 'TODAY 14:00 partner day prep' in user and 'Erin Blake wrote on Monday' in user and ASK in user
 
@@ -268,9 +268,10 @@ def test_a_quick_session_takes_no_desk():
     from taskuary import blackboard as bb
     s = home(); tid, _ = arrived(s)
     with mock.patch.dict(terminal.SESSIONS, {}, clear=True):
-        ses = opened(s, tid); ses.quick = True
+        ses = opened(s, tid); ses.quick = True; ses.busy = True        # working: only a working session holds a slot (2026-11-08)
         assert bb.live_count() == 0
         ses.quick = False; assert bb.live_count() == 1
+        ses.busy = False; assert bb.live_count() == 0                    # ...parked, waiting on the owner, it holds none
 
 def test_file_quick_marks_the_session_quick_itself():
     s = home(); tid, _ = arrived(s)
@@ -577,3 +578,13 @@ def test_a_quick_turn_ends_in_the_same_three_parts_as_an_agent_turn():
     summ = [m for m in general.shown_history(s, tid) if m.get('summary')]
     assert summ and summ[-1]['summary']['about'].startswith('Erin Blake asks whether') and summ[-1]['summary']['did'] == ANSWER['report']
     assert 'on_you' not in summ[-1]['summary']                       # the owner's own steps stay as they were
+
+def test_an_answer_that_could_not_be_read_says_why_in_the_log():
+    # the product audit, 2026-11-08: "the quick answer could not be read" on the task, nothing in the log on why
+    from loguru import logger
+    s = home(); tid, _ = arrived(s); said = []
+    sink = logger.add(lambda m: said.append(str(m)), level='INFO')
+    try:
+        with mock.patch.object(llm, 'build_llm', return_value=Brain('Sorry, I cannot help with that.', web=False)): assert quickwork.ask(s, tid, ASK) is None
+    finally: logger.remove(sink)
+    assert any(f'task {tid}: the quick answer could not be read' in x and 'Sorry, I cannot' in x for x in said), said

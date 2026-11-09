@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { pageState, reopenedDetail } from "../src/taskLifecycle.js";
 
 
+
 test("the reopened detail is open, its reminder cleared, an owner's close read as on you", () => {
   const d = { task: { TaskId: 7, Status: "done", RemindAt: "2026-11-01" }, state: "closed", closedWhy: "Closed." };
   const o = reopenedDetail(d);

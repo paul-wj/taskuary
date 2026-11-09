@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "taskuary"
-version = "0.3.11.9"
+version = "0.3.11.23"
 description = "Your AI work partner. Mail, chats and tickets become one list in the right order; your agents do the work, and nothing goes out until you approve. Free, open source, runs on your computer."
 readme = "README.md"
 license = { text = "MIT" }
@@ -41,7 +41,12 @@ dependencies = [
 mssql = ["pyodbc>=4"]
 sftp = ["paramiko>=2.11"]      # the SFTP card; the share needs nothing (a UNC path is a path)
 db = ["sqlalchemy>=2"]      # 'any database' URLs; add the engine driver too (psycopg2-binary, pymysql, ...)
-aws = ["boto3>=1.28"]       # azure needs no extra: tokens ride plain requests
+aws = ["boto3>=1.28"]       # azure needs no extra: tokens ride plain requests; Amazon Transcribe rides this one too
+mongodb = ["pymongo>=4"]    # the MongoDB, Redis and Neo4j cards (nosql.py) - each its own driver, imported when the card is used
+redis = ["redis>=5"]
+neo4j = ["neo4j>=5"]
+gcp = ["google-auth>=2"]   # the Google Cloud card: a service-account key swapped for a read-only token
+fhir = ["PyJWT[crypto]>=2"]   # Epic and Cerner: the SMART backend-services JWT, signed RS384
 voice = ["faster-whisper>=1.0"]   # Local Whisper: speech to text on this machine, no key, audio never leaves the box
 desktop = ["pywebview>=5"]  # create_window(maximized=)
 build = ["pyinstaller>=6"]

@@ -63,6 +63,12 @@ def running(tid) -> bool:
     return e is not None and not e.is_set()
 
 
+def closing(tid) -> bool:
+    "A write-up is running that closes the task when it ends (Mark done on a live agent): the task is as good as closed."
+    with _LOCK: st = _STATE.get(int(tid)) or {}
+    return running(tid) and bool(st.get('close')) and not st.get('error')
+
+
 def wait_for(tid, timeout: float = 600) -> bool:
     """Block until the write-up running for this task is done (True), or there is none. A close waits here."""
     with _LOCK: e = _JOBS.get(int(tid))
@@ -119,7 +125,11 @@ def _run(store, tid, record, harvested: dict = None, harvest_done=None, job: str
                     harvested=harvested, on_harvest=saved)
     except Exception as e:
         failed = str(e) or type(e).__name__
-        logger.warning(f'write-up of task {tid} failed: {failed}')
+        # ...A SESSION THAT WROTE NOTHING HAS NOTHING TO LOSE (the owner, 2026-11-08: "i can't close tasks now... it comes right back"): a
+        # session restored at a restart, waiting on the owner, has no transcript yet, and "nothing to wrap up" kept the task open on every
+        # Mark done, for good. The close goes on, as concierge.save_live already does for the same refusal
+        if failed.startswith('nothing to wrap up'): logger.info(f'write-up of task {tid}: {failed} - closing it plainly'); failed = ''
+        else: logger.warning(f'write-up of task {tid} failed: {failed}')
     finally:
         if harvest_done: harvest_done.set()
     try:

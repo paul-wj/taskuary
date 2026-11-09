@@ -25,3 +25,4 @@ test("editing a connection can clear its model flag without replacing hidden mod
   assert.equal("acp" in body, false);
 });
 
+

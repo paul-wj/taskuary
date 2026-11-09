@@ -5,9 +5,10 @@
 import { says, subState } from "./laneSays.js";
 import React, { useCallback, useEffect, useState } from "react";
 import {
-  Alert, Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent,
+  Alert, Box, Button, Chip, CircularProgress, Dialog, DialogContent,
   DialogTitle, MenuItem, Select, Switch, TextField, Tooltip, Typography,
 } from "@mui/material";
+import { ButtonBar } from "./ButtonBar.jsx";
 import ViewKanbanIcon from "@mui/icons-material/ViewKanban";
 import WallView from "./WallView.jsx";
 import GridViewIcon from "@mui/icons-material/GridView";
@@ -227,7 +228,7 @@ const NoteDialog = ({ open, task, onClose }) => {
           </Typography>
         )}
       </DialogContent>
-      <DialogActions><Button onClick={onClose}>{tr("Close")}</Button></DialogActions>
+      <ButtonBar><Button onClick={onClose}>{tr("Close")}</Button></ButtonBar>
     </Dialog>
   );
 };
@@ -504,7 +505,7 @@ export default function BoardView({ onOpenTask, active = true }) {
 
       {/* ── start a task for the agent: New's own "Give an agent a job" (the owner, 2026-10-15: "look like a coding or general
           agent - same as in new button") - a live session in a checkout, or a general agent, one form app-wide ── */}
-      <NewSheet open={newOpen} onClose={() => setNewOpen(false)} initialKind="agent"
+      <NewSheet open={newOpen} onClose={() => setNewOpen(false)} initialKind="agent" chat={false}
         onDone={() => { setBoardTick((n) => n + 1); load(); }} />
 
       <NoteDialog open={!!noteFor} task={noteFor} onClose={() => setNoteFor(null)} />

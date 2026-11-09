@@ -252,6 +252,7 @@ class Term:
         self.mode = mode                                  # 'full' or 'auto': how the CLI was started (a stranger's task never runs full)
         self.sid = uuid.uuid4().hex[:12]
         self.argv, self.cwd, self.label, self.task_id, self.agent = argv, cwd, label, task_id, agent
+        self.opened_in = cwd                              # where its process started; cwd moves with use_repo (repochoice)
         self.cli = cli                                    # what RUNS this, named by the profile - never argv[0]'s wrapper
         self.rows, self.cols = rows, cols                 # replaying the stream needs the real geometry
         self.started = datetime.now().isoformat(sep=' ', timespec='seconds')
@@ -710,6 +711,11 @@ def cli_of(argv) -> str:
     return re.split(r'[\\/]', str((argv or [''])[0]))[-1].lower().rsplit('.', 1)[0] if argv else ''
 
 
+def is_acp(t) -> bool:
+    "A coding session over ACP (acpcoding.ACPCoding): a prompt where a pty takes keys, its turns where a pty has a screen."
+    return getattr(t, 'acp', False) is True
+
+
 def cli_named(profile: dict, argv=None) -> str:
     """The CLI this session RUNS, by the name the profile asked for.
 
@@ -1102,8 +1108,12 @@ def opening_geometry(store) -> tuple:
 
 def open_session(store, agent: str = None, task_id: int = None, repo: str = None, cwd: str = None,
                  rows: int = 0, cols: int = 0, actor: str = 'owner', model: str = None,
-                 seed_fn=None, resume: str = None, brain: str = None) -> Term:
+                 seed_fn=None, resume: str = None, brain: str = None, pty: bool = False, sid: str = None) -> Term:
     """Start a terminal: a configured agent CLI, or a plain shell when agent is None.
+
+    A task's claude or codex with 'Run CLI agents over ACP' on opens over ACP instead (acpcoding.py): the same argv, seed and registry
+    entry, no pty. `pty` forces the terminal - the fallback when its adapter does not start. `sid`: an idled-out ACP session's own
+    (acpcoding.wake), so it comes back as the same run.
 
     `seed_fn(cwd) -> str` builds the first prompt once the working directory is known. CLIs
     that take an interactive prompt on the command line get it THERE - the session starts with
@@ -1151,29 +1161,14 @@ def open_session(store, agent: str = None, task_id: int = None, repo: str = None
                              f'chip beside its agent, or the chooser this refusal opens - choose {repo} and '
                              f'give it the path; otherwise the session would open in '
                              f'{profile.get("cwd") or os.getcwd()} and work the wrong tree')
-    # ...and NO repo decided must not mean "the agent's default folder" either. That default is one
-    # particular checkout (ledger, on this box), so a task nothing matched opened there and an agent
-    # worked a tree it had no business in - the same failure the refusal above exists to prevent, one
-    # branch further along (the owner, 2026-09-03: "sent the coding agent the wrong repo again").
+    # ...and NO repo decided must not mean "the agent's default folder" either: that default is one particular checkout, and a task
+    # nothing placed opened there and worked a tree it had no business in (the owner, 2026-09-03: "sent the coding agent the wrong repo
+    # again"). It opens in the TASK'S OWN folder instead - no checkout, so it collides with nobody - and its first prompt lists the
+    # repositories for the agent to pick from with use_repo (repochoice, the owner 2026-11-06). Only a profile that routes no repos at
+    # all keeps a folder of its own.
     if not cwd and not repo and task_id and agent:
-        paths = profile.get('cwd_map') or {}
-        # ...and ONE path is not an answer either while the repo map knows others: "the only repo this agent has a path
-        # for" is how a reimbursement task opened in the integrations checkout. guess_repo no longer scores the words
-        # against the map (2026-10-11), so the owner picks - unless the task says it has no repository at all.
-        others = len(paths) == 1 and len(known_repos_of(store, profile)) > 1 and repo_tag(store.get_task(task_id) or {}) != NO_REPO
-        if len(paths) > 1 or others:
-            raise ValueError('I could not tell which checkout this belongs in, and guessing would put an '
-                             f"agent in {profile.get('cwd') or os.getcwd()}. Pick the repository on the task "
-                             '- the chooser this refusal opens, or the repo chip beside its agent - and say '
-                             'which one; or tag it, and every later session goes there.')
-        if len(paths) == 1: cwd = next(iter(paths.values()))
-        # ...and NOTHING AT ALL - no path, no folder of its own - is no answer either: the fallback below is the folder Taskuary was
-        # started in, which on the owner's machine is Taskuary's own checkout. A bug report about another app opened a coding agent
-        # there by itself (the overnight QA, 2026-10-30). The owner picks, unless the task says it has no repository at all.
-        elif not paths and not profile.get('cwd') and repo_tag(store.get_task(task_id) or {}) != NO_REPO:
-            raise ValueError('I could not tell which checkout this belongs in: no repository is set up for the coding agent, and '
-                             f'guessing would put it in {os.getcwd()}, the folder Taskuary started in. Pick the repository on the task '
-                             '- the chooser this refusal opens, or the repo chip beside its agent - and give it the path.')
+        from . import repochoice
+        cwd = profile['cwd'] if profile.get('cwd') and not profile.get('cwd_map') else repochoice.scratch(task_id)
     cwd = cwd or profile.get('cwd') or os.getcwd()
     if not os.path.isdir(cwd): raise ValueError(f'working directory does not exist: {cwd}')
     # WHICH CHECKOUT comes first, and only then which binary: resolving the CLI up here meant a box
@@ -1200,16 +1195,21 @@ def open_session(store, agent: str = None, task_id: int = None, repo: str = None
         elif mode == 'full':
             from . import agenttools
             argv = agenttools.insert(argv, agenttools.session_args(store, cli_named(profile, argv), task_id, argv))
+    # ...A CODING SESSION OVER ACP (acpcoding.wanted: the owner's task on claude or codex, the switch on): everything above is its launch
+    # too - Taskuary's tools, the send filter, the theme and hooks file - carried to the adapter; what follows that is a pty's own is not
+    from . import acpcoding
+    acp_road = bool(agent and not pty and acpcoding.wanted(store, profile, mode, task_id))
+    if task_id and not sid: acpcoding.IDLED.pop(task_id, None)       # any other start on the task supersedes a session that idled out
     # Reopening the CLI's own conversation, by its own id. The prompt is TYPED into a resumed pane
     # rather than handed over on the command line: `claude --resume <id> "..."` and its equivalents
     # differ per CLI, and the typed road is the one verified against every TUI here.
     from .agents import assign_argv, resume_argv
-    if agent and resume:
+    if agent and resume and not acp_road:
         argv = codex_resume_model(list(argv) + resume_argv(profile, resume, store), model or profile.get('model'))
     # ...and for a NEW one, name it ourselves where the CLI allows (agents.ASSIGN_ARGS). Learning
     # an id afterwards leaves a window - a pane killed inside it was gone for good - and it has to
     # guess WHICH session a hook or a log belongs to. A name we chose has neither problem.
-    assigned = str(uuid.uuid4()) if agent and not resume else ''
+    assigned = str(uuid.uuid4()) if agent and not resume and not acp_road else ''
     named = assign_argv(profile, assigned, store) if assigned else []
     argv, assigned = (list(argv) + named, assigned) if named else (argv, '')
     omp_dir = None
@@ -1244,7 +1244,7 @@ def open_session(store, agent: str = None, task_id: int = None, repo: str = None
     if seed and task_id:
         from . import sessionrecord as _sr
         _sr.keep_seed(task_id, seed)
-    extra = seed_argv(profile, seed) if seed and not resume else None
+    extra = seed_argv(profile, seed) if seed and not resume and not acp_road else None
     # pywinpty joins argv with list2cmdline - correct for a direct .exe - but an npm .CMD shim
     # runs through `cmd /c`, and cmd.exe parses & | < > and stray quotes as ITS OWN syntax:
     # the seed's `subject "T&E System"` was cut AT THE AMPERSAND and half a prompt was
@@ -1269,7 +1269,14 @@ def open_session(store, agent: str = None, task_id: int = None, repo: str = None
                 _hooks.install_user(cli, token=session_env(agent, task_id, cwd).get('TASKUARY_TOKEN', ''), cmd=str(profile.get('cmd') or cli))
                 _hooks.retire_project(cwd)
         except Exception as e: logger.debug(f'agent hooks not installed for {cwd}: {e}')
-    t = Term(argv, cwd, label, task_id, agent, rows, cols, store, cli=cli_named(profile, argv), mode=mode)
+    if acp_road:
+        from .agents import _resolve_cmd
+        try: base = len(_resolve_cmd(profile['cmd']))
+        except FileNotFoundError: base = 1
+        t = acpcoding.ACPCoding(store, profile, argv, acpcoding.carried(argv[base:]), cwd, label, task_id, agent, cli_named(profile, argv),
+                                model or profile.get('model'), resume or '', rows, cols, mode, sid=sid,
+                                fallback=lambda: open_session(store, agent, task_id, None, cwd, rows, cols, actor, model, seed_fn, resume, brain, pty=True))
+    else: t = Term(argv, cwd, label, task_id, agent, rows, cols, store, cli=cli_named(profile, argv), mode=mode)
     SESSIONS[t.sid] = t
     if assigned: bind_ext(t, assigned)     # resumable before it has drawn a single character
     # ...and a RESUMED pane is already named - by the conversation it reopens (`claude --resume <id>` keeps the id: the
@@ -1301,19 +1308,22 @@ def open_session(store, agent: str = None, task_id: int = None, repo: str = None
         from . import browserview as _bv, ingest as _ingest
         # ...or that triage read the work as done on a web page (2026-10-29) - launched now only on the page it was last on: with no
         # address the agent's first navigate launches it (browserview.on_demand, the owner 2026-11-04: "no browser ... if we don't have a URL")
-        if _ingest.mark_browser(store, task_id) and (last := _bv.last_page(task_id)):
+        # ...and only while the owner has a part on that page (general.page_needs_owner): a dead page is not brought back
+        from .general import page_needs_owner
+        if _ingest.mark_browser(store, task_id) and (last := _bv.last_page(task_id)) and page_needs_owner(store, task_id):
             threading.Thread(target=_bv.start, args=(t.sid, last), daemon=True).start()
         from . import agentdesktop as _ad
         _ad.mark_from_triage(store, task_id)               # ...and in a desktop app, with Agent Desktop on (2026-10-31)
-    if agent and task_id and 'codex' in os.path.basename(str(argv[0])).lower():
+    if agent and task_id and not acp_road and 'codex' in os.path.basename(str(argv[0])).lower():
         from .witness import RolloutTail
         RolloutTail(t).start()
     # ...and the CLIs that neither take an id nor stream one: watch for the file they write
-    if agent and task_id and not assigned:
+    if agent and task_id and not assigned and not acp_road:
         from . import sessionfiles
         cli = cli_of(argv)
         if sessionfiles.watches(cli): sessionfiles.SessionWatch(t, cli).start()
-    if seed:
+    if acp_road: t.start(seed or '')         # its first session/prompt; none at all for a quiet resume - it is back at its prompt
+    elif seed:
         if extra: t.seeded, t.accepted = seed, True   # the CLI submits it itself; kept so harvest drops the echo
         else: t.seed(seed)               # no prompt argument on this CLI: type it in, verified
     # A reply drafted from the mail alone promises what this session has not worked out yet, so
@@ -1715,6 +1725,7 @@ def harvest(t: Term, chars: int = 12000) -> str:
     readable text. And the rendering has to be a real terminal (see render): a regex that strips
     absolute cursor moves instead of obeying them turned a 27-minute session into 216 characters
     of glued-together debris, which is what the AI was being asked to write a report from."""
+    if is_acp(t): return t.transcript_text(chars)      # an ACP session has its turns themselves, not a screen
     raw = _drop_echo(render(t.scrollback(), getattr(t, 'cols', 110), getattr(t, 'rows', 32)),
                      getattr(t, 'seeded', '')).strip()
     tidy = declutter(raw)
@@ -1924,10 +1935,13 @@ def seed_text(store, tid: int, instruction: str = None, repo: str = None, cwd: s
     # A general question is told so out loud. Without this the folder the CLI happens to have
     # started in was announced as "REPO: ... work only here", and an agent asked to prepare for a
     # meeting went reading that codebase for the answer.
+    from . import repochoice as _rc
     if repo_tag(t) == NO_REPO:
         parts.append('NO REPOSITORY - this is a general question, not a change to a codebase. '
                      'Answer it from what you are given and what you can look up; do not go '
                      'hunting for code to edit.')
+    # ...and a session no structure placed is in its task's own folder: it is handed the repositories to pick from (repochoice)
+    elif not repo and _rc.is_scratch(tid, cwd): parts.append(_rc.block(store, tid, cwd))
     elif repo or cwd: parts.append(f"REPO: {repo or cwd} - you are already in it; work only here.")
     # the blackboard: agents sharing THIS checkout, told to a newcomer once, up front. Another
     # repo's agents are deliberately absent - awareness costs prompt tokens, so it is spent
@@ -1935,9 +1949,11 @@ def seed_text(store, tid: int, instruction: str = None, repo: str = None, cwd: s
     from . import browserview as _bv
     # the hold is promised only to a CLI whose hook can refuse (llm.HOLDS_CLI): Codex was told "held" and paid (2026-10-25)
     from .llm import HOLDS_CLI
-    # ...told it is OPEN only when there is a page to open it on (last_page); else offered, launched by its first navigate (on_demand)
+    # ...told it is OPEN only when there is a page to open it on (last_page) that the owner has a part on; else offered, launched by its
+    # first navigate (on_demand)
+    from .general import page_needs_owner
     if _bv.wanted(t) and shutil.which('agent-browser'):
-        parts.append(_bv.brief(held=not cli or cli_named({'cmd': cli}) in HOLDS_CLI, open_now=bool(_bv.last_page(tid))))
+        parts.append(_bv.brief(held=not cli or cli_named({'cmd': cli}) in HOLDS_CLI, open_now=bool(_bv.last_page(tid)) and bool(page_needs_owner(store, tid))))
     # ...and the owner's desktop apps, once Agent Desktop is on and the task is marked "needs desktop" - never on a stranger's task
     # (agentdesktop.py; its hook refuses there too)
     if not stranger and _ad.on(store) and _ad.wanted(store.get_task(tid)): parts.append(_ad.brief(held=not cli or cli_named({'cmd': cli}) in HOLDS_CLI))
@@ -1951,6 +1967,9 @@ def seed_text(store, tid: int, instruction: str = None, repo: str = None, cwd: s
     if cwd:
         said = bb.wall_text(store, cwd, for_tid=tid)     # another task's stranger notes never; this task's own, yes
         if said: parts.append(said)
+    # ...and the notes other agents sent THIS task since its last turn (peers.py), framed as a peer's - a new session is its next turn
+    from . import peers
+    if not stranger and (heard := peers.take(store, tid)): parts.append(heard)
     # the owner's own words stay in the prompt (the reviewer should read them as the owner's); text a caller built from a message does not
     if instruction and instruction.strip():
         if stranger and not instruction_theirs: parts.append(f'FROM THE OWNER: {instruction.strip()}')
@@ -2072,7 +2091,13 @@ def seed_text(store, tid: int, instruction: str = None, repo: str = None, cwd: s
     # how this session ENDS. Without it the only ending is a person clicking Done, so a task
     # finished overnight produced no report and the sender got no answer (selfclose.py).
     from . import selfclose
-    if selfclose.stays_open(store, tid): parts.append(selfclose.STAY_LINE)
+    from .wrapup import OWN_ASK, no_correspondent
+    if not stranger and no_correspondent(store, tid):
+        # an owner-opened session still hears it is theirs to end (STAY_LINE's mark), just without STAY_LINE's reply road
+        parts.append(f"{OWN_ASK} No `taskuary --reply` or propose_reply here. " + (
+                     'THE OWNER OPENED THIS SESSION: `taskuary --done` is refused. Summarize, then wait.' if selfclose.stays_open(store, tid) else
+                     'WHEN FINISHED: run `taskuary --done "<one sentence>" --no-reply`.' if selfclose.mode(store) != 'off' else ''))
+    elif selfclose.stays_open(store, tid): parts.append(selfclose.STAY_LINE)
     elif selfclose.mode(store) != 'off': parts.append(selfclose.SEED_LINE)
     # that earlier agents worked out what is still true here, and how to look it up and judge it (handbook.pointer). The
     # wall says what is happening in this checkout this hour; the Hub says what is still true next month. A pointer, not the
@@ -2287,56 +2312,28 @@ def our_own_repo(store, tid: int, known) -> str:
 
 
 def guess_repo(store, tid: int, profile: dict) -> tuple:
-    """Which checkout does this task belong in? The tag on the task wins - that is the override,
-    and the only thing that always does what it says.
+    """Which checkout does this task belong in, by STRUCTURE alone? The owner's tag wins - that is the override, and the only thing that
+    always does what it says. Then a GitHub or GitLab item's own repository, then the coding agent's own pick on this task (use_repo,
+    repochoice.AGENT_TAG). A repo so named is returned even when this agent has no path for it, because open_session must then REFUSE
+    rather than quietly open another folder - an agent editing the wrong checkout is far worse than one that will not start.
 
-    Then a GitHub item's own repository, then triage's verdict (a repository, or "choose one"). A
-    repo so named is returned even when this agent has no path for it, because open_session must
-    then REFUSE rather than quietly open the default folder - an agent editing the wrong checkout is
-    far worse than one that will not start. Without a verdict the owner chooses, unless the agent
-    has exactly one checkout; the task's words are never scored against the map (2026-10-11).
-
-    Taskuary deciding this is the point: an agent left to work it out reads SOUL.md over the API,
-    or guesses from the folder it happens to have started in."""
+    Nothing else decides it (the owner, 2026-11-06: "let's take repo decision out of the triage - remove it completely"): no verdict, no
+    word count, not "the only path there is". (None, why) opens the session in the task's own folder with the REPOSITORIES block, and the
+    agent picks (repochoice). A workflow's cwd and a continued session's cwd are start_on_task's, before this is asked."""
+    from .repochoice import AGENT_TAG
     t = store.get_task(tid) or {}
     tag = repo_tag(t)
-    # "no repository" is an ANSWER, not a missing one: a general question ("what does this mean",
-    # "prepare me for this meeting") has no checkout, and leaving the field blank used to hand it
-    # to the guess below - which then opened the highest-scoring repo and set an agent looking for
-    # code to change. Only the explicit tag stops that.
+    # "no repository" is an ANSWER, not a missing one: a general question ("what does this mean", "prepare me for this meeting") has no
+    # checkout, and the agent is told so instead of being handed the repositories to pick from
     if tag == NO_REPO: return None, 'a general question - no repository'
     if tag: return tag, 'tagged on the task'
-    # a GitHub item's own repository is authoritative (PW-093) - before anything triage or a word count says
-    direct = next((str(m.get('SourceName') or '').strip() for m in store.list_messages(tid)
-                   if str(m.get('Channel') or '') == 'github' and str(m.get('SourceName') or '').strip()), '')
-    if direct: return direct, 'the GitHub item belongs to this repository'
-    # triage's own decision, made with the request and the project map in front of it and written on
-    # the task (ingest: triage-repo: tag, needs-repo-choice tag); startup does not guess again (PW-092)
-    tags = str(t.get('Tags') or '')
-    picked = (re.search(r'triage-repo:([^\s,]+)', tags) or [None, None])[1]
-    note = next((str(c.get('Body') or '') for c in reversed(store.list_comments(tid))
-                 if str(c.get('Body') or '').startswith('Triage')), '')
-    if picked: return picked, f"triage selected this repository - {note.split(': ', 1)[-1] if ': ' in note else 'from the request and the project map'}"
-    if 'needs-repo-choice' in tags.split(','): return None, f"triage could not tell which repository - choose one ({note.split(': ', 1)[-1] if ': ' in note else 'more than one is plausible'})"
-    paths = profile.get('cwd_map') or {}
-    # no repo paths at all = this agent does not do repo routing. Naming one anyway would put a
-    # REPO line in the prompt for a folder the session is not in.
-    if not paths: return (None, None)
-    # NO GUESS FROM THE TASK'S WORDS (2026-10-11, "everything should be ai"; kind-routes-the-task): triage read the ask
-    # with the project map in front of it and named no repository, so a word-overlap score of the mail against SOUL.md -
-    # the old fallback here - was a second opinion nobody could argue with, and it is how a task that merely mentioned a
-    # topic opened in the checkout whose description shared its nouns. What is left is structure, not reading: our own
-    # machinery's checkout, a repository the OWNER's earlier choices tied to this work, the only path there is - and
-    # otherwise the owner chooses (open_session refuses with several paths; the dispatch answers needs_repo, RepoPicker).
-    known = known_repos_of(store, profile)
-    own = our_own_repo(store, tid, known)
-    if own: return own, "Taskuary's own work - our own checkout"
-    from .projects import repositories_for_task
-    related, relation_why = repositories_for_task(store, tid)
-    related = [r for r in related if r in known]
-    if len(related) == 1: return related[0], relation_why
-    if len(related) > 1: return None, relation_why + '; the project has several repositories, so choose one'
-    return (known[0], 'the only repository there is') if len(known) == 1 else (None, 'triage named no repository - choose one')
+    # a code host's item names its own repository (PW-093) - GitLab's project path as GitHub's owner/name
+    direct = next(((str(m.get('SourceName') or '').strip(), m['Channel']) for m in store.list_messages(tid)
+                   if str(m.get('Channel') or '') in ('github', 'gitlab') and str(m.get('SourceName') or '').strip() not in ('', 'GitLab')), None)
+    if direct: return direct[0], f"the {'GitHub' if direct[1] == 'github' else 'GitLab'} item belongs to this repository"
+    picked = (re.search(rf'(?:^|[\s,]){re.escape(AGENT_TAG)}([^\s,]+)', str(t.get('Tags') or '')) or [None, None])[1]
+    if picked: return picked, 'the coding agent chose it on this task'
+    return None, 'no repository yet - the coding agent picks one'
 
 
 def _as_general(store, tid: int, instruction: str = None, actor: str = 'owner') -> dict:
@@ -2392,7 +2389,10 @@ def start_on_task(store, tid: int, agent: str = '', model: str = None, instructi
         b = workflows.brain_of_task(store, t)
         if b and b['key']: model, brain = b['model'] or None, b['key']
     # ...and in Auto mode, hard work opens on the CLI's strong gear (brainroute, 2026-10-25); a model or a resume named here keeps its own
-    from . import brainroute
+    from . import brainroute, general
+    # ...where a model is the owner's pick: the CLI's own default, sent back by a picker that shows it, is none (general.chosen_model)
+    if model and not resume and not _chain and not general.chosen_model(
+            store, f'cli:{brain}' if brain else hub_agents.resolve_brain(store, 'coding', cli_only=True), model): model = None
     if model is None and not resume and not _chain: brain, model = brainroute.for_session(store, t, brain)
     # The chain is of BRAINS, not of workers: the ROLE stays `agent` throughout, because failing
     # over is about which CLI can start, never about what the job is (the 2026-09-16 spec).
@@ -2472,6 +2472,10 @@ def start_on_task(store, tid: int, agent: str = '', model: str = None, instructi
             start_on_task(store, tid, agent, None, instruction, actor, cwd, _chain=remaining, brain=nxt, instruction_theirs=instruction_theirs)
         term.failover = replace
     store.clear_dispatch(tid)          # started (by whatever road): it is no longer waiting
+    # ...and where its work starts from, for the close-out's diff and its landing question (landing.py) - the first session's, kept
+    from . import landing
+    try: landing.mark_start(store, tid, term.cwd)
+    except Exception as e: logger.debug(f'task {tid}: no landing start noted - {e}')
     if repo and why != 'tagged on the task':
         store.add_comment(tid, actor, 'human', f'Session opened in {repo} - {why}.')
     store.add_comment(tid, actor, 'human' if actor == 'owner' else 'agent',
@@ -2644,7 +2648,7 @@ def screen(sid: str, lines: int = 32) -> dict | None:
     t = get(sid)
     if not t: return None
     n = max(1, min(int(lines or 32), 120))
-    shown = render(t.scrollback(), t.cols, t.rows).splitlines()
+    shown = t.screen_lines(n) if is_acp(t) else render(t.scrollback(), t.cols, t.rows).splitlines()
     return {'sid': t.sid, 'alive': bool(t.alive), 'rows': t.rows, 'cols': t.cols,
             'promptPending': prompt_pending(t),
             'lines': shown[-n:]}
@@ -2706,6 +2710,27 @@ def asking_lines(sid: str, n: int = 4) -> list:
 
 def mode_of_task(tid) -> str: return next((t.mode for t in list(SESSIONS.values()) if t.alive and t.task_id == tid), '')
 
+# THE STRANGER GAP (2026-11-06): a task that became a stranger's AFTER its session started full - a new sender on the thread, a batch's
+# outside item - kept every relay road open into that session: an answer, a phone's tell_agent, a teammate's line, the Assistant's.
+# Each road asks this at the moment it would deliver; a yes means nothing goes in, the task says so once, and the caller refuses with it.
+STRANGER_NOW = ("This task's sender is not someone you trust any more - the running agent was given nothing; "
+                "stop it or restart it in the stranger's mode")
+
+def stranger_now(store, tid, t=None) -> str:
+    "STRANGER_NOW when the live session on `tid` (or `t`) runs full and the task now reads as a stranger's - said once on the task - else ''."
+    t = t or next((x for x in list(SESSIONS.values()) if getattr(x, 'task_id', None) == tid and getattr(x, 'alive', False)), None)
+    # ...a general chat (send_prompt) is no full-tools CLI: its floor is its own (general.py), judged at every turn it takes
+    if not t or not tid or getattr(t, 'mode', 'full') == 'auto' or hasattr(t, 'send_prompt'): return ''
+    from . import origin
+    try: o = origin.of_task(store, tid)[0]
+    except Exception as e: o = 'stranger'; logger.warning(f'task {tid}: could not read who wrote on it, so nothing goes in - {e}')
+    if o != 'stranger': return ''
+    try:
+        last = next((c for c in reversed(store.list_comments(tid)) if c.get('Actor') == 'router'), None)
+        if (last or {}).get('Body') != STRANGER_NOW: store.add_comment(tid, 'router', 'agent', STRANGER_NOW)
+    except Exception as e: logger.debug(f'task {tid}: the stranger line was not filed - {e}')
+    return STRANGER_NOW
+
 def say_to_task(store, task_id: int, msg: dict, actor: str = 'router', new: bool = False) -> bool:
     """Type an inbound answer INTO the task's live session. The agent asked a question, the
     hub asked the person, the person answered - the answer belongs in front of the agent,
@@ -2714,10 +2739,13 @@ def say_to_task(store, task_id: int, msg: dict, actor: str = 'router', new: bool
     Accepts a message as a DB row (BodyText/OwnText/FromName) or an ingest dict (body/own_text/from_name).
     `new`: not an answer but new work triage joined to the task (ingest._pass_coding) - said as such, to the agent and on the task.
     What the agent gets is the sender's NEW words (triage.agent_words): never the quoted chain under them, never an address or a
-    number - and a line the session never took is cleared out of its box and said as not delivered, so it waits for the owner."""
+    number - and a line the session never took is cleared out of its box and said as not delivered, so it waits for the owner.
+    Raises origin.Refusal(STRANGER_NOW) when the task turned a stranger's under a full session (stranger_now): nothing goes in."""
     from .triage import agent_words, sender_called, wrapper_of
-    t = next((x for x in list(SESSIONS.values()) if x.task_id == task_id and x.alive), None)
+    from . import acpcoding, origin
+    t = next((x for x in list(SESSIONS.values()) if x.task_id == task_id and x.alive), None) or acpcoding.wake(store, task_id)
     if not t: return False
+    if (why := stranger_now(store, task_id, t)): raise origin.Refusal(why)
     who, mid = sender_called(msg), msg.get('MessageId') or msg.get('message_id')
     wrapper = msg.get('wrapper') or (wrapper_of(store.message_verdict(mid)) if mid and hasattr(store, 'message_verdict') else ())
     body = agent_words(msg, wrapper)
@@ -2725,6 +2753,10 @@ def say_to_task(store, task_id: int, msg: dict, actor: str = 'router', new: bool
     ch = msg.get("Channel") or msg.get("channel") or "mail"
     line = (f"{who} wrote again (by {ch}) with more work on this task - their words, not the owner's: {body}" if new
             else f'{who} answered (by {ch}): {body}')[:4000]
+    # ...with the FILES that came with it, by their paths on this machine (the owner, 2026-11-08: a screenshot sent to a live session reached
+    # it as its caption alone, "This seems to be not working") - the seed names a task's first files the same way (seed_text FILES)
+    files = [a for a in (store.list_attachments(mid) if mid else []) or [] if a.get('Path')]
+    if files: line += ' [FILES that came with it, already on this machine - open them: ' + '; '.join(f"{a['Name']} ({a['Path']})" for a in files[:8]) + ']'
     # NOT INTO A TURN STILL RUNNING (TQ-1251, the owner, 2026-11-02: "the relay is not sending messages to him"). Typed while the agent
     # worked, the line left the box - so it read as delivered - and never reached the agent: Claude's queue let it go while a tool call
     # waited on the owner's yes. Mid-turn it waits in the waiting room instead, which types it in once the agent stops (waitroom.tick).
@@ -2828,6 +2860,7 @@ def type_into(t, text: str, done=None):
     while it works. `done(ok)` hears the outcome; a line that never left the box is cleared out of it
     first (^U, never Esc: that interrupts the agent), so nothing half-said sits there under its turn."""
     text = clean_typed(text)
+    if is_acp(t): return t.say(text, done=done)     # an ACP session takes a prompt, never keystrokes
     def go():
         for i in range(0, len(text), SEED_CHUNK):
             t.write(text[i:i + SEED_CHUNK])
@@ -2869,6 +2902,7 @@ def answer_form(t, picks) -> None:
     words are the "Type something." row (the digit after the last option), then the words, then Enter. The last tab
     is a review whose "1" submits every answer together. `picks` = [(choices, answer)], in order. Own thread."""
     picks = [(list(c or []), ' '.join(str(a or '').split())) for c, a in picks]
+    if is_acp(t): return t.say(' '.join(a for _c, a in picks if a))    # no form on screen over ACP: the answers are its next prompt
     def go():
         for _ in range(len(picks) + 1):
             t.write('\x1b[D'); time.sleep(.15)
@@ -2890,7 +2924,7 @@ def queue_codex(t, text: str) -> bool:
     thread at once and holds a busy one's message for its next turn (measured 2026-09-25: a pty-launched
     codex answered a queued line in 8 s). It is a new TURN, never a pick: a chooser or an approval on the
     screen still needs its keystroke, so callers only send an answer to a question asked in words."""
-    if getattr(t, 'cli', '') != 'codex' or not getattr(t, 'ext_id', ''): return False
+    if getattr(t, 'cli', '') != 'codex' or not getattr(t, 'ext_id', '') or is_acp(t): return False
     from .agents import _resolve_cmd, child_env
     from . import spawn
     try:

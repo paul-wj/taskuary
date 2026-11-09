@@ -24,8 +24,8 @@ test("only the two that wait on the owner, and a run that failed, wear the alarm
 
 // by what the agent IS, from the task's kind - "Start coder" named a profile as if it were a worker (the owner, 2026-10-16)
 test("a step that never ran names what Start starts, by the task's kind", () => {
-  assert.ok(startLabel(held, "coding", false));
-  assert.notEqual(startLabel(held, "coding", false), startLabel(held, "general", false));
+  assert.equal(startLabel(held, "coding", false), "Start the coding agent");
+  assert.equal(startLabel(held, "general", false), "Start the agent");
   assert.equal(startLabel(held, "coding", true), null);
   assert.equal(startLabel({ kind: "interrupted", line: "x" }, "coding", false), null);
 });

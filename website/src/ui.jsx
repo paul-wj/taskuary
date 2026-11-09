@@ -12,8 +12,9 @@ import { useLocale } from "./LocaleProvider.jsx";
 import { useCapabilities, NO_CODING_TOOL } from "./capabilities.js";
 import { bareAddresses } from "./replyDelivery.js";
 import { keepAddresses, linkParts } from "./mailLinks.js";
-import { Alert, Autocomplete, Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent,
+import { Alert, Autocomplete, Box, Button, Chip, CircularProgress, Dialog, DialogContent,
   DialogContentText, DialogTitle, InputAdornment, MenuItem, Select, TextField, Tooltip, Typography } from "@mui/material";
+import { ButtonBar } from "./ButtonBar.jsx";
 import SearchIcon from "@mui/icons-material/Search";
 import BlockIcon from "@mui/icons-material/Block";
 import PsychologyOutlinedIcon from "@mui/icons-material/PsychologyOutlined";
@@ -43,6 +44,7 @@ import ChecklistIcon from "@mui/icons-material/Checklist";
 import ViewKanbanIcon from "@mui/icons-material/ViewKanban";
 import MergeTypeIcon from "@mui/icons-material/MergeType";
 import ArticleIcon from "@mui/icons-material/Article";
+import SupportAgentIcon from "@mui/icons-material/SupportAgent";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import NotificationsActiveIcon from "@mui/icons-material/NotificationsActive";
 import CloudQueueIcon from "@mui/icons-material/CloudQueue";
@@ -95,6 +97,11 @@ export const CHANNEL_COLORS = { teams: "#6264A7", email: "#41525f", github: "#2b
   jira: "#0052CC", asana: "#F06A6A", monday: "#6161FF", clickup: "#7b68ee", todoist: "#e44332",
   gitlab: "#fc6d26", azdo: "#0078d4", linear: "#5e6ad2", trello: "#0079bf", notion: "#37352f",
   discord: "#5865F2", sentry: "#7b6bc9", pagerduty: "#048a24",
+  zendesk: "#03363d", freshdesk: "#25c16f", intercom: "#1f8ded", servicenow: "#62d84e", shortcut: "#58b1e4", wrike: "#08cf65",
+  smartsheet: "#0073ec", airtable: "#fcb400", github_projects: "#2b2a26", bitbucket: "#0052cc", ms_planner: "#31752f",
+  zulip: "#6492fe", signal: "#3a76f0", twilio: "#f22f46", discourse: "#231f20", reddit: "#ff4500", youtube: "#ff0000",
+  calendly: "#006bff", shipstation: "#84c225", shopify: "#5e8e3e", square: "#3e4348", paypal: "#003087", woocommerce: "#7f54b3", bigcommerce: "#121118",
+  instagram: "#e1306c", facebook_pages: "#1877f2", x: "#0f1419", wordpress: "#21759b",
   aws: "#ff9900", azure: "#0078d4", database: "#6b6459", smb_file: "#6b6459", own: "#8a7a5c" };
 // ...and the ONE colour that stands for a source, for the dot on the work rail. A channel with its
 // own brand mark is not in the table above (the mark colours itself), so its logo's colour is named
@@ -108,6 +115,14 @@ const CHANNEL_ICONS = { teams: GroupsIcon, github: GitHubIcon, report: Assessmen
   clickup: ViewKanbanIcon, todoist: ChecklistIcon,
   gitlab: MergeTypeIcon, azdo: ViewKanbanIcon, linear: ChecklistIcon, trello: ViewKanbanIcon,
   notion: ArticleIcon, discord: TagIcon, sentry: ErrorOutlineIcon, pagerduty: NotificationsActiveIcon,
+  zendesk: SupportAgentIcon, freshdesk: SupportAgentIcon, intercom: SupportAgentIcon, servicenow: SupportAgentIcon,
+  shortcut: ChecklistIcon, wrike: ChecklistIcon, smartsheet: ViewKanbanIcon, airtable: ViewKanbanIcon, github_projects: ViewKanbanIcon,
+  bitbucket: MergeTypeIcon, ms_planner: ChecklistIcon,
+  zulip: TagIcon, signal: SendIcon, twilio: SendIcon, discourse: TagIcon, reddit: TagIcon, youtube: TagIcon,
+  calendly: GroupsIcon, shipstation: StorageIcon, shopify: StorageIcon, square: ErrorOutlineIcon, paypal: ErrorOutlineIcon, woocommerce: StorageIcon, bigcommerce: StorageIcon,
+  front: SupportAgentIcon, helpscout: SupportAgentIcon, gorgias: SupportAgentIcon, ringcentral: SendIcon, aircall: SendIcon, dialpad: SendIcon,
+  typeform: ArticleIcon, jotform: ArticleIcon, surveymonkey: ArticleIcon, tally: ArticleIcon, google_forms: ArticleIcon, lever: GroupsIcon,
+  instagram: TagIcon, facebook_pages: TagIcon, x: TagIcon, wordpress: TagIcon,
   aws: CloudQueueIcon, azure: CloudQueueIcon, database: StorageIcon, smb_file: StorageIcon,
   own: PersonOutlineIcon };
 // A product named on a card wears its OWN logo where we have one (logos.jsx, self-colored);
@@ -149,11 +164,11 @@ export const Confirm = ({ open, title, text, confirmLabel = "OK", onConfirm, onC
         <DialogContentText sx={{ fontSize: 13, color: DIM, whiteSpace: "pre-wrap" }}>{text}</DialogContentText>
         {err && <Alert severity="error" sx={{ mt: 1.5 }}>{translateDescriptor(err)}</Alert>}
       </DialogContent>
-      <DialogActions sx={{ px: 3, pb: 2 }}>
-        <Button onClick={onClose} disabled={busy}>{t("Cancel")}</Button>
+      <ButtonBar>
         <Button variant="contained" disableElevation onClick={go} disabled={busy}>
           {busy ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : confirmLabel === "OK" ? t("OK") : confirmLabel}</Button>
-      </DialogActions>
+        <Button onClick={onClose} disabled={busy}>{t("Cancel")}</Button>
+      </ButtonBar>
     </Dialog>
   );
 };
@@ -176,13 +191,12 @@ export const ConfirmDelete = ({ open, what, consequence, confirmLabel = "Delete"
         </DialogContentText>
         {err && <Alert severity="error" sx={{ mt: 1.5, fontSize: 12.5 }}>{translateDescriptor(err)}</Alert>}
       </DialogContent>
-      <DialogActions sx={{ px: 3, pb: 2 }}>
+      <ButtonBar>
         {/* Cancel is the default focus and sits where the eye lands: the safe one is not the
             one you hit by reflex */}
-        <Button onClick={onClose} disabled={busy} autoFocus sx={{ fontSize: 12.5 }}>{t("Cancel")}</Button>
-        <Button onClick={go} disabled={busy} color="error" variant="contained" disableElevation
-          sx={{ fontSize: 12.5 }}>{busy ? "…" : confirmLabel === "Delete" ? t("Delete") : confirmLabel}</Button>
-      </DialogActions>
+        <Button onClick={onClose} disabled={busy} autoFocus>{t("Cancel")}</Button>
+        <Button onClick={go} disabled={busy} color="error" variant="contained" disableElevation>{busy ? "…" : confirmLabel === "Delete" ? t("Delete") : confirmLabel}</Button>
+      </ButtonBar>
     </Dialog>
   );
 };
@@ -2056,7 +2070,8 @@ export const ToRow = ({ to, onSave, disabled }) => {
   );
 };
 
-export const CcRow = ({ cc, setCc, channel }) => {
+// ...ONE ROW FOR CC AND BCC (the owner, 2026-11-08: "share code as much as possible with to/cc/bcc"): `label` names it, BCC the same row
+export const CcRow = ({ cc, setCc, channel, label: name = "CC" }) => {
   useLocale();
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
@@ -2072,12 +2087,12 @@ export const CcRow = ({ cc, setCc, channel }) => {
   };
   return (
     <Box sx={{ display: "flex", alignItems: "center", gap: 0.8, mb: 0.75, flexWrap: "wrap", minWidth: 0 }}>
-      <Typography sx={{ color: "#6f8a6e", fontSize: 9.5, fontWeight: 600, letterSpacing: "1.5px", flexShrink: 0 }}>{t("CC")}</Typography>
+      <Typography sx={{ color: "#6f8a6e", fontSize: 9.5, fontWeight: 600, letterSpacing: "1.5px", flexShrink: 0 }}>{t(name)}</Typography>
       {(cc || []).map((a) => (
         <Box key={a} sx={{ display: "inline-flex", alignItems: "center", gap: 0.5, px: 0.8, py: 0.15,
           borderRadius: 99, bgcolor: "#eef1ec", border: "1px solid #d9e0d6" }}>
           <Typography sx={{ fontSize: 11.5, color: INK }}>{a}</Typography>
-          <Box component="button" type="button" aria-label={t("Remove {address} from CC", { address: a })}
+          <Box component="button" type="button" aria-label={t("Remove {address} from {label}", { address: a, label: name })}
             onClick={() => setCc((cc || []).filter((x) => x !== a))}
             sx={{ cursor: "pointer", color: FAINT, fontSize: 12, lineHeight: 1, border: 0, bgcolor: "transparent", p: 0, fontFamily: "inherit", "&:hover": { color: "#6b2733" } }}>✕</Box>
         </Box>
@@ -2091,13 +2106,25 @@ export const CcRow = ({ cc, setCc, channel }) => {
         <Typography {...pressable(() => setOpen(true))}
           sx={{ ...FOCUS_RING, fontSize: 11.5, color: "#55697a", cursor: "pointer", fontWeight: 600,
                 "&:hover": { textDecoration: "underline" } }}>
-          {(cc || []).length ? t("Add another") : t("Add CC")}
+          {(cc || []).length ? t("Add another") : t("Add {label}", { label: name })}
         </Typography>
       )}
       {!!err && open && <Typography variant="caption" sx={{ color: "#6b2733" }}>{translateDescriptor(err)}</Typography>}
     </Box>
   );
 };
+
+// THE SUBJECT, ON THE EMAIL CARD (the owner, 2026-11-08: one email card, every field editable): the line its reader sees, changed in place -
+// held like CC and sent with Send. `subject`: what goes now; `onChange` takes the owner's words
+export const SubjectRow = ({ subject, onChange, disabled }) => (
+  <Box sx={{ display: "flex", alignItems: "center", gap: 0.8, mb: 0.75, minWidth: 0 }}>
+    <Typography sx={{ color: "#6f8a6e", fontSize: 9.5, fontWeight: 600, letterSpacing: "1.5px", flexShrink: 0 }}>SUBJECT</Typography>
+    <Box component="input" data-tq-subject="" value={subject || ""} disabled={disabled} aria-label="Subject" placeholder="(no subject)"
+      onChange={(e) => onChange(e.target.value)}
+      sx={{ ...FOCUS_RING, flex: 1, minWidth: 0, border: 0, borderBottom: "1px dashed #d9e0d6", bgcolor: "transparent", font: "inherit",
+        fontSize: 13, fontWeight: 600, color: INK, py: 0.25, outline: 0, "&:focus": { borderBottomColor: "#6f8a6e" } }} />
+  </Box>
+);
 
 // THE REPLY DRAFT BOX, one for every surface that shows a draft (task Close out, the walk's reply card) - a long email
 // read through an 8-line slot with its own scrollbar (the owner, 2026-10-19). It grows with the text up to 60% of the

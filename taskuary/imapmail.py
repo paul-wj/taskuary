@@ -95,6 +95,10 @@ def peer_cert(host: str, port: int, starttls: bool) -> tuple:
     whose certificate it is before deciding to accept it. Read on a second connection that verifies
     the chain but not the name; a self-signed server falls through to the fingerprint alone."""
     def read(ctx):
+        if starttls == 'imap':
+            M = imaplib.IMAP4(host, port, timeout=15)
+            try: M.starttls(ssl_context=ctx); return (M.sock.getpeercert() or {}), fingerprint(M.sock)
+            finally: M.shutdown()
         if starttls:
             with smtplib.SMTP(host, port, timeout=15) as S:
                 S.starttls(context=ctx)
@@ -148,11 +152,15 @@ def _login(c):
         raise RuntimeError('Microsoft mailboxes (Outlook.com, Hotmail, Microsoft 365) no longer accept IMAP passwords - '
                            'use the Outlook connector and Sign in with Microsoft')
     port = int(cfg.get('imap_port') or 993)
+    # a server that upgrades a plain connection (Proton Mail Bridge on 1143, an Exchange server on 143) says STARTTLS, never SSL
+    up = 'imap' if cfg.get('imap_starttls') or port in (143, 1143) else False
     # timeout: a half-open socket after a sleep or a Wi-Fi change hung the poll thread in recv
     # forever, and every later poll skipped because the lock was held (audit 2026-09-02)
-    try: M = imaplib.IMAP4_SSL(imap_h, port, timeout=30, ssl_context=ssl_ctx(cfg))
+    try:
+        if up: M = imaplib.IMAP4(imap_h, port, timeout=30); M.starttls(ssl_context=ssl_ctx(cfg))
+        else: M = imaplib.IMAP4_SSL(imap_h, port, timeout=30, ssl_context=ssl_ctx(cfg))
     except ssl.SSLCertVerificationError as e:
-        raise tls_error(e, imap_h, port, False) from e
+        raise tls_error(e, imap_h, port, up) from e
     except OSError as e:
         if getattr(e, 'winerror', None) == 10013 or 'forbidden by its access permissions' in str(e):
             raise RuntimeError(f'this PC blocked the connection to {imap_h}:{port} - a firewall or security agent stops '
@@ -204,6 +212,11 @@ def _body_and_attachments(msg) -> tuple:
     from .channels import _clean
     text, html, atts = '', '', []
     for part in msg.walk():
+        # a mail attached whole: its own From rides along (channels.att_marks), so whose words it carries is read, not guessed
+        if part.get_content_type() == 'message/rfc822':
+            inner = part.get_payload(0) if isinstance(part.get_payload(), list) and part.get_payload() else {}
+            atts.append({'id': f'mail-{len(atts)}', 'name': _dec((inner.get('Subject') if inner else '') or 'attached mail')[:120],
+                         'contentType': 'message/rfc822', 'size': 0, 'isInline': False, 'from': _dec(inner.get('From') or '') if inner else ''})
         if part.is_multipart(): continue
         ctype = part.get_content_type()
         fname = part.get_filename()
@@ -800,7 +813,8 @@ def poll_imap(store, c, sources: list, llm=None, file_only=False, backfill_days:
                     'sent_at': sent_at, 'source_name': user}
                 from .calendar import tz_of
                 incoming.update(protocol_marks(msg, me=(user,), tz=tz_of(store)))
-                incoming['mail_meta'] = {**(incoming.get('mail_meta') or {}), **mail_ids(msg, thrid), **html_links(msg)}
+                from .channels import att_marks
+                incoming['mail_meta'] = {**(incoming.get('mail_meta') or {}), **mail_ids(msg, thrid), **html_links(msg), **att_marks(atts)}
             except Exception as e:
                 raise _UIDFetchFailure(f'uid {uid} headers could not be decoded: {e}') from e
             # ...and the thread a mail already here files under wins over the header root. Outside the decode guard:
@@ -857,13 +871,13 @@ def poll_imap(store, c, sources: list, llm=None, file_only=False, backfill_days:
 
 
 def send_smtp(store, c, to: list, subject: str, body: str, in_reply_to: str = None, cc: list = None,
-              attachments: list = None, html: str = None, references: list = None) -> dict:
+              attachments: list = None, html: str = None, references: list = None, bcc: list = None) -> dict:
     """The reply, over the provider's own SMTP, threaded with In-Reply-To/References. `cc` is the
     colleague the owner looped in: on the header so everyone sees it, and in the envelope so the
     server actually delivers to them (the header alone sends nothing - it is only text)."""
     imap_h, smtp_h, cfg = _hosts(c)
     user = (cfg.get('address') or '').strip()
-    cc = [a for a in (cc or []) if a]
+    cc, bcc = [a for a in (cc or []) if a], [a for a in (bcc or []) if a]     # `bcc`: in the envelope only - never on a header
     # A reply that carries files is a multipart message; without them it stays the plain text it was.
     # ...and a shared result (sharing.email_html) carries its HTML beside the same text, which stays the fallback part
     from email.mime.multipart import MIMEMultipart
@@ -893,6 +907,6 @@ def send_smtp(store, c, to: list, subject: str, body: str, in_reply_to: str = No
         except ssl.SSLCertVerificationError as e: raise tls_error(e, smtp_h, port, True) from e
         verify_pin(S.sock, cfg, smtp_h)
         S.login(user, c['Secret'])
-        S.sendmail(user, list(to) + cc, m.as_string())
-    return {'channel': 'email', 'to': to, 'cc': cc, 'mailbox': user, 'threaded': bool(in_reply_to),
+        S.sendmail(user, list(to) + cc + bcc, m.as_string())
+    return {'channel': 'email', 'to': to, 'cc': cc, 'bcc': bcc, 'mailbox': user, 'threaded': bool(in_reply_to),
             'attached': [f['name'] for f in (attachments or [])]}

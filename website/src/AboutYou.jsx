@@ -1,7 +1,7 @@
 // About you: what the system knows about its owner, gathered on one page - every identity a
 // connector learned (with where it came from), the facts only you can add, what the agents are
 // actually told, and a generated avatar. Backed by taskuary/whoami.py.
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Button, CircularProgress, TextField, Typography } from "@mui/material";
 import ShuffleIcon from "@mui/icons-material/Shuffle";
 import CheckIcon from "@mui/icons-material/Check";
@@ -11,6 +11,37 @@ import { ChannelIcon } from "./ui.jsx";
 import { ABOUT_SECTIONS, secId } from "./settingsMap.js";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
+import { PROFILE_CHANGED } from "./profileAvatar.js";
+import { WorkstreamsSection, parseWorkstreams } from "./FirstRunAbout.jsx";
+import { changedRows } from "./aboutWork.js";
+import { loadWorkstreams } from "./Workstream.jsx";
+
+// WHAT YOU WORK ON, CHANGED LATER (the owner, 2026-11-06): setup's own list, saved as it is changed (no Save button) - only the rows
+// touched, so a workstream the mail proposed and nobody answered stays unanswered; setup's grouping still running is read again
+function AboutWorkstreams() {
+  const [d, setD] = useState(null), [text, setText] = useState(""), [msg, setMsg] = useState("");
+  const was = useRef([]), timer = useRef(null);
+  const load = useCallback(() => api.get("/api/about/workstreams")
+    .then(({ data }) => { setD(data); setText(data.text || ""); was.current = parseWorkstreams(data.text); })
+    .catch((e) => setMsg(e?.response?.data?.detail || "could not read what you work on")), []);
+  useEffect(() => { load(); return () => clearTimeout(timer.current); }, [load]);
+  useEffect(() => { if (d?.state !== "running") return undefined; const id = setTimeout(load, 3000); return () => clearTimeout(id); }, [d, load]);
+  const save = async (v) => {
+    const rows = changedRows(was.current, parseWorkstreams(v));
+    if (!rows.length) return;
+    try { await api.put("/api/about/workstreams", { items: rows }); was.current = parseWorkstreams(v); loadWorkstreams(true); setMsg(t("Saved")); }
+    catch (e) { setMsg(e?.response?.data?.detail || t("save failed")); }
+  };
+  const change = (v) => { setText(v); setMsg(""); clearTimeout(timer.current); timer.current = setTimeout(() => save(v), 700); };
+  return (
+    <Box data-tq-about-workstreams="" sx={{ mb: 3 }}>
+      <Typography sx={{ ...mono, fontSize: 10, letterSpacing: 1, color: FAINT, mb: 1 }}>{t("WHAT YOU WORK ON")}</Typography>
+      {!d ? <CircularProgress size={16} /> : <WorkstreamsSection d={d} text={text} onChange={change} heading={false}
+        later={t("What you work on is still being read from your mail - it fills in on its own.")} />}
+      {msg && <Typography variant="caption" sx={{ color: msg === t("Saved") ? FAINT : "#6b2733", display: "block", mt: 0.5 }}>{msg}</Typography>}
+    </Box>
+  );
+}
 
 const [S_YOU, S_CHANNEL, S_TOLD] = ABOUT_SECTIONS;   // the rail's sub-entries scroll to these three
 
@@ -40,14 +71,16 @@ export default function AboutYou() {
   const [p, setP] = useState(null);
   const [err, setErr] = useState("");
   const [preview, setPreview] = useState(null);       // {svg, style, seed} not yet kept
+  // ...and the top bar's corner draws the same face: a new name or avatar redraws it (ProfileButton)
+  const changed = () => window.dispatchEvent(new Event(PROFILE_CHANGED));
   const load = useCallback(async () => {
     try { setP((await api.get("/api/whoami")).data); setErr(""); }
     catch (e) { setErr(e?.response?.data?.detail || "could not load your profile"); }
   }, []);
   useEffect(() => { load(); }, [load]);
-  const save = async (fields) => { try { setP((await api.patch("/api/whoami", fields)).data); } catch (e) { setErr(e?.response?.data?.detail || "save failed"); } };
+  const save = async (fields) => { try { setP((await api.patch("/api/whoami", fields)).data); changed(); } catch (e) { setErr(e?.response?.data?.detail || "save failed"); } };
   const saveOwner = async (name, email) => {
-    try { await api.put("/api/owner", { name: name || p.facts.owner_name || "the owner", email }); load(); }
+    try { await api.put("/api/owner", { name: name || p.facts.owner_name || "the owner", email }); load(); changed(); }
     catch (e) { setErr(e?.response?.data?.detail || "save failed"); }
   };
   const shuffle = async (style) => {
@@ -105,6 +138,8 @@ export default function AboutYou() {
             inputProps={{ "aria-label": t("About you"), style: { fontSize: 13, color: INK, lineHeight: 1.5 } }} sx={{ mt: 1.5 }} />
         </Box>
       </Box>
+
+      <AboutWorkstreams />
 
       {/* who you are on each channel, with provenance */}
       <Typography id={secId("about", S_CHANNEL)} sx={{ ...mono, fontSize: 10, letterSpacing: 1, color: FAINT, mb: 1 }}>{t("WHO YOU ARE, PER CHANNEL")}</Typography>

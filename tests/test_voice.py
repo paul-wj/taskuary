@@ -22,6 +22,80 @@ def _voice_store(t='groq_stt', secret='k1'):
     return s
 
 
+class FourAddedOn2026_11_08(unittest.TestCase):
+    "AssemblyAI, Speechmatics and Gladia upload, submit and poll; Azure answers in one call - each fed the answers its docs show."
+    def run_one(self, t, posts, gets, cfg=None):
+        s = _voice_store(t)
+        if cfg: s.save_connector({'ConnectorId': s.get_connector_by_type(t)['ConnectorId'], 'ConfigJson': json.dumps(cfg)}, 'o')
+        with mock.patch.object(voice.requests, 'post', side_effect=posts) as p, mock.patch.object(voice.requests, 'get', side_effect=gets) as g,                 mock.patch.object(voice.time, 'sleep'):
+            out = voice.transcribe(s, b'RIFF', 'audio/wav', 'a.wav')
+        return out, p, g
+
+    def test_assemblyai(self):
+        out, p, g = self.run_one('assemblyai', [R(200, {'upload_url': 'https://cdn.assemblyai.com/upload/u1'}), R(200, {'id': 't1', 'status': 'queued'})],
+                                 [R(200, {'id': 't1', 'status': 'processing'}), R(200, {'id': 't1', 'status': 'completed', 'text': 'aai text'})])
+        self.assertEqual(out['text'], 'aai text')
+        self.assertEqual(p.call_args_list[0][0][0], 'https://api.assemblyai.com/v2/upload'); self.assertEqual(p.call_args[1]['headers'], {'authorization': 'k1'})
+        self.assertEqual(p.call_args[1]['json']['audio_url'], 'https://cdn.assemblyai.com/upload/u1')
+        self.assertEqual(g.call_args[0][0], 'https://api.assemblyai.com/v2/transcript/t1')
+
+    def test_speechmatics(self):
+        txt = R(200, {}); txt.text = 'sm text'
+        out, p, g = self.run_one('speechmatics', [R(201, {'id': 'j1'})], [R(200, {'job': {'id': 'j1', 'status': 'running'}}),
+                                 R(200, {'job': {'id': 'j1', 'status': 'done'}}), txt], cfg={'region': 'us1'})
+        self.assertEqual(out['text'], 'sm text')
+        self.assertEqual(p.call_args[0][0], 'https://us1.asr.api.speechmatics.com/v2/jobs')
+        self.assertEqual(json.loads(p.call_args[1]['data']['config'])['type'], 'transcription')
+        self.assertEqual((g.call_args[0][0], g.call_args[1]['params']), ('https://us1.asr.api.speechmatics.com/v2/jobs/j1/transcript', {'format': 'txt'}))
+
+    def test_gladia(self):
+        out, p, g = self.run_one('gladia', [R(200, {'audio_url': 'https://api.gladia.io/file/f1'}), R(201, {'id': 'g1', 'result_url': 'x'})],
+                                 [R(200, {'status': 'processing'}), R(200, {'status': 'done', 'result': {'transcription': {'full_transcript': 'gl text'}}})])
+        self.assertEqual(out['text'], 'gl text'); self.assertEqual(p.call_args[1]['headers'], {'x-gladia-key': 'k1'})
+        self.assertEqual(g.call_args[0][0], 'https://api.gladia.io/v2/pre-recorded/g1')
+
+    def test_azure_one_call_and_it_needs_an_endpoint(self):
+        out, p, _g = self.run_one('azure_speech', [R(200, {'durationMilliseconds': 900, 'combinedPhrases': [{'text': 'az text'}], 'phrases': []})], [],
+                                  cfg={'endpoint': 'https://speech-nw.cognitiveservices.azure.com/'})
+        self.assertEqual(out['text'], 'az text')
+        self.assertEqual(p.call_args[0][0], 'https://speech-nw.cognitiveservices.azure.com/speechtotext/transcriptions:transcribe')
+        self.assertEqual(p.call_args[1]['headers'], {'Ocp-Apim-Subscription-Key': 'k1'})
+        with self.assertRaisesRegex(RuntimeError, 'endpoint or region'): self.run_one('azure_speech', [], [])
+
+    def test_a_failed_job_says_why(self):
+        with self.assertRaisesRegex(RuntimeError, 'AssemblyAI: bad audio'):
+            self.run_one('assemblyai', [R(200, {'upload_url': 'u'}), R(200, {'id': 't'})], [R(200, {'status': 'error', 'error': 'bad audio'})])
+
+
+class AmazonTranscribe(unittest.TestCase):
+    "The clip goes to the owner's own bucket, a job reads it, the transcript JSON is read back - and both objects are deleted. boto3 faked."
+    def run_one(self, statuses, cfg=None):
+        s = _voice_store('amazon_transcribe', 'sk')
+        s.save_connector({'ConnectorId': s.get_connector_by_type('amazon_transcribe')['ConnectorId'],
+                          'ConfigJson': json.dumps(cfg if cfg is not None else {'bucket': 'northwind-audio', 'region': 'us-east-1', 'access_key_id': 'AKIA1'})}, 'o')
+        s3, tr = mock.Mock(), mock.Mock()
+        s3.get_object.return_value = {'Body': mock.Mock(read=lambda: json.dumps({'results': {'transcripts': [{'transcript': 'aws text'}]}}).encode())}
+        tr.get_transcription_job.side_effect = [{'TranscriptionJob': {'TranscriptionJobStatus': x, 'FailureReason': 'bad audio'}} for x in statuses]
+        with mock.patch('taskuary.aws.client', side_effect=lambda c, svc, region=None: {'s3': s3, 'transcribe': tr}[svc]) as cl, mock.patch.object(voice.time, 'sleep'):
+            out = voice.transcribe(s, b'RIFF', 'audio/wav', 'a.wav')
+        return out, s3, tr, cl
+
+    def test_upload_job_poll_read_and_clean_up(self):
+        out, s3, tr, cl = self.run_one(['IN_PROGRESS', 'COMPLETED'])
+        self.assertEqual((out['text'], out['provider']), ('aws text', 'amazon_transcribe'))
+        self.assertEqual(cl.call_args.args[0]['secret_access_key'], 'sk')
+        put = s3.put_object.call_args.kwargs
+        job = tr.start_transcription_job.call_args.kwargs
+        self.assertEqual((put['Bucket'], job['Media']['MediaFileUri'], job['MediaFormat'], job['OutputBucketName'], job['IdentifyLanguage']),
+                         ('northwind-audio', f"s3://northwind-audio/{put['Key']}", 'wav', 'northwind-audio', True))
+        self.assertEqual(s3.get_object.call_args.kwargs['Key'], job['OutputKey'])
+        self.assertEqual({c.kwargs['Key'] for c in s3.delete_object.call_args_list}, {put['Key'], job['OutputKey']})
+
+    def test_a_failed_job_says_why_and_a_bucket_is_needed(self):
+        with self.assertRaisesRegex(RuntimeError, 'Amazon Transcribe: bad audio'): self.run_one(['FAILED'])
+        with self.assertRaisesRegex(RuntimeError, 'S3 bucket'): self.run_one([], cfg={'region': 'us-east-1'})
+
+
 class ProviderTests(unittest.TestCase):
     def test_no_connector_is_said_the_way_the_owner_can_fix_it(self):
         s = MemoryStore()

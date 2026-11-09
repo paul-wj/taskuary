@@ -197,8 +197,12 @@ def goal_facts(store, task, tid, now) -> dict:
     today = now.strftime('%Y-%m-%d')
     due = str(task.get('DueAt') or '')[:10] or None
     kids = [x for x in steps if x['child']]
-    late_kid = any(x['child'].get('Status') == 'waiting' and str(x['child'].get('DueAt') or '')[:10] and str(x['child'].get('DueAt'))[:10] < today for x in kids)
-    slipped = bool((due and due < today and done < n) or late_kid)
+    late = sorted(str(x['child'].get('DueAt'))[:10] for x in kids
+                  if x['child'].get('Status') == 'waiting' and str(x['child'].get('DueAt') or '')[:10] and str(x['child'].get('DueAt'))[:10] < today)
+    slipped = bool((due and due < today and done < n) or late)
+    # ...and the day it SLIPPED: its own date once past, else its first late step's - "slipped Dec 23" on Nov 8 named the goal's date ahead,
+    # while a step due Nov 6 was the one late (the product audit, 2026-11-08)
+    slipped_at = (due if due and due < today and done < n else late[0] if late else None) if slipped else None
     started = bool(done or any(x['child'].get('Status') != 'open' or x['child'].get('Assignee') for x in kids))
     kind = 'goal_slipped' if slipped else 'goal_fresh' if not started else 'goal'
     # WHEN the news happened, so a read goal comes back only for news newer than the read (card_for): the latest step
@@ -218,7 +222,7 @@ def goal_facts(store, task, tid, now) -> dict:
         elif c.get('Status') == 'open': bits.append(f'step {k} is on you')
     if slipped and due and due < today: bits.append(f"slipped {(now - datetime.strptime(due, '%Y-%m-%d')).days}d")
     # `who` is the row's person column everywhere else (the day card lists them): for a goal it is who holds it, never its creator
-    return {'kind': kind, 'news': bool(news_at), 'news_at': news_at, 'due': due, 'steps': n, 'steps_done': done, 'who': holders[0] if holders else '',
+    return {'kind': kind, 'news': bool(news_at), 'news_at': news_at, 'due': due, 'slipped_at': slipped_at, 'steps': n, 'steps_done': done, 'who': holders[0] if holders else '',
             'why': ' · '.join(bits), 'back_at': f'{due} 08:00:00' if due else None, 'folded': False}
 
 
@@ -301,7 +305,11 @@ def card_for(store, item, compact, live_state, now, states=None, noise=None):
             triage = action.get('triage') or {}
             lane = processing_all.idea_lane(idea)
             slip, late, quiet, day = funnel.slipped_followup(store, action, now)   # a quiet thread past the person's day: the owner's move
-            if slip == 'answered': store.set_idea_status(idea['IdeaId'], 'done', 'funnel'); late = 0
+            # ...once: a line already done re-marked on every build left a dirty row each time, so the pile's cache never held and every
+            # read of the rail - and the walk's peek beside it in the same request - built it again (perf 2026-11-06)
+            if slip == 'answered':
+                if idea.get('Status') in ('open', 'snoozed'): store.set_idea_status(idea['IdeaId'], 'done', 'funnel')
+                late = 0
             elif slip: lane = slip
             base.update(idea=idea['IdeaId'], idea_kind=idea.get('Kind'), action=action, workstream=idea.get('Workstream') or '',
                         priority=triage.get('priority'), tid=action.get('tid') or tid,
@@ -431,6 +439,11 @@ def card_for(store, item, compact, live_state, now, states=None, noise=None):
             said = said[:160]
             card.update(lane='saved' if funnel.session_saved(store, tid) else 'stopped',
                         why=f"{agent_word(task.get('Kind'))} {'failed' if end == 'failed' else 'stopped'}" + (f': {said}' if said else ''))
+        elif end == 'finished' and (waits := store.waiting_on_owner(tid)):
+            # ...but a run that finished with a post, an email or another act waiting for the owner's press is that press, not "finished - read
+            # what it found" (the owner's render check, 2026-11-08: a LinkedIn post waiting for Post read "agent done") - store.waiting_on_owner
+            from .general import handles
+            card.update(lane='approve', why=' '.join(str(waits.get('Reason') or 'a step waits for your yes').split())[:160], **({'chat': True} if handles(task) else {}))
         elif end == 'finished':
             last = store.last_worker_event(tid, kinds=('finished',)) or {}
             said = ' '.join(str(last.get('Text') or '').split())[:160]

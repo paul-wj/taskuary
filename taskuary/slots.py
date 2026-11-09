@@ -64,7 +64,7 @@ def add(store, tid: int, outputs, actor: str, sender: dict = None) -> list:
     to pick from; none leaves the name and its '?'."""
     from . import people
     # every email the task has owed - sent and dropped ones too: an email already sent is not owed again because a later
-    # message words it differently
+    # message words it differently (one taken back unsent is owed again: draft reopens it, _reopen)
     have = {str(i['out'].get('to')).casefold() for i in all_(store, tid)}
     new = []
     for i in clean(outputs):
@@ -128,17 +128,41 @@ def seen(store, tid: int):
     return (store.last_material_inbound_on_task(tid) or {}).get('MessageId')
 
 
+# A CHAT ID IS NO MAILBOX, whoever named it - the agent or triage's slot (the night run, 2026-11-09: "emails" went to whatsapp:1555...)
+_NO_MAILBOX = "{to} is a chat, not a mailbox - answer them in that chat (propose_reply, `answers` their line) or give their email address as `to`"
+def _chat_id(to) -> bool:
+    from .ingest import CHAT_CHANNELS
+    return str(to or '').split(':')[0].strip().lower() in CHAT_CHANNELS
+
 def draft(store, tid: int, text: str, to: str = '', subject: str = '', slot: str = '', agent: str = 'agent',
-          channel: str = 'email', name: str = '') -> dict:
+          channel: str = 'email', name: str = '', cc=(), mailbox: str = '') -> dict:
     """The agent that did the work writes one output itself - the slot named by id, else the open one to the same person,
-    else a slot it adds (said on the task: the owner sees the list grow). Nothing is sent: the owner approves it."""
+    else a slot it adds (said on the task: the owner sees the list grow). Nothing is sent: the owner approves it. `cc`: who
+    else is copied - kept on the envelope, so the card shows what the agent said it did (it said "Gail on cc" and dropped her).
+    `mailbox`: the connected mailbox it leaves FROM - a + New task has no mail in to answer from, so "send it from my JOIN
+    Gmail" fell to the first Outlook card, and the agent, with no way to say it, tried the Gmail card as a tool (TQ-1354)."""
     text = str(text or '').strip()
     if not text: return {'ok': False, 'why': 'no email text'}
+    mailbox = str(mailbox or '').strip()
+    if mailbox:
+        from . import outbound
+        if channel != 'email': return {'ok': False, 'why': f'{channel} has no From - only an email leaves from a mailbox'}
+        box = outbound._box(store, mailbox)
+        if not box:
+            have = ', '.join(m['address'] for m in outbound.mailboxes(store)) or 'none is connected'
+            return {'ok': False, 'why': f'{mailbox} is not a connected mailbox - send from one of: {have}'}
+        mailbox = box['address']
+    cc = [a for a in (split(x)[1] for x in ([cc] if isinstance(cc, str) else cc or [])) if a]
+    if cc and channel != 'email': return {'ok': False, 'why': f'{channel} has no cc - only an email can copy somebody in'}
+    if bad := [a for a in cc if '@' not in a]: return {'ok': False, 'why': f"cc takes email addresses - {', '.join(bad)} is not one"}
+    cc = [a.lower() for a in cc]
     if (store.get_task(tid) or {}).get('Status') in ('done', 'dropped'): return {'ok': False, 'why': 'that task is closed'}
     to = split(to)[1] if channel == 'email' else ' '.join(str(to or '').split())
+    if channel == 'email' and _chat_id(to): return {'ok': False, 'why': _NO_MAILBOX.format(to=to)}
     want = ' '.join(str(to or '').split()).casefold()
     hit = next((i for i in all_(store, tid) if slot and i['id'] == slot), None) or \
-          next((i for i in open_(store, tid) if want and str(i['out'].get('to')).casefold() == want), None)
+          next((i for i in open_(store, tid) if want and str(i['out'].get('to')).casefold() == want), None) or \
+          (want and _reopen(store, tid, want, agent))
     added = False
     if hit and hit.get('done'): return {'ok': False, 'why': f"the email to {hit['out'].get('to')} was already sent or dropped"}
     if hit and want and '@' in want and str(hit['out'].get('to')).casefold() != want:
@@ -154,9 +178,15 @@ def draft(store, tid: int, text: str, to: str = '', subject: str = '', slot: str
         hit, added = made[0], True
         store.add_comment(tid, agent, 'agent', f'{agent} added an email to {to} to what this task owes.')
     o = hit['out']; kind = o.get('kind') or 'email'
-    subj = str(subject or o.get('subject') or (store.get_task(tid) or {}).get('Title') or '')[:200] if kind == 'email' else ''
-    deliver = json.dumps({'channel': kind, 'to': [o['to']], 'cc': [], 'subject': subj, 'slot': hit['id'], 'seen': seen(store, tid)})
+    if kind == 'email' and _chat_id(o.get('to')): return {'ok': False, 'why': _NO_MAILBOX.format(to=o.get('to'))}
+    subj = subject_of(store, tid, hit, subject) if kind == 'email' else ''
     rv = store.get_review(hit['rid']) if hit.get('rid') else None
+    # a rewrite that names no From keeps the one already picked - the owner's, or the agent's first draft's
+    try: was = (json.loads(rv.get('Deliver') or '{}') or {}).get('mailbox') if rv and rv.get('Status') == 'pending' else None
+    except (TypeError, ValueError): was = None
+    box = (mailbox or was) if kind == 'email' else None
+    deliver = json.dumps({'channel': kind, 'to': [o['to']], 'cc': cc, 'subject': subj, 'slot': hit['id'], 'seen': seen(store, tid),
+                          **({'mailbox': box} if box else {})})
     if rv and rv.get('Status') == 'pending':
         rid = rv['ReviewId']
         if not store.set_review_deliver(rid, deliver): return {'ok': False, 'why': 'that email is already being sent'}
@@ -169,6 +199,31 @@ def draft(store, tid: int, text: str, to: str = '', subject: str = '', slot: str
         text = agent_signed(store, store.get_review(rid), text) or text
     store.update_review_draft(rid, text, None, by=f'agent:{agent}')
     return {'ok': True, 'review_id': rid, 'slot': hit['id'], 'added': added}
+
+
+def _reopen(store, tid: int, want: str, agent: str):
+    """The slot to this person whose email was taken back unsent (withdrawn or dropped), owed again: the corrected email goes
+    in its place - add() refused it, so after a withdraw the owner was told to send the fix by hand (the product audit, 2026-11-08).
+    Never one whose email went: what was sent is not owed again."""
+    for i in reversed(all_(store, tid)):
+        rv = store.get_review(i['rid']) if i.get('done') and i.get('rid') else None
+        if rv and str(i['out'].get('to')).casefold() == want and rv.get('Status') in ('closed_unsent', 'rejected') and rv.get('DeliveryState') != 'sent':
+            mark(store, tid, i['id'], done=False, actor=f'agent:{agent}')
+            return {**i, 'done': False}
+    return None
+
+
+def subject_of(store, tid: int, hit: dict, subject: str = '') -> str:
+    """The subject an email goes out with: the one written for its reader, else the slot's, else "Re:" the mail its person
+    sent on this task, else what the slot is about. Never the task's title - that is the owner's own label, and three poll
+    emails went out headed with it (agent-flow audit, 2026-11-07)."""
+    from .outbound import re_subject
+    o, to = hit['out'], str(hit['out'].get('to') or '').casefold()
+    theirs = store._one("SELECT Subject FROM message WHERE TaskId=? AND LOWER(IFNULL(FromEmail,''))=? AND IFNULL(Subject,'')<>'' "
+                        "ORDER BY SentAt DESC, MessageId DESC LIMIT 1", (tid, to)) if '@' in to else None
+    about = str(hit.get('text') or '').partition(' - ')[2].strip()
+    s = ' '.join(str(subject or o.get('subject') or (theirs and re_subject(theirs['Subject'])) or about[:1].upper() + about[1:]).split())
+    return s[:200]
 
 
 def readdress(store, rv: dict, to: list, actor: str = 'owner') -> dict:

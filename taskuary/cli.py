@@ -106,12 +106,13 @@ def _open_keyed(url):
 # moment a session unsets its own. An owner's session already has full permissions, so this buys nothing there and stays
 # as it was. A stranger's session runs only the agent commands that go over HTTP with its own task-bound token, where the
 # server's STRANGER scope decides.
-AGENT_ACTS = ('reply', 'reply_file', 'draft', 'draft_file', 'attach', 'item', 'tick', 'untick', 'done', 'note', 'waiting_on', 'reply_not_needed', 'board', 'learned', 'upvote', 'downvote', 'comment',
+AGENT_ACTS = ('reply', 'reply_file', 'draft', 'draft_file', 'attach', 'item', 'tick', 'untick', 'done', 'note', 'waiting_on', 'reply_not_needed', 'withdraw_draft', 'board', 'learned', 'upvote', 'downvote', 'comment',
               'search', 'message', 'memory',        # ...and the owner's mail history and memory, which a stranger's task never reads
               'sign_form',                          # ...and the owner's signature, which never goes on a stranger's form
-              'check_back')                         # ...and a wake of its own later, which a stranger's words never schedule
-STRANGER_ACTS = AGENT_ACTS[:12]                     # ...the Hub, and the wall's other sessions' words, are not a stranger's to read or write
-OWNER_ACTS = ('prompts', 'reroute_held', 'backfill_asks', 'evalset', 'demo', 'link')
+              'check_back',                         # ...and a wake of its own later, which a stranger's words never schedule
+              'use_repo')                           # ...and which of the owner's checkouts it works in (repochoice)
+STRANGER_ACTS = AGENT_ACTS[:13]                     # ...the Hub, and the wall's other sessions' words, are not a stranger's to read or write
+OWNER_ACTS = ('prompts', 'backfill_asks', 'evalset', 'demo', 'link')
 NO_TOKEN = ("not sent: this session has no token of its own (TASKUARY_TOKEN) - Taskuary's own is the owner's, and a "
             "session never borrows it. Restart the session from its task.")
 def _flag(a): return '--' + a.replace('_', '-')
@@ -266,12 +267,6 @@ def main():
     # "is the triage right?" is a rate, and nothing measured it: build the labelled cases out of
     # the owner's own verdicts, score the configured classifier over them, or export a set that
     # can leave the machine (people and prose removed) - see evalset.py
-    # coding tasks triage could not name a repository for cannot start at all: the agent wants a
-    # checkout and there is none to give it. They are the assistant's work now (ingest: no_repo), but
-    # rows that arrived before that rule are still sitting on the board unstartable.
-    ap.add_argument('--reroute-held', action='store_true',
-                    help='move open coding tasks that have no nameable repository to the agent that '
-                         'needs none, and start them; prints what moved, then exits')
     # the rows filed before triage was asked for a summary and a checklist: their ask is the raw
     # email, footer and quoted thread included, and they have no todos at all
     ap.add_argument('--backfill-asks', action='store_true',
@@ -344,6 +339,8 @@ def main():
     ap.add_argument('--reply-not-needed', metavar='WHY', help='the reply waiting on this task is no longer needed (someone else answered, '
                                                              'the owner already did) - say why in one line. The draft stays, marked, with '
                                                              "the owner's Send still on it; nothing is sent, deleted or closed.")
+    ap.add_argument('--withdraw-draft', metavar='WHY', help='the reply draft waiting on this task no longer answers the newest message - '
+                                                           'take it off the table, why in one line. It is kept under Not sent; nothing is sent.')
     ap.add_argument('--follow-up', action='store_true',
                     help='with --reply: the owner asked you for ANOTHER message after your reply already went - it is saved as a '
                          'follow-up to it. Without this, a second reply to a message already answered (nothing new from them) is refused.')
@@ -357,7 +354,11 @@ def main():
     ap.add_argument('--slot', default='', help='the checklist slot this email fills (the id after --slot in your checklist)')
     ap.add_argument('--to', default='', help='who it goes to: with --draft, when no slot names them; with --reply, the person on this '
                                              'task you are answering or asking (a name or address)')
-    ap.add_argument('--answers', type=int, metavar='N', help='with --reply: the message number (#N) of the mail that holds the ask, when it is not the one triage picked')
+    ap.add_argument('--answers', type=int, metavar='N', help='with --reply: the message number (#N) of the mail it replies to - the one that holds '
+                                                         'the ask, or an earlier mail when that is the right next step')
+    ap.add_argument('--only', action='store_true', help="with --reply: to that mail's sender alone, nobody copied (something sensitive)")
+    ap.add_argument('--cc', action='append', default=None, metavar='ADDRESS', help='who else is copied (repeat for more): with --reply, instead of the thread; with --draft, on that email')
+    ap.add_argument('--why-to', default='', metavar='LINE', help='with --reply: one line on why it goes to whom it goes, when it is not the plain reply all')
     ap.add_argument('--subject', default='', help='the subject line')
     # ...and a BATCH's items (batch.py): one finding per item, as the agent finishes each
     ap.add_argument('--item', type=int, metavar='N', help='in a batch: report on item N (with --result, and --overlap/--settled)')
@@ -371,10 +372,13 @@ def main():
     # ...and its own follow-up on the task (checkback.py, the owner 2026-11-05): woken then with the note as its next turn
     ap.add_argument('--check-back', nargs=2, metavar=('WHEN', 'WHAT'), help='wake this task\'s agent at WHEN ("tomorrow 9am", "in 2 days", '
                     '"2026-11-12") to verify WHAT - a payment that should clear, a reply due by a date; one per task, a new one replaces it')
+    # ...and the checkout it works in, for a CLI without the use_repo tool (repochoice.py, the owner 2026-11-06)
+    ap.add_argument('--use-repo', nargs='+', metavar=('NAME_OR_PATH', 'WHY'), help="work this task in that git checkout - a repository from "
+                    'your REPOSITORIES list or a folder - and say why in a few words; the task records it')
     ap.add_argument('--search', metavar='WORDS', nargs='?', const='',
                     help="search the owner's own mail and messages in Taskuary - with --from, --subject, --since, --until - "
                          'and print each hit: its id, when, who, subject, thread and a snippet')
-    ap.add_argument('--from', dest='sender', default='', metavar='WHO', help='with --search: the sender, a name or an address')
+    ap.add_argument('--from', dest='sender', default='', metavar='WHO', help='with --search: the sender, a name or an address; with --draft, the connected mailbox it is sent FROM')
     ap.add_argument('--since', default='', metavar='YYYY-MM-DD', help='with --search: sent on or after this day')
     ap.add_argument('--until', default='', metavar='YYYY-MM-DD', help='with --search: sent on or before this day')
     ap.add_argument('--limit', type=int, default=20, help='with --search: how many hits at most')
@@ -387,7 +391,14 @@ def main():
                                                    'signature"} or {"page": 1, "box": [x, y, width, height]}, "date": true or a field name}')
     ap.add_argument('--memory', metavar='SECTION', nargs='?', const='',
                     help="print what Taskuary has learned about the owner (LEARNED.md) - all of it, or one section: people, care, work, promises, bring")
+    ap.add_argument('--guide', metavar='TOPIC', help="print one of Taskuary's how-tos for an agent - browser, number (guides.py)")
     args = ap.parse_args()
+    # ...static text, nothing of the owner's in it: any session may read one, before any server or task is asked for
+    if args.guide is not None:
+        from . import guides
+        try: print(guides.read(args.guide))
+        except ValueError as e: raise SystemExit(f'taskuary: {e}')
+        return
     agent, stranger = session()
     if stranger is not None: _refuse_outside(args)
     if args.demo:
@@ -435,14 +446,14 @@ def main():
             except OSError as e: print(f'not saved: cannot read {a}: {e.strerror or e}'); return
         who = os.environ.get('TASKUARY_AGENT') or 'agent'
         got = (_post('/api/agent/draft', {'task_id': int(tid), 'text': text, 'to': args.to, 'subject': args.subject, 'slot': args.slot,
-                                          'agent': who, 'files': files}, stranger) if drafting
+                                          'agent': who, 'files': files, 'cc': args.cc or [], 'mailbox': args.sender}, stranger) if drafting
                else _post('/api/agent/reply', {'task_id': int(tid), 'text': text, 'agent': who, 'files': files, 'follow_up': args.follow_up,
-                                                'to': args.to, 'answers': args.answers}, stranger))
+                                                'to': args.to, 'answers': args.answers, 'only': args.only, 'cc': args.cc, 'why_to': args.why_to}, stranger))
         if not got: return
         r, out = got
         # ...saying to WHOM it was saved: "reply saved" alone let a question meant for one requester sit as an answer to another (2026-11-02)
         to = f" to {out['to']}" if not drafting and out.get('to') else ''
-        if text or not out.get('ok'): print("saved on the task as its result - nobody is waiting on a reply, so nothing will be sent." if out.get('saved') == 'result'
+        if text or not out.get('ok'): print(out.get('says') or "saved on the task as its result." if out.get('saved') == 'result'
                                             else f"{'email' if drafting else 'reply'}{to} saved on the task, waiting on the owner to approve and send it." if out.get('ok')
                                             else f"not saved: {out.get('why') or out.get('detail') or r.text[:200]}")
         if out.get('ok') and out.get('people'):
@@ -478,6 +489,18 @@ def main():
         print("marked not needed - the draft stays for the owner, Send still sends it." if out.get('ok')
               else f"not marked: {out.get('why') or out.get('detail') or r.text[:200]}")
         return
+    if args.withdraw_draft:
+        import os, sys
+        try: sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, OSError): pass
+        tid = os.environ.get('TASKUARY_TASK')
+        if not str(tid).isdigit(): print('not in a Taskuary session - TASKUARY_TASK is not set, so there is no draft to withdraw'); return
+        got = _post('/api/agent/withdraw-draft', {'task_id': int(tid), 'why': args.withdraw_draft, 'agent': os.environ.get('TASKUARY_AGENT') or 'agent'}, stranger)
+        if not got: return
+        r, out = got
+        print("withdrawn - the draft is kept under Not sent; nothing was sent." if out.get('ok')
+              else f"not withdrawn: {out.get('why') or out.get('detail') or r.text[:200]}")
+        return
     if args.check_back:
         import os, sys
         try: sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -490,6 +513,18 @@ def main():
         r, out = got
         print(f"check-back set for {out.get('when')}: {out.get('what')} - you are woken on this task then" if out.get('ok')
               else f"not set: {out.get('detail') or r.text[:200]}")
+        return
+    if args.use_repo:
+        import os, sys
+        try: sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, OSError): pass
+        tid = os.environ.get('TASKUARY_TASK')
+        if not str(tid).isdigit(): print('not in a Taskuary session - TASKUARY_TASK is not set, so there is no task to work in a checkout'); return
+        target, why = args.use_repo[0], ' '.join(args.use_repo[1:])
+        got = _post('/api/agent/use-repo', {'task_id': int(tid), 'path_or_name': target, 'why': why}, stranger)
+        if not got: return
+        r, out = got
+        print(out.get('says') if out.get('ok') else f"not used: {out.get('detail') or r.text[:200]}")
         return
     if args.tick or args.untick:
         import os, sys
@@ -613,16 +648,6 @@ def main():
         for r in reversed(rows):
             ref = f" {task_ref(r['TaskId'])}" if r.get('TaskId') else ''
             print(f"  [{r['Kind']}] {r['Agent']}{ref} {bb._ago(r['CreatedAt'])}: {r['Body']}")
-        return
-    if args.reroute_held:
-        import sys
-        from . import ingest
-        from .store import SQLiteStore, task_ref
-        try: sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-        except (AttributeError, OSError): pass
-        moved = ingest.reroute_held_no_repo(SQLiteStore(config.db_path()))
-        for t in moved: print(f"{task_ref(t['TaskId'])} -> general: {t['Title']}")
-        print(f"{plural(len(moved), 'task')} moved.")
         return
     if args.backfill_asks:
         import sys

@@ -35,7 +35,8 @@ const demoRecord = (detail) => {
 export const DEMO = import.meta.env?.VITE_DEMO === "1";
 // the demo's two no's, in the words taskuary/demo.py uses for the same doors
 const SENDS = "This is the demo - nothing is sent. In your own Taskuary this is where you approve it and it goes.";
-const STARTS = "This is the demo - the agents here are recordings, so nothing new starts.";
+export const DEMO_PRESS = "This is the demo - nothing reaches a calendar or anyone's chat. In your own Taskuary this press sends it.";
+const STARTS ="This is the demo - the agents here are recordings, so nothing new starts.";
 
 const clone = (x) => JSON.parse(JSON.stringify(x ?? null));
 // Two clocks, each moved to the visitor's now (demoClock.js): the recording's (when it was dumped) and the
@@ -174,6 +175,8 @@ const read = (url) => {
     files: [], added: 0, removed: 0, scope: "task",
     why: "This demo has no checkout to inspect. In your own Taskuary, this shows the agent's changes.",
   };
+  // a task's "AI used" (aiusage.for_task) from a recording made before it existed: nothing to list, never a failure
+  if (/^\/api\/tasks\/\d+\/ai-used$/.test(p)) return { rows: [], total: { calls: 0 } };
   // the Agent work card's record (sessionrecord.py): the demo keeps no CLI logs, so each filed report is a session
   const m0 = p.match(/^\/api\/tasks\/(\d+)\/record$/);
   if (m0) return demoRecord(state["/api/tasks/detail"]?.[m0[1]]);
@@ -202,12 +205,24 @@ const read = (url) => {
       (b.Score || 0) - (a.Score || 0) || (b.Comments || 0) - (a.Comments || 0));
     return clone({ ...hubBox(), data: rows });
   }
+  // the company and its people above the systems (handbook.about): the demo world's own, since its recording has no JOB.md
+  if (p === "/api/hub/about") return clone(state["/api/hub/about"] || DEMO_ABOUT);
   m = p.match(/^\/api\/(?:hub|handbook)\/(\d+)$/);
   if (m) { const r = [...hubRows(false), ...hubRows(true)].find((x) => String(x.LoreId) === m[1]); return clone(r ? { ...r, comments: r.comments || [], votes: [] } : null); }
   if (p.startsWith("/api/tasks")) return clone(state["/api/tasks"]);
   // New → Meeting: the recorded demo has no calendar behind it - said in its one line, not drawn as a full week
   if (p === "/api/meetings/slots") return { ok: false, say: "This is the demo - no calendar is behind it. In your own Taskuary, Find times reads yours and theirs.", fix: null };
   return { data: [] };                 // an unrecorded list reads as empty, never as a crash
+};
+
+const DEMO_ABOUT = {
+  company: "### The job\n\n- **My role:** Head of engineering at Northwind\n- **My organisation:** Northwind - billing and payroll software for mid-size firms\n\n"
+    + "#### What I am responsible for\n- Keeping the ledger and the customer portal up, and their releases safe\n"
+    + "- Integrations with Payworth (payroll) and Spendly (expenses)\n- Reviewing my team's changes before anything reaches production",
+  people: ["Erin Blake owns the month-end close; finance questions go to her first",
+    "Gail Moreno runs payroll and signs off on anything touching Payworth",
+    "Ray Colton reports to you and owns northwind/portal",
+    "Marcus Reed is the customer contact at Payworth for API changes"],
 };
 
 // Hub's two shelves: what is live, and what the vote (or the visitor) took off.
@@ -229,7 +244,7 @@ const assistantBox = (taskId) => {
   const key = `${taskId}:assistant`;
   const box = state["/api/tasks/detail"][key] ||= { messages: [], providers: [], session: null };
   box.session ||= { sid: `demo${taskId}`, alive: true, provider: "Claude Code",
-    label: "Taskuary assistant", mode: "assistant", model: "", pick: "cli:claude", busy: false,
+    label: "Agent", mode: "assistant", model: "", pick: "cli:claude", busy: false,
     trace: [], trace_revision: 0 };
   if (numbersWorkflow && Number(taskId) === NUMBERS_TASK) {
     box.session.provider = box.providers.find(p => p.id === box.session.pick)?.label || box.providers[0].label;
@@ -450,7 +465,7 @@ const write = (method, url, body) => {
       detail.comments.push({ ActorType: "assistant_user", Actor: "Ruth Bennett", Body: NUMBERS_REQUEST, CreatedAt: now() });
       startDemoAssistant(NUMBERS_TASK, { text: NUMBERS_REQUEST });
       const item = scriptedAssistant.pile.items.find((i) => i.tid === NUMBERS_TASK);
-      if (item) Object.assign(item, { kind: "agent", lane: "working", working: "Taskuary", agent: "Taskuary",
+      if (item) Object.assign(item, { kind: "agent", lane: "working", working: "Agent", agent: "Agent",
         why: "preparing the fictional report and checking its totals" });
       scriptedAssistant.pile.rev = `demo-assistant-${++nextId}`;
       journeyChanged();
@@ -501,6 +516,12 @@ const write = (method, url, body) => {
 
   if (method === "post" && (m = p.match(/^\/api\/reviews\/(\d+)\/decide$/))) {
     const review = (state["/api/reviews"]?.data || []).find((r) => String(r.ReviewId) === m[1]);
+    // ...an answer to an invite, a meeting's invite or a share the agent set up says it is the demo where it was pressed - nothing is told
+    let env = {};
+    try { env = JSON.parse(review?.Deliver || "{}") || {}; } catch { env = {}; }
+    if (body?.verb === "approve" && (env.kind === "calendar" || env.share)) {
+      const err = new Error(DEMO_PRESS); err.response = { status: 403, data: { detail: DEMO_PRESS, demo: true } }; throw err;
+    }
     if (review) {
       review.Status = body?.verb === "approve" ? "sent" : body?.verb || "dismissed";
       review.FinalText = body?.final_text ?? review.DraftText;
@@ -804,6 +825,7 @@ const write = (method, url, body) => {
   // said as the demo, not as a fault: the Assistant posts these as a plain line (AssistantView demoNo), never with "Report this bug"
   const why = /send|approve/.test(p) ? SENDS
     : /dispatch|continue|terminals|agents/.test(p) ? STARTS
+    : /^\/api\/(cli|deps|update)(\/|$)/.test(p) ? "This is the demo - nothing happens. Its AI tools are pretend, and nothing on your computer is touched."
     : /connector|tools|sync|ingest/.test(p) ? "This is the demo - there are no real systems behind it, so nothing connects or runs."
     : "This is the demo - that one needs a Taskuary of your own. This page is a recording you can click.";
   const err = new Error(why);

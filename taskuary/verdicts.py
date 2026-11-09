@@ -196,13 +196,18 @@ def _delivery_busy(store, rid):
                            if current.get('DeliveryClaim') else 'This draft changed before approval; review it and approve again.')}
 
 
+def _more(env, *keys) -> dict:
+    "The envelope's optional fields that are set - a sender that never had them is never handed them."
+    return {k: env[k] for k in keys if env.get(k)}
+
+
 def _send_snapshot(store, snapshot):
     """Only the durable approved payload crosses the provider boundary."""
     from . import outbound
     env, body = snapshot['envelope'], snapshot['body']
     if env.get('kind') == 'reply':
         return outbound.reply_to_message(store, snapshot['message'], body, to=env.get('to') or None,
-                                         cc=env.get('cc'), attachments=env.get('attachments'))
+                                         cc=env.get('cc'), attachments=env.get('attachments'), **_more(env, 'bcc', 'subject'))
     if env.get('kind') == 'zoho_invoice':
         from . import scopes, zoho
         c = store.get_connector(int(env.get('connector_id') or 0), with_secret=True)
@@ -218,7 +223,7 @@ def _send_snapshot(store, snapshot):
     if env.get('format') == 'html' and str(env.get('channel') or 'email').lower() == 'email':
         from .sharing import email_html
         html = email_html(env.get('subject') or '', body)
-    return outbound.send_out(store, env.get('channel'), env.get('to'), env.get('subject'), body, cc=env.get('cc'),
+    return outbound.send_out(store, env.get('channel'), env.get('to'), env.get('subject'), body, cc=env.get('cc'), **_more(env, 'bcc'),
                              attachments=env.get('attachments'), mailbox=env.get('mailbox'), **({'html': html} if html else {}))
 
 
@@ -236,7 +241,7 @@ def _reconcile_snapshot(store, snapshot):
         return {'state': 'unknown', 'reason': f'the provider could not verify delivery ({str(e)[:160]})'}
 
 
-def _deliver_review(store, rv, final, verb, actor, note=None, cc=None, envelope=None, send_fn=None, anyway=False):
+def _deliver_review(store, rv, final, verb, actor, note=None, cc=None, envelope=None, send_fn=None, anyway=False, bcc=None, subject=None):
     """Claim, send or reconcile, persist the outcome, then settle the task.
 
     Review status stays pending until delivery is confirmed. The durable claim and
@@ -257,6 +262,9 @@ def _deliver_review(store, rv, final, verb, actor, note=None, cc=None, envelope=
         files = env.get('attachments')
         env = {**(outbound.reply_envelope(store, msg) or {'kind': 'reply'}), **({'attachments': files} if files else {})}
     if cc is not None: env['cc'] = list(cc)
+    # ...and BCC and the subject as the card has them (the owner, 2026-11-08: one email card, every field editable, edits go out with Send)
+    if bcc is not None: env['bcc'] = list(bcc)
+    if subject is not None and ' '.join(str(subject).split()): env['subject'] = ' '.join(str(subject).split())[:200]
     # a NEW email on a task leaves from the mailbox the task's mail came in on - not the first Outlook card, which sent a
     # second mailbox's business out under the first one's address. Nothing came in by mail: send_out's own fallback, as before
     if outgoing and not env.get('kind') and str(env.get('channel') or '').lower() == 'email' and not env.get('mailbox'):
@@ -349,11 +357,11 @@ def _deliver_review(store, rv, final, verb, actor, note=None, cc=None, envelope=
                 return {'ok': False, 'status': 'pending', 'sent': None, 'send_error': error, 'send_fix': fix, 'delivery': 'failed'}
         try:
             sent = send_fn(attempted) if send_fn is not None else _send_snapshot(store, attempted)
-        except outbound.UNKNOWN_ERRORS as e:
-            checked = _reconcile_snapshot(store, attempted)
-            if checked['state'] == 'sent': return confirmed(checked['sent'], True)
-            return unknown(f'the provider did not answer ({str(e)[:120]}); {checked.get("reason") or "no delivery receipt is available"}')
         except Exception as e:
+            if isinstance(e, outbound.UNKNOWN_ERRORS) and outbound.delivery_uncertain(e):
+                checked = _reconcile_snapshot(store, attempted)
+                if checked['state'] == 'sent': return confirmed(checked['sent'], True)
+                return unknown(f'the provider did not answer ({str(e)[:120]}); {checked.get("reason") or "no delivery receipt is available"}')
             if outbound.delivery_uncertain(e):
                 checked = _reconcile_snapshot(store, attempted)
                 if checked['state'] == 'sent': return confirmed(checked['sent'], True)
@@ -361,6 +369,9 @@ def _deliver_review(store, rv, final, verb, actor, note=None, cc=None, envelope=
             # said in words, once (failures.classify): a mail server's raw answer is its bookkeeping, not the owner's sentence
             from . import failures
             error, fix = failures.classify(e, act='review.approve')['sentence'][:300], outbound.fix_of(e)
+            # ...a channel that refused because it is not connected is fixed on its own card: reconnect, then Send again (2026-11-08)
+            ch = str((msg or {}).get('Channel') or attempted['envelope'].get('channel') or '').lower()
+            if not fix and ch and outbound.refused_before_send(e): fix = {'label': f'Reconnect {ch.replace("_", " ").title()}', 'href': f'#connector={ch}'}
             # ONE sentence, said once: the reason, the comment and the card each said it again in their own words (2026-10-17)
             finished = store.finish_review_delivery(rid, token, 'failed', reason=f'Not sent: {error}.', fix=fix)
             if attempted['envelope'].get('kind') == 'zoho_invoice' and attempted['envelope'].get('item_id'):
@@ -389,6 +400,57 @@ def not_needed(store, tid: int, why: str, by: str) -> dict:
     store.set_review_not_needed(rv['ReviewId'], why)
     store.add_comment(tid, by, 'agent', f"The drafted reply is not needed: {why.rstrip('.')}. It stays on the task - Send still sends it.")
     return {'ok': True, 'review_id': rv['ReviewId']}
+
+
+# ...AND ONE THAT NO LONGER ANSWERS IS WITHDRAWN (the owner, 2026-11-06: corrected, the agent left its earlier draft standing under the newest
+# turn as if it answered the correction): the agent takes it off the table itself, with why. Closed unsent like a superseded draft - its words
+# kept under Close out's "Not sent", Bring it back still sends it - never deleted
+def withdraw(store, tid: int, why: str, by: str, which='', keep: int = 0) -> dict:
+    """Withdraw one unsent draft on the task, for `why`: `which` is its review id or who it was to; none means the reply draft (or the one
+    unsent thing, when there is only one). {'ok': False, 'why': ...} when there is none, several match, or no reason was given.
+    `keep`: a review never taken back - the new draft that `replaces` this one, which may be the same person's own slot."""
+    from . import slots
+    from .wrapup import WITHDRAWN
+    why, which = ' '.join(str(why or '').split()), ' '.join(str(which or '').split()).casefold().removeprefix('rv')
+    if not why: return {'ok': False, 'why': 'say in one line why the draft no longer answers - what the newest message changed'}
+    left = [r for r in unsent(store, tid) if r['rid'] != keep]
+    if not left: return {'ok': False, 'why': 'nothing unsent is waiting on this task, so there is nothing to withdraw'}
+    if which.isdigit(): hit = [r for r in left if r['rid'] == int(which)]
+    elif which: hit = [r for r in left if which in r['to'].casefold() or which in r['what'].casefold()]
+    else: hit = [r for r in left if r['kind'] in ('draft', 'draft_reply')][:1] or (left if len(left) == 1 else [])
+    if len(hit) != 1:
+        return {'ok': False, 'why': ('several match - ' if hit else 'name which one - ' if not which else f'nothing unsent matches {which!r} - ') +
+                'give its review id: ' + '; '.join(f"{r['rid']}: {r['what']}" for r in (hit or left))}
+    r = hit[0]
+    if not store.decide_review(r['rid'], 'closed_unsent', None, by, note=WITHDRAWN + why[:300]):
+        return {'ok': False, 'why': 'that one is being sent or already went - it cannot be withdrawn'}
+    if r['kind'] == slots.KIND and (sid := slots.of_review(store.get_review(r['rid']))): slots.mark(store, tid, sid, done=True, actor=by)
+    back = '' if r['kind'] == 'action' else ' It is kept under Not sent - Bring it back still sends it.'
+    store.add_comment(tid, by, 'agent', f"Withdrew {r['what']}: {why.rstrip('.')}.{back}")
+    return {'ok': True, 'review_id': r['rid']}
+
+
+def unsent(store, tid: int) -> list:
+    """What the agent may still take back on task `tid`, newest first: its reply draft, its emails (slots), its posts and other proposals -
+    each {rid, kind, to, what}. Never a close-out or a playbook (Taskuary's, not the agent's), and never anything already sent."""
+    from . import proposals
+    out = []
+    for rv in store._rows("SELECT * FROM review WHERE TaskId=? AND Status IN ('pending','held') AND DeliveryClaim IS NULL "
+                          "AND IFNULL(DeliveryState,'')<>'sent' ORDER BY ReviewId DESC", (int(tid),)):
+        k = rv.get('Kind')
+        try: d = json.loads((rv.get('DraftText') if k == 'action' else rv.get('Deliver')) or '{}') or {}
+        except (TypeError, ValueError): d = {}
+        if not isinstance(d, dict): d = {}
+        if k == 'action':
+            if d.get('closeout') or d.get('action') in (*proposals.PLAYBOOKS, *proposals.CLOSEOUT) or str(rv.get('Reason') or '').startswith('the workflow'): continue
+            to, what = str(d.get('type') or d.get('action') or ''), f"the proposal ({' '.join(str(rv.get('Reason') or d.get('action')).split())[:160]})"
+        elif k in ('draft', 'draft_reply', 'slot'):
+            to = ', '.join(d.get('to') or []) if isinstance(d.get('to'), list) else str(d.get('to') or '')
+            if not to and rv.get('MessageId'): to = str((store.get_message(rv['MessageId']) or {}).get('FromEmail') or '')
+            what = f"the {'email' if k == 'slot' else 'reply'}" + (f' to {to}' if to else '')
+        else: continue
+        out.append({'rid': rv['ReviewId'], 'kind': k, 'to': to, 'what': what})
+    return out
 
 
 def _settle_task_after_sent_reply(store, rv: dict, actor: str, was_sent: bool):
@@ -445,7 +507,7 @@ def _carried(store, closeout: dict, reply: dict) -> bool:
     return str((msg or {}).get('Channel') or '').lower() == 'github'
 
 
-def _post_with_closeout(store, closeout: dict, reply: dict, text: str, actor: str) -> dict:
+def _post_with_closeout(store, closeout: dict, reply: dict, text: str, actor: str, blanks_ok: bool = False) -> dict:
     """Post the reply as the comment on the PR/issue the close-out just acted on, and file it as sent."""
     from . import github, proposals
     from .ci import _conn
@@ -457,7 +519,7 @@ def _post_with_closeout(store, closeout: dict, reply: dict, text: str, actor: st
         repo, num = m.group(1), int(m.group(2))
     body = (text or '').strip() or str(reply.get('DraftText') or '').strip()
     if not body: return {'ok': False, 'send_error': 'the reply is empty'}
-    if gap := _blanked(body): return gap
+    if not blanks_ok and (gap := _blanked(body)): return gap
     envelope = {'kind': 'closeout_comment', 'channel': 'github', 'to': [f'{repo}#{num}']}
     def post(snapshot):
         url = github.comment_issue(_conn(store)['Secret'], repo, num, snapshot['body'])
@@ -467,8 +529,18 @@ def _post_with_closeout(store, closeout: dict, reply: dict, text: str, actor: st
                            envelope=envelope, send_fn=post)
 
 
-def decide(store, rv: dict, verb_in: str, final_text: str = None, note: str = None,
-           actor: str = 'owner', learn_async=None, cc: list = None, reply_text: str = None, anyway: bool = False, fields: dict = None) -> dict:
+def decide(store, rv: dict, verb_in: str, *a, **kw) -> dict:
+    """_decide, and a yes that went wakes the task's agent where its last turn said it waits on that Send (general.follow_up)."""
+    out = _decide(store, rv, verb_in, *a, **kw)
+    if verb_in in ('approve', 'edit') and out.get('ok') and not out.get('send_error') and rv.get('TaskId'):
+        from . import general
+        general.follow_up(store, rv['TaskId'], 'send', a[2] if len(a) > 2 else kw.get('actor', 'owner'))
+    return out
+
+
+def _decide(store, rv: dict, verb_in: str, final_text: str = None, note: str = None,
+           actor: str = 'owner', learn_async=None, cc: list = None, reply_text: str = None, anyway: bool = False, fields: dict = None,
+           blanks_ok: bool = False, bcc: list = None, subject: str = None) -> dict:
     """Land one verdict on a pending review. learn_async(fn, *args) defers the learning
     call (the API hands FastAPI's background task runner in); None runs it inline.
 
@@ -498,7 +570,7 @@ def decide(store, rv: dict, verb_in: str, final_text: str = None, note: str = No
         from . import proposals
         co = proposals.closeout_pending(store, rv['TaskId'])
         if co: return decide(store, co, 'approve', None, note, actor, learn_async, cc,
-                             reply_text=final_text if (final_text or '').strip() else '')
+                             reply_text=final_text if (final_text or '').strip() else '', blanks_ok=blanks_ok)
     if reply_text is not None and rv.get('Kind') == 'action' and verb_in in ('approve', 'edit', 'close_pr', 'merge_anyway'):
         # ...and a reply still holding a blank stops the press BEFORE the merge: "Done on GitHub, but the reply was not sent" over a
         # [REASON] left in it is half an act the owner never meant (blanks.py, the owner, 2026-10-30)
@@ -508,7 +580,7 @@ def decide(store, rv: dict, verb_in: str, final_text: str = None, note: str = No
             if waiting:
                 from . import signatures
                 typed = signatures.unsigned(reply_text, signatures.for_review(store, waiting)).strip()
-                gap = _blanked(reply_text if typed else waiting.get('DraftText'))
+                gap = None if blanks_ok else _blanked(reply_text if typed else waiting.get('DraftText'))
                 if gap: return gap
         out = decide(store, rv, verb_in, final_text, note, actor, learn_async)
         if not out.get('ok') or not rv.get('TaskId'): return out
@@ -517,8 +589,8 @@ def decide(store, rv: dict, verb_in: str, final_text: str = None, note: str = No
         if reply:
             from . import signatures         # the signature alone in the box is no reply text: the filed draft goes, as with an empty box
             if not signatures.unsigned(reply_text, signatures.for_review(store, reply)).strip(): reply_text = ''
-            sent =(_post_with_closeout(store, rv, reply, reply_text, actor) if _carried(store, rv, reply)
-                    else decide(store, reply, 'approve', reply_text, None, actor, learn_async, cc))
+            sent =(_post_with_closeout(store, rv, reply, reply_text, actor, blanks_ok) if _carried(store, rv, reply)
+                    else decide(store, reply, 'approve', reply_text, None, actor, learn_async, cc, blanks_ok=blanks_ok))
             out['reply'] = sent
             if not sent.get('ok'): out['send_error'] = f"Done on GitHub, but the reply was not sent: {sent.get('send_error') or 'it was refused'}"
         return out
@@ -620,10 +692,11 @@ def decide(store, rv: dict, verb_in: str, final_text: str = None, note: str = No
     # A BLANK LEFT IN IT (the owner, 2026-10-30): "[REASON]" went out as written. The one door refuses it, so the phone and the
     # assistant meet the same "Fill in [REASON] first" the Send button does - nothing is decided, the draft stays as it is
     # ...but a send already attempted is checked as attempted (Check delivery), its text frozen - never a new refusal over it
-    if verb in ('approve', 'edit') and rv.get('DeliveryState') not in ('unknown', 'sending') and (gap := _blanked(final)): return gap
+    # ...and the owner's own Send anyway (`blanks_ok`, the owner 2026-11-08: the press asks once, "This still has [ROOM]. Send anyway?") goes
+    if verb in ('approve', 'edit') and not blanks_ok and rv.get('DeliveryState') not in ('unknown', 'sending') and (gap := _blanked(final)): return gap
     deliver = _envelope(rv)
     if (final or (cal and verb in ('approve', 'edit'))) and (rv.get('MessageId') or deliver):
-        result = _deliver_review(store, rv, final, verb, actor, note, cc, anyway=anyway)
+        result = _deliver_review(store, rv, final, verb, actor, note, cc, anyway=anyway, bcc=bcc, subject=subject)
         if not result.get('ok') or result.get('send_error'): return result
         sent, send_err = result.get('sent'), None
         # A confirmed edit still teaches the owner's voice below.

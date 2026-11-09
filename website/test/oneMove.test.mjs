@@ -13,3 +13,4 @@ test("a chat read never merges lines over a move: the table stays where it was d
   assert.deepEqual(messages.map((m) => m.id), ["a1"], "no line pushed under the table over a move");
 });
 
+

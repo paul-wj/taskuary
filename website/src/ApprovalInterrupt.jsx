@@ -1,5 +1,6 @@
 import React from "react";
-import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, Typography } from "@mui/material";
+import { Box, Button, Dialog, DialogContent, DialogTitle, Typography } from "@mui/material";
+import { ButtonBar } from "./ButtonBar.jsx";
 import { DIM, FAINT, INK } from "./theme.jsx";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
@@ -32,10 +33,10 @@ export default function ApprovalInterrupt({ it, onResolve }) {
           </Typography>
         )}
       </DialogContent>
-      <DialogActions>
-        <Button size="small" sx={{ color: DIM }} onClick={() => onResolve("cancel")}>{t("Cancel")}</Button>
+      <ButtonBar>
         <Button size="small" variant="contained" disableElevation onClick={() => onResolve("review")}>{t("Review the update")}</Button>
-      </DialogActions>
+        <Button size="small" onClick={() => onResolve("cancel")}>{t("Cancel")}</Button>
+      </ButtonBar>
     </Dialog>
   );
 }

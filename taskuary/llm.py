@@ -18,7 +18,7 @@ from pathlib import Path
 from time import sleep
 from typing import NamedTuple
 
-from . import redact
+from . import aiusage, redact
 
 # Everything that can answer a PROMPT. This list is what populates every brain picker, so a model
 # that cannot emit text does not belong in it however good it is: `typesafe` (Jev) answers typed
@@ -40,6 +40,16 @@ OPENAI_COMPATIBLE = {
     'cohere':     ('https://api.cohere.ai/compatibility/v1', 'command-r-plus'),
     'deepseek':   ('https://api.deepseek.com/v1', 'deepseek-chat'),
     'perplexity': ('https://api.perplexity.ai', 'sonar'),
+    # (the owner, 2026-11-08: "all the ones that say coming soon just add them now") - each base and model read off the vendor's own
+    # OpenAI-compatibility page that day, not probed: Fireworks' is /inference/v1 (the /v1 once probed was a 404), Bedrock's
+    # is us-east-1's - another region is its base_url - and takes a Bedrock API key as the bearer
+    'fireworks_ai': ('https://api.fireworks.ai/inference/v1', 'accounts/fireworks/models/glm-5p3-flash'),
+    'nvidia_nim': ('https://integrate.api.nvidia.com/v1', 'meta/llama-3.3-70b-instruct'),
+    'sambanova':  ('https://api.sambanova.ai/v1', 'Meta-Llama-3.3-70B-Instruct'),
+    'deepinfra':  ('https://api.deepinfra.com/v1/openai', 'meta-llama/Llama-3.3-70B-Instruct-Turbo'),
+    'novita':     ('https://api.novita.ai/openai', 'meta-llama/llama-3.3-70b-instruct'),
+    'hyperbolic': ('https://api.hyperbolic.ai/inference/v1', 'glm-5.3-flash'),
+    'bedrock':    ('https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1', 'openai.gpt-oss-120b-1:0'),
     # HIPAA AI: an organisation's own AI (Vertex behind its gateway), switched on with an ACCESS CODE - the person's own gateway
     # key, so usage is metered per person and one code is revoked alone (the owner, 2026-10-16). The app ships no key; the address
     # is the gateway's, filled in here once it is deployed (HIPAA_AI_URL), and `hipaa-ai` is the alias the gateway maps to its model.
@@ -57,6 +67,39 @@ GATEWAY_NOT_GATEWAY = ('That address answered with a web page, not the AI gatewa
 GATEWAY_CODE = "The access code didn't work - copy all of it again and press Connect."
 GATEWAY_FAULT = 'The gateway answered with an error of its own - try again in a minute, or ask whoever sent your access code.'
 LOCAL_HOSTS = ('localhost', '127.0.0.1', '::1')
+# A GATEWAY THAT SCALES TO ZERO (Cloud Run) answers its first request only once it has started, which took past the 15 s every other
+# provider's list gets: Connect said "Couldn't reach that address" about a gateway that was booting, and the model list came back empty,
+# so no job got its model. Quick to give up on an address that is not there, patient with one that is.
+GATEWAY_WAIT = (15, 90)
+# A SPENT BUDGET IS NOT A BROKEN AI (the owner's gateway, 2026-11-06): LiteLLM answers 422 {"error": {"type": "budget_exceeded", "message":
+# "Budget has been exceeded! Team=<id> Current cost: ..."}} once a team's budget is used. Read as an effort or a format refusal it was asked
+# twice more, and shown raw - a team id and a cost the person cannot act on. It is said in one line, and the card rests (brainroute.spend).
+BUDGET_LINE = "{name}'s monthly budget is used up - it answers again when the budget resets or is raised"
+BUDGET_REST = 3600         # seconds before a spent card is asked again: a budget raised comes back within the hour, and no poll hammers it
+_BUDGET = re.compile(r'budget_exceeded|budget has been exceeded|exceeded budget', re.I)
+
+
+class BudgetSpent(RuntimeError):
+    "The gateway turned the call away on its budget. `until` is when the router asks it again; `unavailable` lets a backup take the call."
+    unavailable = True
+    def __init__(self, line: str, rest: int = BUDGET_REST):
+        from datetime import datetime, timedelta
+        super().__init__(line); self.until = datetime.now() + timedelta(seconds=rest)
+
+
+def budget_said(text) -> str:
+    "The spent-budget line inside an error however it was wrapped ('AI triage failed (...)'), else ''."
+    m = re.search(r"[A-Za-z][\w .-]{0,40}?" + re.escape(BUDGET_LINE.split('{name}')[1]), str(text or ''))
+    return m.group(0) if m else ''
+
+
+def budget_spent(r) -> bool:
+    "Did the gateway refuse on its budget? Its error's type, else its words - never a status alone: a 422 is also a refused effort or format."
+    st, text = getattr(r, 'status_code', 200), getattr(r, 'text', '')
+    if not isinstance(st, int) or st < 400 or not isinstance(text, str): return False
+    try: e = json.loads(text).get('error')
+    except (ValueError, AttributeError): e = None
+    return (isinstance(e, dict) and str(e.get('type') or '') == 'budget_exceeded') or bool(_BUDGET.search(text))
 
 
 def gateway_url(raw) -> str:
@@ -86,7 +129,7 @@ def gateway_problem(cfg: dict, key: str) -> str:
     try: base = gateway_base(cfg)
     except ValueError as e: return str(e)
     if not base: return GATEWAY_MISSING
-    try: r = requests.get(f'{base}/models', headers={'Authorization': f'Bearer {key}'}, timeout=15, allow_redirects=False)
+    try: r = requests.get(f'{base}/models', headers={'Authorization': f'Bearer {key}'}, timeout=GATEWAY_WAIT, allow_redirects=False)
     except requests.RequestException: return GATEWAY_SILENT
     if r.status_code >= 500: return GATEWAY_FAULT
     if (body := _json(r)) is None: return GATEWAY_NOT_GATEWAY
@@ -257,7 +300,7 @@ def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, tra
             # its folder is its cwd already; --add-dir says so to Claude whatever cwd a resume or a profile brings (R25)
             prof['args'] = clis.auto_args(c, args) + ['--add-dir', sd, '--settings', origin.session_settings(store, task_id)]
             prof['acp_ok'] = False      # the reviewer rides argv; ACP's own permission answer allows everything
-        elif stranger_mode == 'look': prof['args'] = clis.readonly_args(c, args)
+        elif stranger_mode == 'look': prof['args'], prof['acp_ok'] = clis.readonly_args(c, args), False     # its floor is argv's too
         if stranger_mode in ('auto', 'look'):
             prof['strict_env'], prof['cwd'] = True, sd
             # ...and its token is bound to this task, never the shared one a caller's session env carried (R28)
@@ -266,6 +309,7 @@ def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, tra
             # a conversation is kept in the folder it ran in: one from before the move cannot be picked up from here
             if resume and resume != store.get_setting(f'stranger_sid:{task_id}'): resume = None
     if not no_hands: prof.setdefault('acp_ok', True)
+    else: prof['acp_ok'] = False         # a run with every tool off has nothing to permit, whatever a saved profile says
     if extra_args:
         from .clis import preset_args
         prof['args'] = list(prof.get('args') or preset_args(prof['cmd']) or ['-p']) + list(extra_args)
@@ -324,20 +368,23 @@ def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, tra
         disk itself, and the prompt already names their paths. `want` is accepted and dropped
         too, and takes_want is never set: there is no wire to put a schema on, so the prompt and
         the caller's recheck (ask_json) are the whole contract here."""
-        from .agents import run_cli
+        from .agents import run_cli, run_context
         kwargs = {'cancel': cancel} if cancel is not None else {}
         if extra_env: kwargs['extra_env'] = extra_env
         run_prof, prompt = shaped(system, user)
+        if run_prof.get('model'): aiusage.note(str(run_prof['model']).split('@')[0])
         # A KEPT conversation goes on with the session its last call was on, not the id this brain was built with: a new
         # chat's second round (a look-up, the gate's retry) went out with no id, which clipool reads as New chat - so it
         # killed the live CLI and started another, 15 s against 2.6 s warm, and the round lost the turn it was answering.
         # A chat already under way did this all along: its rounds resume one session. One-shot brains keep their own id.
-        try:
-            out, sid, _diff = run_cli(run_prof, prompt, trace or (lambda *a: None),
-                                      resume=llm.session_id if keep else resume, **kwargs)
-        except hub_agents.OmpTurnError as e:
-            if e.session_id: llm.session_id = e.session_id
-            raise
+        # ...and the store and task the ACP road's permission answers read (acpgate: the send filter, a step held on THIS task)
+        with run_context(store, task_id if not no_hands else None):
+            try:
+                out, sid, _diff = run_cli(run_prof, prompt, trace or (lambda *a: None),
+                                          resume=llm.session_id if keep else resume, **kwargs)
+            except hub_agents.OmpTurnError as e:
+                if e.session_id: llm.session_id = e.session_id
+                raise
         # what the caller needs to CONTINUE this conversation instead of starting another one
         llm.session_id = sid or resume
         if stranger_mode in ('auto', 'look') and sid: store.set_setting(f'stranger_sid:{task_id}', sid, 'router')   # born in the stranger's folder
@@ -367,8 +414,9 @@ def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, tra
         """A kept conversation's process started before its first call, on these instructions (agents.warm_cli). False when
         nothing keeps: a one-shot brain starts its CLI per call, as it always has. `swap`: only a live one launched otherwise is replaced."""
         if not keep: return False
-        from .agents import warm_cli
-        return warm_cli(shaped(system, '')[0], resume=llm.session_id, extra_env=extra_env, swap=swap)
+        from .agents import warm_cli, run_context
+        with run_context(store, task_id if not no_hands else None):
+            return warm_cli(shaped(system, '')[0], resume=llm.session_id, extra_env=extra_env, swap=swap)
     llm.session_id, llm.warm = resume, warm
     # ...and whether it can look a fact up: only a quick call's own flags give the web (clis.quick_web), and a stranger's look has no tools
     from .clis import quick_web
@@ -388,12 +436,11 @@ def build_llm(store, pick=None, model=None, trace=None, cancel=None, resume=None
 
     `job` says what the call is FOR (brainroute.JOBS) and brainroute.choose says which brain runs it. Every call
     site in taskuary/ names one (tests/test_brainroute.py); a caller that does not is triage, as it always was."""
-    from . import demo, brainroute, origin
+    from . import demo, brainroute, origin, aiusage
     r = brainroute.choose(store, job or 'triage', task=task_id, want_pick=pick, want_model=model, gear=gear)
     # the demo answers from a script: no key, no CLI, no request leaving the machine - and its route is logged, so its reason shows
-    if demo.enabled():
-        brainroute.log(store, r, task_id, pick='demo'); return demo.brain()
-    rid = brainroute.log(store, r, task_id)
+    if demo.enabled(): return aiusage.metered(store, brainroute.Lazy(store, r, task_id, pick='demo'), demo.brain())
+    rid = brainroute.Lazy(store, r, task_id)          # written on the brain's first call, or by a build that ends here refused (outcome)
     # held by the owner's data rule: no AI here may read it, so it waits - never what blank means, which would be one the rule keeps out
     if r.tier == 'held': brainroute.outcome(store, rid, 'refused:sensitive'); return None
     try: brain = _build_llm(store, r.pick, r.model or None, trace, cancel, resume, cli_tools, extra_env, research, fallback_user, r.gear, keep, task_id,
@@ -402,6 +449,7 @@ def build_llm(store, pick=None, model=None, trace=None, cancel=None, resume=None
         brainroute.outcome(store, rid, f'refused:{type(e).__name__}' if isinstance(e, (origin.RefusedForStranger, origin.Refusal)) else 'error'); raise
     if brain is None: brainroute.outcome(store, rid, 'error' if r.pick else 'refused:no AI')
     elif getattr(brain, 'is_failover', False): brain.route = (store, rid)
+    brain = aiusage.metered(store, rid, brain)       # what each call used - model, tokens, time - on this route row
     # Auto mode: a one-shot job whose answer comes back unreadable or unsure may ask a strong model ONCE (brainroute.step_up)
     if brain and r.escalate:
         brain = _StepUp(brain, lambda why: brainroute.step_up(store, r, rid, task_id, why, lambda p: _scrub(_build_llm(
@@ -469,16 +517,21 @@ def _scrub(brain): return _Scrubbed(brain) if brain else brain
 
 class _Cooling:
     """A CLI brain that, refused on its usage allowance with a time it comes back, says so to the router (brainroute.cool): the
-    next call goes to a backup until then, instead of to the brain that will refuse it again. The refusal itself still raises."""
+    next call goes to a backup until then, instead of to the brain that will refuse it again. The refusal itself still raises.
+    ...and an AI card whose budget is spent (BudgetSpent) rests the same way - and while it rests it is not asked at all: the call
+    raises the same line at once, so a poll with no backup holds its mail without a request per message (brainroute.spend)."""
     def __init__(self, store, pick, brain):
         for k, v in (('_store', store), ('_pick', pick), ('_brain', brain)): object.__setattr__(self, k, v)
     def __call__(self, *a, **kw):
-        try: return self._brain(*a, **kw)
+        from . import brainroute
+        if (line := brainroute.spent(self._store, self._pick)): raise BudgetSpent(line)
+        try: out = self._brain(*a, **kw)
         except Exception as e:
-            if getattr(e, 'until', None):
-                from . import brainroute
-                brainroute.cool(self._store, self._pick, e.until)
+            if isinstance(e, BudgetSpent): brainroute.spend(self._store, self._pick, str(e), e.until)
+            elif getattr(e, 'until', None): brainroute.cool(self._store, self._pick, e.until)
             raise
+        brainroute.unspend(self._store, self._pick)
+        return out
     def __bool__(self): return bool(object.__getattribute__(self, '_brain'))
     def __getattr__(self, k): return getattr(object.__getattribute__(self, '_brain'), k)
     def __setattr__(self, k, v): setattr(object.__getattribute__(self, '_brain'), k, v)
@@ -562,7 +615,7 @@ def _build_llm(store, pick=None, model=None, trace=None, cancel=None, resume=Non
                 if gear == 'strong' and not chosen_model and str(config.get('strong_model') or '').strip():
                     config = {**config, 'model': str(config['strong_model']).strip()}
                 if chosen_model: config = {**config, 'model': chosen_model}
-                return make_llm(full['Type'], config, full.get('Secret'))
+                return _Cooling(store, candidate, make_llm(full['Type'], config, full.get('Secret')))
         return None
 
     brains = [(candidate, one(candidate, i == 0)) for i, candidate in enumerate(picks)]
@@ -818,7 +871,7 @@ def _list_models(t, cfg: dict, key: str) -> list:
         if t == 'ollama' and base.endswith('11434'): base += '/v1'
         if not base: return []
         url, h, k = f'{base}/models', ({'Authorization': f'Bearer {key}'} if key else {}), 'data'
-    r = requests.get(url, headers=h, timeout=15)
+    r = requests.get(url, headers=h, timeout=GATEWAY_WAIT if t == 'hipaa_ai' else 15)
     if r.status_code != 200: raise RuntimeError(f'{t} answered {r.status_code}: {str(r.text)[:160]}')
     return sorted({m.get('id') for m in (r.json().get(k) or []) if m.get('id')})
 
@@ -826,6 +879,32 @@ def _list_models(t, cfg: dict, key: str) -> list:
 # AN OPENAI-COMPATIBLE PROXY IN FRONT OF ANOTHER MODEL (an access-code card, any proxy that routes to several models) speaks the schema loosely: it
 # may refuse json_schema with a 422 or a 500 of its own rather than a 400, hand `content` back as a list of parts, or turn the schema
 # into a forced tool call and answer in its arguments. A first run's test email failed on that as "wrong format" (2026-11-03).
+# EFFORT ON AN API CARD (the owner, 2026-11-06: "if it's api or something that only has one model use effort instead if they support
+# it"). The router spells it the way a CLI pick does - 'gpt-5@high', '@low' for the card's own model - and make_llm splits it off:
+# Anthropic takes output_config.effort, OpenAI and Azure OpenAI reasoning_effort (the Responses API reasoning.effort). A model that
+# turns it down is asked once more without it, and is not offered it again in this process. Every other provider never sees it.
+# ...and the HIPAA AI card: its gateway (LiteLLM) carries reasoning_effort on to the Gemini and Claude models behind it (2026-11-06)
+EFFORT_TAKERS = ('anthropic', 'openai', 'azure_openai', 'hipaa_ai')
+EFFORT_WORDS = ('minimal', 'low', 'medium', 'high', 'xhigh', 'max')
+_NO_EFFORT = set()         # (type, endpoint, model) that refused an effort - asked plainly from then on
+_EFFORT_REFUSED = re.compile(r'reasoning_effort|reasoning\.effort|\beffort\b|output_config|thinking', re.I)
+# A GATEWAY TURNS AN EFFORT INTO A THINKING BUDGET for a Claude model behind it (LiteLLM: low 1024, high 4096 tokens), and Claude
+# refuses a budget that is not under max_tokens, or thinking beside the forced tool a json_schema becomes - in words that never say
+# "effort". THIS call is asked again without it; the model is not written off, since a call with more room takes it.
+_THINK_REFUSED = re.compile(r'budget_tokens|thinking may not be enabled', re.I)
+
+
+def split_effort(model: str) -> tuple:
+    "'gpt-5@high' -> ('gpt-5', 'high'). Only a known level is split off: a Vertex id like 'claude-x@20251101' stays whole."
+    m, at, e = str(model or '').rpartition('@')
+    return (m, e) if at and e in EFFORT_WORDS else (str(model or ''), '')
+
+
+def _no_effort(key, why) -> None:
+    from loguru import logger
+    _NO_EFFORT.add(key); logger.info(f'{key[0]}: {key[2] or "this model"} takes no effort setting, asking without it - {str(why)[:200]}')
+
+
 _FORMAT_FROM = {}          # (url, model) -> the first of json_schema, json_object, prompt-only that the endpoint has not refused
 _FORMAT_WORDS = re.compile(r'response_format|json_schema|json_object|structured output|response.?schema|strict', re.I)
 
@@ -845,18 +924,31 @@ def said_text(msg: dict) -> str:
 
 
 def make_llm(t, cfg: dict, key: str):
+    m, effort = split_effort(cfg.get('model'))
+    if effort: cfg = {**cfg, 'model': m}
+    if t not in EFFORT_TAKERS: effort = ''
     if t == 'chatgpt': return _chatgpt_llm(cfg, key)
     if not key and t != 'ollama': raise RuntimeError('no API key saved - paste one under Credentials')
     if t == 'anthropic':
         import anthropic
         cli = anthropic.Anthropic(api_key=key)
         model = cfg.get('model') or PROVIDER_DEFAULT['anthropic']
+        ek = ('anthropic', '', model)
+        def asked(**kw):
+            if effort and ek not in _NO_EFFORT:
+                try: return cli.messages.create(**kw, output_config={'effort': effort})
+                except anthropic.BadRequestError as e:
+                    if not _EFFORT_REFUSED.search(str(e)): raise
+                    _no_effort(ek, e)
+            return cli.messages.create(**kw)
+        def ask(**kw):
+            r = asked(**kw); aiusage.anthropic(r); return r       # a paused web turn's every leg is counted
         def llm(system, user, max_tokens=MAX_TOKENS, images=None, want=None, web=False):
             # images FIRST: every provider reads a picture better when the question follows it
             content = ([{'type': 'image', 'source': {'type': 'base64', 'media_type': ct, 'data': b64}}
                         for ct, b64 in (images or [])] + [{'type': 'text', 'text': user}]) if images else user
             if web and not want:
-                got = _anthropic_web(cli, model, system, content, max_tokens)
+                got = _anthropic_web(ask, model, system, content, max_tokens)
                 if got is not None: return got
             # `want` is a schema the answer MUST fit. Anthropic has no response_format; a tool the
             # model is forced to call is the same thing - the tool's input schema is the answer's,
@@ -864,8 +956,7 @@ def make_llm(t, cfg: dict, key: str):
             forced = ({'tools': [{'name': want.get('name') or 'answer', 'description': 'Answer with these fields.',
                                   'input_schema': want.get('schema') or want}],
                        'tool_choice': {'type': 'tool', 'name': want.get('name') or 'answer'}} if want else {})
-            r = cli.messages.create(model=model, max_tokens=max_tokens, system=system,
-                                    messages=[{'role': 'user', 'content': content}], **forced)
+            r = ask(model=model, max_tokens=max_tokens, system=system, messages=[{'role': 'user', 'content': content}], **forced)
             if r.stop_reason == 'refusal': raise RuntimeError('model refused the request')
             if want:
                 call = next((b for b in r.content if b.type == 'tool_use'), None)
@@ -928,10 +1019,11 @@ def make_llm(t, cfg: dict, key: str):
         headers, model = {'api-key': key}, cfg['deployment']
     else:
         raise RuntimeError(f'unknown AI connector type: {t}')
+    ek = (t, urls[0], model)
 
     def llm(system, user, max_tokens=MAX_TOKENS, images=None, want=None, web=False):
         if web and not want and t in ('openai', 'azure_openai'):
-            got = _responses_web(t, cfg, headers, model, system, user, images, max_tokens)
+            got = _responses_web(t, cfg, headers, model, system, user, images, max_tokens, effort if ek not in _NO_EFFORT else '')
             if got is not None: return got
         # three independent compat axes: newer models reject max_tokens ("use
         # max_completion_tokens"), older Azure api-versions reject max_completion_tokens,
@@ -939,7 +1031,10 @@ def make_llm(t, cfg: dict, key: str):
         # be handed a response_format. Walk the grid until one works.
         content = ([{'type': 'image_url', 'image_url': {'url': f'data:{ct};base64,{b64}'}}
                     for ct, b64 in (images or [])] + [{'type': 'text', 'text': user}]) if images else user
-        msgs = [{'role': 'system', 'content': system}, {'role': 'user', 'content': content}]
+        # AN EMPTY TURN IS NO TURN: Gemini and Claude behind a gateway both refuse one ("contents.parts must not be empty", "text content
+        # blocks must be non-empty") where OpenAI let it by - a blank system is left out, and a blank ask is the system's words
+        if not str(user or '').strip() and not images: system, content = '', system
+        msgs = ([{'role': 'system', 'content': system}] if str(system or '').strip() else []) + [{'role': 'user', 'content': content}]
         thinking_off = cfg.get('disable_thinking') is True      # the card's Disable thinking switch: send enable_thinking=false, omit the field when it is off
         last = None
 
@@ -949,13 +1044,21 @@ def make_llm(t, cfg: dict, key: str):
             nonlocal last
             for url in urls:
                 for tok_param in ('max_completion_tokens', 'max_tokens'):
-                    body = {'messages': msgs, tok_param: max_tokens,
-                            **({'model': model} if model else {}), **({'response_format': fmt} if fmt else {}),
+                    body = {'messages': msgs, tok_param: max_tokens, **({'model': model} if model else {}),
+                            **({'response_format': fmt} if fmt else {}), **({'reasoning_effort': effort} if effort and ek not in _NO_EFFORT else {}),
                             **({'chat_template_kwargs': {'enable_thinking': False}} if thinking_off else {})}
                     # a local model may spend its first call loading weights off disk, a reasoning deployment its time on a long
                     # prompt - room to answer, and a quick give-up on an endpoint that is not there
                     r = post_retrying(url, headers, body, (CONNECT_TIMEOUT, READ_TIMEOUT))
+                    # a spent budget first: it is no refused effort or format, and asking again in another shape only spends a request
+                    if budget_spent(r): raise BudgetSpent(BUDGET_LINE.format(name='HIPAA AI' if t == 'hipaa_ai' else t))
+                    # ...a proxy may turn it down with a 422 of its own (the gateway in front of another provider's model)
+                    said = r.text or ''
+                    if r.status_code in (400, 422) and body.pop('reasoning_effort', None) and _EFFORT_REFUSED.search(said):
+                        if not _THINK_REFUSED.search(said): _no_effort(ek, said)
+                        r = post_retrying(url, headers, body, (CONNECT_TIMEOUT, READ_TIMEOUT))
                     if r.status_code == 200:
+                        aiusage.openai(r.json())
                         ch = (r.json().get('choices') or [{}])[0]
                         said = said_text(ch.get('message') or {})
                         if said.strip(): return said
@@ -1028,13 +1131,15 @@ ANTHROPIC_WEB = ([{'type': 'web_search_20260209', 'name': 'web_search', 'max_use
                   {'type': 'web_fetch_20250910', 'name': 'web_fetch', 'max_uses': 5}])
 
 
-def _anthropic_web(cli, model, system, content, max_tokens):
+def _anthropic_web(create, model, system, content, max_tokens):
+    "`create` is make_llm's ask (it carries the effort), or a client, whose messages.create is asked plainly."
     import anthropic
+    if hasattr(create, 'messages'): create = create.messages.create
     for tools in ANTHROPIC_WEB:
         msgs = [{'role': 'user', 'content': content}]
         try:
             for _ in range(5):          # a long search pauses the turn; it is continued, not restarted
-                r = cli.messages.create(model=model, max_tokens=max_tokens, system=system, messages=msgs, tools=tools)
+                r = create(model=model, max_tokens=max_tokens, system=system, messages=msgs, tools=tools)
                 if r.stop_reason != 'pause_turn': break
                 msgs = msgs + [{'role': 'assistant', 'content': r.content}]
         except anthropic.BadRequestError as e:
@@ -1057,15 +1162,18 @@ def _saw_anthropic(blocks):
             _saw('tool_result', getattr(b, 'tool_use_id', ''), {'result': f'{len(got)} results' if isinstance(got, list) else '', 'is_error': failed})
 
 
-def _responses_web(t, cfg, headers, model, system, user, images, max_tokens):
+def _responses_web(t, cfg, headers, model, system, user, images, max_tokens, effort=''):
     url = f"{(cfg.get('endpoint') or '').rstrip('/')}/openai/v1/responses" if t == 'azure_openai' else 'https://api.openai.com/v1/responses'
     content = [{'type': 'input_image', 'image_url': f'data:{ct};base64,{b64}'} for ct, b64 in (images or [])] + [{'type': 'input_text', 'text': user}]
     body = {'model': model, 'instructions': system, 'input': [{'role': 'user', 'content': content}],
-            'tools': [{'type': 'web_search'}], 'max_output_tokens': max_tokens}
-    try: r = post_retrying(url, headers, body, 180)
+            'tools': [{'type': 'web_search'}], 'max_output_tokens': max_tokens, **({'reasoning': {'effort': effort}} if effort else {})}
+    try:
+        r = post_retrying(url, headers, body, 180)
+        if r.status_code == 400 and body.pop('reasoning', None) and _EFFORT_REFUSED.search(r.text or ''):
+            _no_effort((t, url, model), r.text); r = post_retrying(url, headers, body, 180)
     except requests.RequestException as e: _log_web(t, e); return None
     if r.status_code != 200: _log_web(t, f'{r.status_code} {r.text[:200]}'); return None
-    out = r.json()
+    out = r.json(); aiusage.openai(out)
     for o in out.get('output') or []:
         if o.get('type') != 'web_search_call': continue
         act = o.get('action') or {}

@@ -37,7 +37,8 @@ class SearchTests(unittest.TestCase):
     def test_every_kind_wears_its_pill_and_a_thread_is_one_row(self):
         by = {}
         for x in self.hits('certificate'): by.setdefault(x['type'], []).append(x)
-        self.assertEqual(sorted(by), ['chat', 'email', 'issue', 'pr', 'source', 'task'])
+        # ...a connection card whose own words match may join them (the ADP card's TLS 'certificate', 2026-11-08) - it is not one of these kinds
+        self.assertEqual(sorted(k for k in by if k != 'connector'), ['chat', 'email', 'issue', 'pr', 'source', 'task'])
         self.assertEqual(len(by['email']), 1); self.assertEqual(by['email'][0]['more'], 1)
         self.assertEqual(by['pr'][0]['title'], '#12 renew the certificate in CI')
         self.assertEqual(by['chat'][0]['title'], 'can you check the certificate on the portal')    # no subject: its own words
@@ -75,6 +76,20 @@ class SearchTests(unittest.TestCase):
         self.assertEqual([h['tid'] for h in self.hits('certificate status:open') if h['type'] == 'task'], [self.tid])
         # the Tasks tab still filters on the column
         self.assertIn(self.tid, [t['TaskId'] for t in self.s.list_tasks(None, q='open')])
+
+    # DONE TODAY (the owner, 2026-11-06): a filter of the search box only - the tasks closed today, newest first, with or without words
+    def test_done_today_lists_only_the_tasks_closed_today(self):
+        s = self.s
+        a = s.create_task({'Title': 'Send Erin the deck', 'Kind': 'general', 'Status': 'open'}, 't')
+        b = s.create_task({'Title': 'Book the portal review', 'Kind': 'general', 'Status': 'open'}, 't')
+        gone = s.create_task({'Title': 'Not a task at all', 'Kind': 'general', 'Status': 'open'}, 't')
+        for t, st in ((a, 'done'), (b, 'done'), (gone, 'dropped')): s.update_task(t, {'Status': st}, 't')
+        s._exec("UPDATE task SET ClosedAt=datetime('now','localtime','-1 day') WHERE TaskId=?", (self.old,))
+        s._exec("UPDATE task SET ClosedAt=datetime('now','localtime','-1 minute') WHERE TaskId=?", (a,))
+        r = search.everything(s, search.DONE_TODAY)
+        self.assertEqual([h['tid'] for h in r['hits']], [b, a], 'closed today, newest first; yesterday and a dropped one are not')
+        self.assertEqual({h['type'] for h in r['hits']}, {'task'})
+        self.assertEqual([h['tid'] for h in self.hits(f'deck {search.DONE_TODAY}')], [a], 'words narrow it')
 
     # ...a sender's name listed tasks with nothing on them saying why
     def test_a_task_found_through_its_mail_says_so(self):
@@ -125,7 +140,7 @@ class TheAppIndexed(unittest.TestCase):
         self.assertEqual(self.first(s, 'work mail'), '#connector=outlook')
         self.assertEqual(self.first(s, 'the database card'), '#connector=database')
         self.assertEqual(self.first(s, 'audit log'), '#settings=audit')
-        self.assertEqual(self.first(s, 'soul'), '#settings=docs&doc=soul')
+        self.assertEqual(self.first(s, 'soul'), '#about=docs&doc=soul')
         self.assertTrue(str(self.first(s, 'AP ageing')).startswith('#report='))
         self.assertEqual(search.places(s, 'zzqx'), [])
         self.assertNotIn('MySQL', ' '.join(h['title'] for h in search.places(s, 'my style')))       # "my" is a whole word

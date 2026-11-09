@@ -7,6 +7,260 @@ What each release changed, newest first. Ask the Assistant "what changed in the 
 - Skills offers opt-in AI suggestions from completed work, without asking the owner to pick source tasks or replacing existing Hub, Playbook or Profile features.
 - A configured file-capable Agent authors the complete package; the owner reviews every file, returns changes to the same task, or approves the exact revision for publication.
 - Published `taskuary-` Skills retain scripts, examples, references and binary resources, with owned native discovery links and explicit validation/link failures. Publication never grants the Agent additional permissions.
+- Merge upstream 0.3.11.23 while retaining English/Chinese switching, read-only Jira Data Center feeds, reviewed Skills, and the per-connection thinking switch. OMP keeps native-session verification and no-replay protection alongside the updated ACP adapter road.
+
+## 0.3.11.23 - 2026-11-09
+
+- Night scenarios, round 4: the owner's phone line during a turn is heard, and one draft per person
+- Tool list: the show types are read in their guide, and sign_form leaves its rule to ASSISTANT.md
+- Night scenarios, round 5: a question stays asked, a failed first turn is retried with its ask, a colleague's answer reaches the draft
+- propose_reply says it answers on the message's own channel
+- Night scenarios, round 7: a one-to-one nudge joins the task triage named, no email to a chat id, unreachable systems stay general
+- Night scenarios, round 8: one person on two channels is named by channel, and a slot's chat id is no mailbox either
+
+## 0.3.11.22 - 2026-11-09
+
+- Night scenarios, round 1: what a quick call, a shared chat and a yes/no question got wrong
+- Night scenarios, round 3: a line that settles a task across channels reaches it, and says so
+
+## 0.3.11.21 - 2026-11-08
+
+- Triage guide: a bare greeting is fyi, and a question about something already reported joins that task
+- The task agent on a stream of chat lines: fewer false alarms, the owner's line re-read, the first ask gets an agent
+- Slim the general agent's prompt: say each rule once, disclose the rest on demand
+- A finished turn is read by the judge, never a word list; the stream line names the todos tool
+
+## 0.3.11.20 - 2026-11-08
+
+- Work that waits on you elsewhere: shared inboxes, phones, forms and candidates as sources
+- Money and hiring vendors' own MCP servers, and Mercury and Lattice keyed reads
+- The connections guide names the waiting-on-you cards
+- waiting.py imports the inboxes helpers last, so either module may be imported first
+- Pipedrive, Copper, Toggl Track, Harvest, Clockify, UPS, FedEx and USPS on the keyed-read road
+- Analytics and BI read with the sign-ins and keys they already have; PostHog's own MCP server
+- Commerce and billing read on their keys; WooCommerce and BigCommerce orders come in too
+- Social, publishing, marketing and the rest; comments, Page messages, mentions and held comments come in
+- The connections guide names the CRM, social, analytics, commerce and shipping cards
+- FreshBooks reads on the OAuth sign-in road
+- Replies go back to the sources that file work: a ticket's comment, a chat's thread, a text back - on the owner's Send
+
+## 0.3.11.19 - 2026-11-08
+
+- MongoDB, Redis and Neo4j cards: reads only, each engine its own way
+- Nineteen more cards read a vendor's API from the keyed-read table: cloud, web, markets, corporate
+- The Bing Web Search card goes: Microsoft retired the API
+- Amazon Transcribe on the voice road: the owner's bucket, one job, nothing left behind
+- The guide, the golden and the tests follow the cards that left the roadmap
+- One OAuth 2.0 sign-in road: authorization code + PKCE over a loopback redirect
+- Finish the sign-in and push connectors: OAuth cards, push sources, Mailgun, Substack
+
+## 0.3.11.18 - 2026-11-08
+
+- Vendors' own remote MCP servers as working cards, on one road
+- CockroachDB, Oracle Database and DuckDB cards on the named-database road
+- Seven more model providers on the OpenAI-compatible card road
+- AssemblyAI, Speechmatics, Gladia and Azure AI Speech voice cards
+- Marketstack and EOD Historical Data cards on the markets road
+- Rebuild the app, the demo and the docs; the catalogue test judges a category by all its cards
+- Helpdesks, more trackers and mailbox presets bring work in
+- Chat, community, texts and business systems bring work in too
+- MCP servers that take a personal token: GitHub, PagerDuty, Smartsheet, Wrike
+- Nineteen planned cards read a vendor's REST API with a key, from one table; DynamoDB reads
+- The token card's save and the docs for token servers and keyed reads
+
+## 0.3.11.17 - 2026-11-08
+
+- A phone's task page is the view's height, its message box at the foot on every kind
+- The demo is a connected world on an invented machine
+- On a phone the chat box's From chip sits on a line of its own over the words
+- Invites, new meetings and a dashboard's share are set up like an email: a card and one press
+
+## 0.3.11.16 - 2026-11-08
+
+- The agent's own turn picks the lit button; the bar drops Reply and Hand it to a person
+- No Send is lit over a card whose channel is not connected; a phone's chat box stays at its foot
+- Search reaches the agent chat: the owner's lines, the agent's answers and its drafts
+- A video tool's card signs in with one press
+- A turn whose words equal its summary's What I did draws its words
+
+## 0.3.11.15 - 2026-11-08
+
+- An agent's email keeps its CC, and a withdrawn email can be written again
+- An email the agent set up waits on you: store.waiting_on_owner
+- A finished run's row says "agent finished", on the rail and in the header alike
+- A chat turn a restart cut keeps what it said, with one line that it was cut
+- A Send over a blank asks once - "This still has [ROOM]. Send anyway?"
+- A #task link opens its task over setup, and setup has a quiet "Set up later"
+- The demo's weekly dashboard runs on a clock the scheduler reads
+- The agent's next turn hears the owner's hand-off
+- A goal slipped by a late step says that step's day
+- The agent's next turn hears every press the owner made since its last turn
+- Opening a closed task shows it and leaves the Tasks band alone
+- A closed task looked up by any road carries closed
+- Each press the owner makes on a task is their line in its chat
+- A turn is drawn once: the agent's words, and only the cards it set up under them
+- #settings=audit off Developer mode says why it is not there
+- A send card whose channel is not connected says so, and its move is Connect
+- Every kind opens on its chat with Came from folded thin, unless it has no chat
+- Send and close is filled on every reply card unless a move drawn beside it is lit
+- A chat agent whose CLI died while it sat idle is noticed at the next sweep
+- Log says why a quick answer failed; expected outcomes are no warnings
+- An agent's browser closes with its session, its view answering or not
+- A task's agent is Agent everywhere; prompt machinery stays out of comment readers
+- An answer's raw file path is its file card, not a line of its own
+- Copy: one word for one thing, no internal words on screen
+- New's kinds wrap instead of scrolling out of sight
+- UI tests read the agent as Agent; Send anyway's label comes from buttons.js
+- Trust follows whose words are in a task, and who wrote a tracker item
+- A task bound to a teammate chat runs in safe mode by default
+- A stranger's session may not name the CLI's own sign-in variables
+- An unverified From on a verifying mailbox starts nothing by itself
+- A read-level database card runs one SELECT, checked before it connects
+- The browser gate judges an open that carries a token, and never reads a password box
+- A signed build runs only an installer signed by its own signer
+- The cloud-fix workflow pins its actions and CLI, and push keeps no token on disk
+- A task-bound agent session reads only its own task, and no other pane's screen
+- A run that finished with a post or act waiting reads as that press, not agent done
+- A reply with no mailbox leads with Connect email under the draft
+- One email card for the reply and the agent's email: To, CC, BCC, Subject, files
+- New: a general agent's job is typed into the agent chat's own box
+- The Assistant reports what the agent needs; no name yet is ? on the avatar
+- Said once: the ask that is its message, New playbook, a single page's back crumb
+- A held line wears the owner's head and stands under everything the turn drew
+- A phone's task view fits its chat body; a reply's card shows its subject
+- Tests follow the shared CC/BCC row and the New box; the send's envelope edits are one helper
+
+## 0.3.11.14 - 2026-11-08
+
+- Video tools for the agents: Descript, InVideo, Vidova, OpusClip, video-use, Kling and Runway video
+
+## 0.3.11.13 - 2026-11-07
+
+- Taskuary's own reports are never a new workstream
+- Dashboard charts draw again: an orphaned CSS line had dropped the palette
+- The token count is in the glance's top row, and its AI tiles sit up with the charts
+- White cards on a light page for the dashboard, and the End of day checkup laid out as a brief
+- An agent can show a table, chart or checklist in its chat
+- A table, chart or checklist goes through show, not a file
+- A shown view is not repeated in words
+- A chat agent's question is kept with the task, and a turn that asked nothing is done for now
+- On a chat task nothing tells the owner to press a Continue it does not have
+- Each turn keeps the file as it made it; the newest turn shows the file itself
+- Every line the owner sends is kept the moment it is sent, with the time it was typed
+- A line held behind a running turn takes the first line's road, and never says "reload the page"
+- After a restart, unsent lines go back into the owner's box, never to the agent
+- An agent's view draws every block as its own card, with tiles side by side and a chart beside its table
+
+## 0.3.11.12 - 2026-11-07
+
+- A plain to-do is the one chat too: no Close out section; it still opens on what came in (WIP, bundles not rebuilt)
+- The stage model has two sections, Came from and the chat: close_out is to_send, and the Advisor names no Close out section
+- An FYI handful says "6 messages", and the dock's files ride its box's own line
+- A line the owner sends is in the chat once, and its files leave the box with the send
+- A follow-up line their reply ended is marked done once, not on every rail build
+- Triage names no repository: it says a job is coding and nothing about where
+- The coding agent picks its checkout: use_repo and find_repos
+- No repository chosen is no hold on the page: the agent picks, the owner can still change it
+- A rail build waiting on the membership worker wakes it instead of waiting out its tick
+- Every task is Came from and its one chat: the Close out column, its tab, its pairing and its notice are gone
+- The settle wait looks again in milliseconds once it has woken the worker
+- Items lay no hidden Close out section: what registers their row's verbs is ItemSections' 'moves'
+- What the Assistant, the agents, the phone and the demo say: the chat, never Close out
+- AI used and 'Talk to this agent fromâ€¦' are quiet buttons in the task's top-right corner, each a popover
+- Docs: a task is Came from and its one chat - no Close out section, stage or step names
+- One prompt box everywhere: every box that talks to an agent is the same component
+- Next turns blue as soon as the move saves: the walk asks for the light answer and reads the rail behind it
+- AI routing: an optional AI per level for the agents' work
+- The mail a task came in on stays in its chat after the owner's first line
+- Coding sessions over ACP: a task's claude or codex opens as one ACP connection in its checkout, the pty its fallback
+- Coding chat over ACP: the plan is a checklist, Stop ends the turn, the Terminal shows once a command printed
+- ACP coding: a file it touches is named from the checkout's long name
+- A stranger's task never runs over ACP, on either road, whatever a caller hands the gate
+- Docs: ACP step 2 - coding sessions on claude and codex, the registry they share, the stranger floor, the live check
+- Regenerate the assistant tools docs page after the Close out wording change
+- Install the agent connector beside Claude Code and Codex, and run only the pinned one
+- Task button row: four sections, one button size, the lit one alone filled
+- Hold every relay road when a task turns a stranger's under a full session
+- Setup's bottom bar takes the step's width, centred under its cards
+- Assistant's own icons back in the chat head on the home screen
+- One chat picker for the Assistant chat and the agent channels
+- Every dialog's actions are the task row's one ButtonBar: no band, left, one button tall
+- Playbooks back on the Reports page; About you keeps You, Docs and Memory
+- About you is the avatar in the top bar's corner, not a sidebar line
+- ACP coding: steer a running turn, idle out quietly, pin the plan
+- Setup: the job and what you work on are one step, About your work
+- Tell the agent when a task is the owner's own ask, and offer it no reply tools
+- Read a coding task's whole work so far as one diff
+- Write a brain's route row on its first call, not when it is built
+- Name the connector's press on a CLI card: Install connector, Update connector
+- Docs: the connector's presses are Install connector and Update connector
+- A failing membership tick waits out its backoff; a reader's kick no longer cuts it short (CI)
+- Remove AdvisorNote.jsx: nothing draws the task's Advisor section any more
+- Coding chat: no Terminal button, rows in arrival order, no spinner after the turn ends
+- Add a quiet Changes button to the coding task's header
+- Route a general session by tier unless the owner picked its model
+- Count each ACP turn's tokens; match model ids to the agent's spelling
+- Latest message wins: each turn answers the newest message, and a draft belongs to its turn
+- A task works in a checkout whatever its kind; a helper's calls name the call they run under
+- A helper's steps nest under its row; a call still running beside finished ones says it runs in parallel
+- One chat for every task's agent: coding and general share one component, one mapper, three detail levels
+- A stale draft stays under the turn that wrote it, read off the chat payload's drafts
+- The one chat keeps the agent's words at Summary and reads no general conversation on a coding task
+- An owner-opened own-ask session still hears it is the owner's to end
+- The owner's Allow or Deny on a permit goes through on a stranger's task
+- Latest-wins facts ride in the turn, so a CLI chat keeps one process
+- A resumed chat turn carries latest-wins only when a draft waits or a reply went
+
+## 0.3.11.11 - 2026-11-06
+
+- A plain to-do is the one chat too: no Close out section; it still opens on what came in (WIP, bundles not rebuilt)
+- The stage model has two sections, Came from and the chat: close_out is to_send, and the Advisor names no Close out section
+- An FYI handful says "6 messages", and the dock's files ride its box's own line
+- A line the owner sends is in the chat once, and its files leave the box with the send
+- A follow-up line their reply ended is marked done once, not on every rail build
+- Triage names no repository: it says a job is coding and nothing about where
+- The coding agent picks its checkout: use_repo and find_repos
+- No repository chosen is no hold on the page: the agent picks, the owner can still change it
+- A rail build waiting on the membership worker wakes it instead of waiting out its tick
+- Every task is Came from and its one chat: the Close out column, its tab, its pairing and its notice are gone
+- The settle wait looks again in milliseconds once it has woken the worker
+- Items lay no hidden Close out section: what registers their row's verbs is ItemSections' 'moves'
+- What the Assistant, the agents, the phone and the demo say: the chat, never Close out
+- AI used and 'Talk to this agent fromâ€¦' are quiet buttons in the task's top-right corner, each a popover
+- Docs: a task is Came from and its one chat - no Close out section, stage or step names
+- One prompt box everywhere: every box that talks to an agent is the same component
+- Next turns blue as soon as the move saves: the walk asks for the light answer and reads the rail behind it
+- AI routing: an optional AI per level for the agents' work
+- The mail a task came in on stays in its chat after the owner's first line
+- Coding sessions over ACP: a task's claude or codex opens as one ACP connection in its checkout, the pty its fallback
+- Coding chat over ACP: the plan is a checklist, Stop ends the turn, the Terminal shows once a command printed
+- ACP coding: a file it touches is named from the checkout's long name
+- A stranger's task never runs over ACP, on either road, whatever a caller hands the gate
+- Docs: ACP step 2 - coding sessions on claude and codex, the registry they share, the stranger floor, the live check
+- Regenerate the assistant tools docs page after the Close out wording change
+
+## 0.3.11.10 - 2026-11-06
+
+- AI routing: Auto by default, effort for one-model brains, plain words in Settings
+- One clock on a running turn; the task's agent says Agent, the corner pill is the Assistant
+- AI routing: API cards with one model think less or harder too
+- A routing rule's sentence never repeats its job
+- One status cycle for a chat task: working, waiting on you, agent done
+- Check-backs: the owner can cancel one, and a chip says when it wakes
+- A nothing-new turn is one line: the agent judges it, the chat draws only the line
+- The day's opener names an Advisor idea by its own words
+- Attachments: one chip everywhere, a few in the row and then +N more
+- The rail plays a short confetti burst when the walk reaches All done
+- The rail's clear-burst count updates only when the count changes
+- The task's title bar shows its check-back chip beside the status
+- Items open on one box with their Came-from chip; an FYI handful gets the single one's box
+- Opening a closed task from Search only opens it; Reopeningâ€¦ never outlives its press
+- Every non-coding task is one chat with one box; the task's buttons are one row in one place
+- HIPAA AI card takes the effort setting
+- AI used: every call keeps its model, tokens and time; a dashboard and a task endpoint read them
+- The general agent can ask a stronger model itself when it is stuck
+- TaskButtons: the order lives in actionRow.taskButtons, and the row folds around Mark done and the lit move
+- The task shows what AI it used, behind one quiet "AI used" line
 
 ## 0.3.11.9 - 2026-11-06
 

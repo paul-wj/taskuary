@@ -35,13 +35,13 @@ The "Reply" button ("Draft reply" when nothing is drafted yet): write a reply to
 
 ### `approve`
 
-The "Send" button ("Approve" on an agent's proposal or a task's close-out): the owner's yes to what is drafted on the item: sends the reply as it stands - on a task's close-out it merges the pull request or closes the issue FIRST, then sends the reply; on an agent's proposal it runs that action and only that. It never closes the task - that is send_close, or close, the owner's own Mark done - and never continues an agent's session - that is agent.continue.
+The "Send" button ("Approve" on an agent's proposal or a task's finish card): the owner's yes to what is drafted on the item: sends the reply as it stands - on a task's finish card it merges the pull request or closes the issue FIRST, then sends the reply; on an agent's proposal it runs that action and only that. It never closes the task - that is send_close, or close, the owner's own Mark done - and never continues an agent's session - that is agent.continue.
 
 <p class="runs">Brings up its button for you to press.</p>
 
 ### `send_close`
 
-The "Send and close" button ("Approve and close" on a task's close-out with its reply): the same send, then the task closes - unless an agent or anything else on it still waits.
+The "Send and close" button ("Approve and close" on a task's finish card with its reply): the same send, then the task closes - unless an agent or anything else on it still waits.
 
 <p class="runs">Brings up its button for you to press.</p>
 
@@ -378,7 +378,7 @@ Email what a task's work found; a draft for the owner's yes, never sent.
 
 ### `review.approve`
 
-The owner's yes to what is drafted: sends the reply as it stands - and on a task's close-out merges the pull request (or closes the issue) FIRST, sending the reply only if that worked. The task stays open: task.complete (Mark done) is the close.
+The owner's yes to what is drafted: sends the reply as it stands - and on a task's finish card merges the pull request (or closes the issue) FIRST, sending the reply only if that worked. The task stays open: task.complete (Mark done) is the close.
 
 <p class="runs">Brings up its button for you to press.</p>
 
@@ -1102,7 +1102,7 @@ One connection in full.
 
 Why a part of Taskuary itself is not working, read now - the connection, the WhatsApp bridge asked directly, its log, the last sync and error - and the simple repair it has, if any - whether it is switched on under Chats, and where its messages went.
 
-- `name` (optional) - the connection (whatsapp, telegram, outlook...), or none for everything failing
+- `name` (optional) - the connection (whatsapp, telegram, outlook...), claude or codex for a slow agent start (is its agent connector installed), or none for everything failing
 - `chat` (optional) - one WhatsApp chat or group by its name
 
 <p class="runs">Runs at once and changes nothing.</p>

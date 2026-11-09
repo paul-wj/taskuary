@@ -1,5 +1,5 @@
 {
-  "_": "THE settings vocabulary, once. SettingsView.jsx draws its knobs from this file and the assistant (settings_schema.py, appfacts.py) reads the same one, so a knob cannot be called one thing on the page and another in the chat. `groups` is the order the page stacks its sections in; each knob carries group, label, type (switch | number | select | text | brain | brains | channels | timezone | sound | flags), options for a select, desc (one line) and help (the long explanation the page shows).",
+  "_": "THE settings vocabulary, once. SettingsView.jsx draws its knobs from this file and the assistant (settings_schema.py, appfacts.py) reads the same one, so a knob cannot be called one thing on the page and another in the chat. `groups` is the order the page stacks its sections in; each knob carries group, label, type (switch | number | select | text | brain | brains | channels | timezone | sound | flags | lines | detail), options for a select, desc (one line) and help (the long explanation the page shows).",
   "_panel_owned": "Keys a CARD on the page already owns, so the knob list must not also offer them as a bare box. Every aidefaults.SLOTS key and its model_setting belongs here - tests/test_settings_schema.py fails if one is missing, which is what `assistant_ai` (d3bde8bd) and then `judge_ai` both did: a real setting with no KNOB_META entry falls through to the empty 'Other' group as an unlabelled text box, which is the one place nobody would look for it.",
   "panel_owned": [
     "triage_ai",
@@ -174,8 +174,8 @@
       "type": "select",
       "options": ["fixed", "auto"],
       "optionLabels": {"fixed": "Fixed - the cards", "auto": "Auto - by how hard the work is"},
-      "desc": "Fixed runs every job exactly as its card says. Auto picks a quick, standard or strong model by the job and how hard triage judged the work.",
-      "help": "Normally set on the line above the AI cards; this row is the fallback if that panel cannot load. In Auto each card is its job's standard model, and the rules under it say when the quick gear or the strong model runs instead - each shown as a sentence with its own switch. A brain whose strong model box is blank never steps up. An explicit pick - yours, a report's, a workflow's - always wins, and nothing is sent without your press either way."
+      "desc": "Auto, the default: triage judges each task quick, normal or hard, and quick work runs on a smaller model, hard work on a stronger one. Fixed runs every job exactly as its card says.",
+      "help": "Normally set on the line above the AI cards; this row is the fallback if that panel cannot load. In Auto each card is its job's normal model, and the rules under it say when the quick or the strong model runs instead - each shown as a sentence with its own switch. An AI with only one model thinks less for quick work and harder for hard work instead, where it takes an effort setting (Claude Code, Codex, and the Anthropic, OpenAI and Azure OpenAI API cards); any other AI stays on its one model. An explicit pick - yours, a report's, a workflow's - always wins, and nothing is sent without your press either way."
     },
     "ai_route_strong_cap": {
       "group": "How mail is sorted",
@@ -284,6 +284,13 @@
       "desc": "The CLI agent that works tasks when nothing names one.",
       "help": "Start session, Send to coding agent and auto-dispatch all use this agent unless you pick another in the moment; every agent picker lists it first. The roster itself lives under Docs → Profiles → Manage profiles, where the default row wears the star.\n\nGitHub-specific permissions (may agents open issues? push?) are on the GitHub connector card, because they are decisions about how your team uses GitHub, not about Taskuary."
     },
+    "acp_cli": {
+      "group": "Agent permissions",
+      "label": "Run CLI agents over ACP",
+      "type": "switch",
+      "desc": "General agents on Claude Code, Codex, Gemini and the other CLIs run through the Agent Client Protocol: every tool call and permission is a request Taskuary sees and answers. Off: they run on the command line as before.",
+      "help": "On (the default): each tool an agent wants to use is asked for first, and Taskuary answers by its own rules - its own tools and anything that only reads or works in the agent's folder are allowed; a tool that sends mail or chat, a push, a publish or a delete outside the folder waits for you, as it does in a pane. What the agent did is shown step by step, the same as before. Claude Code and Codex speak it through a small adapter, started with npx (installed with `npm i -g @agentclientprotocol/claude-agent-acp @agentclientprotocol/codex-acp`, each start is about 2 seconds quicker); it drives the CLI you already have, with its own login.\n\nIf an agent cannot start that way, that run goes on the command line instead and the log says so once. Off: every CLI run goes on the command line. Coding sessions in a terminal are not affected."
+    },
     "general_agent_hands": {
       "group": "Agent permissions",
       "label": "General agents can",
@@ -318,7 +325,16 @@
       "options": ["review", "cloud"],
       "optionLabels": {"review": "review and fix here", "cloud": "review here, fix in GitHub's cloud"},
       "desc": "What an outside contributor's pull request gets. Fix it in the cloud runs the agent and the tests on a machine GitHub throws away, never yours.",
-      "help": "With \"fix in GitHub's cloud\", an outside pull request that ranking warned about, and whose review asks for changes, is fixed in GitHub's cloud instead of here. It runs a workflow in the repository: one job with a read-only token checks out exactly the reviewed head, runs Claude Code there (tests, builds) and hands back a patch; a second job, which never runs their code, pushes it to taskuary/pr-<number>. Taskuary opens the fix's pull request with your token so your CI runs on it, and Merge merges it with the contributor's commits.\n\nThe repository needs the workflow (Taskuary adds it when you press Set up) and one secret, CLAUDE_CODE_OAUTH_TOKEN - run `claude setup-token` and paste the result under the repository's Settings -> Secrets and variables -> Actions. The secret sits beside the stranger's code in that throwaway job: it is revocable, and it cannot reach your repository or this machine."
+      "help": "With \"fix in GitHub's cloud\", an outside pull request that ranking warned about, and whose review asks for changes, is fixed in GitHub's cloud instead of here. It runs a workflow in the repository: one job with a read-only token checks out exactly the reviewed head, runs Claude Code there (tests, builds) and hands back a patch; a second job, which never runs their code, pushes it to taskuary/pr-<number>. Taskuary opens the fix's pull request with your token so your CI runs on it, and Merge merges it with the contributor's commits.\n\nThe repository needs the workflow (Taskuary adds it when you press Set up) and one secret under the repository's Settings -> Secrets and variables -> Actions. Best is ANTHROPIC_API_KEY: an API key made for this alone, with a spend limit on it; CLAUDE_CODE_OAUTH_TOKEN (run `claude setup-token`) works too, but it is your subscription. The secret sits beside the stranger's code in that throwaway job, where their tests could read it: it is revocable, and it cannot reach your repository or this machine."
+    },
+    "teammate_chat_power": {
+      "group": "Agent permissions",
+      "label": "Teammate chats",
+      "type": "select",
+      "options": ["safe", "full"],
+      "optionLabels": {"safe": "safe mode - the agent sees only its own task", "full": "full power - your agent's own permissions"},
+      "desc": "A coding agent whose task is bound to a WhatsApp, Telegram, Slack or Teams chat with teammates in it. Safe mode by default: it runs like a stranger's task - the CLI's own reviewer, Taskuary's floor, and a key that opens only that task - and its answers still post to the chat by themselves.",
+      "help": "A teammate's line goes straight into the agent, and the agent's answer goes straight back to the chat - nobody presses anything in between. In safe mode the agent cannot read your other mail, other tasks or Taskuary's files, so a teammate (or someone using a teammate's account, or text a teammate pasted from elsewhere) cannot ask it to fetch them into the chat. Your own lines in that chat do not lift it.\n\nFull power runs the agent with your CLI's own permissions, skipping its prompts, and the shared key that can read every task, every mail and every comment here: whatever a teammate asks it to look up can be posted back to the chat."
     },
     "developer_mode": {
       "group": "Agent permissions",
@@ -348,7 +364,7 @@
         "direct"
       ],
       "desc": "A draft pull request, or the commits pushed straight onto the default branch.",
-      "help": "pr (default) = a DRAFT pull request from the task's branch; it merges only when you approve the task's close-out (Merge), or when you merge it on GitHub yourself. direct = the commits already in the checkout are pushed straight onto the default branch — no PR, no review ceremony, which is usually what you want on your own repository.\n\nDirect mode is deliberately narrow: it pushes commits that ALREADY EXIST. A dirty checkout is refused rather than committed for you (Taskuary will not write a commit message over work nobody has read), nothing ahead of the remote is simply 'nothing to do', and a rejected push is reported for you to pull and rebase — it never force-pushes.\n\nEither way 'Agents may push / deploy' on the GitHub card is what allows anything to leave the machine at all, and CI watching follows the work to wherever it landed."
+      "help": "pr (default) = a DRAFT pull request from the task's branch; it merges only when you approve its merge on the task (Merge), or when you merge it on GitHub yourself. direct = the commits already in the checkout are pushed straight onto the default branch — no PR, no review ceremony, which is usually what you want on your own repository.\n\nDirect mode is deliberately narrow: it pushes commits that ALREADY EXIST. A dirty checkout is refused rather than committed for you (Taskuary will not write a commit message over work nobody has read), nothing ahead of the remote is simply 'nothing to do', and a rejected push is reported for you to pull and rebase — it never force-pushes.\n\nEither way 'Agents may push / deploy' on the GitHub card is what allows anything to leave the machine at all, and CI watching follows the work to wherever it landed."
     },
     "ci_watch": {
       "group": "Coding agent",
@@ -404,12 +420,16 @@
           "help": "Verified Sent Items evidence: this mailbox has sent that exact address something before."
         },
         "trust_non_email": {
-          "label": "people you talk with in chats",
-          "help": "Someone you have talked with one-to-one in that chat app, answered there, or vouched for - not everyone in a group you joined. In Slack, Telegram, Discord and the chat servers Taskuary cannot see your own lines, so there it is only the people you vouched for. Off, only your own words count."
+          "label": "people you talk with in chats, and your own feeds",
+          "help": "Someone you have talked with one-to-one in that chat app, answered there, or vouched for - not everyone in a group you joined. In Slack, Telegram, Discord and the chat servers Taskuary cannot see your own lines, so there it is only the people you vouched for. It also lets in your own systems' items: calendar, cloud and billing feeds, and Taskuary's local API. Trackers and alerts are NOT covered here. Off, only your own words count."
+        },
+        "trust_trackers": {
+          "label": "members of your trackers' projects",
+          "help": "An issue or task in GitLab, Jira, Linear, Asana, Monday, ClickUp, Todoist, Azure DevOps, Trello or Notion, written by someone the tracker lists as a member of that project or workspace. An outsider's item - a public GitLab issue, a Jira Service Management portal ticket - or one the tracker names no author for (Trello, Notion) waits for you, unless you trusted that person or project. Alerts (Sentry, PagerDuty) never count: anyone who can trigger an error writes their text, so they wait until you trust alerts from that source."
         }
       },
-      "desc": "An inbound message can open a task AND start the agent on it unattended. These are the three rules that allow it; a sender matching none of them still gets triaged and lands on the Board, and only the unattended start waits for your click.",
-      "help": "Three separate switches until 2026-09-16, which meant reading all three to know the answer to one question.\n\nyour own domains — every connected mailbox's domain and the owner address.\n\npeople you have written to — checked in your own records first, then asked of the mail server once per address and remembered. Earlier INCOMING mail is never evidence: a stranger's second message is still a stranger's. A lookup that fails is not proof either way, so the task says so and waits.\n\npeople you talk with in chats — someone you have answered in a one-to-one chat, or vouched for by releasing or trusting their task. A group chat is not a room of people you trust. Taskuary sees your own lines in Teams, WhatsApp and iMessage; in Slack, Telegram, Discord and the chat servers it cannot, so there trust comes only from vouching.\n\nTurn all three off and nothing ever starts by itself; every task waits on the Board for you. Turning them off does not stop triage, drafting or filing - only the unattended start."
+      "desc": "An inbound message can open a task AND start the agent on it unattended. These are the four rules that allow it; a sender matching none of them still gets triaged and lands on the Board, and only the unattended start waits for your click.",
+      "help": "Three separate switches until 2026-09-16, which meant reading all three to know the answer to one question.\n\nyour own domains — every connected mailbox's domain and the owner address.\n\npeople you have written to — checked in your own records first, then asked of the mail server once per address and remembered. Earlier INCOMING mail is never evidence: a stranger's second message is still a stranger's. A lookup that fails is not proof either way, so the task says so and waits.\n\npeople you talk with in chats — someone you have answered in a one-to-one chat, or vouched for by releasing or trusting their task. A group chat is not a room of people you trust. Taskuary sees your own lines in Teams, WhatsApp and iMessage; in Slack, Telegram, Discord and the chat servers it cannot, so there trust comes only from vouching. Your own feeds (calendar, cloud, billing, the local API) ride on this switch too.\n\nmembers of your trackers' projects \u2014 the tracker's own word that the author is a member; an outsider's item, one with no author, and every alert wait for you until you trust that person, project or alert source.\n\nTurn them all off and nothing ever starts by itself; every task waits on the Board for you. Turning them off does not stop triage, drafting or filing - only the unattended start."
     },
     "agent_context_file": {
       "group": "Coding agent",
@@ -438,6 +458,27 @@
       "type": "number",
       "desc": "How many unattended agent sessions may run together. The rest queue.",
       "help": "The one number that decides how much work this machine takes on at once. Four is the default because four live CLI sessions in four checkouts is about what a laptop stays responsive under — each one is a real process with a real model behind it.\n\nPast the limit nothing is dropped: a dispatched task joins the queue and starts the moment a session ends, and the Board shows it waiting with the reason. The Board's floor view is drawn to this number, so raising it widens the room instead of crowding it.\n\nRaise it if the machine has headroom and your tasks rarely touch the same files; lower it to one if you would rather watch a single agent at a time. Sessions you start yourself are never blocked by this."
+    },
+    "chat_detail_coding": {
+      "group": "Agents",
+      "label": "Chat detail for coding work",
+      "type": "detail",
+      "desc": "How much of a coding agent's work its task chat shows: Summary, Steps, or Everything - every tool call with its output and diff.",
+      "help": "Every task's agent talks in the same chat. This is where a task working in a code checkout starts. Summary shows what the agent said and made, and the cards waiting on you, with its steps behind one line. Steps shows one line a step, folded under each turn. Everything shows every tool call, its command, output and diff a press away.\n\nEach chat can say its own from the corner of its task header (Chat detail); that choice is kept for that task on this computer."
+    },
+    "chat_detail_other": {
+      "group": "Agents",
+      "label": "Chat detail for other work",
+      "type": "detail",
+      "desc": "How much of a general agent's work its task chat shows: Summary, Steps, or Everything.",
+      "help": "The same three stops as coding work, for every task that is not working in a code checkout - research, a reply, a report. Summary is where they start: the agent's words and results, and its cards, with its steps behind one line.\n\nEach chat can say its own from the corner of its task header (Chat detail)."
+    },
+    "code_folders": {
+      "group": "Agents",
+      "label": "Folders agents may look in for code",
+      "type": "lines",
+      "desc": "One folder a line. A coding agent picks its checkout under these, or one Taskuary already knows.",
+      "help": "Taskuary no longer decides which repository a coding task belongs in. When nothing on the task says it - a GitHub item's own repository, the code you set with Change where the code is - the agent starts in the task's own folder with the list of repositories Taskuary knows, and picks one before it touches any code.\n\nIt may also look for a checkout itself, and this list is where it may look: a git checkout under one of these folders, or one Taskuary already has a path for. Anything else is refused. A checkout it finds that Taskuary did not know joins the repository map, with a line saying where it was found.\n\nBlank means the usual places for code on this computer that exist: Documents, source/repos, repos, projects, code and src in your home folder. Keep it small - every folder here is one an agent may open."
     },
     "auto_sessions_light": {
       "group": "Coding agent",

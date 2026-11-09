@@ -59,6 +59,7 @@ test("settings and connections are kinds of their own", () => {
 });
 
 
+
 // PEOPLE IN THE ONE BOX (the owner, 2026-10-28): the directory the To and Cc pickers search answers here too, under People, an address once
 test("the directory's people are a group of their own, after Tasks, each address once", () => {
   const ps = personHits([{ to: "gmoreno@northwind.example", name: "Gail Moreno", company: "Northwind" }, { to: "GMoreno@northwind.example", name: "Gail" },

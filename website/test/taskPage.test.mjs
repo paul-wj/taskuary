@@ -8,6 +8,7 @@ test("the triage reason is kept and whitespace normalized", async () => {
   assert.ok(!triageSays(facts, "reply", "").endsWith(" · "));
 });
 
+
 test("a running agent's Stop and save is dark on its own; the Advisor's pick outranks it, and nothing else darkens itself", async () => {
   const { rowOf } = await import("../src/actionRow.js");
   const v = (id, group, extra = {}) => ({ id, group, label: id, tone: "s", promote: true, ...extra });
@@ -32,4 +33,5 @@ test("the row puts a leading agent verb first and Mark done beside it (actionRow
   assert.equal(waiting.decide[0].id, "r1:approve");
   assert.deepEqual(waiting.agent.slice(0, 2).map((x) => x.id), ["diff", "save-end"]);
 });
+
 

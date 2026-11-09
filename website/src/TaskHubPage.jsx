@@ -37,9 +37,10 @@ import { buildMove, isBusy, loadedAsset, markReloaded, reloadedFor, staleWhat } 
 import { useHandRaise, playSound, desktopNotify } from "./handraise.js";
 import { dismissHandRaise, enqueueHandRaise, handRaiseWhat, isWatchingTask, pruneHandRaises } from "./handraiseState.js";
 import { askAssistant } from "./askAssistant.js";
-import { TaskuaryMark, asUtc, timeAgo } from "./ui.jsx";
+import { TaskuaryMark, asUtc, timeAgo, useAgents } from "./ui.jsx";
 import AssistantView from "./AssistantView.jsx";
 import { SEARCH_PICKED, SearchBar, openSearch } from "./SearchEverything.jsx";
+import ProfileButton from "./ProfileButton.jsx";
 import BugReportDialog from "./BugReportDialog.jsx";
 import { label as btnLabel } from "./buttons.js";
 import { REPORT_EVENT, bellError, openBugReport } from "./bugReportOpen.js";
@@ -70,7 +71,7 @@ const AssistantGame = React.lazy(() => import("./AssistantGame.jsx"));
 // report inside the conversation - and the Board, the agents and their wall, is the one full-screen view, reached from the
 // top bar. Every old destination still lands: go("Connections") and #connector=... open that card in the canvas.
 const VIEWS = ["Assistant", "Board"];
-const BROWSED = { Reports: "reports", Connections: "connections", Settings: "settings", Hub: "hub", Skills: "skills" };
+const BROWSED = { Reports: "reports", Connections: "connections", Settings: "settings", About: "about", Hub: "hub" };
 const DEMO_SETUP = { left: 0 };      // the static demo: nothing to finish, so the plain Setup pill the finished app shows
 const SUPPORT_URL ="https://github.com/ldbumble/taskuary/issues/new/choose";
 
@@ -264,11 +265,12 @@ const SWITCH_VIEWS = [
   { k: "game", label: "Game", icon: () => <SportsEsportsIcon sx={{ fontSize: 19 }} />,
     title: "The same items as an office you walk around - people in the lobby, fyi's in the coffee room" },
 ];
-export const ViewSwitch = ({ view, onView }) => {
+// ...the Board only in Developer mode (the owner, 2026-11-06): its agents and sessions are a developer's view; the Game stays for everyone
+export const ViewSwitch = ({ view, onView, dev }) => {
   useLocale();
   return <Box role="tablist" aria-label={t("View")} data-tq-view-switch={view}
     sx={{ display: "flex", gap: 0.4, p: 0.4, ml: { xs: 0.25, md: 1 }, borderRadius: 99, bgcolor: "#efe9df", border: "1px solid #ddd5c8", flexShrink: 0 }}>
-    {SWITCH_VIEWS.map((v) => {
+    {SWITCH_VIEWS.filter((v) => dev || v.k !== "board").map((v) => {
       const on = view === v.k;
       return (
         <Box key={v.k} component="button" type="button" role="tab" aria-selected={on} data-tq-view={v.k} title={t(v.title)}
@@ -363,6 +365,9 @@ export default function TaskHubPage() {
   // On a busy live session that left the requested page looking completely blank for many seconds.
   // ...and the BOARD is a place of its own (#board): it wrote no address, so Back from a task opened on it never brought it back (2026-10-26)
   const [tab, setTab] = useState(() => (window.location.hash === BOARD ? "Board" : "Assistant"));
+  // ...and a #board link with Developer mode off lands on the chat, once the setting is read (not before: off is only the unread default)
+  const { devMode, agentsRead } = useAgents();
+  useEffect(() => { if (agentsRead && !devMode && tab === "Board") { setTab("Assistant"); tabRef.current = "Assistant"; recordPlace("", "replace"); } }, [agentsRead, devMode, tab]);
   // what the canvas is asked to open - a task, or a browse card - numbered so the same one asked twice opens twice
   const [canvasReq, setCanvasReq] = useState(() => { const r = canvasRequestFromHash(window.location.hash || "", 1); readAhead(r); return r && { ...r, fromUrl: true }; });
   const ask = useCallback((req) => setCanvasReq((cur) => ({ ...req, n: (cur?.n || 0) + 1 })), []);
@@ -575,9 +580,18 @@ export default function TaskHubPage() {
           flexWrap: { xs: "wrap", md: "nowrap" }, rowGap: 0.5,
           px: { xs: 1.25, md: 2.5 }, py: 1,
           bgcolor: PANEL, borderBottom: `1px solid ${BORDER}`, position: "sticky", top: 0, zIndex: 30 }}>
-          <TaskuaryMark size={26} sx={{ borderRadius: 1.5 }} />
-          {/* the word gives way on a phone: with it the bar wrapped, and the bell and refresh sat alone on a second row (2026-10-06) */}
-          <Typography sx={{ fontWeight: 600, fontSize: 14.5, color: INK, letterSpacing: 0.2, display: { xs: "none", sm: "block" } }}>Taskuary</Typography>
+          {/* THE LOGO IS THE WAY HOME (Gabi, 2026-11-08: "we need an easy way to get back to your feed. Maybe the taskuary logo"): from a task,
+              a page, the Board or the Game it lands on the feed - the same 'home' road Back to the bare address takes, so Back returns */}
+          <Tooltip title="Back to your feed">
+            <Box component="button" type="button" aria-label="Back to your feed" data-tq-home=""
+              onClick={() => { pickAsstGame(false); go("Assistant"); ask({ kind: "home" }); }}
+              sx={{ display: "flex", alignItems: "center", gap: { xs: 0.75, md: 1.25 }, p: 0.25, m: -0.25, border: 0, bgcolor: "transparent",
+                borderRadius: 1.5, cursor: "pointer", font: "inherit", "&:hover": { opacity: 0.8 }, "&:focus-visible": { outline: `2px solid ${ACCENT}` } }}>
+              <TaskuaryMark size={26} sx={{ borderRadius: 1.5 }} />
+              {/* the word gives way on a phone: with it the bar wrapped, and the bell and refresh sat alone on a second row (2026-10-06) */}
+              <Typography sx={{ fontWeight: 600, fontSize: 14.5, color: INK, letterSpacing: 0.2, display: { xs: "none", sm: "block" } }}>Taskuary</Typography>
+            </Box>
+          </Tooltip>
           {/* no tagline here (the cleanup, 2026-10-06): the top bar is the logo, the views and three icons */}
           {/* no version number here (audit, 2026-11-05): it is Settings → Updates' to say */}
           <DemoBadge demo={demo} />
@@ -585,7 +599,7 @@ export default function TaskHubPage() {
           {/* ONE SWITCH, THREE VIEWS (the owner, 2026-10-15: "Chat which is the regular workflow, then Board, then Game ... make
               it a little bigger so they are more obvious"). The Board button beside a Chat | Task | Game switch was two controls
               for one question, and Task - rows opening on their own - is what a click in Chat already does. */}
-          <ViewSwitch view={tab === "Board" ? "board" : asstGame ? "game" : "chat"}
+          <ViewSwitch view={tab === "Board" ? "board" : asstGame ? "game" : "chat"} dev={devMode}
             onView={(v) => { if (v === "board") { go("Board"); return; } pickAsstGame(v === "game"); go("Assistant"); }} />
           {/* SEARCH, on the top line (the owner, 2026-10-14) - from the Board it goes to the Assistant, whose rail owns the hits */}
           {/* ...on a phone too, as its icon at the line's end (SearchBar): it was display:none there (the 2026-10-19 UI walk) */}
@@ -616,6 +630,8 @@ export default function TaskHubPage() {
             <IconButton size="small" aria-label={t("Refresh")} onClick={() => setTick(tick + 1)}><RefreshIcon sx={{ fontSize: 17, color: DIM }} /></IconButton>
           </Tooltip>}
           {!phone && <QuitButton onStopped={setStopped} />}
+          {/* ABOUT YOU IS THE FACE IN THE CORNER, not a sidebar line (the owner, 2026-11-06) - on a phone too, where Quit folds into Help */}
+          <ProfileButton onOpen={() => go("About")} />
         </Box>
 
         {/* tighter side padding than top/bottom: the horizontal margin is dead space on a wide

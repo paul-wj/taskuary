@@ -12,6 +12,14 @@ from taskuary.store import MemoryStore
 from taskuary.testing import Factory
 from tests import advisor_cases as C
 
+
+@pytest.fixture(autouse=True)
+def _mailbox_connected(monkeypatch):
+    """These drafts go by email in a world with no mailbox card: as if one were connected, so the Send is what is judged (a card that says
+    Connect email lights nothing - advisor.unconnected, tests/test_agent_lights.py)."""
+    from taskuary import advisor as _adv
+    monkeypatch.setattr(_adv, 'unconnected', lambda store, item: False)
+
 ERIN, RAY = ('Erin Blake', 'erin@northwind.example'), ('Ray Colton', 'ray@northwind.example')
 def at(d=0, h=0): return (datetime.now() - timedelta(days=d, hours=h)).strftime('%Y-%m-%d %H:%M:%S')
 
@@ -60,10 +68,10 @@ MATRIX = [
     ('Q3 accruals file', 'agent_done', 'close', True),           # "Your reply went at 10:02; nothing since."
     ('Helpdesk tickets by day', 'report_ok', 'next', False),
     ('Vendor portal maintenance', 'fyi', 'next', False),
-    ('Reconcile the August GL export', 'working', 'next', False),
+    ('Reconcile the August GL export', 'working', None, False),      # a chat agent's turn picks the light (advisor.agent_light)
     ('agent asking (coding)', 'agent_asking', None, False),       # a coding agent's ask lights nothing (the owner, 2026-11-02)
-    ('agent finished (general)', 'agent_done', 'close', True),
-    ('agent failed (general)', 'failed_cause', 'continue', True),
+    ('agent finished (general)', 'agent_done', None, False),     # its turn said nothing is left nowhere: nothing lit (advisor.agent_light)
+    ('agent failed (general)', 'failed_cause', 'continue', False),    # ...its failure's Try again, said by the run's own line
     ('agent stopped-saved (coding)', 'stopped', 'continue', False),
     ('Close the August books', 'done_list', 'close', True),
     ('Move payroll to Payworth', 'goal', 'next', False),
@@ -173,7 +181,7 @@ def test_the_owners_reply_after_their_newest_mail_is_the_answered_fact(s):
     t, m, it = _asked(s, 'Badge access', d=3)
     s._exec("UPDATE review SET DeliveryState='sent', DecidedAt=? WHERE ReviewId=?", (at(d=2), Factory(s).review(t, m, status='approved', final='Done.')))
     d = rulebook.facts(s, it, _verbs('reply', 'close'))
-    assert (d['state'], d['line'], d['section']) == ('answered', 'Your reply went 2 days ago; nothing since.', 'close')
+    assert (d['state'], d['line'], d.get('section')) == ('answered', 'Your reply went 2 days ago; nothing since.', None)
     # ...they wrote again after it: an ask again
     Factory(s).message(task_id=t, subject='RE: Badge access', body='and the second door?', from_name=ERIN[0], from_email=ERIN[1], sent_at=at(d=1), conversation_id='email:Badge access')
     assert rulebook.facts(s, it, _verbs('reply', 'close'))['state'] == 'asked'

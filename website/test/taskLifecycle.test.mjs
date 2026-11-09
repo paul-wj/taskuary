@@ -72,6 +72,7 @@ test("one stage is open: the last thing owed wins, and a closed task shows itsel
 });
 
 
+
 test("a general chat that has answered is agent state, not \"not started\"", () => {
   assert.equal(agentPhase({ conversation: true }), "stopped and saved");
   assert.equal(agentPhase({ conversation: true, report: { Body: "x" } }), "stopped and saved");

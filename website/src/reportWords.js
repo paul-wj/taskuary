@@ -1,3 +1,4 @@
+import { READ_LABELS } from "./apiReads.js";
 // WHAT A REPORT READS AND WHEN IT RUNS, in words (ReportsView's list and the report on the table, ItemSections) - kept apart so the Assistant's card
 // can say it without loading the whole Reports tab
 // A cron line, said in words when it is one of the shapes people actually write; the raw
@@ -32,8 +33,9 @@ export const reportSchedule = (c) => [c.on_startup && startupText(c), c.cron && 
   .filter(Boolean).join(" + ") || t("only when you press Run now");
 
 export const TYPE_LABELS = {
+  ...READ_LABELS,
   zoho_monthly_invoices: "Monthly Zoho invoices", taskuary: "Taskuary", taskuary_data: "Taskuary - its own rows",
-  mssql: "SQL Server", winrm: "Remote Windows", mcp: "MCP server", sqlite: "SQLite", rest: "REST / JSON", graphql: "GraphQL", rss: "RSS / Atom",
+  obsidian_read: "Obsidian notes", mssql: "SQL Server", winrm: "Remote Windows", mcp: "MCP server", sqlite: "SQLite", rest: "REST / JSON", graphql: "GraphQL", rss: "RSS / Atom",
   database: "Any database", aws: "AWS (any call)", s3_object: "S3 object", cloudwatch_logs: "CloudWatch logs",
   azure: "Azure (ARM)", azure_blob: "Azure blob", azure_logs: "Azure Log Analytics",
   entra_users: "Entra ID — people", entra_groups: "Entra ID — group members",
@@ -59,6 +61,7 @@ export const TYPE_LABELS = {
   td_quotes: "Twelve Data — quotes", td_indicator: "Twelve Data — technical indicator", av_quotes: "Alpha Vantage — quotes",
   finnhub_quotes: "Finnhub — quotes", finnhub_news: "Finnhub — company news", finnhub_earnings: "Finnhub — earnings", finnhub_insiders: "Finnhub — insider transactions",
   polygon_bars: "Polygon.io — bars", polygon_snapshot: "Polygon.io — snapshot", tiingo_history: "Tiingo — price history", tiingo_news: "Tiingo — news",
+  marketstack_eod: "Marketstack — end-of-day bars", eodhd_eod: "EOD Historical Data — end-of-day bars",
   fmp_fundamentals: "FMP — fundamentals", fmp_ratios: "FMP — ratios", alpaca_quotes: "Alpaca — quotes", alpaca_bars: "Alpaca — bars",
   markets_screen: "Strategy screen — only the rows that match",
   metric: "A certified number (Assistant \u2192 Numbers)", metric_check: "Re-prove the certified numbers",

@@ -151,7 +151,7 @@ class OverTheWireTests(unittest.TestCase):
     def test_a_session_cannot_open_or_kill_a_live_pty(self):
         self.assertEqual(c.post('/api/terminals', json={'cwd': '.'}, headers=AGENT).status_code, 403)
         self.assertEqual(c.delete('/api/terminals/nope', headers=AGENT).status_code, 403)
-        self.assertEqual(c.get('/api/terminals', headers=AGENT).status_code, 200)
+        self.assertEqual(c.get('/api/terminals', headers=AGENT).status_code, 403)          # the pane list names every session (M7)
 
     def test_a_session_does_not_see_oauth_secrets_on_the_connector_list(self):
         import json
@@ -229,10 +229,17 @@ class AllowListTests(unittest.TestCase):
                          for m in sorted((getattr(r, 'methods', None) or set()) & {'POST', 'PUT', 'PATCH', 'DELETE'})
                          if guard.classify(m, self._fill(r.path))[0] == 'agent')
         self.assertEqual(allowed, sorted([
-            'POST /api/agent/done', 'POST /api/agent/draft', 'POST /api/agent/item', 'POST /api/agent/not-needed', 'POST /api/agent/reply', 'POST /api/agent/tick', 'POST /api/agent/waiting',
+            'POST /api/agent/ask-stronger',          # one question to a stronger model on its own task (askstronger) - nothing moves
+            'POST /api/agent/done', 'POST /api/agent/draft', 'POST /api/agent/item', 'POST /api/agent/not-needed', 'POST /api/agent/withdraw-draft', 'POST /api/agent/reply', 'POST /api/agent/tick', 'POST /api/agent/waiting',
             'POST /api/agent/propose', 'POST /api/mcp',     # the toolbox (2026-10-25): a proposal on its own task, and its tools' one door
             'POST /api/agent/sign-form',                    # a form on its own task signed into its own folder (handsign, 2026-11-04) - nothing leaves
+            # an invite's answer, a new meeting and a share set up on its own task (2026-11-08) - each a card the owner presses
+            'POST /api/agent/answer-invite', 'POST /api/agent/meeting', 'POST /api/agent/share',
+            'POST /api/agent/use-repo',                     # the checkout its own task is worked in (repochoice, 2026-11-06) - inside the allowed folders
             'POST /api/agent/check-back',                   # its own follow-up on its own task (checkback.py, 2026-11-05) - nothing leaves
+            # its own task's to-dos kept as the issue list, and the owner's Remind me set on their word (2026-11-09) - nothing leaves
+            'POST /api/agent/todos', 'POST /api/agent/remind',
+            'POST /api/agent/note-peers', 'POST /api/agent/propose-land',   # a note to a peer, and its pick for how its branch lands (2026-11-06)
             'POST /api/board/notes',
             'POST /api/handbook', 'POST /api/handbook/{lid}/comment', 'POST /api/handbook/{lid}/restore',
             'POST /api/handbook/{lid}/retire', 'POST /api/handbook/{lid}/vote',

@@ -187,6 +187,16 @@ def test_by_recipient_and_again_rewrites_the_same_draft(s):
     assert a['review_id'] == b['review_id'] and s.get_review(a['review_id'])['DraftText'] == 'second'
 
 
+def test_a_chat_id_is_no_mailbox(s):
+    # the night run, 2026-11-09: two emails were filed to whatsapp:1555... - a person known only by their chat
+    tid = typed(s, FOUR[:1])
+    out = slots.draft(s, tid, 'Your Q3 figures, please.', to='whatsapp:15550004444', subject='Q3 figures')
+    assert not out['ok'] and 'is a chat, not a mailbox' in out['why']
+    sid = slots.add(s, tid, [{'to': 'whatsapp:15550003333', 'about': 'status', 'kind': 'email'}], 'triage')[0]['id']    # ...or triage's slot named it
+    out = slots.draft(s, tid, 'Where it stands.', slot=sid)
+    assert not out['ok'] and 'whatsapp:15550003333 is a chat' in out['why']
+
+
 def test_an_unmatched_recipient_adds_a_slot_and_says_so(s):
     tid = typed(s, FOUR[:1])
     out = slots.draft(s, tid, 'Tab 5 too.', to='omar@northwind.example', subject='Tab 5')
@@ -205,6 +215,18 @@ def test_a_drafted_slot_on_a_mail_task_still_sends(s):
     out = slots.draft(s, tid, 'Tab 1 is fine.', to='paula@northwind.example')
     assert verdicts.context_moved(s, s.get_review(out['review_id']))[0] is False
     assert approve(s, out['review_id'])['ok']
+
+
+def test_an_agent_email_never_goes_out_headed_with_the_task_title(s):
+    tid = typed(s, FOUR[:2]); subj = lambda out: json.loads(s.get_review(out['review_id'])['Deliver'])['subject']
+    s.add_message({'TaskId': tid, 'Channel': 'email', 'Subject': 'Tab 2 numbers', 'FromEmail': 'ray@northwind.example',
+                   'BodyText': 'Can you check tab 2?', 'SentAt': '2026-10-01 09:00:00', 'Status': 'routed'})
+    assert subj(slots.draft(s, tid, 'Fine.', to='omar@northwind.example', subject='Lunch on Friday')) == 'Lunch on Friday'
+    assert subj(slots.draft(s, tid, 'Tab 2 is fine.', to='ray@northwind.example')) == 'Re: Tab 2 numbers'
+    assert subj(slots.draft(s, tid, 'Tab 1 is fine.', to='paula@northwind.example')) == 'Where tab 1 stands'
+    assert 'Check the four tabs' not in {subj(slots.draft(s, tid, 'Hi.', to='gail@northwind.example'))}
+    from taskuary import agenttools
+    assert {'to', 'subject', 'text'} <= set(agenttools.TOOLS['propose_email'][2]['required'])
 
 
 def test_the_chat_block_is_read_and_taken_out():

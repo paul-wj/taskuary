@@ -58,7 +58,7 @@ QUICK_LINE = ('QUICK WORK: answer in one go, as one JSON object with the fields 
     # ...nor is a question only the OWNER can answer about themselves (2026-11-05: "are you here yet" started an agent that ran a command for it)
     'Nor is a question only the owner can answer about themselves - where they are, whether they are coming, what they want or will do: there is '
     'nothing to look up. Put a short draft reply for them to edit in draft (or null if it is theirs alone to word), say so in report, never escalate. '
-    'Never claim an action you did not take. You have no mail search, no connectors and no files: when the answer depends on any of them, '
+    'Never claim an action you did not take. You have no mail search, no connectors and no files - a picture or attachment on the mail is one: when the answer depends on any of them, '
     'or on anything you cannot verify, set escalate rather than answer from memory. Never set done while a question is pending.')
 NO_LOOKUP_LINE = 'THIS AI CANNOT LOOK ANYTHING UP. When the answer depends on a fact that must be checked, set escalate (why: what needs checking) rather than answer from memory.'
 NO_CLOSE_LINE = 'DO NOT CLOSE THIS TASK: set done to false; the owner decides when it is finished.'
@@ -134,9 +134,11 @@ def prompt(store, tid, ask: str, lookups: bool) -> tuple:
     said, prior = general.history_brief(store, tid, False)
     if said: system = f'{system}\n\n{said}'
     if prior: user = f'{prior}\n\n{user}'
-    system = f'{system}\n\n{QUICK_LINE}' + ('' if lookups else f'\n\n{NO_LOOKUP_LINE}')
+    system += '' if lookups else f'\n\n{NO_LOOKUP_LINE}'
     if selfclose.mode(store) == 'off' or selfclose.stays_open(store, tid): system += f'\n\n{NO_CLOSE_LINE}'
-    return system, f'{user}\n\n{ask}'
+    # ...the shape said LAST, in the turn (the night run, 2026-11-09: 3 of 4 quick calls on a CLI came back as prose - the 30K system prompt's
+    # markers and summary won over a line at its end, so the call was wasted and the agent started anyway)
+    return system, f'{user}\n\n{ask}\n\n{QUICK_LINE}'
 
 def ask(store, tid, ask: str, steps: list = None, cancel=None) -> 'QuickAnswer | None':
     "The one call. Raises what the brain raises; None for an answer that cannot be read."
@@ -149,7 +151,10 @@ def ask(store, tid, ask: str, steps: list = None, cancel=None) -> 'QuickAnswer |
     system, user = prompt(store, tid, ask, lookups)
     with llm.watching(trace): got = llm.ask_json(brain, system, user, want=None if web else QUICK_WANT, max_tokens=QUICK_TOKENS, **({'web': True} if web else {}))
     if steps is not None: steps[:] = [x for x in steps if not answer_text(x, got.raw)]
-    return read(got.data)
+    out = read(got.data)
+    # ...an answer that could not be read says WHY in the log (the product audit, 2026-11-08: the owner saw "could not be read", the log nothing)
+    if out is None: logger.info(f'task {tid}: the quick answer could not be read - {len(str(got.raw or ""))} chars back, starting: {str(got.raw or "")[:300]!r}')
+    return out
 
 
 QUICK_TIMEOUT = 180
@@ -205,7 +210,9 @@ def _call(store, tid, ask_: str, steps: list) -> tuple:
             try: return ask(store, tid, ask_, steps, cancel), ''
             finally: timer.cancel()
         finally: _give(store)
-    except Exception as e: return None, f'the quick answer could not be made ({e})'
+    except Exception as e:
+        logger.info(f'task {tid}: the quick call failed - {e}')
+        return None, f'the quick answer could not be made ({e})'
 
 def _escalated(store, tid, q: str, out, failed: str) -> bool:
     "True, having handed the task to the deep path, when the call failed, could not be read or said it needs more."

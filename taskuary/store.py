@@ -6,6 +6,8 @@ import contextlib, contextvars, copy, hashlib, json, os, re, sqlite3, sys, threa
 from datetime import datetime, timedelta
 from loguru import logger
 from . import vault
+from .inboxes import TYPES as INBOXES, NAMES as INBOX_NAMES     # the helpdesks and newer trackers: seeded and triggering like the rest
+from .apireads import types as _read_types                     # a vendor's REST API read (apireads.json): each row a card
 from .kinds import SHOWN, shown as shown_agent   # the name a chip says for whoever works a task: Taskuary, never the profile
 
 # WHO HELD THE STORE, AND FOR HOW LONG (2026-10-23): three freezes in a day left a log where unrelated requests all finished in
@@ -179,6 +181,11 @@ ARTIFACT_COLS = ('TaskId', 'Name', 'ContentType', 'Size', 'Path', 'Kind', 'Creat
 _REVIEW_FROM = ('FROM review rv LEFT JOIN task t ON t.TaskId=rv.TaskId '
                 'LEFT JOIN message m ON m.MessageId=rv.MessageId')
 _NOT_ORPHAN = '(rv.TaskId IS NULL OR t.TaskId IS NOT NULL)'
+# ...the comment kinds that are prompt machinery, not something said on the task (Store.list_comments): a kept line, a line put back in the
+# owner's box, a turn's summary JSON, and a brief - a user turn filed by Taskuary (general.BRIEF_ACTOR) - each its own ActorType already
+INTERNAL_TYPES = ('assistant_waiting', 'assistant_box', 'assistant_summary')
+def is_internal(c) -> bool: return c.get('ActorType') in INTERNAL_TYPES or (c.get('ActorType') == 'assistant_user' and c.get('Actor') == 'taskuary')
+
 _VISIBLE_PENDING = ("NOT (rv.Status='pending' AND (IFNULL(t.Status,'') IN ('dropped','done') "
                     "OR IFNULL(m.Status,'') IN ('context','skipped','ignored')))")
 
@@ -209,6 +216,8 @@ def email_from_soul(soul: str):
 # missing from it, so every worker read "John decides" whoever the owner was (the email walk, 2026-10-29).
 OWNER_DOCS = ('soul', 'job', 'agent', 'coding', 'digest', 'learned', 'triage', 'style', 'counsel')
 TEMPLATE_OWNER = ('John Smith', 'john.smith@example.com')
+NO_NAME_YET = ("THE OWNER'S NAME IS NOT SET YET. Who the owner is comes from the mailbox the mail arrived in (addressed_to_you), never "
+               "from a name: an ask addressed to that mailbox is the owner's, whatever name it greets.")
 
 def docs_hold_template_owner(store) -> bool:
     """Does any owner document still name the shipped example? Then a name saved beside it never reached the docs."""
@@ -283,6 +292,37 @@ def agent_tick(store, tid, item, done: bool = True, actor: str = 'agent') -> tup
     if not agent_tickable(hit): return None, (422, f"\"{hit['text']}\" ticks itself - when its email goes, or its task closes")
     store.tick_checklist_item(tid, hit['id'], done, actor)
     return hit, None
+# THE TO-DO LIST IS THE ISSUE LIST (the owner, 2026-11-09: no new table): on a stream of reports the agent keeps triage's list accurate -
+# adds what came in, rewords a box to what it really is, folds duplicates into one. Boxes that tick themselves (an email, a goal's step)
+# are never reworded or folded, as never ticked by hand (agent_tickable)
+def agent_todos(store, tid, add=(), reword=None, merge=(), actor: str = 'agent') -> dict:
+    """{ok, checklist} with the list as written, or {ok: False, why}. `reword`: {id: new words}; `merge`: [{ids: [...], text?}] - each group
+    folds into its first box (its words, or `text`), done when any of them was."""
+    with store.lock:
+        items = store.task_checklist(tid); by = {i['id']: i for i in items}
+        bad = [k for k in [*(reword or {}), *(x for g in merge or () for x in (g.get('ids') or []))] if k not in by]
+        if bad: return {'ok': False, 'why': f"no to-do {', '.join(map(str, bad))} on this task - the ids are in my_task's checklist"}
+        fixed = [by[k]['text'] for k in [*(reword or {}), *(x for g in merge or () for x in (g.get('ids') or []))] if not agent_tickable(by[k])]
+        if fixed: return {'ok': False, 'why': f"\"{fixed[0]}\" is an email or a step that ticks itself - its words are not yours to change"}
+        for k, w in (reword or {}).items():
+            if (w := ' '.join(str(w or '').split())[:300]): by[k]['text'] = w
+        gone = set()
+        for g in merge or ():
+            ids = [k for k in dict.fromkeys(g.get('ids') or []) if k not in gone]
+            if len(ids) < 2: continue
+            keep = by[ids[0]]
+            if (w := ' '.join(str(g.get('text') or '').split())[:300]): keep['text'] = w
+            keep['done'] = any(by[k].get('done') for k in ids)
+            gone.update(ids[1:])
+        items = [i for i in items if i['id'] not in gone]
+        have = {i['text'] for i in items}; used = {i['id'] for i in items} | gone
+        for text in store.clean_checklist(list(add or ()), cap=False):
+            if text in have: continue
+            d = hashlib.sha1(text.encode()).hexdigest()
+            items.append({'id': next((d[:n] for n in range(8, len(d) + 1) if d[:n] not in used), d), 'text': text, 'done': False})
+            have.add(text); used.add(items[-1]['id'])
+        store._write_checklist(tid, items, actor)
+    return {'ok': True, 'checklist': [f"[{i['id']}] {'x' if i.get('done') else ' '} {i['text']}" for i in items]}
 def auto_code_enabled(src) -> bool:
     """Does new coding work start its agent by itself? ONE read of `coding_auto_enabled` (a store or its settings
     dict), missing = the seeded default. Four readers used to disagree: three read missing as off, one as on."""
@@ -313,6 +353,14 @@ _SUMMARY_NOW = ('"summary": "<two sentences. The first says who wants what from 
                 "('Erin Blake wants the Q3 numbers before Friday'), or on an fyi who says what ('Payworth says the "
                 "September statement is ready'); the second adds the one detail that matters - a date, an amount, "
                 'what was already done. Never the signature, the confidentiality footer or quoted earlier mail>"')
+# WHERE CODING WORK IS DONE IS NOT TRIAGE'S (the owner, 2026-11-06: "let's take repo decision out of the triage - remove it completely"):
+# the coding agent picks its repository (repochoice). The guide's paragraph that asked for one comes out of an edited TRIAGE.md where it
+# still reads as shipped; templates/triage.md no longer has it (test_repo_left_to_the_agent.py pins both).
+_REPO_CHOICE_WAS = ("**Which repository.** For a task an agent could work from a keyboard, answer `repository` with one of `known_repositories`, "
+                    "from what the request is about, with `repo_reason` saying what in the request points there. `project_context` (the sender's "
+                    "past repository choices) is supporting evidence, not proof: it helps say what a message is about, it never makes an "
+                    "informational message a task, it is never permission to write or send anything, and a tentative link stays tentative. "
+                    "When two are plausible or none fits, answer null with `needs_repo_choice` true and the owner chooses.")
 # The kind rules as shipped before 2026-09-23 and what replaced them (templates/triage.md) - kept as
 # data so the swap is exact; test_kind_dispatch.py holds the template to the "now" side.
 with open(__file__[:__file__.replace('\\', '/').rfind('/') + 1] + 'triage_kind_rules.json', encoding='utf-8') as _f:
@@ -509,6 +557,21 @@ CREATE TABLE IF NOT EXISTS waitroom (WId INTEGER PRIMARY KEY, TaskId INTEGER, No
 CREATE TABLE IF NOT EXISTS boardnote (NoteId INTEGER PRIMARY KEY, TaskId INTEGER, Agent TEXT,
   Cwd TEXT, Kind TEXT, Body TEXT, Files TEXT, CreatedAt TEXT, ReadBy TEXT);
 CREATE INDEX IF NOT EXISTS idx_boardnote_cwd ON boardnote(Cwd, NoteId);
+-- ...and what one agent says TO another (peers.py): one row per receiving task, fanned out when it is sent. Scope says who it was
+-- addressed to (task | repo | all); ReadAt is set when it rides into that task's agent's next turn.
+CREATE TABLE IF NOT EXISTS peernote (PeerNoteId INTEGER PRIMARY KEY, FromTask INTEGER, ToTask INTEGER, Scope TEXT, Repo TEXT,
+  Body TEXT, CreatedAt TEXT, ReadAt TEXT);
+CREATE INDEX IF NOT EXISTS idx_peernote_to ON peernote(ToTask, ReadAt);
+-- AGENT CHANNELS (agentchannels.py): one chat - WhatsApp, Telegram, Slack, Teams - bound to one coding agent (TaskId) or to the coding
+-- agents at large (TaskId NULL, the owner alone), its members named by the owner; StateJson holds the question up there and the read cursor.
+-- Each message in or out is a row of agentchannel_msg, keyed by its provider id, so a re-read never routes a line twice.
+CREATE TABLE IF NOT EXISTS agentchannel (ChannelId INTEGER PRIMARY KEY, Kind TEXT, Chat TEXT, ConnectorId INTEGER, TaskId INTEGER,
+  Repo TEXT, MembersJson TEXT, StateJson TEXT, CreatedAt TEXT, UNIQUE(Kind, Chat));
+CREATE TABLE IF NOT EXISTS agentchannel_msg (Id INTEGER PRIMARY KEY, ChannelId INTEGER, ExtId TEXT, Dir TEXT, Who TEXT, Role TEXT,
+  TaskId INTEGER, Text TEXT, At TEXT, UNIQUE(ChannelId, ExtId));
+-- ...and the owner's "always" answers to an agent's permission requests (permissions.py), per task and tool pattern
+CREATE TABLE IF NOT EXISTS permrule (RuleId INTEGER PRIMARY KEY, TaskId INTEGER, Pattern TEXT, Answer TEXT, CreatedAt TEXT,
+  UNIQUE(TaskId, Pattern));
 CREATE TABLE IF NOT EXISTS learned_history (Id INTEGER PRIMARY KEY, Key TEXT, Text TEXT, Status TEXT, Score INTEGER,
   Ev TEXT, Action TEXT, Actor TEXT, At TEXT);
 -- ...and each line's standing (learnedlines.py, phase C 2026-10-23): who reads it, watching / in_use / wrong / forgotten, the owner's
@@ -632,9 +695,12 @@ CREATE TABLE IF NOT EXISTS lore_comment (CommentId INTEGER PRIMARY KEY, LoreId I
   Author TEXT, CreatedAt TEXT);
 CREATE INDEX IF NOT EXISTS idx_lore_comment ON lore_comment(LoreId, CommentId);
 CREATE TABLE IF NOT EXISTS lore_vote (LoreId INTEGER, Actor TEXT, Delta INTEGER, At TEXT, PRIMARY KEY (LoreId, Actor));
--- Which brain each AI call was built on, and why (brainroute.py) - never what it was asked or what it said. Trimmed at 30 days.
+-- Which brain each AI call was built on, and why (brainroute.py) - never what it was asked or what it said - and what it used
+-- (aiusage.py): the model that answered, tokens in / cached / out, its time, how many calls, the agent session it was. Why is
+-- kept a month, the rest 90 days (brainroute.trim).
 CREATE TABLE IF NOT EXISTS brainroute (Id INTEGER PRIMARY KEY, At TEXT, Job TEXT, TaskId INTEGER, MessageId INTEGER, Pick TEXT,
-  Model TEXT, Tier TEXT, Rule TEXT, Why TEXT, Difficulty TEXT, DataClass TEXT, EscalatedFrom INTEGER, Outcome TEXT, Ms INTEGER);
+  Model TEXT, Tier TEXT, Rule TEXT, Why TEXT, Difficulty TEXT, DataClass TEXT, EscalatedFrom INTEGER, Outcome TEXT, Ms INTEGER,
+  Ran TEXT, TokensIn INTEGER, Cached INTEGER, TokensOut INTEGER, Calls INTEGER, Sid TEXT);
 CREATE INDEX IF NOT EXISTS idx_brainroute_task ON brainroute(TaskId, Id);
 -- How hard a task's work is, whether its reader could tell, and what kind of data it carries - triage's judgements, apart from the
 -- priority, kept per task (brainroute.judged). `By` is 'owner' once they correct one: their word stands until they change it again.
@@ -678,8 +744,12 @@ def meta_expr(key: str) -> str: return f"(CASE WHEN json_valid(MailMetaJson) THE
 # CREATE TABLE IF NOT EXISTS is a no-op on an existing db; these are not. IF NOT EXISTS
 # so a second open (desktop + web, or a restart) does not raise. Named so EXPLAIN QUERY
 # PLAN tests can see them, and so a DROP INDEX in a test is not a mystery.
+# a route row a brain built and never called left (brainroute.Lazy): 'ok', no time, no tokens - older than the sweep (?)
+UNCALLED_ROUTES = "Ms IS NULL AND TokensIn IS NULL AND Outcome='ok' AND At<?"
+
 INDEXES = (
     'CREATE INDEX IF NOT EXISTS idx_message_external ON message(ExternalId)',
+    'CREATE INDEX IF NOT EXISTS idx_brainroute_at ON brainroute(At)',          # the AI-use dashboard reads 90 days by time
     'CREATE INDEX IF NOT EXISTS idx_message_conversation ON message(ConversationId, SentAt)',
     # ...and by arrival: store.talked_with walks a chat from each of their lines to the owner's next one
     'CREATE INDEX IF NOT EXISTS idx_message_conversation_id ON message(ConversationId, MessageId)',
@@ -775,14 +845,20 @@ DEFAULT_SETTINGS = {'attach_threshold': '0.42',
                     'chat_keep_days': '15',        # archived assistant chats expire after this many days (retention.py, PW-158)
                     'fyi_batch': '4',             # how many fyi the assistant reads out together (funnel.fyi_batch_size)
                     'general_auto_enabled': '1',    # general tasks open their assistant session by themselves (PW-069)
+                    'code_folders': '',             # where a coding agent may look for its checkout; blank = the usual homes (repochoice.folders)
+                    # how much of an agent's work its task chat shows by default (chatDetail.js): every tool call for coding, the summary for the rest
+                    'chat_detail_coding': 'everything', 'chat_detail_other': 'summary',
                     'concierge_fast': 'auto',   # the Assistant's CLI in fast mode: codex yes, claude no (llm.fast_on)
+                    'acp_cli': '1',                 # general agents' CLI runs over ACP, argv as the fallback (agents.acp_on, acpgate)
                     'general_agent_hands': 'cli',   # ...with the CLI agent's own permissions unless the owner narrows it (general.full_hands)
                     # who counts as ours on a GitHub repository (batch.outside_row), and what an outsider's PR gets (cloudfix.py)
                     'repo_trust_private': 'ours', 'repo_trust_public': 'writers', 'outside_prs': 'review',
+                    # a task bound to a chat with teammates runs as a stranger's unless the owner chose full power (origin.teammate_bound)
+                    'teammate_chat_power': 'safe',
                     # who may start a worker UNATTENDED (senders.known, PW-079..081): the owner's own domains, verified
-                    # Sent Items evidence that the receiving mailbox wrote to the exact address, chat channels inside a
-                    # workspace the owner controls. Prior incoming mail is never a rule here.
-                    'trust_own_domain': '1', 'trust_sent_history': '1', 'trust_non_email': '1',
+                    # Sent Items evidence that the receiving mailbox wrote to the exact address, chat people the owner talks
+                    # with, members of a tracker's project (senders._item_known). Prior incoming mail is never a rule here.
+                    'trust_own_domain': '1', 'trust_sent_history': '1', 'trust_non_email': '1', 'trust_trackers': '1',
                     'auto_sessions': '4',           # unattended agent sessions at once; the rest queue
                     'auto_sessions_light': '5',     # quick answers / subagents that count as one of those (ingest.agent_load)
                     'triage_ai': '',      # '' = first active AI connector | connector:<id> | cli:<agent>
@@ -814,8 +890,11 @@ DEFAULT_SETTINGS = {'attach_threshold': '0.42',
                     'assistant_ai': '', 'assistant_model': '',
                     # Drafting's own brain and model (aidefaults, brainroute) - blank = the triage brain, as before
                     'draft_ai': '', 'draft_model': '',
-                    # which AI does each job (brainroute): fixed = the cards, exactly as before; auto = the rules, '' = the shipped ones
-                    'ai_route_mode': 'fixed', 'ai_route_rules': '', 'ai_route_strong_cap': '',
+                    # which AI does each job (brainroute): auto = triage's judgement picks the model (the owner, 2026-11-06), fixed =
+                    # the cards exactly as before; rules '' = the shipped ones
+                    'ai_route_mode': 'auto', 'ai_route_rules': '', 'ai_route_strong_cap': '',
+                    # ...and an AI per level for the agents' work ({quick|normal|hard: {pick, model}}) - blank = each card's own AI
+                    'ai_route_brain_by_level': '',
                     # the agent's context file (context.py): history, past work and the brief, written to
                     # ~/.taskuary/context/TQ-xxxx.md and pointed at from the seed - not crammed into it
                     'agent_context_file': '1',
@@ -938,7 +1017,8 @@ DEFAULT_ROLES = {'outlook': 'trigger,tool', 'teams': 'trigger,tool', 'slack': 't
                  # five more (2026-09-08): finnhub/polygon/tiingo/fmp key like twelvedata; alpaca
                  # needs two credentials (key_id, secret_key) and ships market DATA only, no orders
                  'finnhub': 'report,tool', 'polygon': 'report,tool', 'tiingo': 'report,tool',
-                 'fmp': 'report,tool', 'alpaca': 'report,tool',
+                 'fmp': 'report,tool', 'alpaca': 'report,tool', 'marketstack': 'report,tool', 'eodhd': 'report,tool', 'dynamodb': 'report,tool', 'obsidian': 'report,tool',
+                 **{t: 'report,tool' for t in _read_types()},      # apireads.json: reads, as reports and agent tools
                  'screen': 'report,tool',       # the strategy screen: conditions in config, matches out (markets.py)
                  # research reads the public web - a report source, and a tool an agent may use
                  'exa': 'report,tool', 'tavily': 'report,tool',
@@ -970,12 +1050,18 @@ DEFAULT_ROLES = {'outlook': 'trigger,tool', 'teams': 'trigger,tool', 'slack': 't
                  'mattermost': 'trigger,tool', 'rocketchat': 'trigger,tool',
                  'matrix': 'trigger,tool', 'google_chat': 'trigger,tool',
                  'sentry': 'trigger', 'pagerduty': 'trigger',
+                 # helpdesks and the newer trackers (inboxes.py): what is assigned to you is work
+                 **dict.fromkeys(INBOXES, 'trigger'),
+                 # ...and the ones that are both (HubSpot, Salesforce, DocuSign, Webex, WooCommerce, BigCommerce...): work comes in, and agents read the same API
+                 **{t: 'trigger,report,tool' for t in INBOXES if t in _read_types()},
                  # speech to text: no role - the funnel and the prompt box ask the first active one
                  'gemini_stt': '', 'groq_stt': '', 'openai_stt': '', 'deepgram': '', 'elevenlabs_stt': '', 'stt_server': '', 'local_whisper': '',
+                 'assemblyai': '', 'speechmatics': '', 'gladia': '', 'azure_speech': '', 'amazon_transcribe': '',
                  # image models (images.py): a tool, never a poll - a picture is drawn when
                  # something asks for one, and lands as an attachment where the owner can see it
                  'openai_image': 'tool', 'azure_openai_image': 'tool', 'xai_image': 'tool', 'image_server': 'tool',
-                 'gemini_image': 'tool', 'stability_image': 'tool', 'openrouter_image': 'tool', 'replicate_image': 'tool', 'runway_image': 'tool'}
+                 'gemini_image': 'tool', 'stability_image': 'tool', 'openrouter_image': 'tool', 'replicate_image': 'tool', 'runway_image': 'tool',
+                 'kling': 'tool'}     # video from a sentence (videotools.py): a tool, like the image cards
 ROLES = ('trigger', 'feed', 'report', 'tool', 'notify')      # 'notify': retired, kept so old rows parse
 
 def roles_of(c) -> set: return {r for r in (c.get('Roles') or '').split(',') if r}
@@ -1385,6 +1471,10 @@ class SQLiteStore:
             if 'StepsJson' not in rrcols: self.cx.execute('ALTER TABLE report_run ADD COLUMN StepsJson TEXT')
             if 'TaskId' not in rrcols: self.cx.execute('ALTER TABLE report_run ADD COLUMN TaskId INTEGER')
             if 'RepairsJson' not in rrcols: self.cx.execute('ALTER TABLE report_run ADD COLUMN RepairsJson TEXT')   # flow.py self-repairs
+            # what each AI call used (aiusage.py, 2026-11-06)
+            brcols = {r[1] for r in self.cx.execute('PRAGMA table_info(brainroute)')}
+            for c, t in (('Ran', 'TEXT'), ('TokensIn', 'INTEGER'), ('Cached', 'INTEGER'), ('TokensOut', 'INTEGER'), ('Calls', 'INTEGER'), ('Sid', 'TEXT')):
+                if c not in brcols: self.cx.execute(f'ALTER TABLE brainroute ADD COLUMN {c} {t}')
             # after the widen above, which rebuilds the table without it
             if 'LastErrorAt' not in {r[1] for r in self.cx.execute('PRAGMA table_info(connector)')}:
                 self.cx.execute('ALTER TABLE connector ADD COLUMN LastErrorAt TEXT')
@@ -1431,6 +1521,11 @@ class SQLiteStore:
                 self.cx.execute('DELETE FROM setting WHERE Name=?', (old,))
             for k, v in DEFAULT_SETTINGS.items():
                 self.cx.execute('INSERT OR IGNORE INTO setting (Name, Value) VALUES (?,?)', (k, v))
+            # AUTO ROUTING ON (the owner, 2026-11-06: "it should be on auto routing by default"). The old seed was 'fixed' with no
+            # writer; a Fixed the owner chose carries who saved it (brainroute.set_panel, the Settings row), so only the seed moves
+            self.cx.execute("UPDATE setting SET Value='auto', UpdatedBy='migration' WHERE Name='ai_route_mode' AND Value='fixed' "
+                            "AND COALESCE(UpdatedBy, '')=''")
+            from . import apireads, connectorcatalog
             for t, n in (('outlook', 'Outlook mail'), ('teams', 'Microsoft Teams'),
                          ('slack', 'Slack'), ('github', 'GitHub'),
                          ('anthropic', 'Anthropic API'), ('openai', 'OpenAI API'),
@@ -1443,6 +1538,7 @@ class SQLiteStore:
                          ('cohere', 'Cohere'),
                          ('deepseek', 'DeepSeek'),
                          ('perplexity', 'Perplexity'),
+                         ('fireworks_ai', 'Fireworks AI'), ('nvidia_nim', 'NVIDIA NIM'), ('sambanova', 'SambaNova'), ('deepinfra', 'DeepInfra'), ('novita', 'Novita AI'), ('hyperbolic', 'Hyperbolic'), ('bedrock', 'AWS Bedrock'),
                          ('hipaa_ai', 'HIPAA AI'),
                          ('azure_openai', 'Azure OpenAI'), ('vertex_ai', 'Google Vertex AI'), ('openrouter', 'OpenRouter'),
                          ('ollama', 'Local models (Ollama)'), ('meta', 'Meta Model API (Muse Spark)'),
@@ -1455,10 +1551,17 @@ class SQLiteStore:
                          ('linkedin', 'LinkedIn'),
                          ('treg', 'treg (agent tools)'),
                          ('reason_network', 'Reason Network'),
-                         ('agent_desktop', 'Agent Desktop'),          # seeded off, like every card: the owner's desktop is opt-in (agentdesktop.py)
+                         ('agent_desktop', 'Agent Desktop'),
+                         # video tools for the agents (videotools.py): remote MCP servers, a skill, and a key card - each seeded off
+                         ('descript', 'Descript'), ('invideo', 'InVideo'), ('vidova', 'Vidova'), ('opusclip', 'OpusClip'),
+                         ('video_use', 'video-use (Browser Use)'), ('kling', 'Kling AI'),          # seeded off, like every card: the owner's desktop is opt-in (agentdesktop.py)
                          ('postgresql', 'PostgreSQL'),
                          ('mysql', 'MySQL / MariaDB'),
                          ('clickhouse', 'ClickHouse'),
+                         ('cockroachdb', 'CockroachDB'), ('oracle', 'Oracle Database'), ('duckdb', 'DuckDB'), ('dynamodb', 'Amazon DynamoDB'),
+                         ('mongodb', 'MongoDB'), ('redis', 'Redis'), ('neo4j', 'Neo4j'), ('obsidian', 'Obsidian'),
+                         # a vendor's REST API read with a key (apireads.json)
+                         *((t, r['title']) for t, r in apireads.table().items()),
                          ('snowflake', 'Snowflake'),
                          ('bigquery', 'Google BigQuery'),
                          ('imessage', 'Apple Messages'),
@@ -1476,7 +1579,7 @@ class SQLiteStore:
                          ('trello', 'Trello'), ('notion', 'Notion'), ('discord', 'Discord'),
                          ('mattermost', 'Mattermost'), ('rocketchat', 'Rocket.Chat'),
                          ('matrix', 'Matrix'), ('google_chat', 'Google Chat'),
-                         ('sentry', 'Sentry'), ('pagerduty', 'PagerDuty'),
+                         ('sentry', 'Sentry'), ('pagerduty', 'PagerDuty'), *INBOX_NAMES.items(),
                          ('prometheus', 'Prometheus'), ('datadog', 'Datadog'),
                          ('intacct', 'Sage Intacct'), ('quickbooks', 'QuickBooks Online'), ('amazon_sp', 'Amazon (Seller Central & Business)'), ('stripe', 'Stripe'), ('teller', 'Bank & card feed (Teller)'),
                          ('simplefin', 'Bank & card feed (SimpleFIN)'),
@@ -1484,6 +1587,7 @@ class SQLiteStore:
                          ('yahoo', 'Yahoo Finance (best-effort)'), ('sec_edgar', 'SEC filings (EDGAR)'),
                          ('twelvedata', 'Twelve Data'), ('alphavantage', 'Alpha Vantage'), ('fred', 'FRED (keyless)'),
                          ('finnhub', 'Finnhub'), ('polygon', 'Polygon.io'), ('tiingo', 'Tiingo'),
+                         ('marketstack', 'Marketstack'), ('eodhd', 'EOD Historical Data'),
                          ('fmp', 'Financial Modeling Prep'), ('alpaca', 'Alpaca (market data)'),
                          ('screen', 'Strategy screen'),
                          ('zoho_invoice', 'Zoho Invoice'),
@@ -1494,13 +1598,16 @@ class SQLiteStore:
                          ('serper', 'Serper'), ('scrapingbee', 'ScrapingBee'), ('apify', 'Apify'),
                          ('gemini_stt', 'Google Gemini transcription'), ('groq_stt', 'Groq (Whisper)'), ('openai_stt', 'OpenAI transcription'), ('deepgram', 'Deepgram'),
                          ('elevenlabs_stt', 'ElevenLabs Scribe'), ('stt_server', 'Any Whisper server'), ('local_whisper', 'Local Whisper'),
+                         ('assemblyai', 'AssemblyAI'), ('speechmatics', 'Speechmatics'), ('gladia', 'Gladia'), ('azure_speech', 'Azure AI Speech'), ('amazon_transcribe', 'Amazon Transcribe'),
                          # image models (images.py). Seeded like every other card: DEFAULT_ROLES
                          # says what a type IS, but the Connections page renders from ROWS, and a
                          # type with no row is a group with nothing in it (2026-09-15).
                          ('openai_image', 'OpenAI images'), ('azure_openai_image', 'Azure OpenAI images'),
                          ('gemini_image', 'Google Gemini images'), ('stability_image', 'Stability AI'),
                          ('openrouter_image', 'OpenRouter images'), ('replicate_image', 'Replicate'), ('runway_image', 'Runway'),
-                         ('xai_image', 'xAI Grok images'), ('image_server', 'Any image server')):
+                         ('xai_image', 'xAI Grok images'), ('image_server', 'Any image server'),
+                         # every vendor's own MCP server for the agents (remotemcp.py): a catalogue row with an `mcp` url is a card
+                         *((c['type'], c['title']) for c in connectorcatalog.cards() if c.get('mcp'))):
                 # Type is intentionally not unique anymore. Seed only when a type has no card;
                 # INSERT OR IGNORE would now insert another blank copy on every startup.
                 self.cx.execute('''INSERT INTO connector (Type, Name, Roles)
@@ -1626,6 +1733,16 @@ class SQLiteStore:
                 if _CODING_WAS in body:
                     self.cx.execute("UPDATE doc SET Content=?, UpdatedAt=? WHERE Name='triage'", (body.replace(_CODING_WAS, _CODING_NOW), _now()))
                 self.cx.execute("INSERT INTO setting (Name, Value, UpdatedBy) VALUES ('triage_reading_not_coding', '1', 'migration')")
+            # ...and NO REPOSITORY IS ASKED FOR (_REPO_CHOICE_WAS): out of a TRIAGE.md the owner edited where it still reads as shipped,
+            # once. One nobody edited follows the guide below, which no longer has it - cut here, it would stop following it
+            if not self.cx.execute("SELECT 1 FROM setting WHERE Name='triage_no_repo_choice'").fetchone():
+                row = self.cx.execute("SELECT Content, UpdatedBy FROM doc WHERE Name='triage'").fetchone()
+                body = (row['Content'] or '') if row and row['UpdatedBy'] == 'owner' else ''
+                nl = '\r\n' if '\r\n' in body else '\n'
+                for was in (_REPO_CHOICE_WAS + nl + nl, _REPO_CHOICE_WAS):
+                    if body.count(was) == 1:
+                        self.cx.execute("UPDATE doc SET Content=?, UpdatedAt=? WHERE Name='triage'", (body.replace(was, ''), _now())); break
+                self.cx.execute("INSERT INTO setting (Name, Value, UpdatedBy) VALUES ('triage_no_repo_choice', '1', 'migration')")
             # ...and THE STOP BEFORE A DEPLOY IS A QUESTION (_DEPLOY_WAS): a CODING.md / AGENT.md the owner edited no longer tracks
             # the template, so the two rules go in where the old text still reads as shipped, once. Everything else stays theirs.
             if not self.cx.execute("SELECT 1 FROM setting WHERE Name='coding_asks_before_deploy'").fetchone():
@@ -1654,6 +1771,12 @@ class SQLiteStore:
                 if body.count(at) == 1 and '## Several to-dos at once' not in body:
                     self.cx.execute("UPDATE doc SET Content=?, UpdatedAt=? WHERE Name='coding'", (body.replace(at, at + now), _now()))
                 self.cx.execute("INSERT INTO setting (Name, Value, UpdatedBy) VALUES ('coding_fans_out_todos', '1', 'migration')")
+            # ...and THE ROUTE ROWS OF BRAINS BUILT AND NEVER CALLED go, once (brainroute.Lazy, 2026-11-06): the chat poll wrote one a second,
+            # each 'ok' with no time and no tokens - a call made through the meter always has its time, so these were never calls
+            if not self.cx.execute("SELECT 1 FROM setting WHERE Name='brainroute_uncalled_swept'").fetchone():
+                n = self.cx.execute(f"DELETE FROM brainroute WHERE {UNCALLED_ROUTES}", (_now(),)).rowcount
+                if n: logger.info(f'removed {n} AI route rows of brains that were built and never called')
+                self.cx.execute("INSERT INTO setting (Name, Value, UpdatedBy) VALUES ('brainroute_uncalled_swept', ?, 'migration')", (str(n),))
             # ...and THE LOGIN RULE LIVES IN CODE (_LOGIN_RULES): out of an edited AGENT.md / ASSISTANT.md that still reads it as shipped, once
             if not self.cx.execute("SELECT 1 FROM setting WHERE Name='login_rule_in_code'").fetchone():
                 for name, (froms, to) in _LOGIN_RULES.items():
@@ -4486,7 +4609,7 @@ class SQLiteStore:
     # A route row is on no screen's road but the log's own, so it does not move this connection's write counter: the display
     # caches are keyed on it (feed_tag, PROCESSING_DIRTY_TABLES), and every AI call writes one - the rail would rebuild for nothing.
     BRAIN_ROUTE_COLS = ('At', 'Job', 'TaskId', 'MessageId', 'Pick', 'Model', 'Tier', 'Rule', 'Why', 'Difficulty', 'DataClass',
-                        'EscalatedFrom', 'Outcome', 'Ms')
+                        'EscalatedFrom', 'Outcome', 'Ms', 'Ran', 'TokensIn', 'Cached', 'TokensOut', 'Calls', 'Sid')
     def add_brain_route(self, rec: dict) -> int:
         cols = [c for c in self.BRAIN_ROUTE_COLS if rec.get(c) is not None]
         return self._exec_unseen(f"INSERT INTO brainroute ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})", [rec[c] for c in cols])
@@ -4504,10 +4627,26 @@ class SQLiteStore:
         q, p = 'SELECT COUNT(*) AS n FROM brainroute WHERE At>=?', [since]
         if tier: q, p = q + ' AND Tier=?', p + [tier]
         return (self._one(q, p) or {}).get('n') or 0
-    def trim_brain_routes(self, before: str) -> int:
+    def trim_brain_routes(self, before: str, why_before: str = None) -> int:
+        "Rows older than `before` go; older than `why_before`, only their reason does - what they used stays for the dashboard."
+        if why_before: self._exec_unseen('UPDATE brainroute SET Why=NULL WHERE At<? AND Why IS NOT NULL', (why_before,))
         n = (self._one('SELECT COUNT(*) AS n FROM brainroute WHERE At<?', (before,)) or {}).get('n') or 0
         if n: self._exec_unseen('DELETE FROM brainroute WHERE At<?', (before,))
         return n
+    def add_brain_usage(self, rid: int, ms: int = None, use: dict = None) -> None:
+        "One more call on route `rid`: its time and tokens ADDED to the row's (a kept conversation is one brain, many calls)."
+        u = use or {}
+        tok = lambda k: None if u.get(k) is None else int(u[k])
+        self._exec_unseen('''UPDATE brainroute SET Calls=COALESCE(Calls,0)+1, Ms=CASE WHEN ? IS NULL THEN Ms ELSE COALESCE(Ms,0)+? END,
+            TokensIn=CASE WHEN ? IS NULL THEN TokensIn ELSE COALESCE(TokensIn,0)+? END, Cached=CASE WHEN ? IS NULL THEN Cached ELSE COALESCE(Cached,0)+? END,
+            TokensOut=CASE WHEN ? IS NULL THEN TokensOut ELSE COALESCE(TokensOut,0)+? END, Ran=COALESCE(?, Ran) WHERE Id=?''',
+            (ms, ms, tok('in'), tok('in'), tok('cached'), tok('cached'), tok('out'), tok('out'), u.get('model') or None, int(rid)))
+    def brain_routes_since(self, since: str, task_id: int = None, limit: int = 20000) -> list:
+        q, p = 'SELECT * FROM brainroute WHERE At>=?', [since]
+        if task_id is not None: q, p = q + ' AND TaskId=?', p + [int(task_id)]
+        return self._rows(q + ' ORDER BY Id DESC LIMIT ?', p + [int(limit)])
+    def brain_route_of_session(self, sid: str):
+        return self._one('SELECT * FROM brainroute WHERE Sid=? ORDER BY Id DESC LIMIT 1', (str(sid),))
     # ── how hard a task's work is, and what data it carries (triage's judgements; brainroute reads them) ────────
     def task_judged(self, task_id) -> dict:
         return self._one('SELECT * FROM task_judged WHERE TaskId=?', (int(task_id),)) or {}
@@ -5060,7 +5199,27 @@ class SQLiteStore:
                 (task_id, actor, actor_type, body, _now()))
             self.cx.commit(); self._writes += 1
             return cur.lastrowid
-    def list_comments(self, task_id): return self._rows('SELECT * FROM comment WHERE TaskId=? ORDER BY CommentId', (task_id,))
+    def list_comments(self, task_id, internal: bool = False):
+        """The task's comments, oldest first. PROMPT MACHINERY IS NOT A COMMENT (the owner, 2026-11-08): a brief Taskuary handed an agent ("THIS
+        TASK IS A REPLY OWED..."), a turn's summary JSON, a line kept for a turn - each its own ActorType already (is_internal) - stays out of
+        every reader (exports, search, the phone, an agent's my_task, the Assistant) unless it asks with `internal`: the agent's own
+        machinery (general, sessionrecord, the task's state) does."""
+        rows = self._rows('SELECT * FROM comment WHERE TaskId=? ORDER BY CommentId', (task_id,))
+        return rows if internal else [c for c in rows if not is_internal(c)]
+    def drop_comment(self, comment_id): self._exec('DELETE FROM comment WHERE CommentId=?', (comment_id,))
+    def take_lines(self, task_id, kind, as_kind, words=str) -> list:
+        """THE OWNER'S LINES KEPT FOR A TURN, taken by it (general.send_prompt): each `kind` row moved to the END of the conversation as an
+        `as_kind` row - its words read out of the kept body by `words`, the time it was typed kept - so the conversation reads in the order the
+        agent read it. In one step under the lock: two turns never take one line. [the rows as they waited], oldest first."""
+        with self.lock:
+            got = [dict(r) for r in self.cx.execute('SELECT * FROM comment WHERE TaskId=? AND ActorType=? ORDER BY CommentId', (task_id, kind))]
+            for r in got:
+                self.cx.execute('DELETE FROM comment WHERE CommentId=?', (r['CommentId'],))
+                self.cx.execute('INSERT INTO comment (TaskId,Actor,ActorType,Body,CreatedAt) VALUES (?,?,?,?,?)',
+                                (task_id, r['Actor'], as_kind, words(r['Body']), r['CreatedAt']))
+            if got: self.cx.commit(); self._writes += 1
+        if got: self._poke('task-changed', task_id=task_id)
+        return got
     def snap_draft(self, review_id, comment_id) -> bool:
         """Keep review `review_id` as it stands, under the turn `comment_id` that left it - only when its words changed since the last turn
         kept it: a turn that left the draft untouched did not write it, so it is not drawn there again. True when one was kept."""
@@ -5314,7 +5473,7 @@ class SQLiteStore:
                              'ORDER BY SentAt DESC, MessageId DESC LIMIT 1', (conv, after)) if conv and after else None
             if sent:
                 from .channels import retire_draft_answered_elsewhere
-                retire_draft_answered_elsewhere(self, fields.get('TaskId'), sent)
+                retire_draft_answered_elsewhere(self, fields.get('TaskId'), sent, later=True)   # a model read, never inside this write
         return rid
     def get_review(self, rid): return self._one('SELECT * FROM review WHERE ReviewId=?', (rid,))
     def reviews_for_message(self, mid):
@@ -5478,6 +5637,12 @@ class SQLiteStore:
         else:         q += " AND rv.Kind<>'slot'"             # a task's emails (slots.py) are never its reply
         if live_only: q += f' AND {_NOT_ORPHAN} AND {_VISIBLE_PENDING}'
         return self._one(q + ' ORDER BY rv.ReviewId DESC LIMIT 1', (task_id, kind) if kind else (task_id,))
+    def waiting_on_owner(self, task_id):
+        """The newest thing on the task waiting for the owner's press - a reply draft, one of its emails (slots.py) or a proposal - by
+        the queue's visibility rule. pending_review leaves the emails out (they are never the reply), so "is anything waiting on you"
+        asked of it read an agent's unsent email as nothing: the task said "agent done" and went to Reports (the product audit, 2026-11-08)."""
+        return self._one(f"SELECT rv.* {_REVIEW_FROM} WHERE rv.TaskId=? AND rv.Status='pending' AND {_NOT_ORPHAN} AND {_VISIBLE_PENDING} "
+                         "ORDER BY rv.ReviewId DESC LIMIT 1", (task_id,))
     def sent_reply(self, message_id=None, task_id=None):
         """The newest reply that actually passed the send gate for this message/task.
 
@@ -5655,6 +5820,43 @@ class SQLiteStore:
         if who in seen: return
         self._exec('UPDATE boardnote SET ReadBy=? WHERE NoteId=?', (','.join(seen + [who]), note_id))
     def get_note(self, note_id: int): return self._one('SELECT * FROM boardnote WHERE NoteId=?', (note_id,))
+    # ── notes between agents (peers.py) ──
+    def add_peer_note(self, frm, to, scope: str, repo: str, body: str) -> int:
+        return self._insert('peernote', {'FromTask': frm, 'ToTask': to, 'Scope': scope, 'Repo': repo or '', 'Body': body, 'CreatedAt': _now()},
+                            ('FromTask', 'ToTask', 'Scope', 'Repo', 'Body', 'CreatedAt'))
+    def peer_notes(self, to: int, unread: bool = True) -> list:
+        return self._rows('SELECT * FROM peernote WHERE ToTask=?' + (' AND ReadAt IS NULL' if unread else '') + ' ORDER BY PeerNoteId', (int(to),))
+    def peer_notes_read(self, ids: list) -> int:
+        if not ids: return 0
+        self._exec(f"UPDATE peernote SET ReadAt=? WHERE PeerNoteId IN ({','.join('?' * len(ids))})", [_now(), *ids])
+        return len(ids)
+    def tasks_with_peer_notes(self) -> list:
+        return [r['ToTask'] for r in self._rows('SELECT DISTINCT ToTask FROM peernote WHERE ReadAt IS NULL')]
+    # ── agent channels (agentchannels.py) and the owner's standing permission answers (permissions.py) ──
+    def agent_channels(self) -> list: return self._rows('SELECT * FROM agentchannel ORDER BY ChannelId')
+    def agent_channel(self, cid: int): return self._one('SELECT * FROM agentchannel WHERE ChannelId=?', (int(cid),))
+    def add_agent_channel(self, f: dict) -> int:
+        return self._insert('agentchannel', {**f, 'CreatedAt': _now()}, ('Kind', 'Chat', 'ConnectorId', 'TaskId', 'Repo', 'MembersJson', 'StateJson', 'CreatedAt'))
+    def set_agent_channel(self, cid: int, **f):
+        ok = [k for k in f if k in ('MembersJson', 'StateJson', 'Repo', 'TaskId')]
+        if ok: self._exec(f"UPDATE agentchannel SET {', '.join(k + '=?' for k in ok)} WHERE ChannelId=?", [f[k] for k in ok] + [int(cid)])
+    def delete_agent_channel(self, cid: int):
+        self._exec('DELETE FROM agentchannel WHERE ChannelId=?', (int(cid),))
+    def agent_channel_log(self, cid: int, ext: str, dir_: str, who: str = '', role: str = '', tid=None, text: str = '') -> bool:
+        "One line in or out; False when that provider id was already kept (a re-read, or our own post read back)."
+        with self.lock, self._undone():
+            cur = self.cx.execute('INSERT OR IGNORE INTO agentchannel_msg (ChannelId, ExtId, Dir, Who, Role, TaskId, Text, At) VALUES (?,?,?,?,?,?,?,?)',
+                                  (int(cid), str(ext), dir_, who, role, tid, text, _now()))
+            self.cx.commit(); self._writes += 1
+            return cur.rowcount > 0
+    def agent_channel_msgs(self, cid: int, n: int = 50) -> list:
+        return self._rows('SELECT * FROM agentchannel_msg WHERE ChannelId=? ORDER BY Id DESC LIMIT ?', (int(cid), int(n)))[::-1]
+    def perm_rule(self, tid: int, pattern: str):
+        r = self._one('SELECT Answer FROM permrule WHERE TaskId=? AND Pattern=?', (int(tid), str(pattern)))
+        return r['Answer'] if r else None
+    def set_perm_rule(self, tid: int, pattern: str, answer: str):
+        self._exec('INSERT OR REPLACE INTO permrule (TaskId, Pattern, Answer, CreatedAt) VALUES (?,?,?,?)', (int(tid), str(pattern), answer, _now()))
+    def perm_rules(self, tid: int) -> list: return self._rows('SELECT * FROM permrule WHERE TaskId=? ORDER BY RuleId', (int(tid),))
 
     def list_sources(self, active_only=True):
         return self._rows('SELECT * FROM source' + (' WHERE Active=1' if active_only else ''))
@@ -6194,8 +6396,15 @@ class SQLiteStore:
     def doc(self, name):
         """The document as the AI should read it: {{owner}} and friends filled in. The name used to
         be typed into six places across SOUL.md and three more in CODING.md, so changing it changed
-        one of them - a doc that half calls you by name and half calls you John Smith."""
-        return render_doc(self.get_doc(name) or '', self.owner())
+        one of them - a doc that half calls you by name and half calls you John Smith.
+        ...and with NOBODY named yet, the shipped example is a hole, not a person: triage read "You work for John Smith", found mail
+        greeting Alex, and filed Alex's own asks as someone else's (agent-flow audit, 2026-11-07). The owner is then "the owner",
+        known only by the mailbox the mail came to - SOUL.md says so."""
+        who, text = self.owner(), self.get_doc(name) or ''
+        if who['owner'] != 'the owner': return render_doc(text, who)
+        text = re.sub(r'\s*\(\s*\{\{\s*owner_email\s*\}\}\s*\)', '', retoken_doc(text, *TEMPLATE_OWNER))
+        if name == 'soul' and text.strip(): text = f'{text.rstrip()}\n\n{NO_NAME_YET}'     # an empty SOUL.md stays empty: nothing to misread
+        return render_doc(text, who)
     def get_doc_row(self, name): return self._one('SELECT Name, Content, UpdatedBy, UpdatedAt FROM doc WHERE Name=?', (name,))
     def doc_names(self) -> list: return [r['Name'] for r in self._rows('SELECT Name FROM doc ORDER BY Name')]
     def github_permissions(self) -> tuple:
@@ -6511,7 +6720,7 @@ class SQLiteStore:
         # ...the files in one read, in the messages' order: a read per message was 1,500 on a long chat (the owner, 2026-11-01)
         for a in self._rows('SELECT a.* FROM attachment a JOIN message m ON m.MessageId=a.MessageId WHERE m.TaskId=? ORDER BY a.AttachmentId',
                             (task_id,)): atts.setdefault(a['MessageId'], []).append(a)
-        reviews = self._rows('SELECT rv.*, m.FromName, m.FromEmail, m.Channel, m.SourceName, m.ConversationId FROM review rv '
+        reviews = self._rows('SELECT rv.*, m.FromName, m.FromEmail, m.Channel, m.SourceName, m.ConversationId, m.Subject FROM review rv '
                              'LEFT JOIN message m ON m.MessageId=rv.MessageId WHERE rv.TaskId=? ORDER BY rv.ReviewId DESC', (task_id,))
         # ...and a reply to a promise's own mail answers whom it was made to, not its author: "sends this to Alex Doyle" was the owner
         if (p := self.promised_in(t)) and any(r.get('MessageId') == p['MessageId'] for r in reviews):

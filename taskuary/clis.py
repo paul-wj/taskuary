@@ -8,7 +8,9 @@ The flags are not decoration. A headless run with no permission flag waits forev
 approval nobody can click, so an agent added without them looks installed and then hangs on first
 use - the exact failure a wizard exists to prevent.
 """
-import shutil
+import json, re, shutil, threading, time
+
+from loguru import logger
 
 # `acp`: how this CLI is launched as an Agent Client Protocol server - the ARGUMENTS, never a
 # boolean, so claude or codex can be added later by pointing a profile at their adapter without
@@ -78,6 +80,25 @@ KNOWN = [
      'args': ['--permission-mode', 'dangerous', '--respect-workspace-trust=false', '-p'], 'acp': ['acp']},
 ]
 
+# CLAUDE AND CODEX SPEAK ACP THROUGH AN ADAPTER, not natively (docs/acp-transport.md): an npm package that drives the CLI the
+# owner already has - its binary, its login - and answers on stdio. Per CLI: the adapter (PINNED: an adapter is a protocol
+# translator, and a new release is a new set of update shapes to check), how it is told which binary to drive ({cli}: the
+# CLI's own resolved path), and the session mode that makes it ASK before it acts, so every tool call reaches acpgate.
+#   claude  `default`: it asks for every tool the owner's own settings do not already allow (measured: Read, Glob, Bash, Edit,
+#           WebFetch and WebSearch each asked, 2026-11-06). Its other modes answer for us: auto, acceptEdits, bypassPermissions.
+#   codex   `workspace-write`: commands run in Codex's own sandbox without asking, and whatever needs the network or a folder
+#           outside the workspace is blocked and then ASKED for - a push, a fetch, an upload. `agent-full-access` asks nothing.
+# The @zed-industries packages were renamed to these; their claude adapter (0.16.2) failed session/new on Claude Code 2.1.318.
+ADAPTERS = {'claude': {'pkg': '@agentclientprotocol/claude-agent-acp@0.101.0', 'bin': 'claude-agent-acp',
+                       'env': {'CLAUDE_CODE_EXECUTABLE': '{cli}'}, 'mode': 'default'},
+            'codex': {'pkg': '@agentclientprotocol/codex-acp@2.5.0', 'bin': 'codex-acp',
+                      'env': {'CODEX_PATH': '{cli}'}, 'mode': 'workspace-write'}}
+
+
+def acp_adapter(cmd: str) -> dict:
+    "The adapter row for a CLI that speaks ACP only through one ({} for every other CLI)."
+    return ADAPTERS.get({'cursor-agent': 'cursor'}.get(_base(cmd), _base(cmd)), {})
+
 
 # Optional TOOLS a coding agent may use - not agents, so the wizard never offers them as one, and
 # none is a pip package, so pyproject's extras cannot name them. Declared here so the app can say
@@ -97,9 +118,59 @@ TOOLS = [
 
 
 def tools() -> list:
-    """Every optional tool, with whether it resolves on PATH - the install hint is for the ones that do not."""
+    """Every optional tool, with whether it resolves on PATH - the install hint is for the ones that do not - and, once a day's check has
+    answered, the version here, npm's latest and `update` (the latest, when the one here is behind it; '' otherwise)."""
+    from . import demo
+    if demo.enabled(): return demo.tool_rows()                # the demo's machine is invented: the visitor's is never read
     from .pathcache import which as w
-    return [{**t, 'installed': bool(w(t['cmd'])), 'path': w(t['cmd']) or ''} for t in TOOLS]
+    seen = versions()
+    def ver(t):
+        v = seen.get(t['name']) or {}
+        have, latest = v.get('have') or '', v.get('latest') or ''
+        return {'version': have, 'latest': latest, 'update': latest if have and latest and _semver(have) < _semver(latest) else ''}
+    return [{**t, 'installed': bool(w(t['cmd'])), 'path': w(t['cmd']) or '', **ver(t)} for t in TOOLS]
+
+
+# WHETHER A TOOL IS BEHIND (the owner, 2026-11-07: the agent-browser card says "update available"): its own `--version` against npm's
+# latest, read at most once a day in a thread and kept in a file - never on a page's request, and offline is no answer, never a failure
+DAY, _CHECKING = 86400, threading.Event()
+_V = re.compile(r'\d+\.\d+\.\d+')
+def _semver(v) -> tuple: return tuple(int(x) for x in (_V.search(str(v or '')) or ['0.0.0'])[0].split('.'))
+def _versions_file():
+    from . import config
+    return config.home() / 'cache' / 'tool-versions.json'
+
+
+def versions(now: float = None) -> dict:
+    "{tool name: {have, latest}} as the last check found it ({} before the first) - a check started behind it when that is a day old."
+    try: got = json.loads(_versions_file().read_text(encoding='utf-8'))
+    except (OSError, ValueError): got = {}
+    from . import demo                                      # ...the demo reaches nothing real
+    if (now or time.time()) - float(got.get('at') or 0) > DAY and not _CHECKING.is_set() and not demo.enabled():
+        _CHECKING.set(); threading.Thread(target=check_versions, daemon=True, name='tool-versions').start()
+    return {k: v for k, v in got.items() if isinstance(v, dict)}
+
+
+def check_versions() -> dict:
+    """Read each tool's installed version and npm's latest now, and keep them. Any one that does not answer is left blank."""
+    import requests
+    from . import spawn
+    from .pathcache import which as w
+    out = {'at': time.time()}
+    try:
+        for t in TOOLS:
+            have = latest = ''
+            if exe := w(t['cmd']):
+                try: have = (_V.search(spawn.run([exe, '--version'], capture_output=True, text=True, timeout=20).stdout or '') or [''])[0]
+                except Exception: pass
+            pkg = t['install'].split()[-1]                                   # npm install -g <package>
+            try: latest = str((requests.get(f'https://registry.npmjs.org/{pkg}/latest', timeout=10).json() or {}).get('version') or '')
+            except Exception: pass
+            out[t['name']] = {'have': have, 'latest': latest}
+        f = _versions_file(); f.parent.mkdir(parents=True, exist_ok=True); f.write_text(json.dumps(out), encoding='utf-8')
+    except Exception as e: logger.debug(f'tool versions were not checked: {e}')
+    finally: _CHECKING.clear()
+    return out
 
 
 # The classifier is not the coding agent. When a CLI reads mail as the triage brain (llm.make_cli_llm) the
@@ -280,7 +351,8 @@ def detect(store=None) -> list:
     Neither means it WORKS - only a test run does, which is why the wizard runs one.
     """
     import json, os
-    from . import cliinstall, clisetup
+    from . import cliinstall, clisetup, demo
+    if demo.enabled(): return demo.cli_rows()                 # ...nor here
     # configured = some row already runs this CLI. A profile is never a row of its own here: it is instructions on whichever
     # tool is the brain, and listing `coding` beside Claude Code read as a second CLI (the owner, 2026-10-15)
     def cmd_of(a):

@@ -63,6 +63,9 @@ export const plainCitations = (text) => String(text ?? "").replace(CITE, (_, att
 
 // {text, files}: the answer with every reference to THIS task's outputs taken out of the words (its name stays where it was
 // said), and the names inside the folder, in order, once each - for the chips drawn under it
+// run `f` on the words between code spans only: a path or a name already in backticks is left exactly as it is
+const outsideCode = (s, f) => s.split(/(\x60[^\x60\n]*\x60)/).map((x, i) => (i % 2 ? x : f(x))).join("");
+
 export function outputRefs(text, tid, listed) {
   const files = [], add = (rel) => { if (!files.includes(rel)) files.push(rel); };
   let out = String(text ?? "");
@@ -89,13 +92,33 @@ export function outputRefs(text, tid, listed) {
     return label.trim() || baseName(at.rel);
   });
   // ...and a path in bold or italics keeps its marks OUTSIDE it: "**C:\\...\\report.xlsx**" named a file "report.xlsx**" that was not there
-  out = out.replace(BARE, (all) => {
+  out = out.replace(BARE, (all, at0, whole) => {
     const lead = /^[*_]+/.exec(all)?.[0] || "", tail = /[.,;:!?*_]+$/.exec(all)?.[0] || "", path = all.slice(lead.length, all.length - tail.length);
     const at = parseOutput(path);
     if (!at) return all;
-    if (at.tid === Number(tid)) { add(at.rel); return `${lead}\`${baseName(at.rel)}\`${tail}`; }
+    // ...a path the agent put in backticks is its name in those backticks - wrapped again it read ```name``` (the product audit, 2026-11-08)
+    const coded = whole[at0 - 1] === "\x60";
+    if (at.tid === Number(tid)) { add(at.rel); return coded ? `${baseName(at.rel)}${tail}` : `${lead}\`${baseName(at.rel)}\`${tail}`; }
     return `${lead}\`${path}\`${tail}`;
   });
+  // ...THE TASK'S FOLDER, named bare, is a code span too - the chat makes that one a link that opens it on this computer (the owner,
+  // 2026-11-06: "clickable links in the agent to local desktop for where it saves items"); and a file of its own folder named bare in
+  // the words ("- Private balance audit.xlsx") reads as that file, which the chat opens at a press. Only OUTSIDE code spans, and only
+  // names the listing has, longest first
+  const folder = new RegExp(`(?:[A-Za-z]:)?(?:[\\\\/]${STOP}*?)?[\\\\/]scratch[\\\\/]outputs[\\\\/]TQ-0*${Number(tid)}[\\\\/]?(?=$|[\\s.,;:!?)*_])`, "gim");
+  const names = [...(listed || [])].sort((a, b) => baseName(b.path).length - baseName(a.path).length);
+  out = outsideCode(out, (bit) => {
+    bit = bit.replace(folder, (path) => `\x60${path}\x60`);
+    for (const r of names) {
+      const n = baseName(r.path).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      bit = outsideCode(bit, (b2) => b2.replace(new RegExp(`(^|[^\\w./\\\\-])(${n})(?![\\w])`, "gm"), (all, lead, name) => { add(r.path); return `${lead}\x60${name}\x60`; }));
+    }
+    return bit;
+  });
+  // ...and a line that is nothing but one of its files is that file's card, drawn under the answer - never its name again on a line of its
+  // own (the product audit, 2026-11-08: the picture's whole path stood alone over the post card)
+  const own = new Set(files.map(baseName));
+  out = out.replace(/^[ \t]*[*_]*\x60([^\x60\n]+)\x60[*_]*[ \t.]*$/gm, (line, n) => (own.has(n) ? "" : line));
   // a marker on a line of its own leaves no empty line behind
   return { text: out.replace(/\n[ \t]*\n(?:[ \t]*\n)+/g, "\n\n").trim(), files };
 }
@@ -143,6 +166,16 @@ export const deliverables = (rows) => {
     else { const n = { ...r, earlier: [] }; by.set(k, n); made.push(n); }
   }
   return { made, working };
+};
+
+// EACH TURN SHOWS THE FILE AS IT MADE IT (the owner, 2026-11-07: "same file with revisions"): turn 1 named the table a later turn rewrote in
+// place, and drew the newest one under words about the old. `versions` (outputs.turn_versions) are earlier turns' own copies, `turn` the
+// answer each belongs to: that turn reads its own, every other turn - the newest among them - the file as it is now
+export const forTurn = (listed, versions, id) => {
+  const mine = new Map((versions || []).filter((v) => v.turn === id).map((v) => [v.path, v]));
+  if (!mine.size) return listed || [];
+  const out = (listed || []).map((r) => mine.get(r.path) || r);
+  return [...out, ...[...mine.values()].filter((v) => !out.includes(v))];
 };
 
 // WHAT A TURN MADE, IN THE TURN (the owner, 2026-11-05: "the post and images are as artifacts separate not inline???"): the files placed on this

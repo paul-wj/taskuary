@@ -535,7 +535,7 @@ class LanesTests(unittest.TestCase):
         self.assertEqual([funnel.level_of(i) for i in items], ['task', 'task'])
         self.assertFalse(funnel.on_you(items[0])); self.assertTrue(funnel.on_you(items[1]))   # ...but only the asking one is on you
         items = items[::-1]
-        self.assertTrue(items[0]['asking']); self.assertIn('asked you something', items[0]['why']); self.assertIn('Taskuary has it', items[1]['why'])
+        self.assertTrue(items[0]['asking']); self.assertIn('asked you something', items[0]['why']); self.assertIn('Agent has it', items[1]['why'])
         self.assertEqual((items[0].get('sid'), items[0]['mode']), (None, 'terminal'))           # the card embeds the screen when a sid is known
         # the mail that started t1 is not a second line: answering the agent answers the mail
         self.assertEqual(items[0]['mid'], s.list_messages(t1)[0]['MessageId'])
@@ -576,7 +576,7 @@ class LanesTests(unittest.TestCase):
         with mock.patch('taskuary.terminal.live_sessions', return_value=working):
             ev = funnel.announce(s)
         self.assertEqual([(e['kind'], e['tid']) for e in ev], [('working', t)])
-        self.assertIn("Taskuary is working on TQ-0001 (Pto) - nothing for you there now.", ev[0]['text'])
+        self.assertIn("Agent is working on TQ-0001 (Pto) - nothing for you there now.", ev[0]['text'])
         self.assertNotIn('next thing', ev[0]['text'])                                    # a worker starting is not a nudge to advance (PW-168)
         with mock.patch('taskuary.terminal.live_sessions', return_value=working):
             self.assertEqual(funnel.announce(s), [])                                  # said once
@@ -602,7 +602,7 @@ class LanesTests(unittest.TestCase):
         s = store()
         t = s.create_task({'Title': 'Pto', 'Kind': 'coding', 'Status': 'in_progress'}, 'o')
         funnel.notify(s, {'tid': t, 'ref': 'TQ-0001', 'kind': 'working', 'agent': 'codex',
-                          'text': 'Taskuary is working on TQ-0001 (Pto) - nothing for you there now.'})
+                          'text': 'Agent is working on TQ-0001 (Pto) - nothing for you there now.'})
         live = [{'taskId': t, 'agent': 'codex', 'label': 'codex', 'started': ago(hours=1), 'idle': 2, 'waiting': False, 'tail': ['editing']}]
         with mock.patch('taskuary.terminal.live_sessions', return_value=live):
             self.assertEqual([a['kind'] for a in funnel.notices(s)], ['working'], 'the agent really is on it')
@@ -874,7 +874,7 @@ class FeedUnreadTests(unittest.TestCase):
         with mock.patch('taskuary.terminal.live_sessions', return_value=live):
             row = next(r for r in s.feed() if r['MessageId'] == mid)
             # the same level as any task, and the walk's item in its place (the owner, 2026-10-21)
-            self.assertEqual((row['Unread'], row['UnreadRank'], row['Working']), (1, 2, 'Taskuary'))
+            self.assertEqual((row['Unread'], row['UnreadRank'], row['Working']), (1, 2, 'Agent'))
             self.assertEqual(row['FunnelKey'], f'agent:{task}')
             self.assertEqual(railwalk.top(s)['tid'], task)
         waving = [dict(live[0], idle=200, waiting=True, tail=['Which region should I use?'])]
@@ -1346,3 +1346,14 @@ class AFailingConnectionIsTheBellsTests(unittest.TestCase):
         self.assertIn(f"connector:{c['ConnectorId']}", {p['key'] for p in problems.collect(s)})
         self.assertFalse([i for i in funnel.pile(s, force=True)['items'] if i['key'].startswith('conn:')])
         self.assertFalse(hasattr(funnel, 'broken_connections'))
+
+
+def test_a_closed_task_looked_up_by_any_road_says_it_is_closed():
+    # the owner, 2026-11-08: a done task opened from Search was drawn under Tasks - the page draws none for a `closed` card (pulledRow)
+    from taskuary import funnel
+    from taskuary.store import MemoryStore
+    s = MemoryStore(); tid = s.create_task({'Title': 'Payworth renewal', 'Kind': 'task', 'Status': 'open'}, 'owner')
+    s.update_task(tid, {'Status': 'done'}, 'owner')
+    assert funnel.item_for_key(s, f'task:{tid}')['closed'] is True
+    assert (funnel.next_item(s, f'task:{tid}', include_surfaced=True) or {'closed': True})['closed'] is True
+    assert funnel.shut(s, {'tid': s.create_task({'Title': 'Open one', 'Kind': 'task', 'Status': 'open'}, 'owner')}).get('closed') is None

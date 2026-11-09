@@ -15,12 +15,14 @@ Each answer says how much there was (`totals` by type, past the caps; `capped` w
 footer said "15 of 15" over a list cut at eight tasks - and a hit says WHY it matched (`why`) when nothing it shows does:
 "Ruth Bennett" listed six tasks with no Ruth anywhere on them."""
 import json, re
+from datetime import datetime
 from urllib.parse import quote
 from . import connectorcatalog, settings_schema, wanames
 from .store import _fold, task_ref
+from .inboxes import TYPES as INBOXES
 
 CHAT = {'teams', 'slack', 'whatsapp', 'telegram', 'imessage', 'discord'}
-TICKET = {'jira', 'asana', 'monday', 'linear', 'clickup', 'todoist', 'trello', 'notion', 'azdo', 'sentry', 'pagerduty'}
+TICKET = {'jira', 'asana', 'monday', 'linear', 'clickup', 'todoist', 'trello', 'notion', 'azdo', 'sentry', 'pagerduty', *INBOXES}
 CLOSED = ('done', 'dropped')
 N_TASKS, N_MSGS, N_SRCS, N_PLACES = 8, 30, 6, 6
 
@@ -109,14 +111,22 @@ def _task_why(t: dict, words, mail: list) -> str:
     return '; '.join(out)
 
 
-def _tasks(store, q: str, words, status: str = '') -> tuple:
-    ts = store.list_tasks(None, q=q, shown=True)
+# DONE TODAY (the owner, 2026-11-06): the tasks closed today, a filter of the search box only - never on the rail. Asked as `done:today`
+# (the box's chip types it), with words or without; newest closed first, more of them than a word search shows
+DONE_TODAY, N_DONE = 'done:today', 40
+
+
+def _tasks(store, q: str, words, status: str = '', today: bool = False) -> tuple:
+    ts = store.list_tasks('done' if today else None, q=q, shown=True)
     if status: ts = [t for t in ts if _fold(t.get('Status')).startswith(status)]
+    if today:
+        d = datetime.now().strftime('%Y-%m-%d')
+        ts = sorted((t for t in ts if str(t.get('ClosedAt') or '')[:10] == d), key=lambda t: str(t.get('ClosedAt')), reverse=True)
     lw, ids = [w.lower() for w in words], _ids(words)
     # the id typed first, then open before closed, a title naming every word before one matched only through its mail, newest first
     ts.sort(key=lambda t: str(t.get('UpdatedAt') or t.get('CreatedAt') or ''), reverse=True)
     ts.sort(key=lambda t: (t['TaskId'] not in ids, t.get('Status') in CLOSED, not all(w in (t.get('Title') or '').lower() for w in lw)))
-    top, mail = ts[:N_TASKS], {}
+    top, mail = ts[:N_DONE if today else N_TASKS], {}
     for r in store._rows(f"SELECT TaskId, Channel, SourceName, Subject, FromName, FromEmail, ExternalId, SourceLink FROM message WHERE TaskId IN "
                          f"({','.join('?' * len(top))})", [t['TaskId'] for t in top]) if top else []:
         mail.setdefault(r['TaskId'], []).append(r)
@@ -296,7 +306,8 @@ def _app_rows(store) -> list:
     try: docs = store.doc_names()
     except Exception: docs = []
     rows += [{'type': 'document', 'title': d.upper() + '.md' if re.fullmatch(r'[a-z]+', d) else d, 'where': places.name('docs'), 'rest': f'{d} document doc', 'key': d,
-              'href': f'#settings=docs&doc={d}' if re.fullmatch(r'\w+', d) else '#settings=docs'} for d in docs]
+              # ...LEARNED.md is About you's Memory, read as sentences (2026-11-06)
+              'href': places.href('memory') if d == 'learned' else places.href('docs') + (f'&doc={d}' if re.fullmatch(r'\w+', d) else '')} for d in docs]
     return rows
 
 
@@ -326,21 +337,58 @@ def places(store, q: str, n: int = 8) -> list:
     return [{k: v for k, v in r.items() if k not in ('rest', 'boost', 'key')} for s, r in scored[:n] if top > 0 and s >= top * 0.35]
 
 
+# THE AGENT CHAT, SEARCHED (F28, the owner, 2026-11-08): a word only in a line the owner typed, an agent's answer or a draft it left found nothing.
+# The conversation only - never a tool's log, never Taskuary's own machinery (store.is_internal, the filter list_comments keeps). A task whose title
+# hit is listed already is not listed again; each other task once, by its newest line holding every word, tagged and opened at that line
+# (`line`: the chat's own 'comment-<id>', GeneralWorkspace data-tq-chat-line - a draft's is the turn that left it, draft_snapshot)
+CHAT_TAG, DRAFTS = 'in agent chat', ('draft_reply', 'draft', 'clarification', 'slot')
+
+
+def _chat(store, words, skip) -> tuple:
+    from .general import ASSISTANT_TYPE, USER_TYPE
+    from .quickwork import report_of
+    from .store import is_internal
+    TEXT = "COALESCE(rv.FinalText, rv.DraftText, '')"
+    lk = lambda col: ' AND '.join(f"tq_fold({col}) LIKE ? ESCAPE '\\'" for _ in words)
+    pat = [store._like_pat(w) for w in words]
+    said = [{**c, 'line': f"comment-{c['CommentId']}", 'Body': report_of(c['Body']) if c['ActorType'] == ASSISTANT_TYPE else c['Body']}
+            for c in store._rows(f"SELECT CommentId, TaskId, Actor, ActorType, Body, CreatedAt FROM comment WHERE ActorType IN (?,?) AND {lk('Body')} "
+                                 "ORDER BY CommentId DESC LIMIT 200", (USER_TYPE, ASSISTANT_TYPE, *pat)) if not is_internal(c)]
+    drafts = store._rows(f"SELECT rv.TaskId, {TEXT} Body, rv.CreatedAt, (SELECT 'comment-' || s.CommentId FROM draft_snapshot s "
+                         f"WHERE s.ReviewId=rv.ReviewId ORDER BY s.Id DESC LIMIT 1) line FROM review rv WHERE rv.Kind IN ({','.join('?' * len(DRAFTS))}) "
+                         f"AND rv.Status IN ('pending','approved','edited') AND {lk(TEXT)} ORDER BY rv.ReviewId DESC LIMIT 50",
+                         (*DRAFTS, *pat))
+    best = {}
+    for c in sorted([*said, *({**d, 'ActorType': 'draft'} for d in drafts)], key=lambda c: str(c.get('CreatedAt') or ''), reverse=True):
+        if c['TaskId'] not in skip and c['TaskId'] not in best and all(_in(c['Body'], w) for w in words): best[c['TaskId']] = c
+    out = []
+    for tid, c in list(best.items())[:N_TASKS]:
+        t = store.get_task(tid)
+        if not t: continue
+        who = 'you' if c['ActorType'] == USER_TYPE else 'a draft' if c['ActorType'] == 'draft' else 'the agent'
+        out.append({'type': 'task', 'id': f"chat:{tid}", 'tid': tid, 'ref': task_ref(tid), 'title': t.get('Title') or '', 'status': t.get('Status'),
+                    'sub': t.get('Kind') or '', 'tag': CHAT_TAG, 'who': who, 'line': c.get('line'), 'when': c.get('CreatedAt'),
+                    'snippet': snippet(c['Body'], words, 120), 'why': ''})
+    return out, len(best)
+
+
 def everything(store, q: str) -> dict:
     toks = str(q or '').split()
     # a task's status is asked for by name - `status:open` - and never matched as a word (store._search_where `shown`)
     status = next((_fold(t[7:]) for t in toks if _fold(t).startswith('status:') and len(t) > 7), '')
-    rest = ' '.join(t for t in toks if not _fold(t).startswith('status:'))
+    today = any(_fold(t) == DONE_TODAY for t in toks)
+    rest = ' '.join(t for t in toks if not _fold(t).startswith('status:') and _fold(t) != DONE_TODAY)
     words = [w for w in re.findall(r'[\w@.\-]+', rest) if len(w) > 1 or w.isdigit()]
-    if not words and not status: return {'q': q, 'hits': [], 'totals': {}, 'capped': False}
+    if not words and not status and not today: return {'q': q, 'hits': [], 'totals': {}, 'capped': False}
     # +1 (555) 010-0123 is one phone number, not four words to find in a body
     if wanames.is_phone_query(rest): words = [wanames.digits(rest)]
-    tasks, n_tasks = _tasks(store, rest, words, status)
-    if status: return {'q': q, 'hits': tasks, 'totals': {'task': n_tasks}, 'capped': False}
+    tasks, n_tasks = _tasks(store, rest, words, status, today)
+    if status or today: return {'q': q, 'hits': tasks, 'totals': {'task': n_tasks}, 'capped': False}
+    chat, n_chat = _chat(store, words, {t['tid'] for t in tasks})
     msgs, totals, capped = _messages(store, words, _wa_ids(store, rest))
     srcs, sets, cons = _sources(store, words, rest), _settings(words), _connectors(store, words)
-    totals.update(task=n_tasks, source=len(srcs), setting=len(sets), connector=len(cons))
-    return {'q': q, 'hits': tasks + msgs + srcs[:N_SRCS] + sets[:N_PLACES] + cons[:N_PLACES], 'totals': totals, 'capped': capped}
+    totals.update(task=n_tasks + n_chat, source=len(srcs), setting=len(sets), connector=len(cons))
+    return {'q': q, 'hits': tasks + chat + msgs + srcs[:N_SRCS] + sets[:N_PLACES] + cons[:N_PLACES], 'totals': totals, 'capped': capped}
 
 
 # ── WHAT EARLIER TASKS SETTLED (the owner, 2026-11-05, from Hermes' session_search: search before asking) ─────────────────────────────

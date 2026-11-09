@@ -52,7 +52,7 @@ class SharedSessionTests(unittest.TestCase):
                 # the first OUTPUT frame: `geom` (which pane drives the PTY size) precedes it
                 first = next(m for m in (ws.receive_json() for _ in range(8)) if m['type'] == 'out')
         self.assertEqual(first['type'], 'out')
-        self.assertIn('Taskuary assistant', first['data'])
+        self.assertIn('Agent', first['data'])
 
     @mock.patch('taskuary.agents.runs_here', lambda p: bool((p or {}).get('cmd')))   # the CLI it connects counts as installed: CI has none on PATH
     def test_setup_walkthrough_uses_a_tool_cli_and_starts_its_own_browser(self):
@@ -72,7 +72,8 @@ class SharedSessionTests(unittest.TestCase):
         self.assertFalse([c for c in thread.call_args_list if c.kwargs.get('target') is browserview.start])
         store.update_task(tid, {'Tags': browserview.WANTS}, 'owner')
         with mock.patch.dict(terminal.SESSIONS, {}, clear=True), mock.patch.object(general.threading, 'Thread') as thread, \
-             mock.patch.object(browserview, 'last_page', return_value='https://zoho.example/signin'):
+             mock.patch.object(browserview, 'last_page', return_value='https://zoho.example/signin'), \
+             mock.patch.object(general, 'page_needs_owner', return_value='the owner has a part on its page'):
             session = general.start_session(store, tid)
         go = [c.kwargs['args'] for c in thread.call_args_list if c.kwargs.get('target') is browserview.start]
         self.assertEqual(go, [(session.sid, 'https://zoho.example/signin')])
@@ -277,8 +278,9 @@ class SharedSessionTests(unittest.TestCase):
              mock.patch.object(llm, 'build_llm', return_value=lambda *a, **k: 'Done from terminal.'):
             session = general.start_session(store, tid)
             session.write('Do this from xterm\r')
-            limit = time.time() + 2
-            while len(general.history(store, tid)) < 2 and time.time() < limit: time.sleep(.02)
+            # the answer is filed before it is echoed to the screen: wait for both (CI's Windows box lost that race)
+            limit = time.time() + 10
+            while (len(general.history(store, tid)) < 2 or 'Done from terminal.' not in session.scrollback()) and time.time() < limit: time.sleep(.02)
         self.assertEqual([m['role'] for m in general.history(store, tid)], ['user', 'assistant'])
         self.assertIn('Done from terminal.', session.scrollback())
 
@@ -687,7 +689,7 @@ class OneGoalTests(unittest.TestCase):
                    aside=[{'mid': erin, 'why': 'thanks only'}], on_you=['confirm Gail has it'])
         user = general._prompt(s, tid)[1]
         for want in ('THE ASK, AS TRIAGE READ IT (check it against the mail):', 'Your part: give Gail the portal login',
-                     'Already handled: Erin Blake - said thanks', f'The mail the reply answers: [#{ray}] Ray Colton', f'Aside: [#{erin}] thanks only',
+                     'Who did what: Erin Blake - said thanks', f'The mail the reply answers: [#{ray}] Ray Colton', f'Aside: [#{erin}] thanks only',
                      'On you: confirm Gail has it', 'THE MAIL ON THIS TASK:', f'[#{ray}] Ray Colton', f'[#{erin}] Erin Blake'):
             self.assertIn(want, user, want)
         self.assertLess(user.index('TASK '), user.index('THE ASK, AS TRIAGE READ IT'))
@@ -717,3 +719,35 @@ class OneGoalTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+
+def test_a_task_from_before_the_chat_draws_its_stored_report_as_one_answer():
+    """The owner, 2026-11-06: an older done task opened in the old three columns. With no chat rows, its agent's filed report is its one
+    answer, the mail that started it drawn over it - the same chat look as any other."""
+    from taskuary import general
+    from taskuary.store import MemoryStore
+    s = MemoryStore()
+    tid = s.create_task({'Title': 'Badge for the new starter', 'Kind': 'task', 'Status': 'done'}, 'owner')
+    s.add_message({'TaskId': tid, 'Channel': 'email', 'Subject': 'Badge', 'FromName': 'Erin Blake', 'FromEmail': 'erin@northwind.example',
+                   'BodyText': 'Can you order a badge for Monday?', 'ExternalId': 'old-1', 'SentAt': '2026-10-01 09:00:00', 'Status': 'filed'})
+    assert general.shown_history(s, tid)[-1]['role'] == 'user', 'no record: the mail alone'
+    s.add_comment(tid, 'agent', 'agent', 'AGENT REPORT\nOrdered the badge; it arrives Friday.')
+    ms = general.shown_history(s, tid)
+    assert ms[-1]['role'] == 'assistant' and 'Ordered the badge' in ms[-1]['content'][0]['text']
+    assert ms[0].get('brief') and ms[0]['mail'][0]['who'] == 'Erin Blake', 'the mail that started it is drawn over the answer'
+
+
+def test_a_message_in_the_chat_carries_its_files_both_chats_alike():
+    """The owner, 2026-11-08: a WhatsApp screenshot and a voice note came in, and the chat's bubble showed only the words. Each message the
+    chat draws names its message and how many files rode on it, so the bubble draws them - the general chat and the coding chat by one road."""
+    from taskuary import codingchat, general
+    from taskuary.store import MemoryStore
+    s = MemoryStore()
+    tid = s.create_task({'Title': 'Login page broken', 'Kind': 'task', 'Status': 'open'}, 'owner')
+    mid = s.add_message({'TaskId': tid, 'Channel': 'whatsapp', 'FromName': 'Erin Blake', 'BodyText': 'This seems to be not working',
+                         'ExternalId': 'whatsapp:155@s.whatsapp.net:3EB0', 'SentAt': '2026-11-08 16:49:30', 'Status': 'routed'})
+    s.add_attachment({'MessageId': mid, 'ExternalId': 'x:1', 'Name': 'shot.jpg', 'ContentType': 'image/jpeg', 'Size': 9, 'Inline': 1, 'Path': '/a/shot.jpg'})
+    [x] = general.shown_history(s, tid)[0]['mail']
+    assert (x['mid'], x['files'], x['words']) == (mid, 1, 'This seems to be not working')
+    [y] = codingchat.mails(s, tid)
+    assert {k: y[k] for k in x} == x and y['joined']
