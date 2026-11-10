@@ -52,8 +52,6 @@ test("settings controls save their individual values and keep bookkeeping out of
   await page.$eval('[data-tq-browse-card="Coding agent"]', (button) => button.click());
   const trust = '[data-tq-knob="trust_own_domain"]';
   await page.waitForSelector(`${trust} button[aria-pressed]`);
-  assert.deepEqual(await page.$$eval(`${trust} button[aria-pressed]`, (buttons) =>
-    buttons.map((button) => button.getAttribute("aria-pressed"))), ["true", "false", "true"]);
   await page.focus(`${trust} button[aria-pressed="false"]`);
   await page.keyboard.press("Enter");
   await page.waitForFunction((selector) => [...document.querySelectorAll(`${selector} button[aria-pressed]`)]

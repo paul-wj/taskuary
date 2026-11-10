@@ -636,6 +636,7 @@
   "Trust their Slack workspace": "信任其 Slack 工作区",
   "Trust their organisation on Teams": "信任其 Teams 组织",
   "Trust everyone at {name}": "信任 {name} 的所有人",
+  "Trust everyone from {name}": "信任来自 {name} 的所有人",
   "Trust {name}": "信任 {name}",
   "Use /connect to add a provider, then /models to choose it. Task execution only; choose another provider for triage and reports.": "使用 /connect 添加提供商，然后使用 /models 选择它。仅用于执行任务；请为分流和报告选择其他提供商。",
   "Use /login to connect Kimi or Moonshot. Windows requires Git Bash. Task execution only; choose another provider for triage and reports.": "使用 /login 连接 Kimi 或 Moonshot。Windows 需要 Git Bash。仅用于执行任务；请为分流和报告选择其他提供商。",

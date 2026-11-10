@@ -10,9 +10,9 @@
     "build:docs": "node tools/build-docs.mjs",
     "test": "node --test \"test/**/*.test.mjs\"",
     "test:browser:voice": "node --test browser/builtin-voice-card.test.mjs",
-    "test:browser": "node --test --test-concurrency=1 browser/loads-once.test.mjs browser/general-starting.test.mjs browser/continue-shows-turn.test.mjs browser/run-another-general.test.mjs",
+    "test:browser": "node --test --test-concurrency=1 browser/loads-once.test.mjs browser/general-starting.test.mjs browser/continue-shows-turn.test.mjs browser/run-another-general.test.mjs browser/task-agent-handoff.test.mjs",
     "test:browser:i18n": "node --test --test-concurrency=1 browser/interface-settings.test.mjs browser/localized-action-guard.test.mjs browser/workflow-schedule.test.mjs",
-    "test:browser:features": "node --test --test-concurrency=1 browser/first-run-task-cli.test.mjs browser/jira-data-center.test.mjs browser/skills-library.test.mjs browser/held-repo-pick.test.mjs browser/back-board-hub.test.mjs",
+    "test:browser:features": "node --test --test-concurrency=1 browser/first-run-task-cli.test.mjs browser/jira-data-center.test.mjs browser/jira-agent-trust.test.mjs browser/skills-library.test.mjs browser/held-repo-pick.test.mjs browser/back-board-hub.test.mjs",
     "check:deadends": "node deadend_check.mjs",
     "lint:undef": "eslint -c eslint.undef.mjs src/*.jsx src/*.js"
   },

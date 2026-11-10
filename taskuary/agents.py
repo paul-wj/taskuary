@@ -1612,8 +1612,9 @@ def _run_acp_omp(profile: dict, prompt: str, trace, resume: str = None, cancel=N
 
     try:
         policy = {'permission_policy': 'deny', 'process_tree': True}
+        steps = acp_tracer(trace, name)
         client = acp_mod.ACPClient(cmd[0], cmd[1:], cwd=cwd, env=env,
-                                   timeout=profile.get('timeout'), on_update=acp_tracer(trace, name), **policy)
+                                   timeout=profile.get('timeout'), on_update=steps, **policy)
     except PermissionError as e:
         if overlay:
             try: os.remove(overlay)
@@ -1637,7 +1638,7 @@ def _run_acp_omp(profile: dict, prompt: str, trace, resume: str = None, cancel=N
                     return
         cancel_thread = threading.Thread(target=_cancel, daemon=True)
         cancel_thread.start()
-    prompt_started = False
+    prompt_started, stop, ok = False, None, False
     try:
         try:
             caps = client.connect()
@@ -1675,12 +1676,20 @@ def _run_acp_omp(profile: dict, prompt: str, trace, resume: str = None, cancel=N
             if head1 and head1 != head0: diff = _git(cwd, 'diff', f'{head0}..{head1}')
             unc = _git(cwd, 'diff', 'HEAD')
             if unc: diff = '\n'.join(x for x in (diff, unc) if x).strip()
+        ok = True
         return said, client.session_id, (diff[:150000] or None)
     except Exception as e:
         if prompt_started:
             raise OmpTurnError(e, client.session_id) from e
         raise
     finally:
+        # one flush, on every road: a turn that ran to end_turn ends its open calls done, everything else ends them failed -
+        # the argv road's contract (run_acp's flush). It must not block the close or overlay cleanup, and a trace failure is
+        # not the provider's: it is logged, never raised over this turn's own result.
+        try:
+            steps.flush(stop if ok else 'error')
+        except Exception as e:
+            logger.debug(f'acp: omp trace flush failed - {e}')
         finished.set()
         with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.discard(client.p)
         try:

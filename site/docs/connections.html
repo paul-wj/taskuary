@@ -422,6 +422,12 @@ to your account, even if they were last updated long before this connection was 
 Recent updates are also read so resolution changes still arrive. This mode creates no local
 tasks and runs no AI triage; existing Jira work is displayed in the Timeline/FYI. Trigger mode
 retains its incremental task-creation behavior.</p>
+<p>Reporter and comment identities use Cloud&#39;s <code>accountId</code>, or Data Center&#39;s <code>key</code>/<code>name</code>, consistently.
+Trusting a person applies only to that Jira site (host and context path), not to a matching user ID
+on another site. An old person-trust entry is migrated when its messages identify exactly one site;
+an ambiguous entry requires you to confirm trust again on the intended site&#39;s task. Assignment to
+you does not itself establish trust. The separate tracker auto-start setting inherits a saved
+non-email restriction during upgrade; an explicitly saved tracker setting takes precedence.</p>
 <p><strong>Data Center is read-only.</strong> No comments, assignments, transitions or upstream close-outs
 are offered. Server and transport guards reject writes and REST v3 calls even when an old
 scope or proposal allowed Cloud writes. You can still finish work locally in Taskuary.</p>
@@ -819,7 +825,9 @@ Their cards open CLI connection settings; they do not select a sorting brain or 
 <p>General-agent ACP sessions use OMP&#39;s default session store for exact continuation. Taskuary rejects
 custom <code>--session-dir</code> for these sessions because OMP 18.15.0&#39;s ACP session loading does not honor
 it. Taskuary disables asynchronous background work for ACP runs and declines their permission
-requests; interactive coding terminals remain normal.</p>
+requests; interactive coding terminals remain normal.
+ACP turn completion flushes buffered text and tool results; failed or cancelled turns mark unfinished
+tool steps as failed rather than leaving their execution record open.</p>
 <p>CLI connections can have a <strong>light model</strong> as well as a main one. For a CLI that supports triage,
 the light gear lets the coding and triage brains share a connection without using the coding model for every message.</p>
 <h2 id="voice-notes-and-dictation">Voice notes and dictation<a class="anchor" href="#voice-notes-and-dictation" aria-label="Link to this section">#</a></h2>

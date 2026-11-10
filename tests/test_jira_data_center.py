@@ -128,6 +128,58 @@ def test_dc_other_person_is_external_even_with_same_display_name():
     assert s.message_by_external('jira:NW-1:c89')['Status'] != 'context'
 
 
+def _judge():
+    "A triage verdict for the fixture: the ask is work. With no AI connector on the store nothing auto-starts an agent, so the poll is deterministic."
+    return lambda *a, **k: json.dumps({'intent': 'task', 'kind': 'general', 'why': 'assigned work'})
+
+
+@pytest.mark.parametrize('erin,expected', [
+    ({'key': 'user-erin', 'name': 'erin', 'displayName': 'Erin'}, 'jira:user-erin'),
+    ({'name': 'erin', 'displayName': 'Erin'}, 'jira:erin'),
+    ({'accountId': '712020:erin', 'key': 'legacy-erin', 'name': 'erin', 'displayName': 'Erin'}, 'jira:712020:erin'),
+])
+def test_dc_same_author_comment_keeps_the_trusted_origin(erin, expected):
+    """The real poll keeps reporter and comment identities equal, including Cloud payloads with legacy key/name fields."""
+    s, c = setup()
+    report = issue(1)
+    report['fields']['reporter'] = erin
+    since = datetime.now() - timedelta(hours=1)
+    with wire(JiraWire([report])):
+        pm.poll_jira(s, c, since, llm=_judge())
+    tid = s.task_for_conversation('jira:NW-1')
+    assert tid
+    from taskuary import origin, senders
+    assert origin.of_task(s, tid)[0] == 'stranger'          # a tracker's author is a stranger's until vouched for
+    senders.vouch(s, s.list_messages(tid))                  # the owner's trust press names the reporter
+    assert origin.of_task(s, tid)[0] == 'trusted'
+    report['fields']['comment'] = {'comments': [{'id': '90', 'author': erin, 'body': 'Please repair the export',
+                                                  'created': datetime.now().astimezone().isoformat()}]}
+    with wire(JiraWire([report])):
+        pm.poll_jira(s, c, since)                           # the same author's comment arrives on the next poll
+    row = s.message_by_external('jira:NW-1:c90')
+    assert row and row['TaskId'] == tid
+    assert json.loads(row['MailMetaJson'])['author'] == expected
+    assert origin.of_task(s, tid)[0] == 'trusted'                                   # its own comment does not re-block it
+
+
+def test_dc_comment_without_a_stable_id_is_not_given_an_identity():
+    """A display name is not an identity, and a site email is not one either: a comment whose author carries no key, name or
+    accountId is not given an author at all - nothing is inferred from the payload - and it reads as a stranger's until the
+    owner trusts the source. The fix narrows the identity to the stable id; it does not widen trust."""
+    s, c = setup()
+    cm = {'id': '92', 'author': {'displayName': 'Erin', 'emailAddress': 'erin@northwind.example'},
+          'body': 'Please repair', 'created': datetime.now().astimezone().isoformat()}
+    report = issue(1)
+    report['fields']['comment'] = {'comments': [cm]}
+    with wire(JiraWire([report])):
+        pm.poll_jira(s, c, datetime.now() - timedelta(hours=1), llm=_judge())
+    row = s.message_by_external('jira:NW-1:c92')
+    assert row and row['TaskId']
+    assert 'author' not in (json.loads(row['MailMetaJson'] or 'null') or {})
+    from taskuary import origin
+    assert origin.of_task(s, row['TaskId'])[0] == 'stranger'
+
+
 def test_dc_draft_test_preserves_saved_credentials_and_identity():
     s, c = setup(); fake = JiraWire()
     before = s.get_connector(c['ConnectorId'], with_secret=True)

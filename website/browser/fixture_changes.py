@@ -22,6 +22,7 @@ def install_processing_changes(app, store):
         '/api/fixture/task/agent-closed',
         '/api/fixture/task/tracker-closeout',
         '/api/fixture/jira/dc/seed', '/api/fixture/jira/dc/wire',
+        '/api/fixture/task/jira-untrusted',
         '/api/fixture/task/pr-closeout',
         '/api/fixture/task/coding-saved',
         '/api/fixture/task/coding-live', '/api/fixture/task/coding-live/end',
@@ -93,8 +94,31 @@ def install_processing_changes(app, store):
 
     demo.refuse = fixture_refuse
     answer_paths = set()
+    demo.LOCAL_OPS = demo.LOCAL_OPS | {'task.trust'}
 
     sync_token = [None]
+
+    @app.post('/api/fixture/task/jira-untrusted')
+    def jira_untrusted(body: dict):
+        if set(body) != {'legacy'} or type(body['legacy']) is not bool:
+            raise HTTPException(422, 'legacy must be a boolean')
+        import json
+        from taskuary import general, origin, workerstate as ws
+        tid = store.create_task({'Title': 'NW-42 Analyse the failed export', 'Kind': 'general', 'Source': 'jira',
+                                 'SourceRef': 'jira:NW-42', 'Status': 'open'}, 'router')
+        store.add_message({'TaskId': tid, 'Channel': 'jira', 'ExternalId': f'fixture-jira-{tid}',
+                           'ConversationId': f'jira:fixture-{tid}', 'FromName': 'Erin Blake',
+                           'SourceName': 'jira.northwind.example', 'Subject': 'NW-42 Analyse the failed export',
+                           'BodyText': 'The export fails after removing a saved skill.', 'Status': 'routed',
+                           'SentAt': datetime.now().isoformat(' '),
+                           'MailMetaJson': '{}' if body['legacy'] else json.dumps({'author': 'jira:erin'})})
+        try: origin.launch_mode(store, tid, 'omp')
+        except origin.Refusal as e: why = str(e)
+        else: raise RuntimeError('the synthetic Jira task must require trust')
+        store.add_comment(tid, 'owner', general.USER_TYPE, 'Analyse this bug')
+        store.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, why)
+        ws.record(store, tid, f'fixture-jira-{tid}', 'failed', text=why, source='fixture')
+        return {'taskId': tid}
 
     @app.post('/api/fixture/review/{rid}/sent')
     def review_sent(rid: int):

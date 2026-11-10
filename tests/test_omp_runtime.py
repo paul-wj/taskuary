@@ -603,3 +603,125 @@ def test_two_omp_panes_bind_and_resume_their_own_conversations(tmp_path):
         assert [store.resumable_session(tid)['ExtId'] for tid in tasks] == paths
         terminal.open_session(store, 'coding', tasks[0], cwd=str(tmp_path), resume=paths[0])
         assert made[-1].argv[-2:] == ['--resume', paths[0]]
+
+
+# ── the OMP ACP road: the trace is flushed exactly once, and it does not hide the turn ─────────────────────────────────────────
+# The real ACPClient is the stand-in's contract: `on_update` receives session/update events while prompt() runs, and the turn's
+# answer is what it said after its last tool call. Nothing else is faked: connect(), new_session(), the native session file, the
+# overlay and the process close all run through _run_acp_omp's own roads.
+
+def _omp_acp_client(seen, events, stop='end_turn', answer='all done', fail_prompt=False, fail_close=False,
+                    prompt_hook=None):
+    """The stand-in behind acp.ACPClient: `on_update` gets the session/update events while prompt() runs; the answer is what
+    it said after its last tool call. Nothing else is faked - connect, new_session, the native file, the overlay and the
+    close all run through _run_acp_omp's own roads."""
+    from pathlib import Path
+    def launch(cmd, args, **kwargs):
+        overlay = next((Path(args[i + 1]) for i, v in enumerate(args[:-1]) if v == '--config'), None)
+        assert json.loads(overlay.read_text(encoding='utf-8')) == {'async': {'enabled': False}}
+        client = mock.MagicMock()
+        client.connect.return_value = {}
+        client.session_id, client.permission_denied = 'omp-session-1', False
+        client.p._taskuary_tree = True
+        def prompt(_):
+            for u in events: kwargs['on_update'](dict(u))
+            if prompt_hook: prompt_hook(client)
+            if fail_prompt: raise RuntimeError('the provider dropped the turn')
+            return stop, answer
+        client.prompt.side_effect = prompt
+        def close():
+            seen['closed'] = True
+            if fail_close: raise RuntimeError('the process tree would not die')
+        client.close.side_effect = close
+        seen['overlay'], seen['client'] = overlay, client
+        return client
+    return launch
+
+
+def _omp_acp_run(verified_acp_file, events, stop='end_turn', answer='all done', fail_prompt=False, cancel=None,
+                 fail_close=False, fail_flush=False, prompt_hook=None):
+    "One OMP turn over run_acp with that stand-in; the traced steps come back for the assertions."
+    traces, seen = [], {}
+    launch = _omp_acp_client(seen, events, stop=stop, answer=answer, fail_prompt=fail_prompt,
+                             fail_close=fail_close, prompt_hook=prompt_hook)
+    seen['flushes'] = 0
+    def counting_tracer(trace, name, held=None):
+        t = agents.ACPSteps(trace, name, held)
+        def flush(stop=None):
+            seen['flushes'] += 1
+            if fail_flush: raise RuntimeError('the step canvas would not render')
+            return agents.ACPSteps.flush(t, stop)
+        t.flush = flush
+        return t
+    with mock.patch.object(agents, '_resolve_cmd', return_value=['omp']), mock.patch.object(agents, '_git', return_value=''), \
+         mock.patch.object(acp, 'ACPClient', side_effect=launch), mock.patch.object(agents, 'acp_tracer', side_effect=counting_tracer):
+        try: out = agents.run_acp({'cmd': 'omp', 'acp': ['acp']}, 'make the change', lambda *a: traces.append(a), cancel=cancel)
+        except Exception as e: out = e
+    seen['client'].close.assert_called()                                   # the turn's own connection is always closed
+    assert not seen['overlay'].exists()                                    # the foreground-only overlay never leaks
+    assert seen['flushes'] == 1                                            # the trace flushes exactly once, on whatever road the turn ended
+    return out, traces, seen
+
+
+OMP_ACP_STEP = {'sessionUpdate': 'tool_call_update', 'toolCallId': 'call-1', 'title': 'Read File', 'kind': 'read',
+                'status': 'in_progress', 'rawInput': {'path': 'app.py'}, 'rawOutput': 'file contents',
+                'locations': [{'path': 'app.py'}]}
+OMP_TRAILING_TEXT = {'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'all done'}}
+
+
+def test_omp_acp_end_turn_flushes_the_open_step_balanced(verified_acp_file):
+    """A tool that is still in progress at end_turn, with its rawOutput and the trailing text: the flush closes it as a done
+    step with its output, and the trailing words land as the turn's last trace - one flush, nothing left open."""
+    out, traces, _ = _omp_acp_run(verified_acp_file, [OMP_ACP_STEP, OMP_TRAILING_TEXT])
+    assert (out[0], out[1]) == ('all done', 'omp-session-1')
+    tool_calls = [t for t in traces if t[0] == 'tool_call']
+    tool_results = [t for t in traces if t[0] == 'tool_result']
+    assert len(tool_calls) == 1 and tool_calls[0][1] in ('read', 'Read File')
+    assert tool_calls[0][2]['tool_call_id'] == 'call-1' and tool_calls[0][2]['args']['path'] == 'app.py'
+    assert len(tool_results) == 1 and tool_results[0][1] == 'call-1'
+    assert tool_results[0][2] == {'result': 'file contents', 'is_error': False}
+    assert ('progress', 'text', 'all done') in traces                        # the trailing text was traced
+
+
+def test_omp_acp_failed_turn_ends_the_unfinished_step_failed_and_still_cleans_up(verified_acp_file):
+    """A provider failure after the turn has started: the still-open step ends failed (never left to spin), the failure is
+    reported as an OmpTurnError with the session's id, and the connection and overlay are still cleaned up."""
+    out, traces, _ = _omp_acp_run(verified_acp_file, [OMP_ACP_STEP, OMP_TRAILING_TEXT], fail_prompt=True)
+    assert isinstance(out, agents.OmpTurnError) and out.session_id == 'omp-session-1'
+    tool_results = [t for t in traces if t[0] == 'tool_result']
+    assert len(tool_results) == 1 and tool_results[0][1] == 'call-1'
+    assert tool_results[0][2] == {'result': 'file contents', 'is_error': True}
+    assert ('progress', 'text', 'all done') in traces
+
+
+def test_omp_acp_cancelled_turn_ends_the_unfinished_step_failed(verified_acp_file):
+    import threading
+    cancel = threading.Event()
+    def cancel_during_prompt(client):
+        client.cancel()
+        cancel.set()
+    out, traces, _ = _omp_acp_run(verified_acp_file, [OMP_ACP_STEP, OMP_TRAILING_TEXT], cancel=cancel,
+                                  prompt_hook=cancel_during_prompt)
+    assert isinstance(out, agents.OmpTurnError) and 'cancelled' in str(out)
+    assert out.session_id == 'omp-session-1'
+    tool_results = [t for t in traces if t[0] == 'tool_result']
+    assert len(tool_results) == 1 and tool_results[0][2]['is_error'] is True
+    assert ('progress', 'text', 'all done') in traces
+
+
+def test_omp_acp_flush_failure_does_not_block_cleanup_or_hide_the_turn(verified_acp_file):
+    """The flush must be best-effort: when it cannot finish, the turn's own answer is still returned (a trace failure is not
+    the provider's), and the connection and the overlay are still cleaned up behind it."""
+    out, traces, seen = _omp_acp_run(verified_acp_file, [OMP_ACP_STEP, OMP_TRAILING_TEXT], fail_flush=True)
+    assert (out[0], out[1]) == ('all done', 'omp-session-1')
+    assert seen['flushes'] == 1
+    assert seen['closed'] is True and not seen['overlay'].exists()
+
+
+def test_omp_acp_close_failure_is_reported_and_does_not_leak_the_overlay(verified_acp_file):
+    """When the turn has run but the close fails: the close's failure is the one reported (not swallowed by the trace), and
+    the overlay is still removed behind it."""
+    out, traces, seen = _omp_acp_run(verified_acp_file, [OMP_ACP_STEP, OMP_TRAILING_TEXT], fail_close=True)
+    assert isinstance(out, RuntimeError) and 'the process tree would not die' in str(out)
+    assert not seen['overlay'].exists()
+    assert any(t[0] == 'tool_result' for t in traces)

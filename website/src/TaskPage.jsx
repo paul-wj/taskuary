@@ -125,7 +125,7 @@ import MoreDrafts from "./MoreDrafts.jsx";
 import { draftAnswers, otherPendingReplies } from "./pendingDrafts.js";
 import { replyRounds, roundReviews } from "./replyRounds.js";
 import { diffStat } from "./agentRecord.js";
-import AgentStory from "./AgentStory.jsx";
+import AgentStory, { TrustButtons } from "./AgentStory.jsx";
 import { startLabel, storyPlace, storyShown } from "./agentStory.js";
 import { isPublished } from "./PublishedPages.jsx";
 import EmailSomeone from "./EmailSomeone.jsx";
@@ -1855,10 +1855,10 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   const lineAt = upAt !== "result" ? null : shows("agent") && !sessionView && hasRecord && !resultRest && !chatPane ? "record" : "top";
   // the Agent work row with nothing in it: no agent at work, none ran, no story to tell, and not the open half
   const agentEmpty = !term?.alive && !wide && !shows("agent") && !hasRecord && !["line", "story", "summary"].includes(storyAt);
-  // A HELD STEP CARRIES ITS TRUST PRESSES (the owner, 2026-10-26: "we should have button on untrusted user to either trust user or trust
-  // domain and then we won't have issue again"): the box that says why nothing started holds them, and Came from then shows none.
-  // A press lifts the hold - the box says so and the normal Start is offered; nothing starts by itself
-  const trustBoxed = trustInBox(story) && ["line", "story"].includes(storyAt);
+  // The shared chat replaces the old AgentStory box, so it must carry the sender's trust presses too.
+  // Trust only lifts the hold; the owner's next Send starts the agent.
+  const chatTrust = chatPane && strangerLine(detail)?.trust ? detail?.origin?.trust || { person: tr("Trust them") } : null;
+  const trustBoxed = !!chatTrust || (!chatPane && trustInBox(story) && ["line", "story"].includes(storyAt));
   // ...and IT SAYS IT IS WORKING (the owner, 2026-10-27: "when you hit trust this sender it does not spin, it just hangs there"): the press
   // spins and both presses grey until the task has been read again with the sender trusted - one press, never two
   const [trusting, setTrusting] = useState(null);
@@ -2186,6 +2186,36 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
       }
     } finally { endStart(id); }
   };
+  // An explicit handoff selects the next Send in the existing chat; the press alone never starts work.
+  const dispatchFromChat = async (text, files) => {
+    const id = selected, kind = t?.DoneWhen || handOff || !canCode ? "general" : "coding";
+    if (!beginStart(id, kind)) throw new Error(tr("Starting…"));
+    try {
+      let target = id;
+      if (t?.DoneWhen) {
+        const { data } = await api.get(`/api/tasks/${id}/steps`), step = (data.steps || []).find((s) => !s.done);
+        if (!step) throw new Error(tr("Every step is done - close the goal, or add a step."));
+        target = step.tid || (await api.post(`/api/tasks/${id}/steps/${step.id}/start`)).data.taskId;
+      }
+      if (kind === "coding" && startRepo) await api.put(`/api/tasks/${target}/repo`, { repo: startRepo });
+      const codingRole = ["coding", "cli"].includes(String(kinds[run.agent] || "").toLowerCase());
+      const agent = kind === "coding" ? (codingRole ? run.agent : codingProfile(agents, kinds)) : codingRole ? "" : run.agent;
+      const { data } = await api.post(`/api/tasks/${target}/dispatch`, { kind, agent: agent || null,
+        brain: kind === "coding" ? run.brain || null : null, pick: kind === "general" ? run.pick || null : null,
+        model: run.model || null, instruction: withImages(text, files) || null,
+        ...(target !== id ? { via: id } : {}) });
+      const outcome = outcomeOf(data);
+      if (outcome.state === "needs_repo") {
+        if (!stale(id)) setRepoPick(true);
+        throw new Error(outcome.text);
+      }
+      if (!["started", "existing"].includes(outcome.state)) throw new Error(outcome.text);
+      if (!stale(id)) { setTerm(data.session || null); setRestartOpen(false); askTaken(id); setChatRead((n) => n + 1); }
+      await Promise.all([loadDetail(id), loadTasks()]); onChanged?.();
+      if (target !== id) (onOpenTask || onSelect)?.(target);
+      return data;
+    } finally { endStart(id); }
+  };
   // TRIAGE'S OFFER, taken with one press (the owner, 2026-10-28: "I can register you for the webinar and put it on your calendar"):
   // the general agent starts on it by the one dispatch door; anything that signs up or sends still waits for the owner's yes
   const acceptOffer = async () => {
@@ -2489,7 +2519,9 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // so a general task could never be handed to the coding agent from here. It opens the agent step; a live session is paused
   // (its handover kept for the next) when the new one starts (startCodingAgent).
   // THE AGENT BOX, OPENED: the agent step, its box open in it and brought into view - one box at a time on the canvas (tq-next-run)
-  const openBox = () => { if (canvas) window.dispatchEvent(new CustomEvent("tq-next-run")); setOpenStage("agent"); setRestartOpen(true); setBoxAt((n) => n + 1); };
+  const openBox = () => { if (canvas) window.dispatchEvent(new CustomEvent("tq-next-run")); setOpenStage(solo ? "from" : "agent"); setRestartOpen(true); setBoxAt((n) => n + 1); };
+  const chatHandoff = home && restartOpen ? { id: boxAt, kind: t?.DoneWhen || handOff || !canCode ? "general" : "coding",
+    send: dispatchFromChat, cancel: () => setRestartOpen(false) } : null;
   const runAnother = { id: "run-another", group: "agent", label: labelOfRow("run-another"), disabled: !!noAiWhy, why: noAiWhy,
     run: openBox, title: hintOfRow("run-another") };
   const changeVerbs = !notDone ? [] : [
@@ -2691,7 +2723,8 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   useEffect(() => {
     if (!restartOpen) return undefined;
     setContinueCard(null);                        // one box in the pane at a time
-    if (twoUp) openSection("agent");
+    if (twoUp && !solo) openSection("agent");
+    if (home) return undefined;                  // the mounted shared composer owns its focus
     const f = requestAnimationFrame(() => {
       const el = document.querySelector("[data-tq-run-form]");
       el?.scrollIntoView({ block: "nearest", behavior: "smooth" }); el?.querySelector("textarea")?.focus({ preventScroll: true });
@@ -2702,7 +2735,10 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   useEffect(() => {
     const on = (e) => {
       if (Number(e.detail?.tid) !== Number(selRef.current)) return;
-      if (typeof e.detail?.coding === "boolean" && !t?.DoneWhen) setHandOff(!e.detail.coding || !canCode);
+      if (typeof e.detail?.coding === "boolean" && !t?.DoneWhen) {
+        setHandOff(!e.detail.coding || !canCode);
+        setRun((r) => ({ ...r, model: "" }));
+      }
       openBox();
     };
     window.addEventListener("tq-agent-ask", on);
@@ -3174,6 +3210,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                         in - typing there starts the agent, whose chat then opens beside it; what the chat would hold (a draft, an email owed) over it */}
                     {solo && <Box data-tq-solo-box="" sx={{ mt: "auto", position: "sticky", bottom: 0, zIndex: 1, bgcolor: SHADE, pt: 1 }}>
                       <NoAgentChat task={t} reviews={detail?.reviews || []} cards={chatCards} closed={closedSaid}
+                        handoff={chatHandoff}
                         onStarted={(data) => { const o = outcomeOf(data); if (o.state === "started" || o.state === "existing") setTerm(data?.session || null);
                           askTaken(t.TaskId); loadDetail(selected); loadTasks(); onChanged?.(); }} /></Box>}
                   </Box>
@@ -3476,7 +3513,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                   /* ...AND A CHAT TASK'S CHAT IS A PANE AT REST TOO ("chat"): its box stays on screen under the newest turn, as any chat app's,
                      never a scroll below a chat as tall as its words (the owner, 2026-11-04: "where is the prompt box") */
                   <Box data-tq-agent-room={liveSession ? "live" : chatPane ? "chat" : "rest"} sx={liveSession || chatPane ? { flex: "1 1 0", minHeight: canvas ? "max(240px, calc(100cqh - 113px))" : { xs: 360, md: 420 }, mb: canvas && !chatPane ? 1 : 0,
-                    display: "flex", flexDirection: "column", "& > *": { flex: 1, minHeight: 0 },
+                    display: "flex", flexDirection: "column", "& > :not([data-tq-chat-trust])": { flex: 1, minHeight: 0 },
                     // ...except while its agent is starting and has said nothing: the room is that one line (GeneralWorkspace `quiet`) - never
                     // a chat task's chat, whose box stays at the card's foot from the first second (the stress run, 2026-11-05: 485px empty under it)
                     ...(!chatPane ? { "&:has([data-tq-starting])": { flex: "0 0 auto", minHeight: 0, "& > *": { flex: "0 0 auto" } } } : {}) }
@@ -3487,11 +3524,16 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                       // ...or that is at work again - a turn under way is the move, never a rest (2026-10-28, CI: a working agent's chat stood hidden)
                       // ...or holds a draft waiting for its Send
                       ...(!chatPane && (resultRest || (failedRun && !resultOpen)) ? { "&:not(:has([data-tq-asking], [data-tq-agent-notice], .tq-aui-band, .tq-aui-thinking, .tq-aui-thread [data-tq-working], [data-tq-waits], [data-tq-on-you]))": { display: "none" } } : {}) }}>
+                    {chatTrust && <Box data-tq-chat-trust="" sx={{ flex: "0 0 auto", px: 1.5, py: 1 }}>
+                      <Typography sx={{ fontSize: 12.5, color: DIM }} title={strangerLine(detail).why}>{strangerLine(detail).text}</Typography>
+                      <TrustButtons trust={chatTrust} onTrust={trustPress} trusting={trusting} />
+                    </Box>}
                     <React.Suspense fallback={<Box sx={{ flex: 1, display: "grid", placeItems: "center" }}><CircularProgress size={22} /></Box>}>
                       {/* ONE CHAT FOR EVERY KIND (the owner, 2026-11-06: "one shared chat object for coding and regular"): the component reads its own
                           source (chatStream.chatSource) - a coding task's sessions, or the general agent's conversation - and the branch's landing
                           card joins it wherever the task works in a checkout */}
                       <GeneralWorkspace key={`${t.TaskId}-${generalRevision}`} task={t} compact onSession={generalSession} reread={chatRead}
+                        handoff={chatHandoff}
                         queued={chatPane && !liveSession && queuedRow ? <QueuedStart taskId={t.TaskId} queued={queuedRow} line onChanged={() => { loadTasks(); loadDetail(t.TaskId); }} /> : null}
                         liveSid={term?.alive && term.mode === "assistant" ? term.sid : ""}
                         mails={storedMessages} reviews={detail?.reviews || []} checklist={detail?.checklist || null} next={chatCards}

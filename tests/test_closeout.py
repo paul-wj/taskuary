@@ -130,6 +130,13 @@ class MergeCloseOutTests(unittest.TestCase):
         s = armed(MemoryStore()); tid = with_pr(s)
         finish(s, tid, keep_open=True)
         self.assertIsNone(proposals.closeout_pending(s, tid))
+        # ...and the upstream's own ending (channels.close_upstream_ended): it dismisses the close-out the finish raised,
+        # then wraps the saved session no_reply - and no new one re-raises over the PR that already ended
+        s = armed(MemoryStore()); tid = with_pr(s)
+        finish(s, tid)
+        s.decide_review(proposals.closeout_pending(s, tid)['ReviewId'], 'no_reply', None, 'router', 'the item ended upstream')
+        self.assertIsNone(finish(s, tid, keep_open=True, no_reply=True)['closeout'])
+        self.assertIsNone(proposals.closeout_pending(s, tid))
 
     def test_the_close_out_is_the_owners_act_so_agent_switches_do_not_hide_it(self):
         s = armed(MemoryStore()); s.set_setting('agent_push_enabled', '0', 't'); tid = with_pr(s)

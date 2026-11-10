@@ -401,8 +401,12 @@ def vouch(store, rows) -> None:
     m = whom(store, rows)
     ch = ((m or {}).get('Channel') or '').lower()
     if ch in CHAT_CHANNELS and (who := chat_key(m)): store.remember_trust(ch, who, 'you vouched for them')
-    # a tracker's author, else (no author to name) its project; an alert's source - never "everyone who can raise an alert"
-    elif ch in TRACKERS + ALERTS: store.remember_trust(ch, (ch in TRACKERS and _author(m)) or _place(m), 'you vouched for them')
+    # a tracker's author, else (no author to name) its project; an alert's source - never "everyone who can raise an alert".
+    # Jira's author is remembered per site (_site_author): a trust pressed on one site's person must not start an agent for the
+    # same id on another site. A Jira item with no author - or no site to name the author on - remembers NOTHING: not the bare
+    # key (that would match any site's old record) and not the whole project.
+    elif ch in TRACKERS and (a := _site_author(m)): store.remember_trust(ch, a, 'you vouched for them')
+    elif ch in TRACKERS + ALERTS and ch != 'jira': store.remember_trust(ch, _place(m), 'you vouched for them')
     # ...and a mail sender too, per mailbox like the Sent Items hit: their next mail is no stranger's either ("then we won't have issue
     # again", 2026-10-26). A From that failed verification may be forged - the task is vouched for, the address is not remembered.
     elif ch == 'email' and '@' in (addr := str(m.get('FromEmail') or '')) and auth(m) != 'fail':
@@ -414,13 +418,26 @@ def vouch(store, rows) -> None:
 # files a Jira Service Management ticket, and anyone who can make the owner's site throw an error writes a Sentry alert. A tracker
 # item is trusted when its poller recorded the author as a member of that project (mail_meta 'member', read off the connector's own
 # payload: devtools/pm); no author, or one who is not a member, is a stranger's. An alert is ALWAYS a stranger's text until the owner
-# trusts that source. The owner's presses (vouch, trust_org) are remembered per channel: the author ('<ch>:<id>'), or the project /
-# alert source ('project:<name>').
+# trusts that source. The owner's presses (vouch, trust_org) are remembered per channel: the author ('<ch>:<id>', scoped to the site
+# on Jira - see _site_author), or the project / alert source ('project:<name>').
 TRACKERS = ('gitlab', 'jira', 'linear', 'asana', 'monday', 'clickup', 'todoist', 'azdo', 'trello', 'notion', *INBOXES)
 ALERTS = ('sentry', 'pagerduty')
 
 def _author(m: dict) -> str: return str(_chat_meta(m).get('author') or '').lower()
 def _place(m: dict) -> str: return f"project:{str(m.get('SourceName') or m.get('source_name') or '').strip().lower()}"
+def _site_of(m: dict) -> str:
+    "The source's site as the poller names it: the host plus its context path ('jira.northwind.example/jira'), lowercased."
+    return str(m.get('SourceName') or m.get('source_name') or '').strip().lower()
+def _site_author(m: dict) -> str:
+    """The remembered-trust key for a tracker's author. On Jira it is 'jira:<site>:<author>' - the raw author ('jira:<accountId or
+    key>') is a SITE-LOCAL id that two sites each hand out, so a trust on one site must not start an agent on the other; the site
+    is the normalized SourceName the poller already records (jiraapi.base_url's host and context path). Every other tracker keeps
+    its global '<ch>:<id>'. A Jira author with no site to name is '' - a bare key would match an old unscoped record at ANY site,
+    so it matches nothing instead: fail closed until the owner re-presses on a named site."""
+    a = _author(m)
+    if not a or not a.startswith('jira:'): return a
+    site = _site_of(m)
+    return f'jira:{site}:{a}' if site else ''
 
 def _item_known(store, msg: dict, ch: str, on: bool, memo: dict = None) -> tuple:
     room, src = channel_name(ch), str(msg.get('source_name') or msg.get('SourceName') or '') or 'this source'
@@ -429,9 +446,12 @@ def _item_known(store, msg: dict, ch: str, on: bool, memo: dict = None) -> tuple
     if ch in ALERTS:
         return False, _said(f"{room} alerts carry text anyone can trigger (an error's message, a page's address), so they are a "
                             f"stranger's words until you trust alerts from {src}, {NOBODY}.", True)
-    if (a := _author(msg)) and _vouched(store, ch, a, memo): return True, _said(f'You vouched for {name}.')
+    if (a := _site_author(msg)) and _vouched(store, ch, a, memo): return True, _said(f'You vouched for {name}.')
     if not on: return False, _said(f'Starting an agent from {room} is switched off in Settings, {NOBODY}.')
     if _chat_meta(msg).get('member') is True: return True, _said(f'{name} is a member of {src} on {room}.')
+    if not a and ch == 'jira' and _author(msg):
+        return False, _said(f'Jira recorded who wrote this ({name}) but Taskuary has no record of the site it is from, so it is '
+                            f"a stranger's until you trust the site it came from, {NOBODY}.", True)
     if not a: return False, _said(f"{room} does not say who wrote this item on {src}, so it is a stranger's until you trust {src}, {NOBODY}.", True)
     return False, _said(f'{name} is not a member of {src} on {room}, {NOBODY}.', True)
 

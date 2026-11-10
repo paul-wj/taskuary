@@ -30,6 +30,12 @@ def jira_member(a: dict):
     return None if not t else t == 'atlassian'
 
 
+def _jira_author_id(a: dict):
+    """Use the same identity for a reporter and their comments: Cloud's accountId, then Data Center's key or name.
+    Display names and email addresses do not establish an identity."""
+    return a.get('accountId') or a.get('key') or a.get('name')
+
+
 def _cfg(c):
     try: return json.loads(c.get('ConfigJson') or '{}')
     except ValueError: return {}
@@ -126,7 +132,7 @@ def _jira_comments(store, c, issue, base: str, llm, file_only: bool) -> int:
                'body': str(cm.get('body') or '')[:20000], 'from_name': who,
                'from_email': a.get('emailAddress'), 'sent_at': _stamp(cm.get('created')),
                'source_link': f"{jiraapi.base_url(c)}/browse/{base.split(':', 1)[-1]}",
-               'source_name': jiraapi.base_url(c).split('//', 1)[-1], **author_meta('jira', a.get('accountId'), jira_member(a))}
+               'source_name': jiraapi.base_url(c).split('//', 1)[-1], **author_meta('jira', _jira_author_id(a), jira_member(a))}
         if jiraapi.same_user(a, me, jiraapi.deployment(c)) or (a.get('accountType') or '') == 'app':
             n += ingest_own_message(store, msg, f'comment on {base} by {who} - history, not work')
             continue
@@ -161,7 +167,7 @@ def poll_jira(store, c, since, llm=None, file_only=False) -> int:
             'from_name': rep.get('displayName') or 'Jira', 'from_email': rep.get('emailAddress'),
             'conversation_id': f"jira:{i['key']}", 'sent_at': _stamp(f.get('updated')),
             'source_link': f"{base}/browse/{i['key']}", 'source_name': base.split('//', 1)[-1],
-            **author_meta('jira', rep.get('accountId') or rep.get('key'), jira_member(rep))}, llm=llm)
+            **author_meta('jira', _jira_author_id(rep), jira_member(rep))}, llm=llm)
     return n
 
 

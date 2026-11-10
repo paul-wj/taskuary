@@ -237,7 +237,9 @@ def _wrap(store, tid: int, agent: str, why: str, final_message: str = '', no_rep
     from .store import task_ref
     try:
         # ...the ending runs (report, drafted reply, proposals) and the task stays open: closing it is the owner's (nothing_left)
-        out = wrapup.wrap(store, tid, close=False, actor=agent or 'agent', final_message=final_message, no_reply=no_reply)
+        # `done`: the agent SAID it was finished, so the close-out its work owes - an open pull request's merge - is raised
+        # for the owner's yes even though no reply is drafted; the approval never sends, merges or closes the task
+        out = wrapup.wrap(store, tid, close=False, actor=agent or 'agent', final_message=final_message, no_reply=no_reply, done=True)
         # ...and a reply already waiting (triage's early draft, one the agent saved) goes down with it: nobody hears back
         if no_reply:
             for rv in (store.pending_review(tid, 'draft_reply', live_only=False), store.pending_review(tid, 'draft', live_only=False),

@@ -17,6 +17,7 @@ const link = { fontSize: 11, minHeight: 0, p: 0, minWidth: 0 };
 const trustLabel = (label) => {
   if (label === "Trust them" || label === "Trust their Slack workspace" || label === "Trust their organisation on Teams") return t(label);
   if (label.startsWith("Trust everyone at ")) return t("Trust everyone at {name}", { name: label.slice("Trust everyone at ".length) });
+  if (label.startsWith("Trust everyone from ")) return t("Trust everyone from {name}", { name: label.slice("Trust everyone from ".length) });
   if (label.startsWith("Trust ")) return t("Trust {name}", { name: label.slice("Trust ".length) });
   return label;
 };

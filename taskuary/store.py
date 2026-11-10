@@ -1373,6 +1373,36 @@ class SQLiteStore:
             # a verified 'this mailbox wrote to them' hit, remembered so the mail server is asked once per address (PW-080)
             self.cx.execute('CREATE TABLE IF NOT EXISTS sender_trust (Mailbox TEXT, Address TEXT, Reason TEXT, CheckedAt TEXT, '
                             'PRIMARY KEY (Mailbox, Address))')
+            # Jira remembers an author PER SITE, not per raw author key: 'jirauser10000' is a local id that two Data Center
+            # sites each hand out to a different person, and a trust on one site must not start an agent on the other. senders
+            # now stores the address as 'jira:<site>:<author>' (senders._site_author). A legacy row is the bare
+            # ('jira', 'jira:<author>') - detected by its AUTHOR KEY (the poller's json_extract '$.author' equals the row's own
+            # key, so a Cloud accountId that itself contains a colon is no trap), never by counting colons. It migrates when the
+            # store records that author on exactly one site (the owner's press was for that site's person), into
+            # 'jira:<site>:<key>'; a scoped row already there wins - the legacy twin is dropped, never overwritten; two recorded
+            # sites mean two different people, so the bare row is dropped too. A bare row whose author the store no longer
+            # records is left alone: it matches no scoped lookup (senders._item_known only asks 'jira:<site>:<author>', and a
+            # siteless Jira item fails closed), so it is dead weight, never a back door - the owner re-presses on the site.
+            _jira_trust = {str(r[0] or '').lower() for r in self.cx.execute(
+                "SELECT Address FROM sender_trust WHERE Mailbox='jira'").fetchall()}
+            for _k, _sn in self.cx.execute("SELECT lower(COALESCE(json_extract(MailMetaJson,'$.author'),'')), "
+                                           "COALESCE(trim(lower(SourceName)),'') FROM message "
+                                           "WHERE Channel='jira' AND COALESCE(json_valid(MailMetaJson),0)=1").fetchall():
+                if not _sn or not _k.startswith('jira:') or not _k[5:] or _k not in _jira_trust: continue
+                _sites = {x[0] for x in self.cx.execute(
+                    "SELECT DISTINCT COALESCE(trim(lower(SourceName)),'') FROM message WHERE Channel='jira' AND "
+                    "COALESCE(trim(lower(SourceName)),'')<>'' AND COALESCE(json_valid(MailMetaJson),0)=1 AND "
+                    "lower(COALESCE(json_extract(MailMetaJson,'$.author'),''))=?", (_k,))}
+                if any(x != _k and x.startswith('jira:') and x.endswith(':' + _k) for x in _jira_trust):
+                    # a scoped record for this author already exists, on any site: it wins, the bare twin is dropped,
+                    # nothing overwritten, and the bare press is never moved to a different site
+                    self.cx.execute("DELETE FROM sender_trust WHERE Mailbox='jira' AND Address=?", (_k,))
+                elif len(_sites) == 1:
+                    self.cx.execute("UPDATE sender_trust SET Address=? WHERE Mailbox='jira' AND Address=?",
+                                    (f'jira:{_sites.pop()}:{_k}', _k))
+                else:
+                    self.cx.execute("DELETE FROM sender_trust WHERE Mailbox='jira' AND Address=?", (_k,))   # two sites: fail closed
+                _jira_trust.discard(_k)
             # explicit worker events (workerstate.py, PW-222/227): what a run said about itself, by task, run and request
             self.cx.execute('CREATE TABLE IF NOT EXISTS worker_event (Id INTEGER PRIMARY KEY, TaskId INTEGER, Sid TEXT, Kind TEXT, RequestId TEXT, '
                             'Text TEXT, ChoicesJson TEXT, Source TEXT, EventId TEXT UNIQUE, CreatedAt TEXT)')
@@ -1519,6 +1549,19 @@ class SQLiteStore:
             for old, new in SETTING_RENAMES:
                 self.cx.execute('UPDATE OR IGNORE setting SET Name=? WHERE Name=?', (new, old))
                 self.cx.execute('DELETE FROM setting WHERE Name=?', (old,))
+            # trust_trackers is NEWER than the master switch: a legacy db has no row for it, and the seed below would
+            # hand it back on for an owner who had switched trust_non_email off (senders._known checks the tracker
+            # switch first). Inherit the saved master choice before the seed; a fresh db (no saved choice) keeps the
+            # new default. Explicit tracker choices win; a seed from an earlier merged startup has no writer.
+            if not self.cx.execute("SELECT 1 FROM setting WHERE Name='trust_trackers'").fetchone():
+                _ne = self.cx.execute("SELECT Value FROM setting WHERE Name='trust_non_email'").fetchone()
+                if _ne is not None:
+                    self.cx.execute('INSERT INTO setting (Name, Value, UpdatedBy) VALUES (?,?,?)',
+                                    ('trust_trackers', str(_ne[0] or '').strip() or DEFAULT_SETTINGS['trust_non_email'], 'migration'))
+            self.cx.execute("UPDATE setting SET Value='0', UpdatedBy='migration' WHERE Name='trust_trackers' AND Value=? "
+                            "AND COALESCE(UpdatedBy,'')='' AND EXISTS "
+                            "(SELECT 1 FROM setting WHERE Name='trust_non_email' AND Value='0')",
+                            (DEFAULT_SETTINGS['trust_trackers'],))
             for k, v in DEFAULT_SETTINGS.items():
                 self.cx.execute('INSERT OR IGNORE INTO setting (Name, Value) VALUES (?,?)', (k, v))
             # AUTO ROUTING ON (the owner, 2026-11-06: "it should be on auto routing by default"). The old seed was 'fixed' with no
@@ -6229,6 +6272,9 @@ class SQLiteStore:
         r = self._one('SELECT * FROM sender_trust WHERE LOWER(Mailbox)=LOWER(?) AND LOWER(Address)=LOWER(?)', (mailbox or '', email or ''))
         return r['Reason'] if r else None
     def remember_trust(self, mailbox: str, email: str, reason: str):
+        # A Jira author arrives here already scoped to its site (senders.vouch passes senders._site_author's
+        # 'jira:<site>:<author>'): the raw author id is a site-local key that two Data Center sites each hand out, and a
+        # bare 'jira:<author>' that slips through matches no scoped lookup, so it fails closed on its own.
         self._exec('INSERT OR REPLACE INTO sender_trust (Mailbox, Address, Reason, CheckedAt) VALUES (?,?,?,?)',
                    ((mailbox or '').lower(), (email or '').lower(), reason, _now()))
     def _heal_notes(self):

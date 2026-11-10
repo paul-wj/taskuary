@@ -2,7 +2,7 @@
 // drafts waiting on Send, the steps only the owner can take ("On you: …"), or "Nothing left to do here". Where the chat is the task's home the
 // drafts are their cards, inside Next steps (`next`, TaskPage's chat cards, so each draft is drawn once); elsewhere a
 // line each. An On you step's mark says whose it is, never a press.
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Box, CircularProgress, IconButton, Tooltip, Typography } from "@mui/material";
 import AttachFileIcon from "@mui/icons-material/AttachFile";
 import SendIcon from "@mui/icons-material/ArrowUpward";
@@ -13,7 +13,8 @@ import { isCardReview } from "./actionCard.js";
 import { Md } from "./md.jsx";
 import { MicButton } from "./ui.jsx";
 import { MESSAGE } from "./kinds.js";
-import { AttachRow, IMAGE_ACCEPT, INLINE_CHIPS, fileChips, fileState, usePromptImages, withImages } from "./promptImages.jsx";
+import { AttachChip, AttachRow, IMAGE_ACCEPT, INLINE_CHIPS, fileChips, fileState, usePromptImages, withImages } from "./promptImages.jsx";
+import { label as btn } from "./buttons.js";
 import { ALERT_INK, BORDER, DIM, FAINT, INK } from "./theme.jsx";
 
 // ...a chatbot's answer, split into sections to read (the owner, 2026-11-05): a short bold heading over each, no rules, no boxes but the email's
@@ -112,19 +113,22 @@ export const StaleDrafts = ({ reviews, turnId }) => staleOn(reviews, turnId).map
 // A TO-DO NO AGENT HAS TOUCHED (the owner, 2026-11-06): under what came in - which says the ask and the To do already - the cards the chat would
 // hold (`cards`: a draft and its Send, an email owed), the drafter's why over them, and the one box. The box is Send to agent's road (the
 // dispatch, which makes the task the general agent's) with the owner's own words; from its first turn on, the chat is the agent's.
-export function NoAgentChat({ task, reviews = [], cards = null, closed = "", onStarted }) {
+export function NoAgentChat({ task, reviews = [], cards = null, closed = "", handoff = null, onStarted }) {
   const [text, setText] = useState(""), [busy, setBusy] = useState(false), [err, setErr] = useState("");
   const pics = usePromptImages({ files: true });          // ...a dropped, pasted or picked file goes with the words (the owner, 2026-11-05)
+  const input = useRef(null);
+  useEffect(() => { if (handoff) input.current?.focus({ preventScroll: true }); }, [handoff?.id]);
   const why = String((reviews || []).find((r) => r?.Status === "pending" && r.DraftWhy)?.DraftWhy || "").trim();
   const send = async () => {
     const words = text.trim();
     if ((!words && !pics.paths.length) || busy || pics.busy) return;
     setBusy(true); setErr("");
     try {
-      const { data } = await api.post(`/api/tasks/${task.TaskId}/dispatch`, { kind: "general", instruction: withImages(words, pics.paths) });
-      setText(""); pics.clear(); onStarted?.(data);
+      const data = handoff ? await handoff.send(words, pics.paths)
+        : (await api.post(`/api/tasks/${task.TaskId}/dispatch`, { kind: "general", instruction: withImages(words, pics.paths) })).data;
+      setText(""); pics.clear(); if (!handoff) onStarted?.(data);
     }
-    catch (e) { setErr(e?.response?.data?.detail || "Could not start the agent - check that an AI is connected under Connections, then send it again."); }
+    catch (e) { setErr(e?.response?.data?.detail || e?.message || "Could not start the agent - check that an AI is connected under Connections, then send it again."); }
     finally { setBusy(false); }
   };
   return (
@@ -136,6 +140,8 @@ export function NoAgentChat({ task, reviews = [], cards = null, closed = "", onS
       {/* ...a closed one says how it closed over the box - typing there reopens it (server._refuse_closed_chat) */}
       {!!closed && <div className="tq-aui-closed" data-tq-chat-closed="">{closed}</div>}
       <PromptBox text={text} setText={setText} pics={pics} busy={busy} onSend={send} placeholder={MESSAGE}
+        inputRef={input} chips={handoff ? <AttachChip data-tq-agent-handoff={handoff.kind} name={btn(handoff.kind === "coding" ? "coding_agent" : "regular_agent")}
+          icon={false} onRemove={busy ? null : handoff.cancel} /> : null}
         label="Send to the agent" title="Starts the agent on this task with your words" boxAttrs={{ "data-tq-no-agent-box": "" }} sendAttrs={{ "data-tq-no-agent-send": "" }} />
       {!!err && <Typography role="alert" sx={{ px: 1.5, pb: 1, fontSize: 12.5, color: ALERT_INK }}>{err}</Typography>}
     </Box>

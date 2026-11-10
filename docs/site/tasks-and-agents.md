@@ -98,19 +98,25 @@ is still alive.
 
 ## Sending work to an agent
 
-Choose **Send to agent** on the Agent section. A coding task opens a terminal on its CLI and model in
-the repository's checkout; a general task opens a conversation. The session is handed the task summary,
-the incoming messages, the attachments, any saved result from an earlier run and your optional
-note — plus a context file under `~/.taskuary/context/` holding the thread, relevant sender
-and topic history, the learned profile, and reports from related closed tasks.
+The **Agent** section keeps one chat box for coding and general work. **Send to agent** selects
+the next target and focuses that box; it does not start anything until you send your words.
+Choosing the same kind continues its existing chat or coding session. Changing kind hands the
+task over through the normal dispatch checks. The task summary, incoming messages, attachments,
+saved results and relevant context accompany the work; an unsuccessful handoff keeps the draft.
+
+If a start is refused because the sender is not trusted, the **Agent** chat shows the trust controls
+beside the explanation. Review the source before choosing one. Trusting only lifts the restriction:
+your typed instructions stay in the box, and the next **Send** starts the agent. A person button
+remembers that author; a source button trusts everyone from the named source. Older Jira imports
+without an author ID offer source trust rather than pretending to know the reporter. Connecting a
+Jira account or receiving an issue assigned to you does not by itself establish the author's trust.
 
 | Control | What it does |
 |---|---|
-| **Send to agent** | Hands the work to an agent; the card lets you change which one |
-| **Stop and save** | Ends the session and writes its result; the task stays open until you mark it done |
-| **Continue** (coding) | Picks the work up where it left off, with what you add or as it is (**Try again** after a failed run) |
-| **Run another agent** (coding) | Starts a second agent on the same task |
-| The box under a general task's chat | Carries the same conversation on - there is no Continue or Run another there |
+| **Send to agent** | Selects the target for the next Send in the existing box |
+| The chat box | Starts or continues work with your words and attached files |
+| The selected agent chip's **×** | Cancels the selection without discarding your draft |
+| **Stop response** | Ends the current turn; the conversation and task remain available |
 
 **Mark done** is stronger than all of them: it closes the task *and* ends any live session,
 because a finished task should not leave an orphan process running.

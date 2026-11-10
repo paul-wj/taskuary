@@ -42,7 +42,7 @@ flowchart LR
   C1 -->|"you answer them"| F
   C1 -->|"Not yet"| C2["Open · on you"]
   C1 -->|"merged or closed on GitHub"| F
-  C -->|no| R
+  C -->|no| D["Agent finished · task open<br/>reply drafted if owed"]
   W -->|"the PR or issue it came from ended"| R{"Reply owed?"}
   R -->|yes| R1["Waiting, with the draft for you"]
   R -->|no| R2["Done · stays on the rail until a person reads it"]
@@ -69,6 +69,11 @@ flowchart LR
 What finishes a task depends on where it lives. Mail is finished by the reply. A pull request the agent opened
 is finished by merging it, and an issue by closing it. So the finish raises that last act as a card waiting for
 your yes, and the task is not done until you answer it (decided with the owner on 2026-09-27).
+
+Agent completion and task closure are separate. The agent's explicit done signal raises a due
+merge/close approval even without a reply, while leaving the task open. Saying `--no-reply` does
+not remove that approval. A run merely stopped and saved does not acquire a new close-out unless
+it already owes a reply; owner Mark done and upstream-ended flows keep their existing handling.
 
 **One set of words for every system** (the owner, 2026-09-27: "if we have button to close out per system it will
 be endless"): **Close out** / **Decline** / **Not yet** - on the task page, the Assistant's card, its chat button,

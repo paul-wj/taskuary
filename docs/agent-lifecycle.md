@@ -55,6 +55,11 @@ flowchart LR
   D4 -->|Continue| R
 ```
 
+An explicit agent-finished signal leaves the task open but raises any due upstream approval,
+even when no reply is owed. `--no-reply` suppresses a reply draft, not an open PR's merge approval.
+Stop and save remains a saved run, not a completion signal. Neither the signal nor creating the
+approval merges, sends or closes anything; existing duplicate and stale-context checks still apply.
+
 ## The rules
 
 | # | Rule | Decided |

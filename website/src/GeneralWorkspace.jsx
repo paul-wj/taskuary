@@ -705,7 +705,7 @@ export function AgentAsks({ asking, name, onAnswer, taskId }) {
 function AssistantThread({ task, messages, published, onAsked, onStop, selectionRef, attachmentsRef, onSent, onStarted, onClearAttachments, onAttach, onAttachBack,
   dock = false, dockExpanded = false, prompt, onPromptUsed, onBusyChange, onDockNavigate, onDockChanged,
   serverBusy = false, provider, name = "Taskuary", work, since, began = null, revision = 0, asking, onAnswer, drafts = [], acts = [], onDraftDecided, starting = "", noComposer = false, waiting = [], box = "",
-  onEnded, chat = false, reading = null, came = null, noAi = null, closedLine = "", road = null, cards = null, landing = null, queued = null, hint = "", placeholder = "",
+  onEnded, chat = false, reading = null, came = null, noAi = null, closedLine = "", road = null, cards = null, landing = null, queued = null, hint = "", placeholder = "", handoff = null,
   empty = "", stopShown = false }) {
   useLocale();
   // "working" is only ever true on a WORK window. In the dock nothing below changes at all: the
@@ -714,6 +714,7 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
   const working = !dock && !!serverBusy;
   // ...where the chat has no summary yet, what Close out held (`next`) stands under the thread on its own - a draft is never without its one place
   const nextAt = React.useContext(WorkCtx), summed = lastAnswerSummed(messages);
+  const handoffRef = useRef(handoff); handoffRef.current = handoff;
   const modelAdapter = useMemo(() => ({
     async *run({ messages: runMessages, abortSignal }) {
       onBusyChange?.(true);
@@ -727,9 +728,15 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
       };
       // THE FILES LEAVE THE BOX WITH THE SEND (the owner, 2026-11-06: two pictures sent, their chips still in the box): let go at the server's
       // first word back - the send accepted - never at the turn's end, minutes on; a send refused keeps them. Only these: one added meanwhile stays
-      const sentFiles = attachmentsRef.current.map((a) => a.path);
-      let gone = !sentFiles.length;
-      const took = () => { if (!gone) { gone = true; onClearAttachments(sentFiles); } };
+      const sentFiles = attachmentsRef.current.map((a) => a.path), askedHandoff = handoffRef.current;
+      let gone = !sentFiles.length, accepted = false;
+      const took = () => {
+        if (!gone) { gone = true; onClearAttachments(sentFiles); }
+        if (!accepted && askedHandoff && handoffRef.current?.id === askedHandoff.id) askedHandoff.cancel();
+        accepted = true;
+      };
+      const restore = () => { const c = runtime.thread.composer;
+        if (!accepted && askedHandoff && handoffRef.current?.id === askedHandoff.id && !c.getState().text) c.setText(prompt); };
       const events = [];
       // ..."Started Claude Code (on this computer)" only on the conversation's first turn: it opened every follow-up the owner typed
       // (the desktop stress test, 2026-11-03)
@@ -756,6 +763,7 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
           // ...and the page is told the turn is over: the session the stream's `start` handed it stayed "Agent is working", with Stop
           // and save, over a CLI that had died mid-turn - and nothing polls a session the server no longer has (the agents walk, 2026-10-26)
           onEnded?.();
+          restore();
           yield { content: event.error ? content(`⚠ ${event.error}`) : [...content(), { type: "data", name: "interface_error", data: { source: "The agent stopped without an answer." } }] };
           return;
         } else if (event.type === "done") {
@@ -766,6 +774,7 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
       } catch (e) {
         if (abortSignal?.aborted) return;              // the owner pressed stop; that is not an error
         onEnded?.();
+        restore();
         yield { content: e?.presentation ? [...content(), { type: "data", name: "interface_error", data: e.presentation }] : e?.message ? content(`⚠ ${e.message}`) : [...content(), { type: "data", name: "interface_error", data: { source: "The assistant could not answer." } }] };
       } finally {
         onBusyChange?.(false);
@@ -793,6 +802,8 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
     return off;
   }, [revision, runtime]);
   const prompted = useRef(null);
+  const input = useRef(null);
+  useEffect(() => { if (handoff) input.current?.focus({ preventScroll: true }); }, [handoff?.id]);
   useEffect(() => {
     if (!prompt?.text || prompted.current === prompt.id) return;
     prompted.current = prompt.id;
@@ -849,7 +860,7 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
   useEffect(() => { setAskErr(""); }, [asking?.request_id]);
   const answerTyped = (e) => {
     // ...a source with its own road (a coding CLI: typed into it, or its session picked back up) takes every line as a held one
-    if (!dock && !asking && road) { e.preventDefault(); const c = runtime.thread.composer; holdText(c.getState().text.trim(), c); return; }
+    if (!dock && road && (handoff || !asking)) { e.preventDefault(); const c = runtime.thread.composer; holdText(c.getState().text.trim(), c); return; }
     if (dock || !asking) return;
     e.preventDefault();
     const c = runtime.thread.composer, w = c.getState().text.trim();
@@ -883,13 +894,15 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
     read(); return runtime.thread.subscribe(read);
   }, [runtime]);
   const holdLine = (e) => {
-    if (dock || asking) return;
+    if (dock || (asking && !handoff)) return;
     const c = runtime.thread.composer, w = heldLine(e, c.getState().text, !!road || runtime.thread.getState().isRunning);
     if (!w) return;
     e.preventDefault(); holdText(w, c);
   };
   const holdText = (w, c) => {
     if (!w && !attachmentsRef.current.length) return;
+    if (handoff && answering.current) return;
+    if (handoff) { answering.current = true; setAskErr(""); }
     c.setText("");
     const id = `held-${Date.now()}-${Math.random()}`, after = (messages || []).filter((m) => m?.role === "user").length;
     // ...WITH THE BOX'S FILES: a line held mid-turn went without them, and they sat on in the box (the owner, 2026-11-06) - put back if it did not go
@@ -897,7 +910,11 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
     if (files.length) onClearAttachments(files.map((a) => a.path));
     setHeld((h) => [...h, { id, text: w || withImages("", files.map((a) => a.path)), after, drawn: mineDrawn.length }]);
     (road ? road(w, files.map((a) => a.path)) : api.post(`/api/tasks/${task.TaskId}/assistant/messages`, { text: w, attachments: files.map((a) => a.path) }, { timeout: 0 }))
-      .catch((x) => { setHeld((h) => h.map((l) => (l.id === id ? { ...l, err: errText(x) } : l))); if (files.length) onAttachBack(files); });
+      .catch((x) => {
+        if (handoff) { const more = c.getState().text; setHeld((h) => h.filter((l) => l.id !== id)); c.setText(more ? `${w}\n${more}` : w); setAskErr(errText(x)); }
+        else setHeld((h) => h.map((l) => (l.id === id ? { ...l, err: errText(x) } : l)));
+        if (files.length) onAttachBack(files);
+      }).finally(() => { if (handoff) answering.current = false; });
   };
   const [landState, setLandState] = useState(null);
   const landAt = landing ? landingTurn(messages, landState?.at) : null;
@@ -1005,12 +1022,14 @@ function AssistantThread({ task, messages, published, onAsked, onStop, selection
                 composer its root, input and Send. Its files inside it, the one attachment look in one line (the owner, 2026-11-05), and WHERE IT CAME
                 FROM a chip at its left (2026-11-06: "keep the prompt box thin... put the from you in the left side of the prompt box") - a press opens it */}
             <OneBox root={ComposerPrimitive.Root} rootProps={{ onSubmit: answerTyped }} onFiles={onAttach}
-              chips={attachmentsRef.current.length || came ? <>
+              chips={attachmentsRef.current.length || came || handoff ? <>
+                {handoff && <AttachChip data-tq-agent-handoff={handoff.kind} name={btn(handoff.kind === "coding" ? "coding_agent" : "regular_agent")}
+                  icon={false} onRemove={handoff.cancel} />}
                 {came && <AttachChip data-tq-came-chip="" name={came.label} title={came.title || came.label} icon={came.icon || false} onClick={came.onOpen}
                   sx={{ cursor: came.onOpen ? "pointer" : "default" }} />}
                 {attachmentsRef.current.map((a) => <AttachChip key={a.path} data-tq-file-chip={a.name} name={a.name} onRemove={() => onClearAttachments(a.path)} />)}</> : null}
               /* ...by the name the pane shows (kinds.json `shown`): an analyst's box said "the assistant" (the email walk, 2026-10-29) */
-              input={<ComposerPrimitive.Input className="tq-aui-input" onKeyDown={holdLine} placeholder={askWords || placeholder || (dock ? t("Tell Taskuary what to do next…") : MESSAGE)} />}
+              input={<ComposerPrimitive.Input ref={input} className="tq-aui-input" onKeyDown={holdLine} placeholder={askWords || placeholder || (dock ? t("Tell Taskuary what to do next…") : MESSAGE)} />}
               onMic={(t) => { const c = runtime.thread.composer, was = c.getState().text; c.setText(was.trim() ? `${was.trimEnd()} ${t}` : t); }}
               /* stopping is an ACT: closing this page is not one. The button tells the server to stop the run; abandoning the tab just detaches
                  from it (server.py) - and A TURN THIS PANE DID NOT START has the same stop (the owner, 2026-11-05): a turn woken by new mail, or one
@@ -1048,7 +1067,7 @@ const byTime = (ms) => ms.map((m, i) => [String(m.createdAt || "9999").replace("
 export function GeneralWorkspace({ task, onSession, onAnswered, compact = false, dock = false, toolsAt = null,
   dockExpanded = false, prompt, onPromptUsed, onBusyChange, onDockNavigate, onDockChanged,
   onDockNewChat, noAiSaid = false, noTools = false, noComposer = false, liveSid = "", reread = 0, mails = [], reviews = [],
-  checklist = null, opening = false, next = null, chat = false, came = null, closedLine = "", term = null, landing = null, queued = null, onChanged }) {
+  checklist = null, opening = false, next = null, chat = false, came = null, closedLine = "", term = null, landing = null, queued = null, handoff = null, onChanged }) {
   useLocale();
   const [data, setData] = useState(null);
   const [connectorId, setConnectorId] = useState("");
@@ -1268,9 +1287,10 @@ export function GeneralWorkspace({ task, onSession, onAnswered, compact = false,
     return coding ? byTime([...general, ...turns]) : general; })();
   // ...and what typing does there: into the running CLI as its next line, or the session picked back up with these words leading - the files
   // named to the CLI by their paths after the words (promptImages.withImages), as every coding CLI reads a file
-  const road = coding ? (w, files) => { const said = withImages(w, files);
+  const dispatchHandoff = handoff && (task.DoneWhen || (handoff.kind === "coding") !== coding);
+  const road = dispatchHandoff ? handoff.send : coding ? (w, files) => { const said = withImages(w, files);
     return (cc.live ? api.post(`/api/tasks/${task.TaskId}/waitroom`, { text: said }) : api.post(`/api/tasks/${task.TaskId}/continue-work`, { note: said }))
-      .then(() => { onChanged?.(); setTimeout(cc.load, 1200); }); } : null;
+      .then(() => { handoff?.cancel(); onChanged?.(); setTimeout(cc.load, 1200); }); } : null;
   // ...its screen is a card only on the pty road, and only while it asks (codingchat.live_of `asking`); over ACP Stop ends the turn
   const acp = cc.live?.transport === "acp", screenAsks = coding && !!cc.live?.asking && !acp && !!cc.live?.sid, perms = coding ? cc.got?.permissions || [] : [];
   const codingBusy = coding && !!cc.live?.working && !screenAsks && !perms.length;
@@ -1352,7 +1372,7 @@ export function GeneralWorkspace({ task, onSession, onAnswered, compact = false,
         chat={chat && !dock} reading={chat && !dock && readingOf(data?.thread || task?.ThreadJson)?.asking
           ? <div className="tq-aui-ask" data-tq-chat-ask="">{readingOf(data?.thread || task?.ThreadJson).asking}</div> : null}
         came={chat && !dock ? came : null} closedLine={chat && !dock ? closedLine : ""} queued={chat && !dock ? queued : null}
-        road={road} cards={codingCards} landing={chat && !dock ? landing : null} stopShown={coding && acp && !!cc.live?.working}
+        road={road} handoff={handoff} cards={codingCards} landing={chat && !dock ? landing : null} stopShown={coding && acp && !!cc.live?.working}
         placeholder={coding ? (closedTask ? "Write to pick it back up…" : cc.live ? MESSAGE : "Write to pick the session back up…") : ""}
         hint={!coding ? "" : acp ? (cc.live.working ? "Enter sends it when this turn ends · Shift+Enter adds a line" : "Enter sends it to the agent · Shift+Enter adds a line")
           : cc.live ? "Enter types it into the running agent · Shift+Enter adds a line" : "Enter picks the session back up with what you wrote · Shift+Enter adds a line"}

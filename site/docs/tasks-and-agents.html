@@ -319,11 +319,17 @@ finished anyway its sentence is filed on the task and the task stays open until 
 <p>Reopening a completed task starts a fresh task lifecycle rather than pretending an old terminal
 is still alive.</p>
 <h2 id="sending-work-to-an-agent">Sending work to an agent<a class="anchor" href="#sending-work-to-an-agent" aria-label="Link to this section">#</a></h2>
-<p>Choose <strong>Send to agent</strong> on the Agent section. A coding task opens a terminal on its CLI and model in
-the repository&#39;s checkout; a general task opens a conversation. The session is handed the task summary,
-the incoming messages, the attachments, any saved result from an earlier run and your optional
-note — plus a context file under <code>~/.taskuary/context/</code> holding the thread, relevant sender
-and topic history, the learned profile, and reports from related closed tasks.</p>
+<p>The <strong>Agent</strong> section keeps one chat box for coding and general work. <strong>Send to agent</strong> selects
+the next target and focuses that box; it does not start anything until you send your words.
+Choosing the same kind continues its existing chat or coding session. Changing kind hands the
+task over through the normal dispatch checks. The task summary, incoming messages, attachments,
+saved results and relevant context accompany the work; an unsuccessful handoff keeps the draft.</p>
+<p>If a start is refused because the sender is not trusted, the <strong>Agent</strong> chat shows the trust controls
+beside the explanation. Review the source before choosing one. Trusting only lifts the restriction:
+your typed instructions stay in the box, and the next <strong>Send</strong> starts the agent. A person button
+remembers that author; a source button trusts everyone from the named source. Older Jira imports
+without an author ID offer source trust rather than pretending to know the reporter. Connecting a
+Jira account or receiving an issue assigned to you does not by itself establish the author&#39;s trust.</p>
 <table>
 <thead>
 <tr>
@@ -333,23 +339,19 @@ and topic history, the learned profile, and reports from related closed tasks.</
 </thead>
 <tbody><tr>
 <td><strong>Send to agent</strong></td>
-<td>Hands the work to an agent; the card lets you change which one</td>
+<td>Selects the target for the next Send in the existing box</td>
 </tr>
 <tr>
-<td><strong>Stop and save</strong></td>
-<td>Ends the session and writes its result; the task stays open until you mark it done</td>
+<td>The chat box</td>
+<td>Starts or continues work with your words and attached files</td>
 </tr>
 <tr>
-<td><strong>Continue</strong> (coding)</td>
-<td>Picks the work up where it left off, with what you add or as it is (<strong>Try again</strong> after a failed run)</td>
+<td>The selected agent chip&#39;s <strong>×</strong></td>
+<td>Cancels the selection without discarding your draft</td>
 </tr>
 <tr>
-<td><strong>Run another agent</strong> (coding)</td>
-<td>Starts a second agent on the same task</td>
-</tr>
-<tr>
-<td>The box under a general task&#39;s chat</td>
-<td>Carries the same conversation on - there is no Continue or Run another there</td>
+<td><strong>Stop response</strong></td>
+<td>Ends the current turn; the conversation and task remain available</td>
 </tr>
 </tbody></table>
 <p><strong>Mark done</strong> is stronger than all of them: it closes the task <em>and</em> ends any live session,
