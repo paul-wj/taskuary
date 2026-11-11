@@ -16,6 +16,15 @@ Return JSON only: {"candidates":[{"action":"create|update","slug":"taskuary-keba
 "target_digest":null,"evidence":[{"task_id":1,"reason":"specific evidence"}]}]}.
 For update, copy the exact registered slug and target_digest. Cite only supplied task IDs. Use no personal data, credentials or invented steps.
 Return {"candidates":[]} if nothing is justified. Never write files, execute commands or change tasks.'''
+WANT = {'name': 'skill_suggestions', 'schema': {'type': 'object', 'additionalProperties': False,
+    'properties': {'candidates': {'type': 'array', 'maxItems': 20, 'items': {'type': 'object', 'additionalProperties': False,
+        'properties': {'action': {'type': 'string', 'enum': ['create', 'update']},
+            **{k: {'type': 'string'} for k in ('slug', 'title', 'description', 'rationale', 'varies')},
+            'target_digest': {'type': ['string', 'null']},
+            'evidence': {'type': 'array', 'minItems': 1, 'items': {'type': 'object', 'additionalProperties': False,
+                'properties': {'task_id': {'type': 'integer'}, 'reason': {'type': 'string'}}, 'required': ['task_id', 'reason']}}},
+        'required': ['action', 'slug', 'title', 'description', 'rationale', 'varies', 'target_digest', 'evidence']}}},
+    'required': ['candidates']}}
 
 
 def _hash(value):
@@ -76,10 +85,8 @@ def _finish(store, claim, status, error=None, **extra):
     return result
 
 
-def _candidates(snapshot, answer):
+def _candidates(snapshot, decoded):
     from . import redact
-    clean = re.sub(r'^```(?:json)?\s*|\s*```$', '', str(answer or '').strip(), flags=re.I)
-    decoded = json.loads(clean)
     candidates = decoded.get('candidates') if isinstance(decoded, dict) else None
     if not isinstance(candidates, list) or len(candidates) > 20: raise ValueError('AI did not return a bounded candidate list')
     supplied = {e['task_id']: e for e in snapshot['evidence']}
@@ -127,8 +134,10 @@ def _perform(store, claim, llm, manual):
             from .llm import build_llm
             llm = build_llm(store, job='memory')
         if llm is None: return _finish(store, claim, 'no_provider', 'Connect an AI to analyze completed work')
-        answer = llm(SYSTEM, json.dumps(snapshot, ensure_ascii=False), max_tokens=3000)
-        candidates = _candidates(snapshot, answer)
+        from .llm import ask_json
+        answer = ask_json(llm, SYSTEM, json.dumps(snapshot, ensure_ascii=False), want=WANT, max_tokens=3000)
+        if answer.data is None: raise ValueError(answer.error)
+        candidates = _candidates(snapshot, answer.data)
         for candidate in candidates:
             state.create(store, 'candidate', candidate, key=candidate['identity'] + ':' + candidate['fingerprint'])
         count = sum(c.get('state') == 'suggested' for c in state.rows(store, 'candidate'))

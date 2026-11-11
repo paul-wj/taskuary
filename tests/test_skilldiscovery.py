@@ -1,6 +1,7 @@
 """AI judges repetition; code enforces evidence, ownership and durable suppression."""
 import json
 from unittest import mock
+import pytest
 from taskuary import skillstate as state
 from taskuary.store import MemoryStore
 
@@ -57,6 +58,48 @@ def test_empty_no_provider_and_provider_failure_are_not_fake_suggestions():
         assert d.analyze(s, llm=lambda *a, **k: '{not json')['state'] == 'failed'
         assert d.analyze(s, llm=lambda *a, **k: '{"candidates": []}')['state'] == 'empty'
         assert state.rows(s, 'candidate') == []
+    finally: s.close()
+
+
+@pytest.mark.parametrize('wrapped', ['{}Analysis complete.', 'Findings:\n```json\n{}\n```\nAnalysis complete.'])
+def test_wrapped_ai_answer_preserves_validated_skill_evidence(wrapped):
+    from taskuary import skilldiscovery as d
+    s = MemoryStore()
+    try:
+        tid = finished(s)
+        result = d.analyze(s, llm=lambda *a, **k: wrapped.format(answer([tid])))
+        assert result['state'] == 'ready' and result['error'] is None
+        candidate, = state.rows(s, 'candidate')
+        assert candidate['slug'] == 'taskuary-reconcile'
+        assert candidate['evidence'] == [{'task_id': tid, 'ref': f'TQ-{tid:04d}',
+            'title': 'Reconcile monthly data', 'reason': 'completed and verified this method'}]
+        assert s.get_task(tid)['Status'] == 'done'
+        assert state.rows(s, 'generation') == []
+    finally: s.close()
+
+
+def test_empty_ai_answer_with_trailing_prose_is_not_a_failure():
+    from taskuary import skilldiscovery as d
+    s = MemoryStore()
+    try:
+        tid = finished(s)
+        result = d.analyze(s, llm=lambda *a, **k: '{"candidates":[]}Analysis complete.')
+        assert result['state'] == 'empty' and result['error'] is None
+        assert state.rows(s, 'candidate') == []
+        assert s.get_task(tid)['Status'] == 'done'
+    finally: s.close()
+
+
+def test_wrapped_answer_cannot_partially_save_candidates_with_forged_evidence():
+    from taskuary import skilldiscovery as d
+    s = MemoryStore()
+    try:
+        tid = finished(s)
+        candidates = json.loads(answer([tid]))['candidates'] + json.loads(answer([99999]))['candidates']
+        result = d.analyze(s, llm=lambda *a, **k: 'Findings:\n' + json.dumps({'candidates': candidates}) + '\nAnalysis complete.')
+        assert result['state'] == 'failed' and result['error']
+        assert state.rows(s, 'candidate') == []
+        assert s.get_task(tid)['Status'] == 'done'
     finally: s.close()
 
 

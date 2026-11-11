@@ -12,6 +12,8 @@ The analysis uses Taskuary's existing configured memory brain. It considers at m
 
 Discovery is off until you choose **Start AI discovery** in Skills, so an upgrade does not automatically add model calls over your existing history. Starting it requests an analysis and enables background checks on the existing clock, no more frequently than once every ten minutes. **Analyze completed work with AI** requests another analysis; **Pause automatic analysis** prevents future automatic passes (an active read-only pass may finish). No provider, provider failure, malformed output, analysis in progress and a valid empty result are different states. Taskuary never substitutes keyword guesses or sample suggestions when AI is unavailable. Analysis failure does not stop ordinary tasks, messages or reports.
 
+Analysis uses the shared structured-AI response handling: providers that support it receive a JSON schema, and explanatory text around a JSON object or Markdown code fence does not by itself cause failure. Unreadable replies follow the existing bounded AI retry/routing policy. A missing candidate list, invalid task evidence or an invalid update target still fails validation; none is silently treated as an empty result.
+
 The evidence goes to the AI configured for that job, which can be local or hosted. Local storage does not mean hosted models receive no data. Credentials recognized by the shared scrubber are removed from the evidence; this is not comprehensive business-data anonymization.
 
 ## Ask an Agent to generate or improve
