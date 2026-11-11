@@ -1,0 +1,711 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Taskuary · 事件、任务与统一处理视图",
+    "locale": "zh-CN",
+    "output": ".archify/architecture-taskuary-20261111-142904/taskuary-ingestion.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/paul-wj/taskuary.git",
+      "revision": "32c917736295f9c2172b54c23f43b59c4984184d"
+    }
+  },
+  "components": [
+    {
+      "id": "fetch-clock",
+      "type": "backend",
+      "label": "接入时钟与入口",
+      "sublabel": "全量 / 快速聊天 / HTTP push",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        180,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/server.py",
+          "line": 10463,
+          "end_line": 10489
+        },
+        {
+          "path": "taskuary/server.py",
+          "line": 10501,
+          "end_line": 10523
+        },
+        {
+          "path": "taskuary/server.py",
+          "line": 7139,
+          "end_line": 7145
+        }
+      ]
+    },
+    {
+      "id": "channels",
+      "type": "backend",
+      "label": "连接器适配层",
+      "sublabel": "channels.py · 并发 HTTP",
+      "pos": [
+        340,
+        40
+      ],
+      "size": [
+        220,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/channels.py",
+          "line": 2016,
+          "end_line": 2049
+        },
+        {
+          "path": "taskuary/channels.py",
+          "line": 2314,
+          "end_line": 2377
+        }
+      ],
+      "tag": "独立 fetch；SQLite 单 writer 转交"
+    },
+    {
+      "id": "gate",
+      "type": "backend",
+      "label": "入库前确定性门",
+      "sublabel": "ingest_message",
+      "pos": [
+        700,
+        40
+      ],
+      "size": [
+        210,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/ingest.py",
+          "line": 797,
+          "end_line": 839
+        },
+        {
+          "path": "taskuary/server.py",
+          "line": 10650,
+          "end_line": 10676
+        },
+        {
+          "path": "taskuary/server.py",
+          "line": 7139,
+          "end_line": 7145
+        }
+      ],
+      "tag": "去重 / feed / 自动回复 / policy"
+    },
+    {
+      "id": "file-only",
+      "type": "backend",
+      "label": "只留信息或跳过",
+      "sublabel": "feed / ignored / skipped",
+      "pos": [
+        1000,
+        40
+      ],
+      "size": [
+        180,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/ingest.py",
+          "line": 808,
+          "end_line": 839
+        }
+      ],
+      "tag": "feed 不调用 AI，不建任务"
+    },
+    {
+      "id": "reports",
+      "type": "backend",
+      "label": "报告与 Advisor 时钟",
+      "sublabel": "History + 四条路由条件",
+      "pos": [
+        340,
+        245
+      ],
+      "size": [
+        220,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/server.py",
+          "line": 10896,
+          "end_line": 10908
+        },
+        {
+          "path": "taskuary/reports.py",
+          "line": 1946,
+          "end_line": 1970
+        },
+        {
+          "path": "docs/how-a-report-runs.md",
+          "line": 42,
+          "end_line": 85
+        }
+      ],
+      "tag": "Timeline / Alert / Send / Triage"
+    },
+    {
+      "id": "drain",
+      "type": "messagebus",
+      "label": "有序 deferred triage",
+      "sublabel": "DrainWorker → drain",
+      "pos": [
+        700,
+        245
+      ],
+      "size": [
+        210,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/ingest.py",
+          "line": 319,
+          "end_line": 394
+        },
+        {
+          "path": "taskuary/ingest.py",
+          "line": 509,
+          "end_line": 554
+        },
+        {
+          "path": "taskuary/server.py",
+          "line": 10655,
+          "end_line": 10677
+        }
+      ],
+      "tag": "轮询先落库，再逐条判断"
+    },
+    {
+      "id": "errors",
+      "type": "backend",
+      "label": "显式待重试错误",
+      "sublabel": "无 AI / 无法解析 / 处理失败",
+      "pos": [
+        1000,
+        245
+      ],
+      "size": [
+        180,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/ingest.py",
+          "line": 1087,
+          "end_line": 1108
+        },
+        {
+          "path": "taskuary/ingest.py",
+          "line": 537,
+          "end_line": 549
+        }
+      ],
+      "tag": "不是 FYI，也不是成功"
+    },
+    {
+      "id": "triage-brain",
+      "type": "cloud",
+      "label": "已配置的 Triage Brain",
+      "sublabel": "llm.build_llm / 结构化结果",
+      "pos": [
+        340,
+        455
+      ],
+      "size": [
+        220,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/llm.py",
+          "line": 430,
+          "end_line": 447
+        },
+        {
+          "path": "taskuary/triage.py",
+          "line": 711,
+          "end_line": 738
+        },
+        {
+          "path": "taskuary/triage.py",
+          "line": 745,
+          "end_line": 757
+        }
+      ]
+    },
+    {
+      "id": "routing",
+      "type": "backend",
+      "label": "身份路由与意图判断",
+      "sublabel": "邮件身份 / 聊天关系 / triage",
+      "pos": [
+        700,
+        455
+      ],
+      "size": [
+        210,
+        90
+      ],
+      "sources": [
+        {
+          "path": "taskuary/ingest.py",
+          "line": 845,
+          "end_line": 875
+        },
+        {
+          "path": "taskuary/ingest.py",
+          "line": 1096,
+          "end_line": 1108
+        },
+        {
+          "path": "taskuary/ingest.py",
+          "line": 1160,
+          "end_line": 1183
+        }
+      ],
+      "tag": "附加 / FYI / task / watch / workflow"
+    },
+    {
+      "id": "workflow",
+      "type": "backend",
+      "label": "Workflow / Flow",
+      "sublabel": "定时、手动或邮件触发",
+      "pos": [
+        1000,
+        455
+      ],
+      "size": [
+        180,
+        90
+      ],
+      "sources": [
+        {
+          "path": "taskuary/workflows.py",
+          "line": 329,
+          "end_line": 381
+        },
+        {
+          "path": "taskuary/ingest.py",
+          "line": 1179,
+          "end_line": 1183
+        }
+      ],
+      "tag": "不再当普通 report triage"
+    },
+    {
+      "id": "reads",
+      "type": "backend",
+      "label": "阅读回执与延后",
+      "sublabel": "实体内容 fingerprint",
+      "pos": [
+        40,
+        675
+      ],
+      "size": [
+        180,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/processing_reads.py",
+          "line": 60,
+          "end_line": 108
+        },
+        {
+          "path": "taskuary/processing_reads.py",
+          "line": 175,
+          "end_line": 199
+        },
+        {
+          "path": "taskuary/processing_reads.py",
+          "line": 236,
+          "end_line": 248
+        }
+      ],
+      "tag": "显示本身不落回执"
+    },
+    {
+      "id": "membership",
+      "type": "backend",
+      "label": "Canonical Membership",
+      "sublabel": "后台身份 census / reconcile",
+      "pos": [
+        340,
+        675
+      ],
+      "size": [
+        220,
+        90
+      ],
+      "sources": [
+        {
+          "path": "taskuary/processing_membership.py",
+          "line": 94,
+          "end_line": 140
+        },
+        {
+          "path": "taskuary/processing_membership.py",
+          "line": 150,
+          "end_line": 206
+        },
+        {
+          "path": "taskuary/processing_all.py",
+          "line": 544,
+          "end_line": 619
+        }
+      ],
+      "tag": "item / member / alias / relation"
+    },
+    {
+      "id": "facts",
+      "type": "backend",
+      "label": "任务与 Review 写入",
+      "sublabel": "关联消息、清单、期限与 draft",
+      "pos": [
+        700,
+        675
+      ],
+      "size": [
+        210,
+        90
+      ],
+      "sources": [
+        {
+          "path": "taskuary/ingest.py",
+          "line": 1222,
+          "end_line": 1271
+        },
+        {
+          "path": "taskuary/workflows.py",
+          "line": 359,
+          "end_line": 377
+        }
+      ],
+      "tag": "回复建待审草稿；Agent 按门控启动"
+    },
+    {
+      "id": "durable",
+      "type": "database",
+      "label": "同一 SQLiteStore",
+      "sublabel": "业务事实 / processing_*",
+      "pos": [
+        1000,
+        675
+      ],
+      "size": [
+        180,
+        90
+      ],
+      "sources": [
+        {
+          "path": "taskuary/store.py",
+          "line": 1105,
+          "end_line": 1153
+        },
+        {
+          "path": "taskuary/store.py",
+          "line": 2122,
+          "end_line": 2140
+        },
+        {
+          "path": "taskuary/processing_reads.py",
+          "line": 242,
+          "end_line": 248
+        }
+      ]
+    },
+    {
+      "id": "surface",
+      "type": "frontend",
+      "label": "Assistant / Timeline / Board",
+      "sublabel": "复用服务端投影与状态",
+      "pos": [
+        40,
+        900
+      ],
+      "size": [
+        180,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/taskstate.py",
+          "line": 1,
+          "end_line": 19
+        },
+        {
+          "path": "website/src/api.js",
+          "line": 11,
+          "end_line": 33
+        },
+        {
+          "path": "website/src/live.js",
+          "line": 93,
+          "end_line": 138
+        }
+      ]
+    },
+    {
+      "id": "projection",
+      "type": "backend",
+      "label": "All / Unread 统一投影",
+      "sublabel": "processing_all / unread / rail",
+      "pos": [
+        340,
+        900
+      ],
+      "size": [
+        220,
+        90
+      ],
+      "sources": [
+        {
+          "path": "taskuary/processing_unread.py",
+          "line": 691,
+          "end_line": 723
+        },
+        {
+          "path": "taskuary/processing_rail.py",
+          "line": 19,
+          "end_line": 50
+        },
+        {
+          "path": "taskuary/funnel.py",
+          "line": 1410,
+          "end_line": 1420
+        }
+      ],
+      "tag": "快照 + 增量 dirty + 阅读状态"
+    },
+    {
+      "id": "board-state",
+      "type": "backend",
+      "label": "任务状态推导",
+      "sublabel": "taskstate.state → Board 列",
+      "pos": [
+        700,
+        900
+      ],
+      "size": [
+        210,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/taskstate.py",
+          "line": 60,
+          "end_line": 104
+        }
+      ],
+      "tag": "不是直接显示 task.Status"
+    }
+  ],
+  "connections": [
+    {
+      "id": "poll",
+      "from": "fetch-clock",
+      "to": "channels",
+      "label": "按通道读取",
+      "variant": "dashed"
+    },
+    {
+      "id": "normalized",
+      "from": "channels",
+      "to": "gate",
+      "label": "标准消息",
+      "variant": "default"
+    },
+    {
+      "id": "stops",
+      "from": "gate",
+      "to": "file-only",
+      "label": "feed / policy",
+      "variant": "default"
+    },
+    {
+      "id": "defer",
+      "from": "gate",
+      "to": "drain",
+      "label": "轮询 deferred",
+      "variant": "dashed"
+    },
+    {
+      "id": "push-sync",
+      "from": "gate",
+      "to": "routing",
+      "label": "push 直接判断",
+      "variant": "default"
+    },
+    {
+      "id": "report-triage",
+      "from": "reports",
+      "to": "gate",
+      "label": "仅 Triage 命中",
+      "variant": "default"
+    },
+    {
+      "id": "judge-one",
+      "from": "drain",
+      "to": "routing",
+      "label": "按序处理",
+      "variant": "dashed"
+    },
+    {
+      "id": "ask-brain",
+      "from": "routing",
+      "to": "triage-brain",
+      "label": "需要 AI 时",
+      "variant": "default"
+    },
+    {
+      "id": "show-error",
+      "from": "routing",
+      "to": "errors",
+      "label": "无可用判定",
+      "variant": "default"
+    },
+    {
+      "id": "write-facts",
+      "from": "routing",
+      "to": "facts",
+      "label": "创建 / 附加",
+      "variant": "default"
+    },
+    {
+      "id": "mail-workflow",
+      "from": "routing",
+      "to": "workflow",
+      "label": "命名工作流",
+      "variant": "default"
+    },
+    {
+      "id": "workflow-task",
+      "from": "workflow",
+      "to": "facts",
+      "label": "建立 run task",
+      "variant": "default"
+    },
+    {
+      "id": "write-sql",
+      "from": "facts",
+      "to": "durable",
+      "label": "Store 写入",
+      "variant": "default"
+    },
+    {
+      "id": "census",
+      "from": "membership",
+      "to": "durable",
+      "label": "快照 / 事务",
+      "variant": "default"
+    },
+    {
+      "id": "read-index",
+      "from": "projection",
+      "to": "membership",
+      "label": "成员与身份",
+      "variant": "default"
+    },
+    {
+      "id": "read-inventory",
+      "from": "projection",
+      "to": "durable",
+      "label": "原始事实 / 回执",
+      "variant": "default"
+    },
+    {
+      "id": "draw",
+      "from": "projection",
+      "to": "surface",
+      "label": "All / Unread",
+      "variant": "default"
+    },
+    {
+      "id": "derived",
+      "from": "facts",
+      "to": "board-state",
+      "label": "任务 / run / review",
+      "variant": "default"
+    },
+    {
+      "id": "board",
+      "from": "board-state",
+      "to": "surface",
+      "label": "BoardState",
+      "variant": "default"
+    },
+    {
+      "id": "read-action",
+      "from": "surface",
+      "to": "reads",
+      "label": "阅读 / Next",
+      "variant": "default"
+    },
+    {
+      "id": "save-receipt",
+      "from": "reads",
+      "to": "durable",
+      "label": "内容回执",
+      "variant": "default"
+    },
+    {
+      "id": "file-row",
+      "from": "file-only",
+      "to": "durable",
+      "label": "仅消息与 route",
+      "variant": "default"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "接入与 Triage 不等价",
+      "items": [
+        "连接器的 trigger/feed 角色决定是否产生工作。独立 HTTP 等待可以并发，写入由现有 writer 合同串行转交。",
+        "轮询在 deferred() 中先写 triaging，再由 DrainWorker 异步消费；同一批按顺序判断，后续消息才能看到前一条创建的任务。新鲜聊天通道可优先。",
+        "/api/ingest/push 是直接 ingest_message 的同步入口，不应画成所有消息都必须经过 deferred drain。"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "分类与持久化",
+      "items": [
+        "邮件 / 工单按已观察到的身份关联；聊天结合关系判定，房间 ID 本身不证明同一任务；不确定关系不自动加入。",
+        "reply 路径生成 pending review 并后台写草稿；coding / general 进入 Agent 自动启动或待启动门控；watch 留给观察。",
+        "无模型、坏 JSON 或判断异常保留可见 error 与重试语义，不能伪装成已归档的 FYI。所有数据库节点引用的是同一个本地库。"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "当前 Processing 主链",
+      "items": [
+        "MembershipWorker 维护 canonical 身份目录；CENSUS_INPUTS 和触发器跟踪真正能改变成员归属的字段。",
+        "All 与 Unread 使用 processing_inventory_snapshot 和 compact_inventory；rail 通过 dirty rows 增量失效。funnel.build 在已启用读取迁移后委托统一构建器。",
+        "阅读以实体内容指纹记录；priority、勾选状态、triage bookkeeping 本身不是新内容。Next 是阅读/导航，不等于完成任务。",
+        "BoardState 综合 live session、queue、run、review 与终态证据，不由前端另建一套状态机。"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "报告与工作流是两条道路",
+      "items": [
+        "报告：自身时钟 → source 读取与摘要 → History；Timeline、Alert、Send、Triage 分别判断。Triage 默认关闭，只有启用且命中的 run 才有机会变成任务。",
+        "报告失败保留失败历史与问题提示，不生造任务；已有任务的报告提及只作 note，不把整个报告并进该任务。",
+        "Workflow：统一 run() 建立独立 run task；多步骤交 flow.execute，否则进入 coding/general 启动门。邮件触发和定时/手动触发复用此路径。"
+      ]
+    }
+  ]
+}

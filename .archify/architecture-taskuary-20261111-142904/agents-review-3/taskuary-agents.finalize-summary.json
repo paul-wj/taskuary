@@ -1,0 +1,326 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\candidate-agents.json",
+    "sha256": "cee528480d2420ee2dd0bdae7c727fe1dfdafa910b1e9dc35ac85aa8baf3b70f",
+    "bytes": 21562
+  },
+  "artifact": {
+    "path": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\taskuary-agents.html",
+    "sha256": "7ac1a21848b0ddcfa00713904042ed5e81ca1dc281aefdfa69bf211000d451e9",
+    "bytes": 881996
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\agents-review-3\\taskuary-agents.finalize.json",
+    "summaryReceipt": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\agents-review-3\\taskuary-agents.finalize-summary.json",
+    "browserCheckReceipt": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\agents-review-3\\taskuary-agents.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-11-11T06:36:28.412Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 4818,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  },
+  "visualReviewRecommendation": {
+    "action": "inspect-route-readability",
+    "signals": {
+      "resolvedCrossovers": 12,
+      "routesOverSuggestedBends": 6
+    },
+    "reason": "Automated gates passed, but crossings or detours still need perceptual review before claiming visual quality.",
+    "affectedRoutes": {
+      "crossings": [
+        {
+          "left": {
+            "id": "start-coding",
+            "from": "admission",
+            "to": "coding-session",
+            "label": "coding",
+            "collectionIndex": 2,
+            "artifactIndex": 3
+          },
+          "right": {
+            "id": "drain-general",
+            "from": "dispatch-queue",
+            "to": "general-session",
+            "label": "可运行后",
+            "collectionIndex": 4,
+            "artifactIndex": 5
+          },
+          "point": [
+            630,
+            242
+          ]
+        },
+        {
+          "left": {
+            "id": "start-coding",
+            "from": "admission",
+            "to": "coding-session",
+            "label": "coding",
+            "collectionIndex": 2,
+            "artifactIndex": 3
+          },
+          "right": {
+            "id": "chat-proposal",
+            "from": "general-session",
+            "to": "pending-proposals",
+            "label": "声明提案",
+            "collectionIndex": 16,
+            "artifactIndex": 17
+          },
+          "point": [
+            680,
+            282.27272727272725
+          ]
+        },
+        {
+          "left": {
+            "id": "drain-coding",
+            "from": "dispatch-queue",
+            "to": "coding-session",
+            "label": "可运行后",
+            "collectionIndex": 5,
+            "artifactIndex": 6
+          },
+          "right": {
+            "id": "chat-proposal",
+            "from": "general-session",
+            "to": "pending-proposals",
+            "label": "声明提案",
+            "collectionIndex": 16,
+            "artifactIndex": 17
+          },
+          "point": [
+            680,
+            297
+          ]
+        },
+        {
+          "left": {
+            "id": "coding-brain",
+            "from": "coding-session",
+            "to": "brain-route",
+            "label": "CLI / model 链",
+            "collectionIndex": 7,
+            "artifactIndex": 8
+          },
+          "right": {
+            "id": "save-general",
+            "from": "general-session",
+            "to": "wrapup",
+            "label": "对话记录 / 收尾",
+            "collectionIndex": 18,
+            "artifactIndex": 19
+          },
+          "point": [
+            934,
+            290
+          ]
+        },
+        {
+          "left": {
+            "id": "cli-exec",
+            "from": "brain-route",
+            "to": "cli-runtime",
+            "label": "CLI 时",
+            "collectionIndex": 9,
+            "artifactIndex": 10
+          },
+          "right": {
+            "id": "cwd",
+            "from": "cli-runtime",
+            "to": "workspace",
+            "label": "cwd",
+            "collectionIndex": 11,
+            "artifactIndex": 12
+          },
+          "point": [
+            976,
+            500
+          ],
+          "sharedNode": "cli-runtime"
+        },
+        {
+          "left": {
+            "id": "cli-exec",
+            "from": "brain-route",
+            "to": "cli-runtime",
+            "label": "CLI 时",
+            "collectionIndex": 9,
+            "artifactIndex": 10
+          },
+          "right": {
+            "id": "save-general",
+            "from": "general-session",
+            "to": "wrapup",
+            "label": "对话记录 / 收尾",
+            "collectionIndex": 18,
+            "artifactIndex": 19
+          },
+          "point": [
+            934,
+            569
+          ]
+        },
+        {
+          "left": {
+            "id": "cwd",
+            "from": "cli-runtime",
+            "to": "workspace",
+            "label": "cwd",
+            "collectionIndex": 11,
+            "artifactIndex": 12
+          },
+          "right": {
+            "id": "save-general",
+            "from": "general-session",
+            "to": "wrapup",
+            "label": "对话记录 / 收尾",
+            "collectionIndex": 18,
+            "artifactIndex": 19
+          },
+          "point": [
+            934,
+            500
+          ]
+        },
+        {
+          "left": {
+            "id": "task-tools",
+            "from": "cli-runtime",
+            "to": "tools-gate",
+            "label": "工具请求",
+            "collectionIndex": 12,
+            "artifactIndex": 13
+          },
+          "right": {
+            "id": "chat-proposal",
+            "from": "general-session",
+            "to": "pending-proposals",
+            "label": "声明提案",
+            "collectionIndex": 16,
+            "artifactIndex": 17
+          },
+          "point": [
+            680,
+            500
+          ]
+        }
+      ],
+      "detours": [
+        {
+          "relationship": {
+            "id": "start-coding",
+            "from": "admission",
+            "to": "coding-session",
+            "label": "coding",
+            "collectionIndex": 2,
+            "artifactIndex": 3
+          },
+          "bends": 3,
+          "stretch": 1
+        },
+        {
+          "relationship": {
+            "id": "cli-exec",
+            "from": "brain-route",
+            "to": "cli-runtime",
+            "label": "CLI 时",
+            "collectionIndex": 9,
+            "artifactIndex": 10
+          },
+          "bends": 3,
+          "stretch": 1.077
+        },
+        {
+          "relationship": {
+            "id": "chat-proposal",
+            "from": "general-session",
+            "to": "pending-proposals",
+            "label": "声明提案",
+            "collectionIndex": 16,
+            "artifactIndex": 17
+          },
+          "bends": 4,
+          "stretch": 1
+        },
+        {
+          "relationship": {
+            "id": "delivery-ledger",
+            "from": "delivery",
+            "to": "run-ledger",
+            "label": "claim / receipt",
+            "collectionIndex": 26,
+            "artifactIndex": 27
+          },
+          "bends": 4,
+          "stretch": 1.228
+        },
+        {
+          "relationship": {
+            "id": "saved-record",
+            "from": "wrapup",
+            "to": "run-ledger",
+            "label": "结果与运行状态",
+            "collectionIndex": 27,
+            "artifactIndex": 28
+          },
+          "bends": 4,
+          "stretch": 1
+        },
+        {
+          "relationship": {
+            "id": "close-state",
+            "from": "close-task",
+            "to": "run-ledger",
+            "label": "任务与清理记录",
+            "collectionIndex": 29,
+            "artifactIndex": 30
+          },
+          "bends": 3,
+          "stretch": 1.198
+        }
+      ],
+      "truncated": true
+    },
+    "hints": [
+      "admission → coding-session crosses dispatch-queue → general-session: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "admission → coding-session crosses general-session → pending-proposals: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "dispatch-queue → coding-session crosses general-session → pending-proposals: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "coding-session → brain-route crosses general-session → wrapup: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "brain-route → cli-runtime and cli-runtime → workspace cross next to cli-runtime: move node brain-route or workspace so the two reach cli-runtime from different sides (for example one level with it, one directly above or below it).",
+      "brain-route → cli-runtime crosses general-session → wrapup: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "cli-runtime → workspace crosses general-session → wrapup: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "cli-runtime → tools-gate crosses general-session → pending-proposals: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor."
+    ],
+    "repair": "Trace these relationships at the desktop viewport. For Architecture, use references/architecture-layout-repair.md: reflow a blocked main path or tangled connected scene, and repair an isolated defect locally only when the surrounding composition is accepted. Preserve all semantic content and user-fixed geometry. Rerun finalize once after the edit."
+  }
+}

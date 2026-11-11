@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "3cffbad6-0717-49a5-ac91-f3fa5716f721",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\candidate-agents.json",
+  "output": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\taskuary-agents.html",
+  "specification": {
+    "sha256": "cee528480d2420ee2dd0bdae7c727fe1dfdafa910b1e9dc35ac85aa8baf3b70f",
+    "bytes": 21562
+  },
+  "artifact": {
+    "sha256": "7ac1a21848b0ddcfa00713904042ed5e81ca1dc281aefdfa69bf211000d451e9",
+    "bytes": 881996
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "ee732336-361d-47e3-860e-dd9093b76fae",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\candidate.json",
+  "output": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\taskuary-architecture.html",
+  "specification": {
+    "sha256": "02b752685acd0dba4854444da0987560fe3fcc679841513195d7af4d077f5e88",
+    "bytes": 13263
+  },
+  "artifact": {
+    "sha256": "828080f029c23527ef20482187b81d5bad89dd2e3483501d5aeccbbca6e2f86f",
+    "bytes": 849729
+  }
+}

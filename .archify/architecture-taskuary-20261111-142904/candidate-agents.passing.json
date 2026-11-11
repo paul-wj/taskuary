@@ -1,0 +1,903 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Taskuary · Agent 执行、工具与所有者审批",
+    "locale": "zh-CN",
+    "output": ".archify/architecture-taskuary-20261111-142904/taskuary-agents.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/paul-wj/taskuary.git",
+      "revision": "32c917736295f9c2172b54c23f43b59c4984184d"
+    }
+  },
+  "components": [
+    {
+      "id": "work-entry",
+      "type": "external",
+      "label": "任务与所有者动作",
+      "sublabel": "Triage / Workflow / 手动派发",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        180,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/server.py",
+          "line": 3100,
+          "end_line": 3136
+        },
+        {
+          "path": "taskuary/workflows.py",
+          "line": 372,
+          "end_line": 381
+        },
+        {
+          "path": "taskuary/ingest.py",
+          "line": 1261,
+          "end_line": 1271
+        }
+      ]
+    },
+    {
+      "id": "admission",
+      "type": "backend",
+      "label": "派发与自动启动门",
+      "sublabel": "任务类型、信任与可用容量",
+      "pos": [
+        340,
+        40
+      ],
+      "size": [
+        220,
+        90
+      ],
+      "sources": [
+        {
+          "path": "taskuary/server.py",
+          "line": 4394,
+          "end_line": 4455
+        },
+        {
+          "path": "taskuary/ingest.py",
+          "line": 242,
+          "end_line": 261
+        },
+        {
+          "path": "taskuary/ingest.py",
+          "line": 2995,
+          "end_line": 3059
+        }
+      ],
+      "tag": "角色 Profile ≠ Brain / CLI"
+    },
+    {
+      "id": "general-session",
+      "type": "backend",
+      "label": "GeneralSession",
+      "sublabel": "对话、流式回合与会话恢复",
+      "pos": [
+        700,
+        40
+      ],
+      "size": [
+        210,
+        90
+      ],
+      "sources": [
+        {
+          "path": "taskuary/general.py",
+          "line": 1647,
+          "end_line": 1659
+        },
+        {
+          "path": "taskuary/general.py",
+          "line": 2118,
+          "end_line": 2130
+        },
+        {
+          "path": "taskuary/general.py",
+          "line": 2727,
+          "end_line": 2791
+        }
+      ],
+      "tag": "API 脑或 CLI 脑"
+    },
+    {
+      "id": "brain-route",
+      "type": "backend",
+      "label": "Brain 路由与统一 LLM",
+      "sublabel": "job / pick / model / gear",
+      "pos": [
+        1000,
+        40
+      ],
+      "size": [
+        180,
+        90
+      ],
+      "sources": [
+        {
+          "path": "taskuary/llm.py",
+          "line": 430,
+          "end_line": 457
+        },
+        {
+          "path": "taskuary/terminal.py",
+          "line": 2385,
+          "end_line": 2426
+        },
+        {
+          "path": "taskuary/llm.py",
+          "line": 365,
+          "end_line": 384
+        }
+      ],
+      "tag": "按连接选择；受敏感数据规则限制"
+    },
+    {
+      "id": "dispatch-queue",
+      "type": "database",
+      "label": "SQLite dispatch 队列",
+      "sublabel": "blackboard · 排名与重试",
+      "pos": [
+        340,
+        245
+      ],
+      "size": [
+        220,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/ingest.py",
+          "line": 3030,
+          "end_line": 3059
+        },
+        {
+          "path": "taskuary/blackboard.py",
+          "line": 456,
+          "end_line": 521
+        }
+      ],
+      "tag": "同库持久化；不是独立服务"
+    },
+    {
+      "id": "coding-session",
+      "type": "backend",
+      "label": "Coding 会话控制器",
+      "sublabel": "terminal.start_on_task",
+      "pos": [
+        700,
+        245
+      ],
+      "size": [
+        210,
+        90
+      ],
+      "sources": [
+        {
+          "path": "taskuary/terminal.py",
+          "line": 2364,
+          "end_line": 2426
+        },
+        {
+          "path": "taskuary/server.py",
+          "line": 2847,
+          "end_line": 2852
+        }
+      ],
+      "tag": "仅已连接 CLI；否则按规则转 general"
+    },
+    {
+      "id": "api-provider",
+      "type": "cloud",
+      "label": "已连接 API / 本地模型",
+      "sublabel": "Anthropic / 兼容 API / Ollama",
+      "pos": [
+        1000,
+        245
+      ],
+      "size": [
+        180,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/llm.py",
+          "line": 926,
+          "end_line": 946
+        },
+        {
+          "path": "taskuary/llm.py",
+          "line": 967,
+          "end_line": 1001
+        },
+        {
+          "path": "taskuary/general.py",
+          "line": 2185,
+          "end_line": 2192
+        }
+      ],
+      "tag": "模型服务可在本机或远端"
+    },
+    {
+      "id": "external-tools",
+      "type": "external",
+      "label": "外部 MCP 与系统",
+      "sublabel": "可选 stdio / HTTP 工具",
+      "pos": [
+        40,
+        455
+      ],
+      "size": [
+        180,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/mcp.py",
+          "line": 12,
+          "end_line": 35
+        },
+        {
+          "path": "taskuary/mcp.py",
+          "line": 56,
+          "end_line": 74
+        },
+        {
+          "path": "taskuary/mcp.py",
+          "line": 133,
+          "end_line": 162
+        }
+      ]
+    },
+    {
+      "id": "tools-gate",
+      "type": "security",
+      "label": "任务工具与权限门",
+      "sublabel": "agenttools / MCP / hooks",
+      "pos": [
+        340,
+        455
+      ],
+      "size": [
+        220,
+        90
+      ],
+      "sources": [
+        {
+          "path": "taskuary/server.py",
+          "line": 5902,
+          "end_line": 5940
+        },
+        {
+          "path": "taskuary/agenttools.py",
+          "line": 235,
+          "end_line": 238
+        },
+        {
+          "path": "taskuary/acpgate.py",
+          "line": 89,
+          "end_line": 129
+        }
+      ],
+      "tag": "owns_task / scopes；send 与 approve 不开放"
+    },
+    {
+      "id": "cli-runtime",
+      "type": "external",
+      "label": "CLI 运行时与子进程",
+      "sublabel": "PTY / argv / 可选 ACP",
+      "pos": [
+        700,
+        455
+      ],
+      "size": [
+        210,
+        90
+      ],
+      "sources": [
+        {
+          "path": "taskuary/terminal.py",
+          "line": 215,
+          "end_line": 221
+        },
+        {
+          "path": "taskuary/agents.py",
+          "line": 1743,
+          "end_line": 1773
+        },
+        {
+          "path": "taskuary/agents.py",
+          "line": 1812,
+          "end_line": 1824
+        }
+      ],
+      "tag": "OMP、Claude、Codex 等已连接 CLI"
+    },
+    {
+      "id": "workspace",
+      "type": "database",
+      "label": "本机工作区",
+      "sublabel": "checkout / scratch / 文件",
+      "pos": [
+        1000,
+        455
+      ],
+      "size": [
+        180,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/terminal.py",
+          "line": 215,
+          "end_line": 221
+        },
+        {
+          "path": "taskuary/agents.py",
+          "line": 1808,
+          "end_line": 1820
+        },
+        {
+          "path": "taskuary/artifacts.py",
+          "line": 20,
+          "end_line": 26
+        }
+      ],
+      "tag": "子进程不是 OS 沙箱"
+    },
+    {
+      "id": "skill-library",
+      "type": "backend",
+      "label": "技能库与受控发布",
+      "sublabel": "分析证据 → 草案 → 发布",
+      "pos": [
+        40,
+        675
+      ],
+      "size": [
+        180,
+        90
+      ],
+      "sources": [
+        {
+          "path": "taskuary/skilldiscovery.py",
+          "line": 88,
+          "end_line": 150
+        },
+        {
+          "path": "taskuary/skillpackages.py",
+          "line": 334,
+          "end_line": 375
+        },
+        {
+          "path": "taskuary/skillcontext.py",
+          "line": 6,
+          "end_line": 43
+        }
+      ],
+      "tag": "owner-only；校验 digest 与归属"
+    },
+    {
+      "id": "pending-proposals",
+      "type": "backend",
+      "label": "提案与挂起动作",
+      "sublabel": "proposals.collect / queue",
+      "pos": [
+        340,
+        675
+      ],
+      "size": [
+        220,
+        90
+      ],
+      "sources": [
+        {
+          "path": "taskuary/proposals.py",
+          "line": 248,
+          "end_line": 251
+        },
+        {
+          "path": "taskuary/proposals.py",
+          "line": 282,
+          "end_line": 295
+        },
+        {
+          "path": "taskuary/general.py",
+          "line": 2366,
+          "end_line": 2372
+        }
+      ],
+      "tag": "草稿 / 待批准动作，不是发送"
+    },
+    {
+      "id": "wrapup",
+      "type": "backend",
+      "label": "保存结果与收尾",
+      "sublabel": "writeup / wrapup / workerstate",
+      "pos": [
+        700,
+        675
+      ],
+      "size": [
+        210,
+        90
+      ],
+      "sources": [
+        {
+          "path": "taskuary/writeup.py",
+          "line": 1,
+          "end_line": 28
+        },
+        {
+          "path": "taskuary/wrapup.py",
+          "line": 657,
+          "end_line": 673
+        },
+        {
+          "path": "taskuary/wrapup.py",
+          "line": 750,
+          "end_line": 767
+        }
+      ],
+      "tag": "Agent done、Stop and save、任务关闭分离"
+    },
+    {
+      "id": "owner-approval",
+      "type": "external",
+      "label": "所有者",
+      "sublabel": "Approve / Edit / Mark done",
+      "pos": [
+        40,
+        895
+      ],
+      "size": [
+        180,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/server.py",
+          "line": 464,
+          "end_line": 487
+        },
+        {
+          "path": "taskuary/verdicts.py",
+          "line": 600,
+          "end_line": 626
+        },
+        {
+          "path": "taskuary/concierge.py",
+          "line": 4186,
+          "end_line": 4202
+        }
+      ]
+    },
+    {
+      "id": "verdict",
+      "type": "security",
+      "label": "裁决与版本防护",
+      "sublabel": "operations + verdicts",
+      "pos": [
+        340,
+        895
+      ],
+      "size": [
+        220,
+        90
+      ],
+      "sources": [
+        {
+          "path": "taskuary/operations.py",
+          "line": 330,
+          "end_line": 379
+        },
+        {
+          "path": "taskuary/verdicts.py",
+          "line": 600,
+          "end_line": 626
+        },
+        {
+          "path": "taskuary/verdicts.py",
+          "line": 676,
+          "end_line": 684
+        }
+      ],
+      "tag": "先 claim；拒绝重复与过期上下文"
+    },
+    {
+      "id": "approved-action",
+      "type": "backend",
+      "label": "审批后动作执行",
+      "sublabel": "proposals.execute",
+      "pos": [
+        700,
+        895
+      ],
+      "size": [
+        210,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/proposals.py",
+          "line": 567,
+          "end_line": 617
+        }
+      ],
+      "tag": "执行前重新校验权限 / 系统事实"
+    },
+    {
+      "id": "outbound-system",
+      "type": "external",
+      "label": "外部收件人与业务系统",
+      "sublabel": "邮件 / 聊天 / GitHub / 工具",
+      "pos": [
+        1000,
+        895
+      ],
+      "size": [
+        180,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/verdicts.py",
+          "line": 204,
+          "end_line": 241
+        },
+        {
+          "path": "taskuary/proposals.py",
+          "line": 591,
+          "end_line": 617
+        }
+      ]
+    },
+    {
+      "id": "run-ledger",
+      "type": "database",
+      "label": "SQLite 持久记录",
+      "sublabel": "run / transcript / review / audit",
+      "pos": [
+        40,
+        1115
+      ],
+      "size": [
+        180,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/verdicts.py",
+          "line": 273,
+          "end_line": 286
+        },
+        {
+          "path": "taskuary/verdicts.py",
+          "line": 288,
+          "end_line": 311
+        },
+        {
+          "path": "taskuary/operations.py",
+          "line": 348,
+          "end_line": 379
+        }
+      ]
+    },
+    {
+      "id": "close-task",
+      "type": "backend",
+      "label": "所有者 Mark done",
+      "sublabel": "concierge.close_task",
+      "pos": [
+        340,
+        1115
+      ],
+      "size": [
+        220,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/concierge.py",
+          "line": 4186,
+          "end_line": 4236
+        }
+      ],
+      "tag": "先保存；撤待审草稿；停会话；结任务"
+    },
+    {
+      "id": "delivery",
+      "type": "security",
+      "label": "发送与不确定性对账",
+      "sublabel": "claim + immutable snapshot",
+      "pos": [
+        700,
+        1115
+      ],
+      "size": [
+        210,
+        90
+      ],
+      "sources": [
+        {
+          "path": "taskuary/verdicts.py",
+          "line": 244,
+          "end_line": 291
+        },
+        {
+          "path": "taskuary/verdicts.py",
+          "line": 288,
+          "end_line": 328
+        },
+        {
+          "path": "taskuary/verdicts.py",
+          "line": 204,
+          "end_line": 241
+        }
+      ],
+      "tag": "unknown 保留；不盲目重复发送"
+    }
+  ],
+  "connections": [
+    {
+      "id": "request-start",
+      "from": "work-entry",
+      "to": "admission",
+      "label": "发起工作",
+      "variant": "emphasis"
+    },
+    {
+      "id": "start-general",
+      "from": "admission",
+      "to": "general-session",
+      "label": "general",
+      "variant": "default"
+    },
+    {
+      "id": "start-coding",
+      "from": "admission",
+      "to": "coding-session",
+      "label": "coding",
+      "variant": "default"
+    },
+    {
+      "id": "queue-held",
+      "from": "admission",
+      "to": "dispatch-queue",
+      "label": "满额 / 重试",
+      "variant": "dashed"
+    },
+    {
+      "id": "drain-general",
+      "from": "dispatch-queue",
+      "to": "general-session",
+      "label": "可运行后",
+      "variant": "dashed"
+    },
+    {
+      "id": "drain-coding",
+      "from": "dispatch-queue",
+      "to": "coding-session",
+      "label": "可运行后",
+      "variant": "dashed"
+    },
+    {
+      "id": "general-brain",
+      "from": "general-session",
+      "to": "brain-route",
+      "label": "选择 Brain",
+      "variant": "default"
+    },
+    {
+      "id": "coding-brain",
+      "from": "coding-session",
+      "to": "brain-route",
+      "label": "CLI / model 链",
+      "variant": "default",
+      "labelDx": -85
+    },
+    {
+      "id": "api-exec",
+      "from": "brain-route",
+      "to": "api-provider",
+      "label": "API 时",
+      "variant": "default"
+    },
+    {
+      "id": "cli-exec",
+      "from": "brain-route",
+      "to": "cli-runtime",
+      "label": "CLI 时",
+      "variant": "default"
+    },
+    {
+      "id": "coding-pty",
+      "from": "coding-session",
+      "to": "cli-runtime",
+      "label": "可观察会话",
+      "variant": "default"
+    },
+    {
+      "id": "cwd",
+      "from": "cli-runtime",
+      "to": "workspace",
+      "label": "cwd",
+      "variant": "default"
+    },
+    {
+      "id": "task-tools",
+      "from": "cli-runtime",
+      "to": "tools-gate",
+      "label": "工具请求",
+      "variant": "security"
+    },
+    {
+      "id": "optional-tools",
+      "from": "tools-gate",
+      "to": "external-tools",
+      "label": "按授权调用",
+      "variant": "default"
+    },
+    {
+      "id": "read-skill",
+      "from": "tools-gate",
+      "to": "skill-library",
+      "label": "read_skill",
+      "variant": "default"
+    },
+    {
+      "id": "tool-proposal",
+      "from": "tools-gate",
+      "to": "pending-proposals",
+      "label": "需批准时",
+      "variant": "security"
+    },
+    {
+      "id": "chat-proposal",
+      "from": "general-session",
+      "to": "pending-proposals",
+      "label": "声明提案",
+      "variant": "default"
+    },
+    {
+      "id": "save-cli",
+      "from": "cli-runtime",
+      "to": "wrapup",
+      "label": "收集转录",
+      "variant": "default"
+    },
+    {
+      "id": "save-general",
+      "from": "general-session",
+      "to": "wrapup",
+      "label": "对话记录 / 收尾",
+      "variant": "default"
+    },
+    {
+      "id": "wrap-review",
+      "from": "wrapup",
+      "to": "pending-proposals",
+      "label": "应付回复 / close-out",
+      "variant": "default"
+    },
+    {
+      "id": "pending-review",
+      "from": "pending-proposals",
+      "to": "verdict",
+      "label": "pending review",
+      "variant": "default"
+    },
+    {
+      "id": "approve",
+      "from": "owner-approval",
+      "to": "verdict",
+      "label": "所有者裁决",
+      "variant": "security"
+    },
+    {
+      "id": "run-action",
+      "from": "verdict",
+      "to": "approved-action",
+      "label": "action",
+      "variant": "security"
+    },
+    {
+      "id": "act-effect",
+      "from": "approved-action",
+      "to": "outbound-system",
+      "label": "再校验后执行",
+      "variant": "default"
+    },
+    {
+      "id": "send-review",
+      "from": "verdict",
+      "to": "delivery",
+      "label": "回复 / 新消息",
+      "variant": "security"
+    },
+    {
+      "id": "send-or-reconcile",
+      "from": "delivery",
+      "to": "outbound-system",
+      "label": "发送 / 对账",
+      "variant": "security"
+    },
+    {
+      "id": "delivery-ledger",
+      "from": "delivery",
+      "to": "run-ledger",
+      "label": "claim / receipt",
+      "variant": "default"
+    },
+    {
+      "id": "saved-record",
+      "from": "wrapup",
+      "to": "run-ledger",
+      "label": "结果与运行状态",
+      "variant": "default"
+    },
+    {
+      "id": "mark-done",
+      "from": "owner-approval",
+      "to": "close-task",
+      "label": "Mark done",
+      "variant": "default"
+    },
+    {
+      "id": "close-state",
+      "from": "close-task",
+      "to": "run-ledger",
+      "label": "任务与清理记录",
+      "variant": "default"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "执行路径与生命周期",
+      "items": [
+        "派发区分角色 Profile 与执行 Brain；GeneralSession 可使用 API 或 CLI，coding 的正常道路是 terminal.start_on_task。只有已连接的可运行 CLI 才是编码工具。",
+        "自动启动受 kind 开关、发送者信任、危险内容、敏感数据规则和当前容量限制；满额和失败重试存在同一 SQLite 队列，blackboard 负责释放后继续。",
+        "argv、PTY 与 ACP 是不同执行方式。ACP 只在开关开启且适配时使用；OMP 有显式 JSON/异步回合处理与进程树清理。",
+        "spawn.stop_tree（taskuary/spawn.py:193–215）清理拥有的进程树；关闭浏览器流只 detach，不代表停止 Agent。"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "审批是代码边界，不是提示词约定",
+      "items": [
+        "guard 对所有者、Agent 和不可信任务 token 分范围；Taskuary MCP 还验证 owns_task。Agent 工具不能自己批准 review 或把草稿直接发送出去。",
+        "operations.execute 先核对版本和 context_revision，再做唯一 claim；处理器返回后还检查承诺的效果是否落地。",
+        "verdicts 拒绝重复裁决、空草稿和 stale context。action 进入 proposals.execute，执行前重新检查授权；批准不会增加 connector 权限。",
+        "工具读写遵从当前 scopes 与规则；部分已获授权的本地/业务写入可直接执行。需额外批准的动作才进入 review；不能将本图理解成所有写操作都必须逐次审批。"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "发送与任务完成必须分开读",
+      "items": [
+        "发送 claim 与不可变 payload 先持久化。只有确认收到 provider receipt 才记录 sent；若断线或回执不可验证，保留 unknown，先对账而非自动重发。",
+        "Agent 显式 done 经 wrapup 判断应付回复与 PR/issue close-out。--no-reply 不能消除已有 close-out；Stop and save 只是保存 run，不是完成任务。",
+        "所有者 Mark done 通过 concierge.close_task：先保存活会话结果，再撤销待审草稿、停止会话、更新任务并移出工作 rail；保存失败保留任务。",
+        "图中只画关键 claim/收尾写入；普通 Store 查询、事件通知和逐 token 反馈省略，所有 SQLite 节点均指向同一数据 home 的数据库。"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "技能与 MCP 是可选能力，不是默认权限",
+      "items": [
+        "技能分析：已完成任务证据 → ask_json/WANT → 候选硬校验；slug、更新目标 digest 和每个任务证据都必须来自当前 snapshot。",
+        "skillauthoring.py:134–150 将接受的建议变成普通 Agent 生成任务；skillpackages.publish 要求所有者、审核 digest、库归属和 required checks，并保留交换日志以恢复。",
+        "read_skill 渐进披露已发布文本，既不执行代码，也不授予额外权限。读取和发布不能混为一个信任层。",
+        "外部 MCP 可为 stdio 子进程或 HTTP 服务；未显式给 readOnlyHint 的工具按写处理。CLI 自身的 vendor OAuth/MCP 配置是另外的可选入口。"
+      ]
+    }
+  ]
+}

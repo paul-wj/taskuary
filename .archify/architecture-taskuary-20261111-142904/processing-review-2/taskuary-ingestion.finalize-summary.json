@@ -1,0 +1,225 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\candidate-ingestion.json",
+    "sha256": "e80848d3a580bde86fe8233d9bcdc1ec3af7080629f2c0469774fc7570d8f111",
+    "bytes": 16488
+  },
+  "artifact": {
+    "path": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\taskuary-ingestion.html",
+    "sha256": "85e184685aade10b1939f6900893d5b2cee8474733e752c4832b084941b3cc11",
+    "bytes": 862683
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\processing-review-2\\taskuary-ingestion.finalize.json",
+    "summaryReceipt": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\processing-review-2\\taskuary-ingestion.finalize-summary.json",
+    "browserCheckReceipt": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\processing-review-2\\taskuary-ingestion.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-11-11T06:36:28.412Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 4864,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  },
+  "visualReviewRecommendation": {
+    "action": "inspect-route-readability",
+    "signals": {
+      "resolvedCrossovers": 5,
+      "routesOverSuggestedBends": 3
+    },
+    "reason": "Automated gates passed, but crossings or detours still need perceptual review before claiming visual quality.",
+    "affectedRoutes": {
+      "crossings": [
+        {
+          "left": {
+            "id": "show-error",
+            "from": "routing",
+            "to": "errors",
+            "label": "无可用判定",
+            "collectionIndex": 8,
+            "artifactIndex": 9
+          },
+          "right": {
+            "id": "file-row",
+            "from": "file-only",
+            "to": "durable",
+            "label": "仅消息与 route",
+            "collectionIndex": 21,
+            "artifactIndex": 22
+          },
+          "point": [
+            982,
+            285.15384615384613
+          ]
+        },
+        {
+          "left": {
+            "id": "write-facts",
+            "from": "routing",
+            "to": "facts",
+            "label": "创建 / 附加",
+            "collectionIndex": 9,
+            "artifactIndex": 10
+          },
+          "right": {
+            "id": "file-row",
+            "from": "file-only",
+            "to": "durable",
+            "label": "仅消息与 route",
+            "collectionIndex": 21,
+            "artifactIndex": 22
+          },
+          "point": [
+            982,
+            713
+          ]
+        },
+        {
+          "left": {
+            "id": "mail-workflow",
+            "from": "routing",
+            "to": "workflow",
+            "label": "命名工作流",
+            "collectionIndex": 10,
+            "artifactIndex": 11
+          },
+          "right": {
+            "id": "file-row",
+            "from": "file-only",
+            "to": "durable",
+            "label": "仅消息与 route",
+            "collectionIndex": 21,
+            "artifactIndex": 22
+          },
+          "point": [
+            982,
+            500
+          ]
+        },
+        {
+          "left": {
+            "id": "write-sql",
+            "from": "facts",
+            "to": "durable",
+            "label": "Store 写入",
+            "collectionIndex": 12,
+            "artifactIndex": 13
+          },
+          "right": {
+            "id": "file-row",
+            "from": "file-only",
+            "to": "durable",
+            "label": "仅消息与 route",
+            "collectionIndex": 21,
+            "artifactIndex": 22
+          },
+          "point": [
+            982,
+            727
+          ],
+          "sharedNode": "durable"
+        },
+        {
+          "left": {
+            "id": "draw",
+            "from": "projection",
+            "to": "surface",
+            "label": "All / Unread",
+            "collectionIndex": 16,
+            "artifactIndex": 17
+          },
+          "right": {
+            "id": "board",
+            "from": "board-state",
+            "to": "surface",
+            "label": "BoardState",
+            "collectionIndex": 18,
+            "artifactIndex": 19
+          },
+          "point": [
+            356,
+            1146
+          ],
+          "sharedNode": "surface"
+        }
+      ],
+      "detours": [
+        {
+          "relationship": {
+            "id": "show-error",
+            "from": "routing",
+            "to": "errors",
+            "label": "无可用判定",
+            "collectionIndex": 8,
+            "artifactIndex": 9
+          },
+          "bends": 3,
+          "stretch": 1
+        },
+        {
+          "relationship": {
+            "id": "save-receipt",
+            "from": "reads",
+            "to": "durable",
+            "label": "内容回执",
+            "collectionIndex": 20,
+            "artifactIndex": 21
+          },
+          "bends": 3,
+          "stretch": 1.056
+        },
+        {
+          "relationship": {
+            "id": "file-row",
+            "from": "file-only",
+            "to": "durable",
+            "label": "仅消息与 route",
+            "collectionIndex": 21,
+            "artifactIndex": 22
+          },
+          "bends": 4,
+          "stretch": 1.052
+        }
+      ],
+      "truncated": false
+    },
+    "hints": [
+      "routing → errors crosses file-only → durable: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "routing → facts crosses file-only → durable: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "routing → workflow crosses file-only → durable: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "facts → durable and file-only → durable cross next to durable: move node facts or file-only so the two reach durable from different sides (for example one level with it, one directly above or below it).",
+      "projection → surface and board-state → surface cross next to surface: move node projection or board-state so the two reach surface from different sides (for example one level with it, one directly above or below it).",
+      "routing → errors needs 3 bends: move node routing or errors so they share a row or column with matching centers, or sit diagonally with a clear corner.",
+      "reads → durable needs 3 bends: move node reads or durable so they share a row or column with matching centers, or sit diagonally with a clear corner.",
+      "file-only → durable needs 4 bends: move node file-only or durable so they share a row or column with matching centers, or sit diagonally with a clear corner."
+    ],
+    "repair": "Trace these relationships at the desktop viewport. For Architecture, use references/architecture-layout-repair.md: reflow a blocked main path or tangled connected scene, and repair an isolated defect locally only when the surrounding composition is accepted. Preserve all semantic content and user-fixed geometry. Rerun finalize once after the edit."
+  }
+}

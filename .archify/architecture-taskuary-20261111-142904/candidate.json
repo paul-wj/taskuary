@@ -1,0 +1,585 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Taskuary · 系统总览与运行边界",
+    "locale": "zh-CN",
+    "output": ".archify/architecture-taskuary-20261111-142904/taskuary-architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/paul-wj/taskuary.git",
+      "revision": "32c917736295f9c2172b54c23f43b59c4984184d"
+    }
+  },
+  "components": [
+    {
+      "id": "owner",
+      "type": "external",
+      "label": "所有者",
+      "sublabel": "浏览器 / pywebview",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        170,
+        72
+      ],
+      "sources": [
+        {
+          "path": "taskuary/desktop.py",
+          "line": 643,
+          "end_line": 653
+        },
+        {
+          "path": "taskuary/cli.py",
+          "line": 733,
+          "end_line": 741
+        }
+      ]
+    },
+    {
+      "id": "react",
+      "type": "frontend",
+      "label": "React / MUI 界面",
+      "sublabel": "TaskHubPage · API / live",
+      "pos": [
+        360,
+        40
+      ],
+      "size": [
+        220,
+        80
+      ],
+      "sources": [
+        {
+          "path": "website/src/main.jsx",
+          "line": 82,
+          "end_line": 91
+        },
+        {
+          "path": "website/src/api.js",
+          "line": 9,
+          "end_line": 33
+        },
+        {
+          "path": "website/src/live.js",
+          "line": 93,
+          "end_line": 138
+        }
+      ],
+      "tag": "en / zh-CN"
+    },
+    {
+      "id": "http",
+      "type": "security",
+      "label": "受控 API 入口",
+      "sublabel": "Host / Origin / Token",
+      "pos": [
+        730,
+        40
+      ],
+      "size": [
+        210,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/server.py",
+          "line": 417,
+          "end_line": 488
+        },
+        {
+          "path": "taskuary/server.py",
+          "line": 602,
+          "end_line": 635
+        },
+        {
+          "path": "taskuary/server.py",
+          "line": 11084,
+          "end_line": 11094
+        }
+      ],
+      "tag": "所有者 / Agent / 任务范围"
+    },
+    {
+      "id": "sqlite",
+      "type": "database",
+      "label": "SQLiteStore",
+      "sublabel": "taskuary.db · WAL",
+      "pos": [
+        1080,
+        40
+      ],
+      "size": [
+        170,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/store.py",
+          "line": 1105,
+          "end_line": 1153
+        },
+        {
+          "path": "taskuary/store.py",
+          "line": 2122,
+          "end_line": 2140
+        },
+        {
+          "path": "taskuary/config.py",
+          "line": 133,
+          "end_line": 134
+        }
+      ],
+      "tag": "受锁保护的写入 / 读连接池"
+    },
+    {
+      "id": "launcher",
+      "type": "backend",
+      "label": "CLI / GUI 启动",
+      "sublabel": "命令 / 桌面 / Docker",
+      "pos": [
+        40,
+        245
+      ],
+      "size": [
+        170,
+        80
+      ],
+      "sources": [
+        {
+          "path": "pyproject.toml",
+          "line": 70,
+          "end_line": 72
+        },
+        {
+          "path": "tools/launcher_gui.py",
+          "line": 103,
+          "end_line": 142
+        },
+        {
+          "path": "Dockerfile",
+          "line": 19,
+          "end_line": 33
+        }
+      ]
+    },
+    {
+      "id": "live",
+      "type": "messagebus",
+      "label": "进程内变更通知",
+      "sublabel": "live.py · WS 合并扇出",
+      "pos": [
+        360,
+        245
+      ],
+      "size": [
+        220,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/store.py",
+          "line": 2227,
+          "end_line": 2259
+        },
+        {
+          "path": "taskuary/live.py",
+          "line": 107,
+          "end_line": 130
+        },
+        {
+          "path": "taskuary/live.py",
+          "line": 154,
+          "end_line": 189
+        }
+      ],
+      "tag": "通知后 refetch；非外部消息队列"
+    },
+    {
+      "id": "app",
+      "type": "backend",
+      "label": "FastAPI 本地应用",
+      "sublabel": "路由 / 领域模块 / 后台时钟",
+      "pos": [
+        730,
+        245
+      ],
+      "size": [
+        210,
+        90
+      ],
+      "sources": [
+        {
+          "path": "taskuary/server.py",
+          "line": 14,
+          "end_line": 39
+        },
+        {
+          "path": "taskuary/server.py",
+          "line": 133,
+          "end_line": 171
+        },
+        {
+          "path": "taskuary/server.py",
+          "line": 252,
+          "end_line": 286
+        }
+      ],
+      "tag": "一个 Python 进程，多线程 + asyncio"
+    },
+    {
+      "id": "config",
+      "type": "database",
+      "label": "应用配置",
+      "sublabel": "config.toml / 环境覆盖",
+      "pos": [
+        1080,
+        245
+      ],
+      "size": [
+        170,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/config.py",
+          "line": 66,
+          "end_line": 72
+        },
+        {
+          "path": "taskuary/config.py",
+          "line": 114,
+          "end_line": 134
+        }
+      ],
+      "tag": "默认 127.0.0.1:7787"
+    },
+    {
+      "id": "systems",
+      "type": "external",
+      "label": "业务系统与消息",
+      "sublabel": "邮件 / 聊天 / 工单 / 数据",
+      "pos": [
+        40,
+        455
+      ],
+      "size": [
+        170,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/server.py",
+          "line": 10463,
+          "end_line": 10489
+        },
+        {
+          "path": "taskuary/reports.py",
+          "line": 1946,
+          "end_line": 1962
+        }
+      ]
+    },
+    {
+      "id": "ingress",
+      "type": "backend",
+      "label": "接入与任务处理",
+      "sublabel": "连接器 / ingest / processing",
+      "pos": [
+        360,
+        455
+      ],
+      "size": [
+        220,
+        90
+      ],
+      "sources": [
+        {
+          "path": "taskuary/server.py",
+          "line": 17,
+          "end_line": 33
+        },
+        {
+          "path": "taskuary/server.py",
+          "line": 253,
+          "end_line": 256
+        },
+        {
+          "path": "taskuary/taskstate.py",
+          "line": 60,
+          "end_line": 99
+        }
+      ],
+      "tag": "详见「事件与任务处理」"
+    },
+    {
+      "id": "runtime",
+      "type": "backend",
+      "label": "Agent / Brain 运行层",
+      "sublabel": "角色、会话与模型选择",
+      "pos": [
+        730,
+        455
+      ],
+      "size": [
+        210,
+        90
+      ],
+      "sources": [
+        {
+          "path": "taskuary/terminal.py",
+          "line": 2364,
+          "end_line": 2426
+        },
+        {
+          "path": "taskuary/general.py",
+          "line": 2727,
+          "end_line": 2805
+        },
+        {
+          "path": "taskuary/agents.py",
+          "line": 1743,
+          "end_line": 1773
+        }
+      ],
+      "tag": "详见「Agent 执行与审批」"
+    },
+    {
+      "id": "cli-child",
+      "type": "external",
+      "label": "本机 CLI 子进程",
+      "sublabel": "编码终端 / 会话恢复",
+      "pos": [
+        1080,
+        455
+      ],
+      "size": [
+        170,
+        90
+      ],
+      "sources": [
+        {
+          "path": "taskuary/terminal.py",
+          "line": 215,
+          "end_line": 221
+        },
+        {
+          "path": "taskuary/agents.py",
+          "line": 1812,
+          "end_line": 1824
+        },
+        {
+          "path": "taskuary/server.py",
+          "line": 2847,
+          "end_line": 2852
+        }
+      ],
+      "tag": "包括 OMP；不等于 OS 沙箱"
+    },
+    {
+      "id": "files",
+      "type": "database",
+      "label": "本机文件与工作区",
+      "sublabel": "仓库 / 附件 / 技能包",
+      "pos": [
+        730,
+        675
+      ],
+      "size": [
+        210,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/artifacts.py",
+          "line": 251,
+          "end_line": 289
+        },
+        {
+          "path": "taskuary/skillpackages.py",
+          "line": 334,
+          "end_line": 375
+        },
+        {
+          "path": "taskuary/terminal.py",
+          "line": 215,
+          "end_line": 221
+        }
+      ]
+    },
+    {
+      "id": "models",
+      "type": "cloud",
+      "label": "已连接模型或 CLI 脑",
+      "sublabel": "按配置选择，不默认连接",
+      "pos": [
+        1080,
+        675
+      ],
+      "size": [
+        170,
+        80
+      ],
+      "sources": [
+        {
+          "path": "taskuary/llm.py",
+          "line": 430,
+          "end_line": 457
+        },
+        {
+          "path": "taskuary/llm.py",
+          "line": 967,
+          "end_line": 1001
+        }
+      ],
+      "tag": "远端 API 或本机 CLI"
+    }
+  ],
+  "connections": [
+    {
+      "id": "open-ui",
+      "from": "owner",
+      "to": "react",
+      "label": "打开应用",
+      "variant": "emphasis"
+    },
+    {
+      "id": "api-calls",
+      "from": "react",
+      "to": "http",
+      "label": "HTTP /api",
+      "variant": "security"
+    },
+    {
+      "id": "route-call",
+      "from": "http",
+      "to": "app",
+      "label": "鉴权后路由",
+      "variant": "security"
+    },
+    {
+      "id": "sql",
+      "from": "app",
+      "to": "sqlite",
+      "label": "Store 调用",
+      "variant": "default"
+    },
+    {
+      "id": "load-config",
+      "from": "app",
+      "to": "config",
+      "label": "读取配置",
+      "variant": "default"
+    },
+    {
+      "id": "launch",
+      "from": "launcher",
+      "to": "app",
+      "label": "启动 / 复用",
+      "variant": "default"
+    },
+    {
+      "id": "changed",
+      "from": "app",
+      "to": "live",
+      "label": "写入后通知",
+      "variant": "dashed"
+    },
+    {
+      "id": "ws-refetch",
+      "from": "live",
+      "to": "react",
+      "label": "WS / refetch",
+      "variant": "dashed"
+    },
+    {
+      "id": "fetch",
+      "from": "systems",
+      "to": "ingress",
+      "label": "拉取 / 推送",
+      "variant": "default"
+    },
+    {
+      "id": "domain",
+      "from": "ingress",
+      "to": "app",
+      "label": "事件与任务",
+      "variant": "default"
+    },
+    {
+      "id": "start-agent",
+      "from": "app",
+      "to": "runtime",
+      "label": "派发 / 对话",
+      "variant": "default"
+    },
+    {
+      "id": "run-cli",
+      "from": "runtime",
+      "to": "cli-child",
+      "label": "启动 / 恢复",
+      "variant": "default"
+    },
+    {
+      "id": "brain",
+      "from": "runtime",
+      "to": "models",
+      "label": "选择 Brain",
+      "variant": "default"
+    },
+    {
+      "id": "write-result",
+      "from": "runtime",
+      "to": "files",
+      "label": "保存结果",
+      "variant": "default"
+    },
+    {
+      "id": "workspace",
+      "from": "cli-child",
+      "to": "files",
+      "label": "工作目录",
+      "variant": "default"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "前端与服务端",
+      "items": [
+        "TaskHubPage 管理 shell；Assistant、Board 与任务工作区复用 api.js、live.js 和 LocaleProvider。",
+        "生产 UI 来自 website/src → Vite → taskuary/web，由 FastAPI 提供；开发时 /api 代理至本地后端。",
+        "终端另用 /api/terminals/{sid}/ws，浏览器画面可通过独立 WS 转发；共享事件通道不是唯一 socket。"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "状态、后台工作与数据",
+      "items": [
+        "server.py 导入即加载配置并打开 SQLite；lifespan 启动连接器、报告、聊天、门口会话时钟并做重启恢复。",
+        "TASKUARY_HOME 选择数据目录；默认 ~/.taskuary。SQLite 保存任务、消息、review、run、配置与审计；会话进程本身不跨重启存活。",
+        "任务状态、Agent 状态与回复状态分开；Board 由 taskstate.py 综合实时 session、排队、运行和 review 推导。"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "授权边界不是进程沙箱",
+      "items": [
+        "一次性 launch key 才将所有者 token 注入应用页。HTTP 与 WS 都校验来源和 token；Agent 写入口为允许列表。",
+        "不可信任务会话的 token 绑定其 task；发送、审批等所有者入口不能被 Agent 自行调用。",
+        "这些是应用代码边界，不隔离同一用户启动的 OS 进程。未配置的模型或 CLI 不会被自动视为已连接。"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "公共站点是独立部署",
+      "items": [
+        "website/package.json:8–10 分别构建 taskuary/web、site/demo、site/docs；wheel、桌面包与 Docker 使用本地应用 bundle。",
+        "静态 demo 使用 demoApi.js 录制数据和内存写入，不连接本地 FastAPI；本地 --demo 在未指定 home 时创建临时目录，已有 TASKUARY_HOME 则保留，并在 API 层拒绝对外动作。",
+        "worker.mjs:15–53 + wrangler.jsonc:3–19：Cloudflare 提供 site/；/api/ev 统计使用 Durable Object SQLite 或 D1，不是本地任务数据库。"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,256 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\candidate-ingestion.json",
+    "sha256": "f8c83f82902da97e53fd72ec02a867f028ad0668b450bfcb1be6ede9937f8e8c",
+    "bytes": 16488
+  },
+  "artifact": {
+    "path": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\taskuary-ingestion.html",
+    "sha256": "f0e8b5173696ba5fbe6206387bc776472148aec947f20d7d7411bc0fe7b43d48",
+    "bytes": 862980
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\processing-review-3\\taskuary-ingestion.finalize.json",
+    "summaryReceipt": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\processing-review-3\\taskuary-ingestion.finalize-summary.json",
+    "browserCheckReceipt": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\processing-review-3\\taskuary-ingestion.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-11-11T06:36:28.412Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 4700,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  },
+  "visualReviewRecommendation": {
+    "action": "inspect-route-readability",
+    "signals": {
+      "resolvedCrossovers": 4,
+      "routesOverSuggestedBends": 4
+    },
+    "reason": "Automated gates passed, but crossings or detours still need perceptual review before claiming visual quality.",
+    "affectedRoutes": {
+      "crossings": [
+        {
+          "left": {
+            "id": "write-facts",
+            "from": "routing",
+            "to": "facts",
+            "label": "创建 / 附加",
+            "collectionIndex": 9,
+            "artifactIndex": 10
+          },
+          "right": {
+            "id": "census",
+            "from": "membership",
+            "to": "durable",
+            "label": "快照 / 事务",
+            "collectionIndex": 13,
+            "artifactIndex": 14
+          },
+          "point": [
+            804.9999999999999,
+            672
+          ]
+        },
+        {
+          "left": {
+            "id": "write-facts",
+            "from": "routing",
+            "to": "facts",
+            "label": "创建 / 附加",
+            "collectionIndex": 9,
+            "artifactIndex": 10
+          },
+          "right": {
+            "id": "save-receipt",
+            "from": "reads",
+            "to": "durable",
+            "label": "内容回执",
+            "collectionIndex": 20,
+            "artifactIndex": 21
+          },
+          "point": [
+            805,
+            651
+          ]
+        },
+        {
+          "left": {
+            "id": "workflow-task",
+            "from": "workflow",
+            "to": "facts",
+            "label": "建立 run task",
+            "collectionIndex": 11,
+            "artifactIndex": 12
+          },
+          "right": {
+            "id": "save-receipt",
+            "from": "reads",
+            "to": "durable",
+            "label": "内容回执",
+            "collectionIndex": 20,
+            "artifactIndex": 21
+          },
+          "point": [
+            968,
+            651
+          ]
+        },
+        {
+          "left": {
+            "id": "read-inventory",
+            "from": "projection",
+            "to": "durable",
+            "label": "原始事实 / 回执",
+            "collectionIndex": 15,
+            "artifactIndex": 16
+          },
+          "right": {
+            "id": "derived",
+            "from": "facts",
+            "to": "board-state",
+            "label": "任务 / run / review",
+            "collectionIndex": 17,
+            "artifactIndex": 18
+          },
+          "point": [
+            805,
+            789
+          ]
+        }
+      ],
+      "detours": [
+        {
+          "relationship": {
+            "id": "census",
+            "from": "membership",
+            "to": "durable",
+            "label": "快照 / 事务",
+            "collectionIndex": 13,
+            "artifactIndex": 14
+          },
+          "bends": 4,
+          "stretch": 1.218,
+          "directCorridorBlockers": [
+            {
+              "id": "facts",
+              "label": "任务与 Review 写入",
+              "box": [
+                700,
+                675,
+                210,
+                90
+              ]
+            }
+          ]
+        },
+        {
+          "relationship": {
+            "id": "board",
+            "from": "board-state",
+            "to": "surface",
+            "label": "BoardState",
+            "collectionIndex": 18,
+            "artifactIndex": 19
+          },
+          "bends": 3,
+          "stretch": 1.079,
+          "directCorridorBlockers": [
+            {
+              "id": "projection",
+              "label": "All / Unread 统一投影",
+              "box": [
+                340,
+                900,
+                220,
+                90
+              ]
+            }
+          ]
+        },
+        {
+          "relationship": {
+            "id": "save-receipt",
+            "from": "reads",
+            "to": "durable",
+            "label": "内容回执",
+            "collectionIndex": 20,
+            "artifactIndex": 21
+          },
+          "bends": 3,
+          "stretch": 1.054
+        },
+        {
+          "relationship": {
+            "id": "file-row",
+            "from": "file-only",
+            "to": "durable",
+            "label": "仅消息与 route",
+            "collectionIndex": 21,
+            "artifactIndex": 22
+          },
+          "bends": 4,
+          "stretch": 1.335,
+          "directCorridorBlockers": [
+            {
+              "id": "errors",
+              "label": "显式待重试错误",
+              "box": [
+                1000,
+                245,
+                180,
+                80
+              ]
+            },
+            {
+              "id": "workflow",
+              "label": "Workflow / Flow",
+              "box": [
+                1000,
+                455,
+                180,
+                90
+              ]
+            }
+          ]
+        }
+      ],
+      "truncated": false
+    },
+    "hints": [
+      "routing → facts crosses membership → durable: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "routing → facts crosses reads → durable: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "workflow → facts crosses reads → durable: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "projection → durable crosses facts → board-state: move the node of whichever is a branch, return, or second entrance to the other side of the main path, so that relationship runs through an empty corridor.",
+      "reads → durable needs 3 bends: move node reads or durable so they share a row or column with matching centers, or sit diagonally with a clear corner."
+    ],
+    "repair": "Trace these relationships at the desktop viewport. For Architecture, use references/architecture-layout-repair.md: reflow a blocked main path or tangled connected scene, and repair an isolated defect locally only when the surrounding composition is accepted. Preserve all semantic content and user-fixed geometry. Rerun finalize once after the edit."
+  }
+}

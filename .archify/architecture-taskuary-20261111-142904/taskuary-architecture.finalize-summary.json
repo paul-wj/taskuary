@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\candidate.json",
+    "sha256": "8c72069102dca40cd630dabc9cf76d47bf78a763ed1cb02a6c80cb7eb0c0ce9e",
+    "bytes": 13213
+  },
+  "artifact": {
+    "path": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\taskuary-architecture.html",
+    "sha256": "f8d42a379a1e5459f63e9ee0da6c70d1db59f6ea893724d3623321de7df721b3",
+    "bytes": 849669
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\taskuary-architecture.finalize.json",
+    "summaryReceipt": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\taskuary-architecture.finalize-summary.json",
+    "browserCheckReceipt": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\taskuary-architecture.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-11-11T06:36:28.412Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 4769,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  },
+  "visualReviewRecommendation": {
+    "action": "inspect-route-readability",
+    "signals": {
+      "routesOverSuggestedBends": 2
+    },
+    "reason": "Automated gates passed, but crossings or detours still need perceptual review before claiming visual quality.",
+    "affectedRoutes": {
+      "crossings": [],
+      "detours": [
+        {
+          "relationship": {
+            "id": "launch",
+            "from": "launcher",
+            "to": "app",
+            "label": "启动 / 复用",
+            "collectionIndex": 5,
+            "artifactIndex": 6
+          },
+          "bends": 4,
+          "stretch": 1.145
+        },
+        {
+          "relationship": {
+            "id": "domain",
+            "from": "ingress",
+            "to": "app",
+            "label": "事件与任务",
+            "collectionIndex": 9,
+            "artifactIndex": 10
+          },
+          "bends": 3,
+          "stretch": 1
+        }
+      ],
+      "truncated": false
+    },
+    "hints": [
+      "launcher → app needs 4 bends: move node launcher or app so they share a row or column with matching centers, or sit diagonally with a clear corner.",
+      "ingress → app needs 3 bends: move node ingress or app so they share a row or column with matching centers, or sit diagonally with a clear corner."
+    ],
+    "repair": "Trace these relationships at the desktop viewport. For Architecture, use references/architecture-layout-repair.md: reflow a blocked main path or tangled connected scene, and repair an isolated defect locally only when the surrounding composition is accepted. Preserve all semantic content and user-fixed geometry. Rerun finalize once after the edit."
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "fb28baf0-8cb8-4d9b-ba52-80943dd0f602",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\candidate-ingestion.json",
+  "output": "C:\\project\\taskuary\\.archify\\architecture-taskuary-20261111-142904\\taskuary-ingestion.html",
+  "specification": {
+    "sha256": "f8c83f82902da97e53fd72ec02a867f028ad0668b450bfcb1be6ede9937f8e8c",
+    "bytes": 16488
+  },
+  "artifact": {
+    "sha256": "f0e8b5173696ba5fbe6206387bc776472148aec947f20d7d7411bc0fe7b43d48",
+    "bytes": 862980
+  }
+}
