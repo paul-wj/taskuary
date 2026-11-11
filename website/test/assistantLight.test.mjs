@@ -2,9 +2,12 @@
 // own button, lit - never a card to confirm, never a button of its own, and nothing runs until the owner presses it.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { lightOf, litAfter, litOn, litPick, litPull } from "../src/assistantLight.js";
 import { rowOf } from "../src/actionRow.js";
 import { label } from "../src/buttons.js";
+const src = (f) => readFileSync(fileURLToPath(new URL(`../src/${f}`, import.meta.url)), "utf8");
 
 
 test("\"mark this done\" fills the row's own Mark done and adds no button", () => {
@@ -32,12 +35,39 @@ test("the light lands on its item - by key, or by its task - and goes out when t
   assert.equal(litPick(lightOf({ verb: "", key: "task:12", tid: 12 }), up), null, "brought up with nothing to light");
 });
 
+test("a typed turn draws no proposal card and runs nothing: it lights, opens a page, or fills New", () => {
+  const view = src("AssistantView.jsx");
+  const at = view.indexOf("const send = async"), body = view.slice(at, view.indexOf("const sendEmoji", at));
+  assert.doesNotMatch(body, /proposalOf|runProposal|prop\?\.auto|kind: "proposal"/);
+  assert.match(body, /const l = lightOf\(data\.light\);/);
+  assert.match(body, /if \(data\.new\) browseRef\.current\?\.\("new", \{ \.\.\.data\.new, aid \}\);/);
+  assert.match(body, /const page = "open" in data \? data\.open : firstAppLink\(data\.say\);/);
+  // the lit act outranks the Advisor's line, which would name another button; any press puts it out
+  assert.match(view, /<ActionRow advised=\{stripPick \|\| setupLit\}( hold=\{[^}]*\})?( early=\{[^}]*\})?( says=\{.*?\})? \/>/);
+  assert.match(view, /const shownAdvice = table\.speaks && !litNow \?/);
+  assert.match(src("advice.js"), /pick: lit \|\| \(noAi \? \{ none: "no_ai", for: key \} : shown \|\| quiet\)/, "the light first, then no AI's way out, then the Advisor's decision, then Next (advice.stripWord)");
+  assert.match(view, /useEffect\(\(\) => onPressed\(\(\) => setLit\(null\)\), \[\]\);/);
+});
 
 // THE LIT BUTTON IS THE WHOLE ANSWER (the owner, 2026-10-23: "what the heck is Lit"): no "Lit Mark done on TQ-0026." line in the chat and
 // no "Press Mark done when you're sure." over the row - the filled button says it. A strip line is drawn only when a light carries one
 test("a lit button says no line, in the chat or over the row", () => {
   const lit = lightOf({ verb: "close", label: label("close"), key: "msg:4", tid: 7 });
   assert.equal(lit.line, ""); assert.equal(litPick(lit, { key: "msg:4", tid: 7 }).line, "");
+  const view = src("AssistantView.jsx"), light = src("assistantLight.js");
+  assert.doesNotMatch(view + light.replace(/\/\/.*$/gm, ""), /when you're sure/);
+  assert.doesNotMatch(light, /export const pressLine/);
+  // ...and not even a light that carries one: no strip stands over the row to say it (the owner, 2026-10-26: "remove the advisor")
+  assert.doesNotMatch(view + src("CanvasItem.jsx"), /data-tq-advice="lit"/);
+  // ...and the one-row chat bar's pop-up never shuts by itself (the owner, 2026-10-27: "it disappeared when done?") - no timer closes it
+  assert.doesNotMatch(view, /POP_LIT_MS|setTimeout\(\(\) => setPopOpen\(false\)/);
+  // ...and a reply that only lit or pressed is no chat line in the column: only words get one - in the chat window it ends on its receipt
+  // ...or acts on the page it was asked about (pageView): those acts are its steps, drawn on its line (the owner, 2026-10-30)
+  assert.match(view, /if \(data\.say \|\| data\.options\?\.length \|\| data\.chips\?\.length \|\| ops\.length\)\s+setMsgs\(\(m\) => \[\.\.\.m, \{ id: aid, role: "assistant"/);
+  assert.match(view, /else if \(winOnRef\.current && !data\.context_update && !data\.decision\) \{ const r = actReceipt\(data, tableKey \|\| current\); receipt\(r\.text, r\.status\); \}/);
+  assert.doesNotMatch(view, /Thinking about this one/, "no Thinking under it - or anywhere (the owner, 2026-10-23)");
+  assert.match(view, /lit: litNow,/);
+  assert.match(src("CanvasItem.jsx"), /<ActionRow inline advised=\{pick\}( says=\{.*?\})? \/>/);
 });
 
 
@@ -57,6 +87,11 @@ test("the day typed with Remind me rides the light into the picker as its first 
   assert.equal(lightOf({ verb: "close", key: "task:4", tid: 4, day }).day, undefined, "only Remind me carries a day");
   assert.equal(lightOf({ verb: "defer", key: "task:4", tid: 4 }).day, undefined, "no day said, none carried");
   assert.equal(litPick(lightOf({ verb: "defer", key: "task:4", tid: 4 }), { key: "task:4" }).day, undefined);
+  assert.match(src("CanvasItem.jsx"), /saidDay=\{lit\?\.verb === "defer" \? lit\.day \|\| null : null\}/);
+  assert.match(src("TaskPage.jsx"), /const remindHere = \(at\) => \{ setRemindSaid\(saidRef\.current\); setRemindAt\(at\); \};/);
+  assert.match(src("TaskPage.jsx"), /onStay=\{onStay\}\n\s+said=\{remindSaid\} \/>/);
+  assert.match(src("RemindMe.jsx"), /\{said\?\.until && said\?\.day && !away && \(/, "the said day leads the picker, before the learned day");
+  assert.match(src("AssistantView.jsx"), /said: litDayRef\.current \}\); return; \}/, "the walk's own picker too");
 });
 
 // HAND IT TO A PERSON, ASKED FOR IN WORDS (the owner, 2026-11-03: "This should be sent to <an address>" did nothing): the light carries who

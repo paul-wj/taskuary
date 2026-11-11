@@ -130,6 +130,32 @@ class TheTableIsTheCatalogue(unittest.TestCase):
             self.assertIn('token on the card' if t in rm.HEADERS else 'Sign in', c['desc'], t)
             self.assertRegex(t, r'^[a-z][a-z0-9_]*$')                     # the type is the CLI's server name
 
+    def test_one_card_per_system(self):
+        """A vendor's MCP entry for a system that has a card of its own names that card (`system`), and the page draws the two as one
+        (connectorCatalog.oneCardPerSystem): "Airtable" and "Airtable MCP" side by side read as two products (the owner, 2026-11-10)."""
+        cards = connectorcatalog.cards()
+        by_type = {c['type']: c for c in cards}
+        by_title = {c['title'].lower(): c['type'] for c in cards if not c.get('mcp')}
+        for c in cards:
+            if not c.get('mcp'): self.assertNotIn('system', c, c['type']); continue
+            # ...named for the system at the source, never for its road (the owner, 2026-11-10): the type is the CLI's server name
+            self.assertFalse(c['title'].endswith(' MCP'), c['type'])
+            base = c['type'][:-4] if c['type'].endswith('_mcp') else None
+            if (same := base if base in by_type else by_title.get(c['title'].lower())): self.assertEqual(c.get('system'), same, c['type'])
+            if c.get('system'): self.assertFalse(by_type[c['system']].get('mcp') or by_type[c['system']].get('planned'), c['type'])
+        # ...and a system under two names is one card too (the owner, 2026-11-10: "yes merge basecampe with mcp")
+        self.assertEqual((by_type['basecamp']['system'], by_type['atlassian']['system']), ('basecamp_todos', 'jira'))
+        systems = [c['system'] for c in cards if c.get('system')]
+        self.assertEqual(len(systems), len(set(systems)), 'one MCP entry per system')
+        self.assertGreaterEqual(len(systems), 22)
+
+    def test_no_entry_is_connected_without_a_connection_row(self):
+        "The catalogue says what a card IS, never that it is on: connected is read off the owner's own row, and a seeded one is off."
+        for c in connectorcatalog.cards():
+            self.assertFalse({'Active', 'HasSecret', 'connected', 'state', 'LastSyncAt'} & set(c), c['type'])
+        rows = [r for r in MemoryStore().list_connectors() if r['Type'] in rm.MCPS]
+        self.assertTrue(rows and not any(connectorcatalog.is_connected(r) for r in rows))
+
     def test_every_row_is_seeded_and_rides_this_road(self):
         have = {c['Type'] for c in MemoryStore().list_connectors()}
         self.assertEqual(sorted(set(rm.MCPS) - have), [])
@@ -156,7 +182,7 @@ class TheTableIsTheCatalogue(unittest.TestCase):
         s = MemoryStore(); cid = s.get_connector_by_type('notion_mcp')['ConnectorId']
         with Machine(claude={'notion_mcp'}, codex={'notion_mcp'}):
             out = channels.test_connector(s, cid)
-        self.assertTrue(out['ok'], out); self.assertIn('Notion MCP is ready in Claude Code, Codex', out['detail'])
+        self.assertTrue(out['ok'], out); self.assertIn('Notion is ready in Claude Code, Codex', out['detail'])
         native = connectorcatalog.by_type('notion')
         self.assertFalse(native.get('mcp') or native['planned'])          # the Notion feed card stays as it was, beside its server
 

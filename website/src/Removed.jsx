@@ -27,9 +27,9 @@ export function UndoLine({ kinds, onRestored, sx }) {
   };
   return (
     <Box data-tq-undo={r.kind} role="status" sx={{ display: "flex", alignItems: "center", gap: 1, px: 1.25, py: 0.5, mb: 1.5, borderRadius: 1.5,
-      bgcolor: "#f3efe8", border: `1px solid ${BORDER}`, ...sx }}>
+      bgcolor: "var(--tq-inset, #f3efe8)", border: `1px solid ${BORDER}`, ...sx }}>
       <Typography variant="body2" sx={{ color: INK, flex: 1, minWidth: 0 }} noWrap>
-        {removedLine(r.title, r.verb)}{err ? <Box component="span" sx={{ color: "#6b2733", fontWeight: 600 }}> - {err?.local ? t(err.local) : err}</Box> : ""}
+        {removedLine(r.title, r.verb)}{err ? <Box component="span" sx={{ color: "var(--tq-danger, #6b2733)", fontWeight: 600 }}> - {err?.local ? t(err.local) : err}</Box> : ""}
       </Typography>
       <Button size="small" disabled={busy} onClick={undo} sx={{ fontWeight: 700 }}>{t("Undo")}</Button>
       <IconButton size="small" aria-label={t("Dismiss notification")} title={t("Dismiss notification")} onClick={() => clearRemoved(r.did)}><CloseIcon sx={{ fontSize: 14 }} /></IconButton>
@@ -67,7 +67,7 @@ export function RecentlyDeleted({ kinds, onRestored, sx }) {
   return (
     <Box data-tq-recently-deleted={kinds.join(",")} sx={{ mt: 2, ...sx }}>
       <Typography sx={{ fontSize: 12, fontWeight: 600, color: DIM, px: 0.5, mb: 0.5 }}>{t("Recently deleted")}</Typography>
-      {err && <Typography variant="body2" sx={{ color: "#6b2733", fontWeight: 600, px: 0.5 }}>✗ {err?.local ? t(err.local) : err}</Typography>}
+      {err && <Typography variant="body2" sx={{ color: "var(--tq-danger, #6b2733)", fontWeight: 600, px: 0.5 }}>✗ {err?.local ? t(err.local) : err}</Typography>}
       {items.map((d) => (
         <Box key={d.id} data-tq-deleted={d.id} sx={{ display: "flex", alignItems: "center", gap: 1.5, py: 1, px: 0.5, borderBottom: `1px solid ${BORDER}` }}>
           <RestoreIcon sx={{ fontSize: 18, color: FAINT, flexShrink: 0 }} />

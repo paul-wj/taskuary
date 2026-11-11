@@ -8,7 +8,7 @@ from unittest import mock
 
 import pytest
 
-from taskuary import acpcoding, agents, blackboard, codingchat, devphone, peers, permissions, session_artifacts, shellgate, terminal, waitroom
+from taskuary import acpcoding, agents, blackboard, codingchat, devphone, general, peers, permissions, session_artifacts, shellgate, terminal, waitroom
 from taskuary.store import MemoryStore
 from taskuary import llm, origin
 
@@ -148,12 +148,24 @@ def test_a_line_typed_while_it_works_is_kept_shown_and_taken_by_the_next_turn(wo
     assert live['working'] and abs(live['turnStarted'] - (time.time() - 5)) < 2
     t.write('was this code completed?\r')                                                   # ...typed in its Terminal
     assert until(lambda: [w['text'] for w in codingchat.chat(s, tid)['waiting']] == ['was this code completed?'])
-    assert s.waiting_notes(tid)[0]['CreatedBy'] == 'owner'
+    assert [w['text'] for w in general.waiting_lines(s, tid)] == ['was this code completed?']        # kept as the owner's (general.take_line)
     assert t.cancel() and idle(t, 2)
     assert until(lambda: 'was this code completed?' in ' '.join([x for k, x in t.history if k == 'said'][-1].split()))
     assert codingchat.chat(s, tid)['waiting'] == []
     ups = [u for u in codingchat.acp_updates(tid, t.sid) if u['sessionUpdate'] == 'user_message_chunk']
-    assert any(u['content']['text'] == 'was this code completed?' and '_meta' not in u for u in ups)      # drawn as theirs
+    assert any(u['content']['text'] == 'was this code completed?' and u['_meta']['taskuary'] == 'owner' for u in ups)      # drawn as theirs
+
+
+def test_a_turn_that_fails_says_so_in_the_chat_and_typing_carries_on(world, monkeypatch):
+    """A FAILURE IS KEPT WHERE IT HAPPENED (rules part 4): a turn the adapter ended with an error - an overloaded model - was said only on the
+    session's Terminal; the chat, drawn from the kept updates, showed "Looking." and stopped, with nothing to say the turn had failed."""
+    s, tid, repo = world
+    monkeypatch.setenv('FAKE_ACP_FAIL', 'turn')
+    t = open_(s, tid, repo, seed='look at the totals'); assert idle(t)
+    [e] = [u for u in codingchat.acp_updates(tid, t.sid) if u['sessionUpdate'] == 'error']
+    assert '529 Overloaded' in e['content']['text'] and general.CARRY_ON in e['content']['text'] and e['_meta'] == {'taskuary': 'error'}
+    t.prompt('try again'); assert idle(t, 2)
+    assert 'heard: try again' in [x for k, x in t.history if k == 'said'][-1]
 
 
 def test_a_note_from_the_waiting_room_is_drawn_as_the_owners_words(world):
@@ -162,8 +174,8 @@ def test_a_note_from_the_waiting_room_is_drawn_as_the_owners_words(world):
     out = waitroom.add(s, tid, 'use the rounding helper', 'owner')
     assert out['delivered'] == 1 and idle(t, 2)
     ups = [u for u in codingchat.acp_updates(tid, t.sid) if u['sessionUpdate'] == 'user_message_chunk']
-    assert ups[-2]['content']['text'] == 'use the rounding helper' and '_meta' not in ups[-2]       # theirs
-    assert ups[-1]['_meta'] == {'taskuary': 'brief'} and 'queued' in ups[-1]['content']['text']   # Taskuary's framing, its brief
+    assert ups[-2]['content']['text'] == 'use the rounding helper' and ups[-2]['_meta']['taskuary'] == 'owner'       # theirs
+    assert ups[-1]['_meta'] == {'taskuary': 'brief'} and 'left 1 note' in ups[-1]['content']['text']   # Taskuary's framing, its brief
 
 
 def test_a_resume_is_the_agents_own_conversation(world, monkeypatch):
@@ -191,12 +203,68 @@ def test_words_typed_while_it_works_go_into_the_turn_where_the_adapter_steers(wo
     said = [x for k, x in t.history if k == 'said'][-1]
     assert 'steered:' in said and 'also the tax line' in said and 'turn=1' in said and t.turns == 1
     ups = [u for u in codingchat.acp_updates(tid, t.sid) if u['sessionUpdate'] == 'user_message_chunk']
-    assert any(u['content']['text'] == 'also the tax line' and '_meta' not in u for u in ups)              # theirs, in the chat
+    assert any(u['content']['text'] == 'also the tax line' and (u.get('_meta') or {}).get('taskuary') == 'owner' for u in ups)              # theirs, in the chat
     assert any('while the agent worked' in c['Body'] for c in s.list_comments(tid))
     # ...and at rest nothing steers: the next words are a turn of their own
     assert not t.steerable()
     t.prompt('and keep it short'); assert idle(t, 2)
     assert 'heard: and keep it short' in [x for k, x in t.history if k == 'said'][-1]
+
+
+def test_a_steer_the_adapter_echoes_back_is_one_line_not_two(world, monkeypatch):
+    """The owner typed one line mid-turn and the chat drew it twice in one bubble: claude-agent-acp echoed the steer back as a
+    user_message_chunk, beside the line Taskuary draws itself - and the chat joins a run of the owner's chunks into one."""
+    s, tid, repo = world
+    for k in ('FAKE_ACP_HANG', 'FAKE_ACP_STEER', 'FAKE_ACP_STEER_ECHO'): monkeypatch.setenv(k, '1')
+    t = open_(s, tid, repo, seed='look at the totals')
+    assert until(lambda: t.in_turn) and t.steerable()
+    assert waitroom.add(s, tid, 'merge and deploy', 'owner')['state'] == 'steered'
+    assert idle(t)
+    ups = [u['content']['text'] for u in codingchat.acp_updates(tid, t.sid) if u['sessionUpdate'] == 'user_message_chunk' and (u.get('_meta') or {}).get('taskuary') == 'owner']
+    assert ups.count('merge and deploy') == 1 and not t._echoes
+
+
+def test_a_steered_line_is_drawn_above_the_answer_even_when_the_turn_ends_first(world, monkeypatch):
+    """The adapter answers the steer, replies and ends the turn in one breath: drawn only once the steer's own reply woke its thread, the
+    owner's line landed under the agent's answer to it - and a turn read as over had no line at all (CI on Windows, 2026-11-10)."""
+    from taskuary import acp
+    s, tid, repo = world
+    for k in ('FAKE_ACP_HANG', 'FAKE_ACP_STEER', 'FAKE_ACP_STEER_ECHO'): monkeypatch.setenv(k, '1')
+    real = acp.ACPClient.steer
+    def slow(self, text, **kw): got = real(self, text, **kw); time.sleep(0.5); return got        # the turn ends before the steer returns
+    monkeypatch.setattr(acp.ACPClient, 'steer', slow)
+    t = open_(s, tid, repo, seed='look at the totals')
+    assert until(lambda: t.in_turn) and t.steerable()
+    assert waitroom.add(s, tid, 'merge and deploy', 'owner')['state'] == 'steered'
+    assert idle(t)
+    ups = codingchat.acp_updates(tid, t.sid)
+    mine = [i for i, u in enumerate(ups) if u['sessionUpdate'] == 'user_message_chunk' and (u.get('_meta') or {}).get('taskuary') == 'owner' and u['content']['text'] == 'merge and deploy']
+    answer = [i for i, u in enumerate(ups) if u['sessionUpdate'] == 'agent_message_chunk' and u['content']['text'].startswith('steered:')]
+    assert len(mine) == 1 and answer and mine[0] < answer[0], ups
+    until(lambda: not t._drawn)                                                                    # the slowed steer returns: nothing left marked
+
+
+@pytest.mark.parametrize('steer', [True, False], ids=['steered', 'queued'])
+def test_a_note_two_deliveries_race_for_is_handed_over_once(world, monkeypatch, steer):
+    """The owner typed one line while the agent worked and the chat drew it twice: their POST's deliver steered it in, and before that
+    deliver marked it handed over (a slow store, 4 s on the live app) the turn ended and the clock's deliver (waitroom.later) read it as
+    still waiting and handed it over again - one note, two prompts. Steered into the turn, or queued for a session at rest: once."""
+    s, tid, repo = world
+    for k in ('FAKE_ACP_HANG', 'FAKE_ACP_STEER') if steer else (): monkeypatch.setenv(k, '1')
+    t = open_(s, tid, repo, seed='look at the totals')
+    assert until(lambda: t.in_turn) if steer else idle(t)
+    real, first = s.deliver_waiting, threading.Event()
+    def slow(wids, how):
+        if not first.is_set(): first.set(); time.sleep(1.5)
+        real(wids, how)
+    monkeypatch.setattr(s, 'deliver_waiting', slow)
+    th = threading.Thread(target=lambda: waitroom.add(s, tid, 'are both fixes pushed?', 'owner')); th.start()
+    assert first.wait(10)
+    waitroom.deliver(s, tid)                                               # the clock's look, while the POST's is still marking
+    th.join(10)
+    assert until(lambda: not t.busy, 10)
+    ups = [u['content']['text'] for u in codingchat.acp_updates(tid, t.sid) if u['sessionUpdate'] == 'user_message_chunk' and (u.get('_meta') or {}).get('taskuary') == 'owner']
+    assert ups.count('are both fixes pushed?') == 1, ups
 
 
 def test_a_coding_session_idle_past_its_period_closes_quietly_and_the_next_input_brings_it_back(world, monkeypatch):
@@ -312,16 +380,17 @@ def test_a_strangers_coding_session_on_claude_keeps_its_terminal_and_its_floor(f
     a = [str(x) for x in p.argv]
     assert a[a.index('--permission-mode') + 1] == 'auto' and '--strict-mcp-config' in a and '--dangerously-skip-permissions' not in a
     assert a[a.index('--settings') + 1] == origin.session_settings(s, t)
-    assert '--mcp-config' not in a                              # Taskuary's toolbox is trusted work's only
+    assert a[a.index('--mcp-config') + 1].endswith(f'TQ-{t}.stranger.mcp.json')   # ...the owner's harmless tools only (agenttools.STRANGER_TOOLS)
 
 
-def test_a_strangers_coding_session_on_a_cli_with_no_reviewer_starts_nowhere(floor):
-    "codex has no reviewer (clis.AUTO): a stranger's task is refused - no pty, and no ACP session either."
+def test_a_strangers_coding_session_on_a_cli_with_no_reviewer_reads_only_and_never_over_acp(floor):
+    "codex has no reviewer (clis.AUTO): a stranger's task runs in its read-only sandbox (clis.READONLY) on the pty's floor - never ACP."
     s, t, repo = floor
     s.upsert_agent('coding', 'coding', 'cli', json.dumps({'cmd': 'codex', 'acp_cmd': FAKE, 'cwd': str(repo)}))
-    with pytest.raises(ValueError, match='no built-in reviewer'):
+    with mock.patch.object(terminal, 'Term') as T:
         terminal.open_session(s, 'coding', t, None, str(repo), 32, 110, 'owner', seed_fn=lambda here: 'look')
-    assert not terminal.SESSIONS
+    argv = [str(x) for x in T.call_args.args[0]]
+    assert T.call_args.kwargs['mode'] == 'look' and argv[argv.index('--sandbox') + 1] == 'read-only' and '--dangerously-bypass-approvals-and-sandbox' not in argv
 
 
 @pytest.mark.parametrize('mode', ['full', 'auto', 'look', ''])
@@ -349,3 +418,17 @@ def test_the_general_road_refuses_a_strangers_task_too(floor, how):
     assert not agents._acp_road({**p, 'acp_ok': True}, s) if p.get('strict_env') else True
     mine = _general(s, s.create_task({'Title': 'mine', 'Kind': 'coding', 'Source': 'manual', 'OriginBase': 'owner'}, 'owner'), cli_tools=True)
     assert mine.get('acp_ok') is True and agents._acp_road(mine, s)          # the owner's own run with hands is the one that goes
+
+
+def test_a_user_role_update_the_adapter_sent_itself_is_the_agents_not_the_owners(world):
+    """ONLY WHAT THE OWNER TYPED IS HIS (codingchat.owned, 2026-11-10): an adapter sends user-role messages of its own - a slash command's
+    output - and the chat drew them in his bubble. Every line he types is recorded (general.take_line), so one that is not his is the agent's;
+    an old record of his, written before lines were marked, is still his."""
+    s, tid, repo = world
+    t = open_(s, tid, repo, seed='look at the totals'); assert idle(t)
+    s.add_comment(tid, 'owner', general.USER_TYPE, 'is the tax line right?')          # a line he typed, kept as his
+    codingchat.record_update(tid, t.sid, {'sessionUpdate': 'user_message_chunk', 'content': {'type': 'text', 'text': 'is the tax line right?'}})
+    codingchat.record_update(tid, t.sid, {'sessionUpdate': 'user_message_chunk', 'content': {'type': 'text', 'text': 'Compacted the conversation.'}})
+    ups = [u for ss in codingchat.chat(s, tid)['sessions'] for u in ss.get('updates') or [] if u['sessionUpdate'] == 'user_message_chunk']
+    who = {u['content']['text']: u['_meta']['taskuary'] for u in ups}
+    assert who['is the tax line right?'] == 'owner' and who['Compacted the conversation.'] == 'agent'

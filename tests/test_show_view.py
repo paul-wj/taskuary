@@ -19,6 +19,9 @@ SPEC = {'title': 'Northwind renewals', 'root': 'top', 'elements': {
     'stray': {'type': 'list', 'props': {'items': ['never drawn']}}}}
 
 
+PNG = bytes([0x89]) + b'PNG' + bytes([13, 10, 26, 10])
+
+
 def one(type_, props, **more): return {'root': 'a', 'elements': {'a': {'type': type_, 'props': props, **more}}}
 
 
@@ -117,11 +120,12 @@ class TheTool(unittest.TestCase):
 
     def tearDown(self): self.p.stop()
 
-    def test_it_is_listed_as_a_read_and_says_it_is_optional(self):
+    def test_it_is_listed_as_a_read_and_invites_use(self):     # 2026-11-09: once in 50 scenarios, with "never required" in it
         cls, desc, schema, _ = agenttools.TOOLS['show']
         self.assertEqual(cls, 'read')
-        self.assertIn('plain text is fine otherwise', desc); self.assertIn('never sends, pays or closes', desc)
-        self.assertEqual(schema['required'], ['root', 'elements'])
+        self.assertIn('Use it freely', desc); self.assertIn('never sends, pays or closes', desc)
+        self.assertEqual(schema['required'], [])            # a view, or `files`, or both (2026-11-09)
+        self.assertIn('files', schema['properties'])
 
     def test_a_call_answers_with_the_view_and_a_bad_one_with_what_to_fix(self):
         text, err = tool(self.tid, 'show', **SPEC)
@@ -138,6 +142,72 @@ class TheTool(unittest.TestCase):
         self.assertTrue(err)
 
 
+    # A PICTURE THE AGENT MADE IS SHOWN IN ITS CHAT, never "opened in your image viewer" on a computer nobody watches (2026-11-09)
+    def test_files_are_copied_onto_the_task_and_the_answer_carries_their_rows(self):
+        import tempfile
+        from pathlib import Path
+        from taskuary import config, session_artifacts
+        d = Path(tempfile.mkdtemp(dir=tempfile.gettempdir()))           # a CLI's own scratchpad lives in the system's temp folder
+        (d / 'dark.png').write_bytes(PNG + b'fake'); (d / 'run.exe').write_bytes(b'MZ')
+        text, err = tool(self.tid, 'show', files=[str(d / 'dark.png'), str(d / 'run.exe'), str(d / 'gone.png')])
+        self.assertFalse(err, text)
+        head, rows = text.split(agenttools.FILES_MARK)
+        self.assertIn("Shown in the owner's chat under your answer: dark.png", head)
+        self.assertIn('run.exe: .exe cannot be shown', head); self.assertIn('gone.png: there is no such file', head)
+        (row,) = json.loads(rows)
+        self.assertEqual((row['name'], row['content_type'], row['kind']), ('dark.png', 'image/png', 'shown'))
+        self.assertEqual(row['url'], f"/api/task-artifacts/{row['id']}")
+        art = self.s.get_task_artifact(row['id'])
+        self.assertEqual((art['TaskId'], art['Kind']), (self.tid, 'shown'))
+        kept = session_artifacts.confined(art['Path'])
+        self.assertTrue(kept and kept.read_bytes().startswith(PNG))     # its own copy, kept after the scratch folder is cleared
+        # ...and with a view in the same call, the view's mark is last, so the chat reads its spec whole (viewSpec.specIn)
+        text, err = tool(self.tid, 'show', files=[str(d / 'dark.png')], **one('text', {'text': 'Two palettes.'}))
+        self.assertFalse(err, text)
+        self.assertLess(text.index(agenttools.FILES_MARK), text.index(viewspec.MARK))
+        self.assertEqual(json.loads(text.split(viewspec.MARK)[1])['elements']['a']['type'], 'text')
+        # ...and the general chat's payload places the copy under an answer, as a file it chose to show
+        self.assertTrue(any(p['kind'] == 'shown' and p['name'] == 'dark.png' for p in server._assistant_payload(self.tid)['published']))
+
+    # A DRAWN VIEW IS KEPT WITH THE TASK (2026-11-10): the CLI's log was its only copy - cleaned up, the table was gone from the chat
+    def test_a_view_shown_in_a_turn_is_drawn_from_the_task_once_its_session_log_is_gone_and_never_twice(self):
+        import tempfile
+        from pathlib import Path
+        from fastapi.testclient import TestClient
+        from taskuary import sessionrecord
+        text, err = tool(self.tid, 'show', **SPEC)
+        self.assertFalse(err, text)
+        (art,) = [a for a in self.s.list_task_artifacts(self.tid) if a.get('Kind') == 'view']
+        self.assertEqual(art['ContentType'], 'application/json')
+        self.s.add_transcript(self.tid, 'pty-1', 'the pane, as it ended', agent='coding', ext_id='a-log-cleaned-up', brain='claude')
+        drawn = lambda ss: [x for s in ss for x in s.get('steps') or [] if viewspec.MARK in str(x.get('output') or '')]
+        with mock.patch.object(sessionrecord, '_home', lambda: Path(tempfile.mkdtemp())):     # no CLI log anywhere
+            chat = TestClient(server.app).get(f'/api/tasks/{self.tid}/coding-chat').json()['data']['sessions']
+            rec = sessionrecord.record(self.s, self.tid)['sessions']
+            for ss in (chat, rec):
+                (step,) = drawn(ss)
+                self.assertEqual((step['k'], step['name']), ('tool', 'show'))
+                self.assertEqual(json.loads(step['output'].split(viewspec.MARK)[1])['title'], 'Northwind renewals')
+            # ...and while the session's own record still carries it, that copy is the one drawn
+            sessionrecord._saved_path(self.tid, 'pty-1').write_text(json.dumps({'steps': [
+                {'k': 'tool', 'name': 'mcp__taskuary__show', 'text': '', 'output': text}, {'k': 'said', 'text': 'Three are due.'}]}), encoding='utf-8')
+            chat = TestClient(server.app).get(f'/api/tasks/{self.tid}/coding-chat').json()['data']['sessions']
+            self.assertEqual([x['name'] for x in drawn(chat)], ['mcp__taskuary__show'])
+            self.assertEqual([x['name'] for x in drawn(sessionrecord.record(self.s, self.tid)['sessions'])], ['mcp__taskuary__show'])
+
+    def test_a_file_outside_the_agents_folders_is_never_read(self):
+        from pathlib import Path
+        from taskuary import config
+        secret = config.home().parent / 'outside-scratch.png'
+        secret.write_bytes(PNG + b'not yours')
+        with mock.patch.object(agenttools, '_show_roots', lambda: [(config.home() / 'scratch').resolve()]):
+            text, err = tool(self.tid, 'show', files=[str(secret)])
+        self.assertTrue(err); self.assertIn("only a file in your task's outputs folder", text)
+        self.assertFalse([a for a in self.s.list_task_artifacts(self.tid) if a.get('Kind') == 'shown'])
+        text, err = tool(self.tid, 'show')
+        self.assertTrue(err); self.assertIn('give `files`', text)
+
+
 if __name__ == '__main__': unittest.main()
 
 
@@ -152,3 +222,18 @@ def test_the_tools_one_example_is_a_good_spec_with_a_grid_tiles_a_chart_a_table_
     v = viewspec.check(json.loads(agenttools.SHOW_EXAMPLE))
     assert sorted({e['type'] for e in v['elements'].values()}) == ['chart', 'checklist', 'grid', 'stats', 'table']
     assert len(v['elements']['kpi']['props']['items']) == 3
+
+
+def test_every_worker_is_told_to_show_files_through_the_tool_and_never_claim_an_unchecked_effect():
+    # 2026-11-09: a coding agent "opened" screenshots in an image viewer nobody could see and said they were on the owner's screen
+    from taskuary import brief, selfclose, terminal
+    rules = terminal.with_fence_rule(brief.rules(MemoryStore(), 'agent', terminal.AGENT_CHARS))      # the coding road's cut, the template's copy
+    for said in ('call the `show` tool with its path in `files`', 'Never open a viewer, a browser or an app on the computer',
+                 'unless the show tool returned it', 'Never claim an effect you did not verify - opened, sent, pushed, deployed, on screen'):
+        assert said in rules, said
+    old = terminal.with_fence_rule('Honest reporting: say what you did.')        # an owner's AGENT.md from before it hears both too
+    assert agenttools.SHOW_RULE in old and agenttools.VERIFY_RULE in old
+    assert rules.count('unless the show tool returned it') == 1                  # ...and the template's own copy is not said twice
+    assert 'never say it is on the owner\'s screen' in selfclose.SHOW_LINE and '`show` tool\'s `files`' in selfclose.SHOW_LINE
+    desc = agenttools.TOOLS['show'][1]
+    assert '`files`' in desc and 'never open a viewer' in desc and 'unless this tool said it was shown' in desc

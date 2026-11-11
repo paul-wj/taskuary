@@ -62,7 +62,7 @@ function loggedProcess(command, args, options) {
   const child = spawn(command, args, { ...options, shell: false, windowsHide: true });
   let output = "";
   let spawnError = null;
-  const save = (chunk) => { output = (output + chunk.toString()).slice(-12000); };
+  const save = (chunk) => { output = (output + chunk.toString()).slice(-400000); };   // ...enough of a scenario's log to read what the server did (recorder.mjs)
   child.stdout?.on("data", save);
   child.stderr?.on("data", save);
   child.on("error", (error) => { spawnError = error; save(`${error.message}\n`); });
@@ -316,7 +316,8 @@ export async function startHarness({ fresh = false, bin = "", tour = false } = {
       await waitHttp(`${fixtureApi}/api/health`, backend, { "X-Taskuary-Token": token });
     };
 
-    return { backendPort, frontendPort, fixtureApi, ui, home, token, backend, frontend, newPage, close, restart };
+    // `log()`: what the server running now has said - after a restart, the new one's
+    return { backendPort, frontendPort, fixtureApi, ui, home, token, backend, frontend, newPage, close, restart, log: () => backend.output() };
   } catch (error) {
     await browser?.close().catch(() => {});
     await stopProcess(frontend);

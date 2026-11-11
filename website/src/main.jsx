@@ -2,6 +2,7 @@ import "./fonts.css";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import TaskHubPage from "./TaskHubPage.jsx";
+import { AppThemeProvider } from "./AppThemeProvider.jsx";
 import { startTracking } from "./demoTrack";
 import { needsLink, UNLINKED_LINE, UNLINKED_EVENT } from "./unlinked.js";
 import { record } from "./lastError.js";
@@ -48,29 +49,29 @@ class Boundary extends React.Component {
     if (!this.state.err) return this.props.children;
     return (
       <div style={{ maxWidth: 720, margin: "80px auto", padding: 24, fontFamily: "'IBM Plex Sans', 'Segoe UI', sans-serif",
-        background: "#fff", border: "1px solid #f3d1d1", borderRadius: 12 }}>
-        <div style={{ fontWeight: 600, fontSize: 16, color: "#6b2733", marginBottom: 8 }}>
+        background: "var(--tq-panel, #fff)", border: "1px solid var(--tq-edge-red, #f3d1d1)", borderRadius: 12 }}>
+        <div style={{ fontWeight: 600, fontSize: 16, color: "var(--tq-danger, #6b2733)", marginBottom: 8 }}>
           {t("Something in this view failed to draw")}
         </div>
-        <div style={{ fontSize: 13, color: "#1f2430", marginBottom: 12 }}>
+        <div style={{ fontSize: 13, color: "var(--tq-text, #1f2430)", marginBottom: 12 }}>
           {t("Your data and any running agent sessions are untouched — they live on the server, not in this page.")}
         </div>
-        <pre style={{ fontSize: 11.5, background: "#f4f1ec", border: "1px solid #e1dcd5", borderRadius: 8,
-          padding: 12, whiteSpace: "pre-wrap", color: "#5e685f", maxHeight: 180, overflow: "auto" }}>
+        <pre style={{ fontSize: 11.5, background: "var(--tq-panel, #f4f1ec)", border: "1px solid var(--tq-border, #e1dcd5)", borderRadius: 8,
+          padding: 12, whiteSpace: "pre-wrap", color: "var(--tq-secondary, #5e685f)", maxHeight: 180, overflow: "auto" }}>
           {String(this.state.err?.stack || this.state.err)}
         </pre>
         <button onClick={() => this.setState({ err: null, report: null })}
-          style={{ padding: "6px 16px", borderRadius: 8, border: "1px solid #d8cfbe", background: "#eae4d8",
-            color: "#55697a", fontWeight: 600, cursor: "pointer" }}>
+          style={{ padding: "6px 16px", borderRadius: 8, border: "1px solid var(--tq-border, #d8cfbe)", background: "var(--tq-inset, #eae4d8)",
+            color: "var(--tq-link, #55697a)", fontWeight: 600, cursor: "pointer" }}>
           {btnLabel("try_again")}
         </button>
         <button onClick={() => location.reload()}
-          style={{ marginLeft: 8, padding: "6px 16px", borderRadius: 8, border: "1px solid #e1dcd5",
-            background: "#fff", color: "#1f2430", cursor: "pointer" }}>
+          style={{ marginLeft: 8, padding: "6px 16px", borderRadius: 8, border: "1px solid var(--tq-border, #e1dcd5)",
+            background: "var(--tq-panel, #fff)", color: "var(--tq-text, #1f2430)", cursor: "pointer" }}>
           {t("Reload the app")}
         </button>
         <button type="button" onClick={() => this.setState({ report: { message: String(this.state.err?.message || this.state.err), stack: this.state.err?.stack } })}
-          style={{ marginLeft: 12, padding: 0, border: 0, background: "none", color: "#4d4a43", fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>
+          style={{ marginLeft: 12, padding: 0, border: 0, background: "none", color: "var(--tq-secondary, #4d4a43)", fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>
           {btnLabel("report_bug")}
         </button>
         <BugReportDialog open={!!this.state.report} onClose={() => this.setState({ report: null })} screen="crash" error={this.state.report} />
@@ -82,10 +83,10 @@ class Boundary extends React.Component {
 let storage = null;
 try { storage = globalThis.localStorage; } catch { /* storage unavailable */ }
 const unlinked = needsLink(document, storage);
-const Unlinked = () => { useLocale(); return <div style={{ margin: "80px auto", maxWidth: 560, fontFamily: "'IBM Plex Sans', 'Segoe UI', sans-serif", fontSize: 14, color: "#5e685f" }}>{t(UNLINKED_LINE)}</div>; };
+const Unlinked = () => { useLocale(); return <div style={{ margin: "80px auto", maxWidth: 560, fontFamily: "'IBM Plex Sans', 'Segoe UI', sans-serif", fontSize: 14, color: "var(--tq-secondary, #5e685f)" }}>{t(UNLINKED_LINE)}</div>; };
 const root = createRoot(document.getElementById("root"));
-root.render(<LocaleProvider>{unlinked ? <Unlinked /> : <Boundary><TaskHubPage /></Boundary>}</LocaleProvider>);
+root.render(<LocaleProvider><AppThemeProvider>{unlinked ? <Unlinked /> : <Boundary><TaskHubPage /></Boundary>}</AppThemeProvider></LocaleProvider>);
 // the token went stale under an open page (unlinked.staleToken): every call would meet 401 from here on
-window.addEventListener(UNLINKED_EVENT, () => root.render(<LocaleProvider><Unlinked /></LocaleProvider>), { once: true });
+window.addEventListener(UNLINKED_EVENT, () => root.render(<LocaleProvider><AppThemeProvider><Unlinked /></AppThemeProvider></LocaleProvider>), { once: true });
 
 startTracking();   // the static demo only, and only on taskuary.com

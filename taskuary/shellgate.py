@@ -19,8 +19,14 @@ never a judgement over words, and never the words of a mail. Everything else pas
 
 What this does not cover, said plainly: Codex, Devin and Copilot sessions (their hooks report, they cannot refuse a call - and Codex's
 PreToolUse parses `ask` without supporting it yet); a session whose hook could not reach Taskuary (the call runs - the same as the
-browser hook); and a step reached some other way than these tools by name (a script that pushes, an HTTP call made by hand). This
-gates the commands agents use, not every road there is.
+browser hook); and a step reached some other way than these tools by name (a script that pushes). This gates the commands agents use,
+not every road there is.
+
+AN HTTP CLIENT THAT WRITES OFF THIS MACHINE GOES OUT TOO (the north-star audit, 2026-11-10 - the owner: "it shoudl prompt you, should i deploy
+and respond once deployed??? isnt' this the goal?"): `curl -X POST`, `-d`, `Invoke-RestMethod -Method Post` to a host that is not this
+computer is one of the steps `acts` returns, read by each client's own flags. The ACP road refused it flatly ("only the owner sends") and the
+hook road never looked, so a CLI's POST went out unseen; both read it here now and hold it as any push is held - the owner's one press.
+Taskuary's own API on this machine is not a step out.
 
 A DELETE ON THE OWNER'S COMPUTER WAITS TOO (the same ruling's "delete"; the desktop stress test, 2026-11-03: asked to remove the folder it
 had just unzipped into Downloads, a general agent ran `Remove-Item -Recurse -Force` at once - gone for good, not in the Recycle Bin). What
@@ -28,17 +34,18 @@ is held is a delete tool by name (rm, del, Remove-Item, rmdir... and the .NET / 
 folder: its working folder and the temp folder are its to tidy, everything else is the owner's. A target it cannot read - a variable set
 somewhere else, a pipe into Remove-Item - is held, never let through for being hard to read.
 """
-import json, ntpath, os, re, shlex, shutil, subprocess, tempfile
+import contextvars, json, ntpath, os, re, shlex, shutil, subprocess, tempfile
 from loguru import logger
-from .browsergate import _segments, _deny, _tell
+from .browsergate import _segments, _deny, _tell, not_approved, NEXT, OWNER_NO
 
 HELD = 'Taskuary held this for the owner'
 # ...said to the agent the hold covers, as the browser's hold is (browserview.HOLD_LINE): told nothing, a general agent asked "Should I delete
 # it?" in words, the owner said yes, and the delete was held for a second yes on the task (the overnight run, 2026-11-03)
 HOLD_LINE = ("A DELETE ON THE OWNER'S COMPUTER outside your working folder, and a step that leaves the machine (a push, a merge, a publish, "
-             "a mail from a script), is HELD for the owner's press: Taskuary refuses it with \"held for the owner\", puts it on the task, runs "
-             "it once they approve and tells you what happened. So never ask the owner in words whether to delete - run the command, end your "
-             "turn when it is held, and say what waits for their Approve. Draft no reply that says it is done while it waits: the reply is "
+             "a mail from a script, data sent to a web address), is HELD for the owner's press: Taskuary refuses it with \"held for the owner\", "
+             "puts it on the task, runs it once they approve and tells you what happened. So never ask the owner in words whether to delete - "
+             "run the command, end your turn when it is held, and say in one line what waits for their Approve. The held step IS the owner's "
+             "button: never ask \"will you run these\", never print the commands for them to copy. Draft no reply that says it is done while it waits: the reply is "
              "written once Taskuary tells you the step ran.")
 ASKS = {'claude'}       # the CLIs whose PreToolUse hook can answer `ask` with their own prompt (measured: Claude 2.1.312 honours it)
 # each tool's own words for a step that goes out, as (what it does, in the owner's words): its subcommand, or (subcommand, action)
@@ -57,6 +64,12 @@ GLAB = {('mr', 'merge'): 'merge a merge request', ('mr', 'create'): 'open a merg
 PUBLISH = {'npm', 'pnpm', 'yarn', 'cargo', 'poetry', 'gem', 'dotnet', 'nuget'}             # `<tool> publish` / `nuget push` publish a package
 MAIL = {'sendmail': 'send an email', 'mailx': 'send an email', 'mutt': 'send an email', 'msmtp': 'send an email', 'send-mailmessage': 'send an email'}
 _WRITES = {'post', 'put', 'patch', 'delete'}
+HTTP = {'curl', 'wget', 'http', 'https', 'xh', 'invoke-webrequest', 'iwr', 'invoke-restmethod', 'irm'}
+# curl's short flags are case-sensitive (-F is a form post, -f is --fail); the long ones and PowerShell's -Body / -InFile are not
+_SHORT = ('-d', '-F', '-T')
+_DATA = ('--data', '--data-raw', '--data-binary', '--data-urlencode', '--json', '--form', '--upload-file', '-body', '-infile',
+         '--post-data', '--post-file', '--body-data', '--body-file')
+_LOCAL = re.compile(r'^https?://(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:\d+)?(/|$)', re.I)
 _PREFIX = ('&', 'npx', 'command', 'call', 'exec', 'sudo', 'time', 'nohup')
 
 
@@ -78,6 +91,19 @@ def _words(argv: list) -> tuple:
     for t in rest[j:]:
         if not t.startswith('-'): out.append(t)
     return tool, out
+
+
+def _http_write(argv: list) -> str:
+    "'' unless this HTTP client writes to a host off this machine - then what it does, in words. Taskuary's own API answers its own guard."
+    a = [str(t) for t in argv[1:]]
+    urls = [t for t in a if re.match(r'^https?://', t, re.I)]
+    if urls and all(_LOCAL.match(u) for u in urls): return ''
+    meth = next((a[i + 1] for i, t in enumerate(a[:-1]) if t.lower() in ('-x', '--request', '-method')), '')
+    meth = meth or next((t[2:] for t in a if t.startswith('-X') and len(t) > 2), '')
+    data = any(t in _SHORT or t.lower().split('=', 1)[0] in _DATA or (t.startswith('-d') and not t.startswith('--') and len(t) > 2) for t in a)
+    if meth.lower() not in _WRITES and not data: return ''
+    host = re.sub(r'^https?://([^/?#]+).*', r'\1', urls[0]) if urls else 'a web address'
+    return f'send data to {host} ({_name(argv[0])})'
 
 
 def _api_writes(argv: list) -> bool:
@@ -226,7 +252,8 @@ def _outward(cmd: str) -> list:
     these tools is one step - held, never let through for being hard to read."""
     raw = str(cmd or '')
     low = raw.lower()
-    if not any(w in low for w in ('git', 'gh', 'glab', 'publish', 'push', 'upload', 'mail', 'mutt', 'msmtp')): return []      # the cheap test first
+    if not any(w in low for w in ('git', 'gh', 'glab', 'publish', 'push', 'upload', 'mail', 'mutt', 'msmtp', 'http', 'curl', 'wget', 'xh', 'iwr', 'irm',
+                                  'invoke-')): return []      # the cheap test first
     segs = _segments(raw)
     if segs is None:
         import re
@@ -245,6 +272,7 @@ def _outward(cmd: str) -> list:
                 or (tool == 'docker' and w[:1] == ['push']) else MAIL.get(tool))
         if not what and tool in ('gh', 'glab') and w[:1] == ['api'] and _api_writes(argv): what = 'change something on the code host through its API'
         if not what and tool == 'git' and w[:1] == ['push']: what = GIT['push']
+        if not what and tool in HTTP: what = _http_write(argv)
         if what: out.append({'tool': tool, 'what': what, 'why': OUT, 'command': ' '.join(argv)[:400]})
     return out
 
@@ -257,14 +285,16 @@ def _pending(store, tid: int, sid: str, cmd: str):
     return None
 
 
-def asks(store, t) -> bool:
-    """Can the owner answer this session's own permission prompt? Only a CLI pane of ours (argv: a terminal, not a headless chat),
-    started 'full' (a stranger's task runs 'auto' and its permit door is the owner's), whose CLI's hook answers `ask`, on a task that
-    is not a workflow's run (nobody sits at a scheduled run's pane). Everything else is held for the task's Approve."""
-    if not getattr(t, 'argv', None) or getattr(t, 'mode', 'full') != 'full': return False
-    from . import clis
-    if clis._base(getattr(t, 'cli', '') or t.argv[0]) not in ASKS: return False
-    return (store.get_task(t.task_id) or {}).get('Source') != 'workflow'
+def asks(store, t) -> str:
+    """WHERE the owner answers this session's own permission prompt - '' where nobody can. Only a CLI pane of ours (argv: a terminal, not a
+    headless chat), started 'full' (a stranger's task runs 'auto' and its permit door is the owner's), whose CLI's hook answers `ask`, on a
+    task that is not a workflow's run (nobody sits at a scheduled run's pane). Everything else is held for the task's Approve.
+    'terminal': the CLI's own prompt in its pane. 'chat': the same CLI over ACP has no terminal - its ask comes back to Taskuary's own
+    gate (acpgate.answerer), which draws the landing card, the owner's buttons or the Approve card itself."""
+    if not getattr(t, 'argv', None) or getattr(t, 'mode', 'full') != 'full': return ''
+    from . import clis, terminal
+    if clis._base(getattr(t, 'cli', '') or t.argv[0]) not in ASKS or (store.get_task(t.task_id) or {}).get('Source') == 'workflow': return ''
+    return 'chat' if terminal.is_acp(t) else 'terminal'
 
 
 # A TRUSTED REPO'S OWN STEPS GO THROUGH (the owner, 2026-11-05, a coding agent's push and deploy promote stopped by the ask: "i thought for
@@ -305,9 +335,10 @@ def trusted(store, cwd: str, todo: list) -> str:
     return repo if all(a.get('what') in ok and a.get('why') == OUT for a in todo) else ''
 
 
-def check(store, tid: int, sid: str, cmd: str, shell: str = 'Bash', cwd: str = '', ask: bool = False) -> dict:
-    """The hook's answer for one shell command: {} lets it run; `ask` hands it to the CLI's own prompt (never an allow); else a refusal
-    holds it and puts the step on the task. ONE step holds the whole command - the line is the agent's, and half of it is not what it asked."""
+def check(store, tid: int, sid: str, cmd: str, shell: str = 'Bash', cwd: str = '', ask: bool | str = False, about: str = '') -> dict:
+    """The hook's answer for one shell command: {} lets it run; `ask` (asks) hands it to the CLI's own prompt (never an allow); else a
+    refusal holds it and puts the step on the task. ONE step holds the whole command - the line is the agent's, and half of it is not what it asked.
+    `about`: the agent's own words for the call (a CLI's shell tool takes a `description`) - the card leads with them (the owner, 2026-11-09)"""
     todo = acts(cmd, cwd)
     if not todo: return {}
     what, why = ('; '.join(dict.fromkeys(a[k] for a in todo)) for k in ('what', 'why'))
@@ -317,18 +348,31 @@ def check(store, tid: int, sid: str, cmd: str, shell: str = 'Bash', cwd: str = '
         return {}
     if ask:
         store.audit('task', tid, 'shell_act_asked', 'taskuary', 'system', {'tools': [a['tool'] for a in todo], 'what': what})
-        store.add_comment_once(tid, 'taskuary', 'agent', f"The agent asked to {what}: `{str(cmd)[:300]}` - its terminal asks you to allow it.")
+        # ...said only where a terminal does ask (agent walk 2, 2026-11-10: the line stood on a task whose agent has no terminal, over a
+        # push its own gate had already answered with the landing card)
+        if ask != 'chat': store.add_comment_once(tid, 'taskuary', 'agent', f"The agent asked to {what}: `{str(cmd)[:300]}` - its terminal asks you to allow it.")
         return {'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'ask',
                                        'permissionDecisionReason': f'Taskuary asks you first: {what} ({why}).'}}
+    from . import landing
+    if (lands := landing.push_asked(store, tid, cmd, cwd, about)): return _deny(lands[1])      # the landing card's own button, never a second card
     if not _pending(store, tid, sid, cmd):
         from . import proposals
-        proposals.queue(store, tid, {'action': 'shell_act', 'sid': str(sid), 'command': str(cmd)[:4000], 'shell': shell, 'cwd': cwd or '',
+        proposals.queue(store, tid, {'action': 'shell_act', 'sid': str(sid), 'turn': turn_of(store, tid), 'command': str(cmd)[:4000], 'shell': shell, 'cwd': cwd or '',
                                      # the card's In: the folder a delete aims at, never the agent's own scratch folder it ran from
-                                     'what': what, 'why': why, 'where': next((a['where'] for a in todo if a.get('where')), '')}, 'agent')
+                                     'what': what, 'why': why, 'where': next((a['where'] for a in todo if a.get('where')), ''),
+                                     **({'about': ' '.join(str(about).split())[:300]} if str(about or '').strip() else {})}, 'agent')
         store.audit('task', tid, 'shell_act_held', 'taskuary', 'system', {'tools': [a['tool'] for a in todo], 'what': what})
-    return _deny(f"{HELD}: {what} ({why}). It is on the task for the owner to approve; once they do, Taskuary runs this "
-                 "exact command in the same folder and tells you what happened. Do not try it another way. End your turn now, or go on "
+    return _deny(f"{HELD}: {what} ({why}). It is on the task as the owner's Approve button; once they press it, Taskuary runs this "
+                 "exact command in the same folder and tells you what happened. Do not try it another way. The button is the ask: say in one "
+                 "line what it waits on - never ask them to run it, never print the command for them to copy. End your turn now, or go on "
                  "with work that does not need it.")
+
+
+def turn_of(store, tid) -> int:
+    """WHICH TURN HELD IT (the owner, 2026-11-09: "this should be one action button and one card"): the owner's last line on the task. Steps
+    held under the same line are one action - one card, one Approve; a step held after the owner wrote again is a new card."""
+    from .general import USER_TYPE
+    return max((c['CommentId'] for c in store.list_comments(tid, internal=True) if c.get('ActorType') == USER_TYPE), default=0)
 
 
 def git_bash() -> str:
@@ -368,16 +412,37 @@ def text(raw) -> str:
     return raw.decode('utf-8', errors='replace')
 
 
+# ...ONE LINE THAT SAYS WHY, never git's list of files (the owner, 2026-11-10: "no idea what this is" over "U site/demo/assets/...js / U ...").
+# By the tools' own grammar, not by meaning: a status entry, a commit line or a bare path is not a reason, and git, gh and WSL put theirs on
+# an `error:` / `fatal:` line; else its first line, where WSL says it
+_LISTED = re.compile(r'^([ MADRCU?!]{1,2}\s+\S+|[0-9a-f]{7,40}\s.*|[^\s:]+[/\\][^\s]+)$')
+_SAYS_WHY = re.compile(r'^(error|fatal|ERROR|FATAL)\b')
 def failed(said: str, rc: int) -> str:
-    "What the owner reads when the held step failed: its first lines, which are where WSL, git and gh say why."
+    "What the owner reads when the held step failed: the one line where WSL, git or gh says why."
     lines = [l.strip() for l in str(said or '').splitlines() if l.strip()]
-    return f"The held step failed: {' / '.join(lines[:4])[:300] or f'exit {rc}'}"
+    told = [l for l in lines if not _LISTED.match(l) and not l.lower().startswith('hint:')] or lines
+    why = next((l for l in told if _SAYS_WHY.match(l)), told[0] if told else '')
+    return f"The held step failed: {why[:240] or f'exit {rc}'}"
+
+
+# THE OWNER'S PRESS NEVER RACES THE AGENT IN ITS OWN FOLDER (the owner, 2026-11-10: "no idea what this is. it's broken"): a second Approve
+# re-ran a failed push while the agent was mid-merge in that checkout, and it failed again. A step its own agent's turn is still working
+# beside waits for that turn to end - said in words, nothing run
+BUSY = 'The agent is working in that folder right now, so nothing was run - press it again once its turn has ended.'
+def mid_turn(store, tid: int, sid: str) -> str:
+    "BUSY while the agent session that held a step is in a turn, else ''."
+    from . import terminal as term, workerstate as ws
+    s = term.SESSIONS.get(str(sid or ''))
+    if s is None or not getattr(s, 'alive', False): return ''
+    st = ws.status(store, tid)
+    return BUSY if getattr(s, 'busy', False) or (str(st.get('sid')) == str(sid) and st.get('state') == 'working') else ''
 
 
 def perform(store, tid: int, p: dict, run=None) -> dict:
     """The owner's yes: run the held command, as it was, in the folder it was held in. `run`: the runner (tests stand one in)."""
     cmd, cwd = str(p.get('command') or ''), str(p.get('cwd') or '')
     if not cmd: raise RuntimeError('this held step names no command')
+    if (busy := mid_turn(store, tid, p.get('sid'))): raise RuntimeError(busy)
     if cwd and not os.path.isdir(cwd): raise RuntimeError(f'the folder it was held in is gone ({cwd}) - nothing was done')
     def go(argv, folder):
         from . import spawn
@@ -386,11 +451,52 @@ def perform(store, tid: int, p: dict, run=None) -> dict:
     rc, said = (run or go)(_argv(p.get('shell') or 'Bash', cmd), cwd)
     if rc != 0: raise RuntimeError(failed(said, rc))
     said = ' '.join(str(said or '').split())[-600:]
-    _tell(store, tid, f"The owner approved it and Taskuary ran `{cmd[:300]}` in {cwd or 'its folder'}. It said: {said[-300:] or 'done'}. Carry on.")
-    store.audit('task', tid, 'shell_act_done', 'owner', 'human', {'what': p.get('what')})
+    if (told := _batch.get()) is not None: told.append(f"`{cmd[:300]}` said: {said[-200:] or 'done'}")
+    else: _tell(store, tid, f"The owner approved it and Taskuary ran `{cmd[:300]}` in {cwd or 'its folder'}. It said: {said[-300:] or 'done'}. "
+                    + NEXT, wake=True)
+    store.audit('task', tid, 'shell_act_done', 'owner', 'human', {'what': p.get('what'), 'about': p.get('about'), 'command': cmd[:300], 'said': said[-300:]})
     return {'performed': p.get('what') or cmd[:200], 'said': said[-300:]}
 
 
+FAILED, NOT_RUN = 'it failed - the agent was told and goes on from there', 'not run - a step before it failed'
+# ONE APPROVE FOR A TURN'S HELD STEPS (approve_steps): each step is approved through the one decide door, in order; the agent hears once, at the end
+_batch = contextvars.ContextVar('shellgate_batch', default=None)
+
+def approve_steps(store, rids: list, decide, actor: str = 'owner', verb: str = 'approve') -> dict:
+    """The owner's one Approve on a held-steps card: each review, in the order given, through `decide` (verdicts.decide - the same checks a
+    single Approve gets: pending, re-validated, run by perform). Stops at the first that does not go and says which; the rest stay waiting.
+    `verb` 'reject': the card's one Dismiss - every step dismissed, the agent told once."""
+    rvs = [store.get_review(int(r)) for r in rids]
+    if not rvs or any(not r or r.get('Kind') != 'action' or json.loads(r.get('DraftText') or '{}').get('action') != 'shell_act' for r in rvs):
+        raise ValueError('only held shell steps are approved together')
+    if len({r.get('TaskId') for r in rvs}) != 1: raise ValueError('held steps of one task only')
+    tid, told, done, failed = rvs[0]['TaskId'], [], [], None
+    if verb == 'approve' and (busy := mid_turn(store, tid, json.loads(rvs[0].get('DraftText') or '{}').get('sid'))):
+        return {'ok': False, 'done': [], 'failed': None, 'left': [r['ReviewId'] for r in rvs], 'busy': busy}
+    tok = _batch.set(told)
+    try:
+        for i, rv in enumerate(rvs):
+            out = decide(store, rv, verb, actor=actor)
+            if not out.get('ok'): failed = {'review': rv['ReviewId'], 'step': i + 1, 'error': out.get('send_error') or 'it did not run'}; break
+            done.append({'review': rv['ReviewId'], 'result': out.get('result')})
+    finally: _batch.reset(tok)
+    left = [r['ReviewId'] for r in rvs[len(done) + (1 if failed else 0):]]
+    ran = '; '.join(told) or 'nothing ran'
+    if verb != 'approve': _tell(store, tid, f"The owner dismissed {len(rvs)} held steps: {ran} - NOT done. {OWNER_NO}")
+    elif failed:
+        # ...A STEP THAT FAILED IS OVER, AND THE AGENT'S (the owner, 2026-11-10: "no idea what this is. it's broken"): the card read "1 of 2 ran -
+        # the rest wait" with Approve still lit under the failure, and the agent - told they still waited - worked the failure while the owner's
+        # next press ran the same step into it again. The card is now its record: the failed step and those after it settled, never pressable;
+        # the agent is started on what failed, and what it holds next is a new card in its new turn
+        for r in [failed['review'], *left]: store.decide_review(r, 'superseded', None, 'taskuary', FAILED if r == failed['review'] else NOT_RUN)
+        _tell(store, tid, f"The owner approved {len(rvs)} held steps together. Taskuary ran {len(done)} of them ({ran}); step {failed['step']} "
+                          f"failed: {failed['error'][:300]}. Nothing on that card waits on the owner now - the steps after it were not run. Find out "
+                          "why and put it right if you can; a step still needed is run again by you and held as a new card for their press. " + NEXT,
+              wake=True)
+    else: _tell(store, tid, f"The owner approved {len(rvs)} held steps together and Taskuary ran them in order: {ran}. " + NEXT, wake=True)
+    return {'ok': not failed, 'done': done, 'failed': failed, 'left': left}
+
+
 def declined(store, tid: int, p: dict) -> None:
-    _tell(store, tid, f"The owner did not approve it: {p.get('what') or 'the step'} (`{str(p.get('command') or '')[:200]}`) was NOT done. Do "
-                      'not try it another way - carry on without it, or ask the owner what they want instead.')
+    if (told := _batch.get()) is not None: return told.append(f"{p.get('what') or 'the step'} (`{str(p.get('command') or '')[:200]}`)")
+    _tell(store, tid, not_approved(f"{p.get('what') or 'the step'} (`{str(p.get('command') or '')[:200]}`)"))

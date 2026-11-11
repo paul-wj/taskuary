@@ -5,7 +5,7 @@ import json, os, sys, tempfile, threading, time, unittest
 from pathlib import Path
 from unittest import mock
 from fastapi.testclient import TestClient
-from taskuary import server, terminal
+from taskuary import server, terminal, wrapup
 # these pin the OWNER's seed; a sender nobody has vouched for is a stranger's, which rides in a file (tests/test_origin_seed.py)
 _owner = mock.patch('taskuary.origin.of_task', new=lambda *a, **k: ('owner', 'test'))
 
@@ -568,6 +568,17 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(server.store.get_task(tid)['Status'], 'waiting')
         close.assert_called_once_with('only-the-session')
 
+    def test_the_x_on_a_pty_turn_stops_it_with_the_cli_s_own_key_and_keeps_the_session(self):
+        """The x on the running turn is the one stop (the owner, 2026-11-10: "we should have x button for agent to stop in middle of the
+        work"); over a pty it answered stopped=False and did nothing. Esc stops the CLI's turn; the session stays for the next line."""
+        tid = c.post('/api/tasks', json={'Title': 'stop mid-turn', 'Kind': 'coding'}).json()['taskId']
+        live = mock.Mock(sid='pty-session', alive=True)
+        with mock.patch.object(server.hub_term, 'session_for', return_value=live), mock.patch.object(server.hub_term, 'is_acp', return_value=False), \
+             mock.patch.object(server.hub_term, 'close') as close:
+            out = c.post(f'/api/tasks/{tid}/agent/cancel').json()
+        self.assertEqual(out, {'stopped': True})
+        live.write.assert_called_once_with('\x1b'); close.assert_not_called()
+
     def test_continue_does_not_silently_replace_a_removed_profile(self):
         tid = c.post('/api/tasks', json={'Title': 'continue it', 'Kind': 'coding'}).json()['taskId']
         server.store.add_transcript(tid, 'gone-session', 'work', 'removed-agent', os.getcwd())
@@ -621,8 +632,8 @@ class TerminalTests(unittest.TestCase):
             self.assertEqual(typed, [])                                        # the agent was never asked
             self.assertNotIn(t.sid, [x['sid'] for x in terminal.listing()])     # session gone
             pend = [r for r in server.store.list_reviews('pending') if r['TaskId'] == tid]
-            self.assertEqual((len(pend), pend[0]['Kind']), (1, 'draft_reply'))  # the sender is still owed the answer
-            self.assertIn('no longer gets a mailbox', pend[0]['DraftText'])
+            # the sender is still owed the answer - the agent's to write, never a second voice's (2026-11-10)
+            self.assertEqual((len(pend), pend[0]['Kind'], pend[0].get('DraftText') or ''), (1, 'draft', ''))
             self.assertEqual(server.store.get_task(tid)['Status'], 'waiting')  # waiting on you to send it; dismissing it closes the task
             self.assertNotIn('stay:open', server.store.get_task(tid).get('Tags') or '')   # ...because the owner's mark came off (2026-09-07)
             self.assertTrue(any('flipped it to N/N' in cm['Body'] for cm in server.store.list_comments(tid)))
@@ -668,13 +679,30 @@ class TerminalTests(unittest.TestCase):
                                   'BodyText': 'files with adjustments import in the wrong month'})
         seed = terminal.seed_text(server.store, tid, 'use the payroll date', 'northwind/Census', 'C:/src/Census')
         for s in ['payroll import month is wrong', 'Dana Reyes', 'wrong month', 'use the payroll date',
-                  'REPO: northwind/Census', 'Do NOT call the Taskuary API', 'fix it if it is fixable',
+                  'REPO: northwind/Census', 'Do NOT look this task up again', 'fix it if it is fixable',
                   'Do NOT create GitHub issues']:
             self.assertIn(s, seed)
         self.assertIn('CODING RULES (CODING.md)', seed)                  # CODING.md rides along (PW-185: one labelled block)
         self.assertIn('RULES (AGENT.md', seed)                          # ...on top of the rules every worker shares (PW-182)
         self.assertIn('Work ONLY in the repository', seed)
         self.assertNotIn('\\n', seed)                                   # one line - a newline submits
+
+    def test_the_seed_and_the_file_it_points_to_agree_on_taskuarys_api(self):
+        """The agent walk, 2026-11-10: the seed closed on "Do NOT call the Taskuary API" while the file it says to read FIRST tells the
+        agent how a connected system is reached - a POST to that API - and its `taskuary` commands and tools are that API too. What
+        the line was ever for is the task it already holds: THAT is not looked up again, anywhere."""
+        from taskuary import context, docsync
+        from taskuary.store import MemoryStore
+        s = MemoryStore(); s.set_setting('owner_email', 'alex@northwind.example', 't')
+        hub = s.get_connector_by_type('handbook'); s.save_connector({'ConnectorId': hub['ConnectorId'], 'Active': 1}, 'owner')
+        docsync.sync_connections(s)
+        tid = s.create_task({'Title': 'payroll import month is wrong', 'Kind': 'coding', 'Status': 'open'}, 'owner')
+        s.add_message({'TaskId': tid, 'ExternalId': 'graph:PAY2', 'Channel': 'email', 'FromName': 'Erin Blake', 'FromEmail': 'erin@northwind.example',
+                       'Subject': 'Payroll file imports', 'SentAt': '2026-08-19 15:03', 'BodyText': 'files with adjustments import in the wrong month'})
+        seed, told = terminal.seed_text(s, tid, repo='northwind/ledger', cwd=None), context.build(s, tid)
+        self.assertIn('/api/tools/run', told)                           # the file says how a system is reached...
+        self.assertNotIn('call the Taskuary API', seed)                 # ...and the seed does not forbid that call
+        self.assertIn('Do NOT look this task up again', seed); self.assertIn('everything known about it is above', seed)
 
     def test_no_repo_is_guessed_from_the_task_words(self):
         """The task's words are never scored against the SOUL.md map (2026-10-11, "everything should be ai"), and triage names no
@@ -717,7 +745,7 @@ class TerminalTests(unittest.TestCase):
             return Fake()
         with mock.patch.object(terminal, 'open_session', side_effect=fake_open):
             self.assertEqual(c.post('/api/terminals', json={'agent': 'coding', 'task_id': tid, 'seed': True}).status_code, 200)
-        for s in ('imports in the wrong month', 'dreyes@northwind.example', 'Do NOT call the Taskuary API', 'fix it if it is fixable'):
+        for s in ('imports in the wrong month', 'dreyes@northwind.example', 'Do NOT look this task up again', 'fix it if it is fixable'):
             self.assertIn(s, Fake.seeded)
 
     def test_the_prompt_is_sent_not_just_typed(self):
@@ -739,6 +767,23 @@ class TerminalTests(unittest.TestCase):
             self.assertEqual(''.join(wrote[:wrote.index(chr(13))]),
                              'do the thing and then do the other thing')   # whole prompt, exactly once
             self.assertEqual(wrote[wrote.index(chr(13))], '\r')   # then Enter, on its own
+        finally:
+            terminal.close(t.sid)
+
+    def test_the_toe_never_ends_on_a_space(self):
+        """2026-11-09: "FROM THE OWNER: try now" put "FROM THE OWNER: try " in alone, and its space never reached the CLI: "trynow"."""
+        t = terminal.Term([sys.executable, '-c', 'import time; time.sleep(3)'], os.getcwd(), 'test')
+        terminal.SESSIONS[t.sid] = t
+        wrote = []
+        def fake_write(x): wrote.append(x); t._append(x)
+        try:
+            with mock.patch.object(t, 'write', side_effect=fake_write):
+                with mock.patch.object(terminal, 'SEED_QUIET', 0), mock.patch.object(terminal, 'SEED_ENTER', .05):
+                    t.n = 1
+                    t.seed('FROM THE OWNER: try now, please')
+                    self.assertTrue(_wait(lambda: '\r' in wrote))
+            self.assertEqual(wrote[0], 'FROM THE OWNER: try n')
+            self.assertEqual(''.join(wrote[:wrote.index(chr(13))]), 'FROM THE OWNER: try now, please')
         finally:
             terminal.close(t.sid)
 
@@ -864,7 +909,7 @@ class TerminalTests(unittest.TestCase):
             self.assertNotIn('Levitating', seen[0])
             self.assertNotIn('esc to interrupt', seen[0])
             # ...and not the prompt WE typed in, echoed back by the pty as if the agent said it
-            self.assertNotIn('Do NOT call the Taskuary API', seen[0])
+            self.assertNotIn('Do NOT look this task up again', seen[0])
         finally:
             terminal.close(ses['sid'])
 
@@ -1145,10 +1190,10 @@ class DurableWrapTests(unittest.TestCase):
         self.assertEqual(c.post(f'/api/tasks/{tid}/wrap', json={'close': True}).status_code, 422)
         self.assertEqual(c.post('/api/tasks/999999/wrap', json={'close': True}).status_code, 422)
 
-    def test_a_reply_drafted_from_the_mail_is_held_while_the_agent_works_and_rewritten_after(self):
+    def test_a_reply_drafted_from_the_mail_is_held_while_the_agent_works_and_comes_back_stale(self):
         """Triage answers a question from the mail alone. Send that same task to a coding agent and
         the draft was still sitting in Review looking ready to send - promising a fix nobody had
-        looked at yet. It waits, then comes back written from what the session found."""
+        looked at yet. It waits, then comes back as the reply owed - the agent's to write (2026-11-10), its old words marked stale."""
         tid = self._task('held reply task')
         mid = server.store.add_message({'TaskId': tid, 'ExternalId': 'graph:HELD1', 'Channel': 'email',
                                         'FromEmail': 'asker@corp.com', 'SourceName': 'me@corp.com',
@@ -1159,7 +1204,7 @@ class DurableWrapTests(unittest.TestCase):
         self.assertIn(rid, pending())
         t = terminal.Term(ECHO, os.getcwd(), 'coding', tid, 'coding', store=server.store)
         terminal.SESSIONS[t.sid] = t
-        server.store.hold_reviews(tid, 'held while an agent works the task')   # what open_session does
+        server.store.hold_reviews(tid, 'held while an agent works the task')   # what a look-first outbox task does (outbox.compose)
         self.assertNotIn(rid, pending())                                        # out of the queue
         held = [r['ReviewId'] for r in c.get('/api/reviews', params={'status': 'held'}).json()['data']]
         self.assertIn(rid, held)                                                # but visible, not vanished
@@ -1168,10 +1213,26 @@ class DurableWrapTests(unittest.TestCase):
         with mock.patch('taskuary.responder.write_draft', return_value='The import is fixed.') as wd:
             with mock.patch('taskuary.llm.build_llm', return_value=None):
                 out = c.post(f'/api/tasks/{tid}/wrap', json={'close': True}).json()
-        self.assertTrue(out['drafting'])
-        self.assertEqual(wd.call_args.args[2], rid)          # the SAME review, not a second one
-        self.assertIn(rid, pending())                        # back in the queue, rewritten
-        self.assertIn('what it found', server.store.get_review(rid)['Reason'])
+        self.assertTrue(out['drafting']); wd.assert_not_called()
+        self.assertIn(rid, pending())                        # the SAME review back in the queue, not a second one
+        self.assertIn("the agent's to write", server.store.get_review(rid)['Reason'])
+        self.assertEqual(server.store.get_review(rid)['Stale'], 1)       # ...its words from before the work never go as the answer
+
+    def test_a_coding_start_leaves_the_arrival_draft_where_it_stands_as_a_chat_start_does(self):
+        """One road for both chats (2026-11-11): a coding start held the arrival draft, so the owner's card left his coding chat for the
+        turn's first second; a chat start holds only what an EARLIER session drafted (wrapup.hold_stale). Now the coding start does the same."""
+        server.store.upsert_agent('Atlas', 'coding', 'cli', json.dumps({'cmd': 'claude', 'cwd': os.getcwd()}))
+        tid = self._task('arrival draft stays')
+        mid = server.store.add_message({'TaskId': tid, 'ExternalId': 'graph:STAY1', 'Channel': 'email', 'FromEmail': 'erin@northwind.example',
+                                        'BodyText': 'is the import fixed?', 'Status': 'routed'})
+        arrival = server.store.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft_reply', 'Status': 'pending', 'DraftText': 'Looking now.'})
+        earlier = server.store.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft_reply', 'Status': 'pending', 'DraftText': 'Fixed.'})
+        server.store._exec('UPDATE review SET DraftBy=? WHERE ReviewId=?', (wrapup.AGENT_DRAFT + 'assistant', earlier)); server.store.set_review_sid(earlier, 's-earlier')
+        with mock.patch.object(terminal, 'Term') as T, mock.patch('taskuary.agents._resolve_cmd', return_value=['claude']), mock.patch('taskuary.origin.launch_mode', return_value='full'):
+            T.return_value = mock.Mock(sid='stay1', cwd=os.getcwd())
+            try: terminal.open_session(server.store, 'Atlas', tid)
+            finally: terminal.SESSIONS.pop('stay1', None)
+        self.assertEqual((server.store.get_review(arrival)['Status'], server.store.get_review(earlier)['Status']), ('pending', 'held'))
 
     def test_a_held_reply_can_be_released_without_waiting(self):
         tid = self._task('released reply task')
@@ -1413,7 +1474,7 @@ class SeedCompletenessTests(unittest.TestCase):
         seed = terminal.seed_text(s, tid)
         self.assertIn('truncated here', seed)                          # it did trim something
         # the closing instructions and the rules survive WHOLE, not clipped mid-sentence
-        self.assertIn('Do NOT call the Taskuary API, read its database or hunt for this task elsewhere', seed)
+        self.assertIn('Do NOT look this task up again - in Taskuary, its database or the mailbox', seed)
         self.assertIn('Missing required detail? Change nothing: ask one concrete question here, '
                       'say if the sender must answer, and wait.', seed)
         # the cut is IN the message, strictly ahead of the rules it must never reach

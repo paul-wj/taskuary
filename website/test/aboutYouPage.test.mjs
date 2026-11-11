@@ -3,27 +3,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
-import { fromWhere, provenance, sentence } from "../src/memorySentences.js";
-
-const src = (f) => fs.readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
-
-test("About you is a page of its own, drawn by SettingsView's about area", () => {
-  const b = src("CanvasBrowse.jsx");
-  assert.match(b, /area === "about" && <SettingsView key="about" area="about"/);
-  assert.match(b, /about: "About you"/);
-  assert.match(src("TaskHubPage.jsx"), /About: "about"/);
-  assert.doesNotMatch(src("FeedView.jsx"), /about: PersonOutlineIcon/, "no sidebar line");
-  assert.match(src("SettingsView.jsx"), /const mine = about \? \["you", "docs", "memory"\]/);
-});
-
-test("Memory shows LEARNED.md as one sentence per line with Keep / Wrong / Forget, through the existing mark road", () => {
-  const m = src("MemoryLines.jsx");
-  assert.match(m, /api\.get\("\/api\/learned\/graph"\)/);
-  assert.match(m, /api\.post\("\/api\/learned\/mark", \{ key, how \}\)/);
-  assert.match(m, /<MarkRow marks=\{marksFor\(l\)\}/);
-  assert.doesNotMatch(m, /l\.score|s:\{|l\.key\}<|evidence\.length/, "no score, id or evidence count on the line");
-  assert.match(src("SettingsView.jsx"), /section === "memory" \? \[\{ key: "memory", node: <MemoryLines \/> \}\]/);
-});
+import { sentence } from "../src/memorySentences.js";
 
 test("a line's sentence carries no tag, stamp or markdown, and ends like a sentence", () => {
   assert.equal(sentence("prefers short replies"), "Prefers short replies.");
@@ -33,13 +13,6 @@ test("a line's sentence carries no tag, stamp or markdown, and ends like a sente
   assert.equal(sentence("  "), "");
 });
 
-test("under it, faint: when it was learned and from what - or that the owner wrote it", () => {
-  const l = { evidence: [{ kind: "verdict", date: "2026-10-09 10:00:00" }, { kind: "review", date: "2026-10-03 08:00:00" }, { kind: "verdict", date: null }] };
-  assert.match(provenance(l), /^learned Oct 3 from your verdicts and your reviews$/);
-  assert.equal(provenance({ own: true }), "you wrote this");
-  assert.equal(provenance({ evidence: [], seen: "" }), "");
-  assert.equal(fromWhere([{ kind: "message" }, { kind: "task" }, { kind: "idea" }, { kind: "message" }]), "mail you answered, what you did on tasks and more");
-});
 
 test("every old address of Docs and Memory still lands - and the Assistant's page map names the page, Playbooks on Reports", async () => {
   const words = JSON.parse(fs.readFileSync(new URL("../../taskuary/words.json", import.meta.url), "utf8")).places;

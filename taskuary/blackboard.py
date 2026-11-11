@@ -391,8 +391,7 @@ BACKOFF = (30, 120)              # seconds before attempt 2, then before attempt
 # a failure the next attempt cannot fix: configuration, a missing repository or worker, a permission
 # problem. It becomes "needs you" at once instead of burning the budget (PW-086).
 PERMANENT = ('unknown agent', 'no coding agent is set up', 'repositor', 'repo:', 'checkout', 'permission', 'not configured', 'no such', 'not found',
-             'needs a', 'pick one', 'kind must be', 'assistant view is for', 'no task ', 'not installed',
-             "stranger's task")      # origin.Refusal: retrying the same CLI on the same words is refused the same way
+             'needs a', 'pick one', 'kind must be', 'assistant view is for', 'no task ', 'not installed')   # (a stranger's refusal is a hold: record_failure)
 
 
 def live_count() -> int:
@@ -441,6 +440,10 @@ def record_failure(store, tid: int, err, agent: str = '', label: str = 'The agen
     """One failed start, wherever it happened - the queue drain or a direct auto-start: the attempt is
     counted on the queue row (made if the task was not queued yet), the owner reads what happened and
     what comes next, and the retry is scheduled rather than left to an unrelated session ending."""
+    # ...A START A STRANGER'S WORDS MAY NOT HAVE IS HELD, NEVER FAILED (the owner, 2026-11-10: "this is also weird bug?" - "couldn't start" over
+    # a monitor's task, naming a Trust press that was nowhere): the task's one hold, said once, its Trust the way on (ingest.not_started)
+    from .ingest import held_start
+    if held_start(store, tid, err): return None
     if not store.get_dispatch(tid): store.enqueue_dispatch(tid, None, agent, 'start failed - retrying')
     row = store.dispatch_failed(tid, str(err), is_permanent(err), BACKOFF, MAX_ATTEMPTS)
     if not row: return None
@@ -453,9 +456,17 @@ def record_failure(store, tid: int, err, agent: str = '', label: str = 'The agen
     return row
 
 
-def schedule_due(store):
+def freed(store):
+    """A slot came free - an assistant's turn ended or it idled out: what waits in the queue starts now (the stress round, 2026-11-10: a turn
+    queued behind a full house of assistants waited for a coding session to end), never on the freeing session's own thread."""
+    if store.queued_dispatches(): drain_later(store, 0.5)
+
+
+def schedule_due(store, startup: bool = False):
     """Arm the next retry from what is persisted - what the app does on startup, so a backoff that was
-    running when it closed neither vanishes nor restarts from zero (PW-085/088). Returns the delay."""
+    running when it closed neither vanishes nor restarts from zero (PW-085/088). Returns the delay.
+    `startup`: and what waited for a slot when it closed is drained now - nothing else would start it (freed)."""
+    if startup and any(q.get('State') != 'retrying' for q in store.queued_dispatches()): drain_later(store, 5.0)
     nxt = [q['NextAt'] for q in store.queued_dispatches() if q.get('State') == 'retrying' and q.get('NextAt')]
     if not nxt: return None
     from datetime import datetime
@@ -494,13 +505,18 @@ def drain(store):
             if not has_room(store): return                                        # a capacity wait is not an attempt (PW-086)
             # BehindTaskId is history now: likely overlap is advisory and rides into the briefing at
             # startup; an old row parked behind another task is simply due (PW-171)
-            b = q.get('BehindTaskId')
+            b, turn = q.get('BehindTaskId'), q.get('Turn')
             t = store.get_task(q['TaskId']) or {}
-            if t.get('Status') not in ('open', 'in_progress') or _occupied(q['TaskId']):
+            from . import general
+            # ...a queued TURN is a stopped agent's next one (ingest.queue_turn): a task waiting on someone still hears it, and an
+            # assistant the owner opened meanwhile takes it next - only a coding session already open makes it moot
+            if t.get('Status') not in ('open', 'in_progress', *(('waiting',) if turn else ())) or (_occupied(q['TaskId']) and not (turn and general.handles(t))):
                 store.clear_dispatch(q['TaskId']); continue
             try:
-                from . import general
-                if general.handles(t):
+                if turn:
+                    from .ingest import queued_turn
+                    queued_turn(store, q['TaskId'], turn, q.get('Brief') or '')
+                elif general.handles(t):
                     from .ingest import _start_general
                     # a queued GENERAL task opens its assistant session, not a CLI (PW-069). Its failure is counted and
                     # re-armed inside; clearing the row here wrote "Started" over a launch that never happened (PW-073/085)

@@ -69,10 +69,12 @@ def test_a_resumed_stranger_pane_stays_in_auto_mode(tmp_path):
     argv, kw = _pane(s, t, tmp_path, resume='abc')
     assert '--dangerously-skip-permissions' not in argv and 'auto' in argv and kw['mode'] == 'auto'
 
-def test_a_stranger_s_task_on_a_cli_with_no_reviewer_is_refused(tmp_path):
+def test_a_stranger_s_task_on_a_cli_with_no_reviewer_reads_only_and_one_with_neither_is_refused(tmp_path):
     s = _store('gemini', 'g'); t = _stranger(s)
-    with pytest.raises(ValueError, match="no built-in reviewer, so it does not run a stranger's task"):
-        terminal.open_session(s, 'g', task_id=t, cwd=str(tmp_path))
+    argv, kw = _pane(s, t, tmp_path, agent='g')
+    assert kw['mode'] == 'look' and '--yolo' not in argv               # its own read-only mode (clis.READONLY), a stranger's env
+    s = _store('copilot', 'g'); t = _stranger(s)
+    with pytest.raises(ValueError, match="Trust them if you know who wrote it"): terminal.open_session(s, 'g', task_id=t, cwd=str(tmp_path))
 
 def test_an_owner_task_on_that_cli_still_starts(tmp_path):
     s = _store('gemini', 'g'); t = _owner(s)
@@ -158,9 +160,9 @@ def test_an_owner_s_headless_run_is_unchanged():
     assert [x for i, x in enumerate(a) if x not in TOOLBOX and not (i and a[i - 1] in TOOLBOX)] == (base.get('args') or preset_args('claude'))
     assert {k: v for k, v in mine.items() if k != 'args'} == {k: v for k, v in base.items() if k != 'args'}
 
-def test_a_stranger_s_headless_run_on_a_cli_with_no_reviewer_is_refused():
-    s = _store('gemini'); t = _stranger(s)
-    with pytest.raises(ValueError, match='no built-in reviewer'): llm.make_cli_llm(s, 'coding', cli_tools=True, task_id=t)
+def test_a_stranger_s_headless_run_on_a_cli_with_neither_mode_is_refused():
+    s = _store('copilot'); t = _stranger(s)
+    with pytest.raises(ValueError, match='Trust them'): llm.make_cli_llm(s, 'coding', cli_tools=True, task_id=t)
 
 def test_the_classifier_road_ignores_the_task():
     s = _store('gemini'); t = _stranger(s)
@@ -304,13 +306,19 @@ def test_a_stranger_s_line_reaches_only_an_auto_session(monkeypatch, mode):
     ingest._hand_to_agent(s, {'answer_to_agent': 'auto'}, t, {'from_email': 'someone@vendor.example'}, 'router')
     assert typed == []
 
-def test_an_auto_start_that_is_refused_says_so_on_the_task_and_does_not_retry(monkeypatch, tmp_path):
-    s = _store('gemini'); t = _stranger(s); s.set_setting('default_brain', 'gemini', 'owner')     # the coding brain is the CLI, not the profile
-    s.upsert_agent('coding', 'coding', 'cli', json.dumps({'cmd': 'gemini', 'cwd': str(tmp_path)}))   # a folder of its own: the checkout is not asked
+def test_an_auto_start_that_is_refused_is_held_never_failed(monkeypatch, tmp_path):
+    """The owner, 2026-11-10: a refused start read "couldn't start" with a Trust press nowhere. It is the stranger hold - said once on the
+    task (No agent started: ...), HOLD_TAG on it, nothing queued to retry - and Trust is the way on."""
+    s = _store('copilot'); t = _stranger(s); s.set_setting('default_brain', 'copilot', 'owner')     # the coding brain is the CLI, not the profile
+    s.upsert_agent('coding', 'coding', 'cli', json.dumps({'cmd': 'copilot', 'cwd': str(tmp_path)}))   # a folder of its own: the checkout is not asked
     monkeypatch.setattr(blackboard, 'drain_later', lambda *a, **k: None)
     with mock.patch.object(terminal, 'Term'), mock.patch.dict(terminal.SESSIONS, {}, clear=True): ingest._auto_code(s, t)   # never raises into the poller
-    said = ' '.join(c['Body'] for c in s.list_comments(t))
-    assert 'no built-in reviewer' in said and 'Start fails the same way until it is fixed' in said and 'try again' not in said
+    said = [c['Body'] for c in s.list_comments(t)]
+    assert [x for x in said if x.startswith('No agent started:') and 'Trust them' in x] and not [x for x in said if "couldn't start" in x or 'fails' in x]
+    assert s.task_has_tag(t, ingest.HOLD_TAG) and not s.get_dispatch(t)
+    from taskuary import funnel
+    idle = funnel.idle_state(s, t)                   # ...the task's one sentence, with the Trust presses its held box draws (senders.trust_offer)
+    assert idle['kind'] == 'held' and idle['line'].startswith('Waiting for you.') and 'Trust them' in idle['line'] and idle.get('trust') and idle['trust']['once'] is False
 
 def test_release_all_wakes_a_held_permit_with_a_deny():
     s = MemoryStore(); t = _stranger(s); out = []
@@ -343,3 +351,24 @@ def test_the_folder_passes_in_its_long_name_when_temp_is_a_short_one(monkeypatch
     d = origin.stranger_dir(7)
     for p in (d / 'notes.md', Path(os.path.realpath(d)) / 'notes.md'):
         assert floor.check({'tool_name': 'Read', 'tool_input': {'file_path': str(p)}}, 7) == {}, p
+
+
+def test_a_chat_turn_refused_for_a_stranger_is_the_hold_with_its_trust_never_a_failure():
+    """The recorded walk, 2026-11-10: a stranger's task whose AI cannot be kept to reading; the owner typed a line and the chat drew a running
+    "AGENT · ran 50s" head with nothing behind it, never saying why. A chat's turn refused at its start is the stranger hold the queue's and a
+    coding line's are (ingest.held_start): said once on the task with its Trust presses (funnel.idle_state), never a failed run."""
+    s = MemoryStore(); t = s.create_task({'Title': 'Vendor review', 'Kind': 'general', 'Status': 'open', 'Source': 'email'}, 'router')
+    s.add_message({'TaskId': t, 'Channel': 'email', 'FromEmail': 'paula@vendor.example', 'Status': 'routed'})
+    with mock.patch.object(general, '_selected', return_value=('cli:copilot', 'Copilot', '')): sess = general.GeneralSession(s, t)
+    refused = origin.refused(origin.Refusal(origin.no_reviewer(s)))
+    with mock.patch.object(general.llm_mod, 'build_llm', side_effect=refused), mock.patch('taskuary.hooks.judge_ended'), \
+         mock.patch.object(general.GeneralSession, '_end_soon'):
+        with pytest.raises(ValueError): sess.send_prompt('make it shorter and attach the sheet')
+    said = [c['Body'] for c in s.list_comments(t)]
+    assert [x for x in said if x.startswith(ingest.NOT_STARTED) and 'Trust them' in x], said
+    assert s.task_has_tag(t, ingest.HOLD_TAG) and (s.last_worker_event(t, kinds=('failed',)) or {}).get('Kind') != 'failed'
+    from taskuary import funnel
+    idle = funnel.idle_state(s, t)
+    assert idle['kind'] == 'held' and 'Trust them' in idle['line'] and idle.get('trust'), idle
+    # ...and no Run anyway: on the same AI it is refused again - a press that cannot work is not offered (funnel.held_offer)
+    assert idle['trust']['once'] is False

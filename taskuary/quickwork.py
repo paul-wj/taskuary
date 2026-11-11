@@ -10,14 +10,14 @@ already ran deep, and a routine. A quick call that finds it needs more escalates
 import json, re, threading
 from typing import NamedTuple
 from loguru import logger
-from . import brainroute, browserview, general, ingest, llm, origin, selfclose, slots
+from . import brainroute, browserview, general, ingest, llm, origin, selfclose, slots, workerstate
 
 DEEP_WHY = ('kind', 'routine', 'hard', 'browser', 'stranger', 'emails', 'ran deep')
 SETUP_REFS = (general.SETUP_REF, 'connector:setup')
-NOT_RUNS = ('answered',)          # an answer is the owner's reply landing, not a run; owner and judge events carry their own Source
+NOT_RUNS = ('answered',)          # an answer is the owner's reply landing, not a run; the owner's events carry their own Source
 
 
-def _runs(store, tid) -> list: return [e for e in store.worker_events(tid) if e.get('Kind') not in NOT_RUNS and e.get('Source') not in ('owner', 'judge')]
+def _runs(store, tid) -> list: return [e for e in store.worker_events(tid) if e.get('Kind') not in NOT_RUNS and e.get('Source') not in ('owner', workerstate.READ_OFF_PROSE)]
 
 def only_quick(store, tid) -> bool:
     "True when the task has run events and every one came from the quick path."
@@ -29,12 +29,12 @@ def ran_deep(store, tid) -> bool:
     rs = _runs(store, tid)
     return any(e.get('Source') != 'quick' for e in rs) if rs else bool(general.history(store, tid))
 
-def why_deep(store, tid) -> str:
-    "'' when this general task is answered in one call (quick), else why it takes the agent - one of DEEP_WHY."
+def why_deep(store, tid, first: bool = False) -> str:
+    "'' when this general task is answered in one call (quick), else why it takes the agent - one of DEEP_WHY. `first`: an arrival's first look."
     t = store.get_task(tid) or {}
     if not general.handles(t) or general.is_dock(t) or str(t.get('SourceRef') or '') in SETUP_REFS: return 'kind'
     if t.get('Source') == 'workflow': return 'routine'            # a routine runs on its own brain and definition (workflows.brain)
-    if brainroute.judged(store, t)['difficulty'] == 'hard': return 'hard'
+    if not first and brainroute.judged(store, t)['difficulty'] == 'hard': return 'hard'
     if browserview.wanted(t) or ingest.triage_wants_browser(store, tid): return 'browser'
     if origin.of_task(store, tid)[0] == 'stranger': return 'stranger'
     if slots.all_(store, tid): return 'emails'
@@ -42,6 +42,10 @@ def why_deep(store, tid) -> str:
     return ''
 
 def takes(store, tid) -> bool: return not why_deep(store, tid)
+# A HARD ASK IS LOOKED AT IN ONE CALL FIRST, AT ARRIVAL (the owner, 2026-11-10: "the ai limits as much as possible to use ai"): a whole tool loop
+# started on every question triage called hard, though one call often answers it - and the call says itself when it cannot (escalate: what
+# it needs to look up or do), which hands it on with its notes. A stranger's words are not in the prompt, only in a file the call cannot open
+def looks_first(store, tid) -> bool: return not why_deep(store, tid, first=True)
 
 
 QUICK_TOKENS = 3_000

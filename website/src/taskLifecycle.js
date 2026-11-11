@@ -102,6 +102,12 @@ export const bulkSendable = (items = [], reviews = []) => {
 };
 export const slotState = (item, rv) => item.done ? (rv && ["approved", "edited", "sent"].includes(rv.Status) ? "sent" : "dropped")
   : rv?.Status === "pending" ? "waits for your yes" : "to draft";
+// ...and the block's count is of the emails still OWED - a dropped one read as sent ("2 of 3": one sent, one dropped, the agent walk 2026-11-09)
+export const slotTally = (items = [], reviews = []) => {
+  const byRid = Object.fromEntries(slotReviews(reviews).map((r) => [r.ReviewId, r])), states = items.map((i) => slotState(i, byRid[i.rid]));
+  const n = (s) => states.filter((x) => x === s).length, dropped = n("dropped"), owed = items.length - dropped;
+  return [owed && `${n("sent")} of ${owed}`, dropped && `${dropped} dropped`].filter(Boolean).join(" · ");
+};
 
 // ...and the one closed WITHOUT sending: the draft stays on the task whatever became of it, a done task
 // included (the owner, 2026-09-24: "draft should always stay on task even on done task"). Newest wins.
@@ -146,7 +152,10 @@ export const pendingProposals = (reviews = []) =>
 export const NO_ONE_BEHIND = ["", "own", "report", "assistant"];
 // ...and mail the owner sent from their own address (the server's FromOwner, wrapup.from_owner): a self-forward drafted "Hi Alex"
 // back to the owner (the email walk, 2026-10-29)
-export const hasCorrespondent = (m) => !!m && !m.FromOwner && !NO_ONE_BEHIND.includes(String(m?.Channel || "").toLowerCase());
+// ...and THE SERVER SAYS IT (the owner, 2026-11-10: "reply by itself makes no sense on github"): the task's rows carry ReadsReply
+// (wrapup.reads_reply_row - a person, not the owner nor a machine's notice), and the page reads it; only a row from before it was sent
+// falls back to the channel and FromOwner
+export const hasCorrespondent = (m) => !!m && (m.ReadsReply != null ? !!m.ReadsReply : !m.FromOwner && !NO_ONE_BEHIND.includes(String(m?.Channel || "").toLowerCase()));
 // WHAT A REPLY ANSWERS: the newest row that came in from SOMEBODY (wrapup.reply_target) - a report joined onto the task is newer
 // than the colleague's mail and said "Nobody sent this one" over a task with a person waiting (2026-10-13); only a task with
 // nobody behind any row falls back to its newest

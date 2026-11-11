@@ -14,6 +14,7 @@ CLOSED = ('done', 'dropped')
 WHAT_CHARS = 300
 TURN = ("TASKUARY: the check-back you set on this task is due - {what}. Check it now with your tools, then answer with what you found and "
         "what it means for the owner. If it is still not settled and time will settle it, set another check-back; otherwise say what is left.")
+LATE = "the answer you wait on is late ({line}) - draft the chase to whoever owes it as your reply card, or say in one line why not"
 
 
 def _stamp(at: datetime = None) -> str: return f"{at or datetime.now():%Y-%m-%d %H:%M:%S}"
@@ -55,16 +56,63 @@ def cancel(store, tid: int, actor: str = 'owner') -> dict:
     return {'ok': True, 'cancelled': True}
 
 
+# A WAIT GONE LATE WAKES THE TASK'S AGENT, ONCE (the owner, 2026-11-10: "job of agent is to be helpful and do as much as possible. it shoudl
+# prompt you"): a late answer lit nothing and woke nobody - only a check-back the agent set itself did. Now the lateness the rail names
+# (rulebook.LATE) is a check-back come due, set here on the reminders' clock and handed over by due() below - a full house waits for the
+# next tick - where the owner's own line would wake that agent (ingest.wake_why). Its audit row is the record: nothing wakes it again
+# until something moves on the task. Where none may wake, the row lights Chase instead (rulebook._recommended).
+def woke(store, tid, actor: str = 'late') -> bool:
+    "Whether this lateness already woke the task's agent (`actor` 'held': was refused its first one): a record after the task's newest message."
+    r = store._one("SELECT MAX(CreatedAt) AS at FROM audit WHERE EntityType='task' AND EntityId=? AND Action='check_back' AND Actor=?", (int(tid), actor)) or {}
+    if not r.get('at'): return False
+    m = store._one('SELECT MAX(IFNULL(SentAt,CreatedAt)) AS at FROM message WHERE TaskId=?', (int(tid),)) or {}
+    return str(m.get('at') or '').replace('T', ' ')[:19] <= str(r['at']).replace('T', ' ')[:19]
+
+
+def late(store, now: datetime = None) -> int:
+    "Each open wait, goal or quiet watch the rail reads as late, set due now for its agent - once per lateness. Run with the reminders."
+    from . import advisor, ingest, rulebook
+    n = 0
+    for t in store._rows("SELECT TaskId FROM task WHERE Status NOT IN ('done','dropped') AND IFNULL(CheckBackAt,'')='' "
+                         "AND (Status='waiting' OR IFNULL(WatchBack,'')='quiet' OR IFNULL(DoneWhen,'')<>'')"):
+        tid = t['TaskId']
+        if woke(store, tid) or woke(store, tid, 'held'): continue
+        # ...AND A TASK NO AGENT HAS WORKED GETS ITS FIRST ONE (the owner, 2026-11-10: "yes"): no conversation to wake was a lateness nobody
+        # took up. It starts through the check every start passes (auto_start_ok) - a refusal (the switch, a stranger held) said once on the
+        # task, and Chase stays lit (woke is False) - with the same turn; a full house queues it as a carry-on turn waits (ingest.queue_turn)
+        first = ingest.code_of(why := ingest.wake_why(store, tid, {}, None, None, own=True)) == 'no_conversation'
+        if why and not first: continue
+        it = advisor._item(store, 'task', tid, build=False)
+        f = rulebook.facts(store, it, advisor.offered(store, it)) if it else {}
+        if f.get('state') not in rulebook.LATE or not f.get('line'): continue
+        what = LATE.format(line=f['line'].rstrip('.'))[:WHAT_CHARS]
+        if first:
+            m = store._one("SELECT * FROM message WHERE TaskId=? AND IFNULL(Direction,'in')<>'out' ORDER BY MessageId DESC LIMIT 1", (int(tid),))
+            ok, no = ingest.auto_start_ok(store, ingest._from_row(m) if m else {}, (m or {}).get('MessageId'), 'general', own=not m)
+            if not ok:
+                ingest.not_started(store, tid, no); store.audit('task', tid, 'check_back', 'held', 'agent', {'state': f['state'], 'why': str(no)})
+                continue
+            if not ingest.has_room(store):
+                ingest.queue_turn(store, tid, TURN.format(what=what))
+                store.audit('task', tid, 'check_back', 'late', 'agent', {'state': f['state'], 'line': f['line'], 'queued': True})
+                n += 1; continue
+        store.update_task(tid, {'CheckBackAt': _stamp(now), 'CheckBackWhat': what}, 'assistant')
+        store.audit('task', tid, 'check_back', 'late', 'agent', {'state': f['state'], 'line': f['line'], **({'first': True} if first else {})})
+        n += 1
+    return n
+
+
 def due(store, now: datetime = None, spawn=None) -> int:
     """Each check-back come due, handed to its task's agent once - run with the reminders (remind.tick). With every agent slot full it waits for
     the next tick rather than being dropped. `spawn` runs the hand-off (a thread by default: the clock never waits on a model)."""
-    from . import general, ingest
+    from . import brainroute, general, ingest
     n = 0
     for t in store._rows("SELECT TaskId, Status, Kind, CheckBackWhat FROM task WHERE IFNULL(CheckBackAt,'')<>'' AND CheckBackAt<=?", (_stamp(now),)):
         tid = t['TaskId']
         if t.get('Status') in CLOSED or not general.handles(t):
             store.update_task(tid, {'CheckBackAt': '', 'CheckBackWhat': ''}, 'assistant'); continue
         if not general.session_for(tid) and not general.idled(tid, store) and not ingest.has_room(store): continue
+        if brainroute.auto_held(store): continue           # past the day's ceiling for what nobody asked for: due again tomorrow
         store.update_task(tid, {'CheckBackAt': '', 'CheckBackWhat': ''}, 'assistant')        # cleared first: it speaks once
         (spawn or ingest._spawn)(fire, store, tid, t.get('CheckBackWhat') or 'what you said you would verify')
         n += 1

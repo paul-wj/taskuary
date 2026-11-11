@@ -63,7 +63,26 @@ _KIND = re.compile(r'"type"\s*:\s*"(frame|url)"')
 _SEQ, _ACK = re.compile(r'"seq"\s*:\s*(\d+)'), re.compile(r'"type"\s*:\s*"ack"')
 
 
-def installed() -> bool: return bool(shutil.which('agent-browser'))
+def installed() -> bool:
+    "A browser an agent can use right now: the owner's own agent-browser on PATH, or Taskuary's own with its Chrome (browserruntime)."
+    from . import browserruntime as rt
+    p = shutil.which('agent-browser')
+    return rt.whole() if not p or rt.mine(p) else True
+def can_set_up() -> bool:
+    "No browser here yet, and Taskuary can fetch its own for this computer."
+    from . import browserruntime as rt
+    return not installed() and rt.can()
+def set_up(say=None) -> str:
+    "Fetch Taskuary's own browser and wait for it, `say` hearing each step. '' once there is one, else why not - in words for the owner."
+    if installed(): return ''
+    from . import browserruntime as rt
+    try: rt.ensure(say); return ''
+    except RuntimeError as e: return str(e)
+def set_up_soon() -> str:
+    "The same, behind the turn. '' while the first try is under way, else why the last one failed - and a new try is begun either way."
+    from . import browserruntime as rt
+    was = rt._STATE['failed']; rt.start()
+    return '' if installed() else was
 
 
 def program() -> str:
@@ -71,7 +90,8 @@ def program() -> str:
     cmd.exe, which reads & | < > ^ in an argument as its own: the owner's address bar opened https://portal.example/?app=1&return=...
     as ?app=1 and ran `return=...` as a command, and the page sat on a white loading spinner (2026-11-03). An approved fill or eval
     with an & in it was cut the same way. The shim only starts the .exe beside it, so that is what is run."""
-    p = shutil.which('agent-browser') or ''
+    from . import browserruntime
+    p = shutil.which('agent-browser') or browserruntime.find()
     if os.name == 'nt' and p.lower().endswith(('.cmd', '.bat')):
         import platform
         arch = 'arm64' if platform.machine().lower() in ('arm64', 'aarch64') else 'x64'
@@ -424,8 +444,9 @@ def last_frame(tid) -> dict | None:
 
 # A STEP ONLY THE OWNER CAN DO ON THE PAGE - a CAPTCHA, a sign-in or a code the agent cannot type, a card number. The agent ends its turn
 # with [[TASKUARY-YOURTURN: <what>]] (selfclose.turn_marker); the request it raises is drawn ON the browser view as "Your turn", the page
-# handed to the owner's mouse and keys, and their Done goes back to the agent as its next message. A chat's agent gets Done as a press;
-# a terminal CLI's choices are a chooser answered by number, so its ask carries none and the view sends the words (TURN_BACK).
+# handed to the owner's mouse and keys. Their Done on the view is a press (browsergate.done): Taskuary tells the agent, chat or terminal alike.
+# A chat's ask carries Done as a choice for where no view is drawn; a terminal CLI's choices are a chooser answered by number, so its ask
+# carries none. TURN_BACK: the words a page left open from an older build still sends - read as their Done (browsergate.owner_said).
 TURN_PREFIX = 'yourturn:'
 TURN_DONE = 'Done'
 TURN_BACK = 'Done - I finished that in the browser. Look at the page as it is now and continue.'
@@ -440,14 +461,14 @@ def your_turn(store, tid: int, sid: str, what: str = '', watch=...) -> str:
     # (the owner, 2026-11-04, on a flight search that only asked where and when)
     if not st.get('open') or not _page(st.get('url')):
         text = what or 'The agent needs you to do a step on a web page, and has none open yet'
-        rid = ws.request_id_for(text)
+        rid = ws.fresh_id(store, tid, ws.request_id_for(text))
         ws.record(store, tid, sid, 'input_needed', request_id=rid, text=text, source='api')
         return rid
     try: host = urlsplit(str(st.get('url') or '')).hostname or ''
     except ValueError: host = ''
     host = host[4:] if host.startswith('www.') else host
     text = f"Your turn in the browser{f' on {host}' if host else ''}: {what or 'the agent needs you to do a step on the page'}"
-    rid = f'{TURN_PREFIX}{ws.request_id_for(text)}'
+    rid = ws.fresh_id(store, tid, f'{TURN_PREFIX}{ws.request_id_for(text)}')
     chat = hasattr(term.SESSIONS.get(str(sid)), 'send_prompt')
     # ...AND WATCHED (the owner, 2026-11-05: "if we need the user we should wait for them to do it"): the page moving on closes it by itself
     # and the agent goes on - Done stays for a page Taskuary cannot read (browsergate.watch_turn)
@@ -645,10 +666,9 @@ def set_viewport(sid: str, w: int, h: int) -> bool:
 # ends at a payment, a form or any button that can't be undone is filled in and left on that page for them (browsergate.hand_over).
 HOLD_LINE = ('WHEN THE WORK ENDS AT A PAYMENT, A FORM TO SUBMIT OR ANY BUTTON THAT CAN\'T BE UNDONE (pay, order, submit for real, send, post, '
              'delete, cancel): fill in everything first, then run the command for that last button as you would. Taskuary refuses it with '
-             '"held for the owner" and hands them the page as you left it, scrolled to that button - THEY press it on the page themselves, '
-             'and you are told when they have and what the page shows (or that they did not). Then end your turn in one short line and run '
-             'no browser command until you hear back; never try the same act another way, and never ask the owner in words whether to '
-             'submit, register or pay. ')
+             '"held for the owner" and puts that button in front of them as a card in this task - THEY press it, and you are told when '
+             'they have and what the page shows (or that they did not). Then end your turn in one short line and run no browser command '
+             'until you hear back; never try the same act another way, and never ask the owner in words whether to submit, register or pay, or to click it. ')
 ASK_FIRST_LINE = ('TASKUARY CANNOT HOLD YOUR BROWSER COMMANDS ON THIS AI: nothing stops a press once you run it. So when the work ends at a '
                   'payment, a form to submit or any button that can\'t be undone (pay, order, submit for real, send, post, delete, cancel), '
                   'NEVER press it: fill in everything, leave the page on that button and end your turn with a final line '
@@ -672,12 +692,25 @@ SAY_WHY = ('IF A STEP FAILS OR IS REFUSED, your answer says which step, what the
            'thing the owner can do about it (sign in on the site in the browser pane, approve the held step on the task, send another '
            'message to open the browser again) - never only that you could not. ')
 OFFER_HEAD = ('NO BROWSER IS OPEN for this task yet, but Taskuary keeps one for you: if the work needs a web page - a link in a message to '
-              'follow, a form to fill, a site to sign in to - run `agent-browser open <url>` and it opens beside this chat, where the owner '
-              'watches it. Searching and reading the web needs no browser: use your own web search and fetch for that, and open this one '
+              'follow, a form to fill, a site to sign in to - run `agent-browser open <url>` and it opens for you; the owner sees it only '
+              'when Taskuary shows it to them. Searching and reading the web needs no browser: use your own web search and fetch for that, and open this one '
               'only for a page you must see or act on. NEVER use --session, --headed, profile listing, or launch Chrome separately. ')
 NOT_SET_UP = ('THIS COMPUTER HAS NO BROWSER FOR AGENTS YET (agent-browser is not installed). Do not use a browser tool of your own CLI '
               'or of another app instead - Taskuary cannot show those to the owner or hold their presses, and they fail here. If the work needs a web page, do what you can without it (read the message, find the link), then tell the owner in one line: '
               '"The browser is not set up - install agent-browser under {where}, then ask me again." ')
+# ...AND A COMPUTER WITHOUT ONE IS GIVEN ONE, NOT A CHORE (the owner, 2026-11-09: "it asks for cli tool why??"). Taskuary fetches its own
+# browser (browserruntime) - behind the turn for a task that was only offered it, so the agent is told it is on its way; and when the
+# download could not be made, the real reason is the owner's line, never a settings page to go and install something on
+SETTING_UP = ('IT IS STILL BEING SET UP on this computer - a one-time download Taskuary started by itself, a few minutes. If `agent-browser` '
+              'is not found when you run it, the download has not finished: do the rest of the work first, then wait a minute and try '
+              'again, for up to five minutes. If it is still not there, tell the owner in one line: "The browser is still being set up on '
+              'this computer - ask me again in a few minutes." Never tell them to install anything. ')
+NO_SET_UP = ('THIS COMPUTER HAS NO BROWSER FOR AGENTS YET: Taskuary tried to set its own up and could not ({why}). Do not use a browser '
+             'tool of your own CLI or of another app instead - Taskuary cannot show those to the owner or hold their presses, and they fail '
+             'here. If the work needs a web page, do what you can without it, then tell the owner in one line: "The browser could not be '
+             'set up on this computer: {why}. Ask me again and Taskuary tries again." ')
+COMING = 'The browser is being set up on this computer (a one-time download) - try again in a few minutes'
+GETTING = 'Getting the browser ready on this computer - a one-time download; the agent goes on by itself once it is there.'
 # ...and a stranger's task (origin.py: a message on it is from someone the owner has not vouched for) gets no browser: a link in a
 # stranger's mail is the oldest way to talk an agent into a form. Said, so the answer is the reason and the press, not "could not"
 STRANGER_LINE = ('NO BROWSER ON THIS TASK: it carries a message from someone the owner has not vouched for ({why}), and a link in such a '
@@ -690,7 +723,7 @@ STRANGER_LINE = ('NO BROWSER ON THIS TASK: it carries a message from someone the
 TURN_LINE = ('NEVER SOLVE, CLICK OR WORK AROUND A CAPTCHA, an "I\'m not a robot" box, a puzzle or any other check that a human is at the '
              'page - not even to try - and never ask the owner whether you may. That, and any step only the owner can do on the page '
              '(a sign-in or code you cannot type, a card number), is THEIRS: leave the page on it and end your turn with a final line '
-             '[[TASKUARY-YOURTURN: <what they need to do on the page, in a few words>]]. Taskuary hands them this browser beside your session; '
+             '[[TASKUARY-YOURTURN: <what they need to do on the page, in a few words>]]. Taskuary shows them this page; '
              'they do it and hand it back, and their "Done" is your next message - then look at the page and go on. Run no browser '
              'command until then. ')
 
@@ -699,7 +732,8 @@ def brief(held: bool = True, open_now: bool = True) -> str:
     this only rides when the owner asked for a browser, so it can afford to say how to drive
     it and where the line is. `held`: this session's own hook can refuse a browser act (browsergate).
     `open_now`: the browser is already up; else it is OFFERED - opened by the agent's first `open`."""
-    head = ('A BROWSER IS OPEN for this task and the owner is WATCHING it beside this session. '
+    # ...and nobody is said to be watching it (the owner, 2026-11-05: hidden unless they are needed on it; 2026-11-10: "i cant see the screen")
+    head = ('A BROWSER IS OPEN for this task. The owner sees it only when Taskuary shows it to them - never say it is on their screen. '
             'Drive the existing tab with `agent-browser` - it is already bound and restored, so '
             'NEVER use --session, --headed, profile listing, or launch Chrome separately. Navigate '
             'with `agent-browser open <url>`. ') if open_now else OFFER_HEAD
@@ -780,5 +814,5 @@ def hint() -> str:
     in the pane, never by the agent (the transcript becomes the report). Short on purpose: the
     seed rides a tty line with a hard cap, and the CLI documents its own commands
     (`agent-browser skills get core`)."""
-    if not shutil.which('agent-browser'): return ''
+    if not installed(): return ''
     return 'BROWSER: agent-browser is installed; Never type passwords/codes - to sign in, end the turn with [[TASKUARY-SIGNIN: <domain>]].'

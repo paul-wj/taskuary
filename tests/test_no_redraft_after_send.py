@@ -107,11 +107,12 @@ class TheEnding(Base):
         self.assertFalse(out['drafting']); self.assertEqual(pending(self.s, self.tid), [])
         self.assertTrue(any('already went at 05:33 PM' in c['Body'] for c in self.s.list_comments(self.tid)))
 
-    def test_with_new_mail_the_ending_drafts_as_before(self):
+    def test_with_new_mail_the_ending_raises_the_reply_as_before(self):
         mail(self.s, self.tid, 'g-2', 'One more - can you also add September?', '18:00:00')
         with mock.patch('taskuary.responder.write_draft', return_value='Sure.') as redraft:
-            self.assertTrue(wrapup.finish(self.s, self.tid, REP, None, 'coding')['drafting'])
-        redraft.assert_called_once()
+            out = wrapup.finish(self.s, self.tid, REP, None, 'coding')
+        self.assertTrue(out['drafting']); self.assertTrue(out['owed'])
+        redraft.assert_not_called()                     # ...the agent's to write (2026-11-10), never a second voice's
 
 
 class TheAgentIsTold(Base):
@@ -129,6 +130,17 @@ class TheAgentIsTold(Base):
         self.assertIn('YOUR REPLY WENT OUT', seed); self.assertIn('taskuary --follow-up --reply', seed)
         self.assertLess(len(seed.encode()), 1024, 'the seed rides a tty command line')
         self.assertIn('## Replies already SENT on this task', text); self.assertIn(FIRST, text)
+
+    def test_a_read_cut_to_fit_keeps_what_already_went(self):
+        from taskuary import context
+        text = ('# Context\nwritten for the agent\n## Past work with this sender\n' + 'an older task, closed\n' * 400
+                + f'\n{context.SENT_HEAD} (newest first)\n--- to Gail Moreno\n{FIRST}')
+        with mock.patch.object(context, 'build', return_value=text), mock.patch('taskuary.origin.of_task', return_value=('owner', '')):
+            cut = context.for_prompt(self.s, self.tid, chars=1000)
+            whole = context.for_prompt(self.s, self.tid, chars=len(text))
+        self.assertIn(FIRST, cut); self.assertIn('[...cut to fit]\n\n' + context.SENT_HEAD, cut)
+        self.assertLessEqual(len(cut), 1000 + len('\n[...cut to fit]'))
+        self.assertNotIn('cut to fit', whole)
 
     def test_new_mail_since_the_send_is_news_not_a_sent_line(self):
         mail(self.s, self.tid, 'g-2', 'One more - can you also add September?', '18:00:00')

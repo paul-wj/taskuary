@@ -21,8 +21,8 @@ import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 
 const NOT_A_STEP = new Set(["agent", "assistant", "zoho_monthly_invoices"]);
-const KIND_TINT = { source: "#e6ebef", ai: "#efe9f3", task: "#e5ece2", draft: "#f3ede2", agent: "#efece6" };
-const field = { bgcolor: "#fff" };
+const KIND_TINT = { source: "var(--tq-tint-slate, #e6ebef)", ai: "var(--tq-tint-purple, #efe9f3)", task: "var(--tq-tint-sage, #e5ece2)", draft: "var(--tq-tint-brass, #f3ede2)", agent: "var(--tq-tint-neutral, #efece6)" };
+const field = { bgcolor: "var(--tq-panel, #fff)" };
 
 const KindChip = ({ kind }) => {
   useLocale();
@@ -49,7 +49,7 @@ function TokenField({ flow, index, value, onChange, label, placeholder, multilin
         onChange={(e) => onChange(e.target.value)} />
       {!!groups.length && <>
         <Typography component="button" type="button" onClick={(e) => setAt(e.currentTarget)}
-          sx={{ border: 0, bgcolor: "transparent", p: 0, mt: 0.35, cursor: "pointer", color: "#55697a", fontSize: 11.5, fontWeight: 600,
+          sx={{ border: 0, bgcolor: "transparent", p: 0, mt: 0.35, cursor: "pointer", color: "var(--tq-link, #55697a)", fontSize: 11.5, fontWeight: 600,
             "&:hover": { textDecoration: "underline" } }}>{t("Insert output of…")}</Typography>
         <Menu anchorEl={at} open={!!at} onClose={() => setAt(null)}>
           {groups.flatMap((g) => [
@@ -230,7 +230,7 @@ export default function WorkflowSteps({ flow, setFlow, outputs, setOutputs, conn
                   color: rec?.status === "failed" ? "#fff" : DIM, bgcolor: rec?.status === "failed" ? ALERT : PANEL, border: `1px solid ${BORDER}`, mt: 1.1 }}>{i + 1}</Box>
                 <Box sx={{ flex: 1, width: "1px", bgcolor: BORDER, minHeight: 8 }} />
               </Box>
-              <Box data-tq-step={s.id} sx={{ flex: 1, minWidth: 0, bgcolor: PANEL, border: `1px solid ${mark ? "#a58bb5" : BORDER}`, borderRadius: 2,
+              <Box data-tq-step={s.id} sx={{ flex: 1, minWidth: 0, bgcolor: PANEL, border: `1px solid ${mark ? "var(--tq-edge-purple, #a58bb5)" : BORDER}`, borderRadius: 2,
                 boxShadow: mark ? "0 0 0 2px #efe9f3" : "none" }}>
                 <Box onClick={() => toggle(s.id)} sx={{ display: "flex", alignItems: "center", gap: 1, px: 1.25, py: 0.9, cursor: "pointer", minWidth: 0 }}>
                   <KindChip kind={s.kind} />
@@ -250,7 +250,7 @@ export default function WorkflowSteps({ flow, setFlow, outputs, setOutputs, conn
                   <ExpandMoreIcon sx={{ fontSize: 18, color: FAINT, transform: isOpen ? "rotate(180deg)" : "none", transition: "transform .15s" }} />
                 </Box>
                 {isOpen && <Box sx={{ px: 1.25, pb: 1.25, pt: 0.25, display: "flex", flexDirection: "column", gap: 1.1, borderTop: `1px solid ${BORDER}` }}>
-                  {mark && <Typography variant="caption" sx={{ color: "#6a4f7a", fontWeight: 600, mt: 0.75 }}>
+                  {mark && <Typography variant="caption" sx={{ color: "var(--tq-purple, #6a4f7a)", fontWeight: 600, mt: 0.75 }}>
                     {mark.has("*") ? t("Added by the repair") : t("Changed by the repair: {keys}", { keys: [...mark].join(", ") })}</Typography>}
                   <TextField size="small" label={t("Step name")} value={s.label || ""} placeholder={KIND_WORDS[s.kind] ? t(KIND_WORDS[s.kind]) : s.kind} sx={{ ...field, mt: mark ? 0 : 1 }}
                     onChange={(e) => setStep(i, { label: e.target.value })} />

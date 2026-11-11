@@ -12,6 +12,7 @@ import PublishedPages, { FOLD } from "./PublishedPages.jsx";
 import { BORDER, DIM, FAINT, INK, PANEL, PANEL2, mono } from "./theme.jsx";
 import { cardParts, hasMore, heldLines, lastWords, madeOnce, moreParts, plain, resultLine, recordFacts, recordHead, recordSteps, resultParts, runCost, runHeads, runsOf, sourceLabel, splitFiles } from "./agentRecord.js";
 import AgentStory, { StoryLine, Timeline } from "./AgentStory.jsx";
+import { plural } from "./timeWords.js";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 import { outputRefs } from "./taskOutputs.js";
@@ -40,8 +41,9 @@ const Step = ({ s }) => {
       {s.items.map((i, n) => <Box key={n} sx={{ pl: 1 }}>{i.status === "completed" ? "✓" : i.status === "in_progress" ? "▸" : "○"} {i.text}</Box>)}
     </Box>);
   if (s.k === "result") return <Typography sx={{ fontSize: 12, color: FAINT, fontStyle: "italic" }}>{t("Its answer — shown above.")}</Typography>;
-  if (s.k === "error") return <Typography sx={{ fontSize: 12, color: "#8a3646" }}>⚠ {s.text}</Typography>;
+  if (s.k === "error") return <Typography sx={{ fontSize: 12, color: "var(--tq-danger, #8a3646)" }}>⚠ {s.text}</Typography>;
   if (s.k === "brief") return <BriefLine text={s.text} />;
+  if (s.k === "compact") return <Typography sx={{ fontSize: 11.5, color: FAINT }}>{s.text || "Conversation compacted"}</Typography>;
   if (s.k === "gap") return <Typography sx={{ fontSize: 11.5, color: FAINT }}>… {s.text}</Typography>;
   if (s.k === "screen") return (
     <Box sx={{ ...mono, fontSize: 11, whiteSpace: "pre-wrap", bgcolor: PANEL2, p: 1, borderRadius: 1, maxHeight: 420, overflow: "auto", color: INK }}>{s.text}</Box>);
@@ -251,7 +253,7 @@ const ResultView = ({ s, pages, diff, since, draft, story, diffOpen = false, onD
       {made && <Box data-tq-result-files="" sx={sec}>
         <Typography sx={head}>{t("What it made")}</Typography>
         {diff && <Typography data-tq-diff-stat="" sx={{ ...mono, fontSize: 11.5, color: DIM, mb: 0.4 }}>
-          {t(diff.files === 1 ? "{count} file changed" : "{count} files changed", { count: diff.files })} <Box component="span" sx={{ color: "#47654a" }}>+{diff.added}</Box> <Box component="span" sx={{ color: "#6b2733" }}>−{diff.removed}</Box>
+          {plural(diff.files, "file")} changed <Box component="span" sx={{ color: "var(--tq-success, #47654a)" }}>+{diff.added}</Box> <Box component="span" sx={{ color: "var(--tq-danger, #6b2733)" }}>−{diff.removed}</Box>
           {onDiff && <Box component="span" data-tq-diff-toggle="">{" · "}<Button size="small" aria-expanded={diffOpen} onClick={onDiff}
             sx={{ ...link, fontSize: 11.5, verticalAlign: "baseline", textTransform: "none" }}>{t(diffOpen ? "Hide diff" : "Show diff")}</Button></Box>}</Typography>}
         <FileNames files={mine} />

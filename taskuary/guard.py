@@ -61,6 +61,7 @@ DENIED = (
     (r'POST|DELETE', r'^/api/agent-channels(/\d+)?$', "which chats reach an agent - and hear it - is the owner's to open and close"),
     # anything that puts a message in front of a human somewhere else
     (r'POST', r'^/api/reviews/\d+/decide$', 'approving a reply sends it - that is the owner\'s'),
+    (r'POST', r'^/api/reviews/steps$', 'approving a turn\'s held steps runs them - that is the owner\'s'),
     (r'POST', r'^/api/tasks/\d+/handoff$', 'handing work to a person sends them a message'),
     (r'POST', r'^/api/outbox$', 'starting an outbound message is the owner\'s door, not an agent\'s'),
     (r'POST', r'^/api/messages/\d+/reply$', 'opening a reply is the first half of sending one'),
@@ -221,7 +222,7 @@ OWNER_ONLY = (
     (r'POST', r'^/api/roles/[a-z0-9_-]+$', "a role adds a worker and a workflow and narrows a ledger's authority"),
     (r'POST', r'^/api/platform/macos/(open-settings|probe)$', "operating-system permission prompts are the owner's"),
     (r'POST', r'^/api/deleted/\d+/restore$', "Undo and Restore put back what the owner removed - a report, a rule, a profile, a sign-in (recentlydeleted)"),
-    (r'POST|PUT', r'^/api/voice/(transcribe|vocabulary|speech-on|listen(/[0-9a-f]+/stop)?)$', "the owner's microphone and vocabulary"),
+    (r'POST|PUT', r'^/api/voice/(transcribe|vocabulary|speech-on|open-settings|listen(/[0-9a-f]+/stop)?)$', "the owner's microphone and vocabulary"),
     (r'POST', r'^/api/terminals/[^/]+/(browser/(open|snapshot|viewport)|image|pause|wrap)$', 'the pane the owner is watching'),
 )
 _c = lambda t: tuple((re.compile(f'^({m})$', re.I), re.compile(p), why) for m, p, why in t)
@@ -293,7 +294,8 @@ def stranger_tid(server: dict, presented) -> int | None:
 # the token's own task, so it never reaches another session's seed (blackboard.live_notes, wave B). Not the Hub, the data
 # tools or a report rerun: each of those reaches past its own task.
 _STRANGER_WRITES = (re.compile(r'^/api/hooks/[a-z]+$'), re.compile(r'^/api/agent/(reply|done|draft|item|tick|waiting|not-needed|withdraw-draft)$'), re.compile(r'^/api/board/notes$'))
-_STRANGER_TASK_HOOK = re.compile(r'^/api/hooks/claude/(floor|permit)$')
+# ...and Taskuary's tools on its own task alone (server.mcp_rpc serves it agenttools.STRANGER_TOOLS only, 2026-11-09)
+_STRANGER_TASK_HOOK = re.compile(r'^/api/(hooks/claude/(floor|permit)|mcp)$')
 _STRANGER_FILE = re.compile(r'^/api/(attachments|task-artifacts)/(\d+)$')
 STRANGER_WHY = "a session working a stranger's task reaches its own task and nothing else"
 STRANGER_TASK_READS = ('history', 'worker', 'proof', 'work', 'diff', 'record', 'waitroom')   # each answers for this task only

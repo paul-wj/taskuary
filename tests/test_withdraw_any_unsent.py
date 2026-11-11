@@ -82,3 +82,38 @@ def test_an_agent_with_no_shell_takes_back_an_email_by_its_marker():
         reply = sess.send_prompt('only Gail, please')
     assert 'TASKUARY-WITHDRAW' not in reply and s.get_review(paula)['Status'] == 'closed_unsent'
     assert waiting(s, tid) == [('slot', gail)]
+
+
+def test_a_playbook_the_agent_proposed_is_its_own_to_take_back_and_the_ledgers_is_not():
+    s = MemoryStore(); tid = own_task(s, 'general')
+    mine = s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'Reason': 'the agent proposes a playbook',
+                         'DraftText': json.dumps({'action': 'write_playbook', 'slug': 'w-9', 'text': '# Send our W-9'})})
+    s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'Reason': 'what the ledger counted',
+                  'DraftText': json.dumps({'action': 'amend_playbook', 'slug': 'w-9', 'block': 'Counted: 3 of 4 sent as drafted', 'text': '# Send our W-9'})})
+    assert [r['rid'] for r in verdicts.unsent(s, tid)] == [mine]
+    assert verdicts.withdraw(s, tid, 'the owner said the steps are wrong', 'assistant', which=str(mine))['ok']
+    assert s.get_review(mine)['Status'] == 'closed_unsent'
+
+
+def test_a_reply_nobody_has_written_is_nothing_set_up():
+    """The audit, 2026-11-10: a reply owed at arrival - its review open, no word in it yet - was told to the agent's first turn as "ALSO SET UP AND
+    NOT SENT ... rv1: the reply to erin@...", a thing it had set up and might take back. Nothing was set up; once written it is listed."""
+    from taskuary import general
+    s = MemoryStore(); tid = own_task(s, 'general')
+    mid = s.add_message({'TaskId': tid, 'ExternalId': 'e1', 'ConversationId': 'c1', 'Channel': 'email', 'FromName': 'Erin Blake',
+                         'FromEmail': 'erin@northwind.example', 'Subject': 'Tuesday', 'BodyText': 'Free Tuesday?', 'Status': 'routed'})
+    rid = s.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft', 'Status': 'pending', 'DraftText': ''})
+    assert verdicts.unsent(s, tid) == [] and 'ALSO SET UP' not in general.turn_facts(s, tid)
+    s.update_review_draft(rid, 'Yes, Tuesday works.', None)
+    assert [x['rid'] for x in verdicts.unsent(s, tid)] == [rid]
+
+
+def test_an_email_waiting_is_told_to_the_agent_with_its_words():
+    """The audit's real turn, 2026-11-10: told only "rv1: the email to paula@...", the agent asked to make it shorter could not see what it
+    said, and asked the owner. Each letter set up and not sent is told with its words."""
+    from taskuary import general
+    s = MemoryStore(); tid = own_task(s, 'general')
+    with mock.patch.object(server, 'store', s):
+        call(tid, 'propose_email', to='paula@northwind.example', subject='October report', text='Hi Paula, here is the October report.')
+    s.add_comment(tid, 'owner', general.USER_TYPE, 'make it shorter')
+    assert 'the email to paula@northwind.example: "Hi Paula, here is the October report."' in general.turn_facts(s, tid)

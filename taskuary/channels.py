@@ -4,17 +4,17 @@ live probe (token/chat-read/repo-discovery); poll_channels is the scheduled inge
 funnels mail and chats through the same triage as everything else. Credentials left blank
 fall back to AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET env vars.
 """
-import base64, contextlib, hashlib, json, math, os, queue, re, threading, time
+import base64, contextlib, contextvars, hashlib, json, math, os, queue, re, threading, time
 from concurrent.futures import ThreadPoolExecutor
 from html import unescape
 from datetime import datetime, timedelta
 from loguru import logger
 
-from . import msauth, net, remotemcp, spawn
+from . import msauth, net, remotemcp, spawn, teamsweb
 from .timewords import plural
 requests = net      # pooled Session + (connect, read) timeouts; the name keeps patches of channels.requests.get biting
 from .github import _h as gh_headers, list_accessible_repos
-from .ingest import ingest_message, rev_id, seen_before
+from .ingest import edited_words, ingest_message, rev_id, seen_before
 from .counsel import is_invite
 from .llm import AI_TYPES        # every brain picker and every brain Test read the one list
 from .inboxes import TYPES as INBOXES      # helpdesks and the newer project tools: one road (inboxes.py)
@@ -259,7 +259,9 @@ def test_connector(store, cid: int, draft: dict | None = None) -> dict:
     if not c: raise ValueError('connector not found')
     cfg, t0, extra = _cfg(c), time.time(), {}
     try:
-        if c['Type'] in ('outlook', 'teams'):
+        if c['Type'] == 'teams' and teamsweb.personal(c):          # Teams free: no API, the card's browser reads it (teamsweb.py)
+            detail = teamsweb.probe(c)
+        elif c['Type'] in ('outlook', 'teams'):
             gcfg, gsec, borrowed = graph_creds(store, c)
             own = bool(c.get('Secret') and (cfg.get('client_id') or cfg.get('auth') == 'user'))
             if c['Type'] == 'teams' and not (own or borrowed or os.getenv('AZURE_CLIENT_ID')):
@@ -599,6 +601,20 @@ def mail_links(html, cap: int = 40) -> list:
         if not words or href in words or len(href) > 2048 or not re.match(r'(?i)(https?://|mailto:)', href) or is_doc_link(href): continue
         if [words[:200], href] not in out: out.append([words[:200], href])
     return out[:cap]
+
+
+def links_meta(html) -> dict:
+    "{'links': [[words, address]]} for a message's mail_meta, {} when its HTML puts none behind words - each connector's one line."
+    return {'links': ln} if (ln := mail_links(html)) else {}
+
+
+def kept_links(m: dict | None) -> list:
+    """The links a stored message keeps behind words, read back ([[words, address]]) - web and mail addresses only, checked again here
+    so nothing else stored there ever becomes one. ONE READER: the screens, the Assistant on an item and - which had none - read_message
+    and the agent's context each read MailMetaJson their own way, so "the invoice is at the link" reached an agent as the words alone."""
+    try: got = (json.loads((m or {}).get('MailMetaJson') or '{}') or {}).get('links') or []
+    except (ValueError, TypeError, AttributeError): return []
+    return [[str(w), str(h)] for w, h in (x for x in got if isinstance(x, list) and len(x) == 2) if re.match(r'(?i)(https?://|mailto:)', str(h))]
 
 
 # A MAIL THAT IS ONLY A PICTURE had no words, so it was stored, triaged and shown as nothing (the owner, 2026-11-03: "in a fyi email where
@@ -999,43 +1015,77 @@ def _same_words(a: str, b: str, n: int = 160) -> bool:
     return bool(x) and x == y
 
 
-REREAD_SYSTEM = ('You read a reply drafted for the owner, not sent yet, and one line the owner has since written themselves on the same chat. '
-                 'Decide how much of what the draft answers the owner\'s line already covers: "covered" (all of it - nothing more to send), '
-                 '"partly" (some of it) or "none". For "partly", `left` is the draft cut to only what the owner\'s line left unanswered - in '
-                 'the draft\'s own voice, language and greeting, nothing new added, nothing the owner\'s line already said. Reply with JSON '
-                 'only: {"covered": "covered" | "partly" | "none", "left": "the cut draft for partly, else empty"}')
+# ...the one read of a draft waiting on the owner's Send against their line on the chat since - only where no agent may take that line (owner_line)
+REREAD_SYSTEM = ('You read words written for the owner and not acted on yet - a reply drafted for them to send - and one line the owner has '
+                 'since written themselves on the same chat. Decide how much of what the words '
+                 'answer, report or ask the owner\'s line already covers: "covered" (all of it - nothing more to send or do), "partly" (some '
+                 'of it) or "none". For "partly", `left` is the words cut to only what the owner\'s line left open - in their own voice, '
+                 'language and greeting, nothing new added, nothing the owner\'s line already said. Reply with JSON '
+                 'only: {"covered": "covered" | "partly" | "none", "left": "the cut words for partly, else empty"}')
 REREAD_WANT = {'type': 'object', 'properties': {'covered': {'type': 'string', 'enum': ['covered', 'partly', 'none']}, 'left': {'type': 'string'}},
                'required': ['covered']}
 COVERED, CHECK_IT = 'Your line covers this, nothing more to send.', 'You wrote on the thread since - check the draft still fits.'
 
 
+def reread(store, tid, words: str, line: str, brain=None) -> tuple:
+    "(covered | partly | none | None when unread, left): a draft's `words` read against the owner's `line` since - one small model call, REREAD_SYSTEM."
+    from .llm import build_llm, ask_json
+    try:
+        b = brain or build_llm(store, job='judge', task_id=tid)
+        v = (ask_json(b, REREAD_SYSTEM, f"THE DRAFT:\n{words[:6000]}\n\nTHE OWNER'S LINE SINCE:\n{line[:2000]}", want=REREAD_WANT,
+                      need=('covered',)).data if b else None) or {}
+    except Exception as e: logger.debug(f'task {tid}: the draft was not re-read against the owner\'s line - {e}'); v = {}
+    if not isinstance(v, dict): return None, ''
+    return (v.get('covered') if v.get('covered') in ('covered', 'partly', 'none') else None), str(v.get('left') or '').strip()
+
+
 def reread_draft(store, tid, rv: dict, sent: dict, brain=None) -> str:
-    """A pending draft on a chat, re-read against the line the owner wrote there since - one small model call that reads only the two:
+    """A pending draft on a chat, re-read against the line the owner wrote there since (reread):
     covered -> retired (COVERED), partly -> its text cut to what is still unanswered (same recipient, same quote), none -> left as it is.
     Unreadable, or no AI: the draft stays untouched and the task says CHECK_IT. Returns which it was."""
-    from .llm import build_llm, ask_json
     from .sessionrecord import NOTE_ACTOR
     from . import funnel
     line, draft = ' '.join(str(sent.get('BodyText') or '').split())[:2000], str(rv.get('DraftText') or '').strip()
     note = lambda t: tid and store.add_comment(tid, NOTE_ACTOR, 'assistant_agent', t)
     if not draft: return 'none'
-    try:
-        b = brain or build_llm(store, job='judge', task_id=tid)
-        v = (ask_json(b, REREAD_SYSTEM, f"THE DRAFT:\n{draft[:6000]}\n\nTHE OWNER'S LINE SINCE:\n{line}", want=REREAD_WANT, need=('covered',)).data
-             if b else None) or {}
-    except Exception as e: logger.debug(f'task {tid}: the draft was not re-read against the owner\'s line - {e}'); v = {}
-    got, left = v.get('covered') if isinstance(v, dict) else None, str((v or {}).get('left') or '').strip() if isinstance(v, dict) else ''
+    # ...said in one line that never quotes the owner's words again: their line stands on the chat's left, just above (general.shown_history)
+    m = store.get_message(rv.get('AnswersMid') or rv.get('MessageId')) or {}
+    who = str(m.get('FromName') or '').strip() if m.get('FromName') != 'You' else ''
+    got, left = reread(store, tid, draft, line, brain=brain)
     if got == 'covered':
         store.decide_review(rv['ReviewId'], 'superseded', None, 'you', COVERED)
         if tid:
             from . import verdicts
             verdicts._settle_task_after_sent_reply(store, rv, 'you', True)
-        note(f'You wrote on the chat: "{line[:180]}". {COVERED}')
+        note(f"You answered {who or 'them'} yourself - no new response needed.")
     elif got == 'partly' and left and store.update_review_draft(rv['ReviewId'], left, rv.get('RunId'), by=rv.get('DraftBy')):
-        note(f'You wrote on the chat: "{line[:180]}". The draft now says only what your line left unanswered.')
+        note(f"You answered {who or 'them'} on part of it yourself - the draft now says only what is still open.")
     elif got != 'none': got = 'unread'; note(CHECK_IT)
     funnel.invalidate(); store._poke('feed-changed', 'task-changed', task_id=tid)
     return got or 'unread'
+
+
+def answered_drafts(store, tid, sent: dict) -> list:
+    "Task `tid`'s pending replies on the conversation the owner's own line `sent` is on, drafted before it: what that line may have answered."
+    conv, at = sent.get('ConversationId'), sent.get('SentAt')
+    if not conv or not at: return []
+    return [rv for rv in store.list_reviews('pending') if rv.get('TaskId') == tid and rv.get('Kind') != 'action'
+            and rv.get('ConversationId') == conv and (not rv.get('SentAt') or rv['SentAt'] <= at)]
+
+
+# THE OWNER'S LINE ON A CHAT IS THE AGENT'S TO RE-PLAN (the owner, 2026-11-09: "if we respond show on left side and then agent reevaluates if
+# action still required"). A second model read each waiting draft against the line and retired or cut it in the agent's name, and re-read a
+# working turn's closing words the same way - the agent itself heard the line only when something else woke it. Now a line on a chat where
+# the agent's draft waits, or while it works, wakes it to re-plan (ingest.thread_moved, own): it keeps, rewrites or withdraws its own card. A
+# line with neither stays context, heard on the next turn (general.latest_block - the owner, 2026-11-08). The one read (reread_draft) is kept
+# only where no agent may take the line - a task no assistant works, or the owner's switch or a missing AI that lets none run
+def owner_line(store, tid, msg: dict, mid, sent: dict) -> None:
+    from . import ingest
+    if ingest.is_ack(store, sent): return
+    worded = [rv for rv in answered_drafts(store, tid, sent) if str(rv.get('DraftText') or '').strip()]
+    if not worded and not ingest.live_agent(store, tid): return
+    if ingest.thread_moved(store, tid, msg, mid, None, 'router', own=True): return
+    for rv in worded: reread_draft(store, tid, rv, sent)
 
 
 def retire_draft_answered_elsewhere(store, tid: int | None, sent: dict, later: bool = False) -> list:
@@ -1044,30 +1094,24 @@ def retire_draft_answered_elsewhere(store, tid: int | None, sent: dict, later: b
     A provider sync can land well after triage wrote its draft.  The draft belongs to the
     inbound message it was written against, so an owner line later on that same conversation
     is the missing verdict: the reply already went out.  Action approvals are deliberately
-    excluded -- sending a chat line cannot approve an unrelated proposed action. On a chat the
-    line is re-read against each draft instead (reread_draft) - on its own thread when `later`.
+    excluded -- sending a chat line cannot approve an unrelated proposed action. On a chat a
+    worded draft is left to the task's agent (owner_line) - a taskless one re-read, on its own thread when `later`.
     """
-    conv, sent_at = sent.get('ConversationId'), sent.get('SentAt')
-    if not conv or not sent_at:
-        return []
     # Taskuary's own "On it - I'll get back to you here." promises the answer; it is not one. Filed as the
     # owner's line (or echoed back as one on Teams), it retired the very draft it promised (2026-09-24, TQ-0731)
     from .ingest import is_ack
     if is_ack(store, sent): return []
-    stale = [rv for rv in store.list_reviews('pending')
-             if rv.get('TaskId') == tid and rv.get('Kind') != 'action'
-             and rv.get('ConversationId') == conv
-             and (not rv.get('SentAt') or rv['SentAt'] <= sent_at)]
+    stale = answered_drafts(store, tid, sent)
     if not stale:
         return []
     # ...A CHAT LINE IS ONE LINE, NOT THE REPLY (the owner, 2026-11-09): "voice to text is fixed in 18" from the phone retired a draft that
-    # answered six points, five of which never went out. On a chat the draft is re-read against the owner's line (reread_draft); email keeps
+    # answered six points, five of which never went out. On a chat a worded draft is the task's agent's to re-plan (owner_line); email keeps
     # the retire below - a mail sent from the mailbox is the whole answer. A draft with no words yet (its writer still at work when the
-    # owner answered) has nothing to re-read: the owner's line is the reply it was going to be, retired as before
+    # owner answered) has nothing to re-plan: the owner's line is the reply it was going to be, retired as before
     from .ingest import CHAT_CHANNELS
     if str(sent.get('Channel') or '').lower() in CHAT_CHANNELS:
         worded = [rv for rv in stale if str(rv.get('DraftText') or '').strip()]
-        if worded:
+        if worded and not tid:          # ...a reply to filed chatter has no task, so no agent: the one read stands in
             go = lambda: [reread_draft(store, tid, rv, sent) for rv in worded]
             if later: threading.Thread(target=go, daemon=True, name=f'reread-draft-{tid}').start()
             else: go()
@@ -1172,7 +1216,8 @@ def ingest_own_message(store, msg: dict, why: str, keep_unmatched: bool = True) 
         from . import ingest
         # ...but A LINE THE OWNER SAID IN A CHAT is context, never a turn (the owner, 2026-11-08: "it should show what i sent ... even if it
         # does not trigger as a prompt"): it stands in the task's chat as theirs, and the agent hears it on its next turn (general.latest_block)
-        if ingest.is_chat(msg): return 1
+        # - at once where its draft waits or it is at work (owner_line)
+        if ingest.is_chat(msg): owner_line(store, tid, msg, mid, sent); return 1
         if not ingest.is_ack(store, sent):
             ingest.thread_moved(store, tid, msg, mid, None, 'router', own=True)
             # ...and every OTHER open task on the thread hears it too (the stress run, 2026-11-05): a follow-up that was a new ask made a
@@ -1521,7 +1566,9 @@ def ingest_teams_chats(store, upn: str, tok: str, since, llm=None, file_only=Fal
         if org is None and tenant and user.get('tenantId'): org = teams_internal(user, tenant, users.get(('guest', user['id']), False))
         meta = {**({'dm': True} if kind == 'oneOnOne' else {}), **({'internal': org} if org is not None else {}),
                 # ...and which organisation they are in, whenever Graph says: what "Trust their organisation" is matched on
-                **({'tenant': str(user['tenantId']).lower()} if user.get('tenantId') else {})}
+                **({'tenant': str(user['tenantId']).lower()} if user.get('tenantId') else {}),
+                # ...and the addresses a chat line puts behind words ("the form is here"), as a mail's are: _clean keeps only the words
+                **links_meta((m.get('body') or {}).get('content'))}
         if meta: common['mail_meta'] = meta
         if org and user['id'] != me: store.remember_trust('teams', (addr or f"teams:{user['id']}").lower(), ORG_REASON)
         if user['id'] == me:                       # your own chat lines are context, never work
@@ -1864,7 +1911,9 @@ def ingest_github_issues(store, src: dict, tok: str, since, llm=None, file_only=
         # what somebody meant to say the day they filed it
         n += _gh_comments(store, src, tok, repo, i, base, llm, mode == 'feed')
         if seen_before(store, base, subject, body): continue
+        own = edited_words(store, base, body)       # an edit shows what it added, not the whole PR again
         out = ingest_message(store, {
+            **({'own_text': own} if own else {}),
             'external_id': rev_id(base, subject, body), 'channel': 'github',
             'subject': subject, 'body': body,
             'from_name': who, 'from_email': f'{who}@users.noreply.github.com',
@@ -1955,13 +2004,43 @@ POLL_OVERLAP = timedelta(minutes=5)
 STARTUP_OVERLAP = timedelta(hours=1)
 
 
-def _since(s, backfill_hours: float = 0):
+def _since(s, backfill_hours: float = 0, first_hours: float = 24):
     """How far back to ask this source for. `backfill_hours` WIDENS the window without moving the
     watermark - what the app does on startup, because whatever arrived while it was shut down was
-    never polled by anyone, and 'since I last ran' is the wrong question after a weekend off."""
+    never polled by anyone, and 'since I last ran' is the wrong question after a weekend off.
+    A source with no watermark yet is a first read and goes back `first_hours` (first_read_hours)."""
     last = (datetime.fromisoformat(s['LastPolledAt'].replace(' ', 'T')) - POLL_OVERLAP
-            if s.get('LastPolledAt') else datetime.now() - timedelta(days=1))
+            if s.get('LastPolledAt') else datetime.now() - timedelta(hours=first_hours))
     return min(last, datetime.now() - timedelta(hours=backfill_hours)) if backfill_hours else last
+
+
+# A FIRST READ GOES BACK THE CATCH-UP WINDOW, whatever started it (the owner, 2026-11-10: "it says connected but it's not going
+# back whatever the period is to sync it"). Only startup passed a window; Sync now and a new card's own first read passed none, so
+# a source with no watermark fell to a fixed day and an IMAP box with no UID cursor to SINCE yesterday. One rule for every reader.
+SINCELESS = ('telegram', 'whatsapp', 'imessage')     # these ask for what is pending, never for a date: nothing to go back on
+
+
+# ...AND HOW FAR IS THE CONNECTION'S OWN CHOICE (the owner, 2026-11-10: "first sync should be 3 days.. or you can make drop down"): its card's
+# "How far back to bring in" (`first_days` on its config) while its first read is due, else the catch-up window the owner set
+FIRST_DAYS, FIRST_DEFAULT = (1, 3, 7, 14, 30), 3
+def first_read_hours(store, c=None) -> float:
+    """The window a never-read source of card `c` is asked for: the card's own choice, else the catch-up window the owner set (Settings >
+    Sync & startup, 3 days as shipped), and 3 days when that is off - a first sync is 3 days (the owner, 2026-11-10)."""
+    days = 0
+    for raw in ((lambda: _cfg(c).get('first_days')) if c else (lambda: 0), lambda: store.get_setting('startup_sync_days')):
+        try: days = int(raw() or 0)
+        except (TypeError, ValueError): days = 0
+        if days > 0: break
+    return (days if days > 0 else FIRST_DEFAULT) * 24
+
+
+def reads_back(store, c, sources=None, unsourced: bool = False) -> bool:
+    """Whether the next read of card `c` is a first read that goes back the window: a source of its own with no watermark yet.
+    `sources`: the sources already read, for a caller asking of every card at once. `unsourced`: a card still being connected, with
+    no mailbox or chat of its own yet, counts too - its first read is still ahead (the card's How far back)."""
+    if c['Type'] in SINCELESS or c['Type'] not in CH2SRC: return False
+    mine = [s for s in (store.list_sources() if sources is None else sources) if s['Channel'] == CH2SRC[c['Type']] and s.get('ConnectorId') == c['ConnectorId']]
+    return any(not s.get('LastPolledAt') for s in mine) or (not mine and (unsourced or c['Type'] in PER_CONNECTOR))
 
 
 class _Writer:
@@ -2041,7 +2120,14 @@ def _poll_one(store, c, file_only, backfill_hours, llm, read_it) -> int:
     arrival order because a connector is one worker."""
     n, errors = 0, []      # errors: folders a mailbox could not finish - the card shows them, the poll goes on
     full = store.get_connector(c['ConnectorId'], with_secret=True)
+    first = first_read_hours(store, full)  # how far back a source with no watermark yet goes
     try:
+        if c['Type'] == 'teams' and teamsweb.personal(full):       # Teams free: the card's browser, never Graph (teamsweb.py)
+            mine = [x for x in store.list_sources() if x['Channel'] == 'teams' and x.get('ConnectorId') == c['ConnectorId']]
+            n += teamsweb.poll(store, full, _since(mine[0] if mine else {}, backfill_hours, first), llm, file_only)
+            for s in mine: store.touch_source(s['SourceId'])
+            store.touch_connector(c['ConnectorId'])
+            return n
         user = False                                # a person's own sign-in reads Teams chats by another road
         if c['Type'] in ('outlook', 'teams'):
             gcfg, gsec, _ = graph_creds(store, full)
@@ -2057,7 +2143,7 @@ def _poll_one(store, c, file_only, backfill_hours, llm, read_it) -> int:
             mine = [x for x in store.list_sources()
                     if x['Channel'] == CH2SRC[c['Type']]
                     and (not x.get('ConnectorId') or x['ConnectorId'] == c['ConnectorId'])]
-            since = _since(mine[0] if mine else {}, backfill_hours)
+            since = _since(mine[0] if mine else {}, backfill_hours, first)
             if c['Type'] in ('telegram', 'whatsapp'):
                 from . import messengers
                 poll = messengers.poll_telegram if c['Type'] == 'telegram' else messengers.poll_whatsapp
@@ -2092,7 +2178,7 @@ def _poll_one(store, c, file_only, backfill_hours, llm, read_it) -> int:
             # channel 'email', and without this the Graph poller tried the Gmail address.
             # (Orphans are adopted at startup, so ownership is always present now.)
             if s.get('ConnectorId') and s['ConnectorId'] != c['ConnectorId']: continue
-            since = _since(s, backfill_hours)
+            since = _since(s, backfill_hours, first)
             if c['Type'] == 'outlook':
                 since_iso = since.astimezone().isoformat()
                 identity = _mail_identity(s)
@@ -2156,7 +2242,7 @@ def _poll_one(store, c, file_only, backfill_hours, llm, read_it) -> int:
                             'mail_meta': {'folder': folder, 'focus': m.get('inferenceClassification'),
                                           'flag': (m.get('flag') or {}).get('flagStatus'),
                                           'invite': inv, **({'cal': cal_} if cal_ else {}), **att_marks(atts),
-                                          **({'links': ln} if (ln := mail_links((m.get('body') or {}).get('content'))) else {})}}, llm=llm)
+                                          **links_meta((m.get('body') or {}).get('content'))}}, llm=llm)
                         if atts and out.get('message_id') and out['status'] != 'duplicate':
                             try: save_attachments(store, out['message_id'], atts, f"graph:{m['id']}")
                             except Exception as e: logger.warning(f"saving attachments for {m['id']} failed: {e}")
@@ -2237,7 +2323,7 @@ def _poll_one(store, c, file_only, backfill_hours, llm, read_it) -> int:
                 # one poll per connector (the UID watermark lives there); its own source only
                 from . import imapmail
                 if s['ConnectorId'] != c['ConnectorId']: continue
-                n += imapmail.poll_imap(store, full, [s], llm, file_only, math.ceil(backfill_hours / 24))
+                n += imapmail.poll_imap(store, full, [s], llm, file_only, math.ceil(max(backfill_hours, first) / 24))
             elif c['Type'] in CLOUD:
                 # per SOURCE: each discovered object carries its own mode, and 'report'
                 # (the default) means the Reports tab may use it but nothing is polled.
@@ -2342,39 +2428,81 @@ def poll_channels(store, backfill_hours: float = 0, progress=None, only=None) ->
     def _say(kind, so_far, st):
         if not progress: return
         try:
-            st.do(lambda: progress(kind, so_far)) if hasattr(st, 'do') else progress(kind, so_far)
+            st.do(lambda: progress(kind, so_far)) if hasattr(st, 'do') and threading.get_ident() != st.ident else progress(kind, so_far)
         except Exception:
             pass
 
+    tally = _Tally()
     if len(jobs) == 1:
         c, file_only = jobs[0]
         _say(c['Type'], 0, store)
-        return _file_after(store, _poll_one(store, c, file_only, backfill_hours, llm, read_it))
+        with _first_read(store, c, backfill_hours), tally.on(lambda n: _say(c['Type'], n, store)):
+            n = _poll_one(store, c, file_only, backfill_hours, llm, read_it)
+        _say(c['Type'], tally.n, store)           # the whole count, never one the once-a-second say left behind
+        return _file_after(store, n)
 
     # said as it happens, not at the end: the timeline is refreshing while this runs, so
     # "reading Outlook" beside rows that are already arriving beats a spinner and a wait
     writer = _Writer(store)
-    tally, tally_lock = [0], threading.Lock()
     try:
         def run(c, file_only):
             from . import ingest as ingest_mod
-            with tally_lock: so_far = tally[0]
-            _say(c['Type'], so_far, writer)
+            _say(c['Type'], tally.n, writer)
             # inherit the poll thread's deferred(): our threading.local is off, and without
             # this wrap we would triage in parallel - the thing drain exists to prevent
-            with ingest_mod.deferred() if ingest_mod._parent_deferring() else contextlib.nullcontext():
-                added = _poll_one(writer, c, file_only, backfill_hours, llm, read_it)
-            with tally_lock: tally[0] += added
-            return added
+            with ingest_mod.deferred() if ingest_mod._parent_deferring() else contextlib.nullcontext(),                  _first_read(writer, c, backfill_hours), tally.on(lambda n: _say(c['Type'], n, writer)):
+                return _poll_one(writer, c, file_only, backfill_hours, llm, read_it)
         with ThreadPoolExecutor(max_workers=min(8, len(jobs)), thread_name_prefix='poll') as pool:
             futs = [pool.submit(run, c, fo) for c, fo in jobs]
             n = 0
             for f in futs:
                 try: n += f.result()
                 except Exception as e: logger.warning(f'channel poll worker failed: {e}')
+            _say(jobs[-1][0]['Type'], tally.n, writer)
             return _file_after(store, n)
     finally:
         writer.close()
+
+
+class _Tally:
+    """What one poll has brought in so far, counted where ingest takes a message in (ingest.LANDING) and said at most once a
+    second: the sync line's "bringing in 37…" (the owner, 2026-11-10: "next to the word sync show brin[g]ing in emails count").
+    It counted a connector only once it had FINISHED, so a first read of three days sat on "reading outlook" with no number."""
+    def __init__(self): self.n, self.lock, self.at = 0, threading.Lock(), 0.0
+
+    @contextlib.contextmanager
+    def on(self, say):
+        from .ingest import LANDING
+        def count():
+            mine = LANDING_HERE.get()
+            if mine is not None: mine[0] += 1          # ...and the one card's own, for its first-read line (_first_read)
+            with self.lock:
+                self.n += 1
+                n, due = self.n, time.monotonic() - self.at >= 1
+                if due: self.at = time.monotonic()
+            if due: say(n)
+        tok = LANDING.set(count)
+        try: yield
+        finally: LANDING.reset(tok)
+
+
+LANDING_HERE = contextvars.ContextVar('landing_here', default=None)
+
+
+@contextlib.contextmanager
+def _first_read(store, c, backfill_hours):
+    """A card read for the first time keeps what that read did on its own config - how far back it went and how many it brought
+    in - so its card says that instead of only "Connected" (the owner, 2026-11-10). Kept only once the read moved the watermark:
+    a first read that failed half-way is still a first read, and says nothing yet."""
+    first = reads_back(store, c)
+    got = [0]
+    tok = LANDING_HERE.set(got)
+    try: yield
+    finally: LANDING_HERE.reset(tok)
+    if first and not reads_back(store, c):
+        try: store.merge_connector_config(c['ConnectorId'], {'first_read': {
+            'hours': max(first_read_hours(store, c), backfill_hours), 'n': got[0], 'at': datetime.now().isoformat(sep=' ', timespec='seconds')}})
+        except Exception as e: logger.warning(f"could not keep {c['Type']}'s first read on its card: {e}")
 
 
 def _file_after(store, n: int) -> int:

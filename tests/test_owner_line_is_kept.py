@@ -49,9 +49,9 @@ class OwnerLineIsKept(unittest.TestCase):
         def until(ok, secs=10):
             end = time.time() + secs
             while not ok() and time.time() < end: time.sleep(0.02)
-        first = threading.Thread(target=lambda: general.say_line(self.s, self.tid, 'Compare three tools.')); first.start()
+        first = threading.Thread(target=lambda: general.take_line(self.s, self.tid, 'Compare three tools.')); first.start()
         until(lambda: getattr(general.session_for(self.tid), 'busy', False))
-        held = [threading.Thread(target=lambda w=w: general.say_line(self.s, self.tid, w)) for w in ('Make it cheapest first.', 'And add Trainly.')]
+        held = [threading.Thread(target=lambda w=w: general.take_line(self.s, self.tid, w)) for w in ('Make it cheapest first.', 'And add Trainly.')]
         for i, t in enumerate(held): t.start(); until(lambda n=i + 1: len(general.waiting_lines(self.s, self.tid)) >= n)
         kept = general.waiting_lines(self.s, self.tid)
         self.assertEqual([w['text'] for w in kept], ['Make it cheapest first.', 'And add Trainly.'])      # kept the moment they were sent...
@@ -74,7 +74,7 @@ class OwnerLineIsKept(unittest.TestCase):
         self.assertEqual(general.waiting_lines(self.s, self.tid), [])
         self.assertEqual(server._assistant_payload(self.tid)['box'], 'And copy Erin Blake.')   # ...it is back in the owner's box
         self.brain.delay = 0
-        general.say_line(self.s, self.tid, 'And copy Erin Blake, please.')               # they send it, changed
+        general.take_line(self.s, self.tid, 'And copy Erin Blake, please.')               # they send it, changed
         self.assertEqual(general.box_text(self.s, self.tid), '')                          # ...offered once, never twice
         self.assertEqual([b for t, b in self.said() if t == general.USER_TYPE], ['And copy Erin Blake, please.'])
 
@@ -97,6 +97,28 @@ class OwnerLineIsKept(unittest.TestCase):
         cancel = threading.Event(); threading.Timer(0.2, cancel.set).start()
         with self.assertRaises(RuntimeError): ses.send_prompt('Never mind.', cancel=cancel)
         self.assertEqual(general.waiting_lines(self.s, self.tid), [])
+
+    def test_a_line_keeps_the_name_its_page_gave_it_while_it_waits_and_as_the_turn_it_becomes(self):
+        """THE SPINE AUDIT, 2026-11-09: the page that sent a line draws it at once and has to know when the conversation has it. It knew by
+        the line's words and by counting the owner's lines, so a line from another window retired one the server did not have yet, and "ok"
+        sent twice stood once. The page names its line; the name is kept on the waiting row and on the turn it becomes, and comes back on both."""
+        def until(ok, secs=10):
+            end = time.time() + secs
+            while not ok() and time.time() < end: time.sleep(0.02)
+        say = lambda w, name: threading.Thread(target=lambda: general.take_line(self.s, self.tid, w, line_id=name))
+        first = say('Compare three tools.', 'held-1'); first.start()
+        until(lambda: getattr(general.session_for(self.tid), 'busy', False))
+        held = [say('ok', 'held-2'), say('ok', None), say('ok', 'held-3')]
+        for i, t in enumerate(held): t.start(); until(lambda n=i + 1: len(general.waiting_lines(self.s, self.tid)) >= n)
+        self.assertEqual([(w['text'], w.get('line')) for w in server._assistant_payload(self.tid)['waiting']], [('ok', 'held-2'), ('ok', None), ('ok', 'held-3')])
+        for t in [first, *held]: t.join(15)
+        mine = [(m['content'][0]['text'], m.get('line')) for m in server._assistant_payload(self.tid)['messages'] if m['role'] == 'user']
+        self.assertEqual(mine, [('Compare three tools.', 'held-1'), ('ok', 'held-2'), ('ok', None), ('ok', 'held-3')])
+
+    def test_the_chats_door_takes_the_name_and_a_long_one_is_cut(self):
+        self.brain.delay = 0
+        out = TestClient(server.app).post(f'/api/tasks/{self.tid}/assistant/messages', json={'text': 'Compare three tools.', 'line_id': 'h' * 200}).json()
+        self.assertEqual([m.get('line') for m in out['messages'] if m['role'] == 'user'], ['h' * 80])
 
 
 if __name__ == '__main__':

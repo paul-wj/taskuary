@@ -118,19 +118,6 @@ export const lastActIndex = (messages) => {
   }
   return said;
 };
-// ...AND A NOT OURS TAKEN FURTHER OUTLIVES THE WALK'S NEXT STEP: Not ours files the item and the walk moves on in the same press, so
-// its From now on (followUps, `follow`) stood on the row only between the receipt and the next item's line - a flash, and none at all
-// once the row drew once (actionRow.useRowHold kept the old row until the new item was whole). It rides on the next item's row until
-// anything else is said or done: the newest receipt carrying one, with nothing after it but the one item the walk moved to; -1 if none
-export const furtherIndex = (messages) => {
-  const ms = messages || [];
-  for (let index = ms.length - 1, cards = 0; index >= 0; index -= 1) {
-    const m = ms[index];
-    if (m?.role === "receipt") return chipsOf(m).some((c) => c.follow) ? index : -1;
-    if (m?.role !== "assistant" || !m.card || m.proposal || (cards += 1) > 1) return -1;
-  }
-  return -1;
-};
 // The words offered under one line: the item's own verbs, or a clarifying choice the assistant asked
 // with (OPTIONS) - which goes back as words, not as a verb. Never both: one row, one place to look.
 export const chipsOf = (message) => {
@@ -341,6 +328,10 @@ export const sameRow = (a, b) => !!a && !!b && (answersTo(a, b.key) || answersTo
 // ...two keys naming one row: the same key, or one rail row (or the card on the table) answering to both
 export const sameKey = (items, a, b, card = null) => !!a && !!b
   && (a === b || [...(items || []), ...(card ? [card] : [])].some((r) => answersTo(r, a) && answersTo(r, b)));
+// A CLOSE THAT COMES IN AFTER THE OWNER OPENED ANOTHER ROW (the canvas audit, 2026-11-10): Mark done on a working agent is answered when its
+// write-up is in, a Send's close a beat after the send - and a rail row clicked in between was taken off the table again, by the row below
+// the one closed. Such a close runs its act and moves nothing: the table, and the walk, stay on the row the owner is on (railwalk.leave `away`)
+export const closedElsewhere = (rail, how, fromKey, card) => how === "leave" && !!fromKey && !!card?.key && !sameKey(rail, fromKey, card.key, card);
 // WHAT A WALK PRESS DRAWS AT ONCE (rule 7): the row the walk names below the one put down (walk.below - railwalk.peek, the same line `next`
 // walks), Back's row above, or a rail row pressed. `onIt`: the row put down is the walk's own, so its word holds. A walk older than the row on
 // the table names nothing - the press then draws its row when its answer comes, and moves from the row on screen all the same (from_key)
@@ -351,6 +342,13 @@ export const pressOnto = (walk, rail, { putDown = null, how = "next", fromKey = 
     : key && how === "next" && key !== card?.key && !key.startsWith("fyis:") ? key : null;
   return { onIt, below };
 };
+// NEW STAYS UP UNTIL WHAT IT MADE IS ON THE TABLE (the owner, 2026-11-09, said twice: "it closed the new ui, then opened the old task up with
+// dots on bottom"): New's press opens a task made a second ago, which no rail row holds yet, so nothing draws at the press (pressOnto) - put
+// down then, the card took itself away and the task it had been opened over stood under the "…" until the read landed. Held while it is the
+// live page and the rail has no row to draw; a row there draws at once, and the card goes with the press as ever
+export const holdsNew = (msgs, browsing, rail, key) => !!key && !!browsing
+  && (msgs || []).some((m) => m.id === browsing && m.role === "browse" && m.area === "new")
+  && !(rail || []).some((i) => i.key === key && !i.settling);
 // NEXT TURNS BLUE AS SOON AS THE MOVE SAVES (the owner, 2026-11-06): a light walk answer (no rail rides) carries the walk's whole word -
 // below included - and the rail on screen takes it until its own read lands, so a second press draws its row and Back stands at once
 export const withWalk = (pile, walk) => (pile && walk && "below" in walk ? { ...pile, walk } : pile);
@@ -366,17 +364,28 @@ export const rowKeys = (items, keys, card = null) => {
 // ring spinning, where it is under Tasks - not two seconds later with the next pile (press audit B23b, 2026-10-01).
 // `read`: the keys a walk press reads (rule 4) - they leave with the press, as the server's answer will have them - a row answering to one
 // as an alias with them (answersTo)
-export const asPressed = (items, { leaving = null, continuing = null, read = null } = {}) => (!leaving && !continuing && !read?.length ? items
-  : items.filter((i) => (!leaving || i.tid !== leaving) && !read?.some((k) => answersTo(i, k)))
+// `leaving`: the task, or every task, a press is putting down (AssistantView's `leaving` holds them all)
+export const asPressed = (items, { leaving = null, continuing = null, read = null } = {}) => { const gone = [].concat(leaving ?? []).filter(Boolean);
+  return !gone.length && !continuing && !read?.length ? items
+  : items.filter((i) => !gone.includes(i.tid) && !read?.some((k) => answersTo(i, k)))
     .map((i) => (continuing && i.tid === continuing
-      ? { ...i, lane: "working", order_band: 2, surfaced: false, put_down: false, deferred: false, watching: false, working: i.working || i.agent || "agent" } : i)));
+      ? { ...i, lane: "working", order_band: 2, surfaced: false, put_down: false, deferred: false, watching: false, working: i.working || i.agent || "agent" } : i)); };
 // ...and a put-down has LANDED when the server's pile no longer has the row - or has it put away: Remind me keeps the task on the
 // rail under For later (`deferred`), so waiting for it to vanish hid a reminded task until a reload (UX walk, 2026-10-22) - and Watch it
 // keeps it under Watching (`watching`, watch.py)
 // ...put away BY THE PRESS, against `was`, the row as it stood when pressed (the owner, 2026-11-04): Mark done on a row already under
 // Watching read the pile it was pressed on as landed - the row was drawn on the rail again until the server's answer took it off
-export const putDownLanded = (items, tid, was = null) => { const r = (items || []).find((i) => i.tid === tid);
+export const putDownLanded = (items, tid, was = null, keys = null) => {
+  if (keys) return !(items || []).some((i) => keys.some((k) => answersTo(i, k)));      // ...rows a press READ (keys): landed when none is drawn
+  const r = (items || []).find((i) => i.tid === tid);
   return !r || (!!r.deferred && !was?.deferred) || (!!r.watching && !was?.watching); };
+// ...and of every row put down, the ones still held off the rail by `pile`: not landed, and no read of it begun after that close's answer
+// came back (`at`, the page's clock; `generated_at`, when the read began) - a rail read after the close that still has the row is the server's
+// word (a message reopened it), never hidden on the page's (the owner, 2026-11-09: a second Mark done drew the first one's task back)
+// ...ONE HOLD FOR EVERY ROW PUT DOWN (2026-11-09): a task closed (`tid`) and the rows a press read (`keys`: "All read, next", Next on a
+// report) are held by the same rule - an FYI batch read came back for the seconds between its answer and the next rail read
+export const stillLeaving = (leaving, pile) => (leaving || []).filter((x) => !putDownLanded(pile?.items, x.tid, x.was, x.keys)
+  && !(x.at && Number(pile?.generated_at) > x.at));
 // when a For later row comes back: its Remind me date (an open task walked past has no clock - it is back with the next walk)
 export const backAt = (item) => item?.back_at || item?.defer_until || null;
 // ...said by timeWords.bandUntil, and every other gutter age by timeWords.band - one rule for how a time reads
@@ -566,10 +575,6 @@ export const heldSince = (pile, now = Date.now()) => {
 // or ACTS reads pile.items - the row on the table and the walk's next pick are always among them - and whatever COUNTS
 // (a heading, the day's opener, "in today", "N more fyi") reads pileRows, which is every row, the same as before paging.
 export const FYI_PAGE = 50;
-// FYI SHOWS A FIXED COUNT (the owner, 2026-11-02: "you also need some room for expanding the window. Okay leave it for now: 6 on big and 4 on
-// small"): a window at least BIG_H tall is big. Height, not the 960px width breakpoint, since this is about rows the rail can hold.
-export const BIG_H = 900;
-export const fyiCap = (h) => (h >= BIG_H ? 6 : 4);
 const tails = new WeakMap();
 export const fyiTail = (pile) => {
   const t = pile?.fyi_tail;

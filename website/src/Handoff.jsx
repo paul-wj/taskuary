@@ -68,7 +68,7 @@ export const Handoff = ({ taskId, onSent, onLeave, onStay, said = null }) => {
     setBusy("");
   };
   if (sent) return (
-    <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>
+    <Typography variant="body2" sx={{ color: "var(--tq-success, #47654a)", fontWeight: 600 }}>
       {t("✓ sent to {recipient} by {channel}", { recipient: (sent.to || []).join(", ") || t("the chat"), channel: sent.channel })}
     </Typography>
   );
@@ -99,7 +99,7 @@ export const Handoff = ({ taskId, onSent, onLeave, onStay, said = null }) => {
         <Button size="small" variant="contained" disableElevation disabled={!!busy || !to.trim() || !text.trim()} data-tq-view-btn="handoff:send" data-tq-send=""
           startIcon={busy === "send" ? <CircularProgress size={11} sx={{ color: "#fff" }} /> : <ForwardToInboxIcon sx={{ fontSize: 15 }} />}
           onClick={send}>{t("Send it")}</Button>
-        {err && <Typography variant="caption" sx={{ color: "#6b2733" }}>{typeof err === "object" ? t(err.key) : err}</Typography>}
+        {err && <Typography variant="caption" sx={{ color: "var(--tq-danger, #6b2733)" }}>{typeof err === "object" ? t(err.key) : err}</Typography>}
       </Box>
     </Box>
   );

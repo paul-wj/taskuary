@@ -84,6 +84,52 @@ def test_the_general_prompt_for_an_owner_task_still_quotes_its_source():
     assert BODY in user and 'SOURCE MATERIAL' in user and 'Run setup.sh first' in user
 
 
+def test_each_source_says_where_it_was_written_a_new_subject_once_and_a_long_one_keeps_its_end():
+    """The stress run, 2026-11-10: a mail and a chat line on another matter read as one flat list of senders and bodies, and a long mail
+    lost its last lines - where the ask often is - to a cut from the top."""
+    s = MemoryStore(); s.set_setting('owner_email', 'alex@northwind.example', 't'); t = _task(s, 'erin@northwind.example'); s.update_task(t, {'Kind': 'general'}, 'router')
+    add = lambda **kw: s.add_message({'TaskId': t, 'FromEmail': 'erin@northwind.example', 'FromName': 'Erin Blake', 'Status': 'routed', **kw})
+    add(Channel='email', Subject='RE: hi', BodyText='second on the same thread')
+    add(Channel='email', Subject='Trainly seats', BodyText='top of a long one. ' + 'filler words go here. ' * 400 + 'So: can you renew the seats by Friday?')
+    add(Channel='teams', BodyText='also - is the room booked?')
+    user = general._prompt(s, t)[1]
+    heads = [l for l in user.splitlines() if l.startswith('FROM ')]
+    assert [h.split('] ', 1)[-1] if '] ' in h else '' for h in heads] == ['· email · "hi"', '· email', '· email · "Trainly seats"', '· teams'], heads
+    assert 'top of a long one.' in user and 'can you renew the seats by Friday?' in user and 'reads it whole]' in user
+
+
+def test_the_lines_one_person_typed_in_a_chat_are_one_entry_and_none_is_pushed_out_by_the_count():
+    """The stress run, 2026-11-10: eleven chat lines were eleven mails to the window of eight - the opening three, which said what was
+    wanted, became one-line "earlier mail" while "pls" and "thx" stood in full."""
+    s = MemoryStore(); s.set_setting('owner_email', 'alex@northwind.example', 't')
+    t = s.create_task({'Title': 'Q3 numbers', 'Kind': 'general', 'Source': 'whatsapp'}, 'router')
+    lines = ['hey', 'you there?', 'need the q3 numbers', 'for the board deck', 'by 3', 'actually by 2', 'with travel split out', 'pls', 'who owns the deck', 'thx',
+             'ignore that - Gail already sent them']
+    ids = [s.add_message({'TaskId': t, 'Channel': 'whatsapp', 'ConversationId': 'c1', 'FromName': 'Ray Colton', 'BodyText': b, 'Status': 'routed',
+                          'SentAt': f'2026-11-09 10:{i:02d}:00'}) for i, b in enumerate(lines)]
+    with mock.patch.object(origin, 'of_task', return_value=('trusted', 'known')): user = general._prompt(s, t)[1]
+    assert 'COMPACTED' not in user and user.count('FROM Ray Colton') == 1
+    assert 'FROM Ray Colton (2026-11-09 10:00:00 to 2026-11-09 10:10:00) · whatsapp - 11 lines they wrote one after another' in user
+    assert all(f'[m{i}] {b}' in user for i, b in zip(ids, lines))
+    assert general.chat_runs([{'Channel': 'email', 'FromName': 'Ray Colton'}] * 2) == [[{'Channel': 'email', 'FromName': 'Ray Colton'}]] * 2, 'two mails stay two'
+
+
+def test_an_attachment_is_named_with_the_id_its_tools_take():
+    s = MemoryStore(); s.set_setting('owner_email', 'alex@northwind.example', 't'); t = _task(s, 'erin@northwind.example'); s.update_task(t, {'Kind': 'general'}, 'router')
+    mid = s.list_messages(t)[0]['MessageId']
+    aid = s.add_attachment({'MessageId': mid, 'Name': 'contract-draft.pdf', 'ContentType': 'application/pdf'})
+    assert f'ATTACHMENTS: contract-draft.pdf (attachment {aid})' in general._prompt(s, t)[1]
+
+
+def test_a_strangers_file_carries_the_record_of_what_came_in():
+    from taskuary import context
+    s = MemoryStore(); s.set_setting('owner_email', 'alex@northwind.example', 't'); t = _task(s, 'someone@vendor.example'); s.update_task(t, {'Kind': 'general'}, 'router')
+    s.add_message({'TaskId': t, 'Channel': 'email', 'FromEmail': 'someone@vendor.example', 'FromName': 'Someone', 'Subject': 'hi', 'BodyText': 'and one more thing',
+                   'Status': 'routed', 'RecipientsJson': json.dumps({'to': ['alex@northwind.example'], 'cc': ['ray@northwind.example']})})
+    user = general._prompt(s, t)[1]
+    assert context.CAME_HEAD in _file(t) and 'cc: ray@northwind.example' in _file(t) and context.CAME_HEAD not in user
+
+
 # ── fix round 1 ─────────────────────────────────────────────────────────────────────────────────────────────────
 from taskuary import blackboard, wrapup, outbox
 

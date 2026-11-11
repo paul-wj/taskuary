@@ -64,13 +64,13 @@ class TheChangeCheckFollowsTheFourTests(Base):
             polls.append(k.get('only'))
             later(self.s, tid); return 1                                          # the refresh brings a newer line
         item = railwalk.top(self.s)
-        self.assertEqual(item['key'], f'review:{rid}')
+        self.assertIn(f'review:{rid}', item['aliases'])
         with mock.patch.object(server, '_poll_reports', side_effect=poll):
             t = server._refresh_after({'item': item}); t.join(5)
         self.assertEqual(polls, [['teams']])
         # the line is in the store; the page's next read of the item carries it (the strip says so)
         self.assertEqual(self.s.last_inbound_on_task(tid)['BodyText'], 'Actually it works now.')
-        self.assertEqual(funnel.next_item(self.s, f'review:{rid}')['mid'], self.s.last_inbound_on_task(tid)['MessageId'])
+        self.assertIn(f"message:{self.s.last_inbound_on_task(tid)['MessageId']}", funnel.next_item(self.s, f'review:{rid}')['member_ids'])
 
     def test_an_fyi_batch_is_checked_once_per_channel(self):
         for i, ch in enumerate(('teams', 'slack', 'teams')):
@@ -116,14 +116,14 @@ class NoticeTests(Base):
         with mock.patch.object(server, '_poll_reports', side_effect=poll), mock.patch.dict(server.hub_term.SESSIONS, {}, clear=True):
             lines = self.stream(c)
             self.assertEqual([l['type'] for l in lines], ['done'])
-            self.assertEqual(lines[0]['item']['key'], f'review:{rid}')
+            self.assertIn(f'review:{rid}', lines[0]['item']['aliases'])
             self.assertEqual(lines[0]['item']['mid'], first, 'spoken as the rail had it - the check had not run yet')
             server.wait_refresh_after(5)
         self.assertEqual(polls, [['teams']])
         newest = self.s.last_inbound_on_task(tid)['MessageId']
         self.assertNotEqual(newest, first)
         cur = c.get('/api/funnel/pile', params={'force': 1, 'current': f'review:{rid}'}).json()['current']
-        self.assertEqual(cur['mid'], newest, "the page's next read carries the line that arrived")
+        self.assertIn(f'message:{newest}', cur['member_ids'], "the page's next read carries the line that arrived")
 
     def test_a_clicked_row_opens_at_once_and_its_source_is_checked_after(self):
         """A row you click opened only after its mailbox had been polled - 9 of the 12 seconds a click took (the owner,
@@ -140,7 +140,7 @@ class NoticeTests(Base):
             server.wait_refresh_after(5)
         self.assertEqual(polls, [['teams']], 'the source is still checked - after')
         cur = c.get('/api/funnel/pile', params={'force': 1, 'current': f'review:{rid}'}).json()['current']
-        self.assertEqual(cur['mid'], self.s.last_inbound_on_task(tid)['MessageId'])
+        self.assertIn(f"message:{self.s.last_inbound_on_task(tid)['MessageId']}", cur['member_ids'])
 
     def test_a_provider_that_cannot_be_reached_does_not_fail_the_answer(self):
         tid, first, rid = teams_task(self.s)
@@ -157,7 +157,7 @@ def mail_task(s):
     first = s.add_message({'TaskId': tid, 'ExternalId': 'm:first', 'ConversationId': 'AAQk-m', 'Channel': 'email', 'SourceName': 'me@northwind.example',
                            'Subject': 'August export', 'FromName': 'Dana', 'FromEmail': 'dana@vendor.example', 'SentAt': stamp(-60),
                            'BodyText': 'Could you send me the August export?', 'Status': 'routed'})
-    rid = s.add_review({'TaskId': tid, 'MessageId': first, 'Kind': 'draft', 'Status': 'pending', 'DraftText': 'Here it is.', 'Reason': 'needs a reply: asked'})
+    rid = s.add_review({'TaskId': tid, 'MessageId': first, 'Kind': 'draft', 'Status': 'pending', 'DraftText': 'Here it is.', 'Reason': 'needs a reply: asked', 'Origin': 'triage'})
     return tid, first, rid
 
 
@@ -167,7 +167,7 @@ def mail(text, ext):
 
 
 class SupersedeTests(Base):
-    def test_a_new_ask_on_a_task_with_a_pending_draft_marks_it_behind_and_redrafts_that_same_review(self):
+    def test_a_new_ask_on_a_task_with_a_pending_draft_marks_it_behind_and_hands_that_same_review_to_the_agent(self):
         tid, first, rid = mail_task(self.s)
         spawned = []
         llm = lambda *a, **k: json.dumps({'intent': 'reply_only', 'why': 'another question'})
@@ -175,10 +175,10 @@ class SupersedeTests(Base):
             out = ingest.ingest_message(self.s, mail('And could you add the July file too?', 'm:second'), llm=llm)
         self.assertEqual((out['status'], out['task_id']), ('attached', tid))
         self.assertEqual(self.s.get_review(rid)['Stale'], 1)
-        self.assertEqual(spawned, [('_auto_draft', rid)])                          # the SAME review, redrafted - never a second one
+        self.assertEqual(spawned, [('reply_to_agent', rid)])                       # the SAME review, the agent's to write again - never a second one
         self.assertEqual(len(self.s.list_reviews('pending')), 1)
 
-    def test_a_second_line_judged_a_task_still_repoints_and_redrafts_the_pending_reply(self):
+    def test_a_second_line_judged_a_task_still_repoints_the_pending_reply_and_hands_it_to_the_agent(self):
         """Ray asked for the budgets link, then wrote again asking for access to the files. Triage
         called the second mail a task, so the draft was ONLY marked behind: still pinned to the
         first mail, warned as stale, with nothing behind the warning but a Refresh link (TQ-0665,
@@ -191,7 +191,7 @@ class SupersedeTests(Base):
         rv = self.s.get_review(rid)
         self.assertEqual(out['task_id'], tid)
         self.assertNotEqual(rv['MessageId'], first)                                # re-pointed at the line it must answer
-        self.assertIn(('_auto_draft', rid), spawned)                               # ...and rewritten from it
+        self.assertIn(('reply_to_agent', rid), spawned)                            # ...and the agent's to write from it
         self.assertEqual(len(self.s.list_reviews('pending')), 1)
 
     def test_the_second_message_adds_its_own_boxes_to_the_task_list(self):
@@ -219,19 +219,19 @@ class SupersedeTests(Base):
             ingest.ingest_message(self.s, mail('Thanks so much!', 'm:thanks'), llm=llm)
         self.assertEqual(self.s.get_review(rid)['Stale'], 0); spawn.assert_not_called()
 
-    def test_someone_elses_fyi_has_the_writer_reread_the_draft(self):
+    def test_someone_elses_fyi_has_the_agent_look_at_the_draft_again(self):
         "The night run, 2026-11-09: a colleague answered the question on the thread, and the drafted answer stayed ready to send."
         tid, first, rid = mail_task(self.s)
         llm = lambda *a, **k: json.dumps({'intent': 'fyi', 'why': 'Gail answered it'})
         with mock.patch.object(ingest, '_spawn') as spawn:
             ingest.ingest_message(self.s, {**mail('Dana - it is in the shared folder.', 'm:gail'), 'from_email': 'gail@northwind.example',
                                            'from_name': 'Gail Moreno'}, llm=llm)
-        self.assertEqual([c.args[0] for c in spawn.call_args_list], [ingest._auto_draft])
+        self.assertEqual([(c.args[0], c.args[2:4]) for c in spawn.call_args_list], [(ingest.reply_to_agent, (tid, rid))])
 
     def test_the_owners_external_answer_retires_the_draft_and_the_notice_says_so(self):
         tid, first, rid = teams_task(self.s)
         sent = {'ConversationId': 'teams:robin', 'SentAt': stamp(), 'Channel': 'teams', 'BodyText': 'done, reset it'}
-        with reads('covered'): channels.retire_draft_answered_elsewhere(self.s, tid, sent)
+        with reads('covered'): channels.owner_line(self.s, tid, {'channel': 'teams'}, None, sent)      # a reply task no agent works: the one read
         rv = self.s.get_review(rid)
         self.assertEqual(rv['Status'], 'superseded')
         line = server._context_update_line({'after': {'FromName': 'You', 'BodyText': 'done, reset it'}, 'item': {'ref': 'TQ-0001', 'rid': rid, 'tid': tid}})
@@ -264,5 +264,5 @@ class OurAcknowledgementIsNotAnAnswerTests(Base):
         tid, first, rid = teams_task(self.s)
         channels.retire_draft_answered_elsewhere(self.s, tid, self._ack(tid))
         self.assertEqual(self.s.get_review(rid)['Status'], 'pending')
-        with reads('covered'): channels.retire_draft_answered_elsewhere(self.s, tid, self._ack(tid, ext='teams:mine', text='done, reset it'))
+        with reads('covered'): channels.owner_line(self.s, tid, {'channel': 'teams'}, None, self._ack(tid, ext='teams:mine', text='done, reset it'))
         self.assertEqual(self.s.get_review(rid)['Status'], 'superseded')

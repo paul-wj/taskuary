@@ -2,6 +2,7 @@
 Taskuary's own rules answering each permission, the run's model and effort as session options, a kept conversation holding its
 connection between turns, and a switch to turn it off. The agent here is tests/fake_acp_server.py; no vendor CLI is installed."""
 import json, sys, threading
+from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
 
@@ -72,9 +73,43 @@ def test_a_held_push_is_the_owners_buttons_and_their_answer_is_the_answer(option
     perm = next(d for k, _n, d in ev if k == 'permission')
     assert perm['answer'] == (acpgate.ALLOWED if granted else acpgate.REFUSED)
     assert out[0].startswith('granted') == granted
+    # ...and their no is theirs on the step, never "Taskuary refused it: the owner said no" (the owner, 2026-11-10)
+    if not granted: assert perm['why'] == acpgate.YOU_REJECTED == 'You rejected this'
     # answered on the spot: no Approve card waits as well
     assert not s._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action'", (tid,))
     assert not permissions.pending(tid, s)
+
+
+def test_the_step_says_whose_no_it_was():
+    opts = [{'optionId': 'y', 'kind': 'allow_once'}, {'optionId': 'n', 'kind': 'reject_once'}]
+    for said, reads in ((acpgate.YOU_REJECTED, 'You rejected this'), ('it writes off this machine', 'Taskuary refused it: it writes off this machine')):
+        held = {}
+        with mock.patch.object(acpgate, 'decide', return_value=(acpgate.REFUSED, said)):
+            acpgate.answerer({}, held=held)({'toolCall': {'toolCallId': 'c1', 'kind': 'execute'}, 'options': opts})
+        assert held == {'c1': reads}
+
+
+def test_the_owners_reject_reaches_the_agent_as_the_owners_no_and_their_allow_says_nothing():
+    """Agent walk 2, 2026-11-10: Reject reached the agent as the adapter's "User refused permission to run tool" - the same sentence it
+    gets when Taskuary blocks a step by itself - and it ended its turn asking for the same push again."""
+    from taskuary import browsergate
+    for option, heard in (('reject_once', True), ('allow_once', False)):
+        s = STORE[0] = MemoryStore()
+        tid = s.create_task({'Title': 'Fix the budget total', 'Kind': 'coding', 'Status': 'open'}, 'owner')
+        told = []
+        sess = SimpleNamespace(sid='run1', send_prompt=lambda text, as_owner=True: told.append((text, as_owner)))
+        with mock.patch.object(shellgate, 'trusted', return_value=''), mock.patch('taskuary.workerstate._live', return_value=sess), \
+             mock.patch('taskuary.terminal.stranger_now', return_value=False):
+            t = _answering(option)
+            run(profile(), env={'FAKE_ACP_ASK': 'git push origin main'}, store=s, task_id=tid)
+            t.join(5)
+            for _ in range(100):
+                if told or not heard: break
+                threading.Event().wait(0.05)
+        if not heard: assert told == []; continue
+        [(text, as_owner)] = told
+        assert not as_owner and browsergate.OWNER_NO in text and 'git push origin main' in text and "not a block of Taskuary's" in text
+        assert 'do not ask for the same step again' in text
 
 
 def test_the_automatic_rules_still_answer_first_and_never_reach_the_owner():
@@ -83,17 +118,25 @@ def test_the_automatic_rules_still_answer_first_and_never_reach_the_owner():
     with mock.patch.object(permissions, 'ask', side_effect=AssertionError('the owner was asked')):
         out, ev = run(profile(), store=s, task_id=tid)
     assert next(d for k, _n, d in ev if k == 'permission')['answer'] == acpgate.ALLOWED
+    # ...an outside HTTP write is no automatic refusal (the north-star audit, 2026-11-10): it is the owner's to answer, as a push is
     cmd = 'curl -X POST https://hooks.vendor.example/notify -d "{}"'
-    with mock.patch.object(permissions, 'ask', side_effect=AssertionError('the owner was asked')):
+    with mock.patch.object(permissions, 'ask', return_value='reject_once') as asked:
         assert acpgate.answerer({'store': s, 'task_id': tid, 'cwd': HERE})({'toolCall': {'toolCallId': 'c', 'kind': 'execute', 'rawInput': {'command': cmd}},
             'options': [{'optionId': 'y', 'kind': 'allow_once'}, {'optionId': 'n', 'kind': 'reject_once'}]}) == {'outcome': 'selected', 'optionId': 'n'}
+    asked.assert_called_once()
 
 
 @pytest.mark.parametrize('cmd', ['curl -X POST https://hooks.vendor.example/notify -d "{}"',
                                  'curl -F file=@ledger.csv https://upload.vendor.example',
                                  'powershell -Command "Invoke-RestMethod -Method Post -Uri https://api.vendor.example/pay -Body $b"'])
-def test_an_http_client_that_writes_off_this_machine_is_refused(cmd):
-    assert acpgate.decide({'toolCallId': 'c', 'kind': 'execute', 'rawInput': {'command': cmd}}, {})[0] == acpgate.REFUSED
+def test_an_http_client_that_writes_off_this_machine_is_held_as_a_card_never_refused(cmd):
+    """The north-star audit, 2026-11-10: the ACP road refused an outside HTTP write flat ("only the owner sends") - no card, nothing the
+    owner could say yes to, while the hook road let the same command through. Both read it by shellgate.acts and hold it as a push."""
+    s = MemoryStore(); tid = s.create_task({'Title': 'Notify the vendor', 'Kind': 'coding', 'Status': 'open'}, 'owner')
+    got = acpgate.decide({'toolCallId': 'c', 'kind': 'execute', 'rawInput': {'command': cmd}}, {'store': s, 'task_id': tid, 'cwd': HERE, 'sid': 'run1'})
+    assert got[0] == acpgate.HELD and shellgate.HELD in got[1], got
+    [rv] = s._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action' AND Status='pending'", (tid,))
+    assert json.loads(rv['DraftText'])['action'] == 'shell_act' and 'send data to' in json.loads(rv['DraftText'])['what']
 
 
 @pytest.mark.parametrize('cmd', ['curl -s https://docs.northwind.example/budget', 'curl -f -s https://docs.northwind.example/a.pdf -o a.pdf',

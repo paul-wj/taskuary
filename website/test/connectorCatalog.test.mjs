@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+const read = (n) => fs.readFileSync(path.join(process.cwd(), "src", n), "utf8");
 import { CATALOGUE, PLANNED_CONNECTORS, onceEach, plannedFor } from "../src/connectorCatalog.js";
 import { AI_SHELF } from "../src/aiShelf.js";
 
@@ -67,6 +70,7 @@ test("each connector type is drawn once: a planned card never repeats a live one
     { title: "Everything else", cards: [{ key: "ppointclickcare", channel: "pointclickcare", planned: true }, { key: "pgraphql", channel: "graphql", planned: true }] },
   ]);
   assert.deepEqual(groups.map((g) => g.cards.map((c) => c.key)), [["catalog-pcc", "d1"], ["d2", "d3"], ["pgraphql"]]);
+  assert.match(read("ConnectorsView.jsx"), /const groups = oneCardPerSystem\(onceEach\(\[/, "the page's groups go through onceEach");
 });
 
 // Fastmail, Yahoo, Proton Mail Bridge and Exchange are IMAP cards with their servers filled in (the owner, 2026-11-08: "add more

@@ -64,9 +64,7 @@ const KINDS = [
   // ...and the third thing Reports keeps (the owner, 2026-10-22: "this is not playbook ui?" - asked for one, the Assistant handed it to a
   // general agent as its job). Its words go to the shelf's own New playbook, which sets it up with AI there (playbookOpen.askPlaybook)
   { key: "playbook", mark: "📖", label: "Playbook", hint: "how one kind of request is handled from now on — triage matches new mail to it, and its steps are followed your way" },
-  // ...and the door for what fits none of them (Gabi, TQ-1358: "some things dont fit into these categories"): the words go to the Assistant's
-  // chat as a line typed there (askAssistant.js), and it works out what it is - nothing is filed here
-  { key: "chat", mark: "💬", label: "Chat with Taskuary", hint: "anything that fits none of these — say it and the Assistant takes it from there" },
+  // no "Chat with Taskuary" tab (the owner, 2026-11-09: "remove it. it looks crazy") - what fits none of these is typed to the Assistant's own box
 ];
 const REPEATS = ["report", "dashboard", "workflow"];
 
@@ -79,7 +77,7 @@ const Fork = ({ on, title, hint, onClick }) => (
   <Box onClick={onClick} role="button" tabIndex={0}
     onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onClick()}
     sx={{ flex: 1, minWidth: 0, border: `1px solid ${on ? ACCENT : BORDER}`, borderRadius: 2,
-      p: 1.25, cursor: "pointer", bgcolor: on ? "#fff" : "#fcfaf7",
+      p: 1.25, cursor: "pointer", bgcolor: on ? "var(--tq-panel, #fff)" : "var(--tq-panel, #fcfaf7)",
       boxShadow: on ? `inset 0 0 0 1px ${ACCENT}` : "none", transition: "border-color .15s" }}>
     <Typography sx={{ fontSize: 12.5, fontWeight: 600, color: INK, mb: 0.4 }}>{title}</Typography>
     <Typography sx={{ fontSize: 11, color: FAINT, lineHeight: 1.5 }}>{hint}</Typography>
@@ -119,7 +117,7 @@ export const EmailRecipients = ({ value, onChange, options, placeholder, label =
     renderInput={(params) => (
       <TextField {...params} placeholder={value.length ? t("Add another email") : placeholder}
         inputProps={{ ...params.inputProps, ...(label ? { "data-tq-label": label } : {}) }}
-        sx={{ "& .MuiInputBase-root": { fontSize: 13, bgcolor: "#fcfaf7" } }} />
+        sx={{ "& .MuiInputBase-root": { fontSize: 13, bgcolor: "var(--tq-panel, #fcfaf7)" } }} />
     )} />
   );
 };
@@ -147,7 +145,7 @@ export const ChatRecipient = ({ channel, options, value, onChange }) => {
       )}
       renderInput={(params) => (
         <TextField {...params} placeholder={t("Search people and conversations")}
-          sx={{ "& .MuiInputBase-root": { fontSize: 13, bgcolor: "#fcfaf7" } }} />
+          sx={{ "& .MuiInputBase-root": { fontSize: 13, bgcolor: "var(--tq-panel, #fcfaf7)" } }} />
       )} />
   );
 };
@@ -194,10 +192,10 @@ const AboutField = React.memo(forwardRef(function AboutField({ kind, how, onRead
       InputProps={{ endAdornment: (
         <Box sx={{ display: "flex", alignSelf: "flex-start", gap: 0.25 }}>
           {withPics && <AttachImage pics={pics} sx={{ width: 30, height: 30 }} />}
-          <MicButton size={18} sx={{ width: 30, height: 30, p: 0, color: "#6e685f" }}
+          <MicButton size={18} sx={{ width: 30, height: 30, p: 0, color: "var(--tq-secondary, #6e685f)" }}
             onText={(t) => changed({ target: { value: value ? `${value} ${t}` : t } })} />
         </Box>) }}
-      sx={{ "& .MuiInputBase-root": { fontSize: 13, bgcolor: "#fcfaf7", alignItems: "flex-start" } }} />
+      sx={{ "& .MuiInputBase-root": { fontSize: 13, bgcolor: "var(--tq-panel, #fcfaf7)", alignItems: "flex-start" } }} />
     {withPics && <ImageTray pics={pics} sx={{ mt: 0.75 }} />}
     </>
   );
@@ -211,7 +209,7 @@ const AboutField = React.memo(forwardRef(function AboutField({ kind, how, onRead
 // `chat`: offer Chat with Taskuary - off where the Assistant is not on screen to take it (the Board)
 export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = false, initialKind = "send", initialHow = "", initialText = "", line = null, onSaid, start = false,
   initialChannel = "", initialTo = "", initialMeeting = null, initialRoutine = null, chat = true }) {
-  const locale = useLocale();
+  useLocale();
   const [kind, setKind] = useState(initialKind);
   const said = useRef(null);      // the words, for the repository picker (see NewRepo)
   const repoPick = useRef(null);  // what the picker says to use, read on submit
@@ -303,6 +301,11 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
   const submit = useCallback(async () => {
     setBusy(true); setErr(""); setErrAi(false); setOk("");
     const about = String((agentBoxRef.current ? wordsRef.current : aboutRef.current?.value) || "").trim();
+    // THE BUTTON SPINS UNTIL WHAT IT MADE IS UP (the owner, 2026-11-09: "it should open new task right away or if it needs a second the create
+    // new agent button should spin"): the card in the conversation is put down by the task landing on the table (AssistantView pull, holdsNew),
+    // so its press stays busy until then - free again, it could be pressed twice and file the task twice. A dialog's host closes it itself
+    let opened = false;
+    const openIt = (tid) => { opened = !!tid && !!onOpenTask; onOpenTask?.(tid); };
     try {
       if (kind === "send") {
         const { data } = await api.post("/api/outbox", {
@@ -312,7 +315,7 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
         setOk({ key: mode === "task"
           ? "{ref} — an agent is finding out first; the message is drafted when it is done."
           : "{ref} — drafted. It is open now, waiting for you to send it.", values: { ref: data.ref } });
-        aboutRef.current?.clear(); setHasAbout(false); pics.clear(); onDone?.(); onOpenTask?.(data.taskId);
+        aboutRef.current?.clear(); setHasAbout(false); pics.clear(); onDone?.(); openIt(data.taskId);
       } else if (kind === "agent") {
         // one module decides chat-vs-terminal for the whole app, so the Board and this sheet can
         // never disagree about what "no repository" means
@@ -347,7 +350,7 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
           // not start"). One reading of a dispatch answer, the same one every other surface uses.
           ({ data: out } = await api.post(`/api/tasks/${data.taskId}/dispatch`, { ...(general
             ? { kind: "general", agent: role || null, pick: pick || null, model: model || null }
-            : { agent: agent || null, brain: brain || null, model: model || null }), ...(line ? { said: line } : {}) }));
+            : { agent: agent || null, brain: brain || null, pick: brain ? null : pick || null, model: model || null }), ...(line ? { said: line } : {}) }));
         } catch (e) {
           // ...and the line says the task is there: "nothing started" over a task already filed sent the owner to press again
           throw { display: { key: "{ref} is filed but did not start - {reason}. Press {verb} to try it again.", values: { ref: data.ref, reason: String(e?.response?.data?.detail || "").replace(/\.$/, ""), verb: btn(how === "general" ? "regular_agent" : "coding_agent") } } };
@@ -355,8 +358,8 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
         filed.current = null;
         if (out?.said) onSaid?.(out.said);
         // the line leads with the ref: said once, not twice
-        setOk({ key: "{ref} — {outcome}.", values: { ref: data.ref }, outcome: out });
-        aboutRef.current?.clear(); setHasAbout(false); pics.clear(); onDone?.(); onOpenTask?.(data.taskId);
+        setOk({ key: "{ref} — {outcome}.", values: { ref: data.ref }, outcome: { ...out, ref: "" } });
+        aboutRef.current?.clear(); setText(""); setHasAbout(false); pics.clear(); onDone?.(); openIt(data.taskId);
       } else if (kind === "chat") {
         // said in the chat as if typed there: the Assistant answers, or files it as whatever it turns out to be
         askAssistant(about); aboutRef.current?.clear(); setHasAbout(false); onClose?.();
@@ -376,15 +379,15 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
         // ...and with no AI nothing plans them: it promised steps that never came (the UI audit, 2026-10-21)
         setOk({ key: !plan ? "{ref} — on your rail; add the steps on the task." : noAi ? "{ref} — on your rail. No AI is connected, so nothing can plan the steps - add them on the task."
           : "{ref} — planning the steps; they land on the task in a moment.", values: { ref: data.ref } });
-        aboutRef.current?.clear(); setHasAbout(false); setBy(""); setWho(""); onDone?.(); onOpenTask?.(data.taskId);
+        aboutRef.current?.clear(); setHasAbout(false); setBy(""); setWho(""); onDone?.(); openIt(data.taskId);
       } else {
         const { data } = await api.post("/api/notes", { title: about.slice(0, 300), body: "", when: when || null });
         setOk({ key: "Noted — it sits on {day} and nothing will touch it.", values: { day: String(data.at).slice(0, 16) } });
         aboutRef.current?.clear(); setHasAbout(false); setWhen(""); onDone?.();
       }
     } catch (e) { setErr(e?.display || (e?.response?.data?.detail ? { text: e.response.data.detail } : { key: "That did not go through" })); }
-    setBusy(false);
-  }, [kind, channel, to, emailTo, cc, mode, how, agent, brain, model, role, pick, when, by, who, plan, noAi, onDone, onOpenTask, onClose, pics, line, onSaid, locale]);
+    if (!(inline && opened)) setBusy(false);
+  }, [kind, channel, to, emailTo, cc, mode, how, agent, brain, model, role, pick, when, by, who, plan, noAi, onDone, onOpenTask, onClose, pics, line, onSaid, inline]);
 
   // ...and no live session without a coding tool the owner chose (owner-approved, 2026-10-21): Send to coding agent stays disabled
   const noCodingTool = kind === "agent" && how === "terminal" && (!agentsRead || !codingReady);
@@ -504,6 +507,7 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1.25, flexWrap: "wrap" }}>
                   <AgentPicker agents={agents} models={models} kinds={kinds} coding agent={agent} model={model}
                     brains={brainList} brainModels={brainModels} brain={brain} brainsRead={agentsRead} codingReady={codingReady}
+                    generalBrains={generalBrains} pick={pick} onPick={setPick}
                     onBrain={(b) => { setBrain(b); setModel(""); }}
                     onAgent={(a) => { setAgent(a); setModel(""); }} onModel={setModel} size={30} />
                 </Box>
@@ -580,14 +584,14 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
           <>
             <Box>
               <Label>{t("By")}</Label>
-              <TextField type="date" size="small" value={by} onChange={(e) => setBy(e.target.value)} inputProps={{ "data-tq-field": "by", "data-tq-label": "By" }} sx={{ "& .MuiInputBase-root": { fontSize: 13, bgcolor: "#fcfaf7" } }} />
+              <TextField type="date" size="small" value={by} onChange={(e) => setBy(e.target.value)} inputProps={{ "data-tq-field": "by", "data-tq-label": "By" }} sx={{ "& .MuiInputBase-root": { fontSize: 13, bgcolor: "var(--tq-panel, #fcfaf7)" } }} />
               <Typography sx={{ fontSize: 11, color: FAINT, mt: 0.5 }}>{t('The date shows on the goal\'s row on your rail, as "due" and the day.')}</Typography>
             </Box>
             <Box>
               <Label>{t("Who is involved")}</Label>
               <TextField fullWidth size="small" value={who} onChange={(e) => setWho(e.target.value)} placeholder={t("Ray Colton, Payworth (Marcus), the coding agent")}
                 inputProps={{ "data-tq-field": "who", "data-tq-label": "Who is involved" }}
-                sx={{ "& .MuiInputBase-root": { fontSize: 13, bgcolor: "#fcfaf7" } }} />
+                sx={{ "& .MuiInputBase-root": { fontSize: 13, bgcolor: "var(--tq-panel, #fcfaf7)" } }} />
               <Typography sx={{ fontSize: 11, color: FAINT, mt: 0.5 }}>{t("People it may chase and systems it may touch. Anyone else is a question to you first.")}</Typography>
             </Box>
             <Box>
@@ -611,7 +615,7 @@ export default function NewSheet({ open, onClose, onDone, onOpenTask, inline = f
                 the view it was sent, so "come back to it friday" had nothing to fill (2026-11-02) */}
             <TextField type="datetime-local" size="small" value={when} onChange={(e) => setWhen(e.target.value)}
               inputProps={{ "data-tq-field": "when", "data-tq-label": "Come back to it" }}
-              sx={{ "& .MuiInputBase-root": { fontSize: 13, bgcolor: "#fcfaf7" } }} />
+              sx={{ "& .MuiInputBase-root": { fontSize: 13, bgcolor: "var(--tq-panel, #fcfaf7)" } }} />
             <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.75 }}>
               {t("Leave it empty for now. A date puts the row in that day and it stays quiet until then.")}
             </Typography>

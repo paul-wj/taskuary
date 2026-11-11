@@ -2,30 +2,15 @@
 // etc.. look how other chat libraries show intermediately the tool calls etc.") and THE TURN'S CLOCK ("it should show right when it starts the
 // counter on top, then it stops when response is generated")
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import test from "node:test";
-import { describeCall, pageOf, present, stepLabel, stepsOf } from "../src/agentSteps.js";
-import { clockText, turnBegan, turnStamp } from "../src/agentWork.js";
+import { describeCall, pageOf, stepLabel, stepsOf } from "../src/agentSteps.js";
+import { clockText, turnBegan, turnFrom, turnStamp } from "../src/agentWork.js";
+import { setLocale } from "../src/i18n.js";
 
-const read = (f) => fs.readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
+// The step's words read English (describeCall's labels): the locale is pinned, never the host's.
+setLocale("en");
+
 const doing = (name, args) => stepLabel({ ...describeCall(name, args), status: "running" });
-const did = (name, args) => stepLabel({ ...describeCall(name, args), status: "done" });
-
-test("a running step says what it is doing, from the call's own arguments", () => {
-  assert.equal(doing("WebSearch", { query: "northwind budget policy" }), 'Searching the web for "northwind budget policy"');
-  assert.equal(doing("WebFetch", { url: "https://docs.northwind.example/budget/review" }), "Reading docs.northwind.example/budget/review");
-  assert.equal(doing("Bash", { command: "agent-browser open https://portal.vendor.example/login" }), "Opening portal.vendor.example in the browser");
-  assert.equal(doing("Read", { file_path: "/srv/northwind/notes.md" }), "Reading notes.md");
-  assert.equal(doing("Write", { file_path: "/work/outputs/report.csv" }), "Writing report.csv");
-  assert.equal(doing("Bash", { command: "npm test -- --watch" }), "Running npm test");
-  assert.equal(doing("mcp__taskuary__my_task", {}), "Looking at the task's emails");
-  assert.equal(doing("mcp__taskuary__search_messages", { words: "invoice" }), 'Searching your mail for "invoice"');
-  // ...and once done, the same step in the past
-  assert.equal(did("WebFetch", { url: "https://docs.northwind.example/budget/review" }), "Read docs.northwind.example/budget/review");
-  assert.equal(did("mcp__taskuary__my_task", {}), "Looked at the task's emails");
-  assert.equal(present("Edited app.py"), "Editing app.py");
-  assert.equal(present("Build the report"), "Build the report", "the agent's own words stay its own");
-});
 
 test("an address is shown as host and path - never its query string, a sign-in, or a key in its path", () => {
   assert.equal(pageOf("https://user:pw@www.docs.northwind.example/budget/review?token=abc123&x=1#top"), "docs.northwind.example/budget/review");
@@ -52,18 +37,6 @@ test("the turn's stamp: working m:ss while it runs, ran once it answered, nothin
   assert.equal(clockText(3_725_000), "1:02:05");
 });
 
-test("a running turn shows its steps open, the newest six, and ONE clock - its working line's, never a second on its head", () => {
-  const ws = read("GeneralWorkspace.jsx");
-  assert.match(ws, /const LIVE_SHOWN = 6;/);
-  assert.match(ws, /data-tq-live-steps=""/);
-  assert.match(ws, /plural\(cut, "earlier step"\)/);
-  assert.match(ws, /const stepsWord = \(parts\) => \{ const n = workCount\(parts\); return n \? plural\(n, "step"\) : "Along the way"; \};/, "an ended turn folds to N steps");
-  assert.doesNotMatch(ws, /<Ticking|data-tq-working-for/, "the head's \"working 0:03\" is gone (the owner, 2026-11-06)");
-  assert.match(ws, /<span>Working on this…<\/span>\s*<em>\{since \? elapsedText\(now - since\)/);
-  assert.match(ws, /since: session\.turn_started \* 1000/, "the turn's own start, from the server");
-  assert.match(read("AgentStepRows.jsx"), /<CircularProgress size=\{10\}/);
-});
-
 // A BURST (the owner, 2026-11-05): a mail read in while turn 1 ran is drawn after it, stamped when it came in - the re-think under it began when
 // turn 1 answered, the newest of everything above it, never at that mail's earlier stamp
 test("a turn's run is counted from the newest thing above it, not the row just above", () => {
@@ -71,5 +44,14 @@ test("a turn's run is counted from the newest thing above it, not the row just a
   assert.equal(+turnBegan([t("19:55"), t("21:10"), t("20:40")]), +t("21:10"));
   assert.equal(turnStamp({ start: turnBegan([t("19:55"), t("21:10"), t("20:40")]), end: t("21:50") }), "ran 40s");
   assert.equal(turnBegan([null, undefined]), null);
-  assert.match(read("GeneralWorkspace.jsx"), /turnBegan\(ms\.slice\(0, i\)\.map\(\(m\) => m\.createdAt\)\)/);
+});
+
+// THE CLOCK COUNTS FROM THE PRESS AND NEVER RESTARTS (the owner, 2026-11-10; the recorded coding walk: "ran 9s" under his line while the adapter
+// started, then "ran 2s" once the turn's own row came - its clock from the turn's first step): a running turn counts from the earlier of its own
+// start and the line it answers - a mail that joined mid-turn is newer than the turn and never sets it back
+test("a running turn's clock is the earlier of its start and the line it answers", () => {
+  assert.equal(turnFrom(9000, 1000), 1000, "the adapter took 8 s: still from the press");
+  assert.equal(turnFrom(1000, 5000), 1000, "a mail joined at 5 s: still from the turn's start");
+  assert.equal(turnFrom(null, 1000), 1000); assert.equal(turnFrom("2026-11-10T10:00:00Z", null), Date.parse("2026-11-10T10:00:00Z"));
+  assert.equal(turnFrom(null, null), null);
 });

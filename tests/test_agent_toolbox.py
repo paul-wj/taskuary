@@ -62,6 +62,33 @@ class TheServer(unittest.TestCase):
         self.assertFalse(tools['propose_reply']['annotations']['readOnlyHint'])
         self.assertIn('nothing is sent', tools['propose_reply']['description'])
 
+    def test_a_file_that_came_on_this_tasks_mail_is_sent_on_by_its_id_and_checked_again_at_send(self):
+        """The north-star audit, 2026-11-10: asked to send a document the task received on to someone else, the agent could attach only
+        files in its task folder. It names the mail's file by the id its brief shows - only one on a message OF THIS task, checked at the
+        door and again at Send - and the file goes as it came."""
+        from taskuary import outbound, verdicts
+        d = config.home() / 'attachments' / 'toolbox'; d.mkdir(parents=True, exist_ok=True)
+        (d / 'terms.pdf').write_bytes(b'%PDF-1.4 renewal terms'); (d / 'other.pdf').write_bytes(b'%PDF-1.4 not this task')
+        on = self.s.add_message({'TaskId': self.tid, 'ExternalId': 'r2', 'ConversationId': 'conv-r', 'Channel': 'email', 'FromName': 'Gail Moreno',
+                                 'FromEmail': 'gail@northwind.example', 'Subject': 'Renewal terms', 'BodyText': 'Terms attached.',
+                                 'SentAt': '2026-10-21 08:00:00', 'Status': 'routed'})
+        aid = self.s.add_attachment({'MessageId': on, 'ExternalId': 'r2:1', 'Name': 'terms.pdf', 'ContentType': 'application/pdf', 'Size': 22,
+                                     'Path': str(d / 'terms.pdf')})
+        far = self.s.add_attachment({'MessageId': self.mid, 'ExternalId': 'r1:1', 'Name': 'other.pdf', 'ContentType': 'application/pdf', 'Size': 21,
+                                     'Path': str(d / 'other.pdf')})
+        text, err = tool(self.tid, 'propose_email', to='paula@northwind.example', subject='Renewal terms', text='Paula - the terms.', attach=[f'attachment {far}'])
+        self.assertTrue(err, 'a file on mail that is not this task\'s is never sent'); self.assertIn('not an attachment on this task', text)
+        text, err = tool(self.tid, 'propose_email', to='paula@northwind.example', subject='Renewal terms', text='Paula - the terms.', attach=[f'attachment {aid}'])
+        self.assertFalse(err, text)
+        rv = self.s.get_review(json.loads(text)['review_id'])
+        [f] = json.loads(rv['Deliver'])['attachments']
+        self.assertEqual((f['name'], f['attachment']), ('terms.pdf', aid)); self.assertEqual(open(f['path'], 'rb').read(), b'%PDF-1.4 renewal terms')
+        other = self.s.create_task({'Title': 'Another matter', 'Kind': 'general', 'Status': 'open'}, 'owner')
+        self.s._exec('UPDATE message SET TaskId=? WHERE MessageId=?', (other, on))         # the mail was moved to another task before Send
+        with mock.patch.object(outbound, 'send_out', side_effect=AssertionError('it went')):
+            out = verdicts.decide(self.s, rv, 'approve')
+        self.assertFalse(out['ok']); self.assertIn('Nothing was sent', out['send_error']); self.assertEqual(self.s.get_review(rv['ReviewId'])['Status'], 'pending')
+
     def test_search_and_read_come_back_fenced(self):
         text, err = tool(self.tid, 'search_messages', words='uplift')
         self.assertFalse(err); self.assertIn('Renewal terms', text); self.assertTrue(text.startswith('⟦'))
@@ -73,9 +100,25 @@ class TheServer(unittest.TestCase):
         r = c.post(f'/api/mcp?task={other}', headers=hdr(self.tid), json={'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})
         self.assertEqual(r.status_code, 403)
 
-    def test_a_strangers_token_never_reaches_it_and_the_token_gate_covers_it(self):
-        st = {'X-Taskuary-Token': guard.stranger_token(SRV, self.tid)}
-        self.assertEqual(rpc(self.tid, 'tools/list', headers=st).status_code, 403)
+    def test_a_strangers_token_gets_only_the_harmless_tools_on_its_own_task_and_the_token_gate_covers_it(self):
+        # 2026-11-09: "remind me ..." on a stranger's task came back "I can't set a reminder" beside the task's own Remind me
+        theirs = self.s.create_task({'Title': 'Look at this', 'Kind': 'general', 'Status': 'open', 'OriginBase': 'stranger'}, 'triage')
+        st = {'X-Taskuary-Token': guard.stranger_token(SRV, theirs)}
+        self.assertEqual(rpc(self.tid, 'tools/list', headers=st).status_code, 403)                      # never another task's
+        self.assertEqual(guard.stranger_denied('POST', '/api/mcp', {'task': str(self.tid)}, theirs, None), guard.STRANGER_WHY)
+        r = rpc(theirs, 'tools/list', headers=st)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual({t['name'] for t in r.json()['result']['tools']}, set(agenttools.STRANGER_TOOLS))
+        for name in ('search_tasks', 'search_messages', 'propose_reply', 'my_task'):
+            r = rpc(theirs, 'tools/call', {'name': name, 'arguments': {'words': 'renewal'}}, headers=st).json()
+            self.assertIn('unknown tool', r['error']['message'])
+        # ...with no day, on a task with no reminder, nothing is "taken off": it says what to give
+        r = rpc(theirs, 'tools/call', {'name': 'remind', 'arguments': {}}, headers=st).json()['result']
+        self.assertTrue(r['isError'], r); self.assertIn('no reminder is set', str(r))
+        r = rpc(theirs, 'tools/call', {'name': 'remind', 'arguments': {'when': 'in 2 days'}}, headers=st).json()['result']
+        self.assertFalse(r['isError'], r); self.assertTrue(self.s.get_task(theirs).get('RemindAt'))
+        r = rpc(theirs, 'tools/call', {'name': 'check_back', 'arguments': {'when': 'tomorrow 9am', 'what': 'the export ran'}}, headers=st).json()['result']
+        self.assertFalse(r['isError'], r); self.assertTrue(self.s.get_task(theirs).get('CheckBackAt'))
         self.assertTrue(agenttools.url(1).split(':', 2)[2].split('/', 1)[1].startswith('api/'))   # under /api: token and origin gates apply
 
     def test_a_strangers_task_does_not_read_the_owners_mail(self):
@@ -108,6 +151,7 @@ class TheServer(unittest.TestCase):
         self.assertIn('4% works', rv[-1]['DraftText'])
 
     def test_a_github_comment_is_a_proposal_and_a_merge_cannot_be_proposed(self):
+        self.s.update_task(self.tid, {'SourceRef': 'https://github.com/northwind/ledger/issues/7'}, 'owner')     # the issue it comments on
         with mock.patch('taskuary.proposals._switch_ok', return_value=True):
             text, err = tool(self.tid, 'propose', action='comment_issue', body='Fixed in the next release.', why='the reporter asked')
         self.assertFalse(err, text); self.assertIn('queued', text)
@@ -123,6 +167,23 @@ class TheServer(unittest.TestCase):
         with mock.patch.dict(REGISTRY, {'linkedin_post': lambda cfg: ran.append(1) or ('posted', '')}):
             text, err = tool(self.tid, 'run_system', type='linkedin_post', text='We shipped.')
         self.assertFalse(err, text); self.assertIn('"queued": true', text); self.assertEqual(ran, [])
+
+    def test_an_agent_reading_a_system_again_and_again_leaves_the_pile_warm(self):
+        """A general agent called run_system every few seconds while the owner pressed Next (2026-11-09). A read of the owner's own
+        system is no card on the rail: it may leave its audit row, never a stamp the pile is keyed on - so no call rebuilds it."""
+        from taskuary import funnel
+        card = self.s.get_connector_by_type('mssql')
+        self.s.save_connector({'ConnectorId': card['ConnectorId'], 'Active': 1, 'Roles': 'tool'}, 'test')
+        builds, real = [], funnel.build
+        with mock.patch.object(funnel, 'build', side_effect=lambda *a, **kw: builds.append(1) or real(*a, **kw)), \
+             mock.patch('taskuary.terminal.live_sessions', return_value=[]), mock.patch.dict(REGISTRY, {'mssql': lambda cfg: ('1 row', 'n\n1')}):
+            funnel.invalidate(); funnel.pile(self.s); n, top = len(builds), self.s.rail_top()
+            for _ in range(3):
+                text, err = tool(self.tid, 'run_system', type='mssql', connector_id=card['ConnectorId'], query='select 1')
+                self.assertFalse(err, text); self.assertIn('1 row', text)
+                funnel.pile(self.s)
+            self.assertEqual(self.s.rail_top(), top, 'a tool run left a dirty row')
+            self.assertEqual(len(builds), n, 'a tool run rebuilt the pile')
 
     def test_search_tasks_finds_a_task_by_its_words(self):
         text, err = tool(self.tid, 'search_tasks', words='renewal')
@@ -147,7 +208,7 @@ class TheTable(unittest.TestCase):
         for name, (cls, desc, schema, (method, path)) in agenttools.TOOLS.items():
             self.assertIn(guard.classify(method, path)[0], ('read', 'agent'), name)
             self.assertTrue(any(m == method and re.fullmatch(re.sub(r'\{[^}]+\}', r'[^/]+', p), path) for m, p in routes), f'{name}: {path}')
-            self.assertIn(cls, ('read', 'own', 'propose'))
+            self.assertIn(cls, ('read', 'reach', 'own', 'propose'))
         self.assertEqual(guard.classify('POST', '/api/mcp')[0], 'agent')
 
     def test_claude_gets_our_server_with_no_secret_written(self):
@@ -182,7 +243,11 @@ class EverySessionGetsThem(unittest.TestCase):
         self.assertLess(args.index('--mcp-config'), args.index('-p'))           # before the options: the list is closed
         theirs = s.create_task({'Title': 'Look at this', 'Kind': 'general', 'Status': 'open', 'OriginBase': 'stranger'}, 'triage')
         with mock.patch('taskuary.origin.launch_mode', return_value='auto'):
-            self.assertNotIn('--mcp-config', turn(s, theirs)['profile']['args'])
+            args = turn(s, theirs)['profile']['args']
+        # ...a stranger's gets its own server file: its token alone, served the harmless tools (agenttools.STRANGER_TOOLS)
+        f = args[args.index('--mcp-config') + 1]
+        self.assertIn(f'TQ-{theirs}.stranger.mcp.json', f); self.assertIn('--strict-mcp-config', args)
+        self.assertNotIn(guard.TASK_HDR, open(f, encoding='utf-8').read())
 
     def test_older_agent_rules_still_hear_of_the_tools(self):
         from taskuary import terminal

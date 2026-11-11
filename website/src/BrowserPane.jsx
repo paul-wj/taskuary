@@ -5,6 +5,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Box, Typography } from "@mui/material";
 import api from "./api.js";
+import { failLine, landed, press as pressReview } from "./press.js";
 import { label } from "./buttons.js";
 import { useAgents } from "./ui.jsx";
 import { BORDER, CATPPUCCIN, FAINT, PANEL, mono } from "./theme.jsx";
@@ -21,7 +22,7 @@ const wsUrl = (sid) => {
 export const hostOf = (u) => { try { return new URL(u).host; } catch { return ""; } };
 
 const btn = { ...mono, fontSize: 10.5, lineHeight: 1, px: 0.9, py: 0.45, borderRadius: 1, cursor: "pointer",
-  border: `1px solid ${BORDER}`, bgcolor: "transparent", color: "#b9b2a8", "&:hover": { color: "#e1dcd5", borderColor: "#6b655c" } };
+  border: `1px solid ${BORDER}`, bgcolor: "transparent", color: "var(--tq-muted, #b9b2a8)", "&:hover": { color: "var(--tq-muted, #e1dcd5)", borderColor: "#6b655c" } };
 
 // `open`: the parent's poll of browserview.state - the relay refuses a session with no browser, so this
 // connects only while that says open (a caller that does not poll leaves it true and always tries).
@@ -233,7 +234,7 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
           sx={{ width: 8, height: 8, borderRadius: 99, flexShrink: 0, bgcolor: live ? CATPPUCCIN.green : "#5a554d",
             boxShadow: live ? `0 0 0 3px ${CATPPUCCIN.green}33` : "none", transition: "background .3s" }} />
         <Typography title={t("The agent opened this page itself - this pane is its browser, watched live.\nTake over to drive it yourself; close the session to close it.")}
-          sx={{ ...mono, fontSize: 10.5, color: live ? "#c9c3b9" : FAINT, letterSpacing: 0.3, flexShrink: 0 }}>
+          sx={{ ...mono, fontSize: 10.5, color: live ? "var(--tq-muted, #c9c3b9)" : FAINT, letterSpacing: 0.3, flexShrink: 0 }}>
           {live ? t("LIVE") : "…"}
         </Typography>
         {/* the URL is a FIELD, not a label: click it and type somewhere else. Blank shows where
@@ -243,9 +244,9 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
           onKeyDown={(e) => { if (e.key === "Enter") go(); if (e.key === "Escape") setTyped(""); e.stopPropagation(); }}
           placeholder={shortUrl(url) || t("type an address to open a page")}
           title={url ? `${/^file:/i.test(url) ? shortUrl(url, 200) : url}\n\n${t("type an address and press Enter to go somewhere else")}` : t("type an address and press Enter to open a page")}
-          sx={{ ...mono, fontSize: 11, color: "#c9c3b9", flex: 1, minWidth: 0, bgcolor: "transparent",
+          sx={{ ...mono, fontSize: 11, color: "var(--tq-muted, #c9c3b9)", flex: 1, minWidth: 0, bgcolor: "transparent",
             border: "1px solid transparent", borderRadius: 1, px: 0.75, py: 0.25, outline: "none",
-            "&::placeholder": { color: "#a8a196", opacity: 1 },
+            "&::placeholder": { color: "var(--tq-warning, #a8a196)", opacity: 1 },
             "&:hover": { borderColor: BORDER }, "&:focus": { borderColor: CATPPUCCIN.yellow, bgcolor: "#1a1a1a" } }} />
         {!!typed.trim() && (
           <Box component="button" onClick={go} disabled={going} sx={{ ...btn, flexShrink: 0 }}>{going ? t("opening…") : t("Go")}</Box>
@@ -276,7 +277,7 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
         {attached === null && !live && (
           <Box data-tq-browser-starting="" sx={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
             pointerEvents: "none" }}>
-            <Typography sx={{ ...mono, fontSize: 11.5, color: "#a8a196" }}>{t("starting the browser…")}</Typography>
+            <Typography sx={{ ...mono, fontSize: 11.5, color: "var(--tq-warning, #a8a196)" }}>{t("starting the browser…")}</Typography>
           </Box>
         )}
         {/* Only before the first frame: once a page has painted, a momentary "not connected"
@@ -284,7 +285,7 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
         {attached === false && !live && (
           <Box sx={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column",
             alignItems: "center", justifyContent: "center", gap: 0.75, px: 3, textAlign: "center" }}>
-            <Typography sx={{ ...mono, fontSize: 11.5, color: "#c9c3b9" }}>{t("the browser is running, with no page open")}</Typography>
+            <Typography sx={{ ...mono, fontSize: 11.5, color: "var(--tq-muted, #c9c3b9)" }}>{t("the browser is running, with no page open")}</Typography>
             <Typography sx={{ ...mono, fontSize: 10.5, color: FAINT, lineHeight: 1.6 }}>
               {t("Nothing has been navigated to yet, so there is nothing to show. Type an address up there to open one — then take over to drive it yourself.")}
             </Typography>
@@ -298,8 +299,8 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
         {live && (!url || url === "about:blank") && (
           <Box sx={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", pointerEvents: "none",
             alignItems: "center", justifyContent: "center", gap: 0.75, px: 3, textAlign: "center" }}>
-            <Typography sx={{ ...mono, fontSize: 11.5, color: "#867f74" }}>{t("an empty tab, live")}</Typography>
-            <Typography sx={{ ...mono, fontSize: 10.5, color: "#a8a196", lineHeight: 1.6 }}>
+            <Typography sx={{ ...mono, fontSize: 11.5, color: "var(--tq-warning, #867f74)" }}>{t("an empty tab, live")}</Typography>
+            <Typography sx={{ ...mono, fontSize: 10.5, color: "var(--tq-warning, #a8a196)", lineHeight: 1.6 }}>
               {t("The agent opens its pages here. Or type an address above to open one yourself.")}
             </Typography>
           </Box>
@@ -307,13 +308,13 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
         {/* WHILE TASKUARY TYPES A SIGN-IN the picture holds and input is dropped (browserview.relay): said, instead of "your turn - click
             the page and type" over a frozen LIVE pane (2026-10-25) */}
         {filling && (
-          <Typography data-tq-browser-filling="" sx={{ ...mono, position: "absolute", left: 8, bottom: 6, fontSize: 10, color: "#e1dcd5",
+          <Typography data-tq-browser-filling="" sx={{ ...mono, position: "absolute", left: 8, bottom: 6, fontSize: 10, color: "var(--tq-muted, #e1dcd5)",
             bgcolor: "#000000cc", px: 0.75, py: 0.25, borderRadius: 1, pointerEvents: "none" }}>
             {hostOf(url) ? t("Taskuary is signing in to {host} — the picture resumes in a moment", { host: hostOf(url) }) : t("Taskuary is signing in — the picture resumes in a moment")}
           </Typography>
         )}
         {ended && (
-          <Typography data-tq-browser-ended="" sx={{ ...mono, position: "absolute", left: 8, top: 6, fontSize: 10, color: "#e1dcd5",
+          <Typography data-tq-browser-ended="" sx={{ ...mono, position: "absolute", left: 8, top: 6, fontSize: 10, color: "var(--tq-muted, #e1dcd5)",
             bgcolor: "#000000cc", px: 0.75, py: 0.25, borderRadius: 1, pointerEvents: "none" }}>
             {t("the browser closed — this is where it last was; it reopens when the agent next needs it")}
           </Typography>
@@ -328,7 +329,7 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
         {asked && !driving && (
           <Box sx={{ position: "absolute", left: 8, right: 8, bottom: 6, display: "flex", alignItems: "center", gap: 1,
             bgcolor: "#000000cc", border: `1px solid ${CATPPUCCIN.yellow}66`, px: 1, py: 0.5, borderRadius: 1 }}>
-            <Typography sx={{ ...mono, fontSize: 10, color: "#e1dcd5", flex: 1 }}>
+            <Typography sx={{ ...mono, fontSize: 10, color: "var(--tq-muted, #e1dcd5)", flex: 1 }}>
               {t("You are watching the agent's page — Take over to type on it.")}
             </Typography>
             <Box component="button" onClick={takeOver}
@@ -347,10 +348,10 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
 // dark, as the page's own frame is: the light toolbar's light text would read faint here, where the one thing to read is the ask
 const bar = { display: "flex", alignItems: "center", flexWrap: "wrap", gap: 1, px: 1.25, py: 0.75, flexShrink: 0, bgcolor: "#1c1b19",
   borderTop: `1px solid ${CATPPUCCIN.yellow}88` };
-const barText = { fontSize: 12.5, color: "#e1dcd5", flex: "1 1 220px", minWidth: 0, lineHeight: 1.4 };
+const barText = { fontSize: 12.5, color: "var(--tq-muted, #e1dcd5)", flex: "1 1 220px", minWidth: 0, lineHeight: 1.4 };
 const press = { ...btn, fontSize: 11.5, px: 1.25, py: 0.6 };
-const primary = { ...press, color: "#101010", bgcolor: CATPPUCCIN.yellow, borderColor: CATPPUCCIN.yellow,
-  "&:hover": { bgcolor: "#f3d98f", borderColor: "#f3d98f", color: "#101010" } };
+const primary = { ...press, color: "var(--tq-text, #101010)", bgcolor: CATPPUCCIN.yellow, borderColor: CATPPUCCIN.yellow,
+  "&:hover": { bgcolor: "var(--tq-tint-brass, #f3d98f)", borderColor: "var(--tq-edge-brass, #f3d98f)", color: "var(--tq-text, #101010)" } };
 const failed = (e, data) => {
   const detail = data?.send_error || e?.response?.data?.detail;
   return detail ? { text: detail, local: false } : e ? { text: "That did not go through - nothing was done. Try again.", local: true } : null;
@@ -364,17 +365,15 @@ function HeldBar({ held: h, onDecided }) {
   const decide = async (verb) => {
     if (busy) return;
     setBusy(verb); setErr("");
-    try {
-      const { data } = await api.post(`/api/reviews/${h.id}/decide`, { verb, final_text: null, note: null, cc: null, anyway: false }, { timeout: 120000 });
-      if (data?.send_error) { setErr(failed(null, data)); setBusy(""); onDecided?.(); return; }
-      onDecided?.();
-    } catch (e) { setErr(failed(e)); setBusy(""); }
+    const o = await pressReview(api, h.id, { verb, cc: null, anyway: false }, 2);       // the one press (press.js)
+    if (!landed(o) && o.kind !== "already") { setErr(failLine(o)); setBusy(""); }
+    if (o.kind !== "error") onDecided?.();
   };
   return (
     <Box data-tq-browser-held={h.id} sx={bar}>
       <Typography sx={barText} title={[h.url, h.why].filter(Boolean).join("\n")}>
         <Box component="span" sx={{ color: CATPPUCCIN.yellow, fontWeight: 600 }}>{t("Approve: ")}</Box>{h.whatIsFallback ? t("the step the agent held") : h.what}
-        {h.why && <Box component="span" sx={{ color: "#a8a196" }}>{t(" — held because {reason}", { reason: h.why })}</Box>}
+        {h.why && <Box component="span" sx={{ color: "var(--tq-warning, #a8a196)" }}>{t(" — held because {reason}", { reason: h.why })}</Box>}
       </Typography>
       <Box component="button" onClick={() => decide("approve")} disabled={!!busy} sx={primary}
         title={t("Taskuary runs exactly this in the agent's browser, and the agent carries on from there")}>{busy === "approve" ? t("running…") : label("approve", "action")}</Box>
@@ -386,7 +385,7 @@ function HeldBar({ held: h, onDecided }) {
 }
 
 // THE OWNER'S TURN (browserview.your_turn): the page is theirs to click and type on (yourTurn hands it over), and Done hands it back -
-// the agent's next message, so it looks at the page and goes on.
+// their press, never words in their name: Taskuary tells the agent, which looks at the page and goes on (browsergate.done).
 function TurnBar({ turn, onHandBack }) {
   useLocale();
   const [busy, setBusy] = useState(false), [err, setErr] = useState("");
@@ -403,7 +402,7 @@ function TurnBar({ turn, onHandBack }) {
     <Box data-tq-browser-turn={turn.request_id} data-tq-browser-press={pressing ? "" : undefined} sx={bar}>
       <Typography sx={barText}>
         <Box component="span" sx={{ color: CATPPUCCIN.yellow, fontWeight: 600 }}>{turn.text || t("Your turn in the browser")}</Box>
-        {!pressing && <Box component="span" sx={{ color: "#a8a196" }}>{t(" · do it on the page, and the agent goes on when it moves on")}</Box>}
+        {!pressing && <Box component="span" sx={{ color: "var(--tq-warning, #a8a196)" }}>{t(" · do it on the page, and the agent goes on when it moves on")}</Box>}
       </Typography>
       <Box component="button" onClick={back} disabled={busy} sx={press}
         title={t("The agent looks at the page as you left it and carries on")}>{busy ? t("handing back…") : t("I'm done")}</Box>
@@ -432,7 +431,7 @@ export function LastView({ taskId, sid = "", narrow = false }) {
     <Box data-tq-browser-last="" sx={{ flex: "0 0 auto", mb: 1, border: `1px solid ${BORDER}`, borderRadius: 2, overflow: "hidden", bgcolor: "#101010" }}>
       <Box component="button" onClick={toggle} aria-expanded={shown}
         sx={{ ...mono, width: "100%", display: "flex", alignItems: "center", gap: 1, px: 1, py: 0.6, fontSize: 10.5, cursor: "pointer",
-          border: 0, bgcolor: "#1a1a1a", color: "#c9c3b9", textAlign: "left", "&:hover": { color: "#e1dcd5" } }}>
+          border: 0, bgcolor: "#1a1a1a", color: "var(--tq-muted, #c9c3b9)", textAlign: "left", "&:hover": { color: "var(--tq-muted, #e1dcd5)" } }}>
         <Box sx={{ width: 7, height: 7, borderRadius: 99, bgcolor: "#5a554d", flexShrink: 0 }} />
         <Box component="span" sx={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {last.url ? t("browser · where the agent last was · {url}", { url: shortUrl(last.url, 48) }) : t("browser · where the agent last was")}</Box>

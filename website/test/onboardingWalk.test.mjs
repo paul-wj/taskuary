@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync, existsSync, statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { walkAdvances } from "../src/walkStep.js";
+const read = (name) => readFileSync(fileURLToPath(new URL(`../src/${name}`, import.meta.url)), "utf8");
 
 // The one real decision in this file: does a move land on a stop, or end the walk. `walk.go`
 // clamps anything outside the list to 0 and returns THAT, so branching on the response instead of
@@ -15,3 +18,99 @@ test("walkAdvances lands on every real stop and ends on Finish or past the end",
   assert.equal(walkAdvances(-1, total), false);        // Finish
 });
 
+// The nine keys used to be restated here, in capture-walk.mjs and in walk.py, with nothing tying
+// them together - a tenth stop added to walk.py would ship silently with no image. This derives
+// the truth from walk.py instead of repeating it, and checks capture-walk.mjs agrees.
+test("every image walk.py asks for is one the capture script shoots", () => {
+  const walkPy = readFileSync(fileURLToPath(new URL("../../taskuary/walk.py", import.meta.url)), "utf8");
+  const wanted = [...walkPy.matchAll(/'\/walk\/(\w+)\.png'/g)].map((m) => m[1]);
+  // Review retired as a tab and its stop folded into Tasks (2026-09-22): the count follows
+  // walk.py, and the pairing below is what this test is actually for.
+  assert.ok(wanted.length >= 8, `walk.py asks for ${wanted.length} pictures`);
+  const script = readFileSync(fileURLToPath(new URL("../capture-walk.mjs", import.meta.url)), "utf8");
+  const shot = [...script.matchAll(/\["(\w+)",\s*"/g)].map((m) => m[1]);
+  assert.deepEqual(new Set(wanted), new Set(shot), "walk.py and capture-walk.mjs disagree about which tabs have pictures");
+  // walk.py names these; a stop whose image 404s degrades to a stop with no image, which is
+  // survivable - but it should not happen because nobody ran the capture, or ran a truncated one.
+  // existsSync alone passes on a 0-byte file, so also floor the size well under the real ~180-400KB.
+  const dir = fileURLToPath(new URL("../public/walk/", import.meta.url));
+  for (const key of wanted) {
+    const f = `${dir}${key}.png`;
+    assert.ok(existsSync(f), `missing walk image: ${key}.png`);
+    assert.ok(statSync(f).size > 20000, `suspiciously small walk image: ${key}.png`);
+  }
+});
+
+test("one viewport shoots all nine, or they read as nine different apps", () => {
+  const src = readFileSync(fileURLToPath(new URL("../capture-walk.mjs", import.meta.url)), "utf8");
+  assert.match(src, /setViewport/);
+  assert.equal(src.match(/setViewport/g).length, 1);
+});
+
+// A FILE ON DISK IS NOT THE SAME CLAIM AS THE APP SERVING IT. The nine pictures were in the repo,
+// in the vite output and in the wheel, and every one 404ed because only /assets was mounted. The
+// route is proven over HTTP in tests/test_onboarding_walk.py; this keeps the mount from being read
+// as dead code by somebody looking at server.py alone.
+test("the pictures have a route of their own, because /assets is only the hashed build output", () => {
+  const server = readFileSync(fileURLToPath(new URL("../../taskuary/server.py", import.meta.url)), "utf8");
+  assert.match(server, /app\.mount\('\/walk', StaticFiles/);
+});
+
+// Six stops walked past drew six near-identical rows, each with the message avatar AND the card's
+// own mark, and nothing but the title - it read as six things the assistant had said.
+test("a stop you have walked past is a numbered step, not a message", () => {
+  const view = read("AssistantView.jsx");
+  assert.match(view, /const passed = !live && kind === "walk"/);
+  assert.match(view, /\{!passed && !bare && <div className="avatar">/, "no second mark beside the card's own");
+  assert.match(view, /tq-step-done/);
+  assert.match(read("assistantView.css"), /\.tq-step-done/);
+});
+
+// SETUP IS THE TOP BAR'S BUTTON, never a choice in the chat (the owner, 2026-10-19) - and that button is not hidden on a phone
+test("setup is reachable on a phone, from the top bar, and the chat offers no Set up Taskuary", () => {
+  const view = read("AssistantView.jsx");
+  const welcome = view.slice(view.indexOf('className="tq-welcome"'), view.indexOf('className="tq-welcome"') + 3200);
+  assert.doesNotMatch(welcome, />Set up Taskuary</);
+  const top = read("TaskHubPage.jsx"), chip = top.slice(top.lastIndexOf("<", top.indexOf("<SetupChip")), top.indexOf("/>", top.indexOf("<SetupChip")));
+  assert.match(chip, /onOpen=\{openSetup\}/); assert.doesNotMatch(chip, /tq-phone-hide/);
+});
+
+// The scripted walk took the identifier `setup`, and with it the welcome block's button - so the
+// chip reading "Set up a report or workflow" opened the fourteen-stop tour of the app instead.
+test("setting something up and walking the app are two different doors", () => {
+  const view = read("AssistantView.jsx");
+  // the welcome's second door RUNS what exists - it opens Reports (2026-10-08); setting up is Set up Taskuary's
+  const at = view.lastIndexOf("Run a report or routine");
+  const chip = view.slice(view.lastIndexOf("<button", at), at);
+  assert.ok(chip.includes('onClick={() => onNavigate?.("Reports")}'), "it opens Reports");
+  // ...and setting something up is the sidebar's New, on the empty rail's bar (the owner, 2026-11-10: "even these should just be shortcut to new")
+  assert.match(view, /if \(c\.verb === "newtask"\) \{ browseRef\.current\?\.\("new", \{\}\); return; \}/, "the same New the sidebar opens");
+});
+
+// Rows 2 and 4 both read "Connections" and went to the AI CLI agents page and the connector list.
+test("a row's button names what it opens, in words the server owns", () => {
+  assert.match(read("SetupWizard.jsx"), /s\.goto\?\.label \|\| s\.goto\?\.tab/);
+  const setupPy = readFileSync(fileURLToPath(new URL("../../taskuary/setup.py", import.meta.url)), "utf8");
+  const labels = [...setupPy.matchAll(/'label': '([^']+)'/g)].map((m) => m[1]);
+  assert.equal(labels.length, 5);   // four rows, plus the AI row's second road (Paste an API key)
+  assert.equal(new Set(labels).size, 5, `two rows wear the same button: ${labels}`);
+  assert.match(read("SetupWizard.jsx"), /onGo\(s\.alt\)/, "the second road is drawn, not only sent");
+});
+
+// A box only where there is something to complete: the first five stops carry the checklist's own
+// `done`, the other nine are a tour of the app, and an empty box beside "the Timeline" would invent
+// a chore nobody has (the owner, 2026-09-17: "show check boxes if it's done. Make the walk through
+// accurate to what was completed").
+test("a stop that can be completed wears a box, and says which way it is ticked", () => {
+  const cards = read("assistantCards.jsx");
+  const walk = cards.slice(cards.indexOf("export function WalkCard"), cards.indexOf("export function", cards.indexOf("export function WalkCard") + 10));
+  assert.match(walk, /"done" in card &&/);          // presence, not truthiness: false must still show a box
+  assert.match(walk, /card\.done \? "\u2611" : "\u2610"/);
+});
+
+// The done-green line says what it IS. A bare noun there - "Outlook mail, Microsoft Teams, Telegram"
+// directly above "You can connect a mailbox" - read as a heading for the instructions under it.
+test("what is already set up says so, for every stop and not just one", () => {
+  const cards = read("assistantCards.jsx");
+  assert.doesNotMatch(cards, /card\.key === "ai" \? `Already set up/);
+});

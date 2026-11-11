@@ -5,7 +5,7 @@ import { SECTIONS, homeSection, liveTerminal, soloTodo, cameFrom, agentStatus, a
 import { STAGE, sectionOf } from "../src/stages.js";
 import { setLocale } from "../src/i18n.js";
 
-// The section, From and agent-status words below pin their English formatting contract.
+// The section, From and agent-status words below read English: the locale is pinned, never the host's.
 setLocale("en");
 
 test("two columns at rest, the whole width while an agent works - coding or general, working or waiting on you", () => {
@@ -168,8 +168,8 @@ test("the two sections come in the flow's order, and each closed tab says where 
   assert.equal(agentWord({ result: true }), "finished");
   // ...and a run the owner stopped (Stop and save, a restart) reads stopped with its result shown, never finished (2026-11-03)
   assert.equal(agentWord({ stopped: true, result: true }), "stopped");
-  assert.deepEqual(agentStatus({ profile: "assistant", word: "finished", said: "Wrote a one-page plan.", made: "Plan for a first box", advisor: "Send" }),
-    { lines: ["assistant · finished", "Wrote a one-page plan.", "Made: Plan for a first box"], foot: "✓ Done · Advisor: Send is next" });
+  assert.deepEqual(agentStatus({ profile: "assistant", word: "finished", said: "Wrote a one-page plan.", made: "Plan for a first box" }),
+    { lines: ["assistant · finished", "Wrote a one-page plan.", "Made: Plan for a first box"], foot: "✓ Done" });
   assert.deepEqual(agentStatus({}), { lines: ["not started"], foot: "" });
 });
 
@@ -184,13 +184,8 @@ test("a report's line is its Summary, never its AGENT REPORT marker", () => {
   assert.equal(reportLine("Summary: It says:"), "Summary: It says:".replace(/^Summary:\s*/, ""));
 });
 
-// ANSWERED OUTSIDE TASKUARY (the owner, 2026-10-29): the Advisor's Mark done is lit for it, on the task's one row - its decision names no
-// section of the page (2026-11-06), so where the task opens is its kind's and stage's alone
-test("the Advisor's pick lights a button and names no section; its next move is said on the Agent's tab", () => {
-  assert.equal(agentStatus({ word: "finished", advisor: "Mark done" }).foot, "✓ Done · Advisor: Mark done is next");
-  assert.equal(agentStatus({ word: "not started" }).foot, "");
-});
-
+// ANSWERED OUTSIDE TASKUARY (the owner, 2026-10-29): Mark done is filled for it, on the task's one row - the move names no section of the
+// page (2026-11-06), so where the task opens is its kind's and stage's alone
 test("the chat knows the owner answered outside Taskuary: its Draft reply is not the lit move", () => {
   const ins = [1, 2].map((i) => ({ MessageId: i, Direction: "in", Status: "routed", FromName: "Erin Blake", SentAt: `2026-10-29 11:${i}0:00` }));
   const own = { MessageId: 3, Direction: "out", Status: "context", FromName: "You", Channel: "teams", SourceName: "Teams", SentAt: "2026-10-29 12:10:00" };

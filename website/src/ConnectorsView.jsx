@@ -36,8 +36,9 @@ import { GoogleCalendar } from "./GoogleCalendar.jsx";
 import { hasLogo } from "./logos.jsx";
 import { CliConnectionsPage } from "./AgentsPanel.jsx";
 import { TerminalPane } from "./TerminalView.jsx";
+import BrowserPane from "./BrowserPane.jsx";
 import { WAITING_META, waitingIn } from "./waitingMeta.js";
-import { CATALOGUE, PRESETS, matchCards, onceEach, oneOf, plannedFor, presetBody, presetOf, presetsLeft, repliesOf, repliesOn } from "./connectorCatalog.js";
+import { CATALOGUE, NOT_SET_UP, PRESETS, cardState, matchCards, onceEach, oneCardPerSystem, oneOf, plannedFor, presetBody, presetOf, presetsLeft, repliesOf, repliesOn, WAY_NAMES, WAYS, waysOf, wayState } from "./connectorCatalog.js";
 import { settingsOf } from "./actionCard.js";
 import { isPollField, pollSecondsField } from "./pollFields.js";
 import { githubInboundValue } from "./githubInbound.js";
@@ -54,11 +55,12 @@ import SavedSignins from "./SavedSignins.jsx";
 import { hint as btnHint, label as btnLabel } from "./buttons.js";
 import { noun, placeName, PLACES } from "./words.js";
 import { plural } from "./timeWords.js";
+import { backChoices, broughtLine } from "./syncTiming.js";
 import { openAppLink } from "./appLinks.js";
 import { LIT, lightField, lightStep } from "./connectorStep.js";
 import { FOCUS_RING, pressable } from "./pressable.js";
 import { validEmail } from "./recipientOptions.js";
-import { waLabel, waMatches, waPhone, waSaid } from "./waChats.js";
+import { chatsError, readChats, waLabel, waMatches, waPhone, waSaid } from "./waChats.js";
 import { PEOPLE_MISSING } from "./peopleSearch.js";
 import ReasonPanel from "./ReasonNetwork.jsx";
 import { DESKTOP_HOW } from "./newTask.js";
@@ -66,6 +68,7 @@ import { openHelp, sayEarlier, viewResult } from "./pageView.js";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 import { READ_META, READ_TYPES } from "./apiReads.js";
+import schema from "../../taskuary/settings_schema.json";   // the saved sign-ins' search words, the ones Settings finds the vault by
 
 // Keep tab values stable: translated labels are presentation, not navigation state.
 function LocalTabs({ tabs, value, onChange }) {
@@ -145,16 +148,16 @@ const META = {
   outlook: { group: "Messaging", channel: "email", srcLabel: "Mailboxes", srcPh: "someone@yourdomain.com",
     fields: [["Directory (tenant) ID", "tenant_id"], ["Application (client) ID", "client_id"]],
     secretLabel: "client secret (tenant app only)",
-    desc: "Your Microsoft mailbox, read and sorted for you, through your company's own Microsoft app - its IT registers it once, then you sign in.",
-    howto: ["Your company's own Microsoft app: Taskuary ships none, so nothing goes through anyone else's Azure. The card shows the steps for your IT - Microsoft Entra ID → App registrations → New registration (single tenant); Authentication → Add a platform → Mobile and desktop applications → redirect URI http://localhost/api/ms/callback (Entra ignores the port of a localhost redirect, so it covers whatever port Taskuary runs on); Allow public client flows: Yes; API permissions → Microsoft Graph → Delegated: the permissions the card lists → Grant admin consent. No client secret - a sign-in app is public by design.",
-      "Copy the app's Application (client) ID and Directory (tenant) ID into the card, then sign in - either in the browser (Sign in with Microsoft: Microsoft's page opens, you sign in with your own account and the tab hands you back to Taskuary) or with a code (Sign in with a code instead: a code for microsoft.com/devicelogin, for a Taskuary the browser cannot reach on localhost - some organisations block that one). Both use the same app. That is mail, sending and calendar for your mailbox.",
-      "AADSTS50011 on Microsoft's page: the app does not list http://localhost/api/ms/callback under Mobile and desktop applications yet. AADSTS700016: the client or tenant ID on the card is wrong. \"Need admin approval\": IT has not granted admin consent yet - the card's approval link does it too, once for everyone.",
+    desc: "Your Microsoft mailbox - work or Outlook.com - read and sorted for you, through your own Microsoft app: register it once (about five minutes), then you sign in.",
+    howto: ["Your own Microsoft app: Taskuary ships none, so nothing goes through anyone else's Azure. An Outlook.com or Hotmail account first signs up for a free Azure account with that same account (Microsoft registers apps only inside a directory since June 2024; it asks for a phone and a credit or debit card to verify you, and charges nothing). Then Microsoft Entra → App registrations → New registration - Supported account types \"Any Entra ID Tenant + Personal Microsoft accounts\" for an Outlook.com account, single tenant for a company app; Authentication → Add a platform → Mobile and desktop applications → redirect URI http://localhost/api/ms/callback (Entra ignores the port of a localhost redirect, so it covers whatever port Taskuary runs on); Allow public client flows: Yes; API permissions → Microsoft Graph → Delegated: the permissions the card lists → Grant admin consent (a company app; an Outlook.com account approves them on the sign-in page instead). No client secret - a sign-in app is public by design.",
+      "Copy the app's Application (client) ID into the card (the Directory (tenant) ID too for a single-tenant company app; blank otherwise), then sign in - either in the browser (Sign in with Microsoft: Microsoft's page opens, you sign in with your own account and the tab hands you back to Taskuary) or with a code (Sign in with a code instead: a code for microsoft.com/devicelogin, for a Taskuary the browser cannot reach on localhost - some organisations block that one). Both use the same app. That is mail, sending and calendar for your mailbox.",
+      "AADSTS50011 on Microsoft's page: the app does not list http://localhost/api/ms/callback under Mobile and desktop applications yet. AADSTS700016: the client or tenant ID on the card is wrong. AADSTS50020 / AADSTS50194 with an Outlook.com account: the app was registered for one directory only - register it again for personal accounts too. AADSTS7000218: Allow public client flows is off. \"Need admin approval\": IT has not granted admin consent yet - the card's approval link does it too, once for everyone.",
       "Tenant app (admins - for Teams chat reading and for mailboxes other than your own): the same App registrations → New registration, then API permissions → APPLICATION permissions Mail.Read (Mail.ReadWrite for Outlook drafts on approve or 'Handled mail, at the source') and Calendars.Read (Calendars.ReadWrite to answer invites and book meetings from Taskuary) → Grant admin consent; Certificates & secrets → New client secret. Enter the two IDs and paste the secret under Admin?; blank = the server's AZURE_* env vars.",
       "Mailboxes: signing in adds your own automatically. A tenant app reads every mailbox you add as a UPN under Sources.",
       "Test acquires a real Graph token and reports exactly what failed if anything - and whether the calendar can be read. Enable, and mail flows through the same triage funnel as everything else."],
     // written FOR the agent: it starts the browser sign-in through the API and hands the owner the link (a code only if they ask)
-    agent: ["The card needs the company's own Microsoft app: Taskuary ships none. GET {base}/api/connectors{hdr}: this card's MsApp is 'card' or 'install' when an app is set, '' when not. If not, the registration is the company IT's to do in its own Entra ID (the steps are on the card) - ask the owner for the Application (client) ID and Directory (tenant) ID; never invent one.",
-      "Start the sign-in: POST {base}/api/connectors/{cid}/ms/signin{hdr} with JSON {\"client_id\": \"<id>\", \"tenant_id\": \"<id>\"} (the card keeps them). It returns url and a flow id. Tell the owner: open <url> in the browser on this computer, sign in with their own Microsoft account and Accept - the tab comes back to Taskuary by itself. Only if the owner's browser cannot reach this Taskuary on localhost: add \"code\": true - it returns user_code and verification_uri; tell them to open <verification_uri> and enter <user_code>.",
+    agent: ["The card needs the company's own Microsoft app: Taskuary ships none. GET {base}/api/connectors{hdr}: this card's MsApp is 'card' or 'install' when an app is set, '' when not. If not, the registration is the owner's (or their company IT's) to do - the steps are on the card, including the free Azure account an Outlook.com account needs first - ask the owner for the Application (client) ID (and the Directory (tenant) ID only for a single-tenant company app); never invent one.",
+      "Start the sign-in: POST {base}/api/connectors/{cid}/ms/signin{hdr} with JSON {\"client_id\": \"<id>\"} plus \"tenant_id\" for a single-tenant company app (the card keeps them). It returns url and a flow id. Tell the owner: open <url> in the browser on this computer, sign in with their own Microsoft account and Accept - the tab comes back to Taskuary by itself. Only if the owner's browser cannot reach this Taskuary on localhost: add \"code\": true - it returns user_code and verification_uri; tell them to open <verification_uri> and enter <user_code>.",
       "Poll POST {base}/api/connectors/{cid}/ms/poll{hdr} with JSON {\"flow\": \"<flow>\"} every 5 seconds. status pending = keep waiting; status ok = the card is connected as them and their mailbox was added as a source; status error = read detail (it names what to fix in the app). If the error carries admin_consent_url, give the owner that link to forward to their Microsoft 365 admin, and start again once the admin has approved.",
       "Run Test (POST {base}/api/connectors/{cid}/test{hdr}), turn the connector on (POST {base}/api/connectors{hdr} with {\"ConnectorId\": {cid}, \"Active\": true}) and say SETUP DONE."] },
   teams: { group: "Messaging", channel: "teams", srcLabel: "Users / chat ids", srcPh: "user UPN, e.g. jsmith@yourcompany.com",
@@ -1768,7 +1771,7 @@ function KbSearch({ conn }) {
     <Box sx={{ mt: 2, maxWidth: 560 }}>
       <Typography variant="body2" sx={{ fontWeight: 600, color: INK, mb: 0.75 }}>{t("Ask the knowledge base")}</Typography>
       <Box sx={{ display: "flex", gap: 1 }}>
-        <TextField size="small" fullWidth placeholder={t("e.g. what is our resident refund policy")} value={q} sx={{ bgcolor: "#fff" }}
+        <TextField size="small" fullWidth placeholder={t("e.g. what is our resident refund policy")} value={q} sx={{ bgcolor: "var(--tq-panel, #fff)" }}
           onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && go()} />
         <Button variant="outlined" disabled={busy || !q.trim()} onClick={go}>{busy ? <CircularProgress size={14} /> : t("Search")}</Button>
       </Box>
@@ -1807,8 +1810,8 @@ export function ConfigField({ conn, field: [label, key, ph, help], cfg, setCfg, 
   const onChange = (e) => setCfg({ ...cfg, [key]: e.target.value });
   const end = tick ? { InputProps: { endAdornment: tick } } : {};
   if (!(conn?.WriteOnlyKeys || []).includes(key))
-    return <TextField data-tq-conn-field={key} label={t(label)} placeholder={ph || ""} helperText={help ? t(help) : help} value={cfg[key] || ""} sx={{ bgcolor: "#fff" }} onChange={onChange} {...end} {...rest} />;
-  return <TextField type="password" data-tq-conn-field={key} data-tq-write-only={key} autoComplete="new-password" sx={{ bgcolor: "#fff" }} {...end} {...rest}
+    return <TextField data-tq-conn-field={key} label={t(label)} placeholder={ph || ""} helperText={help ? t(help) : help} value={cfg[key] || ""} sx={{ bgcolor: "var(--tq-panel, #fff)" }} onChange={onChange} {...end} {...rest} />;
+  return <TextField type="password" data-tq-conn-field={key} data-tq-write-only={key} autoComplete="new-password" sx={{ bgcolor: "var(--tq-panel, #fff)" }} {...end} {...rest}
     label={(conn.ConfigSaved || []).includes(key) ? t("{label} — saved, type to replace", { label: t(label) }) : t(label)} placeholder={ph || ""}
     helperText={help ? `${t(help)} ${t("Never shown again once saved.")}` : t("Never shown again once saved.")}
     value={cfg[key] || ""} onChange={onChange} />;
@@ -1820,9 +1823,8 @@ const NL = String.fromCharCode(10);
 // A card per connection. The dot is read off the status line the card already carries -
 // "off", "not set up" and "connection failing" are the only three states worth a colour.
 // a plain card (connCardOf's `plain`) says its state outright; the catalogue's is read off its status line
-const connState = (c) => (c.state || (c.planned ? "planned" : c.guide ? "guide"
-  : /failing|test failed/.test(c.desc) ? "failing"
-    : /^off|not set up|no key yet/.test(c.desc) ? "off" : "on"));
+// ...and only a line that SAYS it is on is on (connectorCatalog.cardState): "not added" was not "off", so it read as connected
+const connState = cardState;
 const connDot = (c) => ({ planned: "#cfc9bf", guide: "#8b7c63", failing: "#6b2733", off: "#cfc9bf", on: "#55697a" })[connState(c)];
 // the whole card says its state, not just the 7px dot: a live connection wears the brand
 // border on a faintly tinted ground, a failing one the alert border, an unconfigured one
@@ -1890,7 +1892,7 @@ const TestLine = ({ test, mt = 1, cid }) => {
   const ins = test.install;
   return (
     <Box sx={{ mt }}>
-      <Typography variant="body2" sx={{ fontWeight: 600, color: test.ok ? "#47654a" : "#6b2733" }}>
+      <Typography variant="body2" sx={{ fontWeight: 600, color: test.ok ? "var(--tq-success, #47654a)" : "var(--tq-danger, #6b2733)" }}>
         {test.ok ? "✓" : "✗"} {test.detailPresentation ? errorText(test.detailPresentation) : test.detailMessage ? displayMessage(test.detailMessage) : test.detail}{test.ms != null ? ` · ${test.ms}ms` : ""}
       </Typography>
       {!test.ok && <BridgeRestart cid={cid} text={test.detail} />}
@@ -1937,15 +1939,15 @@ export const ConnCard = ({ c }) => {
         transition: "border-color .15s, box-shadow .15s",
         ...(c.planned ? {} : { "&:hover": { boxShadow: [ring, "0 2px 8px rgba(47,107,79,.12)"].filter(Boolean).join(", ") } }) }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1.1 }}>
-        <Box sx={{ width: 30, height: 30, borderRadius: 2, bgcolor: "#e9e3d8", flexShrink: 0,
+        <Box sx={{ width: 30, height: 30, borderRadius: 2, bgcolor: "var(--tq-inset, #e9e3d8)", flexShrink: 0,
           display: "flex", alignItems: "center", justifyContent: "center" }}>
-          {c.channel === "cli" ? <TerminalIcon sx={{ fontSize: 17, color: "#55697a" }} />
+          {c.channel === "cli" ? <TerminalIcon sx={{ fontSize: 17, color: "var(--tq-link, #55697a)" }} />
             : <ChannelIcon channel={c.channel} sx={{ fontSize: 17 }} />}
         </Box>
         <Typography noWrap data-tq-setup-label="" sx={{ color: INK, fontWeight: 600, fontSize: 13, flex: 1, minWidth: 0 }}>{c.title}</Typography>
         {connState(c) === "on" && !c.plain && (
           <Box component="span" data-tq-conn-pill sx={{ flexShrink: 0, px: 0.75, py: 0.1, borderRadius: 99, fontSize: 10, fontWeight: 600,
-            lineHeight: 1.6, color: "#47654a", bgcolor: "#e8efe6", border: "1px solid #c9d8c5" }}>{t("Connected")}</Box>
+            lineHeight: 1.6, color: "var(--tq-success, #47654a)", bgcolor: "var(--tq-inset, #e8efe6)", border: "1px solid var(--tq-border, #c9d8c5)" }}>{t("Connected")}</Box>
         )}
         <Box sx={{ width: 7, height: 7, borderRadius: "50%", bgcolor: connDot(c), flexShrink: 0 }} />
         {c.remove && <CardRemove {...c.remove} />}
@@ -1961,8 +1963,11 @@ export const ConnCard = ({ c }) => {
 // THE SAME CARD IN PLAIN WORDS (`plain`, the first run's questions): "off · trigger + tool · 0/0 chat jids" is the catalogue's
 // shorthand for someone who has set connections up before; a first-time owner gets the state itself (the owner, 2026-10-15)
 const SIGNED_OUT = /sign-in has lapsed|signed out|sign in again|expired/i;
+// ...and what its first read did - how far back it went, how many it brought in - not only "Connected" (the owner, 2026-11-10: "it
+// says connected but it's not going back"). channels._first_read keeps it on the card once that read moved the watermark.
+const firstRead = (c) => { try { const f = JSON.parse(c.ConfigJson || "{}").first_read; return f ? ` · ${broughtLine(f.n || 0, f.hours || 0)}` : ""; } catch { return ""; } };
 const plainState = (c, srcs) => (c.LastError ? (SIGNED_OUT.test(c.LastError) ? ["failing", "Needs sign-in"] : ["failing", "Not answering - click to fix it"])
-  : c.Active && (c.HasSecret || c.LastSyncAt || (srcs || []).some((s) => s.Active)) ? ["on", c.LastSyncAt ? `Connected · checked ${timeAgo(c.LastSyncAt)}` : "Connected"]
+  : c.Active && (c.HasSecret || c.LastSyncAt || (srcs || []).some((s) => s.Active)) ? ["on", c.LastSyncAt ? `Connected${firstRead(c)} · checked ${timeAgo(c.LastSyncAt)}` : "Connected"]
   : ["off", "Not set up"]);
 
 // A connector's card as the catalogue draws it - its status line said one way, wherever the card is shown (the first run's
@@ -1979,7 +1984,7 @@ export const connCardOf = (c, sources, go, plain = false) => {
       : c.HasSecret ? " · key saved"
         : ["ollama", "local_whisper"].includes(c.Type) ? " · local — no key needed"
         : c.Type === "stt_server" ? " · your server — key optional" : " · no key yet")
-    + (c.LastError ? " · last test failed" : c.LastSyncAt ? ` · ok ${timeAgo(c.LastSyncAt)}` : "");
+    + (c.LastError ? " · last test failed" : c.LastSyncAt ? `${firstRead(c)} · ok ${timeAgo(c.LastSyncAt)}` : "");
   const [state, said] = plain ? plainState(c, srcs) : [undefined, status];
   // the product's own logo wins over the channel glyph: five AI cards sharing one sparkle,
   // or Jira and Linear both wearing 'boards', tells you nothing about which is which
@@ -2088,7 +2093,7 @@ const VoiceVocabulary = ({ onBack }) => {
         {saved && <Alert severity="success" sx={{ mt: 1.5 }}>{displayMessage(saved)}</Alert>}
         {/* the receipts: what history was read and counted, so every added name traces back to your own mail */}
         {genEv?.length > 0 && (
-          <Box sx={{ mt: 1.5, p: 1.25, bgcolor: "#fff", border: `1px solid ${BORDER}`, borderRadius: 2 }}>
+          <Box sx={{ mt: 1.5, p: 1.25, bgcolor: "var(--tq-panel, #fff)", border: `1px solid ${BORDER}`, borderRadius: 2 }}>
             <Typography variant="caption" sx={{ color: DIM, fontWeight: 600, display: "block", mb: 0.5 }}>{t("What it read")}</Typography>
             {genEv.map((l, i) => (
               <Typography key={i} variant="caption" component="div" sx={{ color: l.startsWith("  ") ? FAINT : DIM, whiteSpace: "pre-wrap", fontFamily: l.startsWith("  ") ? "monospace" : "inherit", fontSize: 11 }}>{l}</Typography>
@@ -2127,7 +2132,7 @@ function AlchemyWalletGuide({ onBack, onData }) {
     localStorage.removeItem("tq-alchemy-wallet-shell");
     setSid("");
   };
-  const command = (value) => <Box component="pre" sx={{ m: 0, mt: 0.6, mb: 1.5, p: 1.2, bgcolor: "#f4f0e8",
+  const command = (value) => <Box component="pre" sx={{ m: 0, mt: 0.6, mb: 1.5, p: 1.2, bgcolor: "var(--tq-inset, #f4f0e8)",
     border: `1px solid ${BORDER}`, borderRadius: 1.5, overflowX: "auto", fontSize: 12 }}>{value}</Box>;
   return <Box sx={{ maxWidth: 850, mx: "auto" }}>
     <Crumb section={t("Connections")} onBack={onBack} title="Alchemy Agent Wallet" />
@@ -2275,7 +2280,11 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
     : AGENT_TOOLS.has(conn.Type) ? <AgentToolDetail key={conn.ConnectorId} {...shared} />
     : DATA_META[conn.Type] ? <DataDetail key={conn.ConnectorId} {...shared} meta={DATA_META[conn.Type]} sources={sources} byType={byType} />
     : <ChannelDetail key={conn.ConnectorId} {...shared} sources={sources} onNavigate={onNavigate} chatsAsk={chatsAsk} />;
-  const detail = page && <AgentsDoor.Provider value={() => setOpen({ kind: "agents" })}><Box ref={setScope} data-tq-connector-scope="">{page}</Box></AgentsDoor.Provider>;
+  // ...and A SYSTEM WITH TWO WAYS IN offers both, at the top of its one card (connectorCatalog.oneCardPerSystem; the owner, 2026-11-10: "it's mcp
+  // vs api for cards. there should be 2 options"): its own connector and its vendor's MCP server, each with its own setup and state, either or both
+  const ways = waysOf(conn, byType);
+  const choice = ways && <SystemWays ways={ways} at={ways.MCP === conn ? "MCP" : "API"} onWay={(w) => setOpen({ kind: "connector", id: ways[w].ConnectorId })} />;
+  const detail = page && <AgentsDoor.Provider value={() => setOpen({ kind: "agents" })}><Box ref={setScope} data-tq-connector-scope="">{choice}{page}</Box></AgentsDoor.Provider>;
   if (!browse) {
     if (detail) return detail;
     if (open?.kind === "connector") return null;
@@ -2287,13 +2296,13 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
   const chanCard = (c) => ({ ...connCardOf(c, sources, () => setOpen({ kind: "connector", id: c.ConnectorId })),
     remove: removable(c) ? { conn: c, channel: META[c.Type]?.channel || "", reload: load } : null });
   // three shapes of card, said once instead of inline in five groups
-  const dataDesc = (c, rtype) => (c?.LastError ? "connection failing" : c?.LastSyncAt ? "connection ✓" : "not set up")
+  const dataDesc = (c, rtype) => (c?.LastError ? "connection failing" : c?.LastSyncAt ? "connection ✓" : NOT_SET_UP)
     + ` · ${plural(reports.filter((s2) => (parse(s2.ConfigJson).type || "rest") === rtype).length, "report")} (built under Reports)`;
   const dataCards = (keys) => keys.flatMap((type) => allOf(type).filter(() => DATA_META[type]).map((c) => {
     const dm = DATA_META[type];
     const count = reports.filter((s2) => dm.types.includes(parse(s2.ConfigJson).type)).length;
     return { key: `d${c.ConnectorId}`, title: c.Name, channel: type,
-      desc: (c.LastError ? "connection failing" : c.LastSyncAt ? "connection ✓" : "not set up")
+      desc: (c.LastError ? "connection failing" : c.LastSyncAt ? "connection ✓" : NOT_SET_UP)
         + ` · ${plural(count, "report")} (built under Reports)`,
       displayDesc: `${t(c.LastError ? "connection failing" : c.LastSyncAt ? "connection ✓" : "not set up")} · ${t(count === 1 ? "{count} report (built under Reports)" : "{count} reports (built under Reports)", { count })}`,
       haystack: `${dm.title} ${type} ${dm.desc} ${dm.types.join(" ")} ` + dm.howto.join(" "),
@@ -2302,14 +2311,16 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
   const channelCards = (keys) => keys.flatMap((t) => allOf(t).map(chanCard));
   const specialCards = (type, title, rtype, haystack, desc = (c) => dataDesc(c, rtype)) => allOf(type).map((c) => {
     const count = reports.filter((s2) => (parse(s2.ConfigJson).type || "rest") === rtype).length;
-    return { key: `s${c.ConnectorId}`, title: c.Name || title, channel: type,
-      desc: desc(c), haystack,
-      displayDesc: ["reason_network", "agent_desktop"].includes(type) ? t(desc(c))
-        : `${t(c.LastError ? "connection failing" : c.LastSyncAt ? "connection ✓" : "not set up")} · ${t(count === 1 ? "{count} report (built under Reports)" : "{count} reports (built under Reports)", { count })}`,
-      go: () => setOpen({ kind: "connector", id: c.ConnectorId }),
-      // ...and these carry it too (the owner, 2026-11-06): SQL Server, remote Windows, Agent Desktop and Reason Network had Remove only on
-      // their own page - the same channel the page's own Remove says (MssqlDetail, WinrmDetail: data)
-      remove: removable(c) ? { conn: c, channel: type === "mssql" || type === "winrm" ? "data" : "", reload: load } : null,
+    return {
+    // ...named for the system, never for the road to it (the owner, 2026-11-10): a card seeded as "Airtable MCP" reads "Airtable"
+    key: `s${c.ConnectorId}`, title: String(c.Name || title).replace(/\s+MCP$/i, ""), channel: type,
+    desc: desc(c), haystack,
+    displayDesc: ["reason_network", "agent_desktop"].includes(type) ? t(desc(c))
+      : `${t(c.LastError ? "connection failing" : c.LastSyncAt ? "connection ✓" : "not set up")} · ${t(count === 1 ? "{count} report (built under Reports)" : "{count} reports (built under Reports)", { count })}`,
+    go: () => setOpen({ kind: "connector", id: c.ConnectorId }),
+    // ...and these carry it too (the owner, 2026-11-06): SQL Server, remote Windows, Agent Desktop and Reason Network had Remove only on
+    // their own page - the same channel the page's own Remove says (MssqlDetail, WinrmDetail: data)
+    remove: removable(c) ? { conn: c, channel: type === "mssql" || type === "winrm" ? "data" : "", reload: load } : null,
     };
   });
   const planned = types.filter((t) => t.status === "planned").map((t) => t.type);
@@ -2345,7 +2356,7 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
       haystack: `${c.type} ${c.title} ${c.desc} planned`, planned: true,
     }))];
 
-  const groups = onceEach([
+  const groups = oneCardPerSystem(onceEach([
     { title: "AI — agents & models", cards: [
       { key: "agents", title: noun("cli_agents"), desc: `Claude / Codex / Qwen Code / OpenCode / Kimi / Gemini / Oh My Pi — connect a coding CLI. Choose the default and model in ${placeName("sorting")}`,
         channel: "cli", haystack: "ai cli agents claude codex qwen 通义千问 opencode deepseek 深度求索 kimi moonshot 月之暗面 glm 智谱 minimax gemini omp oh my pi command args resume", go: () => setOpen({ kind: "agents" }),
@@ -2358,11 +2369,12 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
       // what happens with NO card here is not visible anywhere else, and it looked like something was missing
       note: "Without a card here the mic still works where a voice is found: in Edge or Chrome it uses the browser's own recognition at once, and in the Taskuary window on Windows it uses Windows' own dictation (on this computer, no key) — free, live microphone only. With neither it shows crossed out. Voice notes on WhatsApp/Telegram land marked not transcribed, with a Transcribe button for later. A card is what transcribes a voice-note file on the server. Free choices: Groq (free tier) or Local Whisper (no key, on this machine). Edge's voices are text-to-speech — the other direction.",
       cards: [
-        { key: "builtin-voice", title: t("Windows / browser voice"), channel: "ai",
+        // ...a page to set things on, not a connection: no Connected ring (it wore one, read off a line that never said "off")
+        { key: "builtin-voice", title: t("Windows / browser voice"), channel: "ai", guide: true,
           desc: t("Choose built-in dictation and test the microphone. No API key."),
           haystack: "windows browser edge chrome built in speech microphone dictation voice",
           go: () => setOpen({ kind: "builtin-voice" }) },
-        { key: "voice-vocabulary", title: t("Shared voice vocabulary"), channel: "ai",
+        { key: "voice-vocabulary", title: t("Shared voice vocabulary"), channel: "ai", guide: true,
           desc: t("one system-wide list used by every voice connector and mic"), displayDesc: t("one system-wide list used by every voice connector and mic"),
           haystack: "custom shared voice vocabulary words phrases domain names acronyms",
           go: () => setOpen({ kind: "voice-vocabulary" }) },
@@ -2411,7 +2423,7 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
        the vault's own list and form (SavedSignins), the same one Settings > Agent permissions shows */
     { title: "Sign-ins", note: "Sites an agent signs into in its browser. Taskuary types a saved sign-in into the site's own page; the agent never sees it.",
       cards: [{ key: "signins", title: "Saved sign-ins", guide: true, desc: "Add or remove the sign-ins Taskuary types for your agents",
-        haystack: "sign in signin sign-in login log in password vault saved credentials user name site portal",
+        haystack: schema.panels["panel:signins"].words,
         go: () => setOpen({ kind: "signins" }) }] },
     { title: "Developer", cards: [...channelCards(["github", "gitlab", "azdo", "bitbucket", "sentry", "pagerduty"]), ...catalogCards("Developer")] },
     { title: "Project management", cards: [...channelCards(["jira", "asana", "monday", "clickup", "todoist", "linear", "trello", "notion",
@@ -2460,7 +2472,7 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
     { title: "Files & sheets", cards: [...dataCards(["knowledge", "handbook", "sharepoint", "google_sheets", "smb_file", "sftp", "obsidian"]),
       ...catalogCards("Files & sheets")] },
     { title: "Everything else", cards: [...channelCards(["calendly", "shopify", "woocommerce", "bigcommerce", "shipstation", "square", "paypal", "twilio"]), ...catalogCards("Everything else"), ...plannedCards(KNOWN_PLANNED, true)] },
- ]);
+ ]));
   const hits = matchCards(groups, q);
   // WORDS TYPED PUT THE OPEN CARD DOWN (the owner, 2026-10-21: "link" typed over the open LinkedIn card, and the page went on
   // showing that card and the section chips - the matches are only ever drawn with no card open, so none showed)
@@ -2491,7 +2503,7 @@ export default function ConnectorsView({ onNavigate, browse = null, browseState 
         <Box component="input" type="search" value={q} onChange={(e) => search(e.target.value)} placeholder={t("Search connectors…")}
           aria-label={t("Search connectors")} data-tq-browse-search=""
           sx={{ mt: 1.5, width: "100%", boxSizing: "border-box", height: 34, px: 1.25, border: `1px solid ${BORDER}`, borderRadius: "8px",
-            fontFamily: "inherit", fontSize: 12.5, color: INK, bgcolor: "#fff", outline: "none", "&:focus": { borderColor: "#55697a" } }} />
+            fontFamily: "inherit", fontSize: 12.5, color: INK, bgcolor: "var(--tq-panel, #fff)", outline: "none", "&:focus": { borderColor: "#55697a" } }} />
       ),
       query: q, empty: t("Nothing in this section yet."), noneAction: <RequestConnection q={q} />,
       // a card removed is gone, and the page back on the list: its Undo stands here (RemoveConnection)
@@ -2588,7 +2600,7 @@ function ConnectorIdentity({ conn, reload, onCreated, addOnly = false }) {
     <Box data-tq-add-another={conn.Type} sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap", mb: addOnly ? 0 : 1.5, maxWidth: 720 }}>
       {!addOnly && <>
         <TextField size="small" label={t("Connection name")} value={name} onChange={(e) => setName(e.target.value)} onBlur={rename}
-          onKeyDown={(e) => { if (e.key === "Enter") rename(); }} sx={{ bgcolor: "#fff", minWidth: 240 }} />
+          onKeyDown={(e) => { if (e.key === "Enter") rename(); }} sx={{ bgcolor: "var(--tq-panel, #fff)", minWidth: 240 }} />
         <Tick st={named} sx={{ ml: 0 }} />
       </>}
       {!one || !connected ? null : !adding ? (
@@ -2597,7 +2609,7 @@ function ConnectorIdentity({ conn, reload, onCreated, addOnly = false }) {
         <>
           <TextField size="small" autoFocus label={t("Name of the new {connection}", { connection: one })} value={newName}
             onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }}
-            sx={{ bgcolor: "#fff", minWidth: 240 }} />
+            sx={{ bgcolor: "var(--tq-panel, #fff)", minWidth: 240 }} />
           <Button size="small" variant="contained" disableElevation disabled={busy === "add" || !newName.trim()}
             onClick={add}>{busy === "add" ? t("Adding…") : t("Add")}</Button>
           <Button size="small" onClick={() => { setAdding(false); setNewName(""); setErr(""); }}>{t("Cancel")}</Button>
@@ -2625,7 +2637,7 @@ function CardPlaybooks({ type }) {
   const go = (slug) => { openAppLink(`playbook=${slug}`); };
   return (
     <Box sx={{ mt: 3, p: 1.5, border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: PANEL }}>
-      <Typography variant="caption" sx={{ color: "#6f8a6e", fontWeight: 600, letterSpacing: 1, display: "block", mb: 0.75 }}>
+      <Typography variant="caption" sx={{ color: "var(--tq-success, #6f8a6e)", fontWeight: 600, letterSpacing: 1, display: "block", mb: 0.75 }}>
         {t("PLAYBOOKS — WHAT THIS CONNECTION DOES FOR US")}
       </Typography>
       {books.length === 0 && (
@@ -2650,7 +2662,7 @@ function CardPlaybooks({ type }) {
 // REMOVE IS ONE PRESS AND ONE QUESTION (the owner, 2026-11-05: "going through each step of a connection to remove it and it should go
 // away"): the question says what stays, what goes and what stops working with it (#238); on yes the card is gone - an added one off the
 // list, the last of its kind wiped back to the catalogue's blank card (recentlydeleted.remove_connection) - and the page is back on the
-// list, where "Removed <it> - Undo" stands for the Undo line's minutes. Before 2026-11-05 it removed on the press, without asking.
+// list, where "Removed <it> - Undo" stands for the Undo line's seconds. Before 2026-11-05 it removed on the press, without asking.
 // ...the question and the press, shared by the detail page and the card's face (CardRemove): `read` - what leans on it, read now (#238)
 function useRemove(conn, channel, reload, after, read = true) {
   useLocale();
@@ -2674,7 +2686,7 @@ function RemoveConnection({ conn, reload, onBack, channel = "" }) {
   return (
     <Box sx={{ mt: 3, pt: 1.5, borderTop: `1px solid ${BORDER}`, maxWidth: 720 }}>
       <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
-        <Button size="small" startIcon={<DeleteOutlineIcon sx={{ fontSize: 15 }} />} sx={{ color: "#867f74" }}
+        <Button size="small" startIcon={<DeleteOutlineIcon sx={{ fontSize: 15 }} />} sx={{ color: "var(--tq-warning, #867f74)" }}
           title={t("Asks once, then wipes its saved sign-in and settings and switches its sources off - Undo puts them back")}
           onClick={() => setAsking(true)}>{t("Remove connection")}</Button>
         {line && <Typography data-tq-used-by="" variant="caption" sx={{ color: DIM, lineHeight: 1.5 }}>{line}</Typography>}
@@ -2693,7 +2705,7 @@ function CardRemove({ conn, channel = "", reload }) {
   const stop = (e) => e.stopPropagation();
   return <Box component="span" onClick={stop} onKeyDown={stop} sx={{ display: "inline-flex", flexShrink: 0 }}>
     <IconButton size="small" data-tq-card-remove="" aria-label={`Remove ${conn.Name || conn.Type}`} title="Remove - asks once; Undo puts it back"
-      onClick={() => { setOpen(true); setAsking(true); }} sx={{ p: 0.25, color: FAINT, "&:hover": { color: "#6b2733" } }}>
+      onClick={() => { setOpen(true); setAsking(true); }} sx={{ p: 0.25, color: FAINT, "&:hover": { color: "var(--tq-danger, #6b2733)" } }}>
       <DeleteOutlineIcon sx={{ fontSize: 16 }} /></IconButton>
     <ConfirmDelete open={asking} title={words.title} consequence={words.text} confirmLabel="Remove" undoable onConfirm={remove} onClose={() => setAsking(false)} />
   </Box>;
@@ -2755,7 +2767,7 @@ function MacPermissions({ conn, test, busy, runTest }) {
         {t('Apple Messages stays on this Mac. Reading the history macOS already keeps needs Full Disk Access; asking Messages.app to send a reply needs Automation. macOS controls both — Taskuary cannot grant or bypass them, and both are granted to {host}, not to "Taskuary".', { host })}
       </Typography>
       {notMac ? (
-        <Typography variant="body2" sx={{ color: "#6b2733", fontWeight: 600 }}>✗ {test.detail}</Typography>
+        <Typography variant="body2" sx={{ color: "var(--tq-danger, #6b2733)", fontWeight: 600 }}>✗ {test.detail}</Typography>
       ) : (
         <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap" }}>
           <Card title={t("Read Messages")} sub={t("Full Disk Access")} ok={readOk}>
@@ -2783,7 +2795,7 @@ function MacPermissions({ conn, test, busy, runTest }) {
               {openErr.full_disk_access && ` · ${displayMessage(openErr.full_disk_access)}`}
             </Typography>
             <TestLine test={test} mt={1} />
-            {!test && conn.LastError && <Typography variant="body2" sx={{ mt: 1, color: "#6b2733" }}>✗ {conn.LastErrorPlain || conn.LastError}</Typography>}
+            {!test && conn.LastError && <Typography variant="body2" sx={{ mt: 1, color: "var(--tq-danger, #6b2733)" }}>✗ {conn.LastErrorPlain || conn.LastError}</Typography>}
           </Card>
           <Card title={t("Send Messages")} sub={t("Automation: Messages")} ok={sendOk}>
             <Typography variant="caption" sx={{ color: DIM, display: "block", mb: 1 }}>
@@ -2801,7 +2813,7 @@ function MacPermissions({ conn, test, busy, runTest }) {
               {opened === "automation" && t(" · Settings opened")}
               {openErr.automation && ` · ${displayMessage(openErr.automation)}`}
             </Typography>
-            {probe && <Typography variant="body2" sx={{ mt: 1, fontWeight: 600, color: probe.ok ? "#47654a" : "#6b2733" }}>
+            {probe && <Typography variant="body2" sx={{ mt: 1, fontWeight: 600, color: probe.ok ? "var(--tq-success, #47654a)" : "var(--tq-danger, #6b2733)" }}>
               {probe.ok ? "✓" : "✗"} {displayMessage(probe.detail)}</Typography>}
           </Card>
         </Box>
@@ -3025,7 +3037,7 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
           </Button>
         )}
         {conn.Type === "imap" && /@(outlook|hotmail|live|msn)\.|office365|outlook\.office/i.test(`${cfg.address || ""} ${cfg.imap_host || ""}`) && (
-          <Typography variant="body2" sx={{ color: "#6b2733", fontWeight: 600 }}>
+          <Typography variant="body2" sx={{ color: "var(--tq-danger, #6b2733)", fontWeight: 600 }}>
             {t("Microsoft mailboxes no longer accept IMAP passwords — use the Outlook connector and “Sign in with Microsoft”.")}
           </Typography>
         )}
@@ -3042,7 +3054,7 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
             {/* WhatsApp has no secret at all - the bridge holds the pairing, not us */}
             {adminFields && m.secretLabel && (
               <TextField data-tq-secret="secret" label={conn.HasSecret ? t("{label} (saved — type to replace)", { label: t(m.secretLabel) }) : t(m.secretLabel)} type="password"
-                value={secret} onChange={(e) => setSecret(e.target.value)} onBlur={boxes.flush} sx={{ bgcolor: "#fff" }}
+                value={secret} onChange={(e) => setSecret(e.target.value)} onBlur={boxes.flush} sx={{ bgcolor: "var(--tq-panel, #fff)" }}
                 onKeyDown={(e) => { if (e.key === "Enter") boxes.flush(); }}
                 InputProps={{ endAdornment: boxes.tick("Secret") }} helperText={t(SECRET_HELP)} />
             )}
@@ -3057,6 +3069,14 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
             <TestLine test={saveSaid} mt={0} />
           </>
         )}
+        {/* HOW FAR BACK ITS FIRST SYNC GOES, until that sync has run (`ReadsBack`, channels.first_read_hours) - a reader asked for what is
+            pending, not by date (Telegram, WhatsApp, Apple Messages), has none. Saved as it is picked, like every box here */}
+        {conn.ReadsBack > 0 && !isAI && (
+          <TextField select size="small" label="How far back to bring in" value={String(cfg.first_days || conn.ReadsBack)} data-tq-first-days=""
+            onChange={(e) => setCfg({ ...cfg, first_days: Number(e.target.value) })} InputProps={{ endAdornment: boxes.tick("first_days") }}
+            sx={{ bgcolor: "var(--tq-panel, #fff)", maxWidth: 260 }} helperText="Its first sync brings this much in; after that it keeps up from there.">
+            {backChoices(conn.ReadsBack).map(([d, l]) => <MenuItem key={d} value={String(d)} sx={{ fontSize: 13 }}>{l}</MenuItem>)}</TextField>
+        )}
       </Box>
     )},
     { id: "test", label: "Test", done: !!conn.LastSyncAt && !conn.LastError, body: conn.Type === "imessage" ? (
@@ -3069,7 +3089,7 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
         <TestLine test={test} mt={1} cid={conn.ConnectorId} />
         {!test && (fresh ? <Typography variant="body2" data-tq-saved-test="" sx={{ mt: 1, color: DIM }}>{t("Saved - press Test to check it.")}</Typography>
           : conn.LastError && <>
-            <Typography variant="body2" sx={{ mt: 1, color: "#6b2733" }}>✗ {conn.LastErrorPlain || conn.LastError}</Typography>
+            <Typography variant="body2" sx={{ mt: 1, color: "var(--tq-danger, #6b2733)" }}>✗ {conn.LastErrorPlain || conn.LastError}</Typography>
             <BridgeRestart cid={conn.ConnectorId} text={conn.LastError} /></>)}
       </Box>
     )},
@@ -3118,13 +3138,13 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
             {s.LastPolledAt && <Typography variant="caption" sx={{ color: FAINT }}>{t("polled {time}", { time: timeAgo(s.LastPolledAt) })}</Typography>}
             <Switch checked={!!s.Active} onChange={() => toggleSource(s)} />
             <IconButton size="small" title={t("Remove it (off keeps it listed) - Undo puts it back")} aria-label={t("Remove {address}", { address: s.Address })} onClick={() => removeSrc(s)}>
-              <DeleteOutlineIcon sx={{ fontSize: 16, color: "#867f74" }} />
+              <DeleteOutlineIcon sx={{ fontSize: 16, color: "var(--tq-warning, #867f74)" }} />
             </IconButton>
           </Box>
         ))}
         <UndoLine kinds={["source"]} onRestored={reload} sx={{ mt: 1, mb: 0 }} />
         <Box sx={{ display: "flex", gap: 1, mt: 1.5, maxWidth: 460 }}>
-          <TextField fullWidth placeholder={conn.Type === "teams" ? t("user UPN, e.g. {example}", { example: m.srcPh.split("e.g. ")[1] }) : m.srcPh === "added by Test" ? t("added by Test") : m.srcPh} value={newSrc} sx={{ bgcolor: "#fff" }} error={!!srcBad} helperText={srcBad ? displayMessage(srcBad) : undefined}
+          <TextField fullWidth placeholder={conn.Type === "teams" ? t("user UPN, e.g. {example}", { example: m.srcPh.split("e.g. ")[1] }) : m.srcPh === "added by Test" ? t("added by Test") : m.srcPh} value={newSrc} sx={{ bgcolor: "var(--tq-panel, #fff)" }} error={!!srcBad} helperText={srcBad ? displayMessage(srcBad) : undefined}
             onChange={(e) => { setNewSrc(e.target.value); setSrcBad(""); }} onKeyDown={(e) => e.key === "Enter" && addSource()} />
           <Button variant="contained" disableElevation onClick={addSource}>{t("Add")}</Button>
         </Box>
@@ -3163,7 +3183,7 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
           <Box component="span" title={sync.why ? t(sync.why) : ""} data-tq-sync-why={sync.why || undefined} sx={{ display: "inline-flex" }}>
             <Button size="small" variant="contained" disableElevation onClick={syncHere} disabled={srcSync || !sync.ok} data-tq-sync-now=""
               startIcon={srcSync ? <CircularProgress size={11} sx={{ color: "#fff" }} /> : <SyncIcon sx={{ fontSize: 14 }} />}
-              sx={{ background: sync.ok ? "linear-gradient(90deg, #55697a, #7d9a7c)" : undefined }}>{srcSync ? t("Syncing…") : btnLabel("sync_now")}</Button>
+              sx={{ color: "#fff", background: sync.ok ? "linear-gradient(90deg, #55697a, #7d9a7c)" : undefined }}>{srcSync ? t("Syncing…") : btnLabel("sync_now")}</Button>
           </Box>
         )}
       </Box>
@@ -3213,11 +3233,11 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
       setBusy("");
     };
     // white is the box's, not its hint's: on the root it drew a white band under every field; the hint's link in the app's ink
-    const boxSx = { "& .MuiInputBase-root": { bgcolor: "#fff" }, "& .MuiFormHelperText-root a": { color: "#41525f" } };
+    const boxSx = { "& .MuiInputBase-root": { bgcolor: "var(--tq-panel, #fff)" }, "& .MuiFormHelperText-root a": { color: "var(--tq-link, #41525f)" } };
     return (
       <Box data-tq-simple-mail={conn.Type} sx={{ display: "flex", flexDirection: "column", gap: 1.25, maxWidth: 520 }}>
         {conn.Type === "imap" && /@(outlook|hotmail|live|msn)\.|office365|outlook\.office/i.test(`${cfg.address || ""} ${cfg.imap_host || ""}`) && (
-          <Typography variant="body2" sx={{ color: "#6b2733", fontWeight: 600 }}>
+          <Typography variant="body2" sx={{ color: "var(--tq-danger, #6b2733)", fontWeight: 600 }}>
             {t("That is a Microsoft mailbox - use the Microsoft 365 / Outlook card instead.")}</Typography>
         )}
         {m.fields.filter(([, key]) => keep.includes(key)).map(([label, key, ph, helper]) => (
@@ -3255,7 +3275,9 @@ export function ChannelDetail({ conn: savedConn, sources: savedSources, reload, 
       {/* the sign-in lives at the TOP of the card, not inside the Credentials step: a card that already
           runs on a tenant app opens on Sources, and the one button most people need was folded away.
           It sits above the agent box too: one sign-in is the whole setup, the agent is the long road (B10) */}
-      {MS_SIGNIN.includes(conn.Type) && <Box sx={{ mb: 2 }}><MsSignIn conn={conn} cfg={cfg} setCfg={setCfg} reload={reload} onSignedIn={() => setStep(m.srcLabel ? 2 : 3)} /></Box>}
+      {conn.Type === "teams" && <TeamsAccount conn={conn} cfg={cfg} setCfg={setCfg} reload={reload} />}
+      {MS_SIGNIN.includes(conn.Type) && !(conn.Type === "teams" && cfg.account_type === "personal")
+        && <Box sx={{ mb: 2 }}><MsSignIn conn={conn} cfg={cfg} setCfg={setCfg} reload={reload} onSignedIn={() => setStep(m.srcLabel ? 2 : 3)} /></Box>}
       {conn.Type === "chatgpt" && <Box sx={{ mb: 2 }}><ChatGptSignIn conn={conn} cfg={cfg} reload={reload} /></Box>}
       {conn.Type === "gmail" && <GoogleCalendar conn={conn} cfg={cfg} reload={reload} />}
       {conn.Type === "gmail" && <GoogleFiles conn={conn} cfg={cfg} reload={reload} />}
@@ -3346,19 +3368,19 @@ function MssqlConnection({ conn, drivers, reload }) {
         <StepContent>
           <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, maxWidth: 460, mt: 1 }}>
             <TextField label={t("server")} placeholder="localhost  ·  localhost\SQLEXPRESS  ·  HOST\INSTANCE" value={cfg.server || ""}
-              sx={{ bgcolor: "#fff" }} onChange={(e) => setCfg({ ...cfg, server: e.target.value })} {...box("server")} />
+              sx={{ bgcolor: "var(--tq-panel, #fff)" }} onChange={(e) => setCfg({ ...cfg, server: e.target.value })} {...box("server")} />
             <TextField label={t("database")} placeholder="master" value={cfg.database || ""}
-              sx={{ bgcolor: "#fff" }} onChange={(e) => setCfg({ ...cfg, database: e.target.value })} {...box("database")} />
-            <Select value={cfg.auth || "windows"} sx={{ bgcolor: "#fff" }} onChange={(e) => setCfg({ ...cfg, auth: e.target.value })}
+              sx={{ bgcolor: "var(--tq-panel, #fff)" }} onChange={(e) => setCfg({ ...cfg, database: e.target.value })} {...box("database")} />
+            <Select value={cfg.auth || "windows"} sx={{ bgcolor: "var(--tq-panel, #fff)" }} onChange={(e) => setCfg({ ...cfg, auth: e.target.value })}
               endAdornment={<Box sx={{ mr: 3 }}>{boxes.tick("auth")}</Box>}>
               <MenuItem value="windows" sx={{ fontSize: 12.5 }}>{t("Windows auth (local, trusted)")}</MenuItem>
               <MenuItem value="sql" sx={{ fontSize: 12.5 }}>{t("SQL login")}</MenuItem>
             </Select>
-            {sqlAuth && <TextField label={t("username")} value={cfg.username || ""} sx={{ bgcolor: "#fff" }}
+            {sqlAuth && <TextField label={t("username")} value={cfg.username || ""} sx={{ bgcolor: "var(--tq-panel, #fff)" }}
               onChange={(e) => setCfg({ ...cfg, username: e.target.value })} {...box("username")} />}
             {sqlAuth && <TextField label={t(conn.HasSecret ? "password (saved — type to replace)" : "password")} type="password"
-              value={secret} onChange={(e) => setSecret(e.target.value)} sx={{ bgcolor: "#fff" }} {...box("Secret")} />}
-            <Select value={cfg.driver || ""} displayEmpty sx={{ bgcolor: "#fff" }} onChange={(e) => setCfg({ ...cfg, driver: e.target.value })}
+              value={secret} onChange={(e) => setSecret(e.target.value)} sx={{ bgcolor: "var(--tq-panel, #fff)" }} {...box("Secret")} />}
+            <Select value={cfg.driver || ""} displayEmpty sx={{ bgcolor: "var(--tq-panel, #fff)" }} onChange={(e) => setCfg({ ...cfg, driver: e.target.value })}
               endAdornment={<Box sx={{ mr: 3 }}>{boxes.tick("driver")}</Box>}>
               <MenuItem value="" sx={{ fontSize: 12.5 }}>{t("(auto — newest installed driver)")}</MenuItem>
               {drivers.map((d) => <MenuItem key={d} value={d} sx={{ fontSize: 12.5 }}>{d}</MenuItem>)}
@@ -3373,7 +3395,7 @@ function MssqlConnection({ conn, drivers, reload }) {
           <Button variant="contained" disableElevation disabled={busy === "test"} onClick={runTest}
             startIcon={busy === "test" ? <CircularProgress size={12} sx={{ color: "#fff" }} /> : <BoltIcon sx={{ fontSize: 15 }} />}>{t("Test")}</Button>
           <TestLine test={test} mt={1} />
-          {!test && conn.LastError && <Typography variant="body2" sx={{ mt: 1, color: "#6b2733" }}>✗ {conn.LastErrorPlain || conn.LastError}</Typography>}
+          {!test && conn.LastError && <Typography variant="body2" sx={{ mt: 1, color: "var(--tq-danger, #6b2733)" }}>✗ {conn.LastErrorPlain || conn.LastError}</Typography>}
         </StepContent>
       </Step>
     </Stepper>
@@ -3440,7 +3462,7 @@ function DesktopDetail({ conn: savedConn, reload, onBack, onCreated }) {
           startIcon={busy === "test" ? <CircularProgress size={12} /> : <BoltIcon sx={{ fontSize: 15 }} />}>{t("Test")}</Button>
       </Box>
       <TestLine test={test} mt={1} />
-      {draft.st?.state === "error" && <Typography role="alert" sx={{ mt: 1, color: "#8a3646", fontSize: 12 }}>{draft.st.why}</Typography>}
+      {draft.st?.state === "error" && <Typography role="alert" sx={{ mt: 1, color: "var(--tq-danger, #8a3646)", fontSize: 12 }}>{t(draft.st.why)}</Typography>}
       <CardPlaybooks type={conn.Type} />
       <RemoveConnection conn={conn} reload={reload} onBack={onBack} />
     </Box>
@@ -3449,7 +3471,17 @@ function DesktopDetail({ conn: savedConn, reload, onBack, onCreated }) {
 
 /* ── A tool for the agents: a vendor's MCP server added to the agent CLIs here (remotemcp.py), and/or a skill on disk (videotools.py) ── */
 const AGENT_TOOLS = new Set([...CATALOGUE.filter((c) => c.mcp).map((c) => c.type), "video_use"]);
-const toolDesc = (c) => (c.Active ? "added · your agents can use it" : "not added");
+const toolDesc = (c) => (c.Active ? "added · your agents can use it" : NOT_SET_UP);
+// A SYSTEM'S TWO WAYS IN, TWO EQUAL CHOICES (the owner, 2026-11-10: "it's mcp vs api for cards. there should be 2 options.. yes"): the page's
+// tabs, each saying what that way gives and whether it is set up; the chosen way's own page is drawn under them. A system with one way has no
+// choice (connectorCatalog.waysOf is null), and its card on the grid reads connected when either way is (oneCardPerSystem)
+const SystemWays = ({ ways, at, onWay }) => {
+  useLocale();
+  return <Box data-tq-ways={at}>
+    <UnderTabs tabs={WAY_NAMES} value={at} onChange={(w) => w !== at && onWay(w)}
+      under={Object.fromEntries(WAY_NAMES.map((w) => [w, <>{t(WAYS[w])} <b data-tq-way-state={w}>{t(wayState(w, ways[w]))}</b></>]))} />
+  </Box>;
+};
 function AgentToolDetail({ conn, reload, onBack, onCreated }) {
   const [st, setSt] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -3488,7 +3520,7 @@ function AgentToolDetail({ conn, reload, onBack, onCreated }) {
           : v.signed_in ? "added · signed in" : v.signing_in ? "added · signing in…" : "added"}</Typography>))}
       {skill && <Typography variant="body2" sx={{ color: INK }}>Skill <a href={skill.repo} target="_blank" rel="noreferrer">{skill.name}</a>: {skill.here ? "installed" : "not installed"}</Typography>}
       {(st?.missing || []).map((m) => <Typography key={m} variant="body2" sx={{ color: DIM }}>Still needs {m}.</Typography>)}
-      {st?.token && !clis.some(([, v]) => v.added) && <TextField size="small" type="password" label="Personal token" value={tok} sx={{ bgcolor: "#fff", minWidth: 320, mt: 1 }}
+      {st?.token && !clis.some(([, v]) => v.added) && <TextField size="small" type="password" label="Personal token" value={tok} sx={{ bgcolor: "var(--tq-panel, #fff)", minWidth: 320, mt: 1 }}
         onChange={(e) => setTok(e.target.value)} onBlur={saveTok} helperText="Kept as this card's secret and written only into Claude Code's own config" />}
       {!!st?.sign_in?.length && <Typography variant="body2" sx={{ color: DIM, mt: 1, maxWidth: 720 }}>
         Sign-in is the vendor's, in the agent: press Sign in, or {st.sign_in.join("; or ")}. Taskuary never sees that sign-in, so it cannot list this server's tools - adding it here is your word that your agents may use all of them.</Typography>}
@@ -3537,14 +3569,14 @@ function WinrmDetail({ conn, reload, onBack, onCreated }) {
       {tab === "Agent" && <AgentTab steps={WINRM_AGENT} />}
       {tab === "Setup" && (
         <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, maxWidth: 460, mt: 1 }}>
-          <TextField label={t("machine name")} placeholder="NWWEB01" value={cfg.host || ""} sx={{ bgcolor: "#fff" }}
+          <TextField label={t("machine name")} placeholder="NWWEB01" value={cfg.host || ""} sx={{ bgcolor: "var(--tq-panel, #fff)" }}
             onChange={(e) => setCfg({ ...cfg, host: e.target.value })} onBlur={boxes.flush} InputProps={{ endAdornment: boxes.tick("host") }} />
           <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
             <Button variant="contained" disableElevation disabled={busy === "test" || !cfg.host} onClick={runTest}
               startIcon={busy === "test" ? <CircularProgress size={12} sx={{ color: "#fff" }} /> : <BoltIcon sx={{ fontSize: 15 }} />}>{t("Test")}</Button>
           </Box>
           <TestLine test={test} mt={0} />
-          {!test && conn.LastError && <Typography variant="body2" sx={{ color: "#6b2733" }}>✗ {conn.LastErrorPlain || conn.LastError}</Typography>}
+          {!test && conn.LastError && <Typography variant="body2" sx={{ color: "var(--tq-danger, #6b2733)" }}>✗ {conn.LastErrorPlain || conn.LastError}</Typography>}
         </Box>
       )}
       <AiSetup conn={conn} steps={WINRM_HOWTO} fields={[["machine name", "host"]]} agentSteps={WINRM_AGENT} reload={reload} />
@@ -3631,7 +3663,7 @@ function CloudObjects({ conn, meta, objects, reload }) {
           <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap", mb: 1 }}>
             <TextField size="small" placeholder={t("search by name…")} value={q}
               onChange={(e) => { setQ(e.target.value); setLimit(PAGE_OBJ); }}
-              sx={{ bgcolor: "#fff", width: 230 }}
+              sx={{ bgcolor: "var(--tq-panel, #fff)", width: 230 }}
               InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon sx={{ fontSize: 16, color: FAINT }} /></InputAdornment> }} />
             {kinds.length > 1 && (
               <FilterPills value={kind} onChange={(v) => { setKind(v); setLimit(PAGE_OBJ); }}
@@ -3655,7 +3687,7 @@ function CloudObjects({ conn, meta, objects, reload }) {
                 {CLOUD_MODES.map(([v, label]) => (
                   <Box key={v} component="span" title={t(label)}
                     onClick={() => !bulk && setAllShown(v)}
-                    sx={{ fontSize: 11, fontWeight: 600, color: bulk ? FAINT : "#55697a", cursor: bulk ? "default" : "pointer",
+                    sx={{ fontSize: 11, fontWeight: 600, color: bulk ? FAINT : "var(--tq-link, #55697a)", cursor: bulk ? "default" : "pointer",
                       "&:hover": { textDecoration: bulk ? "none" : "underline" } }}>
                     {bulk === v ? `${t(v)}…` : t(v)}
                   </Box>
@@ -3708,7 +3740,7 @@ function PushAddress({ conn }) {
   if (!path) return null;
   return (
     <Typography variant="caption" sx={{ color: FAINT, display: "block", lineHeight: 1.6, p: 1.25, border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: PANEL2 }}>
-      Point the vendor at your own public https address followed by <Box component="code" sx={{ ...mono, fontSize: 11, color: INK, bgcolor: "#fff", px: 0.6, borderRadius: 0.75, border: `1px solid ${BORDER}` }}>{path}</Box>
+      Point the vendor at your own public https address followed by <Box component="code" sx={{ ...mono, fontSize: 11, color: INK, bgcolor: "var(--tq-panel, #fff)", px: 0.6, borderRadius: 0.75, border: `1px solid ${BORDER}` }}>{path}</Box>
       {" "}- a tunnel of yours (cloudflared, ngrok) to the Taskuary port on this computer. Only that path answers there.
     </Typography>
   );
@@ -3786,7 +3818,7 @@ function OAuthConnect({ conn, meta, reload }) {
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
         {meta.connect.widget === "token" && (
           <TextField size="small" value={token} onChange={(e) => setToken(e.target.value)} disabled={busy}
-            placeholder={t("setup token from your SimpleFIN account")} sx={{ bgcolor: "#fff", minWidth: 260, flex: 1 }}
+            placeholder={t("setup token from your SimpleFIN account")} sx={{ bgcolor: "var(--tq-panel, #fff)", minWidth: 260, flex: 1 }}
             inputProps={{ spellCheck: false, autoComplete: "off", style: { fontSize: 12.5 } }} />
         )}
         <Button variant="contained" disableElevation onClick={go}
@@ -3795,7 +3827,7 @@ function OAuthConnect({ conn, meta, reload }) {
           {busy ? <><CircularProgress size={12} sx={{ color: "#fff", mr: 1 }} /> {meta.connect.widget === "token" ? t("claiming…") : t("waiting for the sign-in…")}</> : st?.connected ? t("Reconnect") : t(meta.connect.label)}
         </Button>
         {st?.connected
-          ? <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>✓ {t("Connected")}{st.member ? t(" as {name}", { name: st.member }) : ""}{st.realm_id ? t(" · company {id}", { id: st.realm_id }) : ""}{st.institution ? ` · ${st.institution}` : ""}{(st.env || st.environment) === "sandbox" ? t(" · sandbox") : ""}{st.days_left != null ? t(st.days_left === 1 ? " · {count} day left on the sign-in" : " · {count} days left on the sign-in", { count: st.days_left }) : ""}</Typography>
+          ? <Typography variant="body2" sx={{ color: "var(--tq-success, #47654a)", fontWeight: 600 }}>✓ {t("Connected")}{st.member ? t(" as {name}", { name: st.member }) : ""}{st.realm_id ? t(" · company {id}", { id: st.realm_id }) : ""}{st.institution ? ` · ${st.institution}` : ""}{(st.env || st.environment) === "sandbox" ? t(" · sandbox") : ""}{st.days_left != null ? t(st.days_left === 1 ? " · {count} day left on the sign-in" : " · {count} days left on the sign-in", { count: st.days_left }) : ""}</Typography>
           : <Typography variant="body2" sx={{ color: DIM }}>{t(st?.has_app ? "keys saved — not connected yet" : "paste the application's keys below first")}</Typography>}
         {busy && url && !st?.connected && (
           <Typography variant="caption" sx={{ color: DIM, display: "flex", alignItems: "center", gap: 1, flexBasis: "100%" }}>
@@ -3814,10 +3846,10 @@ function OAuthConnect({ conn, meta, reload }) {
         <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.75, lineHeight: 1.6 }}>
           {/* named from the card, not hardcoded: three providers share this box now, and it told
               a Zoho owner their INTUIT app needed the URI. */}
-          {t("The {name} app must list this redirect URL, exactly:", { name: meta.title })} <Box component="code" sx={{ ...mono, fontSize: 11, color: INK, bgcolor: "#fff", px: 0.6, borderRadius: 0.75, border: `1px solid ${BORDER}` }}>{st.redirect_uri}</Box>
+          {t("The {name} app must list this redirect URL, exactly:", { name: meta.title })} <Box component="code" sx={{ ...mono, fontSize: 11, color: INK, bgcolor: "var(--tq-panel, #fff)", px: 0.6, borderRadius: 0.75, border: `1px solid ${BORDER}` }}>{st.redirect_uri}</Box>
         </Typography>
       )}
-      {err && <Typography variant="body2" sx={{ color: "#6b2733", mt: 0.75 }}>✗ {displayMessage(err)}</Typography>}
+      {err && <Typography variant="body2" sx={{ color: "var(--tq-danger, #6b2733)", mt: 0.75 }}>✗ {displayMessage(err)}</Typography>}
     </Box>
   );
 }
@@ -3853,7 +3885,7 @@ function ActionDefaults({ type, cfg, setCfg, tick }) {
   const fields = settingsOf(type);
   if (!fields.length) return null;
   return <Box data-tq-action-defaults={type} sx={{ display: "flex", gap: 1.5, flexWrap: "wrap" }}>
-    {fields.map((f) => <TextField key={f.key} select size="small" label={f.label} value={String(cfg[`default_${f.key}`] ?? f.default)} sx={{ bgcolor: "#fff", minWidth: 180 }}
+    {fields.map((f) => <TextField key={f.key} select size="small" label={f.label} value={String(cfg[`default_${f.key}`] ?? f.default)} sx={{ bgcolor: "var(--tq-panel, #fff)", minWidth: 180 }}
       data-tq-action-default={f.key} onChange={(e) => setCfg({ ...cfg, [`default_${f.key}`]: e.target.value })} InputProps={{ endAdornment: tick(`default_${f.key}`) }}
       helperText="What a post an agent sets up starts with - you can change it on the post">
       {f.choices.map((c) => <MenuItem key={String(c.value)} value={String(c.value)} sx={{ fontSize: 13 }}>{c.label}</MenuItem>)}</TextField>)}
@@ -3943,7 +3975,7 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
           {meta.apis && <ApiDots apis={meta.apis} cfg={cfg} setCfg={setCfg} />}
           <ActionDefaults type={conn.Type} cfg={cfg} setCfg={setCfg} tick={boxes.tick} />
           {!meta.noSecret && <TextField label={meta.secretLabel ? (conn.HasSecret ? t("{label} — saved, type to replace", { label: t(meta.secretLabel) }) : t(meta.secretLabel)) : meta.secretLabel}
-            type="password" value={secret} onChange={(e) => setSecret(e.target.value)} sx={{ bgcolor: "#fff" }}
+            type="password" value={secret} onChange={(e) => setSecret(e.target.value)} sx={{ bgcolor: "var(--tq-panel, #fff)" }}
             onBlur={boxes.flush} onKeyDown={(e) => { if (e.key === "Enter") boxes.flush(); }} InputProps={{ endAdornment: boxes.tick("Secret") }}
             helperText={t(meta.secretHelp || SECRET_HELP)} />}
           <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
@@ -3961,7 +3993,7 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
               }}>{busy === a.label ? <CircularProgress size={12} /> : t(a.label)}</Button>
             ))}
             <AiWalkButton ai={ai} />
-            {msg && <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>{displayMessage(msg)}</Typography>}
+            {msg && <Typography variant="body2" sx={{ color: "var(--tq-success, #47654a)", fontWeight: 600 }}>{displayMessage(msg)}</Typography>}
           </Box>
           <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
             <Switch data-tq-card-on="" checked={!!conn.Active} disabled={draft.flipping} onChange={(e) => setActive(e.target.checked)} />
@@ -3974,7 +4006,7 @@ function DataDetail({ conn: savedConn, meta, sources: savedSources = [], reload,
           {meta.search && <KbSearch conn={conn} />}
           <TestLine test={test} mt={0} />
           {!test && (fresh ? <Typography variant="body2" data-tq-saved-test="" sx={{ color: DIM }}>{t("Saved - press Test to check it.")}</Typography>
-            : conn.LastError && <Typography variant="body2" sx={{ color: "#6b2733" }}>✗ {conn.LastErrorPlain || conn.LastError}</Typography>)}
+            : conn.LastError && <Typography variant="body2" sx={{ color: "var(--tq-danger, #6b2733)" }}>✗ {conn.LastErrorPlain || conn.LastError}</Typography>)}
         </Box>
       )}
       {tab === "Setup" && meta.discovers && (
@@ -4164,9 +4196,9 @@ const GithubCloseout = ({ conn, mine, reload }) => {
           <Typography sx={{ ...mono, fontSize: 12, color: INK, fontWeight: 600 }}>
             {row.repo}{row.role ? t(" · your role: {role}", { role: row.role }) : ""}{row.methods ? t(" · merges by {method}", { method: row.method }) : ""}
           </Typography>
-          {row.error && <Typography variant="body2" sx={{ color: "#8a2f3a" }}>{displayMessage(row.error)}</Typography>}
+          {row.error && <Typography variant="body2" sx={{ color: "var(--tq-danger, #8a2f3a)" }}>{displayMessage(row.error)}</Typography>}
           {(row.acts || []).map((a) => (
-            <Typography key={a.key} variant="body2" sx={{ color: a.ok ? DIM : "#8a2f3a" }}>
+            <Typography key={a.key} variant="body2" sx={{ color: a.ok ? DIM : "var(--tq-danger, #8a2f3a)" }}>
               {a.ok ? "✓" : "✗"} {a.what === CLOSEOUT_ACTIONS[a.key] ? t(a.what) : a.what}{a.ok ? "" : t(" - needs {needs}", { needs: a.needs })}
             </Typography>
           ))}
@@ -4192,7 +4224,7 @@ function MailSignature({ conn, addresses = [], reload }) {
   const cfg = parse(conn.ConfigJson);
   const per = cfg.signatures && typeof cfg.signatures === "object" ? cfg.signatures : {};
   const field = (key, label, value, onChange) => (
-    <TextField key={key} data-tq-mail-signature={key} fullWidth multiline minRows={2} size="small" sx={{ mt: 2, maxWidth: 460, bgcolor: "#fff" }}
+    <TextField key={key} data-tq-mail-signature={key} fullWidth multiline minRows={2} size="small" sx={{ mt: 2, maxWidth: 460, bgcolor: "var(--tq-panel, #fff)" }}
       label={label} value={value} helperText={t("Blank uses the signature in Settings.")} onChange={onChange} />
   );
   const save = (next) => saveConn({ ConnectorId: conn.ConnectorId, ConfigJson: JSON.stringify({ ...cfg, ...next }) });
@@ -4367,12 +4399,12 @@ const MailFolders = ({ conn, s, reload }) => {
       {open && (
         <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap", alignItems: "center" }}>
           {list === null && <CircularProgress size={11} />}
-          {err && <Typography variant="caption" sx={{ color: "#6b2733" }}>{displayMessage(err)}</Typography>}
+          {err && <Typography variant="caption" sx={{ color: "var(--tq-danger, #6b2733)" }}>{displayMessage(err)}</Typography>}
           {(list || []).map((f) => (
             <Box key={f.id} onClick={() => toggle(f.id)}
               sx={{ px: 0.9, py: 0.2, borderRadius: 99, cursor: "pointer", fontSize: 11, userSelect: "none",
-                fontWeight: chosen.has(f.id) ? 700 : 500, bgcolor: chosen.has(f.id) ? "#eae4d8" : "#fff",
-                color: chosen.has(f.id) ? "#55697a" : DIM, border: `1px solid ${chosen.has(f.id) ? "#d8cfbe" : BORDER}` }}>
+                fontWeight: chosen.has(f.id) ? 700 : 500, bgcolor: chosen.has(f.id) ? "var(--tq-inset, #eae4d8)" : "var(--tq-panel, #fff)",
+                color: chosen.has(f.id) ? "var(--tq-link, #55697a)" : DIM, border: `1px solid ${chosen.has(f.id) ? "var(--tq-border, #d8cfbe)" : BORDER}` }}>
               {f.name}{f.count ? <Box component="span" sx={{ color: FAINT, ml: 0.5 }}>{f.count}</Box> : null}
             </Box>
           ))}
@@ -4412,7 +4444,8 @@ const WaPair = ({ conn, reload, onStatus, onTurnedAway }) => {
         wasConnected = !!data.connected;
         // Node is there and the bridge is not: start it, once per visit - the owner opened this card to pair. Not one stopped on purpose
         // (manager.held): a Remove stopped it, and starting it here put the card straight back up (TQ-1320) - Start bridge is the way back
-        if (data.bridge === false && data.node && !data.manager?.held && !kicked.current && !["installing", "starting", "failed"].includes(data.manager?.phase)) { kicked.current = true; startBridge(); }
+        // ...Node or not: Start sets up Taskuary's own Node first (#278 - "just install in background and get it to work")
+        if (data.bridge === false && !data.manager?.held && !kicked.current && !["installing", "starting", "failed"].includes(data.manager?.phase)) { kicked.current = true; startBridge(); }
         setTimeout(tick, data.connected ? 30000 : data.bridge === false ? (data.node ? 3000 : 6000) : 4000);
       // A STATUS WE COULD NOT READ IS NOT "NODE IS MISSING". Faking {bridge:false} here sent the owner
       // off to install Node they already had, because the app was restarting or busy for a moment.
@@ -4446,7 +4479,7 @@ const WaPair = ({ conn, reload, onStatus, onTurnedAway }) => {
   const StepLine = ({ n, label, state }) => (
     <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 0.5 }}>
       <Box sx={{ width: 18, height: 18, borderRadius: "50%", fontSize: 11, fontWeight: 600, display: "grid", placeItems: "center",
-        bgcolor: state === "done" ? "#47654a" : state === "now" ? "#55697a" : "#e6e2dc", color: state === "todo" ? DIM : "#fff" }}>{state === "done" ? "✓" : n}</Box>
+        bgcolor: state === "done" ? "#47654a" : state === "now" ? "#55697a" : "var(--tq-inset, #e6e2dc)", color: state === "todo" ? DIM : "#fff" }}>{state === "done" ? "✓" : n}</Box>
       <Typography variant="body2" sx={{ fontSize: 13, fontWeight: state === "now" ? 700 : 500, color: state === "todo" ? DIM : INK }}>{label}</Typography>
       {state === "now" && busy && <CircularProgress size={11} sx={{ color: DIM }} />}
     </Box>
@@ -4458,7 +4491,7 @@ const WaPair = ({ conn, reload, onStatus, onTurnedAway }) => {
         <Typography sx={{ fontWeight: 600, fontSize: 13, color: INK }}>{t("Pair with your phone")}</Typography>
         {!st.connected && (
           <Box sx={{ mb: 1 }}>
-            <StepLine n={1} label={t("Node 18+ on this machine")} state={stateOf(1)} />
+            <StepLine n={1} label={phase === "installing" && !st.node ? (st.manager?.detail || t("Setting up Node.js")) : t("Node.js on this computer (Taskuary sets it up)")} state={stateOf(1)} />
             <StepLine n={2} label={t(phase === "installing" ? "Fetching the bridge (a minute or two, first time only)" : "The bridge is running")} state={stateOf(2)} />
             <StepLine n={3} label={t("Scan the QR from your phone")} state={stateOf(3)} />
           </Box>
@@ -4473,7 +4506,7 @@ const WaPair = ({ conn, reload, onStatus, onTurnedAway }) => {
             onClick={async () => { try { await api.post(`/api/connectors/${conn.ConnectorId}/wa/bridge/restart`); } catch { /* status polling shows the outcome */ } }}>
             {t("Restart bridge")}
           </Button>
-          {st.bridge === false && st.node && !busy && phase !== "failed" && (
+          {st.bridge === false && !busy && phase !== "failed" && (
             <Button size="small" variant="contained" disableElevation startIcon={<PlayArrowIcon sx={{ fontSize: 15 }} />} onClick={startBridge}>{t("Start bridge")}</Button>
           )}
           {/* connected or logged out: the card's own status line (Restart bridge is already beside it, so only Pair again) */}
@@ -4489,18 +4522,13 @@ const WaPair = ({ conn, reload, onStatus, onTurnedAway }) => {
         )}
         {st.connected ? (
           <Box sx={{ mt: 0.5 }}>
-            <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>✓ {t("Paired")}{st.me ? t(" as {name}", { name: st.me }) : ""}{st.phone ? ` · ${st.phone}` : ""} {t("— the bridge is connected. Test, then enable.")}</Typography>
+            <Typography variant="body2" sx={{ color: "var(--tq-success, #47654a)", fontWeight: 600 }}>✓ {t("Paired")}{st.me ? t(" as {name}", { name: st.me }) : ""}{st.phone ? ` · ${st.phone}` : ""} {t("— the bridge is connected. Test, then enable.")}</Typography>
           </Box>
-        ) : st.bridge === false && !st.node ? (
-          <Typography variant="caption" sx={{ color: DIM, lineHeight: 1.6, display: "block" }}>
-            {t("Node is not installed here, and it is the one thing Taskuary cannot install for you. In a terminal:")}
-            <Box component="code" sx={{ ...mono, display: "block", my: 0.5, p: 0.75, bgcolor: "#fff", border: `1px solid ${BORDER}`, borderRadius: 1, fontSize: 12 }}>winget install OpenJS.NodeJS.LTS</Box>
-            {t("(or download the LTS from nodejs.org and run the installer). This box re-checks every few seconds and moves on by itself once Node is there.")}
-          </Typography>
         ) : st.bridge === false ? (
           <Box>
-            <Typography variant="caption" sx={{ color: phase === "failed" ? "#a33" : DIM, lineHeight: 1.5, display: "block", mb: 0.75 }}>
-              {phase === "installing" ? t("Fetching the bridge's dependency (Baileys, not bundled on purpose). The QR appears here the moment the bridge is up.")
+            <Typography variant="caption" sx={{ color: phase === "failed" ? "var(--tq-danger, #a33)" : DIM, lineHeight: 1.5, display: "block", mb: 0.75 }}>
+              {phase === "installing" ? (st.node ? t("Fetching the bridge's dependency (Baileys, not bundled on purpose). The QR appears here the moment the bridge is up.")
+                : t("{detail} - the bridge starts by itself once it is done.", { detail: st.manager?.detail || t("Setting up Node.js") }))
                 : phase === "failed" ? t("The bridge could not start: {detail}", { detail: st.manager.detail })
                 : st.manager?.held ? t("The bridge is stopped and this computer is unpaired. Start bridge to pair a phone again.")
                 : t("Starting the bridge…")}
@@ -4521,7 +4549,7 @@ const WaPair = ({ conn, reload, onStatus, onTurnedAway }) => {
         )}
       </Box>
       {!st.connected && st.qr_svg && (
-        <Box component="img" src={st.qr_svg} alt={t("WhatsApp pairing QR")} sx={{ width: 220, height: 220, borderRadius: 1, bgcolor: "#fff", border: `1px solid ${BORDER}` }} />
+        <Box component="img" src={st.qr_svg} alt={t("WhatsApp pairing QR")} sx={{ width: 220, height: 220, borderRadius: 1, bgcolor: "var(--tq-panel, #fff)", border: `1px solid ${BORDER}` }} />
       )}
     </Box>
   );
@@ -4558,9 +4586,9 @@ const WaChats = ({ conn, mine, reload, onNavigate, onRoster, toggle, ask = null 
   const SHOWN = 8;
   const guideJid = String(parse(conn.ConfigJson).assistant_chat || parse(conn.ConfigJson).notify_chat || "");
   const load = useCallback(async () => {
-    try { const { data } = await api.get(`/api/connectors/${conn.ConnectorId}/wa/chats`); setRows(data.data); setErr("");
-      onRoster?.(new Set((data.data || []).map((r) => r.jid))); }
-    catch (e) { setRows([]); setErr(e?.response?.data?.detail || message("could not reach the bridge")); }
+    try { const { data } = await api.get(`/api/connectors/${conn.ConnectorId}/wa/chats`), got = readChats(data); setRows(got.rows); setErr(got.err);
+      if (!got.err) onRoster?.(new Set(got.rows.map((r) => r.jid))); }
+    catch (e) { setRows([]); setErr(chatsError(e)); }
   }, [conn.ConnectorId, onRoster]);
   useEffect(() => { load(); }, [load]);
   const loadStanding = useCallback(async () => {
@@ -4621,7 +4649,7 @@ const WaChats = ({ conn, mine, reload, onNavigate, onRoster, toggle, ask = null 
           half of it - so both are Settings -> Phone & chats. This card keeps what is
           genuinely the connector's: the pairing, and what comes in (the owner, 2026-09-17). */}
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1.25, py: 0.6, px: 0.8, flexWrap: "wrap",
-        border: `1px solid ${guideJid ? "#c3d2c5" : BORDER}`, borderRadius: 1, bgcolor: guideJid ? "#f2f7f2" : "transparent" }}>
+        border: `1px solid ${guideJid ? "var(--tq-border, #c3d2c5)" : BORDER}`, borderRadius: 1, bgcolor: guideJid ? "var(--tq-panel, #f2f7f2)" : "transparent" }}>
         <Typography variant="caption" sx={{ color: DIM, fontWeight: 600 }}>{t("Assistant chat")}</Typography>
         <Box sx={{ flex: 1, minWidth: 180 }}>
           <Typography variant="caption" sx={{ color: guideJid ? INK : FAINT, fontWeight: guideJid ? 600 : 400, display: "block" }} noWrap>
@@ -4640,17 +4668,17 @@ const WaChats = ({ conn, mine, reload, onNavigate, onRoster, toggle, ask = null 
       </Typography>
       <Box sx={{ display: "flex", gap: 1, alignItems: "center", mb: 0.75, flexWrap: "wrap" }}>
         <FilterPills options={["All", "People", "Groups"].map((key) => ({ key, label: t(key) }))} value={kind} onChange={setKind} />
-        <TextField size="small" value={q} onChange={(e) => setQ(e.target.value)} sx={{ flex: 1, minWidth: 200, bgcolor: "#fff" }}
+        <TextField size="small" value={q} onChange={(e) => setQ(e.target.value)} sx={{ flex: 1, minWidth: 200, bgcolor: "var(--tq-panel, #fff)" }}
           placeholder={t("search by name, phone number or group name")} />
       </Box>
-      {err && <Typography variant="caption" sx={{ color: "#6b2733", display: "block" }}>✗ {displayMessage(err)}</Typography>}
+      {err && <Typography variant="caption" sx={{ color: "var(--tq-danger, #6b2733)", display: "block" }}>✗ {displayMessage(err)}</Typography>}
       {rows && !rows.length && !err && <Typography variant="caption" sx={{ color: FAINT }}>{t("no reachable chats loaded yet — refresh, or send a message in a direct chat")}</Typography>}
       {shown.map((r) => (
         <Box key={r.jid} sx={{ display: "flex", alignItems: "center", gap: 1, py: 0.5, borderBottom: `1px solid ${BORDER}` }}>
           {/* the help text above promises "the row marked Myself" - it used to say "group", because
               that is the shape of the jid WhatsApp gives your own thread */}
           <Chip size="small" label={t(r.self ? "Myself" : r.group ? "group" : "chat")}
-            sx={{ height: 18, fontSize: 10, ...(r.self ? { bgcolor: "#dfe9e0", fontWeight: 600 } : {}) }} />
+            sx={{ height: 18, fontSize: 10, ...(r.self ? { bgcolor: "var(--tq-inset, #dfe9e0)", fontWeight: 600 } : {}) }} />
           <Box sx={{ minWidth: 0, flex: 1 }}>
             <Typography variant="body2" sx={{ color: INK, fontWeight: 600 }} noWrap>{waLabel(r.jid, r.name)}</Typography>
             {/* the number beside a saved name - a person is known by both; the id is the small grey line under them */}
@@ -4664,7 +4692,7 @@ const WaChats = ({ conn, mine, reload, onNavigate, onRoster, toggle, ask = null 
                 {waSaid(r.said, !!src[r.jid]?.Active, timeAgo(r.said?.at))}</Typography>)}
             <Typography variant="caption" sx={{ ...mono, color: FAINT, fontSize: 9.5, display: "block", opacity: 0.8 }} noWrap>{r.jid}</Typography>
           </Box>
-          {guideJid === r.jid && <Typography variant="caption" sx={{ color: "#47654a", fontWeight: 600 }}>✓ {t("assistant chat")}</Typography>}
+          {guideJid === r.jid && <Typography variant="caption" sx={{ color: "var(--tq-success, #47654a)", fontWeight: 600 }}>✓ {t("assistant chat")}</Typography>}
           {adding === r.jid ? <CircularProgress size={14} sx={{ mx: 1.5 }} />
             : <Switch size="small" checked={!!src[r.jid]?.Active} onChange={() => flip(r.jid)}
                 inputProps={{ "aria-label": t("{name} comes in", { name: waLabel(r.jid, r.name) }) }} />}
@@ -4741,7 +4769,7 @@ const ChatGptSignIn = ({ conn, cfg, reload }) => {
       </Typography>
       {signedIn ? (
         <Box sx={{ display: "flex", gap: 1.5, alignItems: "center", flexWrap: "wrap" }}>
-          <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>✓ {t("Signed in as {account}", { account: `${cfg.name ? `${cfg.name} · ` : ""}${cfg.account}` })}</Typography>
+          <Typography variant="body2" sx={{ color: "var(--tq-success, #47654a)", fontWeight: 600 }}>✓ {t("Signed in as {account}", { account: `${cfg.name ? `${cfg.name} · ` : ""}${cfg.account}` })}</Typography>
           <Button size="small" variant="outlined" onClick={signout} title={t("Anything set to run on your ChatGPT account stops until you sign in again - Undo puts it back")}>{t("Sign out")}</Button>
         </Box>
       ) : flow ? (
@@ -4755,10 +4783,10 @@ const ChatGptSignIn = ({ conn, cfg, reload }) => {
         <Box><Button variant="contained" disableElevation disabled={busy} onClick={start}>
           {busy ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : t("Sign in with ChatGPT")}</Button></Box>
       )}
-      {detail && <Typography variant="body2" sx={{ fontWeight: 600, color: state === "ok" ? "#47654a" : "#6b2733" }}>
+      {detail && <Typography variant="body2" sx={{ fontWeight: 600, color: state === "ok" ? "var(--tq-success, #47654a)" : "var(--tq-danger, #6b2733)" }}>
         {state === "ok" ? "✓" : "✗"} {displayMessage(detail)}</Typography>}
       {/* opened again after a failed sign-in: the failure is still said, over the button that tries again (2026-10-20) */}
-      {!detail && !flow && !signedIn && conn.LastError && <Typography variant="body2" sx={{ fontWeight: 600, color: "#6b2733" }}>
+      {!detail && !flow && !signedIn && conn.LastError && <Typography variant="body2" sx={{ fontWeight: 600, color: "var(--tq-danger, #6b2733)" }}>
         ✗ {String(conn.LastError).replace(/\.?\s*$/, ".")} {t("Press Sign in with ChatGPT to try again.")}</Typography>}
     </Box>
   );
@@ -4771,38 +4799,48 @@ const NO_REPLY = /AADSTS900971/;
 export const msSays = (d) => NO_REPLY.test(d || "") ? "Microsoft stopped at your organisation's approval step (error AADSTS900971, \"No reply address provided\") - "
   + "your IT admin approves Taskuary once with the link below, then sign in again." : d;
 const STALL_MS = 90 * 1000;
-// THE COMPANY'S OWN MICROSOFT APP (the owner, 2026-11-05: "i don't want it to go through my azure ... they can create their own app"):
-// Taskuary ships no Microsoft app id (msauth.py), so the card asks for the company's - the two ids, and the steps IT follows to make it.
+// THE PERSON'S OWN MICROSOFT APP (the owner, 2026-11-05: "i don't want it to go through my azure ... they can create their own app";
+// 2026-11-09: a regular Outlook.com / Hotmail person too): Taskuary ships no Microsoft app id (msauth.py), so the card asks for theirs -
+// the steps to register one in about five minutes, and its Application (client) ID. The tenant is a company's single-tenant app's only:
+// blank signs in through /common, and an app for personal accounts only moves the card to /consumers by itself (msauth.personal_door).
 // The ids ride the Sign in press (server ms_signin keeps them on the card); both roads - the browser and the code - use the same app.
 export const MS_REDIRECT = "http://localhost/api/ms/callback";
 // ...a Teams card with no app of its own uses the Outlook card's ('outlook'): its sign-in is ready at once (the owner, 2026-11-05)
-export const msNeedsApp = (conn, cfg) => !["install", "outlook"].includes(conn.MsApp) && !(String(cfg.client_id || "").trim() && String(cfg.tenant_id || "").trim());
+export const msNeedsApp = (conn, cfg) => !["install", "outlook"].includes(conn.MsApp) && !String(cfg.client_id || "").trim();
+export const MS_REGISTER = "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade";
+export const MS_AZURE_FREE = "https://azure.microsoft.com/free";
+export const MS_AUDIENCE = "Any Entra ID Tenant + Personal Microsoft accounts";
 const MsOwnApp = ({ conn, cfg, setCfg, copy }) => {
   const install = conn.MsApp === "install" || conn.MsApp === "outlook", steps = !["card", "install", "outlook"].includes(conn.MsApp);
-  const box = { "& .MuiInputBase-root": { bgcolor: "#fff" }, "& .MuiFormHelperText-root": { mx: 0 } };   // white is the box's, not its hint's
-  const code = (t) => <Box component="code" sx={{ ...mono, fontSize: 11, color: INK, bgcolor: "#fff", px: 0.6, borderRadius: 0.75, border: `1px solid ${BORDER}` }}>{t}</Box>;
+  const box = { "& .MuiInputBase-root": { bgcolor: "var(--tq-panel, #fff)" }, "& .MuiFormHelperText-root": { mx: 0 } };   // white is the box's, not its hint's
+  const code = (t) => <Box component="code" sx={{ ...mono, fontSize: 11, color: INK, bgcolor: "var(--tq-panel, #fff)", px: 0.6, borderRadius: 0.75, border: `1px solid ${BORDER}` }}>{t}</Box>;
   return (
     <Box data-tq-ms-own-app="" sx={{ display: "flex", flexDirection: "column", gap: 1.25 }}>
       {steps && (
         <Box component="ol" data-tq-ms-steps="" sx={{ m: 0, pl: 2.5, color: DIM, fontSize: 12.5, lineHeight: 1.6, "& li": { mb: 0.25 } }}>
-          <li>Your IT registers the app once: Microsoft Entra ID → App registrations → New registration → name it Taskuary, accounts in this
-            organizational directory only (single tenant) → Register.</li>
+          <li><b>Outlook.com or Hotmail account?</b> Microsoft only lets you register an app inside a directory, so first sign up
+            for a <a href={MS_AZURE_FREE} target="_blank" rel="noreferrer">free Azure account</a> with that same account. Microsoft asks
+            for a phone number and a credit or debit card to check you are a person - it charges nothing (a temporary $1 hold may show),
+            and the app stays free. A work account: your company already has a directory - your IT may do these steps for you.</li>
+          <li>Open <a href={MS_REGISTER} target="_blank" rel="noreferrer">App registrations → New registration</a>, name it Taskuary.
+            Supported account types: <b>{MS_AUDIENCE}</b> for an Outlook.com account, or single tenant for a company app → Register.</li>
           <li>Authentication → Add a platform → <b>Mobile and desktop applications</b> → redirect URI {code(MS_REDIRECT)}
             <IconButton size="small" onClick={() => copy(MS_REDIRECT)} title="copy the redirect URI" aria-label="copy the redirect URI" sx={{ p: 0.25, ml: 0.25 }}>
               <ContentCopyIcon sx={{ fontSize: 13 }} /></IconButton>
             {conn.MsRedirect && conn.MsRedirect !== MS_REDIRECT && <> (if Microsoft asks for this install's port, add {code(conn.MsRedirect)} too)</>}</li>
           <li>Authentication → Allow public client flows: <b>Yes</b> → Save.</li>
-          <li>API permissions → Add a permission → Microsoft Graph → Delegated: {code(conn.MsScopes || "")} → Add, then <b>Grant admin consent</b>.</li>
-          <li>From the app's Overview, copy the Application (client) ID and the Directory (tenant) ID into the boxes below. Then sign in -
-            in the browser, or with a code.</li>
+          <li>API permissions → Add a permission → Microsoft Graph → Delegated: {code(conn.MsScopes || "")} → Add. A company app:
+            then <b>Grant admin consent</b>. An Outlook.com account approves them on the sign-in page.</li>
+          <li>From the app's Overview, copy the Application (client) ID into the box below. Leave the Directory (tenant) ID blank,
+            unless it is a single-tenant company app. Then sign in - in the browser, or with a code.</li>
         </Box>
       )}
       <TextField size="small" label="Application (client) ID" value={cfg.client_id || ""} sx={box} required={!install}
         inputProps={{ spellCheck: false, autoComplete: "off" }} onChange={(e) => setCfg({ ...cfg, client_id: e.target.value.trim() })}
-        helperText={conn.MsApp === "outlook" ? "Blank uses your Outlook card's app - the same sign-in." : install ? "Blank uses the app this install was set up with." : "Your company's app, from its Overview page in Entra ID."} />
-      <TextField size="small" label="Directory (tenant) ID" value={cfg.tenant_id || ""} sx={box} required={!install}
+        helperText={conn.MsApp === "outlook" ? "Blank uses your Outlook card's app - the same sign-in." : install ? "Blank uses the app this install was set up with." : "Your app, from its Overview page in Entra ID."} />
+      <TextField size="small" label="Directory (tenant) ID" value={cfg.tenant_id || ""} sx={box}
         inputProps={{ spellCheck: false, autoComplete: "off" }} onChange={(e) => setCfg({ ...cfg, tenant_id: e.target.value.trim() })}
-        helperText="The same Overview page. A work account needs it." />
+        helperText="Blank for an Outlook.com account or an app open to any account. A single-tenant company app: the same Overview page." />
     </Box>
   );
 };   // a browser sign-in this long without coming back: say what a tenant's admin approval looks like
@@ -4905,13 +4943,14 @@ export const MsSignIn = ({ conn, cfg, setCfg, reload, onSignedIn, plain = false 
       <UndoLine kinds={["signout"]} onRestored={reload} sx={{ mb: 0 }} />
       {/* the first-run card says it for someone who has never heard of a tenant (FirstRun.jsx) */}
       <Typography variant="caption" sx={{ color: DIM, lineHeight: 1.5 }}>
-        {t(plain ? "Press the button and sign in on Microsoft's page as usual. This page finishes by itself."
-          : chats ? "Your own work account, your own chats — read here and answered as you, through your company's own Microsoft app. Each Teams card signs in its own account, so a second organisation is a second card."
-          : "Your own account, your own mailbox — mail, sending and calendar — through your company's own Microsoft app. No secret.")}
+        {plain ? t("Press the button and sign in on Microsoft's page as usual. This page finishes by itself.")
+          : chats ? <>{t("Your own work account, your own chats — read here and answered as you, through your company's own Microsoft app.")}
+        {t("Each Teams card signs in its own account, so a second organisation is a second card.")}</>
+          : <>{t("Your own account, your own mailbox — mail, sending and calendar — through your own Microsoft app (your company's, or the one you registered). No secret.")}</>}
       </Typography>
       {!flow && signedIn ? (
         <Box sx={{ display: "flex", gap: 1.5, alignItems: "center", flexWrap: "wrap" }}>
-          <Typography variant="body2" sx={{ color: "#47654a", fontWeight: 600 }}>✓ {t("Signed in as {account}", { account: `${cfg.name ? `${cfg.name} · ` : ""}${cfg.account}` })}</Typography>
+          <Typography variant="body2" sx={{ color: "var(--tq-success, #47654a)", fontWeight: 600 }}>✓ {t("Signed in as {account}", { account: `${cfg.name ? `${cfg.name} · ` : ""}${cfg.account}` })}</Typography>
           <Button size="small" variant="outlined" onClick={signout}
             title={t("{service} stop syncing until you sign in again - Undo puts it back. Nothing already here is lost.", { service: t(chats ? "Teams chats" : "Mail and calendar") })}>{t("Sign out")}</Button>
           {/* choosing it signs in again with the one more permission (or without it) - Microsoft's page opens for it */}
@@ -4942,7 +4981,7 @@ export const MsSignIn = ({ conn, cfg, setCfg, reload, onSignedIn, plain = false 
           </Typography>
           <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
             <Typography sx={{ ...mono, fontSize: 26, fontWeight: 600, letterSpacing: 3, color: INK, px: 1.5, py: 0.5,
-              bgcolor: "#fff", border: `1px solid ${BORDER}`, borderRadius: 1.5 }}>{flow.user_code}</Typography>
+              bgcolor: "var(--tq-panel, #fff)", border: `1px solid ${BORDER}`, borderRadius: 1.5 }}>{flow.user_code}</Typography>
             <IconButton size="small" onClick={() => copy(flow.user_code)} title={t("copy the code")}><ContentCopyIcon sx={{ fontSize: 15 }} /></IconButton>
             <Button size="small" variant="contained" disableElevation component="a" href={flow.verification_uri} target="_blank" rel="noreferrer"
               endIcon={<OpenInNewIcon sx={{ fontSize: 14 }} />}>{t("Open the sign-in page")}</Button>
@@ -4956,8 +4995,8 @@ export const MsSignIn = ({ conn, cfg, setCfg, reload, onSignedIn, plain = false 
         <Box sx={{ display: "flex", gap: 1.5, alignItems: "center", flexWrap: "wrap" }}>
           {legacy && (
             <Typography variant="body2" data-tq-ms-legacy="" sx={{ color: INK, fontWeight: 600, flexBasis: "100%" }}>
-              This card signed in through the Microsoft app Taskuary used to ship, and Taskuary ships none now. Put your company's own app
-              on it below and sign in again - nothing is lost.
+              This card signed in through the Microsoft app Taskuary used to ship, and Taskuary ships none now. Put your own app (your
+              company's, or one you register for free) on it below and sign in again - nothing is lost.
             </Typography>
           )}
           {setCfg && (needsApp || legacy || !signedOut) && <Box sx={{ flexBasis: "100%" }}><MsOwnApp conn={conn} cfg={cfg} setCfg={setCfg} copy={copy} /></Box>}
@@ -4967,7 +5006,7 @@ export const MsSignIn = ({ conn, cfg, setCfg, reload, onSignedIn, plain = false 
             </Typography>
           )}
           <Button variant="contained" disableElevation disabled={busy || needsApp} onClick={() => start()}
-            title={needsApp ? t("Enter your company's Application (client) ID and Directory (tenant) ID first") : undefined}>
+            title={needsApp ? t("Enter your app's Application (client) ID first - the steps are above") : undefined}>
             {busy ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : signedOut || legacy ? t("Sign in again") : t("Sign in with Microsoft")}</Button>
           {/* the device code is the second road, never the default: Conditional Access blocks it in many organisations */}
           <Button size="small" disabled={busy || needsApp} onClick={() => start(files, true)} sx={{ fontSize: 11.5, color: DIM }}
@@ -4983,10 +5022,10 @@ export const MsSignIn = ({ conn, cfg, setCfg, reload, onSignedIn, plain = false 
           )}
         </Box>
       )}
-      {detail && <Typography variant="body2" sx={{ fontWeight: 600, color: state === "ok" ? "#47654a" : "#6b2733" }}>
+      {detail && <Typography variant="body2" sx={{ fontWeight: 600, color: state === "ok" ? "var(--tq-success, #47654a)" : "var(--tq-danger, #6b2733)" }}>
         {state === "ok" ? "✓" : "✗"} {displayMessage(detail)}</Typography>}
       {adminUrl && !signedIn && (
-        <Box sx={{ p: 1.25, border: `1px dashed ${BORDER}`, borderRadius: 1.5, bgcolor: "#fff", display: "flex", flexDirection: "column", gap: 0.5 }}>
+        <Box sx={{ p: 1.25, border: `1px dashed ${BORDER}`, borderRadius: 1.5, bgcolor: "var(--tq-panel, #fff)", display: "flex", flexDirection: "column", gap: 0.5 }}>
           <Typography variant="body2" sx={{ fontWeight: 600, color: INK }}>{t("Approval link for your Microsoft 365 admin")}</Typography>
           <Typography variant="caption" sx={{ color: DIM, lineHeight: 1.5 }}>
             {t("Forward this to whoever runs your Microsoft 365. They open the link, sign in, and click Accept - once, for everyone in your organisation. If the page after Accept says it can't connect, that's expected: the approval is done. Grant admin consent on the app's API permissions page does the same. Then click Sign in with Microsoft again.")}
@@ -5052,8 +5091,8 @@ const ProcessingStep = ({ conn, reload, n }) => {
         {MODES.map(([v, title, desc]) => (
           <Box key={v} onClick={() => set(v)}
             sx={{ p: 1.25, borderRadius: 2, cursor: "pointer", bgcolor: PANEL,
-              border: `${mode === v ? 1.5 : 1}px solid ${mode === v ? "#6f8a6e" : BORDER}`,
-              "&:hover": { borderColor: "#6f8a6e" } }}>
+              border: `${mode === v ? 1.5 : 1}px solid ${mode === v ? "var(--tq-border-strong, #6f8a6e)" : BORDER}`,
+              "&:hover": { borderColor: "var(--tq-border-strong, #6f8a6e)" } }}>
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
               <Radio size="small" checked={mode === v} sx={{ p: 0 }} />
               <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13 }}>{t(title)}</Typography>
@@ -5109,7 +5148,7 @@ const CombineStep = ({ conn, n }) => {
         </Box>
       </Box>
       <Typography variant="caption" sx={{ color: DIM, display: "block", lineHeight: 1.5 }}>{t(SAYS[level])} {t(ALWAYS)}</Typography>
-      {err && <Typography variant="caption" sx={{ color: "#a33", display: "block" }}>{displayMessage(err)}</Typography>}
+      {err && <Typography variant="caption" sx={{ color: "var(--tq-danger, #a33)", display: "block" }}>{displayMessage(err)}</Typography>}
     </Box>
   );
 };
@@ -5151,7 +5190,7 @@ const InboundStep = ({ conn, m, mine, reload }) => {
             return (
               <Box key={s.SourceId} sx={{ display: "flex", alignItems: "center", gap: 1.5, py: 1, borderBottom: `1px solid ${BORDER}` }}>
                 <Typography sx={{ ...mono, color: INK, flex: 1, fontSize: 13 }} noWrap>{s.Address}</Typography>
-                {gc.private === false && <Chip size="small" label={t("public")} sx={{ height: 18, fontSize: 9.5, bgcolor: "#f1e1da", color: "#6b2733" }} />}
+                {gc.private === false && <Chip size="small" label={t("public")} sx={{ height: 18, fontSize: 9.5, bgcolor: "var(--tq-tint-brass, #f1e1da)", color: "var(--tq-danger, #6b2733)" }} />}
                 {["issues", "prs", "auto"].map((kind) => (
                   <Select key={kind} size="small" value={githubInboundValue(gc, roles, kind)}
                     sx={{ fontSize: 11.5, height: 26, ".MuiSelect-select": { py: 0.4 } }}
@@ -5196,7 +5235,7 @@ const InboundStep = ({ conn, m, mine, reload }) => {
           {prompts.map(([key, label, hint]) => (
             <TextField key={key} fullWidth multiline minRows={2} label={t(label)} helperText={t(hint)}
               value={cfg[key] || ""} onChange={(e) => setPrompt(key, e.target.value)}
-              sx={{ bgcolor: "#fff", mt: 1.5 }} />
+              sx={{ bgcolor: "var(--tq-panel, #fff)", mt: 1.5 }} />
           ))}
         </Box>
       )}
@@ -5226,11 +5265,67 @@ const Steps = ({ steps, translate = true }) => {
   <Box sx={{ maxWidth: 720, mx: "auto" }}>
     {steps.map((step, i) => (
       <Box key={i} sx={{ display: "flex", gap: 1.5, py: 1.25, borderBottom: `1px solid ${BORDER}` }}>
-        <Box sx={{ ...mono, width: 24, height: 24, borderRadius: "50%", bgcolor: "#eae4d8", color: "#55697a",
+        <Box sx={{ ...mono, width: 24, height: 24, borderRadius: "50%", bgcolor: "var(--tq-inset, #eae4d8)", color: "var(--tq-link, #55697a)",
           fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{i + 1}</Box>
         <Typography variant="body2" sx={{ color: INK, lineHeight: 1.55 }}>{translate ? t(step) : step}</Typography>
       </Box>
     ))}
   </Box>
+  );
+};
+
+// TEAMS FOR A PERSONAL ACCOUNT (the owner, 2026-11-09): Graph reads only work and school chats, and Teams free has no API, so the
+// personal road signs in once in this card's own browser view and reads the chats through it (teamsweb.py). Opt-in, said plainly.
+const TEAMS_KINDS = [["work", "Work or school (Microsoft 365)"], ["personal", "Personal (Teams free, via the browser)"]];
+const TEAMS_WEB_NOTE = "Reads your chats through a browser session on this computer; Microsoft has no API for personal Teams, so it may need a fix when Microsoft changes the page.";
+export const TeamsAccount = ({ conn, cfg, setCfg, reload }) => {
+  useLocale();
+  const kind = cfg.account_type === "personal" ? "personal" : "work";
+  const [sid, setSid] = useState(""), [busy, setBusy] = useState(""), [said, setSaid] = useState(null);
+  const pick = async (v) => {
+    if (v === kind) return;
+    const next = { ...cfg, account_type: v };
+    setCfg(next); setSaid(null);
+    try { await api.post("/api/connectors", { ConnectorId: conn.ConnectorId, ConfigPatch: cfgPatch(cfg, next) }); reload?.(); }
+    catch (e) { setSaid({ ok: false, detail: e?.response?.data?.detail || message("The choice did not save - pick it again.") }); }
+  };
+  const signIn = async () => {
+    setBusy("signin"); setSaid(null);
+    try { const { data } = await api.post(`/api/connectors/${conn.ConnectorId}/teamsweb/signin`, {}, { timeout: 60000 }); setSid(data.sid); }
+    catch (e) { setSaid({ ok: false, detail: e?.response?.data?.detail || message("The browser did not open - press Sign in again.") }); }
+    setBusy("");
+  };
+  const done = async () => {
+    setBusy("done");
+    try { const { data } = await api.post(`/api/connectors/${conn.ConnectorId}/teamsweb/done`, {}, { timeout: 120000 }); setSid(data); if (data.ok) setSid(""); }
+    catch (e) { setSaid({ ok: false, detail: e?.response?.data?.detail || message("Teams could not be read - press Sign in again.") }); }
+    setBusy(""); reload?.();
+  };
+  // what the last read said, in the card's words: signed out asks for the sign-in again, a changed page says reading stopped
+  const err = conn.LastError || "";
+  const out = /signed out of teams/i.test(err), changed = /page changed/i.test(err);
+  return (
+    <Box data-tq-teams-account={kind} sx={{ mb: 2, p: 1.25, border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: PANEL2, display: "flex", flexDirection: "column", gap: 0.75 }}>
+      <Typography variant="body2" sx={{ fontWeight: 600 }}>{t("Account")}</Typography>
+      {TEAMS_KINDS.map(([v, label]) => (
+        <Box key={v} component="label" sx={{ display: "flex", alignItems: "center", gap: 0.5, cursor: "pointer", fontSize: 14 }}>
+          <Radio size="small" checked={kind === v} onChange={() => pick(v)} value={v} name={`teams-kind-${conn.ConnectorId}`} sx={{ p: 0.5 }} />{t(label)}
+        </Box>
+      ))}
+      {kind === "personal" && <>
+        <Typography variant="body2" data-tq-teams-web-note="" sx={{ color: DIM }}>{t(TEAMS_WEB_NOTE)}</Typography>
+        {out && <Typography variant="body2" role="alert" sx={{ color: "var(--tq-danger, #6b2733)" }}>{t("Signed out of Teams. Sign in again to keep reading your chats.")}</Typography>}
+        {changed && <Typography variant="body2" role="alert" sx={{ color: "var(--tq-danger, #6b2733)" }}>{t("Teams' page changed; reading stopped.")}</Typography>}
+        <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
+          {!sid && <Button size="small" variant="contained" disableElevation onClick={signIn} disabled={!!busy}>
+            {busy === "signin" ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : out || conn.LastSyncAt ? t("Sign in again") : t("Sign in")}</Button>}
+          {sid && <Button size="small" variant="contained" disableElevation onClick={done} disabled={!!busy}>
+            {busy === "done" ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : t("I've signed in")}</Button>}
+          {sid && <Typography variant="body2" sx={{ color: DIM }}>{t("Take over the view below and sign in to Teams; Taskuary keeps only the browser's cookies.")}</Typography>}
+        </Box>
+        {sid && <Box sx={{ height: 460, border: `1px solid ${BORDER}`, borderRadius: 1, overflow: "hidden" }}><BrowserPane sid={sid} /></Box>}
+      </>}
+      {said && <Typography variant="body2" sx={{ color: said.ok ? DIM : "var(--tq-danger, #6b2733)" }}>{said.ok ? "✓ " : "✗ "}{displayMessage(said.detail)}</Typography>}
+    </Box>
   );
 };

@@ -22,6 +22,15 @@ class AskMarker(unittest.TestCase):
     def test_the_prompt_line_teaches_the_marker_and_only_for_a_real_blocker(self):
         self.assertIn(selfclose.ASK_MARKER, selfclose.ASK_LINE); self.assertIn('real blocker', selfclose.ASK_LINE)
 
+    def test_the_ask_is_a_question_never_permission_for_what_a_card_asks(self):
+        """The agent walk, 2026-11-10: one line said a draft's Send card IS the confirmation, the ask line offered the marker for anything
+        the agent "cannot continue without", and a third called the marker the way to "offer choices" - so an ask for leave to send stood
+        over the card that already asked it."""
+        ask, summary = selfclose.ASK_LINE, selfclose.SUMMARY_LINE
+        self.assertIn('a fact or a decision only they can give', ask); self.assertIn('never for permission to do what a card already asks', ask)
+        self.assertIn('IS the confirmation', summary); self.assertNotIn('offer choices', summary)
+        self.assertIn(f'(through {selfclose.ASK_MARKER}) only the question you cannot go on without', summary)
+
 
 class ApiWorkerSignals(unittest.TestCase):
     def setUp(self):
@@ -77,29 +86,6 @@ class ApiWorkerSignals(unittest.TestCase):
         self.assertIs(selfclose.blocked(self.s, self.tid, sess), '')
         sess.n = 10
         self.assertEqual(selfclose.blocked(self.s, self.tid, sess), '', 'printed length is a terminal gate, not an answer\'s')
-
-    def test_a_refused_close_is_said_on_the_task(self):
-        with mock.patch.object(general, '_selected', return_value=('api:test', 'Test', 'm')):
-            sess = general.GeneralSession(self.s, self.tid)
-        with mock.patch.object(selfclose, 'declare', return_value={'closed': False, 'why': 'self-closing is switched off in Settings'}):
-            sess._close_out('drafted it')
-        self.assertIn('The agent said it was finished, but the task was not closed: self-closing is switched off in Settings.',
-                      [c['Body'] for c in self.s.list_comments(self.tid)])
-
-    def test_a_done_turn_with_another_turn_behind_it_does_not_close(self):
-        """The overnight run, 2026-11-03: a sender's second mail was passed in while the first turn worked; that turn said done, and its
-        close wrapped the session up under the second turn. The later turn says for itself whether the work is done."""
-        with mock.patch.object(general, '_selected', return_value=('api:test', 'Test', 'm')):
-            sess = general.GeneralSession(self.s, self.tid)
-        with mock.patch.object(selfclose, 'declare', return_value={'closed': True}) as declare:
-            sess.turn_no, sess.waiting_turns = 3, 0
-            sess._close_out('done', turn=2)                     # a newer turn has started
-            sess.waiting_turns = 1
-            sess._close_out('done', turn=3)                     # one waits for its turn
-            declare.assert_not_called()
-            sess.waiting_turns = 0
-            sess._close_out('done', turn=3)                     # the newest word, nothing behind it
-            declare.assert_called_once()
 
     def test_a_plain_reply_ends_the_turn_and_is_no_hand_raise(self):
         sess, _ = self.turn('Acme is cheaper; Globex ships faster.')

@@ -97,7 +97,7 @@ test("a sweep that took the table with it offers Next; one that did not just rel
   assert.equal(afterConfirm(p, done, "task:7"), "settle");           // the page still settles this one
 });
 
-
+// The Next button itself: the receipt row carries chips, and a sweep that took the table puts one there.
 test("a hand-off in words is a job, not a form: the brief once, and a coding job names its repository", () => {
   const brief = "Look into issue 920 on the fan app and make sure the screening job is scheduled and working.";
   const cut = describe({ kind: "task.create_from_text", label: "Start a coding agent on it",

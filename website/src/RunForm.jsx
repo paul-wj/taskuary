@@ -67,20 +67,20 @@ export function AgentAsk({ coding: wantCoding = false, title, what, placeholder 
     try {
       await onStart?.({ verb: coding ? "coding_agent" : "regular_agent", kind: coding ? "coding" : "general",
         text: withImages(text.trim(), pics.paths) || "", agent: coding ? null : run.agent || null,
-        brain: coding ? run.brain || null : null, pick: coding ? null : run.pick || null, model: run.model || null });
+        brain: coding ? run.brain || null : null, pick: coding && run.brain ? null : run.pick || null, model: run.model || null });
     } catch (e) { setErr(e?.response?.data?.detail || e?.message || { key: "It did not start - press it again." }); }
     finally { setBusy(false); }
   };
   const verb = coding ? "coding_agent" : "regular_agent";
   return (
-    <Box ref={box} data-tq-agent-ask="" data-tq-view={view ? "agent" : undefined} data-tq-view-label={view?.title} sx={inline ? { p: 1.5, border: "1px solid #d5d0c7", borderRadius: "12px", bgcolor: "#fffdfb" } : {}}>
+    <Box ref={box} data-tq-agent-ask="" data-tq-view={view ? "agent" : undefined} data-tq-view-label={view?.title} sx={inline ? { p: 1.5, border: "1px solid var(--tq-border, #d5d0c7)", borderRadius: "12px", bgcolor: "var(--tq-panel, #fffdfb)" } : {}}>
       <RunForm title={title || btn(verb)} value={text} onValue={setText} pics={pics} autoFocus placeholder={placeholder}
         sx={inline ? { mt: 0, pt: 0, borderTop: 0 } : {}}
         note={what}
         picker={<AgentPicker agents={agents} models={models} kinds={kinds} coding={coding} agent={run.agent} model={run.model}
           brains={brainList} brainModels={brainModels} brain={run.brain}
           generalBrains={generalBrains} brainsRead={agentsRead} codingReady={codingReady} pick={run.pick}
-          onPick={coding ? undefined : (p) => setRun((r) => ({ ...r, pick: p }))}
+          onPick={(p) => setRun((r) => ({ ...r, pick: p }))}
           onBrain={(b) => setRun((r) => ({ ...r, brain: b, model: "" }))}
           onAgent={(a) => setRun((r) => ({ ...r, agent: a }))}
           onModel={(m) => setRun((r) => ({ ...r, model: m }))} size={28} />}
@@ -94,7 +94,7 @@ export function AgentAsk({ coding: wantCoding = false, title, what, placeholder 
             {choice("agent", coding ? "regular_agent" : "coding_agent")}</Button>}
           <Button size="small" variant="text" disabled={busy} onClick={onClose}>{t("Cancel")}</Button>
         </>}>
-        {err && <Typography role="alert" variant="caption" sx={{ color: "#7a2f3c", display: "block", mt: 0.5 }}>{typeof err === "object" ? t(err.key) : err}</Typography>}
+        {err && <Typography role="alert" variant="caption" sx={{ color: "var(--tq-danger, #7a2f3c)", display: "block", mt: 0.5 }}>{typeof err === "object" ? t(err.key) : err}</Typography>}
       </RunForm>
     </Box>
   );

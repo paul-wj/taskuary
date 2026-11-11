@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 
 import { studioAgentName, studioElapsed, studioPose, studioSeats, studioTaskState } from "../src/studioModel.js";
 import { dur } from "../src/timeWords.js";
+import { setLocale } from "../src/i18n.js";
+
+// The clock words below read English: the locale is pinned, never the host's.
+setLocale("en");
 
 test("the studio seats live work first and keeps waiting work visible", () => {
   const tasks = [

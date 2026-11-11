@@ -2,6 +2,9 @@
   "Message Taskuary…": "向 Taskuary 留言…",
   "{tool} (on this computer)": "{tool}（在此电脑上）",
   "Language": "语言",
+  "Switch to light theme": "切换到浅色主题",
+  "Switch to dark theme": "切换到深色主题",
+  "Back to your feed": "返回你的工作列表",
   "Settings": "设置",
   "Search settings…": "搜索设置…",
   "About you": "关于你",
@@ -308,5 +311,11 @@
   "Taskuary isn't answering. Check the app is still running, then try again.": "Taskuary 没有响应。请确认应用仍在运行，然后重试。",
   "{count}: {groups}.": "{count}：{groups}。",
   " ({count} urgent)": "（{count}项紧急）",
-  "Nothing is waiting on you.": "没有等待你处理的事项。"
+  "Nothing is waiting on you.": "没有等待你处理的事项。",
+  "Not for me": "不归我管",
+  "Closes the task": "关闭任务",
+  "and stops the agent - what it did so far is written up and saved with the task first": "并停止智能体 - 先将其已完成的工作写入并随任务保存",
+  "- your draft stays on it, to send later if you want": "- 你的草稿将保留在任务上，以便之后发送",
+  "AI used": "所用 AI",
+  "Chat detail": "聊天详情"
 }

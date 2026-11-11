@@ -50,11 +50,12 @@ FIELDS = {
     'sender_history': "sender_history is how this sender's last few asks were worked, newest first: each one's kind.",
     'recently_closed': "recently_closed is work on this thread, sender or subject that was closed in the last few days, each with its "
                        "tid and how it ended - the finding the agent wrote, or the ask if no agent ran.",
-    'open_work': "open_work is the OPEN tasks this message touches, each with its tid.",
+    'open_work': ("open_work is the OPEN tasks this message touches, each with its tid; in_another_chat is true on one whose lines sit in "
+                  "a different chat or group than this chat line."),
     'open_items': ("open_items is the owner's other open tasks and Watching items, newest first, one line each: its ref and (tid), title, "
                    "what it asks, where it came from, whether it is watched, and its age. Nothing ties them to this message by thread, sender "
-                   "or number - most are unrelated. When this message is about the same matter as one of them, whoever wrote it and on "
-                   "whatever channel or thread, answer same_as with that tid."),
+                   "or number - most are unrelated; for a chat line, none of them is this chat's (those are room_tasks). When this message is "
+                   "about the same matter as one of them, whoever wrote it and on whatever channel or thread, answer same_as with that tid."),
     'found_by_search': ("found_by_search is what the owner's own task search finds for this message's subject and words, open or closed, "
                         "best found first, one line each: ref and (tid), title, what it asks, its status (open, watching, or closed and "
                         "when) and age. A word match is not the same matter - when this message IS one of them, answer same_as with "
@@ -135,7 +136,9 @@ _ma = re.search(r'^\*\*An agent already on it\*\*.*?(?=\n\s*\n|\Z)', SHIPPED, re
 FIELDS['agent_on_it'] = ("agent_on_it, on a task in thread_task, room_tasks or open_work, is the agent on that task right now - {state: working or "
                          "waiting for its next turn, kind, brief: what it was put to, doing: the task's latest line}. "
                          + (_ma.group(0) if _ma else ''))
-FIELDS['open_todos'] = "open_todos, on a task in thread_task, room_tasks or open_work, is that task's to-dos not yet done."
+FIELDS['open_todos'] = ("open_todos, on a task in thread_task, room_tasks or open_work, is that task's to-dos not yet done, each with its "
+                       "number n. When this message corrects what one of them asks for on the task it joins, answer reword: "
+                       "[{n, text}] with that to-do as corrected, and leave it out of checklist.")
 ON_TASKS = ('agent_on_it', 'open_todos')      # the FIELDS that ride on a task in the payload rather than at its top
 
 
@@ -313,13 +316,11 @@ def verdict_schema(candidates=None, playbooks=None, same=False, goals=False, cod
          'wrapper': {'type': ['array', 'null'], 'items': {'type': 'string'}},
          # the message asks the owner to find a time to meet: how long and which days (its row's Find a time, calwrite.py)
          'meet': {'type': ['object', 'null'], 'additionalProperties': False, 'required': ['minutes', 'from', 'to'],
-                  'properties': {'minutes': {'type': ['integer', 'null']}, 'from': {'type': ['string', 'null']}, 'to': {'type': ['string', 'null']}}},
-         # what closes it beyond the reply (slots.py): emails to OTHER people the message asks the owner to send
-         'outputs': {'type': ['array', 'null'], 'items': {'type': 'object', 'additionalProperties': False, 'required': ['to', 'about'],
-                                                          'properties': {'to': {'type': 'string'}, 'about': {'type': 'string'}}}}}
+                  'properties': {'minutes': {'type': ['integer', 'null']}, 'from': {'type': ['string', 'null']}, 'to': {'type': ['string', 'null']}}}}
     if playbooks: p['playbook'] = {'type': ['string', 'null']}
     if workflows: p['workflow'] = {'type': ['string', 'null']}
-    # which of the owner's workstreams it belongs to (workstreams.py, the owner 2026-11-01: triage sorts by them), null when unsure
+    # which of the owner's workstreams it belongs to (workstreams.py, the owner 2026-11-01: triage sorts by them) - the best fit, null only when
+    # two fit equally or none does (the owner, 2026-11-09: "when unsure" left most tasks under no workstream)
     if workstreams: p['workstream'] = {'type': ['string', 'null']}
     if candidates is not None:
         p.update(relationship={'type': ['string', 'null'], 'enum': ['new', 'continues', 'answers', 'uncertain', None]},
@@ -336,6 +337,9 @@ def verdict_schema(candidates=None, playbooks=None, same=False, goals=False, cod
         # ...and when it joins with a part the title does not cover, the title that covers both: the task widens, never narrows to the
         # line (the owner, 2026-10-29: a chat bridge's later lines joined at combine 4 - the task should read as the bridge's, not the last line's)
         p['task_title'] = {'type': ['string', 'null']}
+        # ...and a correction rewords the open to-do it corrects, by its number in open_todos (ingest.reword_todos, the owner 2026-11-09)
+        p['reword'] = {'type': ['array', 'null'], 'items': {'type': 'object', 'additionalProperties': False, 'required': ['n', 'text'],
+                                                            'properties': {'n': {'type': 'integer'}, 'text': {'type': 'string'}}}}
     p['thread'] = THREAD_SCHEMA   # every verdict reads the whole thread, so it is never optional on the wire (2026-11-04)
     # the earlier lines of the exchange the ask rests on - shown with the task so its ask can be checked (2026-10-22)
     if earlier: p['rests_on'] = {'type': ['array', 'null'], 'items': {'type': 'integer'}}
@@ -456,6 +460,27 @@ def read_text(body: str, own: str = None, wrapper=()) -> str:
     return strip_wrapper(t, wrapper) or strip_wrapper(body or '', wrapper)
 
 
+# A MAIL SYSTEM'S STAMP opens the mail of LEAD_SENDERS different senders word for word (an external-sender banner); counted in the owner's
+# own mail by whoever asks - the chat over the store (general.lead_wrapper), the rail over its snapshot (processing_all.stamped_leads) -
+# never a phrase list (the owner, 2026-10-28: no hard-coded words). LEAD_LONG: a line that short ("CAUTION:", "Hi Alex,") is never judged.
+LEAD_SENDERS, LEAD_LONG = 3, 24
+
+
+def drop_lead(text: str, stamped) -> str:
+    """`text` less the lead paragraphs every long line of which is `stamped` - a banner, perhaps over a title line of its own.
+    A paragraph is up to the first blank line, else the first line. One short line may ride with the long ones, but a paragraph
+    that is only a short line never goes - and nothing is cut to nothing."""
+    t = str(text or '').strip()
+    for _ in range(3):
+        head, sep, rest = t.partition(NL * 2)
+        if not sep: head, _, rest = t.partition(NL)
+        lines = [l.strip() for l in head.splitlines() if l.strip()]
+        long = [l for l in lines if len(l) >= LEAD_LONG]
+        if not rest.strip() or len(head) > 1200 or not long or len(lines) - len(long) > 1 or not all(stamped(l) for l in long): break
+        t = rest.strip()
+    return t
+
+
 # What an AGENT is told a sender wrote: their words, never how to reach them. An agent with a shell and a mail tool has no use
 # for a sender's address or number, and the signature's copy of both rode into its prompt on every passed-in line. Shapes, not
 # words: an address is its @, a phone number is 7+ digits grouped by separators - a bare run of digits (an order number, a
@@ -558,6 +583,17 @@ def below(text: str, own: str) -> str:
 CHAIN_HEAD = '--- quoted under it, the chain they wrote on top of (their ask is ABOVE this line)'
 
 
+def both_ends(text: str, budget: int) -> str:
+    """Their own words when they run past the budget: the top AND the end, the middle marked as left out. A long mail's ask is as often
+    its last line ("...so please approve by Friday") as its first, and a cut from the end handed every reader - triage, the reply
+    writer, the agent's thread - the half that led up to it (the stress run, 2026-11-10). A third of the room goes to the end."""
+    if len(text) <= budget: return text
+    gap = f'{NL}[... {len(text) - budget} characters of this same message are left out here ...]{NL}'
+    keep = budget - len(gap)
+    if keep < 300: return text[:budget]                  # no room for two ends worth reading
+    return text[:keep - keep // 3].rstrip() + gap + text[-(keep // 3):].lstrip()
+
+
 def sender_body(text: str, own: str = None, budget: int = None, known: set = None) -> tuple:
     """(what one message should look like to a model, whether the budget cut anything).
 
@@ -579,7 +615,7 @@ def sender_body(text: str, own: str = None, budget: int = None, known: set = Non
     # them, and the signature and legal footer under somebody else's mail are boilerplate there too.
     if chain: chain = strip_boilerplate(dedupe_quoted(chain, (), known=known if known is not None else set()))
     room = budget - len(head) - len(CHAIN_HEAD) - 2
-    if not chain or room < 200: return head[:budget], len(head) > budget or bool(chain)
+    if not chain or room < 200: return both_ends(head, budget), len(head) > budget or bool(chain)
     return f'{head}{NL}{CHAIN_HEAD}{NL}{chain[:room]}', len(chain) > room
 
 
@@ -823,16 +859,37 @@ def classify_intent(msg: dict, llm=None, soul: str = None, notes: list = None, i
             if job: system += f"\n\nThe owner's job (their own document - what they are responsible for, who they serve, what to protect; weigh how much this matters with it):\n{job[:JOB_CHARS]}"
             # `learned` is LEARNED.md's active sections: the profile distilled from the owner's
             # past verdicts. It refines the operator's document; explicit notes still outrank it.
+            cut, memory = len(system), ''
             if learned:
                 # ...its "Your people" lines are for the priority alone (the guide's section 6 says so too, 2026-10-25)
                 # ...and what they said they do NOT care about decides as much as what they do (the owner, 2026-10-27: "if I don't care
                 # about something the system knows it") - read for its meaning, a legacy job by any of its names
                 # ...the whole of it since 2026-10-27 (learned_cut.whole): a line ending `(about: ...)` is about that one sender or topic
-                system += ("\n\nLearned profile - the owner's whole memory: what they care about and what they do not, from their own words "
+                memory = ("\n\nLearned profile - the owner's whole memory: what they care about and what they do not, from their own words "
                            "and their past verdicts, their people, how they work and what they promised. Something they said they do "
                            "not care about is never a task on its own - an fyi at most; the people lines weigh the priority only, never "
                            "whether it is a task; a line ending `(about: ...)` bears only on mail about that sender or topic "
                            '(the document above outranks it where they disagree):\n' + learned)
+            # From here down the code only LABELS what it hands over. Every sentence about how to judge it - the
+            # report brief, kind, repositories, chat lines, same_as - lives in the guide (2026-10-09:
+            # the owner, "why are there items in code in triage? I thought we removed them").
+            if playbooks: system += "\n\nPLAYBOOKS - the owner's written procedures, each with the arrival that starts it (when):\n" + str(playbooks)[:3000]
+            # THE OWNER'S WORKSTREAMS (the owner, 2026-11-01): which body of work this belongs to sorts it - a side product's tester is not
+            # a day-job colleague, and a personal chat is never the job's. Context for the sort; how each is weighed is the guide's to say
+            if workstreams: system += ("\n\nTHE OWNER'S WORKSTREAMS - the separate bodies of work they run (a personal one is their own life, "
+                                       'never work); name in "workstream" the one this message fits best, by its id before the colon - '
+                                       'null only when two fit it equally or none does:\n' + str(workstreams)[:2000])
+            if workflows: system += "\n\nWORKFLOWS A MAIL STARTS - the owner's configured jobs, each with the arrival that starts it (when):\n" + str(workflows)[:3000]
+            # a FACT about this install, not a rule of judgement: no coding tool is connected, so coding is not a kind it has
+            if not coding: system += ('\n\nTHERE IS NO CODING AGENT on this install (no coding tool, or developer mode is off). Never choose '
+                                      'kind coding - work that would be coding is general.')
+            # THE CACHED CONTEXT, THEN THE NEW MAIL (the owner, 2026-11-10: "keep the triage context cached and then just the new info should
+            # query it"): the guide and the owner's documents (the same for hours), the playbooks, workstreams and workflows (for days), the
+            # learned memory (a line added at 3pm re-bills only itself) - each a cached block (llm.stable) - and only what follows is this mail's
+            fixed, menus, system = system[:cut], system[cut:], ''
+            # WHAT IS THIS MESSAGE'S OWN comes after what every message shares (the owner, 2026-11-10: "32 million tokens?"): the guide, the
+            # owner's documents and memory, the playbooks, workstreams and workflows are the same bytes on every mail - the prefix a provider
+            # caches - and the evidence picked for this sender and the report's brief differ each time, so they follow
             if notes:
                 # already ranked and budgeted by ingest.relevant_notes. Evidence, never an order (PW-025): how much
                 # each counts for is the guide's to say (templates/triage.md, section 6).
@@ -845,20 +902,7 @@ def classify_intent(msg: dict, llm=None, soul: str = None, notes: list = None, i
                                                   'bear on this message and that you applied, [] when none does' if note_ids else '')
                            + ':\n' + '\n'.join(f'- {n}' for n in notes)
                            + (f'\n({notes_left} further note(s) also apply to this sender but did not fit.)' if notes_left else ''))
-            # From here down the code only LABELS what it hands over. Every sentence about how to judge it - the
-            # report brief, kind, repositories, chat lines, same_as - lives in the guide (2026-10-09:
-            # the owner, "why are there items in code in triage? I thought we removed them").
             if watch: system += "\n\nTHE REPORT'S BRIEF - why the owner runs this report and what they watch for:\n" + str(watch)[:1200]
-            if playbooks: system += "\n\nPLAYBOOKS - the owner's written procedures, each with the arrival that starts it (when):\n" + str(playbooks)[:3000]
-            # THE OWNER'S WORKSTREAMS (the owner, 2026-11-01): which body of work this belongs to sorts it - a side product's tester is not
-            # a day-job colleague, and a personal chat is never the job's. Context for the sort; how each is weighed is the guide's to say
-            if workstreams: system += ("\n\nTHE OWNER'S WORKSTREAMS - the separate bodies of work they run (a personal one is their own life, "
-                                       'never work); name in "workstream" the one this message belongs to, by its id before the colon, or '
-                                       'null when you are not sure:\n' + str(workstreams)[:2000])
-            if workflows: system += "\n\nWORKFLOWS A MAIL STARTS - the owner's configured jobs, each with the arrival that starts it (when):\n" + str(workflows)[:3000]
-            # a FACT about this install, not a rule of judgement: no coding tool is connected, so coding is not a kind it has
-            if not coding: system += ('\n\nTHERE IS NO CODING AGENT on this install (no coding tool, or developer mode is off). Never choose '
-                                      'kind coding - work that would be coding is general.')
             same_ids = {int(w['tid']) for key in ('open_work', 'recently_closed') for w in ((thread or {}).get(key) or []) if w.get('tid')}
             # ...and any line of the owner's open items: a join by meaning names one of those, and it was shown (context.open_items)
             # ...and of what the owner's search found, closed ones too (context.found_tasks)
@@ -924,7 +968,8 @@ def classify_intent(msg: dict, llm=None, soul: str = None, notes: list = None, i
             # provider enforces cannot be talked out of by a longer message. `need` is the recheck
             # behind it, for a CLI brain that has no wire to put a schema on - one more ask, naming
             # what was left out. Both exist because neither reaches every brain (TQ-0665).
-            from .llm import ask_json
+            from .llm import ask_json, stable
+            system = stable(fixed, menus, memory, rest=system, ttl='1h')
             answer = ask_json(llm, system, user, want=verdict_schema(candidates, playbooks, same=bool(same_ids), goals=bool(goal_steps),
                                                                      coding=coding, workflows=workflows, earlier=bool(earlier_ids), thread_task=bool(home),
                                                                      notes=bool(note_ids), workstreams=bool(workstreams), watched=watched),
@@ -977,6 +1022,10 @@ def classify_intent(msg: dict, llm=None, soul: str = None, notes: list = None, i
                     if v in earlier_ids and v not in rests: rests.append(v)
                 if rests: out['rests_on'] = rests
                 if (th := thread_of(j, earlier_ids)): out['thread'] = th
+                # reword: a numbered to-do and its corrected words - which task's is the join's, and the number is checked there
+                rw = [{'n': x['n'], 'text': ' '.join(str(x.get('text') or '').split())[:300]} for x in (j.get('reword') if isinstance(j.get('reword'), list) else [])
+                      if isinstance(x, dict) and isinstance(x.get('n'), int) and str(x.get('text') or '').strip()][:6]
+                if rw: out['reword'] = rw
                 # notes_applied: only the ids of notes it was shown - which standing notes bore on this message is the model's word
                 applied = j.get('notes_applied') if isinstance(j.get('notes_applied'), list) else []
                 if note_ids: out['notes_applied'] = [i for i in dict.fromkeys(str(x) for x in applied) if i in note_ids]
@@ -1011,7 +1060,6 @@ def classify_intent(msg: dict, llm=None, soul: str = None, notes: list = None, i
                 if meet_of(j, msg.get('sent_at')): out['meet'] = meet_of(j, msg.get('sent_at'))
                 if out['intent'] == 'task' and isinstance(j.get('checklist'), list):
                     out['checklist'] = [x for x in j['checklist'] if isinstance(x, str)]
-                if out['intent'] == 'task' and parse_outputs(j): out['outputs'] = parse_outputs(j)
                 # a GOAL needs its done-when sentence: "goal" on a two-line question with nothing to stop on is a task
                 dw = ' '.join(str(j.get('done_when') or '').split())[:1000]
                 if out['intent'] == 'task' and j.get('goal') is True and dw: out.update(goal=True, done_when=dw)
@@ -1032,7 +1080,7 @@ def classify_intent(msg: dict, llm=None, soul: str = None, notes: list = None, i
                 if out['intent'] == 'task' and j.get('needs_desktop') is True: out['needs_desktop'] = True
                 # ...and what it tries to make an AI do (TRIAGE.md's danger): asked for since 2026-10-15 and dropped here, so only ranking's
                 # reading ever reached message.Danger - and it holds the unattended start now (ingest.danger, the owner 2026-10-28)
-                dg = ' '.join(str(j.get('danger') or '').split())[:200]
+                dg = ' '.join(str(j.get('danger') or '').split())[:320]
                 if dg and dg.lower() not in ('null', 'none', 'no', 'false'):
                     out['danger'] = dg
                     if j.get('danger_aim') in ('owner', 'agent'): out['danger_aim'] = j['danger_aim']

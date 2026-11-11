@@ -39,9 +39,9 @@ export default function RoleStart({ onApplied }) {
   if (!offered.length && !done) return null;
   return (
     <Box sx={{ mb: 1.25 }}>
-      {done && <Typography sx={{ fontSize: 11.5, color: INK, p: 1.25, mb: 0.75, bgcolor: "#fff", border: "1px solid #e1dcd5", borderRadius: 2 }}>{said(done)}</Typography>}
+      {done && <Typography sx={{ fontSize: 11.5, color: INK, p: 1.25, mb: 0.75, bgcolor: "var(--tq-panel, #fff)", border: "1px solid var(--tq-border, #e1dcd5)", borderRadius: 2 }}>{said(done)}</Typography>}
       {offered.map((r) => (
-        <Box key={r.name} sx={{ p: 1.25, mb: 0.75, border: "1px dashed #d8cfbe", borderRadius: 2, display: "flex", alignItems: "center", gap: 1 }}>
+        <Box key={r.name} sx={{ p: 1.25, mb: 0.75, border: "1px dashed var(--tq-border, #d8cfbe)", borderRadius: 2, display: "flex", alignItems: "center", gap: 1 }}>
           <Box sx={{ flex: 1, minWidth: 0 }}>
             <Typography sx={{ fontSize: 12.5, fontWeight: 600, color: INK }}>{t("Start from a role: {title}", { title: r.name === "ap" && r.title === "Accounts payable" ? t("Accounts payable") : r.title })}</Typography>
             <Typography sx={{ fontSize: 11.5, color: FAINT }}>{r.name === "ap" && r.blurb === "Vendor mail answered from the ledger; bills waiting in the approval portal checked against it, approved on your yes." ? t(r.blurb) : r.blurb}</Typography>
@@ -61,7 +61,7 @@ export default function RoleStart({ onApplied }) {
               value={portal} onChange={(e) => setPortal(e.target.value)}
               helperText={t("For the daily job that reads the portal's approved bills. You can add it later.")} />
           )}
-          {err && <Typography sx={{ fontSize: 12, color: "#8a3324", mt: 1 }}>{typeof err === "object" ? t(err.key) : err}</Typography>}
+          {err && <Typography sx={{ fontSize: 12, color: "var(--tq-danger, #8a3324)", mt: 1 }}>{typeof err === "object" ? t(err.key) : err}</Typography>}
         </DialogContent>
         <ButtonBar>
           <Button variant="contained" onClick={apply} disabled={busy}>{busy ? t("Setting up…") : t("Set up")}</Button>

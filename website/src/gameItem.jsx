@@ -8,6 +8,7 @@ import React, { useEffect, useState } from "react";
 import { Box, Typography } from "@mui/material";
 
 import api from "./api";
+import { press, sure } from "./press.js";
 import { openReply, useDraftJob } from "./replyDraft.js";
 import { mono } from "./theme.jsx";
 import { cleanText } from "./ui.jsx";
@@ -15,7 +16,7 @@ import { Md, looksMd } from "./md.jsx";
 import { RepoPicker } from "./RepoPicker.jsx";
 import { AgentAsk } from "./RunForm.jsx";
 import { RemindPicker } from "./RemindMe.jsx";
-import { agentOpen, agentRuns } from "./taskFilter.js";
+import { agentRuns } from "./taskFilter.js";
 import { cardFor, laneMeta } from "./funnelPile.js";
 import { afterExecute, proposalOf } from "./proposalCard.js";
 import { closeoutOf } from "./reviewProposal.js";
@@ -153,9 +154,7 @@ function Draft({ item, busy, play }) {
   const value = text ?? (action ? parsed() : rv.DraftText || "");
   const who = rv.FromName || rv.FromEmail || t("them");
   const send = () => play("approve", item.key, async () => {
-    const { data } = await api.post(`/api/reviews/${item.rid}/decide`, { verb: "approve", final_text: action ? null : value, note: null });
-    if (data?.send_error) throw new Error(data.send_error);
-    return data;
+    return sure(await press(api, item.rid, { verb: "approve", final_text: action ? null : value }, action ? 2 : 1), "sent");      // the one press (press.js)
   });
   const redraft = async () => {
     const out = await play("draft", null, async () => (await api.post(`/api/messages/${item.mid}/reply`,
@@ -173,9 +172,7 @@ function Draft({ item, busy, play }) {
           {co || action ? `✔ ${t(btn("approve", "action"))} · +40` : `✔ ${t(btn("approve"))} · +40`}</Btn>
         {/* scored as answering the card - the game has one move for "you decided it" */}
         {co?.alt && <Btn disabled={!!busy} title={`${t(co.alt.label)} - ${t(co.alt.then)}`} onClick={() => play("approve", item.key, async () => {
-          const { data } = await api.post(`/api/reviews/${item.rid}/decide`, { verb: co.alt.verb, final_text: null, note: null });
-          if (data?.send_error) throw new Error(data.send_error);
-          return data;
+          return sure(await press(api, item.rid, { verb: co.alt.verb }, 2));
         })}>✖ {t(co.alt.label)}</Btn>}
       </Row>
       {!action && item.mid && <>
@@ -271,7 +268,7 @@ export function Moves({ item, covers = [], busy, play, onRepo, onAgent, given = 
       <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap" }}>
         {shown.map((c) => <Btn key={c.verb} disabled={!!busy || !!prop} onClick={(e) => pick(c, e?.currentTarget)} title={chipText(c, "hint")}>{chipText(c, "label")}</Btn>)}
       </Box>
-      {remindAt && <RemindPicker task={{ TaskId: item.tid || `idea-${item.idea}`, RemindAt: "" }} anchor={remindAt} live={agentOpen(item)} onClose={() => setRemindAt(null)}
+      {remindAt && <RemindPicker task={{ TaskId: item.tid || `idea-${item.idea}`, RemindAt: "" }} anchor={remindAt} onClose={() => setRemindAt(null)}
         path={item.kind === "idea" && item.idea ? `/api/assistant/ideas/${item.idea}/snooze` : undefined}
         onDone={(out) => out?.remindAt && play("later", item.key, async () => out)} />}
       {prop && (
@@ -315,9 +312,7 @@ export function ItemInspector({ item, agents, busy, play, onOpenTask, onNavigate
   const sendMine = () => play("approve", item.key, async () => {
     const { data } = await api.post(`/api/messages/${item.mid}/reply`, { draft: false });
     if (!data?.reviewId) throw new Error("no draft slot came back - try Draft a reply");
-    const sent = (await api.post(`/api/reviews/${data.reviewId}/decide`, { verb: "approve", final_text: mine, note: null })).data;
-    if (sent?.send_error) throw new Error(sent.send_error);
-    return sent;
+    return sure(await press(api, data.reviewId, { verb: "approve", final_text: mine }), "sent");
   });
   const tell = () => play("answer", item.key, () => api.post(`/api/tasks/${item.tid}/waitroom`, { text: answer })).then((ok) => ok && setAnswer(""));
   const open = (tid) => onOpenTask?.(tid, { start: false });
@@ -381,7 +376,7 @@ export function ItemInspector({ item, agents, busy, play, onOpenTask, onNavigate
       {item.summary && <Reading text={item.summary} cap={100} />}
       {item.tid && <FinalReport tid={item.tid} />}
       <Row>
-        {card === "agentdone" && item.mid && <Btn kind="gold" disabled={!!busy} onClick={() => play("draft", item.key, () => openReply(api, item.mid))}
+        {card === "agentdone" && item.mid && item.replies && <Btn kind="gold" disabled={!!busy} onClick={() => play("draft", item.key, () => openReply(api, item.mid))}
           title={t("Drafts an answer to the sender from what the agent found - nothing is sent")}>✍ {t(btn("reply"))} · +20</Btn>}
         {item.tid && <Btn onClick={() => open(item.tid)}>{t("Open {ref}", { ref: item.ref })}</Btn>}
       </Row>
@@ -403,7 +398,8 @@ export function ItemInspector({ item, agents, busy, play, onOpenTask, onNavigate
       {item.mid ? <MessageText mid={item.mid} /> : item.preview && <Reading text={item.preview} cap={90} />}
       {item.lane === "unjudged" && <Row><Btn kind="gold" disabled={!!busy} onClick={() => play("sort", item.key, () => api.post(`/api/messages/${item.mid}/retriage`, {}))}>🔁 {t(btn("retriage"))} · +10</Btn></Row>}
       {asks && item.mid && <Row>
-        <Btn kind={m.verb === "draft" ? "gold" : "ghost"} disabled={!!busy} onClick={() => play("draft", item.key, () => openReply(api, item.mid))}>✍ {t(btn("reply"))} · +20</Btn>
+        {/* ...a reply only where somebody reads one (the server's `replies`, 2026-11-10) */}
+        {item.replies && <Btn kind={m.verb === "draft" ? "gold" : "ghost"} disabled={!!busy} onClick={() => play("draft", item.key, () => openReply(api, item.mid))}>✍ {t(btn("reply"))} · +20</Btn>}
         {/* not while an agent runs on it - its session is the way in (2026-10-01) */}
         {!agentRuns(item) && <Btn kind={m.verb === "dispatch" ? "gold" : "ghost"} disabled={!!busy} onClick={() => setAsk(coding)}>🤖 {t(btn(coding ? "coding_agent" : "regular_agent"))} · +45</Btn>}
         <Btn disabled={!!busy} onClick={() => setMine((v) => v == null ? "" : null)}>{t("✎ Write it myself")}</Btn>
@@ -418,11 +414,11 @@ export function ItemInspector({ item, agents, busy, play, onOpenTask, onNavigate
   return (
     <Box>
       {body}
-      {repo && <Box onClick={(e) => e.stopPropagation()} sx={{ mt: 1, p: 1, borderRadius: "9px", bgcolor: "#f6f2ea", color: "#262521" }}>
+      {repo && <Box onClick={(e) => e.stopPropagation()} sx={{ mt: 1, p: 1, borderRadius: "9px", bgcolor: "var(--tq-panel, #f6f2ea)", color: "var(--tq-text, #262521)" }}>
         <Typography sx={{ fontSize: 12, fontWeight: 600, mb: 0.5 }}>{t("Which repository should the coding agent use?")}</Typography>
         <RepoPicker taskId={repo.taskId} agent={repo.agent} onDone={(d) => { if (d?.repo) { setRepo(null); dispatch({ ...(last || {}), verb: "coding_agent", kind: "coding" }); } }} />
       </Box>}
-      {ask !== null && <Box onClick={(e) => e.stopPropagation()} sx={{ mt: 1, color: "#262521" }}>
+      {ask !== null && <Box onClick={(e) => e.stopPropagation()} sx={{ mt: 1, color: "var(--tq-text, #262521)" }}>
         <AgentAsk inline coding={ask} what={item.mid ? t("It gets the message and its attachments.") : t("It gets this item.")}
           onClose={() => setAsk(null)} onStart={dispatch} /></Box>}
       <Moves item={item} covers={covers} busy={busy} play={play} onRepo={setRepo} onAgent={(v) => setAsk(v !== "regular_agent")} />

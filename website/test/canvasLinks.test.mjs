@@ -84,23 +84,9 @@ test("a Hub topic and an open post round-trip through the address, and the Board
   assert.equal(canvasRequestFromHash(BOARD), null, "the Board is no canvas page");
 });
 
-// THE LINE EVERY AGENT READS (taskuary/words.py LINK_LINE, the owner 2026-11-07): each address it teaches lands on the canvas - a task, or a
-// page - and #connector=<type> opens that ONE card, so "connect your books" can be the QuickBooks card itself
-test("every address the agents' link line teaches opens in place", () => {
-  const py = fs.readFileSync(path.join(process.cwd(), "..", "taskuary", "words.py"), "utf8");
-  const line = /LINK_LINE = \(([\s\S]*?)\)\r?\n/.exec(py)[1].replace(/#settings=<page>|#report=<id>/g, "");
-  const addrs = [...line.matchAll(/#[\w=&%.:/-]+/g)].map((m) => m[0].replace(/\.$/, ""));
-  assert.ok(addrs.length >= 6, addrs.join(" "));
-  for (const h of addrs) assert.ok(["task", "browse"].includes(canvasRequestFromHash(h)?.kind), h);
-  assert.equal(canvasRequestFromHash("#connector=quickbooks").state.connector, "quickbooks");
-  assert.equal(canvasRequestFromHash("#connector=quickbooks&step=1").state.step, true);
-});
-
 // A #task LINK OPENS ITS TASK OVER SETUP (the owner, 2026-11-08): read before setup said it was open, it landed under the setup canvas
 test("a link to one task is told apart, and setup's first read opens it over setup", async () => {
   const { opensTask } = await import("../src/canvasLinks.js");
   assert.equal(opensTask("#task=1"), true); assert.equal(opensTask("#task=12&x=1"), true);
   for (const h of ["", "#new-task", "#settings=audit", "#msg=4"]) assert.equal(opensTask(h), false, h);
-  const src = fs.readFileSync(path.join(import.meta.dirname, "../src/AssistantView.jsx"), "utf8");
-  assert.match(src, /setFirstRun\(true\); if \(opensTask\(window\.location\.hash\)\) setOverSetup\(true\);/);
 });

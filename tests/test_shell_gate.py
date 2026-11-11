@@ -20,13 +20,15 @@ class Reading(unittest.TestCase):
                           ('gh release delete v1.2', 'delete a release'), ('glab mr merge 4', 'merge a merge request'), ('npm publish', 'publish'),
                           ('twine upload dist/*', 'publish'), ('docker push northwind/portal:1.0', 'publish'),
                           ('Send-MailMessage -To erin@northwind.example -Subject x', 'email'), ('bash -c "git push origin main"', 'push'),
-                          ('FOO=1 git push', 'push')):
+                          ('FOO=1 git push', 'push'), ('curl -X POST https://hooks.vendor.example/notify -d "{}"', 'send data to hooks.vendor.example'),
+                          ('powershell -Command "Invoke-RestMethod -Method Post -Uri https://api.vendor.example/pay -Body $b"', 'send data')):
             got = sg.acts(cmd)
             self.assertTrue(got, cmd); self.assertIn(what, got[0]['what'], cmd)
 
     def test_looking_and_working_locally_pass(self):
         for cmd in ('git status', 'git commit -m "push the fix"', 'git log --grep push', 'gh pr view 12', 'gh api repos/northwind/ledger',
-                    'echo git push', 'npm install', 'pytest -q', 'rm -rf build', 'git pull', 'git fetch origin', 'gh pr list'):
+                    'echo git push', 'npm install', 'pytest -q', 'rm -rf build', 'git pull', 'git fetch origin', 'gh pr list',
+                    'curl -s https://docs.northwind.example/budget', 'curl -s -X POST http://127.0.0.1:7787/api/agent/tick -d "{}"'):
             self.assertEqual(sg.acts(cmd), [], cmd)
 
 
@@ -36,6 +38,7 @@ class Holding(unittest.TestCase):
         self.s = MemoryStore(); self.tid = Factory(self.s).task('Fix the ledger export')
         self.told = []
         self.sess = SimpleNamespace(sid='run1', send_prompt=lambda text, as_owner=True: self.told.append(text))
+        proposals._PRESSED.clear()       # a store's ids start at 1 again: an earlier test's press is not this one's
 
     def held(self, cmd='git push origin fix-export'):
         return sg.check(self.s, self.tid, 'run1', cmd, 'Bash', r'C:\work\ledger')
@@ -46,6 +49,16 @@ class Holding(unittest.TestCase):
         end = time.time() + 5
         while not self.told and time.time() < end: time.sleep(.01)
         return self.told
+
+    def test_an_http_write_off_this_machine_is_held_like_a_push_on_the_hook_road(self):
+        """The north-star audit, 2026-11-10: a CLI's `curl -X POST` to an outside host went out unseen on the hook road - only the ACP road
+        read HTTP writes, and refused them flat. One reading of the command (shellgate.acts) now, the same Approve card a push gets."""
+        cmd = 'curl -X POST https://hooks.vendor.example/notify -d "{}"'
+        d = hooks.command_gate(self.s, self.tid, 'run1', cmd, 'Bash', r'C:\work\ledger')['hookSpecificOutput']
+        self.assertEqual(d['permissionDecision'], 'deny'); self.assertIn('held this for the owner', d['permissionDecisionReason'])
+        [rv] = self.pending(); p = json.loads(rv['DraftText'])
+        self.assertEqual((p['action'], p['command']), ('shell_act', cmd)); self.assertIn('send data to hooks.vendor.example', p['what'])
+        self.assertEqual(hooks.command_gate(self.s, self.tid, 'run1', 'curl -s -X POST http://127.0.0.1:7787/api/agent/tick -d "{}"', 'Bash', ''), {})
 
     def test_a_push_is_refused_and_put_on_the_task_once(self):
         d = self.held()['hookSpecificOutput']
@@ -74,6 +87,7 @@ class Holding(unittest.TestCase):
         self.assertTrue(out['ok'], out)
         self.assertEqual(len(calls), 1); self.assertEqual((calls[0][0][-1], calls[0][1]), ('git push origin fix-export', r'C:\work\ledger'))
         self.assertIn('The owner approved it', self.heard()[0]); self.assertEqual(self.pending(), [])
+        self.assertIn(rv['ReviewId'], proposals._PRESSED, 'its told turn will not supersede it under the press')
 
     def test_a_step_that_fails_says_so_and_runs_nowhere_else(self):
         self.held(); [rv] = self.pending()
@@ -84,6 +98,31 @@ class Holding(unittest.TestCase):
         self.assertTrue(out['send_error'].startswith('The held step failed: '), out['send_error'])
         with mock.patch.object(sg.os.path, 'isdir', return_value=False):
             self.assertRaisesRegex(RuntimeError, 'folder it was held in is gone', sg.perform, self.s, self.tid, json.loads(rv['DraftText']))
+
+    # the owner, 2026-11-09: a held run declined in the agent's chat stood on as "Approve runs: ..." after the agent had asked something else
+    # ...and the owner, 2026-11-10: "once youa re passed it, it should stay where it is with buttons grayed out" - the conversation moving on
+    # passes every card of the task (proposals.move_on), whichever session held it
+    def test_the_owner_speaking_to_that_session_again_settles_its_held_step(self):
+        self.held(); sg.check(self.s, self.tid, 'other', 'git push origin other', 'Bash', r'C:\work\ledger')
+        self.assertEqual(len(proposals.move_on(self.s, self.tid)), 2)
+        self.assertEqual(self.pending(), [])
+        gone = self.s._one("SELECT * FROM review WHERE TaskId=? AND Status='superseded'", (self.tid,))
+        self.assertEqual(gone['DecideNote'], proposals.SET_ASIDE); self.assertTrue(proposals.passed(gone))
+
+    def test_the_prompt_hook_moves_past_it_and_a_step_being_approved_is_not_touched(self):
+        self.held(); [rv] = self.pending()
+        t = SimpleNamespace(store=self.s, task_id=self.tid, sid='run1', bg={})
+        with mock.patch.object(proposals, '_PRESSED', {rv['ReviewId']: time.time()}):
+            hooks._events(t, {'hook_event_name': 'UserPromptSubmit', 'prompt': 'carry on'})
+            self.assertEqual(len(self.pending()), 1, 'its own Approve is telling the agent - never superseded under the press')
+        hooks._events(t, {'hook_event_name': 'UserPromptSubmit', 'prompt': '<task-notification>done</task-notification>'})
+        self.assertEqual(len(self.pending()), 1, 'a background wake is not the owner moving on')
+        hooks._events(t, {'hook_event_name': 'UserPromptSubmit', 'prompt': 'no, leave the checkout - is it ready to push?'})
+        self.assertEqual(self.pending(), [])
+
+    def test_the_agents_own_words_for_the_call_ride_on_the_card(self):
+        sg.check(self.s, self.tid, 'run1', 'git push origin fix-export', 'Bash', r'C:\work\ledger', about='  ship the export fix  ')
+        [rv] = self.pending(); self.assertEqual(json.loads(rv['DraftText'])['about'], 'ship the export fix')
 
     def test_dismiss_tells_the_agent_it_was_not_done(self):
         self.held(); [rv] = self.pending()
@@ -124,7 +163,7 @@ class Running(unittest.TestCase):
         self.assertEqual(sg.text('To northwind/ledger — done'.encode()), 'To northwind/ledger — done')
         self.assertEqual(sg.text(b'bad \xff byte'), 'bad \ufffd byte')
         self.assertEqual(sg.failed(sg.text(wsl.encode('utf-16-le')), 1),
-                         'The held step failed: Windows Subsystem for Linux has no installed distributions. / wsl.exe --install <Distro>')
+                         'The held step failed: Windows Subsystem for Linux has no installed distributions.')
         self.assertEqual(sg.failed('', 128), 'The held step failed: exit 128')
 
 
@@ -150,6 +189,15 @@ class Hook(unittest.TestCase):
         self.assertEqual(self.held(), [], "the CLI's prompt is the approval: no Approve card")
         self.assertTrue(any(a['Action'] == 'shell_act_asked' for a in self.s._rows('SELECT * FROM audit')))
         self.assertIn('git push origin main', self.s.list_comments(self.tid)[-1]['Body'])
+
+    def test_an_agent_with_no_terminal_is_not_said_to_have_one_asking(self):
+        """Agent walk 2, 2026-11-10: "The agent asked to push ... - its terminal asks you to allow it" on a coding agent that talks ACP. It
+        has no terminal: the ask goes back to Taskuary's own gate, which had answered the push with the landing card."""
+        d = self.hook(self.push, acp=True)['hookSpecificOutput']
+        self.assertEqual(d['permissionDecision'], 'ask', "still the CLI's ask: acpgate answers it")
+        self.assertEqual([c['Body'] for c in self.s.list_comments(self.tid) if 'terminal' in c['Body']], [])
+        self.assertTrue(any(a['Action'] == 'shell_act_asked' for a in self.s._rows('SELECT * FROM audit')))
+        self.assertEqual(self.held(), [])
 
     def test_where_nobody_answers_the_cli_it_is_held_for_approve(self):
         for why, pane in (("a stranger's task", {'mode': 'auto'}), ('a CLI whose hook cannot ask', {'cli': 'devin', 'argv': ['claude']})):

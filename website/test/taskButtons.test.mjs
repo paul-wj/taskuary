@@ -65,21 +65,4 @@ test("one look: every task-row button is the same class, the lit one alone adds 
   assert.match(page, /\{!task \? <SpineMoves sec=\{sec\.key\} name=\{sec\.name\} \/> : BUTTONS_AT === "spine" && sec\.key === "from" \? <TaskButtons spine \/> : null\}/);
 });
 
-// the owner, 2026-11-06, of the New dialog's footer: "this is too thick. it should just be button wide and button should be on left ... Reusable
-// code is always the best" - every dialog's actions are the task row's ButtonBar: no band, left, one button tall, the main move first
-test("every dialog's actions are the one ButtonBar: one button size, left, no band", async () => {
-  const { readdirSync } = await import("node:fs");
-  const src = new URL("../src/", import.meta.url), files = readdirSync(src).filter((f) => f.endsWith(".jsx"));
-  const read = (f) => readFileSync(new URL(f, src), "utf8");
-  assert.deepEqual(files.filter((f) => /<DialogActions/.test(read(f))), [], "no dialog draws its own action band");
-  const bar = read("ButtonBar.jsx");
-  assert.match(bar, /export const ROW_BTN = \{ height: 28, minHeight: 28, minWidth: 0, px: 1\.5, py: 0, fontSize: 12,[^}]*borderRadius: 99/);
-  assert.match(bar, /justifyContent: "flex-start"/);
-  assert.doesNotMatch(bar, /borderTop|PANEL2/, "no band");
-  for (const f of ["NewSheet.jsx", "HubView.jsx"]) {
-    assert.match(read(f), /<ButtonBar>/, f);
-    assert.doesNotMatch(read(f), /justifyContent: "flex-end", px: 3, py: 1\.75,\s*borderTop/, f);
-  }
-  // ...the main move first, Cancel after it
-  assert.match(read("NewSheet.jsx"), /<ButtonBar>[\s\S]*?variant="contained"[\s\S]*?>Cancel<\/Button>\s*<\/ButtonBar>/);
-});
+

@@ -140,7 +140,7 @@ const Post = ({ p, onChanged, onOpenTask, onRemoved, onOpen = null, defaultOpen 
             {p.TaskId ? (
               <Button size="small" variant="outlined" onClick={() => onOpenTask?.(p.TaskId)}
                 sx={{ height: 23, px: 0.9, minWidth: 0, fontSize: 10.5, textTransform: "none",
-                  color: "#55697a", borderColor: BORDER }}>
+                  color: "var(--tq-link, #55697a)", borderColor: BORDER }}>
                 {t("from TQ-{id}", { id: String(p.TaskId).padStart(4, "0") })}
               </Button>
             ) : byOwner(p.Author) ? (
@@ -157,7 +157,7 @@ const Post = ({ p, onChanged, onOpenTask, onRemoved, onOpen = null, defaultOpen 
                 first, and below zero the entry is gone */}
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.25 }}>
               <IconButton size="small" onClick={() => vote(true)} title="holds up — agents are handed this sooner" aria-label={`Vote up ${named}`}
-                sx={{ p: { xs: 0.75, md: 0.2 }, color: mine > 0 ? ACCENT : FAINT, "&:hover": { color: ACCENT } }}>
+                sx={{ p: { xs: 0.75, md: 0.2 }, color: mine > 0 ? ACCENT : FAINT, "&:hover": { color: "var(--tq-link, #55697a)" } }}>
                 <ArrowUpwardIcon sx={{ fontSize: { xs: 18, md: 14 } }} />
               </IconButton>
               <Typography title={voteLabel} sx={{ ...mono, fontSize: 11, minWidth: 14, textAlign: "center",
@@ -184,7 +184,7 @@ const Post = ({ p, onChanged, onOpenTask, onRemoved, onOpen = null, defaultOpen 
         </Box>
       </Box>
       {open && (
-        <Box sx={{ borderTop: `1px solid ${BORDER}`, bgcolor: "#fcfaf7", px: 1.5, py: 1.25 }}>
+        <Box sx={{ borderTop: `1px solid ${BORDER}`, bgcolor: "var(--tq-panel, #fcfaf7)", px: 1.5, py: 1.25 }}>
           {comments.map((c) => (
             <Box key={c.CommentId} sx={{ mb: 0.85, pl: 1.25, borderLeft: `2px solid ${BORDER}` }}>
               <Typography variant="caption" sx={{ color: FAINT, display: "block" }}>
@@ -199,7 +199,7 @@ const Post = ({ p, onChanged, onOpenTask, onRemoved, onOpen = null, defaultOpen 
               onChange={(e) => setDraft(e.target.value)}
               sx={{ "& .MuiInputBase-root": { fontSize: 12.5, bgcolor: PANEL } }} />
             <Button size="small" variant="contained" disableElevation disabled={busy || !draft.trim()} onClick={comment}
-              sx={{ fontSize: 12, background: GRADIENT, alignSelf: "flex-end" }}>{t("Post")}</Button>
+              sx={{ fontSize: 12, color: "#fff", background: GRADIENT, alignSelf: "flex-end" }}>{t("Post")}</Button>
           </Box>
         </Box>
       )}
@@ -395,7 +395,7 @@ export default function HubView({ onOpenTask, browse = null, browseState = {}, o
         <TextField size="small" fullWidth value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={t("search Hub…")}
           inputProps={{ "aria-label": t("Search Hub"), "data-tq-browse-search": "" }}
           InputProps={{ startAdornment: <SearchIcon sx={{ fontSize: 16, color: FAINT, mr: 0.75 }} /> }}
-          sx={{ mt: 1.5, "& .MuiInputBase-root": { fontSize: 12.5, bgcolor: "#fff" } }} />
+          sx={{ mt: 1.5, "& .MuiInputBase-root": { fontSize: 12.5, bgcolor: "var(--tq-panel, #fff)" } }} />
       ),
       cards: [...(grouped ? [{ key: "about", node: <About /> }, ...bySystem(posts, topics, (t) => onBrowseState?.({ section: t, open: null }), card)]
         : posts.map((x) => ({ key: String(x.LoreId), node: card(x) }))), ...(posts.length ? [{ key: "recently-deleted", node: shelf }] : [])],
@@ -423,7 +423,7 @@ export default function HubView({ onOpenTask, browse = null, browseState = {}, o
             title={t("what the vote took off, or you did - never deleted")}>{t(removed ? "back to Hub" : "removed")}</Button>
           <Box sx={{ flex: 1 }} />
           <Button size="small" variant="contained" disableElevation startIcon={<AddIcon sx={{ fontSize: 16 }} />}
-            onClick={() => setNewOpen(true)} sx={{ background: GRADIENT, fontSize: 12.5 }}>{t("Write one")}</Button>
+            onClick={() => setNewOpen(true)} sx={{ color: "#fff", background: GRADIENT, fontSize: 12.5 }}>{t("Write one")}</Button>
           <NewEntry open={newOpen} onClose={() => setNewOpen(false)} onDone={load} topics={topics} />
         </Box>
       ),
@@ -444,7 +444,7 @@ export default function HubView({ onOpenTask, browse = null, browseState = {}, o
                 width: "100%", border: 0, font: "inherit",
                 borderTop: i ? `1px solid ${BORDER}` : "none",
                 bgcolor: topic === item.Topic ? PANEL2 : "transparent",
-                "&:hover": { bgcolor: topic === item.Topic ? PANEL2 : "#fcfaf7" } }}>
+                "&:hover": { bgcolor: topic === item.Topic ? PANEL2 : "var(--tq-panel, #fcfaf7)" } }}>
               <Typography sx={{ fontSize: 12.5, fontWeight: topic === item.Topic ? 600 : 400,
                 color: topic === item.Topic ? INK : DIM, flex: 1, minWidth: 0 }} noWrap>
                 {item.Topic || t("everything")}
@@ -491,7 +491,7 @@ export default function HubView({ onOpenTask, browse = null, browseState = {}, o
           <Button size="small" onClick={() => setRemoved((v) => !v)} sx={{ fontSize: 11.5, color: removed ? INK : FAINT, minWidth: 0 }}
             title={t("what the vote took off, or you did - never deleted")}>{t(removed ? "back to Hub" : "removed")}</Button>
           <Button size="small" variant="contained" disableElevation startIcon={<AddIcon sx={{ fontSize: 16 }} />}
-            onClick={() => setNewOpen(true)} sx={{ background: GRADIENT, fontSize: 12.5 }}>{t("Write one")}</Button>
+            onClick={() => setNewOpen(true)} sx={{ color: "#fff", background: GRADIENT, fontSize: 12.5 }}>{t("Write one")}</Button>
         </Box>
 
         {failed}

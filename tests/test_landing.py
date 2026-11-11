@@ -4,7 +4,7 @@ temp folder, no network."""
 import os, subprocess, tempfile, time, unittest
 from unittest import mock
 
-from taskuary import guard, landing
+from taskuary import guard, landing, shellgate
 from taskuary.store import MemoryStore
 from taskuary.testing import Factory
 
@@ -27,6 +27,7 @@ class LandingTests(unittest.TestCase):
         commit(self.cwd, 'ledger.py', 'one\ntwo\nthree\n', 'start')
         self.s = MemoryStore(); self.tid = Factory(self.s).task(title='Fix the ledger rounding', kind='coding')
         landing.mark_start(self.s, self.tid, self.cwd)
+        self.s.add_transcript(self.tid, 'run1', 'Fixed the rounding.', 'claude', self.cwd)     # the agent that worked it: what landing tells
 
     def tearDown(self):
         try: self.tmp.cleanup()
@@ -195,6 +196,214 @@ class LandingTests(unittest.TestCase):
         self.assertTrue(out['ok']); self.assertEqual(out['pr'], 12)
         self.assertEqual(op.call_args[0][1:4], ('northwind/ledger', 'fix-rounding', 'master'))
         self.assertTrue(git(remote, 'rev-parse', 'fix-rounding'))
+
+
+    # ── WORK ON THE SHARED BASE IS A PUSH, ASKED WITH BUTTONS (the owner, 2026-11-09: "i thought actions should be cards/buttons??? why is this
+    # text??") - an agent committed straight on master, ended "Ready to push <sha> and deploy (master -> deploy) - go ahead?", and the card
+    # under it had no button, so the owner typed "yes"
+    def on_master_with_origin(self):
+        self.remote = tempfile.mkdtemp(); git(self.remote, 'init', '-q', '--bare')
+        git(self.cwd, 'remote', 'add', 'origin', self.remote); git(self.cwd, 'push', '-q', 'origin', 'master')
+        commit(self.cwd, 'ledger.py', 'one\nTWO\nthree\n')
+        landing.saw(self.s, self.tid, 'Bash', {'command': 'git commit -q -m "edit ledger.py"'})
+
+    def test_its_unpushed_commits_on_the_shared_base_are_a_push_button(self):
+        self.on_master_with_origin()
+        s = landing.state(self.s, self.tid)
+        self.assertTrue(s['ask']); self.assertFalse(s['own'])
+        self.assertEqual([a['how'] for a in s['answers']], ['push'], 'no deploy branch known yet: Push alone')
+        self.assertEqual((s['push']['tip'], s['push']['ahead']), (self.sha('master'), 1))
+        self.assertIn('Push it?', s['line'])
+        # ...and the press is a line of the chat in the owner's voice, never the audit row's bare name ("You landed.")
+        from taskuary import general
+        self.dev(); landing.land(self.s, self.tid, 'push')
+        self.assertIn("pressed Push on the agent's work - it went through", general.presses(self.s, self.tid)[-1][2])
+
+    def test_two_commits_in_one_second_push_up_to_the_newer(self):
+        self.on_master_with_origin()
+        when = int(git(self.cwd, 'log', '-1', '--format=%ct'))
+        commit(self.cwd, 'rounding.py', 'x\n', env={'GIT_COMMITTER_DATE': f'{when} +0000'})
+        landing.saw(self.s, self.tid, 'Bash', {'command': 'git commit -q -m "edit rounding.py"'})
+        p = landing.state(self.s, self.tid)['push']
+        self.assertEqual((p['tip'], p['ahead']), (self.sha('master'), 2))
+
+    def test_the_agent_proposes_push_and_deploy_and_the_press_pushes_both(self):
+        self.on_master_with_origin(); tip = self.sha('master')
+        landing.propose(self.s, self.tid, 'push', 'the fix counts once it is live', deploy='deploy')
+        s = landing.state(self.s, self.tid)
+        self.assertEqual([a['how'] for a in s['answers']], ['push', 'deploy']); self.assertEqual(s['proposal']['how'], 'deploy')
+        self.assertFalse(git(self.remote, 'branch', '--list', 'deploy'), 'proposing pushes nothing')
+        with self.assertRaises(ValueError): landing.propose(self.s, self.tid, 'rebase')          # no branch of its own to rebase
+        with mock.patch('taskuary.waitroom.add') as told, mock.patch('taskuary.shellgate.repo_of', return_value='northwind/ledger'):
+            out = landing.land(self.s, self.tid, 'deploy')
+        self.assertTrue(out['ok']); self.assertIn('deployed it to deploy', out['says'])
+        self.assertEqual((git(self.remote, 'rev-parse', 'master'), git(self.remote, 'rev-parse', 'deploy')), (tip, tip))
+        self.assertIn('Check it is live', told.call_args[0][2], 'the press is the go-ahead the agent waited on')
+        s = landing.state(self.s, self.tid)
+        self.assertFalse(s['ask']); self.assertEqual(s['landed']['how'], 'deploy')
+        # ...and the next task in this repo is offered the same deploy branch without the agent naming it
+        self.assertEqual(landing._deploy_to(self.s, None, 'northwind/ledger'), 'deploy')
+
+    def test_a_push_proposed_through_propose_or_a_mark_is_the_cards_buttons_whatever_the_push_switch(self):
+        # with "Agents may push / deploy" off a `land` proposal was refused - the agent, left with no road, asked in words
+        from taskuary import proposals
+        self.on_master_with_origin()
+        self.assertIsNone(landing.from_proposal(self.s, self.tid, {'action': 'comment_issue', 'body': 'x'}))
+        self.assertTrue(landing.from_proposal(self.s, self.tid, {'action': 'push', 'deploy': 'deploy', 'why': 'live is the ask'})['ok'])
+        self.assertEqual([a['how'] for a in landing.state(self.s, self.tid)['answers']], ['push', 'deploy'])
+        t2 = Factory(self.s).task(title='Round the totals', kind='coding'); landing.mark_start(self.s, t2, self.cwd)
+        commit(self.cwd, 'totals.py', 'x\n'); landing.saw(self.s, t2, 'Bash', {'command': 'git commit -q -m totals'})
+        queued = proposals.collect(self.s, t2, 'Done. TASKUARY-PROPOSE {"action": "land", "why": "ship it"}', 'agent')
+        self.assertEqual(queued, [], 'no Approve review beside the card')
+        s = landing.state(self.s, t2); self.assertEqual((s['proposal']['how'], [a['how'] for a in s['answers']]), ('push', ['push']))
+
+    def test_a_push_origin_refuses_pushes_nothing_and_says_why(self):
+        self.on_master_with_origin()
+        other = tempfile.mkdtemp(); git(other, 'clone', '-q', self.remote, '.'); commit(other, 'portal.py', 'x\n'); git(other, 'push', '-q', 'origin', 'master')
+        with self.assertRaises(landing.Refused) as e: landing.land(self.s, self.tid, 'push')
+        self.assertIn('nothing was pushed', str(e.exception))
+        with self.assertRaises(ValueError): landing.land(self.s, self.tid, 'deploy')           # not offered: no deploy branch known
+
+    # ── AN AGENT'S OWN `git push` IS THE CARD'S QUESTION TOO (the agent walk, 2026-11-09): told to call propose_land, a coding agent ran
+    # `git add ... && git commit ... && git push` in its shell. With Developer mode on the owner got "THE AGENT ASKS - It wants to run
+    # "git add ... | tail -1; gi"" with Allow once / Reject - cut mid-word, the push not on it - beside a card built to ask it with one Push
+    def dev(self): self.s.set_setting('developer_mode', '1', 'test')
+    def pushed(self): return git(self.remote, 'rev-parse', 'master') == self.sha('master')
+
+    def test_a_push_run_in_the_shell_becomes_the_push_button(self):
+        self.on_master_with_origin(); self.dev()
+        held, said = landing.push_asked(self.s, self.tid, 'git push origin master', self.cwd, about='Push the rounding fix')
+        self.assertTrue(held); self.assertTrue(said.startswith(shellgate.HELD), said); self.assertIn('Push button', said)
+        s = landing.state(self.s, self.tid)
+        self.assertEqual(s['proposal']['how'], 'push'); self.assertIn('rounding fix', s['proposal']['why'])
+        self.assertFalse(self.pushed(), 'asking pushes nothing')
+        # ...a bare `git push` is the same push, and asked twice it is still one question
+        self.assertTrue(landing.push_asked(self.s, self.tid, 'git push', self.cwd)[0])
+        self.assertTrue(landing.push_asked(self.s, self.tid, 'git push -u origin HEAD', self.cwd)[0])
+
+    # ── NO NOT NOW (the owner, 2026-11-10: "why ddo we need not now card? just hit next ... SHouldn't we just get rid of it totally"): the
+    # push card the agent raised is a card like any other - passed once the conversation moves on, raised again if still wanted
+    def test_a_push_card_the_agent_raised_is_passed_when_the_conversation_moves_on_and_raised_again(self):
+        from taskuary import proposals
+        self.on_master_with_origin(); self.dev()
+        landing.propose(self.s, self.tid, 'push', 'the fix is ready')
+        self.assertTrue(landing.state(self.s, self.tid)['ask'])
+        self.assertIn(proposals.LAND, proposals.move_on(self.s, self.tid))
+        s = landing.state(self.s, self.tid)
+        self.assertTrue(s['passed']); self.assertFalse(s['ask'], 'nothing pressable')
+        with self.assertRaises(ValueError) as e: landing.land(self.s, self.tid, 'push')
+        self.assertEqual(str(e.exception), proposals.PASSED_SAID); self.assertFalse(self.pushed())
+        self.assertIn(proposals.LAND_LINE, proposals.passed_note(self.s, [proposals.LAND]))
+        # ...its own `git push` over a passed card is still held - raised again, never run
+        self.assertTrue(landing.push_asked(self.s, self.tid, 'git push origin master', self.cwd)[0]); self.assertFalse(self.pushed())
+        self.assertTrue(landing.state(self.s, self.tid)['ask'])
+        proposals.move_on(self.s, self.tid)
+        # ...the agent asks again, and is never refused for a hold: a live card again
+        self.assertTrue(landing.propose(self.s, self.tid, 'push', 'still needed')['ok'])
+        self.assertTrue(landing.state(self.s, self.tid)['ask'])
+
+    def test_unpushed_work_no_turn_raised_stays_live_as_the_checkout_says(self):
+        from taskuary import proposals
+        self.on_master_with_origin(); self.dev()
+        before = landing.state(self.s, self.tid)
+        self.assertNotIn(proposals.LAND, proposals.move_on(self.s, self.tid))
+        self.assertEqual(landing.state(self.s, self.tid)['ask'], before['ask'])
+        self.assertFalse(landing.state(self.s, self.tid)['passed'])
+
+    def test_a_push_the_remote_refuses_is_kept_and_its_agent_is_told_the_way_past(self):
+        """A FAILURE IS KEPT WHERE IT HAPPENED (rules part 4): someone pushed to origin first, so the owner's Push was refused - "pull and rebase,
+        then push again". That is the agent's to do, yet only the press's own answer said it: nothing on the task after a reload, the agent
+        never told, and the next Push refused the same way."""
+        from taskuary import general
+        self.on_master_with_origin(); landing.propose(self.s, self.tid, 'push', 'the fix is ready')
+        other = tempfile.mkdtemp(); git(other, 'clone', '-q', self.remote, '.')
+        for k, v in (('user.name', 'Ray Colton'), ('user.email', 'ray@northwind.example')): git(other, 'config', k, v)
+        commit(other, 'notes.md', 'from a teammate\n'); git(other, 'push', '-q', 'origin', 'master')
+        told = []
+        with mock.patch.object(general, 'tell', lambda st, t, said, actor='owner': (told.append(said), 'told')[1]):
+            with self.assertRaises(landing.Refused): landing.land(self.s, self.tid, 'push')
+        self.assertFalse(self.pushed())
+        [line] = [what for _, _, what, *_ in general.presses(self.s, self.tid) if 'Push' in what]
+        self.assertIn('REFUSED', line); self.assertIn('nothing went out', line)
+        [said] = told
+        self.assertIn('was refused', said); self.assertIn('rebase', said)
+        self.assertTrue(landing.state(self.s, self.tid)['ask'], 'the question stays: Push is still one press once the agent has rebased')
+
+    def test_a_push_onto_another_branch_is_push_and_deploy(self):
+        for cmd in ('git push origin master:deploy', 'git push origin HEAD:deploy', 'git push origin master && git push origin master:deploy'):
+            with self.subTest(cmd):
+                self.tearDown(); self.setUp(); self.on_master_with_origin(); self.dev()
+                self.assertTrue(landing.push_asked(self.s, self.tid, cmd, self.cwd)[0])
+                s = landing.state(self.s, self.tid)
+                self.assertEqual((s['proposal']['how'], s['proposal']['deploy'], [a['how'] for a in s['answers']]), ('deploy', 'deploy', ['push', 'deploy']))
+
+    def test_commit_and_push_in_one_line_runs_nothing_and_says_how_to_ask(self):
+        self.on_master_with_origin(); self.dev()
+        held, said = landing.push_asked(self.s, self.tid, 'git add -A && git commit -m "round once" && git push origin master', self.cwd)
+        self.assertFalse(held, 'nothing waits on the owner yet: the commit in the line has not run')
+        self.assertIn('propose_land', said); self.assertIn('without the push', said)
+        self.assertIsNone(landing.state(self.s, self.tid)['proposal'])
+        # ...output thrown away is no second step: the push alone is still the button
+        self.assertTrue(landing.push_asked(self.s, self.tid, 'git push origin master 2>&1', self.cwd)[0])
+        # ...and a push alone with nothing of the task's own on the card is never sent to a tool that would refuse it: held the old way
+        t2 = Factory(self.s).task(title='Round the totals', kind='coding'); landing.mark_start(self.s, t2, self.cwd)
+        self.assertFalse(landing.push_asked(self.s, t2, 'git push', self.cwd))
+
+    def test_the_tool_carries_the_deploy_branch(self):
+        # "how push, deploy <branch>" drew Push alone: the tool's door dropped `deploy`, and the agent asked for the deploy in words
+        from taskuary import agenttools
+        got = {}
+        agenttools.call(self.s, self.tid, 'propose_land', {'how': 'push', 'why': 'live is the ask', 'deploy': 'deploy'},
+                        {'propose_land': lambda tid, how, why, deploy='': got.update(how=how, deploy=deploy) or {'ok': True}})
+        self.assertEqual(got, {'how': 'push', 'deploy': 'deploy'})
+
+    def test_what_the_card_cannot_do_is_held_the_old_way(self):
+        self.on_master_with_origin(); self.dev()
+        for cmd in ('git push --force origin master', 'git push --tags', 'git push fork master', 'git push origin :old', 'git push origin +master',
+                    'git push origin master other', 'gh pr create --fill && git push', 'git -C ../portal push', 'cd ../portal && git push',
+                    'bash -c "git push origin master"', 'git status'):
+            with self.subTest(cmd): self.assertFalse(landing.push_asked(self.s, self.tid, cmd, self.cwd))
+        other = tempfile.mkdtemp(); git(other, 'init', '-q', '-b', 'master')
+        self.assertFalse(landing.push_asked(self.s, self.tid, 'git push', other), 'a push from another checkout is not this task\'s work')
+        self.assertFalse(landing.push_asked(self.s, Factory(self.s).task(title='No checkout'), 'git push', self.cwd))
+        from taskuary import agents
+        with mock.patch.object(agents, 'developer_mode', agents.developer_mode.real):     # the suite runs with it on (conftest)
+            self.assertTrue(landing.push_asked(self.s, self.tid, 'git push origin master', self.cwd))
+            self.s.set_setting('developer_mode', '0', 'test')
+            self.assertFalse(landing.push_asked(self.s, self.tid, 'git push origin master', self.cwd), 'no landing card is drawn with Developer mode off')
+
+    def test_its_own_branch_pushed_is_the_landing_question(self):
+        self.remote = tempfile.mkdtemp(); git(self.remote, 'init', '-q', '--bare')
+        git(self.cwd, 'remote', 'add', 'origin', self.remote); git(self.cwd, 'push', '-q', 'origin', 'master')
+        self.branch(); self.dev()
+        held, said = landing.push_asked(self.s, self.tid, 'git push -u origin fix-rounding', self.cwd)
+        self.assertTrue(held, said)
+        s = landing.state(self.s, self.tid)
+        self.assertEqual((s['proposal']['how'], len(s['answers'])), ('pr', 4), 'all four answers, its pick marked')
+        self.assertFalse(git(self.remote, 'branch', '--list', 'fix-rounding'))
+
+    def test_both_gates_ask_the_card_first(self):
+        from taskuary import acpgate
+        self.on_master_with_origin(); self.dev()
+        tc = lambda cmd: {'toolCallId': 'c', 'kind': 'execute', 'rawInput': {'command': cmd, 'description': 'Push the fix'}}
+        ctx = {'store': self.s, 'task_id': self.tid, 'cwd': self.cwd, 'sid': 'run1', 'owner_asks': True}
+        with mock.patch.object(shellgate, 'trusted', return_value=''):
+            asked = []
+            with mock.patch('taskuary.permissions.ask', side_effect=lambda *a, **k: asked.append(a) or 'reject_once'):
+                held = {}
+                out = acpgate.answerer({k: v for k, v in ctx.items() if k != 'owner_asks'}, held=held)({'toolCall': tc('git push origin master'), 'options': [
+                    {'optionId': 'y', 'kind': 'allow_once'}, {'optionId': 'n', 'kind': 'reject_once'}]})
+            self.assertEqual(asked, [], 'no Allow once / Reject card beside the Push button')
+            self.assertEqual(out.get('optionId'), 'n'); self.assertTrue(held['c'].startswith(shellgate.HELD), held)
+            self.assertEqual(acpgate.decide(tc('git add -A && git commit -m x && git push'), ctx)[0], acpgate.REFUSED)
+            # ...the hook's road and an API agent's run_command (shellgate.check): the same answer, and no Approve card filed beside it
+            said = shellgate.check(self.s, self.tid, 'run1', 'git push origin master', cwd=self.cwd)['hookSpecificOutput']['permissionDecisionReason']
+            self.assertIn('Push button', said)
+            self.assertEqual(self.s._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action'", (self.tid,)), [])
+        # ...and a repo the owner trusts to act on its own still just pushes
+        with mock.patch.object(shellgate, 'trusted', return_value='northwind/ledger'):
+            self.assertEqual(shellgate.check(self.s, self.tid, 'run1', 'git push origin master', cwd=self.cwd), {})
+            self.assertEqual(acpgate.decide(tc('git push origin master'), ctx)[0], acpgate.ALLOWED)
 
 
 class LandingDoorTests(unittest.TestCase):

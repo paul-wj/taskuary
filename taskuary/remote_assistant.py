@@ -489,7 +489,9 @@ def push_alerts(store, force: bool = False) -> int:
     tail = (f'Say {handle} to take it now, or carry on with this one.' if handle
             else 'Name it and I will take you to it, or carry on with this one.')
     send(store, h['channel'], h['chat'], f'{say}\n\n{tail}', h.get('connector_id'), urgent=not live)
-    concierge.record(store, task['TaskId'], 'assistant', say)
+    # ...as the phone's line: the model reads it next turn, the desk's chat never draws it (the owner, 2026-11-10: "the agents don't tell
+    # the assistant anything unless you can assistant questions")
+    concierge.record(store, task['TaskId'], 'assistant', say, phone=True)
     # ...onto the hand-off as it is NOW: a Take it back that landed while this was sending must stay taken back - writing
     # the record read a moment ago put the walk back in the chat and locked the desk again
     now = handoff(store)
@@ -1947,12 +1949,12 @@ def _remind(store, act: dict, actor: str) -> str:
 
 
 def _draft_card(store, rid, actor: str = 'owner') -> dict:
-    """The draft just written, brought up. Under canonical processing reads a review is found only once membership has been
+    """The draft just written, brought up. A review is found only once membership has been
     reconciled, which the background does a moment later: the phone answered "I can't find that one" over the draft it had
     just written (F4). The row is reconciled first when it is not there yet - the same recovery funnel.settle uses."""
     from . import concierge, funnel
     key = f'review:{rid}'
-    if getattr(store, 'processing_reads_active', lambda: False)() and not funnel.next_item(store, key, include_surfaced=True):
+    if not funnel.next_item(store, key, include_surfaced=True):
         try:
             from . import processing_all
             processing_all.wait_settled(store)

@@ -72,8 +72,10 @@ class AutoStartTests(unittest.TestCase):
         out, spawned = ingested(s, mail(), 'general')
         self.assertEqual(spawned, [])
         self.assertEqual(s.get_task(out['task_id'])['Status'], 'open')
-        # the switch's place, by its one name (words.json) - never a typed "Settings" path
-        self.assertIn(f"held for you: Starting an agent by itself is switched off in {words.name('coding')}.", last_reason(s))
+        # the switch's place, by its one name (words.json) - never a typed "Settings" path - and the place it really is: the general switch
+        # sits under Agents, and the sentence sent the owner to Coding agent, where it is not
+        knobs = json.loads((pathlib.Path(ingest.__file__).parent / 'settings_schema.json').read_text(encoding='utf-8'))['knobs']
+        self.assertIn(f"held for you: Starting an agent by itself is switched off in Settings → {knobs['general_auto_enabled']['group']}.", last_reason(s))
         s2 = store(coding_auto_enabled='0')
         _out, spawned = ingested(s2, mail(external_id='c1'), 'coding')
         self.assertEqual(spawned, []); self.assertIn(f"Starting the coding agent by itself is switched off in {words.name('coding')}.", last_reason(s2))
@@ -89,9 +91,8 @@ class AutoStartTests(unittest.TestCase):
             self.assertEqual(spawn.call_args_list, [], kind)
             self.assertTrue(s.task_has_tag(out['task_id'], ingest.HOLD_TAG), kind)
             # one whole sentence naming the sender, then where it stands - a state, never an instruction: the row has the button
-            note = next(c for c in comments(s, out['task_id']) if c.startswith('Waiting for you:'))
+            note = next(c for c in comments(s, out['task_id']) if c.startswith(ingest.NOT_STARTED))
             self.assertIn('Sam (stranger@evil.example) is not on your domain and you have never written to them', note)
-            self.assertTrue(note.endswith('No agent has started on it.'), note)
             self.assertNotIn('yourself', note); self.assertNotIn(buttons.label('regular_agent'), note)
             self.assertIn('held for you: Sam (stranger@evil.example) is not on your domain', last_reason(s))
 
@@ -100,7 +101,7 @@ class AutoStartTests(unittest.TestCase):
         out, spawned = ingested(s, mail(), 'general', providers=())
         self.assertEqual(spawned, [])
         self.assertIn(f"No AI is set up for an agent to run on yet ({words.name('ai')})", last_reason(s))
-        self.assertTrue(any(c.startswith('Waiting for you:') and c.endswith('No agent has started on it.') for c in comments(s, out['task_id'])))
+        self.assertTrue(any(c.startswith(ingest.NOT_STARTED) for c in comments(s, out['task_id'])))
 
     def test_coding_with_no_repository_is_started_like_any_coding_work(self):
         """Where it is done is the coding agent's to pick once it starts (repochoice, the owner 2026-11-06): no hold, no question to a
@@ -138,7 +139,7 @@ class AutoStartTests(unittest.TestCase):
         s = store()
         with mock.patch.object(server, 'store', s):
             out, _spawned = ingested(s, mail(), 'general', providers=())     # held: no provider
-            self.assertTrue(any(c.startswith('Waiting for you:') for c in comments(s, out['task_id'])))
+            self.assertTrue(any(c.startswith(ingest.NOT_STARTED) for c in comments(s, out['task_id'])))
             r = TestClient(server.app).post(f"/api/messages/{out['message_id']}/file", json={'learn': False}).json()
         self.assertTrue(r['taskDeleted']); self.assertIsNone(s.get_task(out['task_id']))
 

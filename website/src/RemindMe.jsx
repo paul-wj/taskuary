@@ -18,11 +18,10 @@ const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0
 // "Remind me" word (the owner, 2026-09-25: "remind me should be a walk button")
 // `path`: where the day goes - a task's reminder by default, or an Advisor idea's (its Remind me, 2026-09-27)
 // `onLeave` fires AT THE PRESS, before the server answers, so the walk can put the task down at once; `onStay(error)` if it failed
-// `live`: an agent session is still open on the task - the picker warns instead of offering days (the owner, 2026-10-01:
-// it has to be saved and ended first); the server refuses the day with the same words if one slips through
+// ...whatever its agent is doing: the day is set and the agent put to rest (remind.rest - the owner, 2026-11-10: "remind me should be like send")
 // `act`: the walk's own road for the day (railwalk.leave "remind") - the day and the move in one call; else the task's reminder route
 // `said`: the day the owner's words named, {until, day} (assistantLight's light.day) - its button comes first
-export function RemindPicker({ task, anchor, onClose, onDone, path, act = null, onLeave, onStay, live = false, said = null }) {
+export function RemindPicker({ task, anchor, onClose, onDone, path, act = null, onLeave, onStay, said = null }) {
   useLocale();
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -53,24 +52,20 @@ export function RemindPicker({ task, anchor, onClose, onDone, path, act = null, 
   return (
     <Popover open={!!anchor} anchorEl={anchor} onClose={onClose} anchorOrigin={{ vertical: "bottom", horizontal: "left" }}>
       <Box sx={{ p: 1.5, display: "grid", gap: 1, width: 240 }}>
-        <Typography sx={{ fontSize: 12, fontWeight: 600, color: "#41525f" }}>
+        <Typography sx={{ fontSize: 12, fontWeight: 600, color: "var(--tq-link, #41525f)" }}>
           {away ? t("Away until {day}", { day: remindDay(task.RemindAt) }) : t("Bring it back on…")}</Typography>
-        {live && !away ? (
-          <Typography sx={{ fontSize: 12, color: "#7a2f3c" }}>
-            {t("An agent is still open on this task. Press Stop and save first, then put it away.")}</Typography>
-        ) : <>
           {/* THE DAY THE OWNER SAID leads (the owner, 2026-10-27): "remind me Monday" lit this picker with no Monday in it */}
           {said?.until && said?.day && !away && (
             <Button size="small" variant="contained" disabled={busy} onClick={() => set(said.until)} disableElevation data-tq-remind-said=""
-              sx={{ justifySelf: "start", fontSize: 11, minHeight: 26, py: 0, px: 1, bgcolor: "#55697a", "&:hover": { bgcolor: "#46586a" } }}>{said.day}</Button>)}
+              sx={{ justifySelf: "start", fontSize: 11, minHeight: 26, py: 0, px: 1, color: "#fff", bgcolor: "#55697a", "&:hover": { bgcolor: "#46586a" } }}>{said.day}</Button>)}
           {/* the learned day leads, filled - its row keeps its height while it is read, so the days under it never jump */}
           {reads && !away && (usual === null || usualLabel(usual)) && (
             <Box sx={{ minHeight: 26, display: "flex", alignItems: "center", gap: 0.75 }} data-tq-remind-usual="">
               {usualLabel(usual) && <>
                 <Button size="small" variant="contained" disabled={busy} onClick={() => set(usual.on)} disableElevation
-                  sx={{ fontSize: 11, minHeight: 26, py: 0, px: 1, bgcolor: "#55697a", "&:hover": { bgcolor: "#46586a" } }}>{usualLabel(usual)}</Button>
+                  sx={{ fontSize: 11, minHeight: 26, py: 0, px: 1, color: "#fff", bgcolor: "#55697a", "&:hover": { bgcolor: "#46586a" } }}>{usualLabel(usual)}</Button>
                 {/* ...the line it is read from on hover: the owner corrects the day in LEARNED.md, How you work (2026-10-25) */}
-                <Typography component="span" sx={{ fontSize: 11, color: "#6b6459" }} title={usualLine(usual)}>{usualWhy(usual)}</Typography>
+                <Typography component="span" sx={{ fontSize: 11, color: "var(--tq-warning, #6b6459)" }} title={usualLine(usual)}>{usualWhy(usual)}</Typography>
               </>}
             </Box>)}
           <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
@@ -80,27 +75,26 @@ export function RemindPicker({ task, anchor, onClose, onDone, path, act = null, 
             ))}
           </Box>
           {/* later TODAY, at a time (2026-10-06: only tomorrow could be picked); the server refuses a time already gone */}
-          <Box component="label" sx={{ display: "grid", gap: 0.4, fontSize: 11.5, color: "#6b6459" }}>
+          <Box component="label" sx={{ display: "grid", gap: 0.4, fontSize: 11.5, color: "var(--tq-warning, #6b6459)" }}>
             {t("Later today")}
             <input type="time" id={`remind-time-${task.TaskId}`} disabled={busy}
               onBlur={(e) => e.target.value && set(`today ${e.target.value}`)}
-              style={{ font: "inherit", fontSize: 13, padding: "4px 6px", borderRadius: 6, border: "1px solid #d8d1c5" }} />
+              style={{ font: "inherit", fontSize: 13, padding: "4px 6px", borderRadius: 6, border: "1px solid var(--tq-border, #d8d1c5)" }} />
           </Box>
-          <Box component="label" sx={{ display: "grid", gap: 0.4, fontSize: 11.5, color: "#6b6459" }}>
+          <Box component="label" sx={{ display: "grid", gap: 0.4, fontSize: 11.5, color: "var(--tq-warning, #6b6459)" }}>
             {t("Or pick a day")}
             <input type="date" id={`remind-${task.TaskId}`} min={iso(tomorrow)} disabled={busy}
               onChange={(e) => e.target.value && set(e.target.value)}
-              style={{ font: "inherit", fontSize: 13, padding: "4px 6px", borderRadius: 6, border: "1px solid #d8d1c5" }} />
+              style={{ font: "inherit", fontSize: 13, padding: "4px 6px", borderRadius: 6, border: "1px solid var(--tq-border, #d8d1c5)" }} />
           </Box>
-        </>}
         {away && <Button size="small" disabled={busy} onClick={() => set("none")} sx={{ justifySelf: "start", fontSize: 11 }}>{t("Bring it back now")}</Button>}
-        {err && <Typography sx={{ fontSize: 11.5, color: "#7a2f3c" }}>{err.text || t(err.key)}</Typography>}
+        {err && <Typography sx={{ fontSize: 11.5, color: "var(--tq-danger, #7a2f3c)" }}>{err.text || t(err.key)}</Typography>}
       </Box>
     </Popover>
   );
 }
 
-export default function RemindMe({ task, compact = false, sx, onDone, act = null, onLeave, onStay, live = false, lit = false, said = null }) {
+export default function RemindMe({ task, compact = false, sx, onDone, act = null, onLeave, onStay, lit = false, said = null }) {
   useLocale();
   const [at, setAt] = useState(null);
   const [day, setDay] = useState(null);     // the said day as it was at the press: the light that carried it goes out then
@@ -110,11 +104,11 @@ export default function RemindMe({ task, compact = false, sx, onDone, act = null
   return (
     <>
       {compact
-        ? <Tooltip title={title}><IconButton size="small" sx={{ color: "#55697a", ...sx }} onClick={(e) => setAt(e.currentTarget)}>
+        ? <Tooltip title={title}><IconButton size="small" sx={{ color: "var(--tq-link, #55697a)", ...sx }} onClick={(e) => setAt(e.currentTarget)}>
             <EventIcon sx={{ fontSize: 16 }} /></IconButton></Tooltip>
-        : <Button size="small" variant={lit ? "contained" : "outlined"} disableElevation sx={sx} title={title} startIcon={<EventIcon sx={{ fontSize: 16, color: lit ? "inherit" : "#55697a" }} />}
+        : <Button size="small" variant={lit ? "contained" : "outlined"} disableElevation sx={sx} title={title} startIcon={<EventIcon sx={{ fontSize: 16, color: lit ? "inherit" : "var(--tq-link, #55697a)" }} />}
             onClick={(e) => { setDay(said); setAt(e.currentTarget); }}>{away ? t("Back {day}", { day: remindDay(task.RemindAt) }) : t(label("defer"))}</Button>}
-      <RemindPicker task={task} anchor={at} onClose={() => setAt(null)} onDone={onDone} act={act} onLeave={onLeave} onStay={onStay} live={live} said={day} />
+      <RemindPicker task={task} anchor={at} onClose={() => setAt(null)} onDone={onDone} act={act} onLeave={onLeave} onStay={onStay} said={day} />
     </>
   );
 }

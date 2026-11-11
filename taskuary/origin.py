@@ -43,8 +43,21 @@ def of_task(store, tid: int, msgs=None) -> tuple:
     o, why, t = _judge(store, tid, msgs, {}, {})
     # a bare UPDATE: a read must not move UpdatedAt/UpdatedBy and reorder the lists
     if (t.get('Origin'), t.get('OriginWhy')) != (o, why): store._exec('UPDATE task SET Origin=?, OriginWhy=? WHERE TaskId=?', (o, why, tid))
+    if t.get('_lifted') and t['_lifted'][0] > int(t.get('TrustedThrough') or 0): _lift(store, t, o)
     if o != 'stranger': _drop_stale_hold(store, t, why)
     return o, why
+
+def _lift(store, t: dict, o: str):
+    """A trusted person's line lifted the task (lifted): kept as its TrustedThrough, so every road that reads that (a read of the message, the
+    Trust presses) agrees - and said once on the task, with what it means for an agent already on it (general.GeneralSession: its next turn)."""
+    (mid, who), tid = t['_lifted'], t['TaskId']
+    store._exec('UPDATE task SET TrustedThrough=? WHERE TaskId=? AND IFNULL(TrustedThrough, 0)<?', (mid, tid, mid))
+    store.audit('task', tid, 'origin_lifted', 'agent', 'agent', detail={'through': mid, 'by': who})
+    if o == 'stranger': return                                  # ...a stranger wrote after them: lowered again, nothing to say
+    coding = str(t.get('Kind') or '') == 'coding'
+    store.add_comment_once(tid, 'router', 'agent', f"{who} wrote on this task, and you trust them, so it runs as theirs now: its agent gets your "
+                           "tools and earlier mail" + (" - a coding session already open keeps its review mode until it is started again." if coding
+                           else " from its next turn.") + " What the earlier sender wrote stays their words, never yours.")
 
 def _judge(store, tid: int, msgs, memo: dict, seen: dict) -> tuple:
     "(origin, why, task row), read only: of_task's, and an idea's that cites this task (ref_origin). None: a cycle (idea_rests_on)."
@@ -63,15 +76,58 @@ def _judge(store, tid: int, msgs, memo: dict, seen: dict) -> tuple:
             m.get('Channel') == 'report' for m in msgs) else ('stranger', f"written by Taskuary's {t['Source']} from what it read")
         if r is None: return None                     # a task this same idea made, met again while it is judged: a cycle, not evidence
         o, why = r
-    through = int(t.get('TrustedThrough') or 0)
+    through, base = int(t.get('TrustedThrough') or 0), (o, why)
     # ...every task page reads this, so a long group chat is judged per PERSON (memo), and its first stranger ends it: nothing is worse
     # (the owner, 2026-11-01: a 1,500-line chat held its page behind a spinner while each line asked again)
-    for m in msgs:
-        if o == 'stranger': break
-        if m['MessageId'] <= through: continue
-        if (r := of_message(store, m, memo, seen)) and worse(r[0], o) != o: o, why = r
+    def scan(o, why, after):
+        for m in msgs:
+            if o == 'stranger': break
+            if m['MessageId'] <= after: continue
+            if (r := of_message(store, m, memo, seen)) and worse(r[0], o) != o: o, why = r
+        return o, why
+    o, why = scan(o, why, through)
+    # ...and lifted by someone trusted who wrote on it since (lifted): judged again from their line on, as if they had started it
+    if o == 'stranger' and base[0] != 'stranger' and (l := lifted(store, msgs, through, memo, seen)):
+        o, why = scan('trusted', l[1], l[0]); t = {**t, '_lifted': (l[0], l[2])}
     if o != 'stranger' and (b := teammate_bound(store, tid)): o, why = 'stranger', b
     return o, why, t
+
+# A TRUSTED PERSON WHO WRITES ON A STRANGER'S TASK LIFTS IT (the owner, 2026-11-09): a colleague wrote on a task an outsider had started, and it
+# stayed in stranger mode - no tools, no earlier mail - for the colleague's own ask. Their line vouches for the task as if they had started it.
+# Only someone senders.known trusts lifts it: never the owner's own reply on the thread (an answer to a stranger is no say-so - Trust them is),
+# never Taskuary's own lines or a repository's (an outsider's pull request stays theirs), and never past a line triage read as an attempt on
+# the agent or the owner (message.Danger). The stranger's words stay theirs in every prompt - someone else's, never the owner's - and a
+# stranger who writes after it lowers the task again, as before. IN A GROUP, only a line triage joined to the task as THIS work (same_problem
+# true, ingest.chat_route) lifts it (the owner, 2026-11-09): a colleague just posting in the same group vouches for nothing. Mail: any trusted
+# person on the thread.
+NO_LIFT = (*OURS, 'github')
+def _dm(m) -> bool:
+    try: return bool((json.loads(m.get('MailMetaJson') or '{}') or {}).get('dm'))
+    except (ValueError, TypeError, AttributeError): return False
+def _group_line(m) -> bool:
+    from .store import CHAT_CHANNELS
+    return str(m.get('Channel') or '').lower() in CHAT_CHANNELS and not _dm(m)
+def _joined_as_work(store, msgs) -> set:
+    "The task's lines triage joined as its own work (same_problem true) - one read for the whole task, newest verdict per line."
+    tid, v = next((m.get('TaskId') for m in msgs if m.get('TaskId')), None), {}
+    for r in store._rows('SELECT r.MessageId, r.VerdictJson FROM route r JOIN message m ON m.MessageId=r.MessageId WHERE m.TaskId=? '
+                         'AND r.VerdictJson IS NOT NULL ORDER BY r.RouteId', (tid,)) if tid else []:
+        try: v[r['MessageId']] = (json.loads(r['VerdictJson']) or {}).get('same_problem') is True
+        except (ValueError, TypeError, AttributeError): v[r['MessageId']] = False
+    return {k for k, ok in v.items() if ok}
+def lifted(store, msgs, through: int = 0, memo: dict = None, seen: dict = None):
+    "(message id, why, who) of the newest line on the task past `through` from someone trusted, with no Danger on any line up to it - else None."
+    later, work = [m for m in msgs if m['MessageId'] > through], None
+    for i in range(len(later) - 1, -1, -1):
+        m = later[i]
+        if _own(m) or (m.get('Channel') or '') in NO_LIFT: continue
+        if (r := of_message(store, m, memo, seen)) and r[0] == 'trusted':
+            if _group_line(m) and m['MessageId'] not in (work := _joined_as_work(store, msgs) if work is None else work): continue
+            if any(x.get('Danger') for x in later[:i + 1]): return None
+            if not any((r := of_message(store, x, memo, seen)) and r[0] == 'stranger' for x in later[:i]): return None    # nobody to lift
+            who = m.get('FromName') or m.get('FromEmail') or 'Someone you trust'
+            return m['MessageId'], f'{who} wrote on it since - someone you trust, so it runs as theirs', who
+    return None
 
 # A TEAMMATE CHAT RUNS SAFE (H3, the owner 2026-11-08): a line in a chat bound to this task's agent (agentchannels.py) goes straight in,
 # and the answer goes straight back out - so a teammate, their account, or text they pasted could have the agent fetch the owner's
@@ -249,29 +305,23 @@ def _claude_version(cmd: str) -> tuple:
     return _ver.get(argv, ())
 
 def launch_mode(store, tid, cli: str, cmd: str = '') -> str:
-    """'full' (today's launch, untouched) or 'auto' (the CLI's reviewer); raises Refusal when a stranger's task cannot run safely.
+    """'full' (today's launch, untouched), 'auto' (the CLI's reviewer) or 'look' (its read-only mode); raises Refusal when a stranger's task
+    cannot run safely.
     `cmd` is the profile's own command, so the version read is the binary that will launch."""
     from . import clis
     if not tid or of_task(store, tid)[0] != 'stranger': return 'full'
     cli = clis._base(cli)
-    if cli not in clis.AUTO: raise Refusal(no_reviewer(store))
-    if cli == 'claude' and _claude_version(cmd or cli) < MIN_CLAUDE:      # `cli` IS claude here - the CLI's own name
-        raise Refusal("a stranger's task needs Claude Code 2.1.295 or later (its hooks must refuse when Taskuary cannot answer)")
-    return 'auto'
+    # ...`cli` IS claude in the version check - the CLI's own name; a reviewer too old to refuse is no reviewer
+    if cli in clis.AUTO and not (cli == 'claude' and _claude_version(cmd or cli) < MIN_CLAUDE): return 'auto'
+    # ...AND A CLI WITH NO REVIEWER READS AND ANSWERS IN ITS OWN READ-ONLY MODE (clis.READONLY), on every road - a coding pane's start was refused
+    # outright, "couldn't start" over a task its chat could have read (the owner, 2026-11-10: "this is also weird bug?")
+    if cli in clis.READONLY: return 'look'
+    raise Refusal(no_reviewer(store))
 
 def no_reviewer(store) -> str:
     """Why a stranger's task cannot run with this CLI's tools, and the way on: the owner's word on the sender. It never names
     another tool (the owner, 2026-10-22: "never suggest another coding tool") - it once named claude even to a Codex-only home."""
-    return ("this tool has no built-in reviewer, so it does not run a stranger's task with its tools. Its chat can still read and "
-            "answer, or press Trust them if you know who wrote it")
-
-
-def looks_only(store, tid, cli: str) -> bool:
-    """A stranger's task on a CLI with no reviewer of its own, but a read-only mode it does have (clis.READONLY - Codex's read-only
-    sandbox): the general agent runs it there, looking and answering, rather than not at all."""
-    from . import clis
-    cli = clis._base(cli)
-    return bool(tid) and cli not in clis.AUTO and cli in clis.READONLY and of_task(store, tid)[0] == 'stranger'
+    return "on a stranger's task this AI cannot be kept to only reading their words, so it does not start - Trust them if you know who wrote it"
 
 
 def stranger_path(tid: int):

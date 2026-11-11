@@ -80,6 +80,15 @@ def reference_closed(row):
     return bool(not row.get('TaskId') and row.get('ReviewStatus') != 'pending' and (row.get('Jira') or {}).get('closed'))
 
 
+def reference_open(row):
+    """A task-less Jira reference whose item is not closed: open work on the rail. A reference is
+    resolved by its close (reference_closed), never by who commented last - the owner's own comment
+    on an open issue (stored `context`, the tracker's own line) is not an answer, so it must not
+    count as the thread being answered (processing_unread._noise's 'last word is yours')."""
+    j = row.get('Jira')
+    return bool(j) and not row.get('TaskId') and not j.get('closed')
+
+
 def same_user(author, owner, deployment):
     if deployment == 'cloud': return bool(owner.get('accountId')) and author.get('accountId') == owner['accountId']
     if author.get('key') and owner.get('key'): return author['key'] == owner['key']

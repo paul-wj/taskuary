@@ -10,6 +10,8 @@
 // fold arrows - and an item that `lays` its moves has every one of them on the strip of the section it is about, and on that section's spine
 // folded; the bar is Back and Next. A phone's stacked sections keep the row as it was
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 import { Box, Typography } from "@mui/material";
 import api from "./api.js";
 import { LinkPopups, Md } from "./md.jsx";
@@ -44,6 +46,7 @@ export const handToItem = (key, hand) => { const f = key && HANDS.get(key); if (
 const ASK_ONLY = "the answer here reads the item only";
 // `came`: what the item is, a chip on the box while nothing is handed on (the owner, 2026-11-06: Came-from rides the one box as a chip)
 export function ItemAsk({ ask, hand = null, onHand = null, came = "" }) {
+  useLocale();
   const ls = itemLines(readingOf(ask?.reading));
   const [text, setText] = useState(""), [said, setSaid] = useState([]), [busy, setBusy] = useState(false), [err, setErr] = useState("");
   const pics = usePromptImages({ files: true }), input = useRef(null);
@@ -60,7 +63,7 @@ export function ItemAsk({ ask, hand = null, onHand = null, came = "" }) {
       const { data } = await api.post("/api/concierge/say", { text: q, key: ask.key,
         view: { area: "item", title, item: { kind: ask.kind, id: ask.key, title, section: "ask" } } });
       setSaid((w) => [...w, { q, a: String(data?.say || "") }]); setText("");
-    } catch (e) { setErr(e?.response?.data?.detail || e?.message || (hand ? "It did not start - press Send again." : "That did not go through - try again.")); }
+    } catch (e) { setErr(e?.response?.data?.detail || e?.message || (hand ? t("It did not start - press Send again.") : t("That did not go through - try again."))); }
     finally { setBusy(false); }
   };
   // ...A CHAT, as a task's is (the owner, 2026-11-05: "add the reports/advisor/fyi to chat thing as well without close out"): what it says and what
@@ -73,17 +76,17 @@ export function ItemAsk({ ask, hand = null, onHand = null, came = "" }) {
       sx={{ fontSize: 13.5, lineHeight: 1.55, color: INK, overflowWrap: "anywhere" }}>{l.text}</Typography>)}
     {said.map((t, i) => <React.Fragment key={i}>
       <Typography data-tq-item-said="" sx={{ alignSelf: "flex-end", maxWidth: "75%", fontSize: 13.5, lineHeight: 1.48, color: INK, overflowWrap: "anywhere",
-        bgcolor: "#e7efe6", border: "1px solid #cfdccd", borderRadius: "13px", px: 1.5, py: 1 }}>{t.q}</Typography>
+        bgcolor: "var(--tq-inset, #e7efe6)", border: "1px solid var(--tq-border, #cfdccd)", borderRadius: "13px", px: 1.5, py: 1 }}>{t.q}</Typography>
       <Box data-tq-item-answer="" sx={{ fontSize: 13.5, lineHeight: 1.55, color: INK, overflowWrap: "anywhere", "& p": { my: 0.25 } }}><LinkPopups><Md text={t.a} /></LinkPopups></Box>
     </React.Fragment>)}
     <Box aria-hidden sx={{ flex: "1 1 auto" }} />
     <Box sx={{ position: "sticky", bottom: 0, bgcolor: SHADE, pt: 0.5, mx: -0.5, px: 0.5 }}>
       <PromptBox text={text} setText={setText} pics={pics} busy={busy} onSend={send} inputRef={input} cannot={hand ? null : () => ASK_ONLY}
-        placeholder={MESSAGE}
-        label={hand ? btn(hand.verb) : "Ask about this"} sendAttrs={{ "data-tq-item-send": hand ? "agent" : "ask" }}
+        placeholder={t(MESSAGE)}
+        label={hand ? btn(hand.verb) : t("Ask about this")} sendAttrs={{ "data-tq-item-send": hand ? "agent" : "ask" }}
         chips={hand?.items.length ? hand.items.map((i) => <AttachChip key={i.key} data-tq-item-chip={i.key} name={i.title} onRemove={busy ? null : () => drop(i.key)}
           title={`${btn(hand.verb)} - it gets ${i.title}`} />) : came ? <AttachChip data-tq-came-chip="" name={came} icon={false} title={`Came from: ${came}`} /> : null} />
-      {err && <Typography role="alert" sx={{ fontSize: 12.5, color: "#a33", pt: 0.5 }}>{err}</Typography>}
+      {err && <Typography role="alert" sx={{ fontSize: 12.5, color: "var(--tq-danger, #a33)", pt: 0.5 }}>{err}</Typography>}
     </Box>
   </Box>;
 }
@@ -139,8 +142,8 @@ export default function ItemSections({ kind, label, title, aside, sections: all,
     <ItemLay.Provider value={laid}>
     <Box data-tq-item-sections={kind} sx={{ ...frameInner, height, display: "flex", flexDirection: "column", boxSizing: "border-box", minWidth: 0 }}>
       {/* THE HEADER LINE a task's is (TaskPage data-tq-task-head): what kind it is in the ref's place, its title, and when */}
-      <Box data-tq-item-head="" sx={{ px: 1.75, py: 0.7, bgcolor: "#fff", borderBottom: `1px solid ${BORDER}`, flexShrink: 0, display: "flex", gap: 0.9, alignItems: "center", minHeight: 30 }}>
-        <Typography sx={{ color: "#41525f", letterSpacing: ".015em", fontWeight: 600, fontSize: 11.5, flexShrink: 0 }}>{label}</Typography>
+      <Box data-tq-item-head="" sx={{ px: 1.75, py: 0.7, bgcolor: "var(--tq-panel, #fff)", borderBottom: `1px solid ${BORDER}`, flexShrink: 0, display: "flex", gap: 0.9, alignItems: "center", minHeight: 30 }}>
+        <Typography sx={{ color: "var(--tq-link, #41525f)", letterSpacing: ".015em", fontWeight: 600, fontSize: 11.5, flexShrink: 0 }}>{label}</Typography>
         <Typography noWrap title={typeof title === "string" ? title : undefined} sx={{ color: INK, flex: 1, minWidth: 0, fontWeight: 600, fontSize: 14, letterSpacing: "-.005em" }}>{title}</Typography>
         {aside && <Box sx={{ flexShrink: 0, color: DIM, fontSize: 11.5, display: "flex", alignItems: "center", gap: 0.75 }}>{aside}</Box>}
       </Box>

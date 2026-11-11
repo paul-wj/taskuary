@@ -74,6 +74,27 @@ def test_a_resumed_turn_carries_the_draft_and_the_sent_but_not_a_bare_answer():
     assert general.latest_block(s, t) and not general.latest_block(s, t, resumed=True)    # the CLI has the chat; its turn is the newest
 
 
+def test_a_turn_no_message_started_is_not_handed_the_answered_one_as_newest():
+    """Agent walk 2, 2026-11-10: the owner asked "what is left?", the agent answered, the owner pressed Send - and the turn that press woke
+    read "your answer is to the newest message ... THE NEWEST MESSAGE - from the owner: What is left here?", so it answered that again."""
+    s = MemoryStore(); tid, *_ = the_owners_day(s)
+    assert 'THE NEWEST MESSAGE - from the owner (in this chat)' in general.latest_block(s, tid)
+    at(s, 'comment', 'CommentId', s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Fixed - the November list is drafted.'), '2026-11-06 15:23:00')
+    b = general.latest_block(s, tid)                    # ...the owner's Send wakes it: nobody said anything new
+    assert 'THE NEWEST MESSAGE' not in b and selfclose.LATEST_LINE not in b and 'BEFORE the newest message' not in b
+    assert selfclose.NO_NEW_LINE in b and f'THE LAST MESSAGE, WHICH YOU ANSWERED - from the owner (in this chat), at 03:22 PM' in b and FIX in b
+    # ...a mail that joins after that answer is new, until the turn Taskuary starts on it has answered
+    m = s.add_message({'TaskId': tid, 'ExternalId': 'g-2', 'ConversationId': 'conv-g', 'Channel': 'email', 'FromName': 'Gail Moreno',
+                       'FromEmail': 'gail@northwind.example', 'BodyText': 'Actually I need the December one.', 'Status': 'routed'})
+    at(s, 'message', 'MessageId', m, '2026-11-06 15:40:00')
+    b = general.latest_block(s, tid)
+    assert selfclose.LATEST_LINE in b and 'THE NEWEST MESSAGE - from Gail Moreno' in b
+    at(s, 'comment', 'CommentId', s.add_comment(tid, general.BRIEF_ACTOR, general.USER_TYPE, 'Gail Moreno wrote on the thread.'), '2026-11-06 15:41:00')
+    assert 'THE NEWEST MESSAGE - from Gail Moreno' in general.latest_block(s, tid), 'the turn on it has not answered yet'
+    at(s, 'comment', 'CommentId', s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Drafted the December list.'), '2026-11-06 15:42:00')
+    assert 'THE LAST MESSAGE, WHICH YOU ANSWERED - from Gail Moreno' in general.latest_block(s, tid)
+
+
 def test_a_new_mail_is_the_newest_message_and_the_replan_says_latest_wins():
     from taskuary import ingest
     s = MemoryStore(); tid, *_ = the_owners_day(s)
@@ -164,7 +185,7 @@ def test_the_owners_presses_since_the_last_turn_are_in_the_turns_context():
     s.audit('task', tid, 'priority', 'owner', detail={'from': 'regular', 'to': 'urgent'})
     s.audit('task', tid, 'continue-work', 'owner'); s.audit('task', tid, 'woke', 'assistant')      # the turn itself; not the owner's
     did = [x.split(': ', 1)[1] for x in general.owner_did(s, tid)]
-    monday = f"set a reminder for {general.clock_of('2026-11-10 09:00:00')}"
+    monday = f"set a reminder for {general.clock_of('2026-11-10 09:00:00')} - put away until then"
     assert sorted(did) == sorted([f'approved (sent, if it sends) rv{rid} (the email to Gail)', monday,
                                   'changed its priority from regular to urgent']), did
     assert 'WHAT THE OWNER DID SINCE YOUR LAST TURN' in general.latest_block(s, tid, resumed=True)
@@ -172,6 +193,50 @@ def test_the_owners_presses_since_the_last_turn_are_in_the_turns_context():
     lines = [m for m in general.shown_history(s, tid) if m.get('press')]
     assert [m['content'][0]['text'] for m in lines] == [f'You {monday}.', 'You changed its priority from regular to urgent.']
     assert all(m['role'] == 'user' for m in lines) and not [m for m in general.history(s, tid) if m.get('press')]
+
+
+def test_a_coding_turn_is_told_what_any_agent_s_turn_is():
+    # the audit, 2026-11-10: a coding turn files no answer of its own - its end is on its worker record - so every "since your last answer"
+    # read none: its next turn never heard the owner's Send, and the facts read as before any turn ("THE NEWEST MESSAGE")
+    from taskuary import workerstate as ws
+    s = MemoryStore(); tid = s.create_task({'Title': 'Fix the refund total', 'Kind': 'coding', 'Status': 'in_progress'}, 'owner')
+    ws.record(s, tid, 'acp-1', 'turn_end', text='The reply to Ray waits for your Send.', source='hook')
+    s._exec("UPDATE worker_event SET CreatedAt='2000-01-01 00:00:00' WHERE TaskId=?", (tid,))
+    rid = s.add_review({'TaskId': tid, 'Kind': 'slot', 'Status': 'pending', 'Reason': 'the reply to Ray', 'DraftText': 'Hi Ray - fixed.'})
+    s.decide_review(rid, 'approved', 'Hi Ray - fixed.', 'owner')
+    assert [x.split(': ', 1)[1] for x in general.owner_did(s, tid)] == [f'approved (sent, if it sends) rv{rid} (the reply to Ray)']
+    assert 'WHAT THE OWNER DID SINCE YOUR LAST TURN' in general.turn_facts(s, tid, resumed=True)
+
+
+def test_an_email_the_owner_dropped_is_told_to_its_agent_and_is_a_line_in_the_chat():
+    # the agent walk, 2026-11-09: "Don't send" on one of two emails - its agent heard "turned down rv3 (<its own caption>)", or nothing at
+    # all for an email not drafted yet, and went on saying the dropped one "waits for Send"
+    from taskuary import slots
+    s = MemoryStore(); tid = s.create_task({'Title': 'Trainly rollout', 'Kind': 'general', 'Status': 'open', 'Source': 'assistant'}, 'owner')
+    slots.add(s, tid, [{'to': 'Ray Colton', 'about': 'the new date'}, {'to': 'paula@northwind.example', 'about': 'the licence count'}], 'triage')
+    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Drafted Paula an email.')
+    rid = slots.draft(s, tid, 'Hi Paula', to='paula@northwind.example', agent='assistant')['review_id']
+    s._exec("UPDATE comment SET CreatedAt='2000-01-01 00:00:00' WHERE TaskId=?", (tid,))
+    for i in slots.open_(s, tid): slots.drop(s, tid, i['id'], 'owner')
+    did = [x.split(': ', 1)[1] for x in general.owner_did(s, tid)]
+    assert did == ['dropped the email to Ray Colton - it will not be sent', 'dropped the email to paula@northwind.example - it will not be sent'], did
+    lines = [m['content'][0]['text'] for m in general.shown_history(s, tid) if m.get('press')]
+    assert lines == ['You dropped the email to Ray Colton - it will not be sent.', 'You dropped the email to paula@northwind.example - it will not be sent.'], lines
+    assert s.get_review(rid)['Status'] == 'rejected'
+
+
+def test_a_reminder_the_agent_set_is_a_line_in_the_chat():
+    # the agent walk, 2026-11-09: asked to "remind me Wednesday", the agent set it by tool and the page showed it nowhere but in its prose
+    from taskuary import remind
+    s = MemoryStore(); tid = s.create_task({'Title': 'Trainly rollout', 'Kind': 'general', 'Status': 'open'}, 'owner')
+    s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'On it.')
+    remind.set_reminder(s, tid, '2099-11-11 09:00', 'assistant', agent=True)
+    at = s.get_task(tid)['RemindAt']
+    lines = [m for m in general.shown_history(s, tid) if m.get('press')]
+    assert [m['content'][0]['text'] for m in lines] == [f'Reminder set for you: {general.clock_of(at)}.'], lines
+    assert general.owner_did(s, tid) == [] and not [m for m in general.history(s, tid) if m.get('press')]       # the agent's own act: never told back to it
+    remind.set_reminder(s, tid, None, 'owner')                                                              # ...the owner's own stays theirs
+    assert [m['content'][0]['text'] for m in general.shown_history(s, tid) if m.get('press')][-1] == 'You took the reminder off.'
 
 
 def test_a_question_still_waiting_is_in_the_turns_context_and_a_wake_does_not_clear_it():
@@ -199,3 +264,17 @@ def test_one_person_on_two_channels_is_named_by_address_and_channel():
     hit, why = wrapup.addressee(s, tid, 'Gail Moreno')
     assert hit is None and 'whatsapp:15550004444 on whatsapp' in why and 'gail@northwind.example on email' in why, why
     assert wrapup.addressee(s, tid, 'whatsapp:15550004444')[0]
+
+
+def test_a_letter_filed_while_his_line_still_waits_for_the_turn_is_a_new_draft():
+    """The overnight audit, 2026-11-10, in a coding chat: a reply drafted on arrival waited; the owner typed "make it shorter"; the coding
+    turn filed its new letter before its record took his line (still kept for the turn, general.WAITING_TYPE) - and the old draft was
+    rewritten in place, under his line, instead of greying where it stood with the new letter a card of its own."""
+    s = MemoryStore(); tid, mid = task_with(s)
+    rid = s.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft_reply', 'Status': 'pending', 'DraftText': OLD})
+    at(s, 'review', 'ReviewId', rid, '2026-11-06 14:48:00')
+    at(s, 'comment', 'CommentId', general.wait_line(s, tid, 'make it shorter'), '2026-11-06 15:22:00')
+    out = wrapup.agent_reply(s, tid, NEW, 'assistant', sid='c1')
+    assert out['ok'] and out['review_id'] != rid
+    old = s.get_review(rid)
+    assert (old['Status'], old['DecideNote'], old['DraftText']) == ('closed_unsent', wrapup.REPLACED, OLD)

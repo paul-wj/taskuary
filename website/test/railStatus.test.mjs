@@ -149,13 +149,15 @@ test("a chat task's waiting agent and its ready reply both say agent waiting on 
 
 // ONE CYCLE (the owner, 2026-11-06): working -> waiting on you -> after a Send "agent done" -> typed to again, working
 test("a chat agent the owner answered is agent done on the rail and the chip, never waiting on you; typed to again it works", () => {
-  const row = railStatus({ lane: "report", kind: "wrapup", chat_done: true, tid: 5 });
+  const row = railStatus({ lane: "yours", kind: "wrapup", chat_done: true, tid: 5 });
   assert.equal(row.word, "agent done"); assert.equal(row.badge, ""); assert.equal(row.spins, false);
   const parked = { alive: true, waiting: true };
   assert.equal(taskStatus({ chat: true, live: parked, state: "agentdone" }).word, "agent done");
   assert.equal(taskStatus({ chat: true, live: parked, state: "blocked" }).word, "agent waiting on you");
   assert.equal(taskStatus({ chat: true, live: { alive: true, waiting: false }, state: "agentdone" }).key, "working");
-  assert.equal(taskStatus({ live: parked, state: "agentdone" }).word, LANE_META.blocked.word, "a coding agent keeps its own cycle");
+  // ...a coding agent's too (the owner, 2026-11-10): it pushed, said nothing is left - "agent done", never "agent waiting on you"
+  assert.equal(taskStatus({ live: parked, state: "agentdone" }).word, "agent done");
+  assert.equal(taskStatus({ live: parked, state: "blocked" }).word, LANE_META.blocked.word, "one that asked, or waits on its Push, still waits on you");
   assert.equal(taskStatus({ state: "queued", queued: { state: "failed" } }).word, "couldn't start");
   assert.equal(taskStatus({ state: "queued", queued: { state: "waiting" } }).word, LANE_META.queued.word);
 });

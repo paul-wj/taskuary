@@ -188,20 +188,26 @@ class DeliveryTests(unittest.TestCase):
             time.sleep(0.5)
         self.assertEqual((out['delivered'], out['state']), (1, 'parked'))
         self.assertIn('export path', t.typed())
+        # ...and it was not working (agent walk 2, 2026-11-10: "While you were working, the owner queued 1 note ... after finishing the step
+        # you are on", to an agent at rest). The chat still reads the typed line as Taskuary's head and the owner's words (sessionrecord.queued)
+        self.assertNotIn('While you were working', t.typed()); self.assertNotIn('the step you are on', t.typed())
+        from taskuary import sessionrecord
+        self.assertEqual(sessionrecord.queued(t.typed()), [('brief', 'The owner left 1 note for you. Take them in order:'),
+                                                           ('you', 'now do the same for the export path')])
 
     def test_a_question_for_the_owner_is_answered_by_what_they_write_next(self):
         """An agent parked on a question is asking the OWNER: their next words are the answer and go
         in at once, plainly - no "while you were working" preamble. They used to queue behind the
         question and never arrive, while the card said "Told the agent" (2026-09-07 live check). The
-        question is the MODEL's read of the turn's last message (hooks.judge_turn), never a "?" on the tail."""
-        from taskuary import hooks, workerstate as ws
+        question is one the agent ASKED (its tool, its marker) - never a "?" on the tail, and no model's read of its prose."""
+        from taskuary import workerstate as ws
         s = MemoryStore(); tid = task(s)
         said = 'Two repos match. Which one should I use?'
         t = FakeTerm(tid, idle=terminal.IDLE_WAITING + 5, tail=[said]); t.sid = 'fake'
         with mock.patch.dict(terminal.SESSIONS, {'a': t}, clear=True):
             self.assertEqual(waitroom.state(s, tid)[0], 'parked')                     # the words alone ask nothing
             ws.record(s, tid, 'fake', 'turn_end', text=said, source='hook')
-            hooks.judge_turn(s, tid, 'fake', said, brain=lambda *a, **k: '{"asks": true, "question": "Which repo should I use?"}', wait=True)
+            ws.record(s, tid, 'fake', 'input_needed', request_id=ws.request_id_for('Which repo should I use?'), text='Which repo should I use?', source='hook')
             self.assertEqual(waitroom.state(s, tid)[0], 'asking')
             out = waitroom.add(s, tid, 'use the 8/17 file')
             self.assertEqual((out['delivered'], out['state']), (1, 'answered'))
@@ -278,11 +284,22 @@ class GeneralTests(unittest.TestCase):
             out = waitroom.add(s, tid, 'Also put Northwind Payroll on the list.')
             time.sleep(0.3)
         self.assertEqual((out['delivered'], out['state']), (1, 'parked'))
-        (brief, b), (who, note) = self.said(s, tid)
-        self.assertEqual((brief, who, note), ('taskuary', 'owner', 'Also put Northwind Payroll on the list.'))
-        self.assertIn('While you were working', b); self.assertNotIn('Northwind Payroll', b)
+        # ...his line alone: the head round it is the agent's, typed with it - filed, it drew on his screen as a line saying nothing
+        self.assertEqual(self.said(s, tid), [('owner', 'Also put Northwind Payroll on the list.')])
         [(turn, kw)] = ses.sent                                     # the agent's turn is the batch, filed here already
+        self.assertIn('The owner left 1 note for you', turn); self.assertNotIn('While you were working', turn)
         self.assertIn('(1) Also put Northwind Payroll on the list.', turn); self.assertEqual(kw, {'kept': True, 'brief': True})
+
+    def test_taskuarys_word_to_a_parked_agent_leaves_no_head_on_the_owners_screen(self):
+        """The overnight audit, 2026-11-10: he pressed Approve on a playbook the agent set up; its card left the chat and a grey line "Taskuary
+        left 1 note for you. Take them in order:" stood in its place - the head the agent's own words were typed under."""
+        from taskuary import general
+        s = MemoryStore(); tid, ses = self.general(s)
+        said = general.APPROVED.format(press='Approve', what='saved the playbook vendor-review') + 'Say what you did and what comes next.'
+        with mock.patch.dict(terminal.SESSIONS, {'g': ses}, clear=True):
+            waitroom.add(s, tid, said, 'router'); time.sleep(0.3)
+        self.assertEqual(self.said(s, tid), [('taskuary', said)], "the word itself, kept as Taskuary's for the record - and nothing else")
+        self.assertIn('Taskuary left 1 note for you', ses.sent[0][0])
 
     def test_an_ended_general_agent_reopens_with_the_same_split(self):
         from taskuary import general
@@ -292,7 +309,7 @@ class GeneralTests(unittest.TestCase):
             out = waitroom.add(s, tid, 'and sort it')
             time.sleep(0.3)
         self.assertEqual(out['state'], 'restarted')
-        self.assertEqual([w for w, _ in self.said(s, tid)], ['taskuary', 'owner'])
+        self.assertEqual([w for w, _ in self.said(s, tid)], ['owner'])
         self.assertIn('after the last session ended', ses.sent[0][0])
 
 class DripTests(unittest.TestCase):

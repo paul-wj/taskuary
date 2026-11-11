@@ -35,7 +35,7 @@ def both(s):
     now = datetime.now()
     snapshot = s.processing_inventory_snapshot(fixed_now=now.isoformat(), live_state=[])
     all_rows, _, _ = processing_all.compact_inventory(snapshot, processing_unread.query_for(s))
-    unread = funnel.build(s, now=now, reconcile=False, live_state=[])
+    unread = funnel.build(s, now=now, live_state=[])
     return all_rows, unread
 
 
@@ -118,7 +118,7 @@ def test_later_keeps_it_unread_until_its_time_then_it_comes_back(store):
     funnel.settle(store, key, 'later', hours=2)
     _, now = both(store)
     assert now['items'] == []
-    later = funnel.build(store, now=datetime.now() + timedelta(hours=3), reconcile=False, live_state=[])
+    later = funnel.build(store, now=datetime.now() + timedelta(hours=3), live_state=[])
     assert [i['key'] for i in later['items']] == [key] and later['items'][0]['unread']
     assert not store.cx.execute('SELECT 1 FROM processing_read_receipt').fetchone()
 
@@ -179,9 +179,12 @@ def test_the_message_an_idea_rides_into_triage_on_is_never_a_row(store):
     all_rows, unread = both(store)
     assert vehicle not in {r['row'].get('MessageId') for r in all_rows}, 'the vehicle is not a row in All'
     assert vehicle not in {i.get('mid') for i in unread['items']}, 'nor in work'
-    # ...and what it carried still speaks, beside the mail it is about
-    assert sorted(i['kind'] for i in unread['items']) == ['fyi', 'idea']
-    assert next(i for i in unread['items'] if i['kind'] == 'idea')['idea'] == idea['IdeaId']
+    # ...and what it carried still speaks - behind the mail it is about while that is unread (processing_unread.rail_of), then as the row
+    [mail] = unread['items']
+    assert (mail['kind'], mail['mid']) == ('fyi', source)
+    funnel.settle(store, mail['key'], 'surfaced', read=True)
+    [line] = [i for i in both(store)[1]['items'] if i['kind'] == 'idea']
+    assert line['idea'] == idea['IdeaId']
 
 
 def test_the_task_an_ideas_vehicle_carries_is_still_a_row_while_an_agent_works_it(store):

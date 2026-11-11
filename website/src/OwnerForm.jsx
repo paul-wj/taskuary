@@ -12,7 +12,7 @@ import api from "./api";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 
-const Field = (p) => <TextField size="small" fullWidth sx={{ bgcolor: "#fff" }} {...p} />;
+const Field = (p) => <TextField size="small" fullWidth sx={{ bgcolor: "var(--tq-panel, #fff)" }} {...p} />;
 
 export default function OwnerForm({ onDone }) {
   useLocale();
@@ -35,8 +35,8 @@ export default function OwnerForm({ onDone }) {
   };
   return (
     <Box sx={{ display: "flex", gap: 1, mt: 1, flexWrap: "wrap" }}>
-      <Field label={t("Your name")} value={name} onChange={(e) => setName(e.target.value)} sx={{ bgcolor: "#fff", flex: 1, minWidth: 160 }} />
-      <Field label={t("Email")} value={email} onChange={(e) => setEmail(e.target.value)} sx={{ bgcolor: "#fff", flex: 1, minWidth: 160 }} />
+      <Field label={t("Your name")} value={name} onChange={(e) => setName(e.target.value)} sx={{ bgcolor: "var(--tq-panel, #fff)", flex: 1, minWidth: 160 }} />
+      <Field label={t("Email")} value={email} onChange={(e) => setEmail(e.target.value)} sx={{ bgcolor: "var(--tq-panel, #fff)", flex: 1, minWidth: 160 }} />
       <Button variant="contained" disableElevation size="small" disabled={busy || !name.trim()} onClick={save}>
         {busy ? "…" : t("Save")}
       </Button>

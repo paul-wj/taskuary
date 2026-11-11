@@ -554,8 +554,12 @@ def picked(store, name: str) -> bool: return store.setting_writer(name) == 'owne
 def _cli_in(name: str, value) -> str:
     "The CLI key one brain setting names - `codex` from default_brain's `codex` or a slot's `cli:codex` - else ''."
     v = str(value or '').strip()
-    if name == 'default_brain': return v
+    if name == 'default_brain': return '' if is_card(v) else v
     return v[4:] if v.startswith('cli:') and ',' not in v else ''
+
+def is_card(v) -> bool:
+    "Does a brain setting name an AI card (`connector:<id>`, or an old bare id) rather than a CLI? default_brain may hold one."
+    v = str(v or '').strip(); return v.startswith('connector:') or v.isdigit()
 
 def stale(store, name: str) -> bool:
     "A brain saved for the person - never picked by them - that is not ready here (ready_brains): it must not keep winning."
@@ -603,13 +607,16 @@ def resolve_brain(store, kind: str = 'general', cli_only: bool = False) -> str:
     """'cli:<key>', 'connector:<id>' or '' - see above. `cli_only` for a run that cannot exist without a terminal."""
     name = BRAIN_SETTING.get(kind, 'assistant_ai')
     v = '' if stale(store, name) else str(store.get_setting(name) or '').strip()
-    if v and name == 'default_brain': v = f'cli:{v}'
+    # ...a CLI's key, or an AI card the owner chose for coding (the owner, 2026-11-09: "coding tasks should run on hipaa, why not")
+    if v and name == 'default_brain' and not is_card(v): v = f'cli:{v}'
     if v.isdigit(): v = f'connector:{v}'
     # the person's own pick is taken at its word - one that does not start says so when it is started, never swapped behind them
     if v.startswith('cli:') and (picked(store, name) or v[4:] in dict(connection_brains(store))): return v
     if v.startswith('connector:') and not cli_only: return v
     k = next(iter(ready_brains(store)), '')
     if k: return f'cli:{k}'
+    # no CLI here: a job with no pick of its own runs on the AI card the general agent is SET to (a gateway-only home's coding task)
+    if not cli_only and name != 'assistant_ai' and (g := str(store.get_setting('assistant_ai') or '').strip()).startswith('connector:'): return g
     c = None if cli_only else ready_connector(store)
     return f"connector:{c['ConnectorId']}" if c else ''
 
@@ -714,6 +721,25 @@ def cli_agent_options(store, preferred=(), coding_only: bool = False) -> list[di
     order = {str(k): i for i, k in enumerate(preferred or ()) if k}
     rows = sorted(connection_brains(store), key=lambda kc: (order.get(kc[0], len(order)), ))
     return [{'value': key, 'label': key, 'cli': key, 'ready': runs_here(conn)} for key, conn in rows]
+
+
+def coding_options(store) -> list[dict]:
+    """EVERY AI THAT CAN RUN A CODING TASK, as the pickers offer it (the owner, 2026-11-09: "fix the picker ... it should choose the
+    correct one"): each connected CLI, then each active AI card - a card runs coding through general.on_card, in the checkout a CLI
+    would open. `value` is the pick resolve_brain answers in (`cli:<key>` / `connector:<id>`), so the current one is found by equality."""
+    from . import words
+    from .llm import AI_TYPES
+    labels = {k['cmd']: k['label'] for k in clis_mod.KNOWN}
+    out = [{'value': f'cli:{k}', 'key': k, 'kind': 'cli', 'ready': runs_here(c), 'label': words.local(labels.get(cli_of(c, k)) or k)}
+           for k, c in connection_brains(store)]
+    for c in store.list_connectors():
+        if c['Type'] not in AI_TYPES or not c['Active'] or not (c['HasSecret'] or c['Type'] == 'ollama'): continue
+        try: cfg = json.loads(c.get('ConfigJson') or '{}')
+        except ValueError: cfg = {}
+        model = str(cfg.get('model') or cfg.get('deployment') or '')
+        out.append({'value': f"connector:{c['ConnectorId']}", 'connector': c['ConnectorId'], 'kind': 'card', 'ready': True,
+                    'label': ' · '.join(x for x in (c.get('Name') or c['Type'], model) if x)})
+    return out
 
 
 # The workers Taskuary ships, besides `coding`. A profile IS an agent row and its rules document is
@@ -869,7 +895,8 @@ def default_brain(store) -> str:
     Blank falls back to the CLI behind the legacy `default_agent` profile, so an install that has
     not been migrated keeps running exactly what it ran yesterday."""
     key = str(store.get_setting('default_brain') or '').strip()
-    if key: return key
+    # ...an AI card chosen for coding is no CLI: everything that reads this as a command key gets the CLI it would otherwise run
+    if key and not is_card(key): return key
     legacy = str(store.get_setting('default_agent') or '').strip()       # an install from before brains named tools
     return brain_key(store, f'cli:{legacy}') if legacy else next(iter(ready_brains(store)), '')
 
@@ -880,11 +907,14 @@ def brain_ready(store, key: str) -> bool:
     return bool(conn) and runs_here(conn)
 
 
+# a gateway card answers only a job set to it in Settings (the owner, 2026-11-09: "it should not be used unless set in settings") -
+# a blank slot fell to it whenever no CLI was ready; a gateway-only install still gets every job named by first-run setup
+PICKED_ONLY = ('hipaa_ai',)
 def ready_connector(store) -> dict | None:
-    """The first AI connector that can answer right now - what llm._build_llm runs for an empty pick."""
+    """The first AI connector that can answer right now - what llm._build_llm runs for an empty pick. Never a PICKED_ONLY card."""
     from .llm import AI_TYPES
-    return next((c for c in store.list_connectors()
-                 if c['Type'] in AI_TYPES and c['Active'] and (c['HasSecret'] or c['Type'] == 'ollama')), None)
+    return next((c for c in store.list_connectors() if c['Type'] in AI_TYPES and c['Type'] not in PICKED_ONLY
+                 and c['Active'] and (c['HasSecret'] or c['Type'] == 'ollama')), None)
 
 
 def default_pick(store) -> str:
@@ -900,6 +930,7 @@ def default_pick(store) -> str:
     their back); one nobody chose - blank, or written by the startup migration - is used only when it starts,
     and otherwise gives way to an AI connector that can answer. '' when there is neither: no brain yet."""
     saved = str(store.get_setting('default_brain') or '').strip()
+    saved = '' if is_card(saved) else saved          # an AI card chosen for CODING says nothing of what a blank light job runs on
     key = saved or default_brain(store)
     brains = dict(connection_brains(store))
     conn = brains.get(key) if key else None
@@ -1722,7 +1753,14 @@ def spawn_env(profile: dict, extra_env: dict = None) -> dict:
     return child_env({**base, **(extra_env or {})})
 
 
-def run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None, extra_env: dict = None, store=None):
+
+def sees_images(family: str, args, resume=None) -> bool:
+    """Does a one-shot run of this CLI take pictures in its input: claude printing stream-json, whose stream-json input carries image blocks,
+    and a fresh `codex exec`, which attaches files by --image (codex-cli's own --help, 2026-11-09)."""
+    if family == 'codex': return bool(args) and args[0] in ('exec', 'e') and not resume
+    return family == 'claude' and ('-p' in args or '--print' in args) and 'stream-json' in args and '--input-format' not in args
+
+def run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None, extra_env: dict = None, store=None, images=None):
     """Run one CLI turn without replaying OMP work after its process has started."""
     started, native_sid = False, ''
     def mark_started():
@@ -1732,18 +1770,18 @@ def run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None, 
         nonlocal native_sid
         if isinstance(sid, str) and sid: native_sid = sid
     try:
-        return _run_cli(profile, prompt, trace, resume, cancel, extra_env, store, mark_started, mark_session)
+        return _run_cli(profile, prompt, trace, resume, cancel, extra_env, store, mark_started, mark_session, images)
     except Exception as e:
         if started and _cli_name(with_cmd(profile, store)['cmd']) == 'omp':
             if isinstance(e, OmpTurnError): raise
             raise OmpTurnError(e, native_sid or resume) from e
         raise
 
-
-def _run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None, extra_env: dict = None, store=None, mark_started=None, mark_session=None):
+def _run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None, extra_env: dict = None, store=None, mark_started=None, mark_session=None, images=None):
     """One headless invocation of the configured CLI, output STREAMED line by line into
     the run trace so the Board shows the agent working live. claude's stream-json events
     render as readable tool/text lines; any other CLI's plain stdout streams as-is.
+    `images` [(media type, base64)]: shown to a one-shot claude as image blocks (sees_images); dropped elsewhere.
     Returns (result, session_id, diff)."""
     # Whatever built this prompt, a credential in it would go to the CLI's provider and be filed
     # in the run's own trace two lines below. task_context() writes each message's BodyText in
@@ -1789,6 +1827,18 @@ def _run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None,
     keep = profile.get('keep_alive')
     if _keeps(profile, family, args):
         return _run_live(profile, name, cmd, prompt, trace, keep, resume, cancel, extra_env)
+    # A PICTURE IS SHOWN, NOT NAMED (2026-11-09): triage on claude has no tools to open a file, so a screenshot-only chat line was judged
+    # blind and became its own task beside the one it was about. Claude's stream-json input takes image blocks, as the API does
+    # ...and Codex's exec takes them as files: each written to a private temp file for the run and removed after it, as the devin prompt is
+    pics, pic_files = sees_images(family, args, resume) and list(images or []), []
+    if pics and family == 'claude': cmd += ['--input-format', 'stream-json']
+    elif pics:
+        import base64, tempfile
+        for ct, b64 in pics:
+            fd, f = tempfile.mkstemp(prefix='tq-pic-', suffix='.' + ct.split('/')[-1].replace('jpeg', 'jpg'))
+            with os.fdopen(fd, 'wb') as fh: fh.write(base64.b64decode(b64))
+            pic_files.append(f)
+        cmd += [f'--image={f}' for f in pic_files]     # `=`: --image takes a list, and a bare path after it would swallow what follows
     # Keep exec's existing sandbox/config flags, and resume the exact thread.
     if resume: cmd += resume_argv(profile, resume) + (['--json', '-'] if is_codex else [])
     # Kimi's current CLI does not read its prompt from stdin. --prompt is print mode
@@ -1858,7 +1908,9 @@ def _run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None,
     # emitting output can deadlock both pipes otherwise
     def _feed():
         try:
-            if family != 'kimi' and not prompt_file: p.stdin.write(prompt)
+            if pics and family == 'claude': p.stdin.write(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': [
+                *({'type': 'image', 'source': {'type': 'base64', 'media_type': ct, 'data': b64}} for ct, b64 in pics), {'type': 'text', 'text': prompt}]}}) + '\n')
+            elif family != 'kimi' and not prompt_file: p.stdin.write(prompt)
             p.stdin.close()
         except Exception: pass
     threading.Thread(target=_feed, daemon=True).start()
@@ -2008,8 +2060,9 @@ def _run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None,
             try: stop()
             except Exception: pass
         with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.discard(p)
-        if prompt_file:                                  # the prompt can carry mail: never left in the temp folder
-            try: os.remove(prompt_file)
+        for f in [prompt_file, *pic_files]:              # the prompt and its pictures can carry mail: never left in the temp folder
+            if not f: continue
+            try: os.remove(f)
             except OSError: pass
         if stop_errors: raise RuntimeError(f'{name}: could not stop all agent processes: {stop_errors[0]}')
     err_t.join(5)      # the exit code can land before the stderr reader has appended - 'boom' read as 'no output' on a fast CI box
@@ -2083,7 +2136,8 @@ _FLAGS: dict = {}
 
 def cli_has_flag(name: str, flag: str) -> bool:
     """Does this CLI's --help name `flag`? Asked once per executable and remembered; a CLI that cannot say is taken as not having it."""
-    exe = tuple(_resolve_cmd(name))
+    try: exe = tuple(_resolve_cmd(name))
+    except Exception: return False          # not installed (CI's runners): nothing to ask, and the caller runs without the flag
     if (exe, flag) not in _FLAGS:
         try:
             r = spawn.run([*exe, '--help'], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,

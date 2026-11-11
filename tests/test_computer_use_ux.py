@@ -83,7 +83,8 @@ class TheGeneralAgentsBrowserIsHeld(unittest.TestCase):
         connect_cli(self, claude={'cmd': 'claude', 'args': ['-p']}, codex={'cmd': 'codex', 'args': ['exec']})
         got = {}
         def run_cli(prof, prompt, trace, **kw): got[prof['cmd']] = list(prof.get('args') or []); return ('ok', 's1', None)
-        with mock.patch.object(agents, 'run_cli', run_cli):
+        # a claude without --setting-sources: the hold alone (test_general_own_setup has the claude that has it)
+        with mock.patch.object(agents, 'run_cli', run_cli), mock.patch.object(agents, 'cli_has_flag', return_value=False):
             for cli in ('claude', 'codex'):
                 llm.make_cli_llm(self.s, cli, cli_tools=True, hold_sid='abc', task_id=self.tid)('sys', 'user')
         self.assertIn('--settings', got['claude']); self.assertTrue(got['claude'][got['claude'].index('--settings') + 1].endswith('browser-abc.json'))
@@ -190,7 +191,7 @@ class TheHeldActInWords(unittest.TestCase):
              'command': 'agent-browser find text Bills click'}
         raw = "✗ Element '[data-agent-browser-located='true']' is covered by <input#menu-holder> at its click point"
         with mock.patch.object(browserview, 'state', return_value={'open': True, 'url': 'https://app.vendor.example/home'}), \
-             mock.patch.object(bg, '_tell', side_effect=lambda st, t, text, wait=False: told.append(text)):
+             mock.patch.object(bg, '_tell', side_effect=lambda st, t, text, **k: told.append(text)):
             out = bg.perform(s, tid, p, run=lambda sid, args: (1, raw))
         self.assertIsNone(out['performed'])
         self.assertEqual(out['refused'], 'vendor.example did not take it - something on the page covers that control. The agent was told and goes on another way.')
@@ -319,7 +320,7 @@ class SignedInIsAPressOnEveryAgent(unittest.TestCase):
         s = MemoryStore(); tid = Factory(s).task('Pay the toll', kind='coding'); signin._TRIED.clear()
         pty = SimpleNamespace(sid='run1', alive=True, task_id=tid, agent='coding', label='Claude Code', argv=['claude'])
         typed = []
-        with mock.patch.dict(terminal.SESSIONS, {'run1': pty}, clear=True),                 mock.patch.object(browserview, 'state', return_value={'open': True, 'url': 'https://login.toll.example/', 'port': 1}),                 mock.patch.object(terminal, 'type_into', lambda t, text: typed.append((t.sid, text))):
+        with mock.patch.dict(terminal.SESSIONS, {'run1': pty}, clear=True),                 mock.patch.object(browserview, 'state', return_value={'open': True, 'url': 'https://login.toll.example/', 'port': 1}),                 mock.patch.object(terminal, 'type_into', lambda t, text, brief=False: typed.append((t.sid, text))):
             signin.needs(s, tid, 'run1')
             self.assertEqual(ws.status(s, tid)['requests'][-1]['choices'], [])          # still no chooser on the pty: the card draws it
             out = ws.answer(s, tid, 'signin:toll.example', 'Signed in', 'owner')

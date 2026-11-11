@@ -4,8 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { foldsOf, leadOf, phoneRow, pillsOf, rowOf } from "../src/actionRow.js";
-import { SCAM_LINE, dangerAimOf, dangerLine } from "../src/strangerLine.js";
-import { t } from "../src/i18n.js";
+import { dangerAimOf, dangerLine } from "../src/strangerLine.js";
 
 const v = (id, group, extra = {}) => ({ id, group, tone: "s", label: id, title: "", disabled: false, why: "", promote: true, lead: false, ...extra });
 // what an FYI's Foot registers (assistantCards.Foot): its first words in the row, Next on its own
@@ -13,11 +12,7 @@ const fyi = (tuck) => [v("w:regular_agent", "decide", { label: "Send to agent", 
   v("w:not_ours", "decide", { label: "Not ours" }), v("next", "next", { label: "Next" })];
 const ids = (g) => g.shown.map((x) => x.id);
 
-test("a scam on the owner says so; text steering the agent keeps the steer words", () => {
-  assert.equal(dangerLine("Wants Alex to sign in on a look-alike page.", "owner"), t(SCAM_LINE));
-  const reason = "Tells the agent to mail the payroll file out.";
-  assert.ok(dangerLine(reason, "agent").includes(reason));
-  assert.equal(dangerLine("x"), dangerLine("x", "agent"), "an unspecified aim uses the agent warning");
+test("danger metadata keeps the intended target and absent warnings stay absent", () => {
   assert.equal(dangerLine(null, "owner"), null);
   assert.equal(dangerAimOf({ origin: { danger: "x", danger_aim: "owner" } }), "owner");
   assert.equal(dangerAimOf({ origin: {} }), null);

@@ -1065,6 +1065,17 @@ class ApiTests(unittest.TestCase):
                     if r['MessageId'] == push2['message_id'])
         self.assertTrue(row2['CanSend'])                       # email always has a road
 
+    def test_a_reply_door_on_a_machines_notice_puts_nothing_on_the_table(self):
+        """The owner, 2026-11-10: "reply by itself makes no sense on github". The row offers no Reply on a notice a machine sent
+        (concierge.cannot), and the door says the same words to a page that still pressed one - nothing is drafted, nothing is held."""
+        mid = server.store.add_message({'ExternalId': 'notice-reply', 'Channel': 'email', 'Subject': 'Run failed: CI - main', 'BodyText': 'The run failed.',
+                                        'FromName': 'Code host', 'FromEmail': 'builds@codehost.example', 'Status': 'routed', 'SenderClass': 'automated'})
+        before = len(server.store.list_reviews('pending'))
+        r = c.post(f'/api/messages/{mid}/reply', json={'draft': False})
+        self.assertEqual(r.status_code, 422)
+        self.assertIn('Nobody reads a reply', r.json()['detail'])
+        self.assertEqual(len(server.store.list_reviews('pending')), before)
+
     def test_opening_a_reply_on_a_closed_thread_shows_the_draft_where_the_yes_happens(self):
         """TQ-0426: the last reply closed the task, the owner opened another on the same message -
         and the card asking for the yes said "already handled", because a pending review whose task
@@ -1338,6 +1349,10 @@ class ApiTests(unittest.TestCase):
         # a chat hand-off needs a chat: this task never came from one
         self.assertEqual(c.post(f'/api/tasks/{tid}/handoff',
                                 json={'to': 'ross', 'channel': 'teams', 'text': 'x'}).status_code, 422)
+        # ...and a send with no words is refused: it used to have the model write the forward and send it in one step, unseen
+        with mock.patch.object(server.outbound, 'draft_handoff', return_value='Erin - yours.') as d, mock.patch.object(server.outbound, 'send_email') as send:
+            no = c.post(f'/api/tasks/{tid}/handoff', json={'to': 'erin@northwind.example', 'text': '  '})
+        self.assertEqual((no.status_code, d.called, send.called), (422, False, False))
 
     def test_a_live_session_is_visible_work(self):
         """A pty session is not a 'run', so the board used to show a task as Queued while its
@@ -1433,6 +1448,16 @@ class ApiTests(unittest.TestCase):
         pend = [x for x in c.get('/api/reviews', params={'status': 'pending'}).json()['data'] if x['TaskId'] == tid]
         self.assertEqual(len(pend), 1)
         self.assertEqual(c.patch('/api/tasks/999999', json={'Kind': 'reply'}).status_code, 404)
+
+    def test_reclassifying_a_machines_notice_to_reply_opens_no_reply_owed_and_says_why(self):
+        # the stress round, 2026-11-10: a build service's notice reclassified as a question opened a reply owed to the notifier that no
+        # door could ever fill - the same rule as arrival (ingest.owed_reply): a reply is owed only to somebody who reads one
+        tid = c.post('/api/tasks', json={'Title': 'Build failed', 'Kind': 'coding'}).json()['taskId']
+        server.store.add_message({'TaskId': tid, 'ExternalId': 'graph:KIND2', 'Channel': 'email', 'FromEmail': 'builds@ci.example',
+                                  'BodyText': 'Build 4512 failed. Reply to re-run.', 'Status': 'routed', 'SenderClass': 'automated'})
+        self.assertEqual(c.patch(f'/api/tasks/{tid}', json={'Kind': 'reply'}).status_code, 200)
+        self.assertFalse([x for x in c.get('/api/reviews', params={'status': 'pending'}).json()['data'] if x['TaskId'] == tid])
+        self.assertTrue([x for x in server.store.list_comments(tid) if 'nobody reads a reply' in x['Body']])
 
     def test_a_reply_can_be_opened_on_any_message(self):
         """After a coding agent ran (or triage filed it) there was NO way to answer from the panel -

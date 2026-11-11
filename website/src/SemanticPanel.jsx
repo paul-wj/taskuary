@@ -17,9 +17,9 @@ import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 
 const STATE = {
-  verified: { label: "certified", c: { bg: "#dfeade", fg: "#47654a", bd: "#c8d9c7" } },
-  draft: { label: "being proved", c: { bg: "#eae4d8", fg: "#55697a", bd: "#d8cfbe" } },
-  broken: { label: "stopped matching", c: { bg: "#f5dfe1", fg: "#8a3646", bd: "#e6c6ca" } },
+  verified: { label: "certified", c: { bg: "var(--tq-inset, #dfeade)", fg: "var(--tq-success, #47654a)", bd: "var(--tq-border, #c8d9c7)" } },
+  draft: { label: "being proved", c: { bg: "var(--tq-inset, #eae4d8)", fg: "var(--tq-link, #55697a)", bd: "var(--tq-border, #d8cfbe)" } },
+  broken: { label: "stopped matching", c: { bg: "var(--tq-tint-red, #f5dfe1)", fg: "var(--tq-danger, #8a3646)", bd: "var(--tq-edge-red, #e6c6ca)" } },
 };
 const stateOf = (m) => STATE[m.Status] || STATE.draft;
 const StatusIcon = ({ status, sx }) => (status === "verified" ? <CheckCircleIcon sx={sx} />
@@ -40,18 +40,18 @@ const Fixture = ({ f, onDrop }) => {
       <Box component="td" sx={{ py: 0.4, pr: 1 }}><Typography variant="caption" sx={{ ...mono, color: DIM }}>{f.Period || "—"}</Typography></Box>
       <Box component="td" sx={{ py: 0.4, pr: 1, textAlign: "right" }}><Typography variant="caption" sx={{ ...mono, color: INK }}>{num(f.Expected)}</Typography></Box>
       <Box component="td" sx={{ py: 0.4, pr: 1, textAlign: "right" }}>
-        <Typography variant="caption" sx={{ ...mono, color: bad ? "#8a3646" : f.LastPass === 1 ? "#47654a" : FAINT }}>
+        <Typography variant="caption" sx={{ ...mono, color: bad ? "var(--tq-danger, #8a3646)" : f.LastPass === 1 ? "var(--tq-success, #47654a)" : FAINT }}>
           {f.LastError ? t("error") : num(f.LastGot)}
         </Typography>
       </Box>
       <Box component="td" sx={{ py: 0.4, pr: 1, textAlign: "right" }}>
-        <Typography variant="caption" sx={{ ...mono, fontSize: 10, color: bad ? "#8a3646" : FAINT }}
+        <Typography variant="caption" sx={{ ...mono, fontSize: 10, color: bad ? "var(--tq-danger, #8a3646)" : FAINT }}
           title={f.LastError || ""}>{off === null ? "" : off === 0 ? t("exact") : num(off)}</Typography>
       </Box>
       <Box component="td" sx={{ py: 0.4 }}><Typography variant="caption" sx={{ color: FAINT, fontSize: 10 }} noWrap>{f.Source || ""}</Typography></Box>
       <Box component="td" sx={{ py: 0.4, textAlign: "right" }}>
         <Typography variant="caption" onClick={() => onDrop(f.FixtureId)}
-          sx={{ color: FAINT, fontSize: 10, cursor: "pointer", "&:hover": { color: "#8a3646" } }}>{t("remove")}</Typography>
+          sx={{ color: FAINT, fontSize: 10, cursor: "pointer", "&:hover": { color: "var(--tq-danger, #8a3646)" } }}>{t("remove")}</Typography>
       </Box>
     </Box>
   );
@@ -100,11 +100,11 @@ const Metric = ({ m, minFixtures, open, onOpen, onChanged }) => {
         <Box sx={{ px: 1.1, pb: 1, display: "flex", flexDirection: "column", gap: 0.9 }}>
           {m.Definition && <Typography variant="body2" sx={{ color: INK, fontSize: 12, lineHeight: 1.5 }}>{m.Definition}</Typography>}
           {m.Grain && <Typography variant="caption" sx={{ color: FAINT }}>{t("One row is: {grain}", { grain: m.Grain })}</Typography>}
-          {m.LastCheckNote && <Typography variant="caption" sx={{ color: m.Status === "verified" ? "#47654a" : "#8a3646" }}>{m.LastCheckNote}</Typography>}
+          {m.LastCheckNote && <Typography variant="caption" sx={{ color: m.Status === "verified" ? "var(--tq-success, #47654a)" : "var(--tq-danger, #8a3646)" }}>{m.LastCheckNote}</Typography>}
 
           {/* the proof, or the absence of it */}
           <Box>
-            <Typography sx={{ ...mono, fontSize: 9, letterSpacing: 1, color: "#6b5f45", fontWeight: 600, mb: 0.3 }}>
+            <Typography sx={{ ...mono, fontSize: 9, letterSpacing: 1, color: "var(--tq-warning, #6b5f45)", fontWeight: 600, mb: 0.3 }}>
               {t("KNOWN NUMBERS IT MUST MATCH")}
             </Typography>
             {fixtures.length ? (
@@ -145,7 +145,7 @@ const Metric = ({ m, minFixtures, open, onOpen, onChanged }) => {
             </Typography>}
             <Box sx={{ flex: 1 }} />
             <Button size="small" variant="contained" disableElevation disabled={!!busy} onClick={check}
-              sx={{ fontSize: 10.5, bgcolor: "#6f8a6e", "&:hover": { bgcolor: "#5b7259" } }}>
+              sx={{ fontSize: 10.5, color: "#fff", bgcolor: "#6f8a6e", "&:hover": { bgcolor: "#5b7259" } }}>
               {t(busy === "check it" ? "Checking…" : "Check every known number")}
             </Button>
           </Box>
@@ -155,8 +155,8 @@ const Metric = ({ m, minFixtures, open, onOpen, onChanged }) => {
             {JSON.stringify(m.Spec || {}, null, 2)}
           </Box>
           {m.Notes && <Typography variant="caption" sx={{ color: DIM, whiteSpace: "pre-wrap" }}>{m.Notes}</Typography>}
-          {m.Skill && <Typography variant="caption" sx={{ color: FAINT }}>{t("Frozen as skill {skill} — every later run uses it.", { skill: m.Skill })}</Typography>}
-          {err && <Typography variant="caption" sx={{ color: "#8a3646" }}>{typeof err === "string" ? err : t("could not {action}", { action: t(err.action) })}</Typography>}
+          {m.Skill && <Typography variant="caption" sx={{ color: FAINT }}>{t("Frozen as skill")}<b style={mono}>{m.Skill}</b>{t(" — every later run uses it.")}</Typography>}
+          {err && <Typography variant="caption" sx={{ color: "var(--tq-danger, #8a3646)" }}>{typeof err === "string" ? err : t("could not {action}", { action: t(err.action) })}</Typography>}
         </Box>
       )}
     </Box>
@@ -191,7 +191,7 @@ export default function SemanticPanel() {
         </Box>
       ) : (
         <>
-          <Typography sx={{ ...mono, fontSize: 10, color: "#6b5f45", fontWeight: 600, mb: 0.6 }}>
+          <Typography sx={{ ...mono, fontSize: 10, color: "var(--tq-warning, #6b5f45)", fontWeight: 600, mb: 0.6 }}>
             {t("{verified} CERTIFIED · {draft} BEING PROVED", { verified: by("verified"), draft: by("draft") })}{by("broken") ? t(" · {count} STOPPED MATCHING", { count: by("broken") }) : ""}
           </Typography>
           {rows.map((m) => (

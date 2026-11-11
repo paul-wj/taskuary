@@ -1,8 +1,11 @@
 // Browser actions are described from the agent's command, without losing the values it supplied.
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import { browserStep, describeCall } from "../src/agentSteps.js";
 import { viewportFor } from "../src/browserSplit.js";
+const src = (name) => fs.readFileSync(path.join(process.cwd(), "src", name), "utf8").replace(/\r\n/g, "\n");
 
 
 test("a Codex or Gemini browser step reads as what it did, not 'Ran agent-browser click'", () => {
@@ -30,3 +33,10 @@ test("a laptop's pane draws the page at a readable scale", () => {
 });
 
 
+test("saved sign-ins say so when there are none, can be added ahead of time, and the setup key is asked for in plain words", () => {
+  const ss = src("SavedSignins.jsx");
+  assert.match(ss, /No saved sign-ins\. A sign-in you type in the agent browser is kept here once it goes through - or add one now\./);
+  assert.match(ss, /api\.post\("\/api\/signins", f\)/);
+  assert.match(src("ConnectorsView.jsx"), /open\?\.kind === "signins" \? <SavedSignins \/>/);
+  assert.doesNotMatch(ss, /otpauth:\/\//);
+});

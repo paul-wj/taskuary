@@ -26,6 +26,7 @@ import { runOperation } from "./taskOps.js";
 import { ChannelIcon, DraftField, LinkedText, TaskuaryMark, channelColor, cleanText, fmtDateTime, fmtTime12 } from "./ui.jsx";
 import { openAppLink } from "./appLinks.js";
 import { CardErr, failOf } from "./failure.jsx";
+import { press, sure } from "./press.js";
 import { DASH, place } from "./words.js";
 import Dashboard from "./dashboard/Dashboard.jsx";
 import { snapshotOf } from "./dashboard/slice.js";
@@ -42,7 +43,7 @@ import { laneMeta } from "./funnelPile.js";
 import { age, ago, plural } from "./timeWords.js";
 import { SECTION, WORD, ideaWord } from "./lanes.js";
 import { kindLabel, AGENT_SHOWN } from "./kinds.js";
-import { sendBlockLine, draftState } from "./sendState.js";
+import { sendBlockLine, draftState, failureHead, failureWhy, savedSendFailure } from "./sendState.js";
 import { blankAsk, blankSpans } from "./blanks.js";
 import { BlankAsk } from "./ReviewDecision.jsx";
 import { openReply, useDraftJob } from "./replyDraft.js";
@@ -77,23 +78,23 @@ const shownErr = (err) => err?.source ? translateDescriptor(err) : err;
 const edge = (lane) => { const r = laneMeta(lane).role; return r ? ROLES[r].solid : "#d3ccc1"; };
 const primary = { color: "#fff", background: ASSISTANT.gradient, "&:hover": { background: "linear-gradient(90deg, #465866, #698368)" } };
 const btnSource = (verb, state) => (state && VERBS[liveVerb(verb)]?.states?.[state]) || VERBS[liveVerb(verb)]?.label || "";
-const quiet = { color: "#4d4a43", borderColor: "#d6cec1", bgcolor: "#fffdfb" };
-const faint = { color: "#867f74" };
+const quiet = { color: "var(--tq-secondary, #4d4a43)", borderColor: "var(--tq-border, #d6cec1)", bgcolor: "var(--tq-panel, #fffdfb)" };
+const faint = { color: "var(--tq-warning, #867f74)" };
 const tabWord = (tab) => ["Assistant", "Tasks", "Board", "Reports", "Settings", "Connections", "Hub"].includes(tab) ? t(tab) : tab;
 
 // where a thing came from: the channel's own logo, a calendar for a meeting, a terminal for an
 // agent, the mark for the assistant's own line
 export function SourceMark({ item, size = 14 }) {
   if (!item) return null;
-  if (item.kind === "meeting") return <EventIcon sx={{ fontSize: size, color: "#55697a" }} />;
+  if (item.kind === "meeting") return <EventIcon sx={{ fontSize: size, color: "var(--tq-link, #55697a)" }} />;
   // a goal has no source: it wears the project mark (spec 2026-10-12)
-  if (String(item.kind || "").startsWith("goal")) return <OutlinedFlagIcon sx={{ fontSize: size, color: "#55697a" }} />;
+  if (String(item.kind || "").startsWith("goal")) return <OutlinedFlagIcon sx={{ fontSize: size, color: "var(--tq-link, #55697a)" }} />;
   // a dashboard's row wears a chart, not the report's page (dashboards.py)
-  if (item.dashboard) return <InsertChartOutlinedIcon sx={{ fontSize: size, color: "#55697a" }} />;
+  if (item.dashboard) return <InsertChartOutlinedIcon sx={{ fontSize: size, color: "var(--tq-link, #55697a)" }} />;
   // an agent on it is the row's STATE (its chip says so), not where it came from: an Advisor idea, a report or a
   // mail an agent picked up keeps its own mark (the owner, 2026-09-25: "it should be advisor as that's what it
   // comes from"). The terminal is left for work with no source at all.
-  if ((item.kind === "agent" || item.kind === "agentdone") && !item.channel) return <TerminalIcon sx={{ fontSize: size, color: "#41525f" }} />;
+  if ((item.kind === "agent" || item.kind === "agentdone") && !item.channel) return <TerminalIcon sx={{ fontSize: size, color: "var(--tq-link, #41525f)" }} />;
   if (item.kind === "setup" || item.kind === "brief" || item.kind === "walk" || (item.kind === "idea" && !item.channel)) return <TaskuaryMark size={size} />;
   if (item.kind === "fyis" && !item.channel) return <TaskuaryMark size={size} />;
   // a proposal is the assistant's own act (Remind me, Mark done...), not a mail: it wore the envelope every unsourced card falls to
@@ -325,7 +326,7 @@ export function YourMove({ title, tone, go, then, children }) {
   );
 }
 // the move's own button: the card's main verb, larger, in the move's ink
-const moveSx = { ...primary, fontWeight: 600, fontSize: 12.5, px: 1.5, py: 0.55, "&.Mui-disabled": { color: "#fff", background: "#b9c2bd" } };
+const moveSx = { ...primary, fontWeight: 600, fontSize: 12.5, px: 1.5, py: 0.55, "&.Mui-disabled": { color: "#fff", background: "var(--tq-inset, #b9c2bd)" } };
 const alertSx = { ...moveSx, background: ALERT, "&:hover": { background: ALERT_INK } };
 
 // MORE ONLY WHEN THERE IS MORE (the owner, 2026-09-23: "the less button when there is only one line
@@ -525,7 +526,7 @@ function FullText({ mid, revision, report = null }) {
       {/* ...and the pictures pasted into it, drawn - the screenshot is often the whole ask */}
       {!none && !morning && <Attachments messageId={mid} canFetch={String(doc.Channel || "") === "email" && mentionsPicture(doc.BodyText)} dense bare={bare} />}
       {read !== raw && <button type="button" className="tq-card-more" onClick={() => setWhole((v) => !v)}>{whole ? t("Just what they wrote") : t("Show the whole email")}</button>}
-      {doc.SourceLink && <div className="tq-card-note"><a href={doc.SourceLink} target="_blank" rel="noreferrer" style={{ color: "#55697a" }}>{t("open the original")}</a></div>}
+      {doc.SourceLink && <div className="tq-card-note"><a href={doc.SourceLink} target="_blank" rel="noreferrer" style={{ color: "var(--tq-link, #55697a)" }}>{t("open the original")}</a></div>}
     </div>
   );
 }
@@ -607,7 +608,7 @@ function CombinedTaskText({ card, list = true }) {
       {messages.map((m, n) => {
         const body = noImages(cleanText(m.ReadText ?? m.BodyText ?? ""));
         return (
-          <div key={m.MessageId || n} style={{ padding: "7px 0", borderTop: n ? "1px solid #e2ddd4" : 0 }}>
+          <div key={m.MessageId || n} style={{ padding: "7px 0", borderTop: n ? "1px solid var(--tq-border, #e2ddd4)" : 0 }}>
             <div className="tq-card-note" style={{ marginBottom: 3 }}>
               {m.Direction === "out" ? t("You") : (m.FromName || m.FromEmail || t("Someone"))}{m.SentAt ? ` · ${fmtDateTime(m.SentAt)}` : ""}
             </div>
@@ -719,11 +720,11 @@ export function ReplyCard({ card, onDone, onSent, onOpenTask, onTimeline }) {
       // Decline and Finish anyway belong to the GitHub finish, whichever card is showing; the reply rides with them
       const onCo = ["close_pr", "merge_anyway"].includes(verb) && coRv ? coRv.ReviewId : card.rid;
       const withReply = mate || (onCo !== card.rid && !action);
-      const { data } = await api.post(`/api/reviews/${onCo}/decide`, withReply
-        ? { verb, final_text: null, note: null, reply_text: verb !== "reject" ? value : null, blanks_ok: blanksOk }
-        : { verb, final_text: verb === "approve" ? value : null, note: null, blanks_ok: blanksOk });
-      if (data.refused) reloadGh();
-      if (data.send_error) throw new Error(data.send_error);
+      const o = await press(api, onCo, withReply
+        ? { verb, reply_text: verb !== "reject" ? value : null, blanks_ok: blanksOk }
+        : { verb, final_text: verb === "approve" ? value : null, blanks_ok: blanksOk }, action || coRv ? 2 : 1);     // an act or a finish on GitHub runs something
+      if (o.kind === "refused") reloadGh();
+      sure(o, "sent");                 // the one press (press.js): its line is thrown to this card's own reader
       const ran = ["approve", "merge_anyway"].includes(verb) || verb === co?.alt?.verb;
       // the button's own label is all that is said of it - its badge on the card it folds to, never a line (the owner, 2026-10-22)
       const pressed = verb === co?.alt?.verb ? "Decline" : verb === "merge_anyway" ? `${btnSource("approve", "action")} anyway` : btnSource("approve", action ? "action" : undefined);
@@ -801,9 +802,12 @@ export function ReplyCard({ card, onDone, onSent, onOpenTask, onTimeline }) {
   const moveTitle = stopped ? t("GitHub won't merge it yet") : action && !co ? t("run what the agent proposed") : co ? t("finish it")
     : rv && !value.trim() && !stale ? t("no reply drafted yet") : stale ? t("the thread moved on") : t("reply to {name}", { name: replyTo });
   const via = t(SENDS_ON[String(mate?.Channel || rv?.Channel || "").toLowerCase()] || "by email");
+  // a send that failed before this card was drawn is still said on it (sendState.savedSendFailure): the review holds it, not the press
+  const unsent = !busy && savedSendFailure(mate || rv);
   return (
     <CardShell card={card} kicker={(co || card.tid) && blocked ? t("can't finish yet") : co || (card.tid && value.trim()) ? t(READY) : action ? t("an agent asks to act") : value.trim() ? t("reply · draft ready") : t("reply · no draft yet")}
-      lead={action && !co ? <Lead text={rv?.Subject || card.title} /> : <Story card={card} state={card.summary ? t("finished") : undefined} fallback={rv?.Subject} tail />} err={err}>
+      lead={action && !co ? <Lead text={rv?.Subject || card.title} /> : <Story card={card} state={card.summary ? t("finished") : undefined} fallback={rv?.Subject} tail />}
+      err={err || (unsent ? `${failureHead(unsent, action && !mate)} ${failureWhy(unsent)}`.trim() : "")}>
       <YourMove title={moveTitle} tone={stopped ? "alert" : null} go={verb} then={then}>
         {/* what GitHub says about this pull request now - why Close out is off, or the red it will merge past */}
         {gh && blocked && <div className="tq-move-say">{capital(gh.reason)}.</div>}
@@ -812,7 +816,7 @@ export function ReplyCard({ card, onDone, onSent, onOpenTask, onTimeline }) {
         {rv && (
           <DraftField value={value} onChange={(e) => setText(e.target.value)} marks={!action || mate ? blankSpans(value) : []}
             placeholder={drafting ? t("Drafting…") : action && !mate ? "" : t("Write your answer here")}
-            sx={{ mt: 0.75, "& .MuiOutlinedInput-root": { background: "#fffdf9" }, "& textarea": { fontSize: 13.5, lineHeight: 1.55 } }} />
+            sx={{ mt: 0.75, "& .MuiOutlinedInput-root": { background: "var(--tq-panel, #fffdf9)" }, "& textarea": { fontSize: 13.5, lineHeight: 1.55 } }} />
         )}
         {!action && stale && <div className="tq-card-err">{t("New messages arrived after this draft. Press {redraft} to write it from the latest message before sending.", { redraft: btn("redraft") })}</div>}
         {!action && rv && drafting && !value.trim() && <div className="tq-card-excerpt">{t("Drafting… it fills in here when the AI is done - or write it yourself.")}</div>}
@@ -881,7 +885,7 @@ export function MeetingCard({ card, table = null }) {
               [t("Link"), e.join && <a key="j" href={e.join} target="_blank" rel="noreferrer">{e.join}</a>]]} />
             {e.about && <div className="tq-card-excerpt" data-tq-meeting-about="">{e.about}</div>}
           </ItemPart> },
-        { key: "agent", n: 2, name: t(STEPS[1].name), icon: <TerminalIcon aria-hidden sx={{ fontSize: 17, color: "#746e64" }} />, lines: [t("not started")],
+        { key: "agent", n: 2, name: t(STEPS[1].name), icon: <TerminalIcon aria-hidden sx={{ fontSize: 17, color: "var(--tq-secondary, #746e64)" }} />, lines: [t("not started")],
           body: <ItemPart data-tq-meeting-agent="">
             <div className="tq-thr-h"><b>{t("No agent yet")}</b></div>
             <div className="tq-thr-did muted">{t("Nobody is preparing for this.")}</div>
@@ -971,7 +975,7 @@ export function ReportCard({ card, onOpenTask, onTimeline, onDone, table = null 
             <Facts rows={[[t("Report"), <b key="n">{name}</b>], [t("Ran"), ran], [t("Runs"), src.runs], [t("Reads"), src.reads], [t("Goes"), src.goes], [t("Note"), src.run?.error]]} />
             {card.source_id != null && <div className="tq-card-actions"><Button size="small" component="a" href={`#report=${card.source_id}`} sx={faint}>{t("Edit this report ↗")}</Button></div>}
           </ItemPart> },
-        { key: "report", n: 2, name: t("Report"), icon: <InsertChartOutlinedIcon aria-hidden sx={{ fontSize: 18, color: "#746e64" }} />,
+        { key: "report", n: 2, name: t("Report"), icon: <InsertChartOutlinedIcon aria-hidden sx={{ fontSize: 18, color: "var(--tq-secondary, #746e64)" }} />,
           lines: [card.title],
           body: <ItemPart data-tq-report-body="">
             {card.bad && <div className="tq-card-excerpt">{t("The run failed — the cause is in the report.")}</div>}
@@ -1041,7 +1045,7 @@ export function DashboardCard({ card, onOpenTask, onDone, table = null }) {
             <Facts rows={[[t("Dashboard"), <b key="n">{name}</b>], [t("Ran"), ran], [t("Runs"), src.runs], [t("Reads"), src.reads], [t("Goes"), src.goes], [t("Note"), src.run?.error]]} />
             {edit}
           </ItemPart> },
-        { key: "report", n: 2, name: t("Dashboard"), icon: <InsertChartOutlinedIcon aria-hidden sx={{ fontSize: 18, color: "#746e64" }} />,
+        { key: "report", n: 2, name: t("Dashboard"), icon: <InsertChartOutlinedIcon aria-hidden sx={{ fontSize: 18, color: "var(--tq-secondary, #746e64)" }} />,
           lines: [card.title],
           // ...its white cards straight on the section's warm ground, as on the Dashboards page: no card around the cards
           body: <div data-tq-dash-body="">{drawn}{share}</div> }]}
@@ -1301,8 +1305,8 @@ export function MessageCard({ card, onDone, onOpenTask, onTimeline, onSurface, o
           await new Promise((r) => setTimeout(r, 1500));
           const { data } = await api.get(`/api/connectors/${cid}/wa/status`).catch(() => ({ data: null }));
           const phase = data?.manager?.phase;
-          if (phase === "installing") setNote({ source: "Installing the bridge's dependency - a few minutes the first time…" });
-          if (phase === "failed") { setBusy(""); setNote(""); setStuck(true); setErr({ source: "The bridge did not start: {reason}", values: { reason: data.manager.detail || null } }); return; }
+          if (phase === "installing") setNote({ source: /Node\.js/.test(data.manager.detail || "") ? data.manager.detail : "Installing the bridge's dependency - a few minutes the first time…" });
+          if (phase === "failed") { setBusy(""); setNote(""); setStuck(true); setErr({ source: "The bridge did not start: {reason}", values: { reason: data.manager.detail || "no reason given" } }); return; }
           if (data?.bridge || phase === "running") break;
         }
       } catch (e) { setBusy(""); setNote(""); setStuck(true); setErr(failOf(e)); return; }
@@ -1361,7 +1365,8 @@ export function MessageCard({ card, onDone, onOpenTask, onTimeline, onSurface, o
   const verb = !asks ? null : own || mineAlone
     ? handIt && <Button size="small" variant="contained" disableElevation data-tq-verb={suggestedKind === "coding" ? "coding_agent" : "regular_agent"} disabled={!!busy} onClick={handIt} sx={moveSx}>
         {busy === "agent" ? t("Handing it over…") : hand}</Button>
-    : card.mid && <Button size="small" variant="contained" disableElevation data-tq-verb="reply" disabled={!!busy} onClick={draftReply} sx={moveSx}>{busy === "reply" ? t("Drafting…") : btn("reply")}</Button>;
+    // ...a Reply only where somebody reads one: the server's `replies` (wrapup.reads_reply_row, the owner 2026-11-10 - never a machine's notice)
+    : card.mid && card.replies && <Button size="small" variant="contained" disableElevation data-tq-verb="reply" disabled={!!busy} onClick={draftReply} sx={moveSx}>{busy === "reply" ? t("Drafting…") : btn("reply")}</Button>;
   const asker = String(card.who || t("them")).replace(/\s*<[^>]*>/g, "");
   // AN AGENT ALREADY DID IT (the owner, 2026-09-28: TQ-0796 read "who should take it? Hand to agent" under the report of
   // the agent that took it): once a report is filed the move is to close the task. It offered Continue beside it too, and finished
@@ -1597,7 +1602,7 @@ export const shownSubject = (item) => (item?.subject && item.subject !== item.ti
 // what triage read the words as trying to make an AI do (message.Danger): the task page's one warning line, on the card too (B3) - a scam
 // on the owner said as one, its reason on hover (`aim`, the owner 2026-10-30)
 const DangerNote = ({ danger, aim = null }) => (danger ? <div className="tq-card-note" data-tq-danger="" title={aim === "owner" ? danger : undefined}
-  style={{ color: ALERT, overflowWrap: "anywhere" }}>{dangerLine(danger, aim)}</div> : null);
+  style={{ color: "var(--tq-danger, #8a3646)", overflowWrap: "anywhere" }}>{dangerLine(danger, aim)}</div> : null);
 // ...a line Should be a task made a task stays, wearing where it went - its ref the way to the task (movedFyi.js, the owner 2026-11-03)
 export const MovedLine = ({ moved, onRef, className = "tq-item-msg-g" }) => !moved ? null : (
   <div className={`${className} tq-moved`} data-tq-moved={moved.ref}>{t("Moved to Tasks")} · <button type="button" className="tq-ref-link"
@@ -1708,7 +1713,8 @@ export function FyisCard({ card, onDone, onSurface, onTimeline, onPropose, onAge
   const ask = (i, coding) => { if (!(table != null && handAll(i, coding))) setAsking({ key: i.key, coding }); };
   const actsOf = (i) => (<>
             <div className="tq-card-actions tq-fyi-acts">
-              {i.mid && <Button size="small" variant="outlined" disabled={!!busy} onClick={() => reply(i)} title={btnHint("reply")} sx={quiet}>{btn("reply")}</Button>}
+              {/* ...Reply where somebody reads one (the item's `replies`, the server's): a code host's or a billing mailer's line has none */}
+              {i.mid && i.replies && <Button size="small" variant="outlined" disabled={!!busy} onClick={() => reply(i)} title={btnHint("reply")} sx={quiet}>{btn("reply")}</Button>}
               {i.mid && !i.tid && <Button size="small" variant="outlined" disabled={!!busy} onClick={() => propose("mine", i)} title={btnHint("mine", "fyi")} sx={quiet}>{btn("mine", "fyi")}</Button>}
               {i.mid && !i.tid && canCode && <Button size="small" variant="outlined" disabled={!!busy} onClick={() => ask(i, true)} title={btnHint("coding_agent")} sx={quiet}>{btn("coding_agent")}</Button>}
               {i.mid && !i.tid && <Button size="small" variant="outlined" disabled={!!busy || !!noAi} onClick={() => ask(i, false)} title={noAi || btnHint("regular_agent")} sx={quiet}>{btn("regular_agent")}</Button>}
@@ -1880,7 +1886,7 @@ export function WalkCard({ card, at, total, onNavigate, onNext, onBack, onRestar
             it's done. Make the walk through accurate to what was completed"). */}
         {"done" in card && (
           <span aria-hidden="true" title={card.done ? t("already done") : t("not done yet")}
-            style={{ marginRight: 7, fontSize: 13, fontWeight: 600, color: card.done ? "#47654a" : "#b3aa9c" }}>
+            style={{ marginRight: 7, fontSize: 13, fontWeight: 600, color: card.done ? "var(--tq-success, #47654a)" : "var(--tq-warning, #b3aa9c)" }}>
             {card.done ? "☑" : "☐"}</span>
         )}
         {walkTitle(card)}
@@ -1913,7 +1919,7 @@ export function WalkCard({ card, at, total, onNavigate, onNext, onBack, onRestar
       {/* setup.state writes a detail that says what it IS ("already connected: Outlook mail, \u2026"),
           so this renders it as given. It used to patch the words back on for one step by key, which
           left every other step reading as a heading for the instructions under it. */}
-      {card.done && card.detail && <div style={{ fontSize: 12.5, fontWeight: 600, color: "#47654a", margin: "4px 0" }}>
+      {card.done && card.detail && <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--tq-success, #47654a)", margin: "4px 0" }}>
         {card.detail_ui ? translateDescriptor(card.detail_ui) : card.detail}</div>}
       {can.length > 0 && (
         <div className="tq-walk-can">

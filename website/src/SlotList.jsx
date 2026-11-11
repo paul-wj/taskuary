@@ -3,7 +3,8 @@ import { Box, Button, Typography } from "@mui/material";
 import ReviewDecision from "./ReviewDecision.jsx";
 import { ACCENT2, BORDER, FAINT, INK, label } from "./theme.jsx";
 import api from "./api";
-import { bulkSendable, slotReviews, slotState } from "./taskLifecycle.js";
+import { press } from "./press.js";
+import { bulkSendable, slotReviews, slotState, slotTally } from "./taskLifecycle.js";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 
@@ -12,9 +13,11 @@ import { useLocale } from "./LocaleProvider.jsx";
 export default function SlotList({ taskId, checklist = [], reviews = [], onChanged }) {
   useLocale();
   const [busy, setBusy] = useState(false);
-  const items = (checklist || []).filter((i) => i.out);
-  if (!items.length) return null;
   const byRid = Object.fromEntries(slotReviews(reviews).map((r) => [r.ReviewId, r]));
+  // ...ONLY AN EMAIL SOMEBODY WROTE (the owner, 2026-11-10: "it created reply with nothing in it ... action is only needed if it helps user"): a
+  // recipient with no draft is no card, and a "To <them> · to draft" row under a turn read as the turn's empty answer
+  const items = (checklist || []).filter((i) => i.out && (i.done || byRid[i.rid]?.Status === "pending"));
+  if (!items.length) return null;
   const waiting = bulkSendable(items, reviews);
   // letting one email go - its draft (if any) is never sent, and the task closes when nothing else is owed
   const drop = async (i) => {
@@ -25,14 +28,14 @@ export default function SlotList({ taskId, checklist = [], reviews = [], onChang
   // one press, the same decide each card's own Approve sends - a refused one stays pending on its card
   const approveAll = async () => {
     setBusy(true);
-    try { for (const r of waiting) await api.post(`/api/reviews/${r.ReviewId}/decide`, { verb: "approve", final_text: null, note: null, cc: null }).catch(() => null); }
+    try { for (const r of waiting) await press(api, r.ReviewId, { verb: "approve", cc: null }); }
     finally { setBusy(false); onChanged?.(); }
   };
   return (
     <Box sx={{ mt: 1.5, maxWidth: 900 }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.6 }}>
         <Typography sx={{ ...label }}>
-          {t("Closes when sent · {done} of {total}", { done: items.filter((i) => i.done).length, total: items.length })}
+          {t("Closes when sent · {tally}", { tally: slotTally(items, reviews) })}
         </Typography>
         {waiting.length > 1 && <Button size="small" disabled={busy} onClick={approveAll} data-tq-view-btn="slots:approve-all" data-tq-send="">{busy ? t("Sending…") : t("Approve all ({count})", { count: waiting.length })}</Button>}
       </Box>
@@ -52,7 +55,6 @@ export default function SlotList({ taskId, checklist = [], reviews = [], onChang
                 : `${i.out.name || named} · ${i.out.kind}`}</Typography></>}
               <Typography variant="caption" sx={{ color: FAINT }}>{t(slotState(i, rv))}{i.out.by === "agent" ? t(" · added by the agent") : ""}
                 {i.out.candidates?.length ? t(" · could be {candidates}", { candidates: i.out.candidates.slice(0, 3).join(t(" or ")) }) : ""}</Typography>
-              {!i.done && rv?.Status !== "pending" && <Button size="small" disabled={busy} onClick={() => drop(i)}>{t("Drop")}</Button>}
             </Box>
             {rv?.Status === "pending" && <ReviewDecision review={rv} onChanged={onChanged} onDrop={() => drop(i)} />}
           </Box>

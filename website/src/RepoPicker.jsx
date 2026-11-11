@@ -87,13 +87,13 @@ export const RepoPicker = ({ taskId, agent = "", hasSession, onDone }) => {
   const general = why === "a general question - no repository";
   const noRepoRow = (
     <Box sx={{ border: `1px solid ${general ? ACCENT : BORDER}`, borderRadius: 1.5,
-      bgcolor: general ? "#eae4d8" : PANEL, px: 1.1, py: 0.7, mb: 0.6 }}>
+      bgcolor: general ? "var(--tq-inset, #eae4d8)" : PANEL, px: 1.1, py: 0.7, mb: 0.6 }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
-        <AccountTreeIcon sx={{ fontSize: 14, color: general ? "#55697a" : FAINT }} />
-        <Typography variant="caption" sx={{ fontWeight: 600, color: general ? "#55697a" : INK, flex: 1, minWidth: 0 }} noWrap>
+        <AccountTreeIcon sx={{ fontSize: 14, color: general ? "var(--tq-link, #55697a)" : FAINT }} />
+        <Typography variant="caption" sx={{ fontWeight: 600, color: general ? "var(--tq-link, #55697a)" : INK, flex: 1, minWidth: 0 }} noWrap>
           {t("Not code work")}
         </Typography>
-        {general ? <CheckIcon sx={{ fontSize: 15, color: "#47654a" }} />
+        {general ? <CheckIcon sx={{ fontSize: 15, color: "var(--tq-success, #47654a)" }} />
           : <Button size="small" sx={{ fontSize: 10.5, minWidth: 0, px: 0.75 }} disabled={busy}
               onClick={() => choose({ repo: NO_REPO, has_path: true })}>{t("use this")}</Button>}
       </Box>
@@ -126,17 +126,17 @@ export const RepoPicker = ({ taskId, agent = "", hasSession, onDone }) => {
         const on = r.repo === picked;
         return (
           <Box key={r.repo} sx={{ border: `1px solid ${on ? ACCENT : BORDER}`, borderRadius: 1.5,
-            bgcolor: on ? "#eae4d8" : PANEL, px: 1.1, py: 0.7, mb: 0.6 }}>
+            bgcolor: on ? "var(--tq-inset, #eae4d8)" : PANEL, px: 1.1, py: 0.7, mb: 0.6 }}>
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
-              <AccountTreeIcon sx={{ fontSize: 14, color: on ? "#55697a" : FAINT }} />
-              <Typography variant="caption" sx={{ ...mono, fontWeight: 600, color: on ? "#55697a" : INK,
+              <AccountTreeIcon sx={{ fontSize: 14, color: on ? "var(--tq-link, #55697a)" : FAINT }} />
+              <Typography variant="caption" sx={{ ...mono, fontWeight: 600, color: on ? "var(--tq-link, #55697a)" : INK,
                 flex: 1, minWidth: 0 }} noWrap>{r.repo.startsWith("local:") ? r.path || repoLabel(r.repo) : r.repo}</Typography>
-              {r.tagged && <Chip size="small" label={t("pinned")} sx={{ height: 16, fontSize: 9, bgcolor: "#eae4d8", color: "#55697a" }} />}
+              {r.tagged && <Chip size="small" label={t("pinned")} sx={{ height: 16, fontSize: 9, bgcolor: "var(--tq-inset, #eae4d8)", color: "var(--tq-link, #55697a)" }} />}
               {!r.has_path && (
                 <Chip size="small" icon={<WarningAmberIcon sx={{ fontSize: 11 }} />} label={t("not {local}", { local: t(LOCAL) })}
-                  sx={{ height: 16, fontSize: 9, bgcolor: "#dfeade", color: "#55697a" }} />
+                  sx={{ height: 16, fontSize: 9, bgcolor: "var(--tq-inset, #dfeade)", color: "var(--tq-link, #55697a)" }} />
               )}
-              {on && r.has_path ? <CheckIcon sx={{ fontSize: 15, color: "#47654a" }} />
+              {on && r.has_path ? <CheckIcon sx={{ fontSize: 15, color: "var(--tq-success, #47654a)" }} />
                 : <Button size="small" sx={{ fontSize: 10.5, minWidth: 0, px: 0.75 }} disabled={busy}
                     onClick={() => choose(r)}>{on ? t("set path") : t("use this")}</Button>}
             </Box>
@@ -154,7 +154,7 @@ export const RepoPicker = ({ taskId, agent = "", hasSession, onDone }) => {
                 session cannot open here at all - it would silently land in the default folder. */}
             {open === r.repo && (
               <Box sx={{ mt: 0.75, pl: 2.6 }}>
-                <Typography variant="caption" sx={{ color: r.found ? "#47654a" : "#55697a", display: "block", mb: 0.5 }}>
+                <Typography variant="caption" sx={{ color: r.found ? "var(--tq-success, #47654a)" : "var(--tq-link, #55697a)", display: "block", mb: 0.5 }}>
                   {r.found
                     ? t("Found {repo} {local} — confirm or correct the folder.", { repo: repoLabel(r.repo), local: t(LOCAL) })
                     : t("Which folder holds {repo} {local}? It is saved on the {agent} agent, so every later task about it uses it.", { repo: repoLabel(r.repo), local: t(LOCAL), agent: agent || t("coding") })}
@@ -176,7 +176,7 @@ export const RepoPicker = ({ taskId, agent = "", hasSession, onDone }) => {
       })}
       {localCode}
       {noRepoRow}
-      {err && <Typography variant="caption" sx={{ color: "#6b2733", display: "block" }}>{err.text || t(err.key)}</Typography>}
+      {err && <Typography variant="caption" sx={{ color: "var(--tq-danger, #6b2733)", display: "block" }}>{err.text || t(err.key)}</Typography>}
       <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.5 }}>
         {t("Folders saved here are kept on the agent, so you only say each one once.")}
       </Typography>
@@ -219,7 +219,7 @@ export const RepoSelect = ({ taskId, agent = "", instruction = "", value, onChan
       <AccountTreeIcon sx={{ fontSize: 15, color: DIM }} />
       <Typography variant="caption" sx={{ color: DIM, fontWeight: 600 }}>{t("code")}</Typography>
       <select className="tq-start-repo" aria-label={t("which code")} value={value || ""} onChange={(e) => { setManual(true); onChange?.(e.target.value); }}
-        style={{ fontSize: 12.5, padding: "4px 6px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "#fff", color: INK, minWidth: 220 }}>
+        style={{ fontSize: 12.5, padding: "4px 6px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "var(--tq-panel, #fff)", color: INK, minWidth: 220 }}>
         {!value && <option value="">{t("the agent picks…")}</option>}
         {rows.map((r) => <option key={r.repo} value={r.repo}>{r.repo.startsWith("local:") ? r.path || repoLabel(r.repo) : r.repo}{r.has_path ? "" : t(" (not {local})", { local: t(LOCAL) })}</option>)}
       </select>

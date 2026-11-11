@@ -12,7 +12,7 @@ export const liveVerb = (verb) => (verb && verb in REMOVED ? REMOVED[verb] : ver
 const of = (verb) => VERBS[liveVerb(verb)] || null;
 export const label = (verb, state) => { const v = of(verb); return !v ? "" : t((state && v.states?.[state]) || v.label); };
 export const hint = (verb, state) => { const v = of(verb); return !v ? "" : t((state && v.state_hints?.[state]) || v.hint || ""); };
-// the task page's row registers its own ids (`done`, `remind`, `save-end`); each verb lists the ids that are the same act
+// the task page's row registers its own ids (`done`, `remind`); each verb lists the ids that are the same act
 const ROW = Object.fromEntries(Object.entries(VERBS).flatMap(([k, v]) => (v.row || []).map((r) => [r, k])));
 export const verbOfRow = (rowId) => ROW[String(rowId || "").split(":").pop()] || null;
 export const labelOfRow = (rowId, state) => label(verbOfRow(rowId), state);
@@ -22,3 +22,6 @@ export const rowsOf = (verb) => VERBS[liveVerb(verb)]?.row || [];
 export const ALL_LABELS = [...new Set(Object.values(VERBS).flatMap((v) => [v.label, ...Object.values(v.states || {})]))];
 // a choice's answer, by its verb, inside one of the card's questions (Not ours / an idea / which agent)
 export const choice = (q, verb) => t((CHOICES[q] || []).find(([k]) => k === verb)?.[1] || "");
+// ...and NOT FOR ME'S OWN QUESTION, how far (the phone's numbered answers, remote_assistant.proposal_choices): an idea's - this one, or
+// this kind - else a mail's - this once, their mail filed from now on, a rule. [] where there is nothing to ask (a task: no sender)
+export const howFar = (item) => (item?.kind === "idea" ? CHOICES.idea : item?.mid ? CHOICES.not_ours : null) || [];

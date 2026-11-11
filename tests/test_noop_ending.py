@@ -50,57 +50,80 @@ class NoOpEndingTests(unittest.TestCase):
         self.assertEqual((out['drafting'], out['message_id']), (True, mid))
         self.assertEqual(s.get_task(tid)['Status'], 'waiting')
 
-    def test_finished_state_is_visible_before_slow_reply_drafting(self):
-        """Closing the terminal is immediate; drafting may not be. The task must stop claiming
-        an agent is in progress before the potentially slow AI call begins."""
+    def test_finished_state_is_visible_before_the_reply_is_raised(self):
+        """Closing the terminal is immediate. The task stops claiming an agent is in progress before its reply is raised - and no
+        writer drafts it at all now (the owner, 2026-11-10): it waits as the reply owed, the agent's to write."""
         s = MemoryStore(); tid, _ = task_with(s, 'ap@client.com', 'Is the importer fixed?')
-        seen = []
-        def drafting(*_args, **_kwargs):
-            seen.append((s.get_task(tid)['Status'], len(s.list_reviews('pending'))))
-            return 'It is fixed.'
-        with mock.patch('taskuary.responder.write_draft', side_effect=drafting):
-            wrapup.finish(s, tid, {'summary': 'fixed', 'outcome': 'did_work'}, None, 'coding')
-        self.assertEqual(seen, [('waiting', 1)])
+        seen, real = [], wrapup.raise_reply
+        def raising(*a, **k):
+            seen.append(s.get_task(tid)['Status']); return real(*a, **k)
+        with mock.patch.object(wrapup, 'raise_reply', side_effect=raising), \
+             mock.patch('taskuary.responder.write_draft', side_effect=AssertionError('a second voice drafted the reply')):
+            out = wrapup.finish(s, tid, {'summary': 'fixed', 'outcome': 'did_work'}, None, 'coding')
+        self.assertEqual(seen, ['waiting'])
+        self.assertEqual((len(s.list_reviews('pending')), s.get_review(out['owed']).get('DraftText') or ''), (1, ''))
 
-    def test_work_actually_done_always_drafts_however_it_came_in(self):
-        s = MemoryStore(); tid, mid = task_with(s, 'noreply@vendor.com', sender='automated')
-        rep = {'summary': 'fixed the feed', 'outcome': 'did_work'}
-        with mock.patch('taskuary.responder.write_draft', return_value='Fixed.'):
-            self.assertEqual(wrapup.finish(s, tid, rep, None, 'coding')['message_id'], mid)
+    def test_work_done_on_an_automated_notice_drafts_no_reply_either(self):
+        """The owner, 2026-11-10: "it's replying to a no reply email ... github emails are not supposed to be respodned to". A coding
+        task made from a code host's failure notice finished with the fix done, and its write-up was set up as a reply to the notifier.
+        Whatever the run found, a machine reads no reply: by the class stored on the message, never by its address."""
+        s = MemoryStore(); tid, _ = task_with(s, 'notifications@codehost.example', 'Run failed: CI - main (northwind/ledger)', sender='automated')
+        rep = {'summary': 'fixed the failing import test and pushed', 'outcome': 'did_work'}
+        with mock.patch('taskuary.responder.write_draft', return_value='Fixed.') as wd:
+            out = wrapup.finish(s, tid, rep, None, 'coding')
+        wd.assert_not_called()
+        self.assertEqual((out['drafting'], out['message_id'], s.list_reviews('pending')), (False, None, []))
+        self.assertTrue(any('no reply drafted' in (c.get('Body') or '') for c in s.list_comments(tid)))
+        # ...and a row with no class is a machine only where the mail system marked it one, never by the words of its address
+        from taskuary.categories import automated
+        self.assertEqual((automated({'Status': 'autoreply'}), automated({'FromEmail': 'noreply@codehost.example'})), (True, False))
 
     def test_a_report_with_no_outcome_field_drafts_as_before(self):
         """Absent means did_work. An older report, a degraded one, or a model that ignored the
         field must never cost somebody their answer."""
-        s = MemoryStore(); tid, mid = task_with(s, 'noreply@vendor.com', sender='automated')
+        s = MemoryStore(); tid, mid = task_with(s, 'ap@client.com', 'Is the feed fixed?')
         with mock.patch('taskuary.responder.write_draft', return_value='Fixed.'):
             self.assertEqual(wrapup.finish(s, tid, {'summary': 'fixed'}, None, 'coding')['message_id'], mid)
 
     def test_a_held_draft_means_somebody_is_waiting(self):
         """Triage drafted a reply and it was held when the session started - that is standing
         proof there is an answer owed, and a no-op report does not cancel it."""
-        s = MemoryStore(); tid, mid = task_with(s, 'alerts@phishguard.example', sender='automated')
+        s = MemoryStore(); tid, mid = task_with(s, 'ap@client.com', 'Is the importer broken again?')
         s.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft', 'Status': 'pending',
                             'Reason': 'needs a reply'})
         s.hold_reviews(tid, 'the agent is looking at it')
         with mock.patch('taskuary.responder.write_draft', return_value='hi'):
             self.assertTrue(wrapup.finish(s, tid, NOOP, None, 'coding')['drafting'])
 
+    def test_a_reply_held_for_a_machine_goes_with_the_run(self):
+        """...but one held for a machine's notice is owed to nobody (2026-11-10): retired, not drafted."""
+        s = MemoryStore(); tid, mid = task_with(s, 'alerts@phishguard.example', sender='automated')
+        rid = s.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft', 'Status': 'pending', 'Reason': 'needs a reply'})
+        s.hold_reviews(tid, 'the agent is looking at it')
+        with mock.patch('taskuary.responder.write_draft', return_value='hi') as wd:
+            self.assertFalse(wrapup.finish(s, tid, {'summary': 'done', 'outcome': 'did_work'}, None, 'coding')['drafting'])
+        wd.assert_not_called()
+        self.assertEqual(s.get_review(rid)['Status'], 'no_reply')
+
 
 class ReportOutcomeTests(unittest.TestCase):
     def test_the_flag_is_read_and_never_shown(self):
         s = MemoryStore()
-        tid = s.create_task({'Title': 'Outstanding Assignment', 'Kind': 'coding'}, 'o')
-        j = ('{"determination": "a training reminder", "actions": "nothing", '
-             '"summary": "nothing to do here", "outcome": "nothing_to_do"}')
+        tid = s.create_task({'Title': 'Export job', 'Kind': 'coding'}, 'o')
+        j = ('{"determination": "the export job lives elsewhere", "actions": "nothing", '
+             '"summary": "not in this repository", "outcome": "elsewhere", "elsewhere": "northwind/portal"}')
         with mock.patch('taskuary.llm.build_llm', return_value=lambda sy, u, **kw: j):
-            rep = wrapup.report_from_transcript(s, tid, 'Read the mail. Nothing to do here.')
-        self.assertEqual(rep['outcome'], 'nothing_to_do')
+            rep = wrapup.report_from_transcript(s, tid, 'Searched. Not in this repository.')
+        self.assertEqual(rep['outcome'], 'elsewhere')
         self.assertNotIn('outcome', wrapup.resolution_text(rep).lower())   # a flag, not prose
 
     def test_anything_but_the_flag_reads_as_work_done(self):
+        """...and "nothing to do" is no outcome of its own: whether anybody hears back is the sender's stored class and the agent's
+        `--no-reply`, never the report model's reading (it was read by nobody since 2026-11-10)."""
+        self.assertNotIn('nothing_to_do', wrapup.TRANSCRIPT_SYSTEM + wrapup.OUTCOME_ASK)
         s = MemoryStore()
         tid = s.create_task({'Title': 't', 'Kind': 'coding'}, 'o')
-        for val in ('did_work', 'unsure', ''):
+        for val in ('did_work', 'nothing_to_do', 'unsure', ''):
             with mock.patch('taskuary.llm.build_llm',
                             return_value=lambda sy, u, **kw: '{"summary": "s", "outcome": "%s"}' % val):
                 self.assertNotIn('outcome', wrapup.report_from_transcript(s, tid, 'did it'))

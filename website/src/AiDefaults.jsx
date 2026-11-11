@@ -72,7 +72,7 @@ const Model = ({ slot, onSave, field = "model", label = "model", hint, locked })
       onBlur={() => commit(v)}
       sx={{ minWidth: 260 }}
       renderInput={(p) => <TextField {...p} label={t(label)} placeholder={hint ?? (defaultHint(slot.default_hint) || t("provider default"))}
-        sx={{ bgcolor: "#fff" }} />} />
+        sx={{ bgcolor: "var(--tq-panel, #fff)" }} />} />
   );
 };
 
@@ -81,7 +81,8 @@ const Model = ({ slot, onSave, field = "model", label = "model", hint, locked })
 // in the card rather than a caption under two dropdowns.
 const Slot = ({ slot, brains, agents, judgeOptions, onSave, onGo }) => {
   useLocale();
-  const isAgent = slot.key === "default_brain";     // the coding CLI: a tool, chosen from the connected CLIs
+  // the coding brain: a connected CLI or an active AI card (agents.coding_options), its value what resolve_brain answers
+  const isAgent = slot.key === "default_brain";
   // The judge is the one slot that may be pointed at a model which cannot write, so it is the one
   // picker that shows them. Its own blank row already means "auto" (the report's own brain), so
   // the brains' auto entry — same empty value — is dropped rather than offered twice.
@@ -94,7 +95,7 @@ const Slot = ({ slot, brains, agents, judgeOptions, onSave, onGo }) => {
   const runs = isJudge ? (defaultHint(slot.default_hint) || "") : (slot.model || defaultHint(slot.default_hint) || t("the provider default"));
   return (
     // ...the place a link to its settings lands (SettingsView's knob, by the same word list: `~=` matches any one of them)
-    <Box data-tq-knob={(slot.settings || [slot.key]).join(" ")} sx={{ ...card, p: 2, mb: 1.5, bgcolor: "#fff" }}>
+    <Box data-tq-knob={(slot.settings || [slot.key]).join(" ")} sx={{ ...card, p: 2, mb: 1.5, bgcolor: "var(--tq-panel, #fff)" }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.25 }}>
         <Box sx={{ width: 7, height: 7, borderRadius: "50%", bgcolor: ACCENT2, flexShrink: 0 }} />
         <Typography sx={{ color: INK, fontWeight: 600, fontSize: 14 }}>{t(slot.label)}</Typography>
@@ -105,14 +106,14 @@ const Slot = ({ slot, brains, agents, judgeOptions, onSave, onGo }) => {
       <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap", alignItems: "flex-start" }}>
         <Box>
           <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 0.4, fontWeight: 600 }}>
-            {t(isAgent ? "which CLI" : isJudge ? "what decides" : "which brain")}
+            {t(isAgent ? "which AI" : isJudge ? "what decides" : "which brain")}
           </Typography>
-          <Select size="small" displayEmpty value={picked ? slot.value : ""}
+          <Select size="small" displayEmpty value={picked ? slot.value : ""} data-tq-slot-brain={slot.key}
             onChange={(e) => onSave({ value: e.target.value })}
             MenuProps={{ PaperProps: { sx: { maxHeight: 340 } } }}
-            sx={{ minWidth: 250, fontSize: 12.5, bgcolor: "#fff" }}>
+            sx={{ minWidth: 250, fontSize: 12.5, bgcolor: "var(--tq-panel, #fff)" }}>
             {options.map((o) => (
-              <MenuItem key={o.value} value={o.value} disabled={o.ready === false} sx={{ fontSize: 12.5 }}>
+              <MenuItem key={o.value} value={o.value} disabled={o.ready === false} data-tq-brain-option={o.value} sx={{ fontSize: 12.5 }}>
                 {optionLabel(o)}{o.ready === false ? t(" — no key saved") : ""}
               </MenuItem>
             ))}
@@ -148,7 +149,7 @@ const Slot = ({ slot, brains, agents, judgeOptions, onSave, onGo }) => {
           <Box>
             <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 0.4, fontWeight: 600 }}>{t("effort")}</Typography>
             <Select size="small" displayEmpty value={slot.effort || ""} onChange={(e) => onSave({ effort: e.target.value })}
-              sx={{ minWidth: 150, fontSize: 12.5, bgcolor: "#fff" }}>
+              sx={{ minWidth: 150, fontSize: 12.5, bgcolor: "var(--tq-panel, #fff)" }}>
               <MenuItem value="" sx={{ fontSize: 12.5 }}>{t("default")}</MenuItem>
               {slot.efforts.map((eff) => <MenuItem key={eff} value={eff} sx={{ fontSize: 12.5 }}>{eff}</MenuItem>)}
             </Select>
@@ -160,14 +161,14 @@ const Slot = ({ slot, brains, agents, judgeOptions, onSave, onGo }) => {
         alignItems: "baseline", flexWrap: "wrap" }}>
         <Typography variant="caption" sx={{ color: FAINT, fontWeight: 600 }}>{t("RUNS")}</Typography>
         <Typography sx={{ ...mono, fontSize: 12.5, color: INK, fontWeight: 600 }}>
-          {picked ? optionLabel(picked) : "—"}{slot.ready && runs ? ` · ${runs}` : ""}{slot.ready && slot.resolved ? ` → ${slot.resolved}` : ""}{slot.effort ? ` · ${slot.effort}` : ""}
+          {picked ? optionLabel(picked) : "—"}{slot.ready && runs && !picked?.label?.endsWith(` · ${runs}`) ? ` · ${runs}` : ""}{slot.ready && slot.resolved ? ` → ${slot.resolved}` : ""}{slot.effort ? ` · ${slot.effort}` : ""}
         </Typography>
         {slot.owner && (
           <Typography variant="caption" sx={{ color: FAINT }}>
             {t("saved on {owner}", { owner: ownerLabel(slot.owner) })}
             {slot.owner_link && (
               <Typography component="button" type="button" variant="caption" onClick={() => onGo(slot.owner_link)}
-                sx={{ border: 0, background: "none", p: 0, font: "inherit", textAlign: "inherit", color: "#55697a", cursor: "pointer", ml: 0.5, "&:hover": { textDecoration: "underline" } }}>
+                sx={{ border: 0, background: "none", p: 0, font: "inherit", textAlign: "inherit", color: "var(--tq-link, #55697a)", cursor: "pointer", ml: 0.5, "&:hover": { textDecoration: "underline" } }}>
                 {t("open →")}
               </Typography>
             )}
@@ -236,7 +237,7 @@ export default function AiDefaults({ brains, agents, onGo, onLoaded }) {
       <Typography variant="body2" sx={{ color: DIM, mb: 1.5 }}>
         {t("Which AI does what, and on which model. Adding or signing into a CLI or an API key is still")}{" "}
         <Typography component="button" type="button" variant="body2" onClick={() => onGo("connections")}
-          sx={{ border: 0, background: "none", p: 0, font: "inherit", textAlign: "inherit", color: "#55697a", cursor: "pointer", "&:hover": { textDecoration: "underline" } }}>{t("Connections")}</Typography>
+          sx={{ border: 0, background: "none", p: 0, font: "inherit", textAlign: "inherit", color: "var(--tq-link, #55697a)", cursor: "pointer", "&:hover": { textDecoration: "underline" } }}>{t("Connections")}</Typography>
         {t("; this page only chooses between what you have connected.")}
       </Typography>
       {err && (

@@ -113,7 +113,7 @@ NEEDS = 'NEEDS:'
 # This line used to say "the owner will turn it into a task" (a sentence about what someone ELSE would do), then "say in one line that
 # you will pick it up" - and that is what came back: "I have to look into it and will send that separately" (the owner, 2026-10-28:
 # "don't draft AI slop answers 'I'm looking into it'. that's useless"). A reply that cannot answer is not written: NEEDS says what work
-# it needs, to the owner, and the task goes to an agent that does the work and drafts the real reply (ingest.hand_reply_to_agent).
+# it needs, to the owner, and the task goes to an agent that does the work and drafts the real reply (the owner's Send to agent).
 NOT_YET = ('A reply is worth sending only if it ANSWERS. When a request put to you cannot be answered substantively from what is in '
            'front of you - it needs looking into, checking, working out, deciding or doing first - never write a placeholder that '
            'promises to ("I\'m looking into it", "I\'ll get back to you", "will send that separately"): that is no answer and it is '
@@ -135,7 +135,7 @@ FEEDBACK_TOKENS = 700    # a few specific points need more room than a two-line 
 
 class NotDrafted(RuntimeError):
     """The writer could not answer from what it had - it said what it NEEDS, its own judgement. No draft exists; the reason is the
-    owner's, and a reply task is handed to an agent that does the work (ingest.hand_reply_to_agent)."""
+    owner's: the card says what it needs, and the task's agent does the work."""
 
 # the agent has already closed the thread: this reply reports an outcome, never promises one
 # the owner said what this reply says. Every caller that passes one passes THEIR words - the chase that wrote follow-ups is
@@ -680,8 +680,8 @@ def draft_for_review(store, task_id: int, review_id: int, llm=None, resolution: 
         # the task STAYS OPEN with the writer's why (selfclose.nothing_left): the owner's No reply closes a task, the writer's never does
         from . import selfclose, verdicts
         rv = store.get_review(review_id)
-        # a draft already waiting (a new mail joined the thread and this was the redraft) is never put down or deleted: it is marked
-        # Not needed, with the writer's WHY, and Send still sends it
+        # a draft already waiting (a new mail joined the thread and this was the redraft) is never deleted: it is put down as
+        # not needed, with the writer's WHY, and kept under Not sent (verdicts.not_needed)
         if rv and rv.get('Status') == 'pending' and str(rv.get('DraftText') or '').strip() and not resolution:
             verdicts.not_needed(store, task_id, seen.get('why') or 'the thread no longer asks you for a reply', 'drafter')
             logger.info(f'redraft for task {task_id}: the writer says no reply is owed now; the draft is marked not needed')
@@ -755,16 +755,17 @@ def resolution_of(store, task_id: int):
     return report
 
 
-def write_draft(store, task_id: int, review_id: int, resolution: str = None, actor: str = 'system', llm=None, nudge: str = None,
-                pressed: bool = False) -> str:
+def write_draft(store, task_id: int, review_id: int, actor: str = 'system', llm=None, nudge: str = None, pressed: bool = False) -> str:
     """The one door every reply comes through - and there is only one road behind it now.
 
     An agent named `responder` used to take this over and run HEADLESS: a CLI opened, worked
     and closed where nobody could watch it, interrupt it or answer it. That is the thing this
     app exists to replace, so it is gone. Coding work goes to a real session you can see
     (terminal.start_on_task); a reply is two sentences and belongs to the main AI, which
-    writes it here in under a second and parks it for approval. `pressed`: the owner pressed for this draft (ASKED) - never put down as no reply."""
-    return draft_for_review(store, task_id, review_id, llm, resolution, nudge, pressed)
+    writes it here in under a second and parks it for approval. `pressed`: the owner pressed for this draft (ASKED) - never put down as no reply.
+    ONLY THE OWNER'S PRESS ASKS IT (Draft with AI, Redraft, a chase): a reply owed at arrival or at a run's end is the task's agent's to write
+    (ingest.reply_to_agent, wrapup.raise_reply - the owner, 2026-11-10: "no more triage creates draft. agent should be doing it")."""
+    return draft_for_review(store, task_id, review_id, llm, None, nudge, pressed)
 
 
 def draft_for_message(store, m: dict, review_id: int, llm=None, instruction: str = None) -> str:

@@ -3,7 +3,11 @@
 // A tool nobody judged, or a server whose tools could not be read, is left out and says so (fail closed). Invented servers only.
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import { linesOf } from "../src/sendFilterLines.js";
+
+const src = (f) => fs.readFileSync(path.join(import.meta.dirname, "../src", f), "utf8");
 
 const DATA = {
   claude: [{ server: "mail", error: "", blocked: false, tools: [
@@ -23,4 +27,10 @@ test("one line per server and tool, left out or kept; a server Claude and Codex 
   assert.equal(left[1].unchecked, true); assert.equal(left[2].unchecked, true);
   assert.deepEqual(linesOf(null), { left: [], kept: [] });
 });
+
+test("Settings > Agent permissions draws the list next to the saved sign-ins", () => {
+  assert.match(src("SettingsView.jsx"), /"Agent permissions": <>\{panel\("panel:signins", <SavedSignins \/>\)\}\{panel\("panel:sendfilter", <SendFilter \/>\)\}<\/>/);
+  assert.match(src("SettingsView.jsx"), /import SendFilter from "\.\/SendFilter\.jsx";/);
+});
+
 

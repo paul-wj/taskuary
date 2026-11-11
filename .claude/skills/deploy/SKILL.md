@@ -38,10 +38,34 @@ tools/release.sh 0.3.9.54
 
 It bumps the seven version places (pyproject, both READMEs + their badge `asof=`, roadmap, docs manifest, the demo's three
 fixture fields), builds UI/demo/docs, runs the fast gates (node unit, eslint no-undef, version/docs/catalog/timewords pytest),
-commits, pushes, waits for `ci.yml` on **that exact commit**, prints failing tests, reruns failed jobs **once** (CI's slower
-machines flake on timing), tags only when green, waits for `publish.yml` (reruns once - the exe's signing download flakes),
-verifies PyPI + the GitHub release with `TaskuarySetup.exe`, and fast-forwards the main checkout. Red twice -> it stops and names
-the tests: fix them on master, run it again with the **same** number (it was never tagged).
+commits, pushes, waits for `ci.yml` on **that exact commit**, tags only when green, waits for `publish.yml` (reruns once - the
+exe's signing download flakes), verifies PyPI + the GitHub release with `TaskuarySetup.exe`, and fast-forwards the main checkout.
+A clean release is ~20 min: build + gates ~3, CI ~12 (tests run in 3 parts per OS), publish ~7 (the signed exe is the long leg).
+
+**Red CI is not a restart** (the owner, 2026-11-09: "20 minute release max .. rerun just that test, everything else that passed
+is good"). On a red run it prints the failed tests and stops - no whole-job rerun. Then:
+
+1. Decide per test: is the **test** wrong (timing, a stale expectation) or the **code**? Fix that, commit (no push needed).
+2. `tools/release.sh X.Y.Z.W --after <run-id> --fixed` - pushes the fix, dispatches `ci-targeted.yml` on the fix commit with
+   exactly the failed tests plus the test module of every file the fix touched (Windows + macOS, ~4 min), and tags that commit
+   when it is green - without waiting for the full `ci.yml`, which still runs on master. `publish.yml`'s gate accepts a green
+   targeted run on the tagged commit. A flake with nothing to fix: the same command with no new commit.
+3. Red again -> it prints the targeted run's failures and the next `--after <that run> --fixed` command.
+
+`--after <run-id>` alone lists what would rerun; `--dry-run` also prints the exact dispatch without pushing anything. A docker
+failure (or any job that is not tests/build-web/smoke) cannot be vouched for this way - fix it and use the full road.
+
+**Two duties, never traded against each other** (the owner, 2026-11-10: "i want it released fully as long as tests pass and you just rerun
+the failure one. But then after release rerun ci since it's fixed and get it green.. don't hold up releases but make sure it's green. 2
+things.."):
+
+1. **Release at once.** A red run is fixed and released on the targeted road above - never held for a full run, never restarted.
+2. **Then get master green.** After the release is out, the full `ci.yml` on master's head must end green on GitHub. The script's last
+   step waits for it and says `master is GREEN` or `GREEN IS STILL OWED` with the failing tests. If it is owed: fix forward on master
+   (test or code), push once, `gh run rerun <run-id> --failed`, and stay on it until the head is green. Land follow-up work in few
+   pushes - a pile of small pushes leaves cancelled runs, which GitHub shows as not green.
+
+The turn that ran a release is not finished until both are true: the version is on PyPI, and master's head is green.
 
 Run it in the background and report when it ends; do not babysit runs by hand.
 

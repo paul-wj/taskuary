@@ -5,6 +5,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { ALL_LABELS, REMOVED, VERBS, hint, label, labelOfRow, liveVerb, rowsOf, verbOfRow } from "../src/buttons.js";
 import { advisedAny, advisedIn, rowOf } from "../src/actionRow.js";
+const SRC = path.join(process.cwd(), "src");
+const files = fs.readdirSync(SRC).filter((f) => /\.(jsx?|mjs)$/.test(f) && f !== "buttons.js");
+const strip = (s) => s.replace(/(^[ \t]*|\{)\/\*[\s\S]*?\*\/(?=\})?/gm, "").replace(/(^|\s)\/\/[^\n]*/g, "$1");
+const said = (code) => [...code.matchAll(/"((?:[^"\\\n]|\\.)*)"|'((?:[^'\\\n]|\\.)*)'|`((?:[^`\\]|\\.)*)`|>\s*([^<>{}\n]+?)\s*</g)]
+  .map((m) => m[1] ?? m[2] ?? (m[3]?.includes("${") ? "" : m[3]) ?? m[4]);
 import { t } from "../src/i18n.js";
 
 const json = JSON.parse(fs.readFileSync(path.join(process.cwd(), "..", "taskuary", "buttons.json"), "utf8"));
@@ -35,12 +40,12 @@ test("a removed verb is never drawn: an old word lands on the verb it became, Pr
   for (const r of Object.keys(REMOVED)) assert.ok(!(r in VERBS), r);
 });
 
-// THE ADVISOR FILLS THE REAL BUTTON: its verb (advisor.py) is not the task page's id - close/done, defer/remind, stop_agent/save-end -
+// THE ADVISOR FILLS THE REAL BUTTON: its verb (advisor.py) is not the task page's id - close/done, defer/remind -
 // and matching only ids drew a second button beside the real one. buttons.json's `row` lists are the map.
 test("the Advisor's verb finds the task page's own button for the same act, by buttons.json's row ids", () => {
-  const list = [v("reply", "decide", { tone: "p" }), v("redraft", "decide"), v("continue", "agent"), v("save-end", "agent"), v("start-agent", "agent"),
+  const list = [v("reply", "decide", { tone: "p" }), v("redraft", "decide"), v("continue", "agent"), v("start-agent", "agent"),
     v("done", "more"), v("remind", "more"), v("close-note", "more"), v("nat", "more"), v("hand", "more"), v("reshape", "more"), v("next", "next")];
-  for (const [verb, id] of [["close", "done"], ["defer", "remind"], ["stop_agent", "save-end"], ["regular_agent", "start-agent"], ["redraft", "redraft"],
+  for (const [verb, id] of [["close", "done"], ["defer", "remind"], ["regular_agent", "start-agent"], ["redraft", "redraft"],
     ["reply", "reply"], ["continue", "continue"], ["close_note", "close-note"], ["remove", "nat"], ["forward", "hand"], ["split", "reshape"]]) {
     const pick = { verb, label: label(verb) };
     assert.equal(advisedIn(list, pick)?.id, id, `${verb} -> ${id}`);
@@ -62,3 +67,31 @@ test("the Advisor's verb finds the task page's own button for the same act, by b
 });
 
 
+test("no removed or second name for a button is left where a person can read it", () => {
+  const gone = ["Prep me", "Snooze", "Make a task", "Make task", "Take it myself", "Redraft it", "Run it", "Merge & close", "Continue session", "Close out",
+    "Archive it", "Handled", "Draft a follow-up", "Hand to agent", "Hand to coding agent", "Regular agent", "A non-coding agent", "Silence this sender",
+    "Block them in Settings", "Send back to the agent", "Continue the agent", "Refresh the draft", "Refresh draft", "Mark it handled", "Test the connection",
+    "Run the report again", "Send the answer to the agent", "Write reply", "Start an agent", "Start another agent", "Send to non-coding agent",
+    "Use non-coding agent", "Start coding session", "Approve & send", "Run action", "Save playbook", "Draft a reply", "Check again"];
+  const hits = [], heading = { "TaskPage.jsx": ["Close out"], "taskLayout.js": ["Close out"] };   // the task page's third section is named Close out - a heading, no button
+  for (const f of files) for (const s of said(strip(fs.readFileSync(path.join(SRC, f), "utf8"))))
+    if (gone.includes(s.trim()) && !(heading[f] || []).includes(s.trim())) hits.push(`${f}: "${s.trim()}"`);
+  assert.deepEqual(hits, []);
+  const code = files.map((f) => strip(fs.readFileSync(path.join(SRC, f), "utf8"))).join("\n");
+  assert.doesNotMatch(code, /verb === "prep"|\/api\/calendar\/prep/, "Prep me is gone, its road too");
+  assert.doesNotMatch(code, /\bshortLabel\b/, "no second, shorter name for the bar");
+});
+
+// NOT FOR ME ASKS HOW FAR ON THE DESK TOO (the owner, 2026-11-10: "yes on 1"): the phone's answers (buttons.json `choices`) in a small menu
+// under the pressed button, one press to pick; the answer runs once as its own verb and nothing is carried onto the next item
+test("Not for me asks how far from its own choices, under the button pressed", async () => {
+  const { howFar, CHOICES } = await import("../src/buttons.js");
+  assert.deepEqual(howFar({ kind: "idea", idea: 4 }).map(([v]) => v), ["not_ours", "not_ours_kind"]);
+  assert.deepEqual(howFar({ kind: "fyi", mid: 9 }).map(([v]) => v), CHOICES.not_ours.map(([v]) => v));
+  assert.deepEqual(howFar({ kind: "todo", tid: 3 }), [], "a task has no sender to ask about: it runs as pressed");
+  const view = (await import("node:fs")).readFileSync(new URL("../src/AssistantView.jsx", import.meta.url), "utf8");
+  assert.match(view, /run: \(e, a\) => onChip\(c, undefined, a \|\| e\?\.currentTarget\)/);
+  assert.match(view, /if \(liveVerb\(c\.verb\) === "not_ours" && !c\.how && at && howFar\(item\)\.length > 1\) \{ setHowOn\(\{ at, c, how: howFar\(item\) \}\); return; \}/);
+  assert.match(view, /<Menu open anchorEl=\{howOn\.at\}/);
+  assert.match(view, /onClick=\{\(\) => \{ const h = howOn; setHowOn\(null\); runChip\(\{ \.\.\.h\.c, verb, how: true \}\); \}\}/);
+});

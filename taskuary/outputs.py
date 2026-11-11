@@ -22,11 +22,15 @@ TYPES = {'.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.s
          '.log': 'text/plain', '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
          '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.html': 'text/html', '.htm': 'text/html',
          '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-         '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation'}
-# how the page previews each kind; anything not here is Download only
+         '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+         '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
+         '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg'}
+# how the page previews each kind; anything not here is Download only. A video or a sound PLAYS in place (Gabi, 2026-11-08: "we need to
+# be able to play/interact/edit things taskuary generates right on screen" - an MP4 opened as its raw bytes)
 PREVIEW = {'.xlsx': 'sheet', '.xlsm': 'sheet', '.csv': 'table', '.pdf': 'pdf', '.png': 'picture', '.jpg': 'picture', '.jpeg': 'picture',
            '.gif': 'picture', '.webp': 'picture', '.md': 'text', '.txt': 'text', '.json': 'text', '.log': 'text', '.tsv': 'text',
-           '.svg': 'page', '.html': 'page', '.htm': 'page', '.docx': 'document'}
+           '.svg': 'page', '.html': 'page', '.htm': 'page', '.docx': 'document',
+           '.mp4': 'video', '.m4v': 'video', '.webm': 'video', '.mov': 'video', '.mp3': 'audio', '.wav': 'audio', '.m4a': 'audio', '.ogg': 'audio'}
 
 
 def folder(tid: int) -> Path: return config.home() / 'scratch' / 'outputs' / task_ref(tid)
@@ -136,6 +140,19 @@ def keep_turn(tid: int, turn: int, since: float) -> list:
         turns_folder(tid).mkdir(parents=True, exist_ok=True)
         (turns_folder(tid) / f'{int(turn)}.json').write_text(json.dumps(got), encoding='utf-8')
     return got
+
+
+# A FILE A CARD CARRIES IS DRAWN ON THAT CARD ONLY (the owner, 2026-11-10: "it should have drafted email not show me the file and the privew of
+# the file. don't need preview need the email acion card"): the file the agent attached to its reply stood under its answer as a preview card
+# of its own, read there as the thing it made. `show` still draws what the agent chose to show (agenttools.show_files) - never a card's file
+def on_cards(store, tid: int) -> set:
+    "The names of the files a draft or card of task `tid` carries (its delivery envelope's attachments)."
+    out = set()
+    for r in store._rows("SELECT Deliver FROM review WHERE TaskId=? AND IFNULL(Deliver,'')<>''", (int(tid),)):
+        try: d = json.loads(r['Deliver']) or {}
+        except (TypeError, ValueError): continue
+        out |= {str(a['name']) for a in (d.get('attachments') or []) if isinstance(a, dict) and a.get('name')} if isinstance(d, dict) else set()
+    return out
 
 
 def turns_made(tid: int) -> list:
@@ -351,7 +368,8 @@ def brief(tid: int) -> str:
     return (f'FILES YOU MAKE FOR THE OWNER (a spreadsheet, a document, a PDF, a chart): save each one in {d} . Every file there shows on '
             'this task with Preview and Download, so the owner opens it from the chat. To point at one, write its full path in your '
             'answer. Never write a URL or a link to it - Taskuary serves that folder itself, and an address you make up leads nowhere. '
-            'Asked to send it "here", it already is: name the file.')     # ...one final file per thing: AGENT.md's Files you make (with_fence_rule)
+            'Asked to send it "here", it already is: name the file. A file you attach to a reply or an email rides on that card - name it '
+            'there by its name, never its path.')     # ...one final file per thing: AGENT.md's Files you make (with_fence_rule)
 
 
 # ...and a TERMINAL session is told the same by its environment (terminal.session_env: TASKUARY_OUTPUTS) and its standing rules

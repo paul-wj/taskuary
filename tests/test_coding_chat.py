@@ -93,6 +93,23 @@ def test_an_acp_session_is_served_as_its_updates(home, server):
     assert s['source'] == 'acp' and [u['sessionUpdate'] for u in s['updates']] == ['tool_call', 'agent_message_chunk']
 
 
+def test_each_card_is_named_with_the_turn_that_raised_it_as_the_page_names_that_turns_step():
+    """ONE PLACEMENT ROAD (2026-11-11): the page placed a coding card by comparing times and named the turns by position, so the server could not
+    name one. A card is of the turn whose step was newest when it was raised (`sid#n`, the update's place); raised on arrival or after his line
+    before the turn's first step, none. A draft is stale once his line came after it and no step of the agent's has since."""
+    from taskuary.store import MemoryStore
+    s = MemoryStore(); tid = s.create_task({'Title': 'Ledger totals', 'Kind': 'coding'}, 'owner')
+    u = lambda at, k, meta=None: {'sessionUpdate': k, '_at': at, **({'_meta': {'taskuary': meta}} if meta else {})}
+    ss = [{'sid': 'a1', 'updates': [u('2026-11-11 09:00:00', 'user_message_chunk', 'owner'), u('2026-11-11 09:00:05', 'tool_call'),
+                                    u('2026-11-11 09:00:09', 'agent_message_chunk'), u('2026-11-11 09:10:00', 'user_message_chunk', 'owner')]}]
+    def card(at, kind='draft_reply'):
+        rid = s.add_review({'TaskId': tid, 'Kind': kind, 'Status': 'pending', 'DraftText': 'Hi Erin'}); s._exec('UPDATE review SET CreatedAt=? WHERE ReviewId=?', (at, rid)); return rid
+    arrival, mine, after_his, held = card('2026-11-11 08:00:00'), card('2026-11-11 09:00:06'), card('2026-11-11 09:10:01'), card('2026-11-11 09:00:09', 'action')
+    got = codingchat.cards(s, tid, ss)
+    assert got['turns'] == {str(arrival): None, str(mine): 'a1#1', str(after_his): None, str(held): 'a1#2'}
+    assert [(d['review'], d['turn'], d['stale']) for d in got['drafts']] == [(arrival, None, False), (mine, 'a1#1', True), (after_his, None, False)]
+
+
 def test_a_resumed_conversation_is_drawn_once(home, server):
     srv, c = server
     claude_log(home, 'cc3')
@@ -165,3 +182,34 @@ def test_a_checkout_on_another_branch_or_with_an_agent_in_it_moves_nothing(repo)
 def test_reverting_is_the_owners_door():
     assert guard.classify('POST', '/api/tasks/7/landing/revert')[0] == 'deny'
     assert guard.classify('GET', '/api/tasks/7/coding-chat')[0] == 'read'
+
+
+def test_a_press_on_a_coding_task_is_a_line_in_its_chat_as_in_a_general_one(home, server):
+    """The audit, 2026-11-10: Remind me or Push on a coding task left no line in its chat - the general chat draws each press as one quiet
+    line in the owner's voice (general.press_lines); the coding chat's payload carries the same lines, from the same function."""
+    from taskuary import general, remind
+    srv, c = server
+    tid = Factory(srv.store).task(title='Budget total misses tax', kind='coding')
+    remind.set_reminder(srv.store, tid, 'friday', 'owner')
+    got = c.get(f'/api/tasks/{tid}/coding-chat').json()['data']['presses']
+    assert [m['content'][0]['text'] for m in got] == [m['content'][0]['text'] for m in general.press_lines(srv.store, tid)]
+    assert len(got) == 1 and got[0]['content'][0]['text'].startswith('You set a reminder for')
+
+
+def test_a_coding_agent_s_question_reads_as_a_chat_s_does(home, server, monkeypatch):
+    """The audit, 2026-11-10: over ACP a coding agent's [[TASKUARY-ASK]] came a token at a time - the chat drew the bare marker, and the
+    payload carried no question to answer. Its words read as a general answer's (selfclose.asked_inline), its ask by the one read (taskstate.asking)."""
+    from types import SimpleNamespace
+    from taskuary import workerstate as ws
+    srv, c = server
+    tid = Factory(srv.store).task(title='Pick the vendor', kind='coding')
+    for w in ('Q3 totals are in the reply. One thing only you can say:\n[[TASKU', 'ARY-ASK]] Which vendor - Payworth or Trainly?'):
+        codingchat.record_update(tid, 'acp-8', {'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': w}})
+    ws.record(srv.store, tid, 'acp-8', 'input_needed', request_id='q1', text='Which vendor - Payworth or Trainly?', source='hook')
+    from taskuary import terminal                                      # ...its session at rest over ACP, the question waiting on him
+    live = SimpleNamespace(task_id=tid, sid='acp-8', alive=True, acp=True, started='2026-11-10 09:00:00', cli='claude', cwd='', _q=[], phase=lambda: 'parked')
+    monkeypatch.setitem(terminal.SESSIONS, 'acp-8', live)
+    d = c.get(f'/api/tasks/{tid}/coding-chat').json()['data']
+    (said,) = [u['content']['text'] for u in d['sessions'][0]['updates'] if u['sessionUpdate'] == 'agent_message_chunk']
+    assert said == 'Q3 totals are in the reply. One thing only you can say:\n\nWhich vendor - Payworth or Trainly?'
+    assert d['asking']['text'] == 'Which vendor - Payworth or Trainly?'

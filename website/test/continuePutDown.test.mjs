@@ -4,7 +4,7 @@
 // where it is, under Tasks, its icon ringed: a task does not change section when its agent starts.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { answersTo, asPressed, levelOf, putDownLanded, rowKeys, sameKey } from "../src/funnelPile.js";
+import { answersTo, asPressed, levelOf, putDownLanded, rowKeys, sameKey, stillLeaving } from "../src/funnelPile.js";
 
 const rows = [
   { key: "processing:a", tid: 19, lane: "saved", order_band: 2, surfaced: true, put_down: true, kind: "agent" },
@@ -24,7 +24,6 @@ test("asPressed draws a continued task working, in Tasks, and drops one being pu
   assert.deepEqual(asPressed(rows, { read: ["fyis:processing:a", "processing:a"] }).map((i) => i.key), rows.slice(1).map((i) => i.key));
   assert.equal(asPressed(rows, { read: [] }), rows);
 });
-
 
 // REMIND ME HID THE ROW UNTIL A RELOAD (UX walk, 2026-10-22): the put-down was held until the row left the pile, but a reminded
 // task stays in it, For later - so the rail went on dropping it. The hold ends when the row is gone OR put away.
@@ -54,4 +53,16 @@ test("a press reads a re-run row by key or alias, and sameKey sees one row", () 
   assert.ok(sameKey([], "processing:old", "processing:new", { key: "processing:new", aliases: ["processing:old"] }), "the card's own aliases join them");
   assert.deepEqual(rowKeys(rr, ["processing:old"]).sort(), ["processing:new", "processing:old"]);
   assert.deepEqual(asPressed(rr, { read: ["processing:old"] }).map((r) => r.key), ["processing:other"]);
+});
+
+// TWO MARK DONES IN A ROW (the owner, 2026-11-09: a task marked done was back on the rail once the next one was marked done too):
+// one slot held the row put down, so the second press un-hid the first while the rail on screen was still one built before its close.
+test("every row put down stays off the rail until its own close has landed, a second press included", () => {
+  const two = [{ tid: 4, key: "processing:b", was: rows[1], at: 1000 }, { tid: 19, key: "processing:a", was: rows[0], at: null }];
+  assert.deepEqual(asPressed(rows, { leaving: two.map((x) => x.tid) }).map((i) => i.key), ["processing:c"], "both off, not only the newest");
+  const stale = { items: rows, generated_at: 900 };
+  assert.deepEqual(stillLeaving(two, stale).map((x) => x.tid), [4, 19], "a rail read begun before the close answered hides both");
+  assert.deepEqual(stillLeaving(two, { items: rows.slice(1), generated_at: 900 }).map((x) => x.tid), [4], "the one the pile let go is let go");
+  assert.deepEqual(stillLeaving(two, { items: rows, generated_at: 2000 }).map((x) => x.tid), [19],
+    "read after its close answered and still there: reopened by the server - shown, never hidden on the page's word");
 });

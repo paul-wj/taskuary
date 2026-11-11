@@ -31,10 +31,10 @@ def ev(s, tid, kind, text='', source='hook', rid=None, sid='c1'):
 
 
 def cut_off_asking(s, kind='coding'):
-    """A coding agent's turn ended asking (the judge's read), the CLI's idle notice after it, then a restart cut the session off."""
+    """A coding agent's turn ended on a question it asked, the CLI's idle notice after it, then a restart cut the session off."""
     t = Factory(s).task(title='Packet download fails for large teams', kind=kind, status='open')
     ev(s, t, 'working'); ev(s, t, 'turn_end', SAID)
-    ev(s, t, 'input_needed', ASK, source='judge', rid=ws.request_id_for(ASK))
+    ev(s, t, 'input_needed', ASK, source='api', rid=ws.request_id_for(ASK))
     ev(s, t, 'input_needed', 'Claude is waiting for your input', rid=ws.request_id_for('Claude is waiting for your input'))
     ev(s, t, 'disconnected', 'the session ended', source='shutdown')
     s.tag_task(t, terminal.INTERRUPTED, True, 'shutdown')
@@ -60,31 +60,24 @@ def test_a_run_that_ended_on_a_report_leaves_nothing_asking(s):
     assert ws.left_asking(s, t) == []
 
 
-def test_the_models_read_of_the_final_text_counts_at_the_wrap(s):
-    """The question asked only in the prose that ended the turn is still a question nobody answered (hooks.judge_turn reads it - the model,
-    never a "?" rule): a session put away there did not finish."""
-    t = Factory(s).task(title='Packet download', kind='coding', status='in_progress')
-    ev(s, t, 'working'); ev(s, t, 'turn_end', SAID); ev(s, t, 'input_needed', ASK, source='judge', rid='j1')
-    assert [r['text'] for r in wrapup.unanswered(s, t)] == [ASK]
-
-
-def test_the_advisor_reads_the_cut_off_run_as_the_agent_asking_and_runs_no_finish_check(s):
+def test_a_cut_off_run_reads_as_the_agent_asking_and_its_row_fills_nothing(s):
     t = cut_off_asking(s)
     for item in ({'key': f'agent:{t}', 'kind': 'agent', 'lane': 'stopped', 'tid': t},
                  {'key': f'task:{t}', 'kind': 'task', 'lane': 'stopped', 'tid': t}):
         st, _ = rulebook.state(s, item, [{'verb': 'continue', 'label': 'Continue'}, {'verb': 'reply', 'label': 'Reply'}])
         assert st == 'agent_asking', item
-        assert st not in advisor.CHECKED, 'the finish check reads finished work - this run is waiting on the owner'
+        assert st in rulebook.QUIET, 'nothing is filled over an agent that waits on the owner: its own pane is the way on'
 
 
 @pytest.mark.parametrize('verb', ['continue', 'reply', 'next', 'close'])
-def test_on_a_coding_agent_left_asking_only_its_answer_may_light(s, verb):
+def test_on_a_coding_agent_left_asking_nothing_may_light(s, verb):
     t = cut_off_asking(s)
     it = {'key': f'task:{t}', 'kind': 'task', 'lane': 'stopped', 'tid': t}
     vs = [{'verb': v, 'label': v} for v in ('continue', 'reply', 'close', 'answer_agent')]
     d = advisor.checked(s, it, vs, {'key': it['key'], 'state': 'agent_asking', 'verb': verb, 'line': 'Reply to Gail about the download', 'evidence': []})
     assert d['verb'] is None and d['line'] == '', d
-    assert advisor.checked(s, it, vs, {'key': it['key'], 'state': 'agent_asking', 'verb': 'answer_agent', 'line': ''})['verb'] == 'answer_agent'
+    # ...not even its "Answer it", a button no more (the owner, 2026-11-10: "the agent itself asks that question. Never need that button")
+    assert advisor.checked(s, it, vs, {'key': it['key'], 'state': 'agent_asking', 'verb': 'answer_agent', 'line': ''})['verb'] is None
 
 
 def test_a_general_agent_left_asking_is_still_the_models_call(s):

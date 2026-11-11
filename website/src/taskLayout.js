@@ -99,7 +99,7 @@ export const fromStatus = ({ channel = "", count = 0, msgs = [], workflow = null
   lines: [count ? [channel, count === 1 ? t("{count} message", { count }) : t("{count} messages", { count })].filter(Boolean).join(" · ") : workflow ? t("Routine · {title}", { title: workflow.title }) : made, to,
     ...msgs.slice(0, TAB_MOST).map((m) => `${m.who}: ${q(m.words)}`)].filter(Boolean),
   foot: sorted ? `✓ ${sorted}` : "" });
-// ...the Agent: its profile and where it stands, what it did in a line, what it made - and at its foot its state and the Advisor's next move
+// ...the Agent: its profile and where it stands, what it did in a line, what it made - and at its foot its state
 // ...and a start held back for a free agent slot says so (`queued`, QueuedStart), never "not started" over a start already on its way (2026-11-04)
 export const agentWord = ({ live = false, waiting = false, failed = false, stopped = false, result = false, record = false, codeRun = false, queued = false } = {}) =>
   live ? (waiting ? "needs you" : "working") : queued ? "waiting its turn" : failed ? "failed" : stopped ? "stopped" : result ? "finished" : record ? "ran" : codeRun ? "steps ran by code" : "not started";

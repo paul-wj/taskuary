@@ -31,5 +31,3 @@ test("a close-out approval lights its closing send without changing a draft's pl
   const sends = [{ id: "41:send_close", label: label("send_close"), group: "decide", tone: "p", card: true }, { id: "41:approve", label: label("approve"), group: "decide", tone: "s", card: true }];
   assert.equal(advisedIn(sends, { verb: "approve", label: label("approve") })?.id, "41:approve");
 });
-
-

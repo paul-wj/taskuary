@@ -105,14 +105,14 @@ export default function UpdateCard({ asked = false, at = 0 }) {
       <Typography variant="body2" sx={{ color: DIM, mb: 1.5, lineHeight: 1.6 }}>
         {t("Everything you have set up — connections, tokens, the database, your documents and playbooks — lives in the data folder, never beside the program. An update only swaps the program, so all of it is exactly where you left it when the new build opens.")}
       </Typography>
-      <Box sx={{ p: 1.75, border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: "#fff" }}>
+      <Box sx={{ p: 1.75, border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: "var(--tq-panel, #fff)" }}>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
-          <SystemUpdateAltIcon sx={{ fontSize: 22, color: "#55697a" }} />
+          <SystemUpdateAltIcon sx={{ fontSize: 22, color: "var(--tq-link, #55697a)" }} />
           <Box sx={{ flex: 1, minWidth: 220 }}>
             <Typography sx={{ fontWeight: 600, color: INK, fontSize: 13.5 }}>
               {t("Running")} <Box component="span" sx={{ ...mono }}>v{info?.current || "…"}</Box>
               {info?.latest && (
-                <Box component="span" sx={{ color: info.newer ? "#6b2733" : "#47654a", fontWeight: 600, ml: 1, fontSize: 12.5 }}>
+                <Box component="span" sx={{ color: info.newer ? "var(--tq-danger, #6b2733)" : "var(--tq-success, #47654a)", fontWeight: 600, ml: 1, fontSize: 12.5 }}>
                   {info.newer ? t("· v{version} is out", { version: info.latest }) : t("· this is the latest")}
                 </Box>
               )}
@@ -128,7 +128,7 @@ export default function UpdateCard({ asked = false, at = 0 }) {
               it says (the setup sweep, 2026-10-28) */}
           {!(unknown && !busy) && <Button size="small" variant="contained" disableElevation disabled={!canApply || !!busy} onClick={apply} data-tq-knob="update"
             {...(lit && canApply && !busy ? { "data-tq-asked": "" } : {})}
-            sx={lit && canApply && !busy ? { outline: "2px solid #6f8a6e", outlineOffset: 3 } : undefined}
+            sx={lit && canApply && !busy ? { outline: "2px solid var(--tq-success, #6f8a6e)", outlineOffset: 3 } : undefined}
             startIcon={["apply", "waiting", "restarting"].includes(busy) ? <CircularProgress size={12} sx={{ color: "#fff" }} /> : null}
             title={how === "source" ? t("a source checkout updates with git pull") : info?.newer ? t("install v{version} and reopen - it waits for agents mid-turn and routine runs to finish first", { version: info.latest })
               : t("nothing newer to install")}>
@@ -139,7 +139,7 @@ export default function UpdateCard({ asked = false, at = 0 }) {
         {info?.notes && info.newer && (
           <Typography variant="caption" sx={{ display: "block", mt: 1, color: FAINT }}>
             {t("What changed:")}{" "}
-            <Box component="a" href={info.notes} target="_blank" rel="noopener" sx={{ color: "#55697a" }}>{t("release notes")}</Box>
+            <Box component="a" href={info.notes} target="_blank" rel="noopener" sx={{ color: "var(--tq-link, #55697a)" }}>{t("release notes")}</Box>
           </Typography>
         )}
         {note && <Alert severity="info" sx={{ mt: 1.25, fontSize: 12.5 }}>{note.waiting ? waitingText(note.waiting) : translateDescriptor(note)}</Alert>}

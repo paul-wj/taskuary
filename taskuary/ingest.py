@@ -5,16 +5,16 @@ Pipeline per message: dedup -> deterministic policy -> route to a task -> intent
 (task / reply_only / fyi) -> file or create. Real tasks NEVER get an auto reply-draft:
 answering is the responder's job (reply_only), doing is the coding agent's.
 """
-import contextlib, hashlib, json, re, threading, time
+import contextlib, contextvars, hashlib, json, re, threading, time
 from datetime import datetime, timedelta
 from loguru import logger
 from . import kinds as task_kinds
 from .timewords import plural
-from .routing import first_line, draft_task_fields
+from .routing import first_line, draft_task_fields, norm_subject
 from .policy import evaluate
 from .triage import agent_words, classify_intent, person_name, sender_called, wrapper_of
 from .store import task_ref, auto_code_enabled, _now
-from . import buttons, remind, senders, textsim, watch, wrapup, words, workstreams
+from . import brainroute, buttons, remind, senders, textsim, watch, wrapup, words, workstreams
 from .categories import agent_word, route_head
 
 # A task the stranger gate held back (senders.known). It is a TAG rather than a column because
@@ -88,6 +88,7 @@ _DEFER_DEPTH = 0
 _DEFER_LOCK = threading.Lock()
 _PENDING = {}        # MessageId -> the message as it arrived (images, no_auto...), for drain in this process
 _PENDING_LOCK = threading.Lock()
+LANDING = contextvars.ContextVar('landing', default=None)     # set by a poll reader's thread: called once per message it brings in
 
 
 @contextlib.contextmanager
@@ -239,7 +240,7 @@ def danger(store, msg: dict, mid=None, verdict: dict = None) -> str:
     return ''
 
 
-def auto_start_ok(store, msg: dict, mid: int, kind: str) -> tuple:
+def auto_start_ok(store, msg: dict, mid: int, kind: str, own: bool = False) -> tuple:
     """May this task start ITS worker by itself? (ok, why-not). Both kinds start by default (owner,
     2026-09-05, PW-069): coding opens its CLI, general opens its assistant session, a personal `task`
     is the owner's and starts nothing. Each kind has its own switch; a kind needs its worker to be
@@ -250,15 +251,16 @@ def auto_start_ok(store, msg: dict, mid: int, kind: str) -> tuple:
     said = senders._said
     # MAIL THAT TRIES TO STEER AN AI STARTS NOTHING BY ITSELF (the Advisor design rev 2, the owner's ruling 2026-10-28): what triage or
     # ranking read it as trying to make an AI do (message.Danger - the model's reading, never a word list) holds the start for the owner
-    if (d := danger(store, msg, mid)): return False, said(f'It reads as an attempt to steer an AI ({d}) - nothing starts until you press.')
+    if not own and (d := danger(store, msg, mid)): return False, said(f'It reads as an attempt to steer an AI ({d}) - nothing starts until you press.')
+    if not own and (held := brainroute.auto_held(store)): return False, said(held[0].upper() + held[1:] + '.')
     if kind == 'general':
-        if cfg.get('general_auto_enabled', '1') != '1': return False, said(f"Starting an agent by itself is switched off in {words.name('coding')}.")
+        if cfg.get('general_auto_enabled', '1') != '1': return False, said(f"Starting an agent by itself is switched off in {words.name('agents')}.")
         from . import general
         if not general.provider_options(store): return False, said(f"No AI is set up for an agent to run on yet ({words.name('ai')}).")
     elif kind == 'coding':
         if not auto_code_enabled(cfg): return False, said(f"Starting the coding agent by itself is switched off in {words.name('coding')}.")
     else: return False, said('A person has to do this one, so it is on your list.')
-    return senders.start_known(store, msg, mid)
+    return (True, '') if own else senders.start_known(store, msg, mid)      # `own`: the owner's own line or press - no sender to check
 
 
 def _start_workflow(store, msg: dict, intent: dict, actor: str, note: str = '') -> dict | None:
@@ -287,13 +289,6 @@ def _start_workflow(store, msg: dict, intent: dict, actor: str, note: str = '') 
                     verdict=_stored_verdict(intent))
     store.audit('task', tid, 'workflow_from_mail', actor, 'agent', {'from': msg.get('from_email'), 'workflow': intent['workflow'], 'busy': bool(out.get('busy'))})
     return {'status': 'attached' if out.get('busy') else 'created', 'task_id': tid, 'message_id': mid, 'workflow': intent['workflow']}
-
-
-def held_note(who, kind: str) -> str:
-    """The task's line for a start that waited: the reason as its own sentence, then where it stands. A STATE, NEVER AN
-    INSTRUCTION: the task's own row carries the button that starts it, so the line names none - "press Send to agent" stood on
-    tasks whose row had no such button, and a stranger's hold was told two next steps at once (2026-10-18)."""
-    return f"Waiting for you: {who} No agent has started on it."
 
 
 # One drain at a time: a conversation's second line must find the task its first one opened.
@@ -576,6 +571,42 @@ def invite_verdict(store, msg: dict) -> dict | None:
                        + (f' It {clash}.' if clash else '') + ' Accept, decline or propose a new time.'}
 
 
+# A NOTICE LIKE THE LAST ONES IS FILED AS THEY WERE, WITHOUT A CALL (the owner, 2026-11-10: "the ai limits as much as possible to use ai"):
+# a list or a system that mails the same notice every day had it read by the model every day. Where the mail's own headers say a system or a
+# list sent it (never a person's hand-written mail), and the last REUSE_AFTER verdicts on that address and subject shape were all the same
+# filing - none of them, nor anything since from that sender, corrected by the owner - the stored verdict is that mail's too, marked
+# `reused` on its route so it can be seen and undone. A new sender, a task among them, or a correction: the model reads it.
+# "LIKE" IS THE SAME TEXT, never a look (the owner, 2026-11-10: "dangerous like who decides it's the same"): a system that mailed "export
+# finished" three nights and "export FAILED" on the fourth had the failure filed unread, its subject being the same. Subject AND body must be
+# word for word the earlier ones' once numbers, dates, times and ids are masked - plain code comparing templates, judging no meaning: any word
+# that differs is the model's to read. A mail carrying any attachment is the model's too (its files are saved after it is judged)
+REUSE_AFTER, REUSABLE = 3, ('fyi', 'ignore', 'watch')
+# ...a date's own names, whole words only ("declined" is never "dec"), and none that is also an everyday word (may, mar, sat, sun)
+_VARYING = re.compile(r'\S*\d\S*|\b(?:january|february|march|april|june|july|august|september|october|november|december|monday|tuesday|wednesday'
+                      r'|thursday|friday|saturday|sunday|jan|feb|apr|jun|jul|aug|sep|sept|oct|nov|dec|mon|tue|tues|wed|thu|thur|thurs|fri)\b')
+def template(s) -> str: return ' '.join(_VARYING.sub('#', str(s or '').lower()).split())
+def notice_template(subject, body) -> tuple: return template(norm_subject(subject)), template(body)
+
+
+def reused_verdict(store, msg: dict) -> dict | None:
+    who, cls, meta = str(msg.get('from_email') or '').strip().lower(), msg.get('sender_class'), msg.get('mail_meta') or {}
+    if not who or cls not in ('automated', 'bulk') or msg.get('idea_context'): return None
+    if msg.get('file_text') or msg.get('images') or meta.get('atts') or meta.get('attached'): return None
+    shape = notice_template(msg.get('subject'), msg.get('body'))
+    rows = store._rows("SELECT r.RouteId, r.VerdictJson, r.CreatedAt, m.Subject, m.BodyText FROM route r JOIN message m ON m.MessageId=r.MessageId "
+                       "WHERE lower(m.FromEmail)=? AND m.SenderClass IN ('automated','bulk') AND IFNULL(r.VerdictJson,'')<>'' AND NOT EXISTS "
+                       "(SELECT 1 FROM attachment a WHERE a.MessageId=m.MessageId AND IFNULL(a.Inline,0)=0) ORDER BY r.RouteId DESC LIMIT 30", (who,))
+    same = [r for r in rows if notice_template(r['Subject'], r['BodyText']) == shape][:REUSE_AFTER]
+    if len(same) < REUSE_AFTER: return None
+    try: vs = [json.loads(r['VerdictJson']) for r in same]
+    except ValueError: return None
+    if len({v.get('intent') for v in vs}) != 1 or vs[0].get('intent') not in REUSABLE: return None
+    if store._one('SELECT 1 x FROM correction WHERE lower(Sender)=? AND CreatedAt>=? LIMIT 1', (who, str(same[-1]['CreatedAt'] or ''))): return None
+    v = {k: x for k, x in vs[0].items() if k not in ('notes', 'notes_applied', 'related_message_ids', 'existing_task_id', 'same_as')}
+    return {**v, 'title': str(msg.get('subject') or v.get('title') or '')[:200], 'summary': str(msg.get('subject') or '')[:300], 'reused': True,
+            'why': f"filed as the last {REUSE_AFTER} like it from {who} were - their verdict reused, no AI call ({str(v.get('why') or '')[:120]})"}
+
+
 def judge(store, msg: dict, llm, mine=(), me=(), home=None) -> tuple[dict, dict]:
     """What IS this message - triage's verdict, with everything around the message as evidence:
     the standing notes, who else has spoken on the thread, what the assistant already said about
@@ -584,6 +615,7 @@ def judge(store, msg: dict, llm, mine=(), me=(), home=None) -> tuple[dict, dict]
     One brain, one question, wherever the message landed: a reply that joins an open task gets
     judged exactly like one that opens a new one (the owner, 2026-09-03: "the triage should
     realize that")."""
+    if (v := reused_verdict(store, msg)) is not None: return {**v, 'notes': [], 'notes_left': 0}, {}
     fail = {}
     # **kw, not two positional args: a message with a picture on it calls the brain
     # as llm(system, user, images=[...]) - a screenshot of the error IS the request
@@ -780,6 +812,17 @@ def seen_before(store, base: str, subject: str, body: str) -> bool:
     return bool(row) and rev_id(base, row.get('Subject') or '', row.get('BodyText') or '') == rid
 
 
+def edited_words(store, base: str, body: str) -> str:
+    """What a later version of tracker item `base` SAYS ANEW, for the chat to show: the lines its body gained over the last version
+    stored. The whole item came in again on every edit, so a PR whose description changed showed twice in full (the owner,
+    2026-11-09: "see the input twice why?"). '' for a first version - it is shown whole. Triage and agents still read the full body."""
+    prev = store.last_version(base)
+    if not prev: return ''
+    was = {l.strip() for l in str(prev.get('BodyText') or '').splitlines() if l.strip()}
+    new = [l for l in str(body or '').splitlines() if l.strip() and l.strip() not in was]
+    return ('Edited - it now also says:\n' + '\n'.join(new[:60])) if new else 'Edited - lines were taken out; nothing new was added.'
+
+
 def ingest_tracker(store, msg: dict, llm=None, file_only: bool = False) -> int:
     """One tracker item, keyed on its WORDS. Returns 1 when something landed, so a poll can
     still count arrivals the way it always did.
@@ -790,7 +833,8 @@ def ingest_tracker(store, msg: dict, llm=None, file_only: bool = False) -> int:
     and rewrite a draft that is now behind the thread."""
     base, subject, body = msg['external_id'], msg.get('subject') or '', msg.get('body') or ''
     if seen_before(store, base, subject, body): return 0
-    out = ingest_message(store, {**msg, 'external_id': rev_id(base, subject, body)}, llm=llm, file_only=file_only)
+    own = edited_words(store, base, body)
+    out = ingest_message(store, {**msg, 'external_id': rev_id(base, subject, body), **({'own_text': own} if own else {})}, llm=llm, file_only=file_only)
     return out['status'] != 'duplicate'
 
 
@@ -810,6 +854,7 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
     # A CHAT BOUND TO AN AGENT is never the inbox's (agentchannels.py): its pollers route it first, and this catches any other road
     from . import agentchannels
     if fresh and agentchannels.swallows(store, msg): return {'status': 'agent_channel', 'task_id': None, 'message_id': None}
+    if fresh and (count := LANDING.get()): count()      # the running poll's tally: the sync line's "bringing in 37…" (channels._Tally)
     if fresh and file_only:
         mid = store.add_message({**_fields(msg, None), 'Status': 'feed'})
         # a voice note nothing could transcribe is filed too - and the reason says so, not "a feed"
@@ -876,7 +921,6 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
                                 "its line opens again", [], 'router')
                 batch.arrived(store, r['task_id'], msg.get('conversation_id'), msg.get('from_name') or msg.get('from_email') or 'someone')
                 return {'status': 'routed', 'task_id': r['task_id'], 'message_id': mid}
-    new_rid = None                    # set when a fresh reply task opens a review below
     split_from = r.get('split_from')     # the thread's or the room's task, when triage said this is a different job (new_job, rel new)
     held = ''                            # why the coding agent was NOT auto-started (a robot or a stranger)
     notes, notes_left = [], 0            # standing notes the classifier saw, and any that did not fit
@@ -892,10 +936,6 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
         # No ruling on the thread decides here any more: an owner's earlier "not ours" on this
         # conversation used to file every later reply unread (PW-020). It reaches the model below
         # as evidence (judge), and the model says what THIS message is.
-        busy = any(x['Status'] == 'running' for x in store.list_runs(tid))
-        # the agent's own conversation: its task's opener writing while it runs. Only their words reach the agent's
-        # terminal, and only their mail leaves the drafted reply for the agent's answer (B6, 2026-10-11)
-        talking = busy and from_opener(store, tid, msg)
         # A reply INHERITS the task's kind and nothing used to ask what it actually says, so
         # "Thank you!" on an open coding task read as "asked you" in the pipe. Triage judges it
         # like any other message (the owner, 2026-09-03: "the triage should realize that"); an
@@ -916,28 +956,15 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
             except Exception as e:
                 logger.warning(f'ingest: the follow-up verdict failed - {e}')
                 _fail = {'err': str(e)[:200]}
-            # triage never read it: say so on the thread's task instead of passing it off as classified
-            # work (PW-036). The task link stays; Retry re-judges it in place.
-            if _fail:
-                mid = _land(store, msg, tid, 'error')
-                store.add_route(mid, tid, 'attach', r.get('score'),
-                                f"AI triage failed ({_fail['err']}) - kept on {task_ref(tid)}, unclassified; retry available",
-                                [], 'triage', parse_error=_fail['err'])
-                store.set_setting('triage_last_error', _fail['err'][:200], 'system')
-                store.set_setting('triage_last_error_at', _now(), 'system')   # the bell ages a failure out by this
-                return {'status': 'error', 'task_id': tid, 'message_id': mid}
-            if follow and follow.get('degraded'):
-                mid = _land(store, msg, tid, 'error')
-                store.add_route(mid, tid, 'attach', r.get('score'),
-                                f'AI triage returned an answer it could not read as a verdict - kept on {task_ref(tid)}, unclassified; retry available',
-                                [], 'triage', raw_output=follow.get('raw_output'), parse_error=follow.get('parse_error'))
-                return {'status': 'error', 'task_id': tid, 'message_id': mid}
+        # triage never read it (the call failed, or its answer could not be read): land_on says so on the thread's task, whichever
+        # road the verdict came by - a chat line's, judged before routing, used to sail past this and reopen a closed task unread
+        read = bool(follow) and not _fail and not follow.get('degraded')
         # THE THREAD IS A HINT, NOT THE TOPIC (the owner, 2026-10-26: "same chat, same task" is "a decent guide but not
         # deterministic"). The mail still joins its thread's task by default, but triage was shown that task (thread_task) and may
         # say this is a different job - "separately, can you set up the new starter's laptop" on a refund thread. Then it opens its
         # own task by the one create road below, judged once, and the thread's task gets one note: never reopened or retitled by it.
         # The mirror of same_as, for the thread's own task; Fold in Reshape puts it back where a split was wrong.
-        if follow and follow.get('new_job') and not follow.get('degraded'):
+        if read and follow.get('new_job'):
             split_from, verdict = tid, (follow, _fail)
             r = {'decision': 'create', 'task_id': None, 'score': 0.0, 'candidates': [],
                  'reason': f"a separate ask from {_asker(msg)} on the thread of {task_ref(tid)} - a different job: "
@@ -946,124 +973,15 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
         # these figures" thread asked for the change the owner's own reconciliation task was making, and reopened the old task).
         # Triage was shown the open work about it (context.open_same_job) and named one: the reply goes there, the thread's task stays
         # closed and is told where it went. Only on a closed thread - a reply on an open task's thread is that task's, as before.
-        elif (r.get('reopen') and owes_owner(follow) and (same := follow.get('same_as')) and same != tid
-              and (store.get_task(same) or {}).get('Status') not in (None, 'done', 'dropped')):
-            if pol['action'] == 'escalate': _escalate(store, same, pol, actor)
-            elif follow.get('urgent') or follow.get('priority'): _mark_urgent(store, same, follow, actor)
-            if follow.get('due'): remind.set_due(store, same, follow['due'], actor)
-            if follow.get('title'): msg['_title'] = str(follow['title']).strip()[:140] or None
-            res = _join_same(store, msg, same, follow, actor)
+        elif read and r.get('reopen') and owes_owner(follow) and (same := follow.get('same_as')) and same != tid and joinable(store, same, shut=False):
+            res = land_on(store, msg, same, follow, actor, 'same', cfg=cfg, pol=pol, mine=mine)
             store.add_comment(tid, 'triage', 'agent', f"A later message on this thread joined {task_ref(same)} - same job: "
                               f"{follow.get('why') or (store.get_task(same) or {}).get('Title') or ''}. This task stays closed.")
             store.add_comment(same, 'triage', 'agent', f"Joined from {task_ref(tid)}'s thread, which is closed - same job: {follow.get('why') or ''}")
             return res
     if r['decision'] == 'attach':
-        # the follow-up's own twelve words, like a new message's - an attached row read its raw subject (X2)
-        if follow and follow.get('title'): msg['_title'] = str(follow['title']).strip()[:140] or None
-        # A CLOSED TASK COMES BACK ONLY WITH NEW WORK (the owner, 2026-10-15: "it should update the task description if something
-        # new was added to task, if not and it was just comment don't reopen this"). A Teams "sure" to a meeting time and a WhatsApp
-        # "Ok. Monday 2 pm?" each reopened the day's closed task - triage read both as reply_only, an answer and not work. Its own
-        # intent says which: a task reopens it under the new ask (_retitle, below); a reply or a comment is kept on it, still closed.
-        # ...and a question put to the owner is theirs to answer (2026-10-25): a colleague asking on a finished thread what two ledger
-        # accounts differ by was judged reply_only, kept on the closed task and nearly missed. Triage's asks_owner tells it from a "sure".
-        kept = bool(r.get('reopen') and follow and not owes_owner(follow) and not follow.get('invite'))
-        # THE ANSWER A TASK WAITS ON IS NEVER FILED (waiton.py): "Thursday works" from the person an agent is waiting on reads as
-        # nothing to do, and filed it would leave the task waiting on an answer it already has
-        from . import waiton
-        awaited = waiton.is_them(waiton.waiting(store.get_task(tid)), msg)
-        # ...and a WATCH on a line that joins its thread (the owner, 2026-11-03) asks nothing of the owner either: kept for the chain like an fyi
-        if follow and (follow.get('intent') in QUIET or kept) and not follow.get('degraded') and not awaited:
-            mid = _land(store, msg, tid, 'filed')
-            said = (f"{follow.get('intent')} on {task_ref(tid)}, which is closed - nothing new to do on it, so it stays closed" if kept
-                    else f"{route_head('watch') if follow['intent'] == 'watch' else 'fyi'} - {follow.get('why') or 'nothing to do'} · kept on {task_ref(tid)} for the chain")
-            store.add_route(mid, tid, 'attach', r.get('score'), f"triage: {said}", [], 'triage', verdict=_stored_verdict(follow))
-            store.add_comment(tid, actor, 'agent', f"New {msg.get('channel')} from {_note_of(msg)} - "
-                              + ('no new work, it stays closed' if kept else 'fyi, nothing to do'))
-            logger.info(f"ingest: filed onto {task_ref(tid)} as {'a reply on a closed task' if kept else 'fyi'} - {msg.get('subject') or ''}")
-            # ...and a WATCHED task's thread moved: maybe nothing for the owner to do, but the watch is over - it is back on the walk, and
-            # triage's handled_elsewhere says whether it looks dealt with (watch.py)
-            watch.moved(store, tid, msg, follow, mine, actor)
-            # nothing for the owner, but the answer the waiting agent asked for all the same - it was typed in when a
-            # busy thread skipped triage, and judging it must not strand the agent (B6, 2026-10-11)
-            if talking: _hand_to_agent(store, cfg, tid, msg, actor)
-            # ...and nothing for the owner is still a change for the assistant on it: someone else may have answered what its draft
-            # answers (thread_moved - the agent re-plans; a filed line's own verdict and reading ride with it)
-            # ...and with no agent on it, a writer's draft is re-read by its writer when SOMEONE ELSE spoke - it may find no reply owed any more
-            # (the night run, 2026-11-09: a colleague answered "it's PO-5512" on the thread and the drafted "It's PO-5512" stayed ready to send)
-            elif not kept and not thread_moved(store, tid, msg, mid, follow, actor) and (store.get_task(tid) or {}).get('Kind') != 'coding':
-                from .wrapup import _person
-                rv = store.pending_review(tid, kind='draft') or {}
-                if str(rv.get('DraftText') or '').strip() and _person(store, rv.get('AnswersMid') or rv.get('MessageId')) != _person(store, mid):
-                    _spawn(_auto_draft, store, tid, rv['ReviewId'])
-            return {'status': 'filed', 'task_id': tid, 'message_id': mid}
-        mid = _land(store, msg, tid, 'routed')
-        back = bool(r.get('reopen')) and _reopen(store, tid, msg, actor, follow)
-        if awaited: waiton.arrived(store, tid, msg, mid, actor)
-        # ...and the task says what is asked NOW (the owner, 2026-10-15): an email thread stays one task, but a new ask on it - a
-        # CFO's "export and send the status" on a thread closed two days before - reopened it under the old title, read as the
-        # finished thread, and was closed again unseen. _retitle keeps the old title in a note; an owner-written task keeps its own.
-        # ...but a line that only JOINS never renames it (the owner, 2026-10-28): a colleague's morning of lines renamed one group task
-        # on nearly every line, its title drifting to whatever was said last. A line on its topic keeps the title; only one that
-        # brings a closed task back, or changes what the task itself asks (triage's refines), says what is asked now
-        if (follow or {}).get('intent') in ('task', 'reply_only') and not follow.get('degraded'):
-            _retitle(store, store.get_task(tid) or {}, msg, follow, actor, back)
-        if pol['action'] == 'escalate': _escalate(store, tid, pol, actor)
-        elif (follow or {}).get('urgent') or (follow or {}).get('priority'): _mark_urgent(store, tid, follow, actor)
-        if (follow or {}).get('due'): remind.set_due(store, tid, follow['due'], actor)
-        store.add_comment(tid, actor, 'agent', f"New {msg.get('channel')} from {_note_of(msg)}")
-        # Remind me holds a quiet task: the sender writing again with something that is not fyi brings it back now,
-        # not on the remind day (B2, the owner, 2026-10-11 - "the board needs it tomorrow" sat under For later for two weeks)
-        if remind.waiting(store.get_task(tid) or {}) and str(msg.get('from_email') or '').lower() not in mine:
-            store.update_task(tid, {'RemindAt': ''}, actor)
-            store.add_comment(tid, actor, 'agent', f"{msg.get('from_name') or msg.get('from_email') or 'They'} wrote again - brought back from {words.name('later')}.")
-        # ...and a WATCHED task comes back on the walk when its thread moves, any line from anybody else (watch.py, the owner, 2026-11-01)
-        watch.moved(store, tid, msg, follow, mine, actor)
-        # NEW WORK goes to the task's agent first (_carry_on): a live one hears it as its next turn, a stopped one carries its
-        # conversation on where it would have started by itself, and a REPLY task whose new line needs an agent gets one
-        # (agent_on_reply) - which then drafts the reply itself, so the tool-less writer below is not asked for one too
-        went = _carry_on(store, tid, msg, mid, follow, actor)
-        # ...and an ASIDE (a "thanks", a nudge) leaves the draft as it is, but its agent still hears it and re-plans (thread_moved)
-        # ...and so does a fresh QUESTION (reply_only) on a task its assistant already worked: only the tool-less writer heard it, and the
-        # agent's chat never moved under it (the owner, 2026-11-04: "the agent retriggers based off new messages and rethinks")
-        if not went and not talking and (is_aside(follow) or (follow or {}).get('intent') == 'reply_only'):
-            went = thread_moved(store, tid, msg, mid, follow, actor)
-        # a drafted reply on this task was written against the thread as it WAS (PW-051): mark it behind, and
-        # when the fresh verdict says a reply is still owed, redraft that same review - never a second one
-        # ...unless triage read THIS mail as an aside (a "thanks" on the thread): the draft is no further behind, and stays on what it answers
-        behind = store.pending_review(tid, kind='draft')
-        if behind and not is_aside(follow):
-            store.mark_review_stale(behind['ReviewId'])
-            # WHATEVER the new line was judged to be. This rewrote the draft only when the follow-up
-            # was reply_only, so Ray's second mail - judged a task, because it asked for access -
-            # left the pending reply pinned to his first one, warned as behind, with nothing behind
-            # the warning (TQ-0665, 2026-09-21). The reply is owed to the newest line either way, and
-            # the owner still approves it. An fyi never reaches here: it files and returns above.
-            if follow and not follow.get('degraded') and not talking:
-                store.update_review_message(behind['ReviewId'], mid)
-                if not msg.get('_reply_agent') and not agent_drafts(store, tid, went):
-                    store.add_comment(tid, 'triage', 'agent', 'The thread moved - the drafted reply is behind it and is being rewritten from the latest context.')
-                    _spawn(_auto_draft, store, tid, behind['ReviewId'])
-        if follow and follow.get('checklist'):
-            # a later message that asks for something new adds boxes; nothing moves or unticks, and the
-            # change is said on the task rather than made silently (PW-076)
-            added = store.merge_task_checklist(tid, follow['checklist'], 'triage', src=mid)
-            if added: store.add_comment(tid, 'triage', 'agent', 'New from the latest message:\n' + '\n'.join(f"- [ ] {i['text']}" for i in added))
-        if (follow and follow.get('intent') == 'reply_only' and not follow.get('degraded') and not talking and not follow.get('invite')
-                and not is_aside(follow) and not store.pending_review(tid) and not agent_drafts(store, tid, went)):
-            # a fresh question on an existing task is reply-needed there: one pending review for
-            # this message, drafted at once, whatever the channel can carry (PW-043)
-            unsendable = send_block(store, msg.get('channel'))
-            rid = store.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft', 'Status': 'pending',
-                                    'Reason': f"needs a reply: {follow.get('why') or 'question for you'}" + (f' · {unsendable}' if unsendable else '')})
-            _spawn(_auto_draft, store, tid, rid)
-        # the classic round trip: the agent asked something, the hub asked the person, and
-        # THIS is their answer arriving on the same thread. With answer_to_agent=auto it is
-        # typed straight into the live session; 'ask' leaves the one-click offer in the
-        # panel; 'off' does neither. A dead session just means False - nothing breaks. Only the task's own
-        # person: anyone else on the thread is not the one it asked (B6, 2026-10-11).
-        # ...or of the person the agent said it was waiting on (waiton.py) - the same owner setting, never a start of its own.
-        # A line _carry_on already took (above) is not typed in a second time here
-        if not went and (awaited or from_opener(store, tid, msg)): _hand_to_agent(store, cfg, tid, msg, actor)
+        return land_on(store, msg, tid, follow, actor, fail=_fail, cfg=cfg, pol=pol, mine=mine, score=r.get('score'), cands=r['candidates'],
+                       reason=r['reason'])
     else:
         # Nothing the owner said before decides here without a model. A ruling on THIS thread used
         # to (ingest.ruled_on_thread, until PW-020): every later reply on a dismissed email thread
@@ -1134,6 +1052,7 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
                     return {'status': 'error', 'task_id': None, 'message_id': mid}
         else:
             intent = {'intent': 'task', 'why': ''}
+        intent = owed_reply(store, msg, intent)          # ...a reply owed only to somebody who reads one
         # ...and whatever it decided, it also said what this IS in twelve words. A task keeps that
         # on the task; an fyi or a triaged report has no task, so it is kept on the message and the
         # rail reads it instead of the mail header (funnel.says).
@@ -1155,18 +1074,17 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
         if msg.get('channel') == 'report' and (hit := (same if (same := intent.get('same_as')) and store.get_task(same) else None)
                                                or (sv['task'] if sv and store.get_task(sv['task']) else None)):
             return _mention(store, msg, hit, intent, actor, _notes_note())
-        if sv and store.get_task(sv['task']) and any(x['id'] == sv['step'] for x in store.goal_steps(sv['task'])):
-            return _split_note(store, split_from, msg, _serve_step(store, msg, sv, intent, actor, _notes_note(), pol))
+        if sv and joinable(store, sv['task']) and any(x['id'] == sv['step'] for x in store.goal_steps(sv['task'])):
+            return _split_note(store, split_from, msg, _serve_step(store, msg, sv, intent, actor, _notes_note(), pol, cfg, mine))
         same = intent.get('same_as')
         # A CHAT LINE TRIAGE DID NOT JOIN TO ITS ROOM'S TASK DOES NOT JOIN IT BY SAME_AS (2026-10-29): the room's task is the sender's open
         # work too, so a group line read as `new` or unsure was named "the same as" it and joined all the same - the second road onto one
         # task. Work on another channel's task still joins by same_as; the room's own takes same_problem true (chat_route, `room`).
         if same and same in (r.get('room') or ()): same = None
-        if same and store.get_task(same):
-            if pol['action'] == 'escalate': _escalate(store, same, pol, actor)
-            elif intent.get('urgent') or intent.get('priority'): _mark_urgent(store, same, intent, actor)
-            if intent.get('due'): remind.set_due(store, same, intent['due'], actor)
-            return _split_note(store, split_from, msg, _join_same(store, msg, same, intent, actor, _notes_note()))
+        # ...a task that was DROPPED is never rejoined (joinable): the owner said it is not a task, and the mail is judged as its own
+        if same and joinable(store, same):
+            return _split_note(store, split_from, msg, land_on(store, msg, same, intent, actor, 'same', cfg=cfg, pol=pol, mine=mine,
+                                                               notes_note=_notes_note()))
         if intent['intent'] == 'fyi':
             mid = _land(store, msg, None, 'filed')
             store.add_route(mid, None, 'file', None,
@@ -1239,12 +1157,12 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
                 from . import goals
                 store.tag_task(tid, 'goal', actor='triage')
                 goals.plan_later(store, tid, goals.words(store.get_task(tid)))
-            if intent.get('outputs'):                  # what closes it beyond the reply: emails to other people (slots.py)
-                from . import slots
-                slots.add(store, tid, intent['outputs'], 'triage', sender=_sender(msg))
+            # ...and NO RECIPIENTS LISTED FOR IT: an email to someone else is the agent's to judge and write (the owner, 2026-11-10: "it created
+            # reply with nothing in it" - triage's "email to <them>, to draft" stood under the agent's turn with no words; "action is only
+            # needed if it helps user"). The emails a task closes with are the ones its agent or the owner write (slots.draft)
             # a person's ask put to the owner that an agent works ("here's my draft, let me know your thoughts") still ends in the
             # reply to them: the agent is told so (reply_job) - its thoughts are the owner's Result, the reply is built from them
-            if f['kind'] == 'general' and intent.get('asks_owner') is True and intent.get('sender_class', 'person') == 'person':
+            if f['kind'] == 'general' and intent.get('asks_owner') is True and reads_reply(store, msg, intent):
                 store.tag_task(tid, REPLY_TAG, actor='triage')
             # ...and WHERE the work is done is the coding agent's to pick when it starts (repochoice, the owner 2026-11-06): nothing here
             mid = _land(store, msg, tid, 'routed')
@@ -1259,16 +1177,16 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
                         and prior.get('Status') not in ('context', 'skipped', 'triaging', 'error')):
                     store.attach_message(rel_mid, tid)
             # the agents actually pick work up here:
-            # - reply tasks ALWAYS enter the review queue ("needs me") with the draft written at once - for everyone,
-            #   there is no setting for it (S1, 2026-09-25)
+            # - reply tasks ALWAYS enter the review queue ("needs me") - for everyone, there is no setting for it (S1, 2026-09-25) -
+            #   and the reply is the task's agent's to write, started here as for any work (reply_to_agent)
             # - CODING and GENERAL tasks start their agent by themselves when Settings and the sender allow it
             # - anything else that is real work queues as needs-you, for you to route
             # ...an invite's answer is not an email: its row's Accept, Decline and Propose a new time draft it (calwrite.draft)
             if f['kind'] == 'reply' and not intent.get('invite'):
-                new_rid = rid = store.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft', 'Status': 'pending',
+                rid = store.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft', 'Status': 'pending', 'Origin': 'triage',
                                                   'Reason': f"needs a reply: {intent.get('why') or 'question for you'}"
                                                             + (f' · {unsendable}' if unsendable else '')})
-                _spawn(_auto_draft, store, tid, rid)        # always drafted (PW-043)
+                starts.append((reply_to_agent, store, tid, rid, msg))
             elif f['kind'] == 'reply' and (job := invite_agent(store, tid, msg, mid)): starts.append((_auto_general, store, tid, job, True))
             # Almost everything a keyboard can do goes to the agent - the owner's rule (2026-08-27,
             # restated 2026-08-29): it does what it is supposed to, or says "nothing to do here" and
@@ -1288,50 +1206,41 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
                     if f['kind'] == 'coding': starts.append((_auto_code, store, tid))
                     else: starts.append((_auto_general, store, tid, advisor_brief(store, msg, mid)))
                 else:
+                    # ...said on the task in the one sentence every road that holds a start writes (not_started) - a stranger's held
+                    # as their hold, which the feed row and the release read (senders.known decided it; HOLD_TAG records it)
                     held = who
-                    # A stranger's first message is its own state, not just an absent session. An
-                    # inbound message is a PROMPT, and this one is a prompt from an address that has
-                    # never written before - so the timeline says so in as many words and offers one
-                    # button, instead of a task that merely looks like nobody got round to it. The
-                    # tag rides on the task because that is what the feed row and the release both
-                    # read (senders.known decided it; HOLD_TAG only records the decision).
-                    if getattr(who, 'stranger', False): store.tag_task(tid, HOLD_TAG)
-                    store.add_comment(tid, 'router', 'agent', held_note(who, f['kind']))
+                    not_started(store, tid, who)
                     store.audit('task', tid, 'auto_code_held', actor, 'agent', {'from': msg.get('from_email'), 'why': who})
     # the route row is the JUDGEMENT's record, and the timeline panel quotes it verbatim: the
     # verdict leads (what the classifier decided and why), routing explains new-vs-attached,
     # and the tail says what happened NEXT - "it's a task" without "and who is working it"
     # answered a question nobody asked
-    reason = r['reason']
-    verdict = _stored_verdict(follow) if r['decision'] == 'attach' and follow else None
-    if r['decision'] == 'attach' and (follow or {}).get('invite'):     # a moved meeting reads as itself on its task (invite_verdict)
-        reason = f"{follow['why']} · your answer goes out only when you press {buttons.label('approve')}"
-    if r['decision'] != 'attach':
-        # every kind names its OWN ending. Without the two lines in the middle a general or a
-        # task fell through to "sent to the coding agent" - which nothing had done - and the
-        # Timeline quotes this verbatim, so the panel would have stated a lie under the verdict.
-        # ...and the tail says what is TRUE when it is written: the start was only spawned, so it says the agent was set
-        # going, never that it started - a queued or a failed start writes its own line on the task
-        act = (('a reply draft goes to the task for you' + (f' - {unsendable}, so it cannot be sent from here' if unsendable else '')) if f['kind'] == 'reply'
-               else f"under {words.name('watching')} - nothing asked of you until the thread moves" if watching
-               else 'on your list - no agent works it' if f['kind'] == 'task'
-               else f'{HELD} {gh_hold_why(store, msg)}' if msg.get('no_auto') and msg.get('channel') == 'github'
-               else f'{HELD} items from {senders.channel_name(msg.get("channel")) or "this channel"} wait for you to start them.' if msg.get('no_auto')
-               else f'{HELD} {held}' if held
-               else f'{agent_word(f["kind"])} was set to start by itself')
-        head = route_head(intent['intent'], f['kind'])
-        reason = (f"triage: {head}" + (f" - {intent['why']}" if intent.get('why') else '')
-                  + (f" · playbook {intent['playbook']}" if intent.get('playbook') else '')
-                  + _notes_note()
-                  + f" · {r['reason']} · {act}")
-        # the verdict itself, kept: the route row has always held what triage DECIDED in prose,
-        # which nothing but a person can read. A correction is only learnable against the answer
-        # it corrected, so the answer goes on file here - see routingmemory. An attached message
-        # keeps its own verdict above for the Timeline, while store.task_verdict deliberately
-        # continues to read the task-creating verdict for correction learning.
-        verdict = _stored_verdict(intent)
-        # an invite's row reads as the invite - who, when, what it clashes with - not as triage's reply road (invite_verdict)
-        if intent.get('invite'): reason = f"{intent['why']} · your answer goes out only when you press {buttons.label('approve')}"
+    # ...of a task this message OPENED: one that joined a task that exists returned above, its route written by land_on
+    # every kind names its OWN ending. Without the two lines in the middle a general or a
+    # task fell through to "sent to the coding agent" - which nothing had done - and the
+    # Timeline quotes this verbatim, so the panel would have stated a lie under the verdict.
+    # ...and the tail says what is TRUE when it is written: the start was only spawned, so it says the agent was set
+    # going, never that it started - a queued or a failed start writes its own line on the task
+    act = (('a reply draft goes to the task for you' + (f' - {unsendable}, so it cannot be sent from here' if unsendable else '')) if f['kind'] == 'reply'
+           else f"under {words.name('watching')} - nothing asked of you until the thread moves" if watching
+           else 'on your list - no agent works it' if f['kind'] == 'task'
+           else f'{HELD} {gh_hold_why(store, msg)}' if msg.get('no_auto') and msg.get('channel') == 'github'
+           else f'{HELD} items from {senders.channel_name(msg.get("channel")) or "this channel"} wait for you to start them.' if msg.get('no_auto')
+           else f'{HELD} {held}' if held
+           else f'{agent_word(f["kind"])} was set to start by itself')
+    head = route_head(intent['intent'], f['kind'])
+    reason = (f"triage: {head}" + (f" - {intent['why']}" if intent.get('why') else '')
+              + (f" · playbook {intent['playbook']}" if intent.get('playbook') else '')
+              + _notes_note()
+              + f" · {r['reason']} · {act}")
+    # the verdict itself, kept: the route row has always held what triage DECIDED in prose,
+    # which nothing but a person can read. A correction is only learnable against the answer
+    # it corrected, so the answer goes on file here - see routingmemory. An attached message
+    # keeps its own verdict (land_on) for the Timeline, while store.task_verdict deliberately
+    # continues to read the task-creating verdict for correction learning.
+    verdict = _stored_verdict(intent)
+    # an invite's row reads as the invite - who, when, what it clashes with - not as triage's reply road (invite_verdict)
+    if intent.get('invite'): reason = f"{intent['why']} · your answer goes out only when you press {buttons.label('approve')}"
     # a split is triage's own decision and recorded as one, so the correction loop and the eval replay read it like any verdict
     store.add_route(mid, tid, r['decision'], r['score'], reason, r['candidates'], 'triage' if split_from else actor, verdict=verdict)
     # A REPLY NO AGENT WORKS takes what is on the owner from triage's reading (Task 3.5) - where an agent works, its turn summary says it.
@@ -1344,10 +1253,7 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
     for a in starts: _spawn(*a)
     _split_note(store, split_from, msg, {'task_id': tid})
     logger.info(f"ingest: {r['decision']} -> {task_ref(tid)}")
-    if r['decision'] == 'attach':                   # the Advisor on the event (advisor.py): the task has new mail
-        from . import advisor
-        advisor.notice(store, 'message.attached', 'task', tid)
-    return {'status': 'attached' if r['decision'] == 'attach' else 'created', 'task_id': tid, 'message_id': mid}
+    return {'status': 'created', 'task_id': tid, 'message_id': mid}
 
 
 # ── which standing notes reach a prompt ─────────────────────────────────────────────────
@@ -1560,78 +1466,216 @@ def _mention(store, msg: dict, tid: int, intent: dict, actor: str, notes_note: s
     return {'status': 'feed', 'task_id': None, 'message_id': mid, 'mentions': tid}
 
 
-def _join_same(store, msg: dict, tid: int, intent: dict, actor: str, notes_note: str = '') -> dict:
-    """The arrival IS a task that exists (same_as, or the exact repeat): it joins that one. Filed on it when it
-    adds nothing that needs the owner; otherwise on it, a closed one reopened, a question drafted, new asks added."""
-    t = store.get_task(tid) or {}
+def joinable(store, tid, shut: bool = True):
+    """MAY A MESSAGE LAND ON THIS TASK - the one answer (the spine audit, 2026-11-09). It exists and was not DROPPED: a dropped task is
+    not a task, or was folded away, and nothing comes back to it. `shut=False` wants it open as well - for a road that may not reopen
+    a closed one. And it is WORK: the app's own chat is stored as a task and is no one's job (store.WORK). Returns the id, or None."""
+    from .store import INTERNAL_TASK_BASE
+    t = store.get_task(tid) if tid else None
+    return tid if t and t['TaskId'] < INTERNAL_TASK_BASE and t.get('Status') != 'dropped' and (shut or t.get('Status') != 'done') else None
+
+
+def land_on(store, msg: dict, tid: int, v: dict | None, actor: str, how: str = 'thread', *, fail: dict = None, cfg: dict = None,
+            pol: dict = None, mine=(), score=1.0, cands=(), reason: str = '', notes_note: str = '', step: dict = None) -> dict:
+    """THE ONE ROAD ONTO A TASK THAT EXISTS (the spine audit, 2026-11-09). A message reaches a task three ways - by its own thread or
+    chat (`thread`), by triage naming the task it IS (`same`), by triage naming the goal step it serves (`step`) - and each had its own
+    copy of what landing means. They had drifted apart: only the thread's knew the answer a task waits on, brought a task back from
+    Remind, ended a watch, told the agent an aside had come, or left the reply to an agent already on it; the other two each closed
+    and reopened by a rule of their own. One rule now, and the road only chooses the words (said).
+
+    `v` is triage's verdict on this message - None when nothing judged it (a chat line joined on a fact, triage switched off); `fail`
+    the model's error when the call threw. `step` = {k, ref, text, goal} for a mail serving a goal's step.
+    Returns {status, task_id, message_id}: error | filed | attached (its own thread) | routed (same, step)."""
+    from . import waiton
+    from .outbound import send_block
+    cfg, pol = store.get_settings() if cfg is None else cfg, pol or {}
+    t, ref = store.get_task(tid) or {}, task_ref(tid)
     closed = t.get('Status') == 'done'
-    ref = task_ref(tid)
-    # a closed task comes back only with new work or a question to the owner (see ingest_message): a comment on it is kept, it stays closed
-    if intent.get('intent') in QUIET or (closed and not owes_owner(intent)):
+    # ...the GOAL itself, under a step nobody holds, is a container: its date, its boxes and the agent it does not have are not this mail's
+    own = not (step or {}).get('goal')
+    # NOTHING READ IT, SO NOTHING IS DECIDED BY IT (PW-036): kept on the task, said as unread, with Retry - never passed off as
+    # classified work. A failed call or an unreadable answer, by whichever road the verdict came: a chat line is judged before it is
+    # routed, and its failed verdict used to land here as a follow-up and reopen a closed task nobody had read.
+    # ...and with triage on and no brain to ask, a line on a CLOSED thread waits the same way (the owner, 2026-11-09): it reopened the
+    # task unread. On an open task it still joins - there it changes nothing about where the task stands.
+    if fail or (v or {}).get('degraded') or (v is None and closed and cfg.get('intent_classify_enabled', '1') == '1'):
+        mid, kw = _land(store, msg, tid, 'error'), {}
+        if fail:
+            why, kw = f"AI triage failed ({fail['err']}) - kept on {ref}, unclassified; retry available", {'parse_error': fail['err']}
+            store.set_setting('triage_last_error', fail['err'][:200], 'system')
+            store.set_setting('triage_last_error_at', _now(), 'system')   # the bell ages a failure out by this
+        elif v:
+            why, kw = (f'AI triage returned an answer it could not read as a verdict - kept on {ref}, unclassified; retry available',
+                       {'raw_output': v.get('raw_output'), 'parse_error': v.get('parse_error')})
+        # the prefix is the marker store.TRIAGE_UNJUDGED matches on: the retry sweep reads it the moment a brain exists
+        else: why = f"awaiting AI triage - kept on {ref}, which stays closed until it is read · connect an AI ({words.name('ai')}) and new mail is sorted by itself"
+        store.add_route(mid, tid, 'attach', score, why, [], 'triage', **kw)
+        return {'status': 'error', 'task_id': tid, 'message_id': mid}
+    v = owed_reply(store, msg, v)       # ...a reply owed only to somebody who reads one
+    reword_todos(store, tid, v)         # ...a correction first, filed or not: the words it changes are on the list already
+    # the follow-up's own twelve words, like a new message's - an attached row read its raw subject (X2)
+    if v and v.get('title'): msg['_title'] = str(v['title']).strip()[:140] or None
+    # A CLOSED TASK COMES BACK ONLY WITH NEW WORK (the owner, 2026-10-15: "it should update the task description if something
+    # new was added to task, if not and it was just comment don't reopen this"). A Teams "sure" to a meeting time and a WhatsApp
+    # "Ok. Monday 2 pm?" each reopened the day's closed task - triage read both as reply_only, an answer and not work. Its own
+    # intent says which: a task reopens it under the new ask (_retitle, below); a reply or a comment is kept on it, still closed.
+    # ...and a question put to the owner is theirs to answer (2026-10-25): a colleague asking on a finished thread what two ledger
+    # accounts differ by was judged reply_only, kept on the closed task and nearly missed. Triage's asks_owner tells it from a "sure".
+    kept = bool(closed and v and not owes_owner(v) and not v.get('invite'))
+    # THE ANSWER A TASK WAITS ON IS NEVER FILED (waiton.py): "Thursday works" from the person an agent is waiting on reads as
+    # nothing to do, and filed it would leave the task waiting on an answer it already has
+    awaited = waiton.is_them(waiton.waiting(t), msg)
+    # the agent's own conversation: its task's opener writing while it runs. Only their words reach the agent's
+    # terminal, and only their mail leaves the drafted reply for the agent's answer (B6, 2026-10-11)
+    talking = any(x['Status'] == 'running' for x in store.list_runs(tid)) and from_opener(store, tid, msg)
+    def said(filed: bool) -> tuple:
+        "(the route's reason, the task's note): each road's own words for the one landing"
+        why = (v or {}).get('why')
+        if how == 'step':
+            return (f"triage: serves step {step['k']} of {step['ref']} - {why or ''}" + notes_note,
+                    f"From {msg.get('from_name') or msg.get('from_email') or msg.get('channel')}: {msg.get('subject') or ''}"
+                    f" - it serves step {step['k']}, \"{step['text']}\"")
+        if how == 'same':
+            head = route_head(v.get('intent'), t.get('Kind') or '')
+            if filed: return (f"triage: {head}, the same as {ref} - {why or 'nothing new'} · kept on it" + (', which stays closed' if closed else '') + notes_note,
+                              f"{_note_of(msg)} - {why or 'the same, nothing new'}")
+            return (f"triage: {head} - the same as {ref}, joined to it" + (' and reopened' if closed else '') + f" - {why or ''}" + notes_note,
+                    f"{_note_of(msg)} - the same ask, kept here")
+        new = f"New {msg.get('channel')} from {_note_of(msg)}"
+        if filed:
+            return ('triage: ' + (f"{v.get('intent')} on {ref}, which is closed - nothing new to do on it, so it stays closed" if kept
+                                  else f"{route_head('watch') if v['intent'] == 'watch' else 'fyi'} - {why or 'nothing to do'} · kept on {ref} for the chain"),
+                    f"{new} - " + ('no new work, it stays closed' if kept else 'fyi, nothing to do'))
+        # a moved meeting reads as itself on its task (invite_verdict)
+        return (f"{v['why']} · your answer goes out only when you press {buttons.label('approve')}" if (v or {}).get('invite') else reason, new)
+    # ...and a WATCH on a line that joins its thread (the owner, 2026-11-03) asks nothing of the owner either: kept for the chain like an fyi
+    if v and not awaited and (v.get('intent') in QUIET or kept):
         mid = _land(store, msg, tid, 'filed')
-        store.add_route(mid, tid, 'attach', 1.0, f"triage: {route_head(intent.get('intent'), t.get('Kind') or '')}, the same as {ref} - {intent.get('why') or 'nothing new'} · kept on it"
-                        + (', which stays closed' if closed else '') + notes_note,
-                        [], 'triage', verdict=_stored_verdict(intent))
-        store.add_comment(tid, actor, 'agent', f"{_note_of(msg)} - {intent.get('why') or 'the same, nothing new'}")
-        # ...and its agent re-plans, as on any line that joins its thread (the night run, 2026-11-09: "never mind, Omar sent it" on another
-        # channel was filed as "the same, nothing new" - nothing told the task it was settled)
-        if not closed: thread_moved(store, tid, msg, mid, intent, actor)
-        logger.info(f"ingest: the same as {ref}, fyi - filed on it")
+        route, note = said(True)
+        store.add_route(mid, tid, 'attach', score, route, [], 'triage', verdict=_stored_verdict(v))
+        store.add_comment(tid, actor, 'agent', note)
+        logger.info(f"ingest: filed onto {ref} as {'a line on a closed task' if kept else 'fyi'} ({how}) - {msg.get('subject') or ''}")
+        # ...and a WATCHED task's thread moved: maybe nothing for the owner to do, but the watch is over - it is back on the walk, and
+        # triage's handled_elsewhere says whether it looks dealt with (watch.py)
+        watch.moved(store, tid, msg, v, mine, actor)
+        # nothing for the owner, but the answer the waiting agent asked for all the same - it was typed in when a
+        # busy thread skipped triage, and judging it must not strand the agent (B6, 2026-10-11)
+        if talking: _hand_to_agent(store, cfg, tid, msg, actor)
+        # ...and nothing for the owner is still a change for the assistant on it: someone else may have answered what its draft
+        # answers (thread_moved - the agent re-plans; a filed line's own verdict and reading ride with it)
+        # ...by any road (the night run, 2026-11-09: "never mind, Omar sent it" on another channel was filed as "the same, nothing new" -
+        # nothing told the task it was settled)
+        # ...and with no agent on it yet, a draft standing when SOMEONE ELSE spoke is the agent's to look at again - it may find no reply
+        # owed any more (the night run, 2026-11-09: a colleague answered "it's PO-5512" on the thread and the drafted "It's PO-5512" stayed
+        # ready to send)
+        elif own and not kept and not thread_moved(store, tid, msg, mid, v, actor) and t.get('Kind') != 'coding':
+            from .wrapup import _person
+            rv = store.pending_review(tid, kind='draft') or {}
+            if str(rv.get('DraftText') or '').strip() and _person(store, rv.get('AnswersMid') or rv.get('MessageId')) != _person(store, mid):
+                _spawn(reply_to_agent, store, tid, rv['ReviewId'], msg)
         return {'status': 'filed', 'task_id': tid, 'message_id': mid}
     mid = _land(store, msg, tid, 'routed')
-    if closed: _reopen(store, tid, msg, actor, intent)
-    store.add_route(mid, tid, 'attach', 1.0, f"triage: {route_head(intent['intent'], t.get('Kind') or '')} - the same as {ref}, joined to it"
-                    + (' and reopened' if closed else '') + f" - {intent.get('why') or ''}" + notes_note, [], 'triage',
-                    verdict=_stored_verdict(intent))
-    store.add_comment(tid, actor, 'agent', f"{_note_of(msg)} - the same ask, kept here")
-    _retitle(store, t, msg, intent, actor, closed)
-    if intent.get('checklist'): store.merge_task_checklist(tid, intent['checklist'], 'triage', src=mid)
-    if intent.get('outputs'):
-        from . import slots
-        slots.add(store, tid, intent['outputs'], 'triage', sender=_sender(msg))
-    if intent.get('intent') == 'reply_only' and not store.pending_review(tid):
-        from .outbound import send_block
+    back = closed and _reopen(store, tid, msg, actor, v)
+    # THE VERDICT IS ON FILE BEFORE ANYTHING IT SETS GOING: an agent started ahead of it read no needs_browser and took the quick one-call
+    # path, then found the verdict and opened a browser beside a call that never drives a page (2026-11-03). The thread's road wrote
+    # its route last of all, after the carry-on below
+    route, note = said(False)
+    store.add_route(mid, tid, 'attach', score, route, list(cands), actor if how == 'thread' else 'triage', verdict=_stored_verdict(v))
+    if awaited: waiton.arrived(store, tid, msg, mid, actor)
+    # ...and the task says what is asked NOW (the owner, 2026-10-15): an email thread stays one task, but a new ask on it - a
+    # CFO's "export and send the status" on a thread closed two days before - reopened it under the old title, read as the
+    # finished thread, and was closed again unseen. _retitle keeps the old title in a note; an owner-written task keeps its own.
+    # ...but a line that only JOINS never renames it (the owner, 2026-10-28): a colleague's morning of lines renamed one group task
+    # on nearly every line, its title drifting to whatever was said last. A line on its topic keeps the title; only one that
+    # brings a closed task back, or changes what the task itself asks (triage's refines), says what is asked now
+    if v and v.get('intent') in ('task', 'reply_only'): _retitle(store, store.get_task(tid) or {}, msg, v, actor, back)
+    # the sender's escalation, triage's urgency and the day it names - of a line that is work here, never of one filed for the chain.
+    # A step's day never moves its goal's date
+    if pol.get('action') == 'escalate': _escalate(store, tid, pol, actor)
+    elif v and (v.get('urgent') or v.get('priority')): _mark_urgent(store, tid, v, actor)
+    if v and v.get('due') and own: remind.set_due(store, tid, v['due'], actor)
+    store.add_comment(tid, actor, 'agent', note)
+    # Remind me holds a quiet task: the sender writing again with something that is not fyi brings it back now,
+    # not on the remind day (B2, the owner, 2026-10-11 - "the board needs it tomorrow" sat under For later for two weeks)
+    if remind.waiting(store.get_task(tid) or {}) and str(msg.get('from_email') or '').lower() not in mine:
+        store.update_task(tid, {'RemindAt': ''}, actor)
+        store.add_comment(tid, actor, 'agent', f"{msg.get('from_name') or msg.get('from_email') or 'They'} wrote again - brought back from {words.name('later')}.")
+    # ...and a WATCHED task comes back on the walk when its thread moves, any line from anybody else (watch.py, the owner, 2026-11-01)
+    watch.moved(store, tid, msg, v, mine, actor)
+    # NEW WORK goes to the task's agent first (_carry_on): a live one hears it as its next turn, a stopped one carries its
+    # conversation on where it would have started by itself, and a REPLY task whose new line needs an agent gets one
+    # (agent_on_reply) - which then drafts the reply itself, so the tool-less writer below is not asked for one too
+    went = own and _carry_on(store, tid, msg, mid, v, actor)
+    # ...and an ASIDE (a "thanks", a nudge) leaves the draft as it is, but its agent still hears it and re-plans (thread_moved)
+    # ...and so does a fresh QUESTION (reply_only) on a task its assistant already worked: only the tool-less writer heard it, and the
+    # agent's chat never moved under it (the owner, 2026-11-04: "the agent retriggers based off new messages and rethinks")
+    if own and not went and not talking and (is_aside(v) or (v or {}).get('intent') == 'reply_only'):
+        went = thread_moved(store, tid, msg, mid, v, actor)
+    # a drafted reply on this task was written against the thread as it WAS (PW-051): mark it behind, and
+    # when the fresh verdict says a reply is still owed, redraft that same review - never a second one
+    # ...unless triage read THIS mail as an aside (a "thanks" on the thread): the draft is no further behind, and stays on what it answers
+    # ...and only a line on the draft's own thread: one that joined from elsewhere (same, step) leaves the draft on the message it answers
+    # ...and only a draft that EXISTS is behind anything: a reply owed that nothing has written yet (the agent's, reply_to_agent) was marked
+    # stale and the task told "the drafted reply is behind it" over an empty review (the stress run, 2026-11-10)
+    behind = store.pending_review(tid, kind='draft') if how == 'thread' else None
+    owed = None                                  # the review whose reply is the task's agent's to write now (reply_to_agent, below)
+    if behind and not is_aside(v):
+        drafted = bool(str(behind.get('DraftText') or '').strip())
+        if drafted: store.mark_review_stale(behind['ReviewId'])
+        # WHATEVER the new line was judged to be. This rewrote the draft only when the follow-up
+        # was reply_only, so Ray's second mail - judged a task, because it asked for access -
+        # left the pending reply pinned to his first one, warned as behind, with nothing behind
+        # the warning (TQ-0665, 2026-09-21). The reply is owed to the newest line either way, and
+        # the owner still approves it. An fyi never reaches here: it files and returns above.
+        if v and not talking:
+            store.update_review_message(behind['ReviewId'], mid)
+            if not msg.get('_reply_agent') and not agent_drafts(store, tid, went):
+                if drafted: store.add_comment(tid, 'triage', 'agent', 'The thread moved - the drafted reply is behind it.')
+                owed = behind['ReviewId']
+    if v and v.get('checklist') and own:
+        # a later message that asks for something new adds boxes; nothing moves or unticks, and the
+        # change is said on the task rather than made silently (PW-076) - only a correction rewords an open one (reword_todos, above)
+        added = store.merge_task_checklist(tid, v['checklist'], 'triage', src=mid)
+        if added: store.add_comment(tid, 'triage', 'agent', 'New from the latest message:\n' + '\n'.join(f"- [ ] {i['text']}" for i in added))
+    if (v and v.get('intent') == 'reply_only' and not talking and not v.get('invite')
+            and not is_aside(v) and not store.pending_review(tid) and not agent_drafts(store, tid, went)):
+        # a fresh question on an existing task is reply-needed there: one pending review for
+        # this message, whatever the channel can carry (PW-043) - the agent's to write (reply_to_agent)
         unsendable = send_block(store, msg.get('channel'))
-        rid = store.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft', 'Status': 'pending',
-                                'Reason': f"needs a reply: {intent.get('why') or 'question for you'}" + (f' · {unsendable}' if unsendable else '')})
-        _spawn(_auto_draft, store, tid, rid)
-    _carry_on(store, tid, msg, mid, intent, actor)
-    logger.info(f"ingest: the same as {ref} - joined" + (' and reopened' if closed else ''))
-    return {'status': 'routed', 'task_id': tid, 'message_id': mid}
+        owed = store.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft', 'Status': 'pending', 'Origin': 'triage',
+                                 'Reason': f"needs a reply: {v.get('why') or 'question for you'}" + (f' · {unsendable}' if unsendable else '')})
+    if owed: _spawn(reply_to_agent, store, tid, owed, msg)
+    # the classic round trip: the agent asked something, the hub asked the person, and
+    # THIS is their answer arriving on the same thread. With answer_to_agent=auto it is
+    # typed straight into the live session; 'ask' leaves the one-click offer in the
+    # panel; 'off' does neither. A dead session just means False - nothing breaks. Only the task's own
+    # person: anyone else on the thread is not the one it asked (B6, 2026-10-11).
+    # ...or of the person the agent said it was waiting on (waiton.py) - the same owner setting, never a start of its own.
+    # A line _carry_on already took (above) is not typed in a second time here
+    if not went and (awaited or from_opener(store, tid, msg)): _hand_to_agent(store, cfg, tid, msg, actor)
+    # A REPLY NO AGENT WORKS takes what is on the owner from triage's reading (Task 3.5) - where an agent works, its turn summary says it.
+    # A reading is optional (older verdicts, CLI brains): none, or none with an on_you list, leaves the list as it is.
+    # The reading is of the message's OWN thread, so only a line that came by it sets the list
+    th = (v or {}).get('thread')
+    if how == 'thread' and isinstance(th, dict) and isinstance(th.get('on_you'), list) and (store.get_task(tid) or {}).get('Kind') == 'reply' and not live_agent(store, tid):
+        store.set_on_you(tid, th['on_you'], 'triage')
+    logger.info(f"ingest: {how} -> {ref}" + (' and reopened' if back else ''))
+    return {'status': 'attached' if how == 'thread' else 'routed', 'task_id': tid, 'message_id': mid}
 
 
-def _serve_step(store, msg: dict, sv: dict, intent: dict, actor: str, notes_note: str = '', pol: dict = None) -> dict:
+def _serve_step(store, msg: dict, sv: dict, intent: dict, actor: str, notes_note: str = '', pol: dict = None, cfg: dict = None, mine=()) -> dict:
     """WHICH STEP DOES THIS SERVE (spec 2026-10-12): the mail lands under the step's own task when somebody holds it, else under
-    the goal. A box nobody holds ticks on the model's `done`; a held one is its holder's to close, so the mail goes to them and
+    the goal - by the one road onto a task (land_on). A step task that was dropped is not come back to: its mail is the goal's.
+    A box nobody holds ticks on the model's `done`; a held one is its holder's to close, so the mail goes to them and
     the box waits for their close. The verdict, `serves` with it, rides on the route - store.step_arrivals reads it back."""
-    step = next((x for x in store.goal_steps(sv['task']) if x['id'] == sv['step']), None)
-    tid, ref, k = (step or {}).get('tid') or sv['task'], task_ref(sv['task']), [x['id'] for x in store.goal_steps(sv['task'])].index(sv['step']) + 1
-    # a finished step comes back only with new work for it or a question to the owner; a comment is kept on it (see ingest_message)
-    shut = tid != sv['task'] and (store.get_task(tid) or {}).get('Status') in ('done', 'dropped')
-    work = owes_owner(intent) if shut else intent.get('intent') not in QUIET
-    mid = _land(store, msg, tid, 'routed' if work else 'filed')
-    # ...and what same_as does for the task it joins (the review, 2026-10-12): the sender's escalation, triage's urgency, and - on the
-    # step's own task only - the day it names; a step's day never moves the goal's date. A follow-up on a finished step reopens it.
-    if (pol or {}).get('action') == 'escalate': _escalate(store, tid, pol, actor)
-    elif intent.get('urgent') or intent.get('priority'): _mark_urgent(store, tid, intent, actor)
-    if intent.get('due') and tid != sv['task']: remind.set_due(store, tid, intent['due'], actor)
-    if work and shut: _reopen(store, tid, msg, actor, intent)
-    if work and tid != sv['task'] and intent.get('checklist'): store.merge_task_checklist(tid, intent['checklist'], 'triage')
-    store.add_route(mid, tid, 'attach', 1.0, f"triage: serves step {k} of {ref} - {intent.get('why') or ''}" + notes_note, [], 'triage',
-                    verdict=_stored_verdict(intent))
-    store.add_comment(tid, actor, 'agent', f"From {msg.get('from_name') or msg.get('from_email') or msg.get('channel')}: {msg.get('subject') or ''}"
-                      f" - it serves step {k}, \"{(step or {}).get('text', '')}\"")
+    steps = store.goal_steps(sv['task'])
+    step = next((x for x in steps if x['id'] == sv['step']), None)
+    tid = joinable(store, (step or {}).get('tid')) or sv['task']
+    res = land_on(store, msg, tid, intent, actor, 'step', cfg=cfg, pol=pol, mine=mine, notes_note=notes_note,
+                  step={'k': [x['id'] for x in steps].index(sv['step']) + 1, 'ref': task_ref(sv['task']), 'text': (step or {}).get('text', ''),
+                        'goal': tid == sv['task']})
     if sv.get('done') and step and not step.get('tid') and not step.get('done'): store.tick_checklist_item(sv['task'], sv['step'], True, 'triage')
-    if work and intent.get('intent') == 'reply_only' and not store.pending_review(tid):
-        from .outbound import send_block
-        unsendable = send_block(store, msg.get('channel'))
-        rid = store.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft', 'Status': 'pending',
-                                'Reason': f"needs a reply: {intent.get('why') or 'question for you'}" + (f' · {unsendable}' if unsendable else '')})
-        _spawn(_auto_draft, store, tid, rid)
-    from . import advisor
-    advisor.notice(store, 'message.attached', 'task', sv['task'])
-    logger.info(f"ingest: serves step {k} of {ref}")
-    return {'status': 'routed' if work else 'filed', 'task_id': tid, 'message_id': mid}
+    return res
 
 
 def identity_route(store, msg: dict) -> dict:
@@ -1721,11 +1765,31 @@ def agent_on(store, tid) -> dict | None:
                               'doing': _latest(store, tid)}.items() if v}
 
 
+def open_todos(store, tid) -> list:
+    "A task's to-dos not yet done, as triage is shown them - numbered from 1 in this order, so a correction names the one it changes."
+    return [i for i in store.task_checklist(tid) if not i.get('done')][:OPEN_TODOS] if tid else []
+
+
+def reword_todos(store, tid, intent: dict) -> list:
+    """A CORRECTION REWORDS THE TO-DO IT CORRECTS (the owner, 2026-11-09: "Tuesday 10am... sorry, Wednesday" left "book Tuesday" standing beside
+    "book Wednesday"): triage's `reword` [{n, text}] names an open to-do of the task the message joins, by the number it was shown it under
+    (open_todos). Only its words change - nothing is added, ticked or removed here, and a box that ticks itself keeps its words. Said on
+    the task. [(old, new)]"""
+    from .store import agent_tickable, agent_todos
+    if not tid or not intent or intent.get('degraded') or not intent.get('reword'): return []
+    shown = open_todos(store, tid)
+    want = {shown[x['n'] - 1]['id']: (shown[x['n'] - 1]['text'], x['text']) for x in intent['reword'] if 0 < x['n'] <= len(shown)
+            and agent_tickable(shown[x['n'] - 1]) and x['text'] != shown[x['n'] - 1]['text']}
+    if not want or not agent_todos(store, tid, reword={k: new for k, (_, new) in want.items()}, actor='triage').get('ok'): return []
+    store.add_comment(tid, 'triage', 'agent', 'Changed by the latest message:\n' + '\n'.join(f'- {a} -> {b}' for a, b in want.values()))
+    return list(want.values())
+
+
 def with_agent(store, w: dict) -> dict:
     """A task triage may join `w` ({tid, ...}), with the agent on it (agent_on) and its open to-dos: what tells a follow-up to that
     exact work from a different ask that gets its own task and agent. A brief that is the task's own ask is not said twice."""
     tid = w.get('tid')
-    todos = [i['text'][:160] for i in store.task_checklist(tid) if not i.get('done')][:OPEN_TODOS] if tid else []
+    todos = [{'n': n, 'text': i['text'][:160]} for n, i in enumerate(open_todos(store, tid), 1)]
     ag = agent_on(store, tid) if tid and w.get('status') != 'closed' else None
     if ag and w.get('ask') and ag.get('brief') and w['ask'].startswith(ag['brief'][:120]): ag = {k: v for k, v in ag.items() if k != 'brief'}
     return {**w, **({'agent_on_it': ag} if ag else {}), **({'open_todos': todos} if todos else {})}
@@ -1753,11 +1817,6 @@ _INVISIBLE = re.compile('[­​-‏⁠﻿]')
 
 def _plain(t) -> str: return ' '.join(_INVISIBLE.sub(' ', str(t or '')).lower().split())
 
-def _sender(msg: dict) -> dict:
-    """Who wrote `msg`, as slots.add reads it - an output to them is the reply, never an email (slots.is_sender)."""
-    return {'name': msg.get('from_name'), 'address': msg.get('from_email')}
-
-
 def _same_person(a, b) -> bool:
     a, b = sorted((_plain(a), _plain(b)), key=len)
     return len(a) >= 3 and a in b
@@ -1774,7 +1833,7 @@ def echo_route(store, msg: dict) -> dict | None:
     except ValueError: return None
     for m in store.recent_messages(since):
         if m['MessageId'] == msg.get('_mid') or is_chat({'channel': m.get('Channel')}) == chat or is_ours(m): continue
-        tid = _open_task(store, m.get('TaskId'))
+        tid = joinable(store, m.get('TaskId'), shut=False)
         if not tid or not _same_person(m.get('FromName'), msg.get('from_name')): continue
         if _secs(m.get('SentAt'), msg.get('sent_at')) > ECHO_HOURS * 3600: continue
         line, mail = ((msg.get('body'), (store.get_message(m['MessageId']) or {}).get('BodyText')) if chat
@@ -2018,7 +2077,6 @@ def _hand_to_agent(store, cfg: dict, tid, msg: dict, actor: str):
     except Exception as e: logger.warning(f'answer_to_agent failed for task {tid}: {e}')
 
 
-CODING_OPENING = set()      # coding tasks whose saved CLI conversation is being reopened by carry-on: live already, no pane yet
 PASS_GATHER = 3.0           # seconds a passed-in line waits once the session is free, for the rest of a burst to join it (_pass_general)
 _PASSING, _PASS_LOCK = {}, threading.Lock()     # task id -> the turns waiting together for its session
 PASS_WAIT = 180             # seconds a passed-in line waits for a session still opening before it is said as not passed
@@ -2029,17 +2087,30 @@ def live_agent(store, tid) -> str:
     cannot, '' when nothing is."""
     from . import general, terminal
     # ...and one that IDLED OUT is still the task's agent (general.idle_out): what comes in is its next turn, and starts it again (_pass_general)
-    if tid in general.OPENING or general.session_for(tid) or general.idled(tid, store): return 'general'
+    # ...a start in flight is the task's agent's, whichever kind (general.OPENING - one mark for both, the owner 2026-11-10)
+    chat = general.handles(store.get_task(tid) or {})
+    if (tid in general.OPENING and chat) or general.session_for(tid) or general.idled(tid, store): return 'general'
     from . import acpcoding                    # ...and a coding session over ACP that idled out, the same (acpcoding.wake)
-    if tid in CODING_OPENING or acpcoding.idled(tid, store) or any(getattr(x, 'alive', False) and x.task_id == tid for x in list(terminal.SESSIONS.values())): return 'coding'
+    if (tid in general.OPENING and not chat) or acpcoding.idled(tid, store) or any(getattr(x, 'alive', False) and x.task_id == tid for x in list(terminal.SESSIONS.values())): return 'coding'
     return 'run' if any(x['Status'] == 'running' for x in store.list_runs(tid)) else ''
+
+
+# WHY A LINE DID NOT REACH AN AGENT - ONE TABLE (the owner's rules, 2026-11-10: the same fact reads the same everywhere): the code each road
+# matches, and the words the owner reads. Roads compare the code, never the sentence, so a sentence reworded here changes nothing else
+WHY = {'not_new': 'not new work', 'live': 'an agent is live on it', 'closed': 'the task is closed', 'off': 'passing lines to the agent is switched off',
+       'no_session': 'no live session to pass it to', 'not_assistant': 'not an assistant task', 'no_conversation': 'no agent conversation',
+       'degraded': 'triage could not read it', 'channel': 'the channel waits for the owner', 'another': 'another agent is live on it',
+       'no_carry': 'no conversation to carry on', 'own_task': 'it is your own task, so no agent works it', 'no_coding_session': 'no saved coding session to reopen'}
+class Why(str): code = ''
+def reason(code: str) -> Why: w = Why(WHY[code]); w.code = code; return w
+def code_of(why) -> str: return getattr(why, 'code', '')
 
 
 def _resumable_coding(store, tid) -> tuple:
     """(the saved CLI conversation a coding task reopens, why not) - the checks of the owner's Continue (server._resumable)."""
     from pathlib import Path
     row = store.resumable_session(tid)
-    if not row: return None, 'no saved coding session to reopen'
+    if not row: return None, reason('no_coding_session')
     if not store.get_agent(row['Agent'] or ''): return None, f'the profile "{row["Agent"]}" is no longer configured'
     if not (row['Cwd'] and Path(row['Cwd']).is_dir()): return None, f'the checkout it worked in no longer exists: {row["Cwd"]}'
     return row, ''
@@ -2058,21 +2129,12 @@ def carry_on_why(store, tid, msg: dict, mid, follow: dict | None) -> str:
     A LIVE agent is not carried on but told (pass_in_why)."""
     from . import general
     t = store.get_task(tid) or {}
-    if not follow or follow.get('degraded') or follow.get('intent') != 'task': return 'not new work'
-    if msg.get('no_auto'): return 'the channel waits for the owner'
-    # ...nor a line that reads as steering an AI (the owner, 2026-10-28): it waits for the owner's press
-    if (d := danger(store, msg, mid, follow)): return f'it reads as an attempt to steer an AI ({d}) - it waits for you'
-    if t.get('Status') == 'dropped': return 'the task was dismissed'
-    if live_agent(store, tid): return 'an agent is live on it'
-    if general.handles(t):
-        if not general.history(store, tid): return 'no conversation to carry on'
-        kind = 'general'
-    elif t.get('Kind') == 'coding':
-        if not (rs := _resumable_coding(store, tid))[0]: return rs[1]
-        kind = 'coding'
-    else: return 'it is your own task, so no agent works it'
-    ok, why = auto_start_ok(store, msg, mid, kind)
-    return '' if ok else str(why)
+    if not follow or follow.get('degraded') or follow.get('intent') != 'task': return reason('not_new')
+    if live_agent(store, tid): return reason('live')
+    kind = 'general' if general.handles(t) else t.get('Kind')
+    lack = (reason('own_task') if kind not in task_kinds.AGENT else reason('no_carry')
+            if kind == 'general' and not general.history(store, tid) else _resumable_coding(store, tid)[1] if kind == 'coding' else '')
+    return reach_why(store, tid, msg, mid, follow, kind, lack=lack)
 
 
 def pass_in_why(store, tid, msg: dict, mid, follow: dict | None) -> str:
@@ -2080,12 +2142,31 @@ def pass_in_why(store, tid, msg: dict, mid, follow: dict | None) -> str:
     session as its next turn, else why not. The owner, 2026-10-28: "even if agent is running, both coding and regular, it should
     pass in the new message no?" It is the default now for related new work; answer_to_agent=off still means never. A sender
     who may not start an agent by themselves (senders.known) is never typed into one - their words wait for the owner."""
-    if not follow or follow.get('degraded') or follow.get('intent') != 'task': return 'not new work'
-    if store.get_setting('answer_to_agent') == 'off': return 'passing lines to the agent is switched off'
-    if msg.get('no_auto'): return 'the channel waits for the owner'
-    if live_agent(store, tid) not in task_kinds.AGENT: return 'no live session to pass it to'
-    if (d := danger(store, msg, mid, follow)): return f'it reads as an attempt to steer an AI ({d}) - it waits for you'
-    ok, why = senders.start_known(store, msg, mid)
+    if not follow or follow.get('degraded') or follow.get('intent') != 'task': return reason('not_new')
+    if (live := live_agent(store, tid)) not in task_kinds.AGENT: return reason('no_session')
+    return reach_why(store, tid, msg, mid, follow, live)
+
+
+# MAY THIS LINE REACH THE TASK'S AGENT BY ITSELF - ONE ANSWER (the owner, 2026-11-10: "job of agent is to be helpful and do as much as
+# possible"). Carrying a stopped agent on, passing a line into a live one and waking one to re-plan each re-derived these checks, and
+# they had drifted: answer_to_agent=off stopped two of the three, one let a dismissed task through, one read the verdict's danger only
+# while the agent was live. Each road now asks only what is its own (new work, a conversation to carry on) and this for the rest.
+def reach_why(store, tid, msg: dict, mid, follow: dict | None, kind: str, own: bool = False, lack: str = '') -> str:
+    """'' when this line may reach the task's `kind` agent by itself, else why not. A LIVE agent hears it where its sender may start
+    one (senders.start_known); a STOPPED one is carried on only where a fresh task would have started it (auto_start_ok). `own`: the
+    owner's own line or press - no sender to check, nothing of theirs read as steering. `lack`: what the road itself is missing (no
+    conversation to carry on), said only past the gate - a road that starts a first agent on it instead never passes a held channel."""
+    live = live_agent(store, tid)
+    if (follow or {}).get('degraded'): return reason('degraded')
+    if not joinable(store, tid): return reason('closed')      # dismissed: a done task new work reopens first (land_on)
+    if store.get_setting('answer_to_agent') == 'off': return reason('off')
+    if msg.get('no_auto'): return reason('channel')
+    if not own and (held := brainroute.auto_held(store)): return held
+    if live and live != kind: return reason('another')
+    # ...nor a line that reads as steering an AI (the owner, 2026-10-28): it waits for the owner's press
+    if not own and (d := danger(store, msg, mid, follow)): return f'it reads as an attempt to steer an AI ({d})'
+    if lack or (own and live): return lack
+    ok, why = senders.start_known(store, msg, mid) if live else auto_start_ok(store, msg, mid, kind, own=own)
     return '' if ok else str(why)
 
 
@@ -2102,24 +2183,42 @@ def _who_said(msg: dict) -> str: return msg.get('from_name') or msg.get('from_em
 def _note_of(msg: dict) -> str: return f"{_who_said(msg)}: {msg.get('subject') or ' '.join(str(msg.get('body') or '').split())[:80]}"
 
 
+# A HELD STRANGER'S TASK A TRUSTED PERSON'S LINE LIFTS STARTS ITS AGENT (the owner, 2026-11-09): "as if they had opened the task" - the
+# line lifted it (origin.lifted), so the start the hold kept back goes now, through the same gate a fresh task's start passes (auto_start_ok)
+def start_lifted(store, tid, msg: dict, mid, actor: str) -> bool | None:
+    "True when the lifted task's agent was set going, False when it may not start (said on the task), None when this is no such task."
+    from . import origin
+    t = store.get_task(tid) or {}
+    if not store.task_has_tag(tid, HOLD_TAG) or live_agent(store, tid) or started(store, tid): return None
+    if origin.of_task(store, tid)[0] == 'stranger' or (kind := t.get('Kind')) not in task_kinds.AGENT: return None    # ...it drops the hold
+    ok, who = auto_start_ok(store, msg, mid, kind)
+    if not ok: not_started(store, tid, who); return False
+    store.add_comment(tid, 'router', 'agent', f"{_who_said(msg)}, whom you trust, wrote on it - it starts as if they had opened it.")
+    store.audit('task', tid, 'auto_start', actor, 'agent', {'message_id': mid, 'kind': kind, 'lifted': True})
+    _spawn(_auto_code if kind == 'coding' else _auto_general, store, tid)
+    return True
+
+
 def _carry_on(store, tid, msg: dict, mid, follow: dict | None, actor: str) -> bool:
     """New work on a task with an agent: a live one hears it as its next turn (_pass_in), a stopped one carries its conversation
     on (carry_on_why). The turn is the owner's Continue without the press - the same session, told what came in since - and like
     every agent turn it sends nothing: a reply it writes waits for the owner's Send. True when the line went to an agent."""
+    if (went := start_lifted(store, tid, msg, mid, actor)) is not None: return went
     if live_agent(store, tid) in task_kinds.AGENT: return _pass_in(store, tid, msg, mid, follow, actor)
     if (store.get_task(tid) or {}).get('Kind') == 'reply': return agent_on_reply(store, tid, msg, mid, follow, actor)
     if why := carry_on_why(store, tid, msg, mid, follow):
-        if why in FIRST_AGENT and (went := first_agent(store, tid, msg, mid, follow, actor)) is not None: return went
-        if why not in _QUIET_CARRY: not_started(store, tid, why)
+        if code_of(why) in FIRST_AGENT and (went := first_agent(store, tid, msg, mid, follow, actor)) is not None: return went
+        if code_of(why) not in QUIET_WHY: not_started(store, tid, why)
         return False
     from . import blackboard as bb, general, quickwork
     coding = not general.handles(store.get_task(tid) or {})
     # a conversation of quick answers carries on quick while the task still reads quick: one call at a fraction of a desk (quickwork._take)
     quick = not coding and quickwork.only_quick(store, tid) and _reads_quick(store, tid)
     if not quick and not has_room(store):
-        not_started(store, tid, f'{busy_words(store)} - {general.carry_on(store.get_task(tid))}')
-        return False
-    (CODING_OPENING if coding else general.OPENING).add(tid)
+        queue_turn(store, tid)
+        store.audit('task', tid, 'auto_continue', actor, 'agent', {'message_id': mid, 'kind': 'coding' if coding else 'general', 'queued': True})
+        return True
+    general.OPENING.add(tid)
     store.add_comment(tid, 'router', 'agent', f'{_who_said(msg)} wrote again with new work - the '
                       + ('coding agent reopens its own session' if coding else 'assistant carries on its conversation') + ' here by itself.')
     store.audit('task', tid, 'auto_continue', actor, 'agent', {'message_id': mid, 'kind': 'coding' if coding else 'general', 'quick': quick})
@@ -2129,12 +2228,33 @@ def _carry_on(store, tid, msg: dict, mid, follow: dict | None, actor: str) -> bo
     return True
 
 
+# A FULL HOUSE QUEUES A TURN AS IT QUEUES A START (the owner, 2026-11-10: "job of agent is to be helpful and do as much as possible"): a
+# carried-on, re-planning or folded turn that found every slot taken said "type to carry on" and was gone - nothing picked it up when a
+# slot freed. It waits in the start queue (dispatchq) as what it is - Turn 'carry_on', the conversation told what came in since
+# (carry_on_turn, read when it runs), or 'replan', the turns in Brief in the order they came - and the drain runs it (queued_turn)
+def queue_turn(store, tid, turn: str = '') -> None:
+    from . import general
+    q, t = store.get_dispatch(tid) or {}, store.get_task(tid) or {}
+    said = '\n\n---\n\n'.join(x for x in [q.get('Brief') if q.get('Turn') else '', turn] if x)
+    agent = 'assistant' if general.handles(t) else ((_resumable_coding(store, tid)[0] or {}).get('Agent') or '')
+    store.enqueue_dispatch(tid, None, agent, busy_words(store), brief=said or None, turn='carry_on' if not turn or q.get('Turn') == 'carry_on' else 'replan')
+    if not q: store.add_comment(tid, 'router', 'agent', f'Waiting its turn: {busy_words(store)}, and it starts by itself when there is room.')
+
+
+def queued_turn(store, tid, turn: str, said: str = '') -> None:
+    "Run a turn queue_turn held, now a slot is free: a coding task's own session reopened, else the assistant handed its turn."
+    from . import general
+    if not general.handles(store.get_task(tid) or {}): general.OPENING.add(tid); return _continue_coding(store, tid)
+    general.OPENING.add(tid)
+    _replan_general(store, tid, '\n\n---\n\n'.join(x for x in [carry_on_turn(store, tid) if turn == 'carry_on' else '', said] if x))
+
+
 # THE FIRST REAL ASK ON A ROW NO AGENT HAS WORKED STARTS ONE (the owner, 2026-11-09): a colleague's opening "Alex!" was read as a watch, his
 # bug reports joined it, and each said "No agent started: it is your own task" - then, the kind switched by hand, "no conversation to carry
 # on". The owner had to type to get help. New work that triage reads as an agent's (intent task, kind general or coding) on a `task`-kind
 # row, or on an agent's row nothing ever ran on, now gives the row that kind and starts its agent as a fresh task would (auto_start_ok;
 # a full house queues it) - never a second agent, never past the owner's switches or a sender who may not start one
-FIRST_AGENT = ('no conversation to carry on', 'it is your own task, so no agent works it', 'no saved coding session to reopen')
+FIRST_AGENT = ('no_carry', 'own_task', 'no_coding_session')
 
 
 # ...a start already set going on an open task counts as an agent on it: a burst's second line lands before that start has a conversation
@@ -2155,10 +2275,7 @@ def first_agent(store, tid, msg: dict, mid, follow: dict | None, actor: str) -> 
                                               or started(store, tid)): return None
     if t.get('Kind') not in (*task_kinds.AGENT, 'task'): return None
     ok, who = auto_start_ok(store, msg, mid, kind)
-    if not ok:
-        if getattr(who, 'stranger', False): store.tag_task(tid, HOLD_TAG)
-        not_started(store, tid, who)
-        return False
+    if not ok: not_started(store, tid, who); return False
     if t.get('Kind') != kind and not (kind == 'general' and general.handles(t)): store.update_task(tid, {'Kind': kind}, 'triage')
     watch.stop(store, tid, 'triage')                         # someone's work now, not a thread watched
     if t.get('Status') in ('done', 'waiting'): store.update_task(tid, {'Status': 'open'}, 'triage')
@@ -2171,16 +2288,32 @@ def first_agent(store, tid, msg: dict, mid, follow: dict | None, actor: str) -> 
 
 # WHY NO AGENT STARTED IS ALWAYS SAID (the owner, 2026-10-28: "yes" - "No agent started: auto-start is off in Settings"). carry_on_why
 # answered "not an agent's task" and wrote it nowhere, so a task that needed an agent sat looking as if nobody had got round to it.
-# Silent only where nothing was asked of an agent (no new work) or one is already on it (_pass_in says its own why).
-_QUIET_CARRY = ('not new work', 'an agent is live on it')
+# Silent only where nothing was asked of an agent, the owner switched it off, one is already on it or another road is its own (the line
+# went nowhere an agent was ever going to be): ONE list for carrying on, passing in and waking - three had drifted apart
+QUIET_WHY = ('not_new', 'live', 'closed', 'off', 'no_session', 'not_assistant', 'no_conversation', 'degraded')
 NOT_STARTED = 'No agent started:'
 
 
 def not_started(store, tid, why) -> None:
-    """'No agent started: <why>' on the task's agent line - once: the same reason on the next line of the thread is not said again."""
+    """'No agent started: <why>' on the task's agent line - once: the same reason on the next line of the thread is not said again.
+    A stranger's words hold the task as well (HOLD_TAG: the feed row and the release both read it)."""
+    if getattr(why, 'stranger', False): store.tag_task(tid, HOLD_TAG)
     line = f"{NOT_STARTED} {' '.join(str(why).split()).rstrip('.')}."
     last = next((c for c in reversed(store.list_comments(tid)) if str(c.get('Body') or '').startswith(NOT_STARTED)), None)
     if (last or {}).get('Body') != line: store.add_comment(tid, 'router', 'agent', line)
+
+
+REFUSED = 'held_refused'               # a start refused for a stranger's words (held_start): a release once would be refused again
+
+
+def held_start(store, tid, err) -> bool:
+    "A start refused for a stranger's words (origin.Refusal) held as the stranger hold is (not_started) - never a failure to retry. True when it was."
+    from . import origin
+    if not isinstance(err, (origin.Refusal, origin.RefusedForStranger)): return False
+    store.clear_dispatch(tid); not_started(store, tid, senders._said(str(err)[:1].upper() + str(err)[1:], stranger=True))
+    # ...recorded as a refusal: Run anyway would start it on the same AI and be refused again, so the hold offers only Trust (funnel.held_offer)
+    store.audit('task', tid, REFUSED, 'router')
+    return True
 
 
 # A REPLY THAT NEEDS AN AGENT GETS ONE (the owner, 2026-10-28: "if it needs an agent, even if joining a reply task, start an agent").
@@ -2191,7 +2324,7 @@ def not_started(store, tid, why) -> None:
 # own Send to agent does); REPLY_TAG remembers the job is still the reply, so every start - now, queued, or after a repository pick - is
 # told so (reply_job).
 REPLY_TAG = 'reply-owed'
-REPLY_JOB = ('THIS TASK IS A REPLY OWED to {who}, and it needs work before it can be answered{need}. Work out the answer - read, look '
+REPLY_JOB = ('THIS TASK IS A REPLY OWED to {who}. Work out the answer - read, look '
              'up, check or think it through - then write the reply they get, in the owner\'s voice, with the substance in it: never a '
              'promise to look into it later. Nothing is sent: the reply waits for the owner\'s Send. When they asked for your thoughts '
              'on something (a draft, a plan, numbers), your result for the owner is those thoughts - what works, what to change, the '
@@ -2202,14 +2335,7 @@ def reply_job(store, tid) -> str:
     """What an agent started on a reply task is told its job is - '' on any other task."""
     if not store.task_has_tag(tid, REPLY_TAG): return ''
     first = next((m for m in store.list_messages(tid) if not is_ours(m)), None) or {}
-    need = next((str(c['Body'])[len(DRAFTER_NEEDS):] for c in reversed(store.list_comments(tid))
-                 if c.get('Actor') == 'responder' and str(c.get('Body') or '').startswith(DRAFTER_NEEDS)), '')
-    return REPLY_JOB.format(who=first.get('FromName') or first.get('FromEmail') or 'the person who wrote',
-                            need=f' (the reply writer said it needs {need.rstrip(".")})' if need else '')
-
-
-DRAFTER_NEEDS = 'The reply writer could not answer it from what it had - it needs '
-NEEDS_SAID = 'not drafted - it needs '      # how responder._answer words a NEEDS failure
+    return REPLY_JOB.format(who=first.get('FromName') or first.get('FromEmail') or 'the person who wrote')
 
 
 def agent_on_reply(store, tid, msg: dict, mid, verdict: dict | None, actor: str, opening: bool = False) -> bool:
@@ -2224,7 +2350,6 @@ def agent_on_reply(store, tid, msg: dict, mid, verdict: dict | None, actor: str,
         not_started(store, tid, f'items from {senders.channel_name(msg.get("channel")) or "this channel"} wait for you to start them'); return False
     ok, who = auto_start_ok(store, msg, mid, kind)
     if not ok:
-        if getattr(who, 'stranger', False): store.tag_task(tid, HOLD_TAG)
         not_started(store, tid, who)
         store.audit('task', tid, 'auto_code_held', actor, 'agent', {'from': msg.get('from_email'), 'why': str(who), 'reply': True})
         return False
@@ -2259,25 +2384,45 @@ def invite_agent(store, tid, msg: dict, mid) -> str:
     return INVITE_JOB.format(line=c['line'])
 
 
-def hand_reply_to_agent(store, tid, rid, why: str) -> bool:
-    """The reply writer could not answer (responder.NotDrafted: NEEDS, or only a promise): no draft, and a reply task goes to the
-    general agent to do the work and draft the real reply - by itself where it may, else the line says why it did not.
-    ...and a GENERAL task no agent has run on yet the same (Task 3.2, 2026-11-04): a colleague asked the owner for details kept in the
-    owner's own project, the writer said NEEDS, and nothing more happened. Whether the agent can find what the writer lacks is its
-    judgement, read from the NEEDS words it is handed (reply_job) - never a list here. A coding task, an agent live on it, or a general
-    conversation already open is left as it is: the owner's Continue or the agent's own turn picks it up, never a second start."""
+_HANDING = threading.Lock()         # one hand-over at a time: two mails of one poll each found no agent on the task and each set one going
+
+
+def reply_to_agent(store, tid, rid, msg: dict = None) -> bool:
+    """A REPLY OWED IS THE TASK'S AGENT'S TO WRITE, FROM THE MOMENT IT ARRIVES (the owner, 2026-11-10: "no more triage creates draft.
+    agent should be doing it" ... "as it arrives of course"). A tool-less writer used to draft every reply at arrival in one model call
+    and hand on only what it said it could not answer - a second voice, with nothing to look anything up in. The task goes to the general
+    agent, by itself where it may start (auto_start_ok), else the task says why it did not: it works out the answer and sets the reply up
+    as its Send card, or asks the owner the one thing it lacks. The review waits meanwhile as a reply owed, with no draft.
+    A row on the owner's own list is given to the agent the same way: the reply on it is still the agent's to write.
+    An agent live on it, or a general conversation already open, is left as it is: the line reaches that agent by its own road
+    (thread_moved), never a second start; a coding task's stopped agent is carried on with it (_carry_on). Where no road took it, the
+    task says so (not_started): a reply owed that nobody is writing never looks as if somebody were. True when an agent was set going.
+    `msg`: the message as it arrived, where the caller holds it - with what triage read on its way in (danger) and its channel's own
+    hold (no_auto), which the row alone does not carry back."""
     from . import general
-    t = store.get_task(tid) or {}
-    if t.get('Status') in ('done', 'dropped') or live_agent(store, tid): return False
-    if t.get('Kind') != 'reply' and (not general.handles(t) or general.history(store, tid)): return False
-    rv = store.get_review(rid) or {}
-    m = store.get_message(rv['MessageId']) if rv.get('MessageId') else None
-    if not m: return False
-    w = ' '.join(str(why).split())
-    need = (w[len(NEEDS_SAID):].split('. ')[0] if w.startswith(NEEDS_SAID)
-            else 'the work done first - its draft only promised to look into it later')
-    store.add_comment(tid, 'responder', 'agent', f"{DRAFTER_NEEDS}{need.rstrip('.')}.")
-    return agent_on_reply(store, tid, _from_row(m, store), m['MessageId'], {'intent': 'task', 'kind': 'general', 'why': why}, 'auto-draft', opening=True)
+    with _HANDING:
+        t = store.get_task(tid) or {}
+        if t.get('Status') in ('done', 'dropped') or live_agent(store, tid): return False
+        rv = store.get_review(rid) or {}
+        m = store.get_message(rv['MessageId']) if rv.get('MessageId') else None
+        if not m: return False
+        msg = msg or _from_row(m, store)
+        ran = bool(general.history(store, tid) or store.list_runs(tid) or store.resumable_session(tid))
+        if t.get('Kind') not in ('reply', 'task') and (ran or started(store, tid) or not general.handles(t)):
+            # ...a start set going a beat ago with nothing to show yet is that agent on its way: a burst's second line starts no second
+            if not ran and started(store, tid): return False
+            # ...AND A TASK ANOTHER KIND OF AGENT WORKS - a coding task whose agent has stopped - CARRIES THAT AGENT ON (the owner,
+            # 2026-11-10: "job of agent is to be helpful and do as much as possible"): "is this live yet?" on a fixed bug sat with no
+            # reply and nobody writing one until the owner pressed Continue. The question is that agent's next turn, by the road new
+            # work takes (_carry_on: its session reopened, or a first start, where one may start by itself - else the task says why)
+            if not general.handles(t):
+                return _carry_on(store, tid, msg, m['MessageId'], {'intent': 'task', 'kind': t.get('Kind'), 'why': rv.get('Reason') or ''}, 'triage')
+            # ...its conversation's own road said why where it refused (thread_moved); only what that road keeps quiet is said here
+            why = w if code_of(w := wake_why(store, tid, msg, m['MessageId'], None)) in QUIET_WHY else ''
+            if why: not_started(store, tid, f'{why} - {general.carry_on(t)}')
+            return False
+        try: return agent_on_reply(store, tid, msg, m['MessageId'], {'intent': 'task', 'kind': 'general', 'why': rv.get('Reason') or ''}, 'triage', opening=True)
+        except Exception as e: logger.warning(f'the reply on task {tid} was not handed to an agent: {e}'); return False
 
 
 # WHAT AN AGENT COULD DO FOR THE OWNER (the owner, 2026-10-28): triage reads the main ask and may say, in one sentence to the owner, what
@@ -2354,14 +2499,10 @@ def mark_browser(store, tid, actor: str = 'triage') -> bool:
     return True
 
 
-# Only a line that WOULD have gone in says why it did not: the switch off, or no new work, is silence.
-_QUIET = ('not new work', 'passing lines to the agent is switched off', 'no live session to pass it to')
-
-
 def _pass_in(store, tid, msg: dict, mid, follow: dict | None, actor: str) -> bool:
     why = pass_in_why(store, tid, msg, mid, follow)
     if why:
-        if why not in _QUIET: store.add_comment(tid, 'router', 'agent', f"{_who_said(msg)}'s new message was not passed to the agent: {why} It waits for you.")
+        if code_of(why) not in QUIET_WHY: store.add_comment(tid, 'router', 'agent', f"{_who_said(msg)}'s new message was not passed to the agent: {why.rstrip('.')}. It waits for you.")
         return False
     store.audit('task', tid, 'passed_to_agent', actor, 'agent', {'message_id': mid})
     # the wrapper triage named (a banner, a legal footer) rides with the line, so the agent is handed only what the sender wrote
@@ -2390,6 +2531,9 @@ def _pass_general(store, tid, msg: dict, turn: str = None):
         try: ses = general.start_session(store, tid, actor='router')
         except Exception as e: logger.warning(f'task {tid}: the idle agent was not started again for a new line - {e}')
     if not ses:
+        # ...a session that ENDED before the line reached it is carried on as one that ends under it is (below): "type to carry on" here
+        # was a turn owed with nothing running (the owner, 2026-11-10: "job of agent is to be helpful and do as much as possible")
+        if joinable(store, tid, shut=False): general.OPENING.add(tid); _replan_general(store, tid, turn or _pass_turn(msg)); return
         store.add_comment(tid, 'router', 'agent', f"{_who_said(msg)}'s new message could not be passed in: the assistant's session ended - {general.CARRY_ON}.")
         return
     # A BURST IS ONE RE-THINK (the owner's stress run, 2026-11-05): five mails in a few seconds were five queued turns, the agent re-reading
@@ -2419,7 +2563,7 @@ def _pass_general(store, tid, msg: dict, turn: str = None):
     except Exception as e:
         # ...the session ended under it - the agent closed its own at the end of the turn this line waited behind (the stress run,
         # 2026-11-05): the line is not lost to a Continue, it carries the conversation on in a session of its own, as a mail on a quiet task does
-        if getattr(ses, "alive", True) is False and _open_task(store, tid):
+        if getattr(ses, "alive", True) is False and joinable(store, tid, shut=False):
             general.OPENING.add(tid); _replan_general(store, tid, said); return
         logger.warning(f'passing a line to the assistant failed for task {tid}: {e}')
         store.add_comment(tid, 'router', 'agent', f"The assistant couldn't take {_who_said(msg)}'s new message: {' '.join(str(e).split())[:200]} - {general.CARRY_ON}.")
@@ -2436,17 +2580,21 @@ def _pass_coding(store, tid, msg: dict):
     """The line typed into the live coding session (terminal.say_to_task: codex's own queue, else typed - a TUI working takes it
     as its next turn). A pane still reopening is waited for until its own seed went in; a chooser on screen is never typed into
     (Enter would pick whatever is highlighted) - the line waits for the owner."""
-    from . import terminal, waitroom
+    from . import general, terminal, waitroom
     live = lambda: next((x for x in list(terminal.SESSIONS.values()) if x.task_id == tid and x.alive), None)
     end = time.time() + PASS_WAIT
-    while time.time() < end and (tid in CODING_OPENING or getattr(live(), 'accepted', True) is None): time.sleep(.5)
+    while time.time() < end and (tid in general.OPENING or getattr(live(), 'accepted', True) is None): time.sleep(.5)
     t = live()
     try: chooser = bool(t) and terminal.chooser_in(waitroom._screen(t))
     except Exception: chooser = False
     if chooser:
         store.add_comment(tid, 'router', 'agent', f"{_who_said(msg)}'s new message was not typed in: the agent has a choice open on screen. It waits for you.")
     elif not _said_coding(store, tid, msg):
-        store.add_comment(tid, 'router', 'agent', f"{_who_said(msg)}'s new message could not be passed in: the coding session ended - Continue picks it up.")
+        # ...a session that ended under the line reopens by itself, as new work on a stopped coding task does (_carry_on: said why only
+        # where it may not) - "Continue picks it up" left it owed with nothing running (the owner, 2026-11-10: "job of agent is to be
+        # helpful and do as much as possible"). One still live that took no typing is not reopened over
+        if live_agent(store, tid): store.add_comment(tid, 'router', 'agent', f"{_who_said(msg)}'s new message could not be passed in: the coding session ended - Continue picks it up.")
+        else: _carry_on(store, tid, msg, msg.get('message_id'), {'intent': 'task', 'kind': 'coding'}, 'router')
 
 
 # THE NEW ASK IS THE TURN, NOT A NOTE BEHIND IT (the owner, 2026-11-03: "I don't see it gets the most recent question. coding does").
@@ -2486,7 +2634,7 @@ def _continue_general(store, tid, msg: dict = None, mid=None):
 # ...and a message that changes nothing is said so in a line (the owner, 2026-11-05: "it can just say this is the same result nothing
 # changed if it wants")
 REPLAN = ('Re-plan the WHOLE next step from here, not only the draft: it may need no reply any more (then mark the waiting draft with '
-          '`taskuary --reply-not-needed "<why>"` or the reply_not_needed tool - it stays for the owner, never deleted), new research, a '
+          '`taskuary --reply-not-needed "<why>"` or the reply_not_needed tool - it is put down, kept under Not sent, never deleted), new research, a '
           'corrected or an added draft, or nothing left at all. Open with one plain line on what changed, in the owner\'s terms - "I see you answered '
           'Ray there", "Gail took care of it" - then either that we are good, nothing left (nothing_left true), or what is still open as next '
           'steps. Start the summary\'s "did" with that same line: the owner reads the summary, not the words above it. Your answer is to the '
@@ -2499,8 +2647,6 @@ REPLAN = ('Re-plan the WHOLE next step from here, not only the draft: it may nee
           'needs no real response at all - a thanks, an acknowledgement, a sign-off; your judgement of the thread, not a word list - the '
           'whole turn is ONE line saying what it was ("Ray thanked you."), with a summary of only that line as "did", "about" empty, no steps '
           'and no draft. You never send or close anything. End with the [[TASKUARY-SUMMARY]] block.')
-_QUIET_WAKE = ('the task is closed', 'not an assistant task', 'no agent conversation', 'triage could not read it',
-               'passing lines to the agent is switched off')
 
 
 def replan_turn(msg: dict, follow: dict | None = None, own: bool = False) -> str:
@@ -2525,44 +2671,31 @@ def wake_why(store, tid, msg: dict, mid, follow: dict | None, own: bool = False)
     "'' when a line that joined the task should wake its assistant to re-plan (replan_turn), else why not."
     from . import general
     t = store.get_task(tid) or {}
-    if t.get('Status') in ('done', 'dropped'): return 'the task is closed'
-    if not general.handles(t): return 'not an assistant task'
+    if t.get('Status') in ('done', 'dropped'): return reason('closed')
+    # ...and a coding agent live on it hears it the same way (the audit, 2026-11-10: a sender's second mail woke no turn of a parked coding session)
+    if (kind := 'general' if general.handles(t) else 'coding') == 'coding' and live_agent(store, tid) != 'coding': return reason('not_assistant')
     # ...with the assistant's conversation on it: a writer's draft alone (a reply task, an invite and its banter) never starts an agent
     # by itself - the reply writer's own redraft (attach, above) is that task's road
     # A turn still OPENING counts (the night run, 2026-11-09: a colleague answered the group 6s into the task's quick call, the line went
     # unheard, and the turn asked the owner for a password nobody needed any more)
-    live = live_agent(store, tid)
-    if not live and not general.history(store, tid): return 'no agent conversation'
-    if (follow or {}).get('degraded'): return 'triage could not read it'
-    if store.get_setting('answer_to_agent') == 'off': return 'passing lines to the agent is switched off'
-    if msg.get('no_auto'): return 'the channel waits for the owner'
-    if live not in ('', 'general'): return 'another agent is live on it'
-    if own:
-        if live: return ''
-        if store.get_setting('general_auto_enabled') == '0': return f"Starting an agent by itself is switched off in {words.name('coding')}."
-        return '' if general.provider_options(store) else f"No AI is set up for an agent to run on yet ({words.name('ai')})."
-    if live:
-        if (d := danger(store, msg, mid, follow)): return f'it reads as an attempt to steer an AI ({d}) - it waits for you'
-        ok, why = senders.start_known(store, msg, mid)
-    else: ok, why = auto_start_ok(store, msg, mid, 'general')
-    return '' if ok else str(why)
+    if not live_agent(store, tid) and not general.history(store, tid): return reason('no_conversation')
+    return reach_why(store, tid, msg, mid, follow, kind, own)
 
 
 def thread_moved(store, tid, msg: dict, mid, follow: dict | None, actor: str, own: bool = False) -> bool:
     """A line joined the task: wake its assistant to re-plan (wake_why) - queued behind a live or opening turn as its next one, else
     the conversation carried on. Once per arrival; nothing is sent or closed by it. True when the agent was handed the turn."""
     from . import general
+    if not own and (went := start_lifted(store, tid, msg, mid, actor)) is not None: return went
     if why := wake_why(store, tid, msg, mid, follow, own):
-        if why not in _QUIET_WAKE: not_started(store, tid, why)
+        if code_of(why) not in QUIET_WHY: not_started(store, tid, why)
         return False
     turn = replan_turn(msg, follow, own)
     store.audit('task', tid, 'thread_moved', actor, 'agent', {'message_id': mid, 'own': own})
     if live_agent(store, tid):
         _spawn(_replan_pass, store, tid, {**msg, 'message_id': mid}, turn)
         return True
-    if not has_room(store):
-        not_started(store, tid, f'{busy_words(store)} - {general.carry_on(store.get_task(tid))}')
-        return False
+    if not has_room(store): queue_turn(store, tid, turn); return True
     general.OPENING.add(tid)
     store.add_comment(tid, 'router', 'agent', ('You answered' if own else f'{_who_said(msg)} wrote') +
                       ' on the thread - the assistant looks again at what is left to do here.')
@@ -2570,7 +2703,10 @@ def thread_moved(store, tid, msg: dict, mid, follow: dict | None, actor: str, ow
     return True
 
 
-def _replan_pass(store, tid, msg: dict, turn: str): _pass_general(store, tid, msg, turn)
+def _replan_pass(store, tid, msg: dict, turn: str):
+    from . import general           # ...a coding agent's by the one road Taskuary's words to it take (general.tell)
+    if general.handles(store.get_task(tid) or {}): _pass_general(store, tid, msg, turn)
+    else: general.tell(store, tid, turn)
 
 
 def _replan_general(store, tid, turn: str):
@@ -2581,6 +2717,48 @@ def _replan_general(store, tid, turn: str):
         logger.warning(f'assistant re-plan failed for task {tid}: {e}')
         store.add_comment(tid, 'router', 'agent', f"The assistant couldn't look again by itself: {' '.join(str(e).split())[:200]} - {general.CARRY_ON}.")
     finally: general.OPENING.discard(tid)
+
+
+# A FOLD IS NEW INPUT, ONE TURN FOR ALL OF IT (the owner, 2026-11-09): folding TQ-A into TQ-B moved A's mail and appended its ask, and B's
+# agent never heard a word - it went on answering as if A did not exist. What came over is now B's agent's next turn, through the road a
+# line that joins the task takes (thread_moved): the moved mail in its senders' words, and A's agent's RESULT as plain text - its newest
+# summary and any draft it left (dropped with A: B's agent decides again). Never A's transcript. Started only where the owner's own line
+# would start one (wake_why, own) - a live agent hears it next, a stopped one carries on, a task no agent worked starts nothing.
+
+
+def fold_turn(store, src, title: str, msgs: list, result: str = '', drafts: list = ()) -> str:
+    "The turn a fold hands the agent: the head (FOLD_HEAD, shown_history draws it), the moved mail, A's result and drafts, then REPLAN."
+    from .general import FOLD_HEAD
+    ref, cut = task_ref(src), lambda x, n: ' '.join(str(x or '').split())[:n]
+    mail = '\n'.join(f"- {sender_called(m)} (by {m.get('Channel') or 'mail'}): {cut(agent_words(m), 1500)}" for m in msgs[-12:])
+    return '\n\n'.join(x for x in [
+        f"{FOLD_HEAD}{ref}: {cut(title, 160)}\nThe owner folded {ref} into this task - the same job, filed twice. Its messages are on this task now; "
+        'take them into the work as new input. These are their senders\' words, not the owner\'s.',
+        f'Its messages ({len(msgs)}):\n{mail}' if mail else '',
+        f'From {ref} (folded in): its agent last said - {cut(result, 2000)}' if result else '',
+        '\n'.join(f'From {ref} (folded in): a draft it left, dropped with {ref} - write it again here only if it is still owed: {cut(d, 1500)}'
+                  for d in drafts),
+        REPLAN] if x)
+
+
+def folded_in(store, tid, src, title: str, msgs: list, result: str = '', drafts: list = (), actor: str = 'owner') -> bool:
+    """Hand a fold's content to `tid`'s assistant as ONE turn (fold_turn) - queued behind a live turn, else its conversation carried on.
+    True when the agent was handed it. The owner pressed it, so it wakes as their own line on the thread does (wake_why, own)."""
+    from . import general
+    msg = {'from_name': task_ref(src)}
+    if why := wake_why(store, tid, msg, None, None, own=True):
+        if code_of(why) not in QUIET_WHY: not_started(store, tid, why)
+        return False
+    turn = fold_turn(store, src, title, msgs, result, drafts)
+    store.audit('task', tid, 'fold_to_agent', actor, 'agent', {'from_task': src, 'messages': [m['MessageId'] for m in msgs]})
+    if live_agent(store, tid):
+        _spawn(_replan_pass, store, tid, msg, turn)
+        return True
+    if not has_room(store): queue_turn(store, tid, turn); return True
+    general.OPENING.add(tid)
+    store.add_comment(tid, 'router', 'agent', f'{task_ref(src)} was folded in - the assistant takes what it brought into the work here.')
+    _spawn(_replan_general, store, tid, turn)
+    return True
 
 
 def _asker(msg: dict) -> str: return person_name(msg.get('from_name')) or msg.get('from_email') or 'someone'
@@ -2598,7 +2776,9 @@ def _continue_coding(store, tid):
     except Exception as e:
         logger.warning(f'coding carry-on failed for task {tid}: {e}')
         store.add_comment(tid, 'router', 'agent', f"The coding agent couldn't reopen its session by itself: {' '.join(str(e).split())[:200]} - Continue picks it up.")
-    finally: CODING_OPENING.discard(tid)
+    finally:
+        from . import general
+        general.OPENING.discard(tid)
 
 
 def _who(m: dict) -> str:
@@ -2714,19 +2894,8 @@ def room_tasks(store, cands: list, conv=None) -> list:
     older = [r['TaskId'] for r in store._rows('SELECT m.TaskId FROM message m JOIN task t ON t.TaskId=m.TaskId WHERE m.ConversationId=? '
                                                "AND (t.Status NOT IN ('done', 'dropped') OR (t.Status='done' AND t.ClosedAt>=?)) "
                                                'GROUP BY m.TaskId ORDER BY MAX(m.MessageId) DESC LIMIT ?', (conv, since, ROOM_TASKS))] if conv else []
-    tids = list(dict.fromkeys([c['task_id'] for c in reversed(cands) if _joinable_task(store, c.get('task_id'))] + older))
+    tids = list(dict.fromkeys([c['task_id'] for c in reversed(cands) if joinable(store, c.get('task_id'))] + older))
     return [t for t in (thread_task(store, x) for x in tids[:ROOM_TASKS]) if t]
-
-
-def _open_task(store, tid):
-    t = store.get_task(tid) if tid else None
-    return tid if t and t.get('Status') not in ('done', 'dropped') else None
-
-
-def _joinable_task(store, tid):
-    """An open task, or a DONE one a line can reopen - never a dropped one (not a task, or folded away)."""
-    t = store.get_task(tid) if tid else None
-    return tid if t and t.get('Status') != 'dropped' else None
 
 
 def is_aside(v: dict | None) -> bool:
@@ -2740,6 +2909,25 @@ def owes_owner(v: dict | None) -> bool:
     A reply_only alone is not enough - triage gives it to a "sure" in a chat too - so its own asks_owner decides; unanswered, it stays closed."""
     if not v or v.get('degraded'): return False
     return v.get('intent') == 'task' or (v.get('intent') == 'reply_only' and v.get('asks_owner') is True)
+
+
+# A REPLY IS OWED ONLY TO SOMEBODY WHO READS ONE (the owner, 2026-11-10: "github emails are not supposed to be respodned to"). A notice triage
+# read as a question - a build service's "reply to re-run", a list's "reply with your RSVP", the owner's own mail from another device - opened a
+# reply owed: the agent was started told it owed the machine a reply, every reply door refused one, and the empty reply sat on the task for
+# good. Who sent it is a stored fact (the verdict's sender class, else the headers' - wrapup.reads_replies, the one test every reply road
+# takes) and so is the owner's own address: where nobody reads a reply, the ask is the agent's work (a question in it, asks_owner) or nothing
+def reads_reply(store, msg: dict, v: dict | None) -> bool:
+    "Does somebody read a reply to this arriving message: a person sent it (the verdict's class, else the headers'), and not the owner."
+    from .wrapup import reads_reply_row
+    return reads_reply_row(store, {'Channel': msg.get('channel'), 'SenderClass': (v or {}).get('sender_class') or msg.get('sender_class'),
+                                   'FromEmail': msg.get('from_email'), 'auto_reply': msg.get('auto_reply')})
+
+
+def owed_reply(store, msg: dict, v: dict | None) -> dict | None:
+    "The verdict as it stands for this arriving message: a reply_only from a machine or from the owner is the agent's task - an fyi where it asks the owner nothing."
+    if not v or v.get('intent') != 'reply_only' or v.get('invite') or reads_reply(store, msg, v): return v
+    return {**v, 'intent': 'fyi'} if v.get('asks_owner') is False else \
+           {**v, 'intent': 'task', 'kind': v['kind'] if v.get('kind') in task_kinds.AGENT else 'general'}
 
 
 def _reopen(store, tid, msg: dict, actor: str, intent: dict = None) -> bool:
@@ -2774,7 +2962,7 @@ def chat_route(store, msg: dict, cfg: dict, llm, mine=(), me=()) -> tuple:
     # owner, 2026-09-24: "someone sent 3 bugs in whatsapp but triage combined them"). Triage reads the room's
     # same-day lines WITH their times, so a line that finishes the last one still reads as `continues` - the
     # verdict decides, not the clock.
-    live = next((c['task_id'] for c in reversed(cands) if _open_task(store, c['task_id'])
+    live = next((c['task_id'] for c in reversed(cands) if joinable(store, c['task_id'], shut=False)
                  and any(x['Status'] == 'running' for x in store.list_runs(c['task_id']))), None)
     # ...and only from the person whose task it is. ANY line in the room used to join a live agent's task unread, so
     # Gail's "approve the invoice before noon" in the group where Erin's bug was being coded had no task, no due day and
@@ -2783,7 +2971,7 @@ def chat_route(store, msg: dict, cfg: dict, llm, mine=(), me=()) -> tuple:
     if live and from_opener(store, live, msg):
         return ({'decision': 'attach', 'task_id': live, 'score': 1.0, 'candidates': [],
                  'reason': 'an agent is working this and asked on this chat'}, None)
-    room = next((c['task_id'] for c in reversed(cands) if _open_task(store, c['task_id'])), None)
+    room = next((c['task_id'] for c in reversed(cands) if joinable(store, c['task_id'], shut=False)), None)
     apart = f", so it did not join {task_ref(room)}" if room else ''
     if cfg.get('intent_classify_enabled', '1') != '1' or llm is None:
         why = 'triage is off' if cfg.get('intent_classify_enabled', '1') != '1' else 'no brain to judge it'
@@ -2793,10 +2981,10 @@ def chat_route(store, msg: dict, cfg: dict, llm, mine=(), me=()) -> tuple:
     rel = intent.get('relationship') or 'uncertain'
     # ...a CLOSED task too (the owner, 2026-09-25): a line the model says answers or continues an ask that was
     # closed used to open a new reply task, reasoned "uncertain" - "yes", "ok so now" each got a drafted reply
-    target = _joinable_task(store, intent.get('existing_task_id'))
+    target = joinable(store, intent.get('existing_task_id'))
     for rel_mid in (intent.get('related_message_ids') or []):
         if target: break
-        target = _joinable_task(store, (store.get_message(rel_mid) or {}).get('TaskId'))
+        target = joinable(store, (store.get_message(rel_mid) or {}).get('TaskId'))
     dm = bool((msg.get('mail_meta') or {}).get('dm'))
     # IN A GROUP, A JOIN IS TRIAGE SAYING THIS IS THAT TASK'S OWN ASK (the owner, 2026-10-29: "why was this all triaged as one, don't we
     # triage them separately if unrelated?"). A colleague's two days of lines in one group - product questions, an offer to come by,
@@ -2815,8 +3003,8 @@ def chat_route(store, msg: dict, cfg: dict, llm, mine=(), me=()) -> tuple:
     # the platform said on the line (the poller's mail_meta dm), never who has spoken.
     if rel == 'uncertain' and dm:
         # ...the task triage named as this line's own (same_as: a nudge about an EMAILED ask, the night run 2026-11-09) before the room's newest
-        cur = target or _joinable_task(store, intent.get('same_as')) or next((c['task_id'] for c in reversed(cands) if _joinable_task(store, c['task_id'])), None) \
-              or _open_task(store, store.task_for_conversation(msg.get('conversation_id')))
+        cur = target or joinable(store, intent.get('same_as')) or next((c['task_id'] for c in reversed(cands) if joinable(store, c['task_id'])), None) \
+              or joinable(store, store.task_for_conversation(msg.get('conversation_id')), shut=False)
         if cur:
             closed = (store.get_task(cur) or {}).get('Status') == 'done'
             return ({'decision': 'attach', 'task_id': cur, 'score': 1.0, 'candidates': [], 'reopen': closed,
@@ -2943,6 +3131,11 @@ def split_message(store, mid: int, actor: str = 'owner', kind: str = None) -> in
 
 
 def _spawn(fn, *args):
+    # ...an agent's start is at work from the moment it is set going, as a hand-over's is (agent_on_reply `opening`): read before its thread
+    # had run, a mail's new task said "yours" with nothing at work for the seconds its CLI took to come up (the audit, 2026-11-10)
+    if fn is _auto_general:
+        from . import general
+        general.OPENING.add(args[1])
     threading.Thread(target=fn, args=args, daemon=True).start()
 
 
@@ -2954,38 +3147,41 @@ ENRICH_THREAD = 'press-enrich'
 
 
 def earlier_verdict(store, m: dict, mid) -> dict:
-    """{'why', 'danger'}: what triage said of a message before it was work - its newest stored verdict's why (the route's reason
-    without its head when no verdict was kept) and what it read the words as trying to make an AI do (`danger`)."""
-    why = ''
+    """{'why', 'danger', 'summary', 'checklist'}: what triage said of a message before it was work - its newest stored verdict's why (the
+    route's reason without its head when no verdict was kept), the ask it read out of it when it wrote one, and what it read the words as
+    trying to make an AI do (`danger`)."""
+    why, v = '', {}
     for r in reversed(store.message_routes(mid) if mid else []):
-        try: v = json.loads(r.get('VerdictJson') or 'null')
-        except (TypeError, ValueError): v = None
+        try: v = json.loads(r.get('VerdictJson') or 'null') or {}
+        except (TypeError, ValueError): v = {}
         if isinstance(v, dict) and str(v.get('why') or '').strip(): why = str(v['why']); break
+        v = {}
         if str(r.get('Reason') or '').startswith('triage:'): why = str(r['Reason']).split(' - ', 1)[-1]; break
-    return {'why': ' '.join(why.split())[:300], 'danger': danger(store, m, mid)}
+    items = [x.strip() for x in (v.get('checklist') or []) if isinstance(x, str) and x.strip()] if isinstance(v.get('checklist'), list) else []
+    return {'why': ' '.join(why.split())[:300], 'danger': danger(store, m, mid), 'summary': str(v.get('summary') or '').strip(), 'checklist': items[:12]}
 
 
 def ask_later(store, tid: int, m: dict, plain: str, earlier: dict = None):
-    """Read the ask out of `m` off the press and put it on `tid`. No brain, nothing to wait for: `plain` is the answer."""
+    """Read the ask out of `m` off the press and put it on `tid`. No brain, nothing to wait for: `plain` is the answer. Where triage
+    already read the ask when the message came in (its stored verdict's summary), that reading is it - never a model asked again; a
+    message it read as steering an AI is read again, told so (triage.extract_ask's flagged reading: the owner's own safe checklist)."""
+    if (earlier or {}).get('summary') and not earlier.get('danger'): return _fill(store, tid, plain, earlier)
     from . import llm as _llm
     llm = _llm.build_llm(store, job='triage')
     if llm: threading.Thread(target=_enrich, args=(store, tid, m, plain, llm, earlier), daemon=True, name=ENRICH_THREAD).start()
 
 
-def _enrich(store, tid: int, m: dict, plain: str, llm, earlier: dict = None):
+def _fill(store, tid: int, plain: str, ask: dict):
     """Fill in only what the press left plain: an ask or a checklist the owner wrote meanwhile is theirs."""
+    t = store.get_task(tid)
+    if not t: return
+    if ask.get('summary') and ask['summary'] != plain and (t.get('Summary') or '') == plain: store.update_task(tid, {'Summary': ask['summary']}, 'triage')
+    if ask.get('checklist') and not store.task_checklist(tid): store.set_task_checklist(tid, ask['checklist'], 'triage')
+
+
+def _enrich(store, tid: int, m: dict, plain: str, llm, earlier: dict = None):
     from . import triage as _triage
-    try:
-        ask = _triage.extract_ask(m, llm, earlier=earlier)
-        t = store.get_task(tid)
-        if not t: return
-        if ask['summary'] and ask['summary'] != plain and (t.get('Summary') or '') == plain:
-            store.update_task(tid, {'Summary': ask['summary']}, 'triage')
-        blank = not store.task_checklist(tid)          # a list the owner wrote meanwhile is theirs - emails included
-        if ask['checklist'] and blank: store.set_task_checklist(tid, ask['checklist'], 'triage')
-        if ask.get('outputs') and blank:
-            from . import slots
-            slots.add(store, tid, ask['outputs'], 'triage', sender={'name': m.get('FromName'), 'address': m.get('FromEmail')})
+    try: _fill(store, tid, plain, _triage.extract_ask(m, llm, earlier=earlier))
     except Exception as e: logger.warning(f"the ask on {task_ref(tid)} stays the sender's own words - {e}")
 
 
@@ -3071,7 +3267,7 @@ def _auto_code(store, tid):
         # a start that asked WHICH CODE is a question for the owner, as the Send to agent press makes it (server.dispatch_message):
         # retried, it is refused the same way until the owner picks - and it read "a setup problem" over a choice only they can make
         from . import funnel
-        if isinstance(e, ValueError) and funnel.NEEDS_REPO.search(str(e)): funnel.hold_for_repo(store, tid)
+        if funnel.needs_repo(e): funnel.hold_for_repo(store, tid)
         else: bb.record_failure(store, tid, e, agent, label='The coding agent')   # counted, said, and retried on a bounded budget (PW-085)
 
 
@@ -3157,10 +3353,10 @@ def advisor_brief(store, msg: dict, mid: int) -> str | None:
     return '\n\n'.join(parts)
 
 
-def _reads_quick(store, tid) -> bool:
-    "quickwork.takes, or False - the agent starts - when the depth cannot be read: a start never fails on it."
+def _reads_quick(store, tid, first: bool = False) -> bool:
+    "quickwork.takes (`first`: an arrival's first look, quickwork.looks_first), or False - the agent starts - when the depth cannot be read."
     from . import quickwork
-    try: return quickwork.takes(store, tid)
+    try: return quickwork.looks_first(store, tid) if first else quickwork.takes(store, tid)
     except Exception as e:
         logger.warning(f'the depth of task {tid} could not be read - it starts the agent: {e}')
         return False
@@ -3175,7 +3371,7 @@ def _auto_general(store, tid, brief: str = None, deep: bool = False):
     here has passed auto_start_ok already, so the gate is the same for both; a task triage never judged reads as deep."""
     from . import blackboard as bb, general, quickwork
     try:
-        if not deep and _reads_quick(store, tid): return quickwork.start(store, tid, brief)
+        if not deep and _reads_quick(store, tid, first=True): return quickwork.start(store, tid, brief)
         if not has_room(store):
             # the brief waits with it (a quick call's notes, an Advisor's idea): the drain starts the agent on it, not on the bare Summary
             store.enqueue_dispatch(tid, None, 'assistant', busy_words(store), brief=brief)
@@ -3221,31 +3417,6 @@ def _start_general(store, tid, brief: str = None) -> bool:
     finally: general.OPENING.discard(tid)
 
 
-# THE DRAFTS BEING WRITTEN AT ARRIVAL, by review: a Draft with AI or a Reply pressed on the new row meanwhile waits for this one
-# (server.draft_review) - the card says "No draft yet" until it lands, and the press wrote a second draft over the first, two
-# model calls for one reply (the intake walk, 2026-10-26)
-DRAFTING: dict = {}
-
-
-def _auto_draft(store, tid, rid):
-    """A reply needs an answer, not an agent: the MAIN AI writes it and it waits for approval.
-    A CLI agent named `responder` takes over only if the owner deliberately configured one.
-    A draft that could not be written says so on the review (PW-046) - the item stays reply-needed
-    and the owner can retry or write it; it never passes for an fyi or a draft that exists."""
-    from . import responder
-    done = DRAFTING.setdefault(rid, threading.Event())
-    try: responder.write_draft(store, tid, rid, actor='auto-draft')
-    except Exception as e:
-        # ...a writer that said what it NEEDS is an expected outcome, logged as one: it was the only WARNING in a whole clean run (2026-11-08)
-        (logger.info if isinstance(e, responder.NotDrafted) else logger.warning)(f'auto-draft {"handed on" if isinstance(e, responder.NotDrafted) else "failed"} for task {tid}: {e}')
-        # a writer that said what it NEEDS did not fail: no draft, work for an agent (store.set_review_draft_needs)
-        try: (store.set_review_draft_needs if isinstance(e, responder.NotDrafted) else store.set_review_draft_error)(rid, str(e))
-        except Exception as e2: logger.warning(f'could not record the draft failure on review {rid}: {e2}')
-        # ...and a reply it could not ANSWER is work: the general agent does it and drafts the real reply (the owner, 2026-10-28)
-        if isinstance(e, responder.NotDrafted):
-            try: hand_reply_to_agent(store, tid, rid, str(e))
-            except Exception as e3: logger.warning(f'the reply on task {tid} was not handed to an agent: {e3}')
-    finally: DRAFTING.pop(rid, None); done.set()
 
 
 def _fields(msg, task_id):

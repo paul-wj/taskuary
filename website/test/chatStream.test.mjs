@@ -1,10 +1,14 @@
 // A CODING TASK IS THE SAME ONE CHAT (the owner, 2026-11-06): one session told twice - as Claude's own log read into steps (sessionrecord), and as
 // the ACP session/update notifications the same session sends over ACP (codingchat.record_update) - draws the SAME chat rows. Invented people.
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import test from "node:test";
 import { chatRows, ownerIn, stepsFromAcp } from "../src/chatStream.js";
+import { asUtc } from "../src/dates.js";
 import { editHunks, headerOf, hunksOf, hunkText, langOf, numbered, parseUnified, tokens } from "../src/diffView.js";
+import { setLocale } from "../src/i18n.js";
+
+// The steps' words read English (describeCall's labels): the locale is pinned, never the host's.
+setLocale("en");
 
 const before = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`);
 const after = before.map((l) => (l === "line 12" ? "    total = a + tax" : l));
@@ -39,8 +43,8 @@ const ACP = [
   ...chunks("agent_message_chunk", "All 212 pass."),
 ];
 const ses = (more) => ({ sid: "s1", cli: "claude", at: "2026-11-06 09:00:00", ...more });
-// the rows a person reads: ids and stamps aside, an ACP session has no per-step clock
-const shape = (rows) => rows.map(({ id, at, ...r }) => r);
+// the rows a person reads: ids, stamps and step names aside (an ACP session has no per-step clock; its steps are named by update, a log's by step)
+const shape = (rows) => rows.map(({ id, at, steps, ...r }) => r);
 // ...and a command's output, which only ACP hands over (a log keeps the command alone)
 const noOutput = (rows) => rows.map((r) => (r.parts ? { ...r, parts: r.parts.map((p) => (p.steps ? { ...p, steps: p.steps.map(({ detail, id, ...s }) => s) } : p)) } : r));
 
@@ -73,6 +77,19 @@ test("the owner's words inside a Resume brief are their own line, the rest stays
   assert.equal(rows[0].text, "was this code completed?");
   assert.ok(!JSON.stringify(rows).includes("The owner chose Resume"));
   assert.equal(ownerIn("TASKUARY: work TQ-0042 ..."), "");
+});
+
+test("a brief that carries a line already drawn as his draws no second bubble of Taskuary's words round it", () => {
+  // the browser walk, 2026-11-10: a line typed after a coding session ended stood as his bubble, and under it a second bubble of his - "The
+  // owner left 1 note for you after the last session ended. Take them in order: (1) now check the tax line" - the reopening's brief, whose
+  // FROM THE OWNER part is the waiting room's batch wrapped round the line the prompt had already recorded as his (acpcoding._show)
+  const brief = "FROM THE OWNER: The owner left 1 note for you after the last session ended. Take them in order: (1) now check the tax line\n\nThe owner chose Resume for this task.";
+  const rows = chatRows({ sessions: [ses({ source: "acp", updates: [
+    { sessionUpdate: "user_message_chunk", content: { type: "text", text: "now check the tax line" }, _meta: { taskuary: "owner", line: 6 } },
+    { sessionUpdate: "user_message_chunk", content: { type: "text", text: brief }, _meta: { taskuary: "brief" } },
+    ...chunks("agent_message_chunk", "The tax line adds up.")] })] });
+  assert.deepEqual(rows.map((r) => r.kind), ["you", "turn"]);
+  assert.equal(rows[0].text, "now check the tax line");
 });
 
 test("the mail that came in stands over the turn it woke, a burst as one row", () => {
@@ -142,13 +159,6 @@ test("the highlighter colours by language and keeps every character", () => {
   assert.deepEqual(tokens("x", ""), [{ t: "", s: "x" }]);
 });
 
-test("the one chat's box, on a coding source, types into the running CLI, or picks the session back up", () => {
-  const src = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
-  assert.match(src, /\/api\/tasks\/\$\{task\.TaskId\}\/waitroom/);
-  assert.match(src, /\/api\/tasks\/\$\{task\.TaskId\}\/continue-work/);
-  assert.match(src, /\/api\/tasks\/\$\{tid\}\/coding-chat/);
-});
-
 test("over ACP each step keeps the moment it came in, and the plan is one checklist - the newest of its turn", () => {
   const ups = [
     { sessionUpdate: "user_message_chunk", content: { type: "text", text: "TASKUARY: work TQ-0042 ..." }, _meta: { taskuary: "brief" }, _at: "2026-11-06 09:00:00" },
@@ -163,18 +173,6 @@ test("over ACP each step keeps the moment it came in, and the plan is one checkl
   const plans = turn.parts.filter((p) => p.type === "plan");
   assert.equal(plans.length, 1);
   assert.deepEqual(plans[0].items, [{ text: "Read the ledger", state: "done" }, { text: "Fix the tax line", state: "now" }]);
-});
-
-test("over ACP the box is a prompt and Stop ends the turn; there is no Terminal button, and a pty's asking screen is a card in the stream", () => {
-  // the owner, 2026-11-06: "hate this terminal button. it's also not a terminal"
-  const src = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
-  assert.match(src, /\/api\/tasks\/\$\{task\.TaskId\}\/agent\/cancel/);
-  // ...the plan's checklist row is ViewSpec's, which an agent's own checklist view draws with too
-  assert.match(src, /<PlanRow key=\{p\.id\} p=\{p\} \/>/);
-  assert.match(fs.readFileSync(new URL("../src/ViewSpec.jsx", import.meta.url), "utf8"), /data-tq-plan/);
-  assert.doesNotMatch(src, /terminal-toggle|TerminalIcon|<span>Terminal<\/span>/);
-  assert.match(src, /screenAsks = coding && !!cc\.live\?\.asking && !acp/);
-  assert.match(src, /data-tq-chat-screen[^]*The agent's screen is asking something[^]*<TerminalPane/);
 });
 
 // ── recorded ACP update sequences ────────────────────────────────────────────────────────────────
@@ -225,8 +223,6 @@ test("a turn that ended on a question is not working, though its session is aliv
   // ...and at work but waiting on the owner's press (a permission card, a screen that asks): running, but waiting - no "Working on this…"
   assert.equal(rows({ working: true }, [{ id: "p1" }]).at(-1).waiting, true);
   assert.equal(rows({ working: true, asking: true }).at(-1).waiting, true);
-  const src = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
-  assert.match(src, /const codingBusy = coding && !!cc\.live\?\.working && !screenAsks && !perms\.length;/);
 });
 
 test("the general chat's ACP trace keeps the words where they were said: the answer takes only what came after the last call", async () => {
@@ -241,4 +237,27 @@ test("the general chat's ACP trace keeps the words where they were said: the ans
   assert.deepEqual(live, ["Running the suite.", "Ran pytest", "Quick update: half of it passed.", "All 212 pass."]);
   // ...filed: the answer leaves the trail, every earlier line stays where it stood
   assert.deepEqual(stepsOf(trace, { keepStart: false, answer: "All 212 pass." }).map((s) => s.summary), live.slice(0, 3));
+});
+
+// ONLY WHAT THE OWNER TYPED IS HIS (codingchat.owned, 2026-11-10): a user-role message the adapter sent itself - a slash command's output - is
+// marked the agent's by the server, which records every line he typed, and is drawn as the agent's words, never in his bubble
+test("a user-role update the server marks as the agent's is drawn as the agent's words", () => {
+  const steps = stepsFromAcp([
+    { sessionUpdate: "user_message_chunk", content: { type: "text", text: "merge it in" }, _meta: { taskuary: "owner" } },
+    { sessionUpdate: "user_message_chunk", content: { type: "text", text: "Compacted: 3 files read" }, _meta: { taskuary: "agent" } },
+  ]);
+  assert.deepEqual(steps.map((s) => [s.k, s.text]), [["you", "merge it in"], ["said", "Compacted: 3 files read"]]);
+});
+
+test("a turn that ended before the live session's turn began is not the one at work", () => {
+  // the recorded coding walk, 2026-11-10: a line typed to a session that had idled out - while its adapter came back up the turn before stood
+  // "running" again, its x and "ran 4s" OVER his new line, and nothing under it. The turn at work is the one the live session began
+  const steps = LOG.slice(0, 7), live = (at) => ({ working: true, ...(at ? { turnStarted: +asUtc(at) / 1000 } : {}) });
+  assert.equal(chatRows({ sessions: [ses({ live: true, steps })], live: live("2026-11-06 09:30:00") }).at(-1).running, false);
+  assert.equal(chatRows({ sessions: [ses({ live: true, steps })], live: live("2026-11-06 09:00:00") }).at(-1).running, true);
+  assert.equal(chatRows({ sessions: [ses({ live: true, steps })], live: live() }).at(-1).running, true, "no start said: as before");
+  // ...a session reopened for his line replays its history as new rows before it is handed his prompt: none of them is at work
+  assert.equal(chatRows({ sessions: [ses({ live: true, steps })], live: { working: true, promptPending: true } }).at(-1).running, false);
+  // ...the press is the turn's start where the payload says it (line_state `turnStarted`), the woken session's own not up yet
+  assert.equal(chatRows({ sessions: [ses({ live: true, steps })], live: live("2026-11-06 09:00:00"), turnStarted: +asUtc("2026-11-06 09:30:00") / 1000 }).at(-1).running, false);
 });

@@ -4,9 +4,12 @@ import React, { useEffect, useState } from "react";
 import { Box, Tooltip } from "@mui/material";
 import api from "./api";
 import { BORDER, DIM, PANEL2 } from "./theme.jsx";
+import { t } from "./i18n.js";
+import { useLocale } from "./LocaleProvider.jsx";
 import { PROFILE_CHANGED, PROFILE_TIP, profileFace } from "./profileAvatar.js";
 
 export default function ProfileButton({ onOpen }) {
+  useLocale();
   const [face, setFace] = useState(profileFace(null));
   useEffect(() => {
     let live = true;
@@ -15,8 +18,8 @@ export default function ProfileButton({ onOpen }) {
     return () => { live = false; window.removeEventListener(PROFILE_CHANGED, read); };
   }, []);
   return (
-    <Tooltip title={PROFILE_TIP}>
-      <Box component="button" type="button" onClick={onOpen} aria-label={PROFILE_TIP} data-tq-profile=""
+    <Tooltip title={t(PROFILE_TIP)}>
+      <Box component="button" type="button" onClick={onOpen} aria-label={t(PROFILE_TIP)} data-tq-profile=""
         sx={{ flexShrink: 0, width: 28, height: 28, p: 0, ml: 0.25, borderRadius: "50%", overflow: "hidden", cursor: "pointer",
           border: `1px solid ${BORDER}`, bgcolor: PANEL2, color: DIM, fontFamily: "inherit", fontSize: 11, fontWeight: 700,
           letterSpacing: 0.3, display: "grid", placeItems: "center", "&:hover": { borderColor: DIM }, "&:focus-visible": { outline: `2px solid ${DIM}`, outlineOffset: 1 } }}>

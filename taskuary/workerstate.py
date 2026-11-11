@@ -56,6 +56,18 @@ def request_id_for(text: str) -> str:
     return hashlib.sha1(' '.join(str(text or '').split()).lower().encode()).hexdigest()[:12]
 
 
+def fresh_id(store, tid: int, rid: str) -> str:
+    """`rid` for an ask raised again: the one still open under it, else an id this task never used. An id once answered stays answered
+    (open_requests), so the same press handed over a second time was recorded under it and never shown: no card, no chip, "agent done"
+    (the owner, 2026-11-10: "i cant see the screen")."""
+    evs = events(store, tid)
+    if (o := next((e['RequestId'] for e in open_requests(evs) if str(e['RequestId']).split('~')[0] == rid), None)): return o
+    used, n = {e['RequestId'] for e in evs}, 2
+    if rid not in used: return rid
+    while f'{rid}~{n}' in used: n += 1
+    return f'{rid}~{n}'
+
+
 def _live(tid: int):
     from . import terminal as term
     return next((x for x in list(term.SESSIONS.values()) if getattr(x, 'task_id', None) == tid and getattr(x, 'alive', False)), None)
@@ -121,11 +133,6 @@ def record(store, tid: int, sid: str, kind: str, request_id: str = None, text: s
             from . import agentchannels
             agentchannels.on_event(store, tid, kind, text, source)
         except Exception as e: logger.debug(f'task {tid}: not said on its channel - {e}')
-    if kind in REQUESTS:                          # the Advisor on the event (advisor.py): an agent asked
-        try:
-            from . import advisor
-            advisor.notice(store, 'agent.asked', 'task', tid)
-        except Exception: pass
     return True
 
 
@@ -141,6 +148,10 @@ def events(store, tid: int, sid: str = None) -> list:
     return [e for e in store.worker_events(tid) if sid is None or str(e['Sid']) == str(sid)]
 
 
+# A QUESTION NOBODY ASKED: a model's wording of the prose that ended a turn, which a build before 2026-11-10 recorded as a request and
+# the row then read "Agent asked you: ...". Nothing writes one now (the owner: nothing is asked on the rail); the rows a database
+# still holds are no request and no run (quickwork)
+READ_OFF_PROSE = 'judge'
 def open_requests(evs: list) -> list:
     """The requests still outstanding, oldest first.
 
@@ -158,7 +169,7 @@ def open_requests(evs: list) -> list:
     answered = {e['RequestId'] for e in evs if e['Kind'] == 'answered'}
     spoke = max((i for i, e in enumerate(evs) if e['Kind'] == 'working' and e.get('Text') != WAKE), default=-1)
     return [e for i, e in enumerate(evs)
-            if i > spoke and e['Kind'] in REQUESTS and e['RequestId'] not in answered]
+            if i > spoke and e['Kind'] in REQUESTS and e['RequestId'] not in answered and e.get('Source') != READ_OFF_PROSE]
 
 
 def _public_request(e: dict) -> dict:
@@ -237,13 +248,13 @@ def status(store, tid: int) -> dict:
 ENDINGS = ('finished', *TERMINAL)
 
 
-# A QUESTION THE AGENT ITSELF ASKED, as its run recorded it: its question tool's (q:<group>:<n>), a chooser read off its screen, an API
-# agent's ask, or the model's read of the prose that ended its turn (hooks.judge_turn) - never the CLI's bare idle notice, which follows
+# A QUESTION THE AGENT ITSELF ASKED, as its run recorded it: its question tool's (q:<group>:<n>), a chooser read off its screen or an API
+# agent's ask - never the CLI's bare idle notice, which follows
 # every quiet turn whether or not anything was asked. RESUMED is one of those carried onto the session a restart reopened (server.resume_asking):
 # still the agent's question, and the mark that it was brought back once already
 RESUMED = 'resumed'
 def own_question(r: dict) -> bool:
-    return r.get('kind') == 'input_needed' and bool(r.get('text')) and (r.get('source') in ('judge', 'screen', 'api', RESUMED) or bool(group_of(r.get('request_id'))))
+    return r.get('kind') == 'input_needed' and bool(r.get('text')) and (r.get('source') in ('screen', 'api', RESUMED) or bool(group_of(r.get('request_id'))))
 
 
 def left_asking(store, tid) -> list:
@@ -257,7 +268,14 @@ def left_asking(store, tid) -> list:
     return [r for r in st['requests'] if own_question(r)] if st['state'] in ('disconnected', 'stopped') else []
 
 
-def ended(store, tid, live_too: bool = False) -> str | None:
+def newest(store, tid, evs=None, kinds=None, skip=()):
+    """The task's newest event - of `kinds` only, none of `skip` - or None: off `evs` (its events, oldest first) when the caller holds
+    them (taskstate.TaskState), else the one indexed row (store.last_worker_event). The same reading either way."""
+    if evs is None: return store.last_worker_event(tid, kinds=kinds, skip=skip)
+    return next((e for e in reversed(evs) if (not kinds or e['Kind'] in kinds) and e['Kind'] not in skip), None)
+
+
+def ended(store, tid, live_too: bool = False, evs=None) -> str | None:
     """How the task's last run ENDED, by its own word, with nothing live on it: 'finished' (an explicit result no prompt has
     followed, as status reads it), 'failed', 'stopped' or 'disconnected' - else None: live, never reported, or silent on how it
     ended. Silence is never an ending here: a general conversation that answered and closed is a saved conversation, not a failure.
@@ -267,11 +285,11 @@ def ended(store, tid, live_too: bool = False) -> str | None:
     # `live_too`: the run's own last word even while its session is still open - a run that FAILED reads failed whatever the
     # session does (R2): a failed agent whose session stayed up read "waiting on you" on the phone (the 2026-10-22 re-walk)
     if not tid or (_live(tid) and not live_too): return None
-    last = store.last_worker_event(tid, skip=NOTES)
+    last = newest(store, tid, evs, skip=NOTES)
     if not last: return None
     if last['Kind'] in TERMINAL: return last['Kind']
-    fin = store.last_worker_event(tid, kinds=('finished',))
-    work = fin and store.last_worker_event(tid, kinds=('working',))
+    fin = newest(store, tid, evs, ('finished',))
+    work = fin and newest(store, tid, evs, ('working',))
     return 'finished' if fin and (not work or work['Id'] < fin['Id']) else None
 
 
@@ -367,6 +385,21 @@ def release_all() -> bool:
         return bool(HELD)
 
 
+# WHOSE WORDS AN ANSWER IS (the agent walk, 2026-11-09). The waiting room's own notes - a press that went, a branch that landed - reach an
+# agent parked on a question as the thing that lets the question go. They are Taskuary's, never the owner's: the note stood in their bubble
+# ("You: The owner pressed Send on what you set up..."), went into the record the Advisor learns the owner's words from, and the press
+# itself waited twelve seconds on the turn it began. Its writer is the room's 'router'; anyone else answering is the owner
+def ours(actor) -> bool: return actor == 'router'
+def said_by(actor) -> str: return 'taskuary' if ours(actor) else 'owner'
+def _as(actor) -> dict: return {'brief': True} if ours(actor) else {}
+def _brief(sess, text):
+    "Taskuary's note as a chat agent's next turn, on its own thread: nobody who pressed a button waits for the turn that follows."
+    def go():
+        try: sess.send_prompt(text, brief=True)
+        except Exception as e: logger.warning(f"task {getattr(sess, 'task_id', '?')}: Taskuary's note did not reach its agent - {e}")
+    threading.Thread(target=go, daemon=True, name='brief').start()
+
+
 def _answer_held(store, tid, h, answers: dict, actor) -> dict:
     """Answers for a held ask: kept until every question has one, then the hook is let go with all of them."""
     with _HELD_LOCK:
@@ -374,7 +407,7 @@ def _answer_held(store, tid, h, answers: dict, actor) -> dict:
             if rid in h['rids']: h['answers'][rid] = text
         done = len(h['answers']) >= len(h['rids'])
     for rid, text in answers.items():
-        if rid in h['rids']: record(store, tid, h['sid'], 'answered', request_id=rid, text=text, source='owner')
+        if rid in h['rids']: record(store, tid, h['sid'], 'answered', request_id=rid, text=text, source=said_by(actor))
     if done:
         h['event'].set()
         store.add_comment(tid, actor, 'human', 'Answered the agent: ' + '; '.join(h['answers'][r] for r in h['rids']) + ' - delivered with its question.')
@@ -421,10 +454,10 @@ def answer_group(store, tid: int, answers: dict, actor: str = 'owner') -> dict:
     from . import terminal as term
     try:
         said = '\n'.join(f"{i}. {r['text']} - {answers[r['request_id']]}" for i, r in enumerate(reqs, 1))
-        if hasattr(sess, 'send_prompt'): sess.send_prompt(said)
+        if hasattr(sess, 'send_prompt'): _brief(sess, said) if ours(actor) else sess.send_prompt(said)
         elif getattr(sess, 'cli', '') == 'codex':
             # codex asked in words: its answers are its next turn, through its own queue (typed only if that refuses)
-            if not term.queue_codex(sess, said): term.type_into(sess, said)
+            if not term.queue_codex(sess, said): term.type_into(sess, said, **_as(actor))
         elif all(r.get('choices') for r in reqs) and all(r.get('source') == 'hook' for r in reqs):
             term.answer_form(sess, [(r.get('choices') or [], answers[r['request_id']]) for r in reqs])
         else:
@@ -433,7 +466,7 @@ def answer_group(store, tid: int, answers: dict, actor: str = 'owner') -> dict:
     except Exception as e:
         store.add_comment(tid, actor, 'human', f'Answers could not be delivered to the agent: {str(e)[:200]}')
         return {'delivered': False, 'state': 'failed', 'why': str(e)[:200]}
-    for r in reqs: record(store, tid, sess.sid, 'answered', request_id=r['request_id'], text=answers[r['request_id']], source='owner')
+    for r in reqs: record(store, tid, sess.sid, 'answered', request_id=r['request_id'], text=answers[r['request_id']], source=said_by(actor))
     store.add_comment(tid, actor, 'human', 'Answered the agent: ' + '; '.join(f"{r['text'][:80]} - {answers[r['request_id']][:200]}" for r in reqs)
                       + f' - delivered (run {sess.sid}).')
     store.audit('task', tid, 'worker_answer', actor, detail={'request_ids': [r['request_id'] for r in reqs], 'sid': sess.sid})
@@ -454,13 +487,14 @@ def split_answers(text: str, qs: list) -> dict:
     return {q['request_id']: got.get(q['request_id'], words) for q in qs}
 
 
-def answer(store, tid: int, request_id: str, text: str, actor: str = 'owner', owner: str = None) -> dict:
+def answer(store, tid: int, request_id: str, text: str, actor: str = 'owner', owner: str = None, press: bool = False) -> dict:
     """Deliver the owner's answer to ONE outstanding request of the run that asked it (PW-139/141): once,
     to that run, and say what happened - delivered, resolved already, stale (the run changed),
-    disconnected (no live worker: open the workspace), or failed."""
-    from . import terminal as term
-    text = ' '.join(str(text or '').split())
-    if not text: raise ValueError('say something')
+    disconnected (no live worker: open the workspace), or failed. `press`: the Done on the browser view for a step handed to the owner
+    on the page - their press, with no words of theirs (browsergate.done)."""
+    from . import browsergate, browserview, terminal as term
+    text, press = ' '.join(str(text or '').split()), press and str(request_id).startswith(browserview.TURN_PREFIX)
+    if not text and not press: raise ValueError('say something')
     if (held := _stranger_held(store, tid, [request_id])): return held
     # the request is looked up across every run of the task: one that belongs to a run that is no longer the
     # task's is STALE, not silently forwarded to whatever worker has the task now (PW-139)
@@ -472,6 +506,12 @@ def answer(store, tid: int, request_id: str, text: str, actor: str = 'owner', ow
     h = HELD.get(group_of(request_id) or '')
     if h and h['tid'] == tid: return _answer_held(store, tid, h, {request_id: text}, actor)
     sess = _live(tid)
+    # THE VIEW'S DONE closes the hand-over and Taskuary tells the agent - the one that asked, or none running (it is started on it). A
+    # different run on the task is never handed it: stale, below
+    if press and (not sess or str(sess.sid) == str(req['sid'])):
+        return ({'delivered': True, 'state': 'delivered'} if browsergate.done(store, tid, request_id)
+                else {'delivered': False, 'state': 'resolved', 'why': 'that request is no longer outstanding'})
+    text = text or browserview.TURN_DONE
     if not sess:
         store.add_comment(tid, actor, 'human', f'Answer to "{req["text"][:160]}": {text[:500]} - could not be delivered: no live worker on this task. Open the workspace to continue.')
         return {'delivered': False, 'state': 'disconnected', 'why': 'no live worker on this task'}
@@ -489,7 +529,6 @@ def answer(store, tid: int, request_id: str, text: str, actor: str = 'owner', ow
     send = text
     # ...and a press handed over on the page, answered in words: the agent hears that it was not pressed (browsergate.owner_said). A chat
     # hears it from its own send_prompt, which every owner word to it passes through
-    from . import browsergate
     if str(request_id).startswith(browsergate.PRESS) and not hasattr(sess, 'send_prompt'):
         if (note := browsergate.owner_said(store, tid, req['sid'], text)): send = f'{text} ({note})'     # one line: a newline typed into a CLI's prompt is its Enter
     # a codex question asked in WORDS is answered through its own queue - a chooser or an approval is still a keystroke
@@ -509,15 +548,20 @@ def answer(store, tid: int, request_id: str, text: str, actor: str = 'owner', ow
         # ...a chat is handed the owner's own words, with what the Assistant added to them folded as Taskuary's (general.say_relayed)
         if hasattr(sess, 'send_prompt'):
             from . import general
-            general.say_relayed(sess, owner or send, send) if owner else sess.send_prompt(send)
-        elif words and term.queue_codex(sess, send): pass
-        else: term.type_into(sess, send)
+            if ours(actor): _brief(sess, send)
+            else: general.say_relayed(sess, owner or send, send) if owner else sess.send_prompt(send)
+        elif words and term.queue_codex(sess, send):
+            if ours(actor):
+                from . import sessionrecord
+                sessionrecord.keep_seed(tid, send)          # its `you` step in the record reads as Taskuary's brief (mark_briefs)
+        else: term.type_into(sess, send, **_as(actor))
     except Exception as e:
         store.add_comment(tid, actor, 'human', f'Answer to "{req["text"][:160]}": {text[:500]} - could not be delivered to {who}: {str(e)[:200]}')
         return {'delivered': False, 'state': 'failed', 'why': str(e)[:200]}
     words = ' '.join(str(owner or text).split())          # the record reads what the owner said, not the Assistant's version
-    record(store, tid, sess.sid, 'answered', request_id=request_id, text=words, source='owner')
-    store.add_comment(tid, actor, 'human', f'Answered "{req["text"][:160]}": {words[:500]} - delivered to {who} (run {sess.sid}).')
+    record(store, tid, sess.sid, 'answered', request_id=request_id, text=words, source=said_by(actor))
+    store.add_comment(tid, actor, 'human', f'Told {who} (run {sess.sid}), which was asking "{req["text"][:160]}": {words[:500]}' if ours(actor) else
+                      f'Answered "{req["text"][:160]}": {words[:500]} - delivered to {who} (run {sess.sid}).')
     store.audit('task', tid, 'worker_answer', actor, detail={'request_id': request_id, 'sid': sess.sid})
     return {'delivered': True, 'state': 'delivered', 'sid': sess.sid}
 
@@ -559,7 +603,8 @@ def answer_open(store, tid: int, text: str, actor: str = 'owner', owner: str = N
     req = asking_of(store, sess) if sess else None
     if not req: return {'delivered': False, 'state': 'no_request', 'why': 'no open request from a live run'}
     qs = question_group(store, sess)
-    if len(qs) > 1 and req.get('kind') != 'approval_needed':
+    # ...and Taskuary's note is never split over a group of questions as if it answered each: it is told once, to the one that is showing
+    if len(qs) > 1 and req.get('kind') != 'approval_needed' and not ours(actor):
         return {**answer_group(store, tid, split_answers(text, qs), actor), 'path': delivery_path(sess), 'request_id': qs[0]['request_id']}
     return {**answer(store, tid, req['request_id'], text, actor, owner=owner), 'path': delivery_path(sess), 'request_id': req['request_id']}
 

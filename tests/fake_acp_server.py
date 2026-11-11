@@ -7,6 +7,9 @@ only knows how to match replies to its own requests hangs here - which is the po
 
 Set in its environment, for the tests that need more:
   FAKE_ACP_FAIL=init     it dies at initialize, as an adapter that cannot start does
+  FAKE_ACP_SPAWN=<secs>  it takes that long to start before it reads anything, as npx fetching an adapter does
+  FAKE_ACP_THINK=<secs>  each turn takes that long before its first word, as a model thinking does
+  FAKE_ACP_FAIL=turn     its first turn answers with an error after a word, as an overloaded model's does
   FAKE_ACP_RESUME=1      it offers session/resume (no replay) beside session/load
   FAKE_ACP_ASK=<command> the permission it asks for is to run that shell command (kind execute)
   FAKE_ACP_CODE=<file>   a coding turn: a plan, an edit of that file asked for (kind edit, its location) and, once allowed, made -
@@ -14,11 +17,16 @@ Set in its environment, for the tests that need more:
   FAKE_ACP_HANG=1        a turn that only ends when it is cancelled (session/cancel) - or steered
   FAKE_ACP_STEER=1       it advertises mid-turn input (_meta.steering.supported, as claude-agent-acp and codex-acp do): `_session/steering`
                          joins the running turn, which then ends saying what it was steered with; with no turn running it is promptRequired
+  FAKE_ACP_STEER_ECHO=1  ...and echoes the steered words back as a user_message_chunk before it answers the steer
   FAKE_ACP_USAGE=1       each turn's answer carries its usage and _meta.quota, as both adapters' PromptResponses do
   FAKE_ACP_MODELS=<a,b>  the model values it offers (default opus,sonnet)
+  FAKE_DIRECTOR=<folder> each turn's words come from a scenario (fake_director.py), no permission asked; a session/cancel ends it meanwhile
+  FAKE_ACP_SCRIPT=<file>  fake_claude's script: the first rule whose `when` the owner's words match answers `first`, after its `post`s ran
+                         as the agent's own `taskuary --reply` would (fake_director.post) - a coding agent filing a reply, no permission asked
 It offers config options (mode, model, effort) the way claude-agent-acp and codex-acp do, and says what they were set to.
 """
-import json, os, sys
+import json, os, re, sys
+from fake_director import directed, folder_of, post
 
 SID = 'sess_fake_1'
 PERM_ID = 9001
@@ -69,6 +77,7 @@ def options():
             sel('effort', 'thought_level', ['low', 'high'])]
 
 
+if os.environ.get('FAKE_ACP_SPAWN'): __import__('time').sleep(float(os.environ['FAKE_ACP_SPAWN']))
 for line in sys.stdin:
     line = line.strip()
     if not line: continue
@@ -110,9 +119,29 @@ for line in sys.stdin:
         reply(mid, {'configOptions': options()})
     elif method == 'session/prompt':
         STARTS += 1
-        said = ' '.join(str(b.get('text') or '') for b in msg['params'].get('prompt') or [])
+        if os.environ.get('FAKE_ACP_THINK'): __import__('time').sleep(float(os.environ['FAKE_ACP_THINK']))
+        # ...said back without Taskuary's markers its brief explains: a real agent never quotes them back, and one echoed from the brief raised a
+        # sign-in nobody asked for
+        said = re.sub(r'\[\[[^\]]*\]\]', '', ' '.join(str(b.get('text') or '') for b in msg['params'].get('prompt') or []))
         _heard = f"heard: {said} [mode={SET['mode']} model={SET['model']} effort={SET['effort']} turn={STARTS}" + (f' resumed={RESUMED}' if RESUMED else '') + ']'
+        rule = next((r for r in (json.load(open(os.environ['FAKE_ACP_SCRIPT'], encoding='utf-8')) if os.environ.get('FAKE_ACP_SCRIPT') else [])
+                     if re.search(r['when'], said, re.I)), None)
+        if rule:
+            # ...each post the shell call a real agent makes for it, reported running before it files and done after - never a card ahead of its turn
+            for i, p in enumerate(rule.get('post') or []):
+                update('tool_call', toolCallId=f'post_{i}', title='taskuary', kind='execute', status='in_progress', rawInput={'command': f"taskuary {p['path'].rsplit('/', 1)[-1]}"})
+                post(p); update('tool_call_update', toolCallId=f'post_{i}', status='completed')
+            update('agent_message_chunk', content={'type': 'text', 'text': rule.get('first') or 'Ok.'}); reply(mid, ended()); continue
+        if folder_of():                                # a scenario's own turn (fake_director.py): its words, no permission asked
+            _prompt_id = mid                           # ...on a thread, so a session/cancel meanwhile ends the turn as a real adapter's does
+            def answer_later(mid=mid, said=said):
+                global _prompt_id
+                text = directed(said)
+                if _prompt_id == mid: update('agent_message_chunk', content={'type': 'text', 'text': text}); reply(mid, ended()); _prompt_id = None
+            __import__('threading').Thread(target=answer_later, daemon=True).start(); continue
         update('agent_message_chunk', content={'type': 'text', 'text': 'Looking. '})
+        if os.environ.get('FAKE_ACP_FAIL') == 'turn' and STARTS == 1:
+            send({'jsonrpc': '2.0', 'id': mid, 'error': {'code': -32603, 'message': 'Internal error: API Error: 529 Overloaded'}}); continue
         if os.environ.get('FAKE_ACP_HANG') == '1' and STARTS == 1:
             _prompt_id = mid; continue                  # only session/cancel ends this one
         if os.environ.get('FAKE_ACP_CODE'):
@@ -139,6 +168,8 @@ for line in sys.stdin:
         if _prompt_id is None:
             reply(mid, {'outcome': 'promptRequired', 'reason': 'noRunningTurn'}); continue
         steered = ' '.join(str(b.get('text') or '') for b in msg['params'].get('prompt') or [])
+        # ...echoed back first, as claude-agent-acp does when the CLI takes a steer in under a uuid of its own
+        if os.environ.get('FAKE_ACP_STEER_ECHO') == '1': update('user_message_chunk', content={'type': 'text', 'text': steered})
         reply(mid, {'outcome': 'injected'})
         update('agent_message_chunk', content={'type': 'text', 'text': f'steered: {steered} - {_heard}'})
         reply(_prompt_id, ended()); _prompt_id = None

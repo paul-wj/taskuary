@@ -316,8 +316,7 @@ class SharedSessionTests(unittest.TestCase):
         session = general.GeneralSession(store, tid)
         session.pick, session.provider = 'cli:claude', 'claude'
         answer = 'Here is the comparison.\n[[TASKUARY-DONE]] Finished the comparison.'
-        with mock.patch.object(llm, 'build_llm', return_value=lambda *a, **k: answer), \
-             mock.patch.object(session, '_close_out') as close:
+        with mock.patch.object(llm, 'build_llm', return_value=lambda *a, **k: answer), mock.patch('taskuary.selfclose.declare') as close:
             self.assertEqual(session.send_prompt('Compare them'), 'Here is the comparison.')
         close.assert_not_called()
         self.assertNotEqual(store.get_task(tid)['Status'], 'done')
@@ -332,7 +331,7 @@ class SharedSessionTests(unittest.TestCase):
         session.pick, session.provider = 'cli:claude', 'claude'
         answer = 'Here is the comparison.\n[[TASKUARY-DONE]] Finished the comparison.'
         timer = mock.Mock()
-        with mock.patch.object(llm, 'build_llm', return_value=lambda *a, **k: answer), \
+        with mock.patch.object(llm, 'build_llm', return_value=lambda *a, **k: answer), mock.patch('taskuary.origin.launch_mode', return_value='full'), \
              mock.patch.object(general.threading, 'Timer', return_value=timer) as make_timer:
             session.send_prompt('Compare them')
         make_timer.assert_not_called()
@@ -479,12 +478,13 @@ class GeneralApiTests(unittest.TestCase):
         filed = [c for c in store.list_comments(tid) if str(c['Body']).startswith(wrapup.REPORT)]
         self.assertEqual(len(filed), 1)
 
-    def test_a_general_task_that_ends_drafts_the_reply_the_sender_gets(self):
+    def test_a_general_task_that_ends_raises_the_reply_the_sender_gets(self):
         """The assistant is TOLD that ending the task drafts the answer the person who asked will get
         (selfclose.CHAT_LINE). It was not true: the general branch of wrap returned before finish()
         ever ran, so a task somebody wrote in about closed with them unanswered - and the assistant
         compensated by writing the reply into the chat, where STYLE.md never touches it and nothing
-        can send it (TQ-0440/0441 closed unanswered; TQ-0443 sat open with an unsendable draft)."""
+        can send it (TQ-0440/0441 closed unanswered; TQ-0443 sat open with an unsendable draft). The reply is raised as the one owed - the
+        agent's to write, never a tool-less writer's (the owner, 2026-11-10: "no more triage creates draft. agent should be doing it")."""
         store = MemoryStore(); tid = general_task(store)
         mid = store.add_message({'ExternalId': 'cash-dashboard', 'Channel': 'email', 'FromEmail': 'rachel@example.com',
                                  'Subject': 'Cash dashboard', 'BodyText': 'The balances still pull from the old accounts.'})
@@ -492,11 +492,11 @@ class GeneralApiTests(unittest.TestCase):
         store.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'The dashboard still points at the legacy accounts.')
         with mock.patch.object(responder, 'write_draft') as write_draft:
             out = wrapup.wrap(store, tid, close=True, actor='assistant')
-        review = store.pending_review(tid, 'draft_reply')
+        review = store.pending_review(tid, live_only=False)
         self.assertTrue(out['drafting'])
-        self.assertEqual(review['MessageId'], mid)
+        self.assertEqual((review['MessageId'], review['Kind'], review.get('DraftText') or ''), (mid, 'draft', ''))
         self.assertEqual(store.get_task(tid)['Status'], 'waiting')
-        write_draft.assert_called_once()
+        write_draft.assert_not_called()
 
     def test_the_conversation_is_the_record_once_its_session_is_gone(self):
         """A turn's session ends the moment it answers, whichever backend answered. Wrapping up then
@@ -650,7 +650,7 @@ class OneGoalTests(unittest.TestCase):
         for tid in (plain, mailed):
             system = general._prompt(s, tid)[0]
             for want in ("off the owner's hands", 'only what you cannot find', 're-plan', 'never send', 'goes only in the reply you draft',
-                         selfclose.SUMMARY_OPEN, selfclose.SUMMARY_LINE):
+                         selfclose.SUMMARY_OPEN, selfclose.SUMMARY_LINE, general.SHORT_LINE):
                 self.assertIn(want, system, (tid, want))
             self.assertNotIn('into the conversation or a draft', system)
         # ...never the guide's chat, nor a connector card's walk
@@ -662,15 +662,16 @@ class OneGoalTests(unittest.TestCase):
         # nothing a stranger writes may point the agent at credentials or the owner's files: the goal stays, the login and where-to-look go
         s = self._store(); tid = general_task(s); self._mail(s, tid)
         s.cx.execute("UPDATE task SET OriginBase='stranger' WHERE TaskId=?", (tid,)); s.cx.commit()
-        s.upsert_agent('assistant', 'general', 'cli', json.dumps({'kind': 'general'}))     # PROFILE RULES (ASSISTANT.md) ride as on an install
+        s.upsert_agent('assistant', 'general', 'cli', json.dumps({'kind': 'general'}))     # PROFILE RULES (the file ASSISTANT.md) ride as on an install
         system, user = general._prompt(s, tid)
         for want in ("off the owner's hands", 'only what you cannot find', 're-plan', 'never send'): self.assertIn(want, system, want)
-        self.assertIn('PROFILE RULES (ASSISTANT.md)', system)
+        self.assertIn('PROFILE RULES (the file ASSISTANT.md)', system)
         flat = ' '.join(f'{system}\n{user}'.split())
         for gone in ('put it in the reply you draft', 'goes only in the reply you draft', 'A login or secret', 'A login or key',
                      'supply a login', '.env', 'folders you can read'):
             self.assertNotIn(gone, flat, gone)
         for gone in ("THE OWNER'S REPOSITORIES", 'folders you can read', 'A login'): self.assertNotIn(gone, general.STRANGER_GOAL_LINE, gone)
+        self.assertNotIn(general.SHORT_LINE, system, 'a stranger has no `show` to be told of')
         # ...and the owner's own task keeps all of it, from code
         own = general_task(s); system = general._prompt(s, own)[0]
         for want in ('goes only in the reply you draft', "THE OWNER'S REPOSITORIES and the folders you can read", '.env'):

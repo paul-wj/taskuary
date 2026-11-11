@@ -1,6 +1,6 @@
 """How a coding task ENDS. The work itself happens in a live session you watch (terminal.py);
-this closes the loop: the transcript becomes the report, the responder drafts the reply the
-sender gets, and the task waits on you to send it.
+this closes the loop: the transcript becomes the report, the reply the sender gets is the agent's
+(written in the run, or asked of it at the end), and the task waits on you to send it.
 """
 import json, re, threading
 from loguru import logger
@@ -12,46 +12,43 @@ TRANSCRIPT_SYSTEM = (
     'You are reading the terminal transcript of a coding agent that has just worked a task for '
     "the owner, who has now closed the session. Write the owner's record of what happened, from "
     'the transcript ALONE - never a step it did not take, never a claim it did not make.\n'
-    'Output ONLY this JSON: {"determination": "...", "actions": "...", "summary": "...", '
-    '"outcome": "did_work|nothing_to_do|elsewhere", "elsewhere": "..."} - '
+    'Output ONLY this JSON: {"determination": "...", "actions": "...", "summary": "..."} - '
     'determination is what was decided and why, in plain language and at most 80 words. '
     'actions is only what was actually changed or produced (files, commands, records, ids), '
     'at most 80 words; do not repeat the determination. summary is the concrete outcome for '
     'someone who read none of the transcript: one or two natural sentences, at most 55 words, '
-    'with no headings, process narration, or repetition of the other fields.\n'
-    'outcome is nothing_to_do ONLY when the session changed, produced and chased nothing because there '
-    'was nothing here to do at all - the message turned out to be a notice, a reminder, a newsletter or '
-    "somebody else's job. Anything the session did, found out or settled for the owner is did_work, and "
-    'that includes looking and reporting that the problem is not real.\n'
-    'outcome is elsewhere when the session concluded that the work it was asked for is real but is not in the code it was '
-    'opened in - it lives in another repository or codebase and has to be done there. That is never nothing_to_do. The '
-    'elsewhere field then names the repository the session said the work is likely in, as it wrote it, or "" when it could '
-    'not tell; for every other outcome it is "".')
+    'with no headings, process narration, or repetition of the other fields.')
+# HOW THE RUN ENDED IS THE AGENT'S TO SAY (the owner's rule: "no second voice drafts, judges or edits for it"): an agent that ran
+# `taskuary --done` said it finished the work here - `--no-reply` when nobody should hear back - and the report's model is never asked
+# to second-guess that. This clause is put only for a run that ended WITHOUT the agent saying: the owner's Stop, a killed or crashed CLI,
+# an old one with no --done - the one place the transcript is all there is.
+OUTCOME_ASK = ('\nAlso give "outcome": "did_work|elsewhere" and "elsewhere": "..." in the same JSON. outcome is elsewhere when the session '
+               'concluded that the work it was asked for is real but is not in the code it was opened in - it lives in another repository '
+               'or codebase and has to be done there; anything else is did_work. The elsewhere field then names the repository the '
+               'session said the work is likely in, as it wrote it, or "" when it could not tell; for did_work it is "".')
 
 
-def report_from_transcript(store, task_id: int, transcript: str, agent: str = '', final_message: str = '') -> dict:
+def report_from_transcript(store, task_id: int, transcript: str, agent: str = '', final_message: str = '', said: bool = False) -> dict:
     """The report, written from what is already on screen. The agent is never asked for prose:
     by the time you click Done you are done talking to it, and a transcript cannot argue. No AI
     configured (or a bad answer) files the agent's own last word, or says plainly that there is no summary - never the screen
     itself: "Summary: ● Bash(cd ...; gh pr view ..." was filed as a report (TQ-1112 shape, 2026-10-16). The record does not
-    disappear for it - the transcript is kept with the session (terminal's transcript row)."""
+    disappear for it - the transcript is kept with the session (terminal's transcript row).
+    `said`: the agent ended the run itself (`taskuary --done`) - its outcome is its own, and the model writes only the report's prose."""
     from .llm import build_llm
     blank = dict.fromkeys(FIELDS, '')
     if not (transcript or '').strip(): return blank | {'summary': '(the session ended with nothing on screen)'}
     try:
         llm = build_llm(store, job='summary')
         if not llm: raise RuntimeError('no AI connector is set up to write the report')
-        out = llm(TRANSCRIPT_SYSTEM, f"Task: {(store.get_task(task_id) or {}).get('Title') or ''}\n\n"
-                                     f'Transcript:\n{transcript}', max_tokens=900)
+        out = llm(TRANSCRIPT_SYSTEM + ('' if said else OUTCOME_ASK), f"Task: {(store.get_task(task_id) or {}).get('Title') or ''}\n\n"
+                                                                      f'Transcript:\n{transcript}', max_tokens=900)
         j = json.loads(re.sub(r'^```(json)?|```$', '', (out or '').strip(), flags=re.M))
         rep = blank | {k: str(j.get(k) or '') for k in FIELDS}
         if not any(rep.values()): raise ValueError('empty report')
-        # a flag, not prose: resolution_text never renders it, finish() reads it (see nobody_waiting).
-        # Absent or unrecognised means did_work - the ending that drafts, because swallowing a reply
-        # somebody is waiting for is the worse failure of the two.
-        if j.get('outcome') == 'nothing_to_do': rep['outcome'] = 'nothing_to_do'
-        # ...and work that lives in another repository is not done here: that ending ASKS to move it (asks_to_move), never closes
-        if j.get('outcome') == ELSEWHERE: rep |= {'outcome': ELSEWHERE, 'elsewhere': ' '.join(str(j.get('elsewhere') or '').split())[:120]}
+        # a flag, not prose: resolution_text never renders it, finish() reads it (moves). Absent or unrecognised is the work done here.
+        # Work that lives in another repository is not done here: that ending ASKS to move it (asks_to_move), never closes
+        if not said and j.get('outcome') == ELSEWHERE: rep |= {'outcome': ELSEWHERE, 'elsewhere': ' '.join(str(j.get('elsewhere') or '').split())[:120]}
         return rep
     except Exception as e:
         logger.warning(f'transcript report failed for task {task_id}: {e}')
@@ -103,20 +100,6 @@ def resolution_text(rep: dict) -> str:
     return '\n'.join(f'{k.capitalize()}: {rep[k]}' for k in ('determination', 'actions', 'summary') if rep.get(k))
 
 
-def reply_source(transcript: str, final_message: str = '') -> str:
-    """The unabridged result the sender's reply is written from.
-
-    The compact three-field report is for scanning the task card. It is deliberately lossy and
-    must never be the only source for a reply: one 55-word summary cannot carry eight separate
-    questions and their answers. Hooks give us the CLI's exact final response when they can;
-    otherwise the durable readable transcript is the honest fallback and contains that ending.
-    """
-    final = str(final_message or '').strip()
-    if final:
-        return 'COMPLETE FINAL RESPONSE FROM THE WORK SESSION:\n' + final
-    return 'COMPLETE WORK SESSION TRANSCRIPT (the final response is near the end):\n' + str(transcript or '').strip()
-
-
 def from_owner(store, m: dict, own: set = None) -> bool:
     """Did the owner write this row - mail from one of their own addresses (ingest.own_addresses)? Nobody else is behind it."""
     from .ingest import own_addresses
@@ -130,8 +113,12 @@ def reply_target(store, task_id: int):
     joined onto the task (the End of day checkup) became the newest row, so the session's reply to the colleague who had
     written again went to "nobody" and was filed as a result (2026-10-13). Only a task with nobody behind any row gets one."""
     # ...and never the owner's own mail: a self-forward ("sign me up?") drafted "Hi Alex" back to the owner (the email walk, 2026-10-29)
-    rows = [m for m in reversed(store.list_messages(task_id)) if m.get('Status') not in ('context', 'skipped') and not from_owner(store, m)]
-    own = next((m['MessageId'] for m in rows if not no_one_behind(m.get('Channel'))), None)
+    # ...and a person before a machine: a code host's notice on the thread is nobody to answer while someone on it is (reads_replies)
+    # ...the owner's addresses read once, not once a row: a task of 1,500 chat lines asked the store 4,600 times (the row's Reply asks it now)
+    from .ingest import own_addresses
+    me = own_addresses(store)
+    rows = [m for m in reversed(store.list_messages(task_id)) if m.get('Status') not in ('context', 'skipped') and not from_owner(store, m, me)]
+    own = next((m['MessageId'] for m in rows if reads_replies(m)), None)
     # ...and a promise task answers the owner's own mail it was made from: whom they promised is who waits (store.promised_in). Only
     # where nobody on the task's own rows is: a line that came in on it since is the newer ask
     return own or (store.promised_in(store.get_task(task_id)) or {}).get('MessageId') or (rows[0]['MessageId'] if rows else None)
@@ -140,10 +127,34 @@ def reply_target(store, task_id: int):
 # THE OWNER'S OWN ASK HAS NOBODY TO REPLY TO (the owner, 2026-11-06: "What is this? doesn't make any sense" - an agent saved a reply on a task
 # they made themselves, and narrated the refusal to them). Said in its first prompt, and the reply tools are not offered on it
 OWN_ASK = "This task is your owner's own ask - there is nobody to reply to; answer in the chat."
+# AN AUTOMATED SENDER IS NOBODY TO REPLY TO EITHER (the owner, 2026-11-10: "it's replying to a no reply email ... github emails are not supposed
+# to be respodned to"): a finished run on a code host's failure notice set its write-up up as a reply to the notifier, Send and all
+NOTICE = ('This task came from an automated notice - nobody reads a reply to it, so there is none to write. Your write-up is for your owner, '
+          'here on the task; if a person should hear of it, propose_email to that person.')
+def reads_replies(m: dict) -> bool:
+    "Is somebody behind this message who reads a reply: it came on a channel someone writes on, from a person, not a machine (categories.automated)."
+    from .categories import automated
+    return not no_one_behind((m or {}).get('Channel')) and not automated(m or {})
+def reads_reply_row(store, m: dict, own: set = None) -> bool:
+    "Somebody other than the owner reads a reply to this row: a person on a channel someone writes on (reads_replies), never the owner's own mail."
+    return bool(m) and reads_replies(m) and not from_owner(store, m, own)
+# THE BUTTONS ARE THE ITEM'S ACTIONS (the owner, 2026-11-10: "reply by itself makes no sense on github ... fix this globally"): Reply stands
+# only where somebody reads one - the one fact the row's buttons (concierge.cannot), the cards (funnel's `replies`) and the doors all ask
+def replies_on(store, item: dict) -> bool:
+    "Does anybody read a reply on this item: its task's reply target is somebody (no_correspondent), else its own message is (reads_reply_row)."
+    it = item or {}
+    if it.get('tid'): return not no_correspondent(store, int(it['tid']))
+    return bool(it.get('mid')) and reads_reply_row(store, store.get_message(int(it['mid'])) or {})
 def no_correspondent(store, task_id: int) -> bool:
-    "Nobody but the owner is behind the task: a reply would have no one to go to (agent_reply keeps it as the result instead)."
+    "Nobody but the owner, or a machine, is behind the task: a reply would have no one to read it (the reply tools are not offered on it)."
+    from .categories import automated
+    mid = reply_target(store, task_id); m = (store.get_message(mid) or {}) if mid else {}
+    return not mid or automated(m) or (not store.held_review(task_id) and no_one_behind(m.get('Channel')))
+def nobody_line(store, task_id: int) -> str:
+    "What the agent is told where nobody reads a reply: the notice's line where a machine sent it, else the owner's own ask's."
+    from .categories import automated
     mid = reply_target(store, task_id)
-    return not mid or (not store.held_review(task_id) and no_one_behind((store.get_message(mid) or {}).get('Channel')))
+    return NOTICE if mid and automated(store.get_message(mid) or {}) else OWN_ASK
 
 
 def answers_for(store, task_id: int, mid: int, to: str = '') -> int | None:
@@ -163,7 +174,7 @@ def _people(store, task_id: int) -> list:
     "Everyone who wrote in on this task, newest first, one row each: (address, name, their newest message)."
     seen, out = set(), []
     for m in reversed(store.list_messages(task_id)):
-        if m.get('Status') in ('context', 'skipped') or str(m.get('Direction') or 'in') == 'out' or from_owner(store, m) or no_one_behind(m.get('Channel')): continue
+        if m.get('Status') in ('context', 'skipped') or str(m.get('Direction') or 'in') == 'out' or from_owner(store, m) or not reads_replies(m): continue
         k = str(m.get('FromEmail') or m.get('FromName') or '').strip().lower()
         if k and k not in seen: seen.add(k); out.append((k, str(m.get('FromName') or '').strip(), m))
     return out
@@ -259,6 +270,13 @@ WITHDRAWN = 'withdrawn - '
 def left_by(store, rid):
     "{CommentId, CreatedAt} of the chat turn that last left review `rid` as it stands (store.snap_draft) - None when no filed turn did."
     return store._one('SELECT CommentId, CreatedAt, Text FROM draft_snapshot WHERE ReviewId=? ORDER BY Id DESC LIMIT 1', (rid,))
+def _turn_after(store, task_id: int, rv) -> bool:
+    """Has a turn begun on the task since draft `rv` was written - the owner's line or a brief after it? Only a written draft counts.
+    ...his line still KEPT for the turn counts too (general.WAITING_TYPE): a coding turn files its letter before its record takes the line it
+    was given (waitroom._handed), and the old draft was rewritten in place under his line (the overnight audit, 2026-11-10)"""
+    from .general import USER_TYPE, WAITING_TYPE
+    return bool(str(rv.get('DraftText') or '').strip()) and bool(store._one(
+        'SELECT 1 AS x FROM comment WHERE TaskId=? AND ActorType IN (?,?) AND CreatedAt>? LIMIT 1', (task_id, USER_TYPE, WAITING_TYPE, str(rv.get('CreatedAt') or ''))))
 def an_earlier_turns(store, rv) -> bool:
     "Is this pending draft one a filed chat turn left - so a new letter now is a later turn's, and takes its place as a new draft?"
     s = left_by(store, rv['ReviewId']) if rv else None
@@ -279,6 +297,13 @@ def _sid_now(store, task_id):
     except Exception: return None
 
 
+def put_down(store, task_id: int, mid: int) -> str:
+    "The why of the task's newest reply put down as not needed AFTER message `mid` came in - '' when none was, or a newer mail since."
+    m = store.get_message(mid) or {}
+    rv = store._one("SELECT NotNeeded, DecidedAt FROM review WHERE TaskId=? AND Status='closed_unsent' AND IFNULL(NotNeeded,'')<>'' "
+                    "ORDER BY DecidedAt DESC, ReviewId DESC LIMIT 1", (task_id,))
+    return str(rv['NotNeeded']) if rv and str(rv.get('DecidedAt') or '') >= str(m.get('CreatedAt') or '') else ''
+
 def own_draft(store, task_id: int):
     """The pending reply the agent wrote itself, if there is one."""
     return next((r for r in (store.pending_review(task_id, 'draft_reply', live_only=False),
@@ -294,8 +319,8 @@ def attach_files(store, rid: int, files, agent: str = 'agent') -> dict:
     and the delivery lock hold, and a file that cannot ride says why instead of vanishing."""
     from . import verdicts
     done, why = [], []
-    for name, data in files or []:
-        try: verdicts.attach(store, rid, name, data, agent); done.append(name)
+    for name, data, *src in files or []:              # ...a file from the task's own mail carries its id (agenttools.mail_file)
+        try: verdicts.attach(store, rid, name, data, agent, source=src[0] if src else None); done.append(name)
         except ValueError as e: why.append(f'{name}: {e}'); verdicts.refused(store, rid, name, str(e))
     return {'attached': done, 'not_attached': why}
 
@@ -412,6 +437,10 @@ def agent_reply(store, task_id: int, text: str, agent: str = 'agent', run_id: in
         mid = hit['MessageId']
         if held and _person(store, held.get('MessageId')) != _person(store, mid): held = {}
     else: mid = reply_target(store, task_id) or held.get('MessageId')
+    # ...and a machine reads no reply (NOTICE): refused at the door, saying what to do instead - nothing is kept as a result, the write-up is
+    # the agent's own last words to the owner
+    if mid and nobody_waiting(store, mid):
+        return {'ok': False, 'no_reply': True, 'why': f'{NOTICE} Nothing was saved.'}
     # ...and `answers` names the mail that holds the ask when the owner means one triage did not pick: it must be somebody's mail on this task
     if answers:
         a = store.get_message(answers) or {}
@@ -433,7 +462,7 @@ def agent_reply(store, task_id: int, text: str, agent: str = 'agent', run_id: in
         # ...and what the agent reads back says so as a fact to act on, never a refusal to tell the owner about
         return {'ok': True, 'saved': 'result', 'artifact_id': art.get('ArtifactId'),
                 'says': f"{OWN_ASK} Your words are kept as the task's result - nothing failed, so say nothing about saving them.",
-                'not_attached': [f'{n}: nobody is waiting on a reply, so there is nothing to attach it to' for n, _ in files or []]}
+                'not_attached': [f'{n}: nobody is waiting on a reply, so there is nothing to attach it to' for n, *_ in files or []]}
     sent = answered_by_work(store, task_id, mid)
     if sent and not (follow_up or owner_asked_since(store, task_id, sent.get('DecidedAt'))):
         from .continuity import clock, sent_to
@@ -453,7 +482,12 @@ def agent_reply(store, task_id: int, text: str, agent: str = 'agent', run_id: in
     if live and (to_mid := live.get('AnswersMid') or live.get('MessageId')) and _person(store, to_mid) != _person(store, mid): live = None
     if sid and live and stale_draft(store, live, sid): supersede(store, live, agent); live = None
     # ...and one an EARLIER TURN left is that turn's answer: a different letter now is this turn's own draft, the old one superseded
-    if live and an_earlier_turns(store, live) and _words(live.get('DraftText')) != _words(text):
+    # ...and so is one no turn of the agent's wrote (triage's, the quick drafter's): rewritten in place, the new letter's card stood at that old
+    # draft's place far above and the turn that wrote it drew none (the owner, 2026-11-10: "why did this not create the draft email action card?")
+    # ...and once the owner has prompted past a draft it is old news, whoever wrote it and whatever the letter now says (the owner, 2026-11-10:
+    # "The second you write ptompt on email action it should go gray and then it should generate new email action box under it"): the page
+    # greys it for good, so a letter filed after his line - the same words kept, too - is this turn's new card, the old one its record
+    if live and (an_earlier_turns(store, live) and _words(live.get('DraftText')) != _words(text) or _turn_after(store, task_id, live)):
         store.decide_review(live['ReviewId'], 'closed_unsent', None, agent, note=REPLACED); live = None
     why = f'{agent} wrote this reply in its session - approve to send'
     if sent:
@@ -493,7 +527,7 @@ def agent_reply(store, task_id: int, text: str, agent: str = 'agent', run_id: in
     # itself" and "assistant drafted the reply itself" one under the other (the email walk, 2026-10-29)
     same = agent_drafted(rv) and ' '.join(str(rv.get('DraftText') or '').split()) == ' '.join(text.split())
     # ...with the names of the files it hands over kept as the draft's promise (FilesPromised): the card counts them against what rides
-    store.update_review_draft(rid, text, run_id or rv.get('RunId'), by=AGENT_DRAFT + agent, files=[n for n, _ in files] if files else ...)
+    store.update_review_draft(rid, text, run_id or rv.get('RunId'), by=AGENT_DRAFT + agent, files=[n for n, *_ in files] if files else ...)
     store.set_review_sid(rid, sid)
     if not same: store.add_comment(task_id, agent, 'agent', f'{agent} drafted the reply itself - it is on the task, waiting on your approval.')
     # ...and the session is told whom it went to - and, when it did not say and the task has more than one person on it, who they are
@@ -519,17 +553,13 @@ def agent_reply(store, task_id: int, text: str, agent: str = 'agent', run_id: in
 # PhishGuard training reminder, not an engineering or repo issue, so I closed it as FYI with no
 # further action" - our own internal wrap-up, in our own internal words, posted to the robot that
 # sent the notice (TQ-0252). Nothing about that was a reply to the sender.
-def nobody_waiting(store, mid: int, rep: dict) -> bool:
-    """Did this run end with nothing done, for a sender who is not waiting to hear anything back?
-    Then there is no reply to write and the notice is simply filed with its report.
-
-    BOTH halves are required, and the second is the one that keeps this honest. "Nothing to do"
-    said to a PERSON who asked is still the answer they are owed - "I looked, the import is fine"
-    is a reply, and swallowing it would be the worse bug. "Nothing to do" on an automated notice
-    is a mailer's inbox, and whatever we write there is only ever about ourselves."""
-    if rep.get('outcome') != 'nothing_to_do': return False
-    from .categories import sender_class, team_domains_of
-    return sender_class(store.get_message(mid) or {}, team_domains_of(store.get_settings())) != 'person'
+def nobody_waiting(store, mid: int) -> bool:
+    """Is the message a reply would answer from a machine? Then there is no reply to write, whatever the run found, and the result is
+    simply filed with its report. "Nothing to do" said to a PERSON who asked is still the answer they are owed - "I looked, the import is
+    fine" is a reply. On an automated notice it is a mailer's inbox - and so is "fixed it" (the owner, 2026-11-10: "it's replying to a no
+    reply email"): whatever we write there is read by nobody."""
+    from .categories import automated
+    return automated(store.get_message(mid) or {})
 
 
 # The server installs its conversation refresh here (PW-235): called as REFRESH(store, task_id, mid)
@@ -606,9 +636,7 @@ def unanswered(store, task_id: int) -> list:
     from . import workerstate as ws
     try: reqs = ws.status(store, task_id).get('requests') or []
     except Exception as e: logger.debug(f'task {task_id}: open questions not read - {e}'); return []
-    # ...and a question asked only in the prose that ended its turn, as the model read it (hooks.judge_turn): "Ready to push to main - go
-    # ahead?" is as unanswered as one asked through a tool (the owner, 2026-11-03). selfclose still lets the agent's own --done outrank it
-    return [r for r in reqs if r.get('text') and (r['kind'] == 'approval_needed' or (r['kind'] == 'input_needed' and r.get('source') in ('hook', 'api', 'judge', 'screen', ws.RESUMED)))]
+    return [r for r in reqs if r.get('text') and (r['kind'] == 'approval_needed' or (r['kind'] == 'input_needed' and r.get('source') in ('hook', 'api', 'screen', ws.RESUMED)))]
 
 
 def left_open(asked: list) -> str:
@@ -655,14 +683,14 @@ def asks_to_move(store, task_id: int, rep: dict, actor: str = 'agent', keep_open
 
 
 def finish(store, task_id: int, rep: dict, run_id: int = None, actor: str = 'agent',
-           complete_result: str = None, owner_done: bool = False, keep_open: bool = False, no_reply: bool = False,
+           owner_done: bool = False, keep_open: bool = False, no_reply: bool = False,
            done: bool = False) -> dict:
-    """The end of finished work: the conversation is refreshed, the ask reassessed, and the responder
-    drafts the reply the sender gets from the saved result and the thread as it stands; the task waits
-    on you to send it. Nothing to reply to means nothing to wait for, so it just closes.
+    """The end of finished work: the conversation is refreshed, the ask reassessed, and the reply the
+    sender gets waits on you to send it - the agent's own, or, where it wrote none, the reply owed
+    (`owed`: its review, for ask_for_reply). Nothing to reply to means nothing to wait for, so it just closes.
 
     `keep_open` is ENDING THE RUN without ending the task: everything here still happens - the
-    refresh, the reassessment, the draft - and the task's own status is left exactly as it was. The
+    refresh, the reassessment, the reply - and the task's own status is left exactly as it was. The
     session's end is not a verdict on the work.
 
     `done` is the AGENT SAYING SO - `taskuary --done`, the chat's ending marker: the run is finished
@@ -722,10 +750,16 @@ def finish(store, task_id: int, rep: dict, run_id: int = None, actor: str = 'age
         store.add_comment(task_id, actor, 'agent', 'The session ended waiting on your answer - no reply drafted; what was left open '
                                                    'is in its result.')
         mid = None
-    # a held draft is proof somebody IS waiting on an answer, so it is never quietly dropped here
-    if mid and not held and not own_draft(store, task_id) and nobody_waiting(store, mid, rep):
-        store.add_comment(task_id, actor, 'agent', 'Nothing needed doing here and the sender is not waiting on an '
-                                                   'answer - filed with the report, no reply drafted.')
+    # ...nor when the agent PUT THE REPLY DOWN as not needed since that message came in (verdicts.not_needed - the owner said no reply is
+    # needed, a colleague answered): the session's end drafted a fresh one from its report in the place of the one just retired (2026-11-09)
+    if mid and not held and not own_draft(store, task_id) and (why := put_down(store, task_id, mid)):
+        store.add_comment(task_id, actor, 'agent', f"The reply was put down as not needed ({why.rstrip('.')}) - no reply drafted.")
+        mid = None
+    # a held draft is proof somebody IS waiting on an answer - unless a machine sent what it answers: one held there is retired with it
+    if mid and nobody_waiting(store, mid):
+        if held: store.decide_review(held['ReviewId'], 'no_reply', None, actor, 'an automated sender reads no reply'); held = {}
+        store.add_comment(task_id, actor, 'agent', 'An automated system sent this, and nobody reads a reply to it - the result is filed '
+                                                   'with the report, no reply drafted.')
         mid = None
     # refresh first, draft second (PW-235): an answer the owner already sent means none is owed; a newer
     # ask is the one the reply answers; a failed refresh is shown, not assumed away
@@ -744,10 +778,8 @@ def finish(store, task_id: int, rep: dict, run_id: int = None, actor: str = 'age
         store.add_comment(task_id, actor, 'agent', f'Your reply to {sent_to(store, sent)} already went at {clock(sent.get("DecidedAt"))} and nothing '
                                                    'new came from them since - the result is filed with the report, no second reply drafted.')
         mid = None
-    # The terminal and report are already closed at this point. Publish that truth BEFORE the
-    # reply-writing AI call: it can take seconds (or fail), and during that time the task used to
-    # remain `in_progress` with no live agent. A pending review is already durable, so `waiting`
-    # is honest even while its draft text is being filled in.
+    # The terminal and report are already closed at this point: the task's status says so before its reply is raised - it used to
+    # remain `in_progress` with no live agent while a writer drafted it. A pending review is durable, so `waiting` is honest.
     # THE CLOSE-OUT (the owner, 2026-09-27: "it's not closed until then"): a task whose work is an open pull request
     # is finished by merging it, one from an issue by closing it - each waits for the owner's yes like the reply does.
     # Not on an upstream that already ended it, or the owner's own Mark done (that IS the close) - nor on a session only
@@ -770,10 +802,10 @@ def finish(store, task_id: int, rep: dict, run_id: int = None, actor: str = 'age
     if due and due['action'] == 'close_issue': proposals.closeout(store, task_id, due, '' if mid else resolution_text(rep), actor)
     # a tracker's close-out carries the agent's result as its comment - Jira, Monday and Linear have no reply to carry it (outbound.NEVER)
     if due and due['action'] == 'close_item': proposals.closeout(store, task_id, due, resolution_text(rep), actor)
-    if mid: raise_reply(store, task_id, mid, run_id, rep, complete_result, fresh=fresh, stopped=keep_open and cut_short(store, task_id))
+    owed = raise_reply(store, task_id, mid, run_id, fresh=fresh, stopped=keep_open and cut_short(store, task_id)) if mid else None
     if due and due['action'] == 'merge_pr': proposals.closeout(store, task_id, due, '' if due.get('theirs') else resolution_text(rep), actor)
     return {'drafting': bool(mid), 'message_id': mid, 'can_send': bool(mid) and can_send,
-            'send_block': block if mid else '', 'freshness': fresh['state'], 'closeout': (due or {}).get('action')}
+            'send_block': block if mid else '', 'freshness': fresh['state'], 'closeout': (due or {}).get('action'), 'owed': owed}
 
 
 def deliver_findings(store, task_id: int, mid: int, run_id: int, rep: dict, tgt: dict) -> None:
@@ -813,7 +845,7 @@ def _ended(store, tid: int, close: bool, actor: str):
 def wrap(store, tid: int, close: bool = True, actor: str = 'owner', sid: str = None,
          final_message: str = '', no_reply: bool = False, harvested: dict = None, on_harvest=None, done: bool = False) -> dict:
     """"We're done" - the whole ending, in one callable. The transcript becomes the report, the
-    session dies, proposals become reviews, and finish() drafts the reply the sender gets.
+    session dies, proposals become reviews, and finish() raises the reply the sender gets.
 
     It lived inside the HTTP handler, which meant the ONLY way a task could be closed out was a
     person clicking Done in the browser. An agent that has finished knows it has finished long
@@ -843,6 +875,9 @@ def wrap(store, tid: int, close: bool = True, actor: str = 'owner', sid: str = N
     # with "no session transcript" while the whole answer sat on screen (owner, 2026-09-07).
     session = general.session_for(tid)
     if general.handles(task) and (session or general.chat_rows(store, tid)):
+        # NOTHING TO READ FIRST: this conversation is the task's own comments, so a press waiting on the harvest (writeup.start) may answer
+        # now, and a restart runs this ending again from them - Mark done held the page for the whole ending, its AI calls included (12.9 s)
+        if on_harvest: on_harvest({'general': True})
         # what it was still asking leads its result (left_open) - filed BEFORE the session's own close files the answer plain
         left = left_open(unanswered(store, tid))
         if left: general.report_note(store, tid, lead=left)
@@ -865,22 +900,20 @@ def wrap(store, tid: int, close: bool = True, actor: str = 'owner', sid: str = N
         # "drafts the answer the person who asked will get". Told that and given no drafter, the
         # assistant wrote the reply into the chat itself, in its own voice, where STYLE.md never
         # touched it and no button could send it (TQ-0443; TQ-0440/0441 closed answering nobody).
-        # The conversation IS this worker's transcript, so it is what the responder drafts from.
+        # The reply is the agent's own (its propose_reply), or the reply owed it has still to write (raise_reply).
         fin = {}
         if task.get('Status') not in ('done', 'dropped'):
             _stage(tid, 'reply')
-            fin = finish(store, tid, {'summary': last}, None, 'assistant',
-                         reply_source(general.conversation_text(store, tid), final_message or last),
-                         owner_done=close and actor == 'owner', keep_open=not close, no_reply=no_reply, done=done) or {}
+            fin = finish(store, tid, {'summary': last}, None, 'assistant', owner_done=close and actor == 'owner', keep_open=not close,
+                         no_reply=no_reply, done=done) or {}
             if close:
                 from . import selfclose; selfclose.unclaim(store, tid, actor)
         store.add_comment(tid, actor, 'human', ('Closed the general-work session.' if session else 'Closed out the assistant conversation.')
-                          # the draft is only ASKED FOR here; its writer runs after this line and may find nothing needs to go back.
                           # "is drafted for you to approve" was said over three closes that drafted nothing (the owner, 2026-10-14)
                           # ...and one the agent wrote itself is not "being written": its own line said it is waiting (agent_reply) - this
-                          # came after it, as if a second were on the way (the email walk, 2026-10-29)
+                          # came after it, as if a second were on the way (the email walk, 2026-10-29). Nothing writes one it did not (raise_reply)
                           + ('' if fin.get('drafting') and own_draft(store, tid)
-                             else ' The reply to whoever asked is being written - it waits for your approval, or the task says why none is needed.'
+                             else " A reply to whoever asked is still owed - it is the agent's to write."
                              if fin.get('drafting')
                              # say what the task IS: a proposal left for the owner keeps it waiting (finish), not done
                              else ' The task waits for your answer to what the agent proposed.' if close and (store.get_task(tid) or {}).get('Status') == 'waiting'
@@ -903,7 +936,7 @@ def wrap(store, tid: int, close: bool = True, actor: str = 'owner', sid: str = N
         return {'wrap': 'done', 'taskId': tid, 'report': last, 'proposed': [pbd] if pbd else [],
                 'drafting': bool(fin.get('drafting')), 'can_send': bool(fin.get('can_send')),
                 'send_block': fin.get('send_block') or '', 'freshness': fin.get('freshness') or 'unchecked'}
-    if harvested:          # harvested already - by a write-up that was interrupted (writeup.resume): the session is gone
+    if harvested and 'text' in harvested:          # harvested already - by a write-up that was interrupted (writeup.resume): the session is gone
         text, agent, found, final_message, cut = (harvested[k] for k in ('text', 'agent', 'found', 'final_message', 'cut'))
     else: text, agent, found, final_message, cut = _harvest(store, tid, final_message)
     if not text.strip(): raise ValueError('nothing to wrap up - this task has no session transcript')
@@ -1045,7 +1078,7 @@ def _close_again(store, tid, close, actor, agent, text, no_reply) -> dict:
     "The session's ending is on the task already: Done on a saved session still closes the task, and files nothing more."
     fin = {}
     if close and (store.get_task(tid) or {}).get('Status') not in ('done', 'dropped'):
-        fin = finish(store, tid, {}, None, agent, reply_source(text), owner_done=actor == 'owner', no_reply=no_reply) or {}
+        fin = finish(store, tid, {}, None, agent, owner_done=actor == 'owner', no_reply=no_reply) or {}
         from . import selfclose; selfclose.unclaim(store, tid, actor)
     return {'wrap': 'already', 'taskId': tid, 'report': '', 'proposed': [], 'drafting': bool(fin.get('drafting')),
             'can_send': bool(fin.get('can_send')), 'send_block': fin.get('send_block') or '', 'freshness': fin.get('freshness') or 'unchecked'}
@@ -1060,7 +1093,10 @@ def _wrap_session(store, tid, task, close, actor, sid, final_message, no_reply, 
         _question(playbooks.draft, store, tid, text, agent)])
     _stage(tid, 'report')
     asked = unanswered(store, tid)                 # read while the session is still up: its questions lead the result
-    rep = report_from_transcript(store, tid, text, agent, final_message='' if cut else final_message)
+    # ...and whether the agent ended it itself: the run's Finished event is its `--done` (selfclose._finished), the only one there is
+    from . import workerstate as ws
+    said = ws.status(store, tid).get('state') == 'finished'
+    rep = report_from_transcript(store, tid, text, agent, final_message='' if cut else final_message, said=said)
     # ...and so does the move it asks for, when the work turned out to be in another repository (asks_to_move)
     left = left_open(asked + ([{'text': move_question(store, tid, rep)}] if moves(rep) and not (close and actor == 'owner') else []))
     report = with_left_open(resolution_text(rep), left)
@@ -1091,13 +1127,12 @@ def _wrap_session(store, tid, task, close, actor, sid, final_message, no_reply, 
     # THE RUN ENDING IS WHEN THE ANSWER IS WRITTEN, whoever ended it. Only `close` decided this, so
     # an agent that finished by itself drafted the reply and the owner pressing Stop and save
     # got the report filed and nothing to send - on the one road where they had just read the work
-    # and knew it was done (the owner, 2026-09-22). The draft is written either way now; what `close`
+    # and knew it was done (the owner, 2026-09-22). The reply is raised either way now; what `close`
     # still decides is whether the TASK ends with the run (finish's keep_open).
     fin = {}
     if (store.get_task(tid) or {}).get('Status') not in ('done', 'dropped'):
         _stage(tid, 'reply')
-        fin = finish(store, tid, rep, None, agent, reply_source(text, '' if cut else final_message),
-                     owner_done=close and actor == 'owner', keep_open=not close, no_reply=no_reply, done=done) or {}
+        fin = finish(store, tid, rep, None, agent, owner_done=close and actor == 'owner', keep_open=not close, no_reply=no_reply, done=done) or {}
         if close:
             from . import selfclose; selfclose.unclaim(store, tid, actor)   # the owner ended it; the mark that kept it open has done its job
     # ...and the one question worth asking the transcript that is NOT about this task: did the
@@ -1119,6 +1154,9 @@ def _wrap_session(store, tid, task, close, actor, sid, final_message, no_reply, 
     store.audit('terminal', tid, 'wrap', actor, detail={'sid': found or sid, 'close': close})
     _ended(store, tid, close, actor)
     _collect_skill(store, tid, task)
+    # ...and the reply it owes and did not write is asked of it, once its run is put away (ask_for_reply) - only where the agent ended
+    # the run itself: one the owner ended is theirs to start again
+    if said and fin.get('owed'): ask_for_reply(store, tid, fin['owed'])
     return {'wrap': 'done', 'taskId': tid, 'report': report, 'proposed': proposed,
             'drafting': bool(fin.get('drafting')), 'can_send': bool(fin.get('can_send')), 'send_block': fin.get('send_block') or '',
             'freshness': fin.get('freshness') or 'unchecked', 'artifacts': [artifact] if artifact else [], 'asks': fin.get('asks')}
@@ -1130,30 +1168,26 @@ def cut_short(store, task_id: int) -> bool:
     return (store.last_worker_event(task_id, skip=ws.NOTES) or {}).get('Kind') in ('working', 'stopped')
 
 
-def raise_reply(store, task_id: int, mid: int, run_id: int, rep: dict,
-                complete_result: str = None, fresh: dict = None, stopped: bool = False) -> None:
-    """The session reported; the responder writes what the sender actually reads. One voice for
-    every reply the owner sends - and no coding CLI drafting prose from inside a repo. A draft
-    that fails to write still leaves the review standing: 'Draft with AI' retries it.
-
-    A reply triage already drafted from the mail alone was HELD when the session started - it
-    promised what the agent had not looked at yet. That same review comes back here and is
-    rewritten from the report, so the sender gets one answer, and it is the true one."""
-    from . import responder
+def raise_reply(store, task_id: int, mid: int, run_id: int, fresh: dict = None, stopped: bool = False):
+    """The run ended with a reply owed to the sender of `mid`: one review per answer (PW-236), the held one, else the pending one an earlier
+    ending raised, else a new one. The agent's own reply (agent_reply) stands as written. One it did not write is NOBODY'S DRAFT: the
+    review waits as the reply owed, with no words on it, and its agent is asked for it (ask_for_reply) - the review's id is returned then.
+    A tool-less writer used to draft it here from the run's report (the owner, 2026-11-10: "no more triage creates draft. agent should
+    be doing it"); only the owner's own Draft with AI and Redraft still ask that writer (responder.write_draft, pressed)."""
     fresh = fresh or {}
-    # ...and a run the owner STOPPED (Stop and save: the session ended, the task kept open) did not finish: its draft said "the agent finished
+    # ...and a run the owner STOPPED (Stop and save: the session ended, the task kept open) did not finish: its reply said "the agent finished
     # the work" over an agent stopped mid-turn (the overnight run, 2026-11-03)
     did = 'you stopped the agent' if stopped else 'the agent finished'
-    why = f'{did} - the reply is rewritten from what it found' + (' so far' if stopped else '')
-    if fresh.get('state') == 'changed': why = f'{did}, and the thread moved on after the work began - the reply answers the newest message; reread it before sending'
-    if fresh.get('state') == 'unresolved': why = f"{did}, but the conversation could not be refreshed ({fresh.get('error')}) - drafted from the saved result; refresh it before sending"
-    # an EARLIER SESSION'S draft is not this session's answer: closed as superseded (its words kept), and the reply is drafted from this run
+    why = f"{did} without writing the reply {owed_to(store, mid, store.held_review(task_id))} is owed - it is the agent's to write"
+    if fresh.get('state') == 'changed': why += ' (the thread moved on after the work began - it answers the newest message)'
+    if fresh.get('state') == 'unresolved': why += f" (the conversation could not be refreshed: {fresh.get('error')})"
+    # an EARLIER SESSION'S draft is not this session's answer: closed as superseded (its words kept)
     if (sid := _sid_now(store, task_id)):
         for rv in store._rows("SELECT * FROM review WHERE TaskId=? AND Status IN ('held','pending')", (task_id,)):
             if stale_draft(store, rv, sid): supersede(store, rv)
     held = store.held_review(task_id, mid) or store.held_review(task_id)
     # one review per answer (PW-236): the held triage draft, else the pending one an earlier completion
-    # event already raised - a repeated completion rewrites it, never duplicates it
+    # event already raised - a repeated completion takes it again, never duplicates it
     live = None if held else (store.pending_review(task_id, 'draft_reply', live_only=False) or store.pending_review(task_id, 'draft', live_only=False))
     if held:
         rid = held['ReviewId']
@@ -1163,38 +1197,51 @@ def raise_reply(store, task_id: int, mid: int, run_id: int, rep: dict,
         rid = live['ReviewId']
         # ...a follow-up keeps saying it is one (agent_reply): these lines would make it the answer to the message again
         if not is_follow_up(live): store.update_review_reason(rid, why, run_id)
-    else:
-        rid = store.add_review({'TaskId': task_id, 'MessageId': mid, 'RunId': run_id, 'Kind': 'draft_reply', 'Status': 'pending',
-                                'Reason': why if fresh.get('state') in ('changed', 'unresolved') else 'you stopped the agent - the reply is drafted from what it did so far, awaiting approval' if stopped
-                                else 'the agent finished the work - reply awaiting approval'})
+    # ...a new one is the reply owed, as one owed at arrival is (ingest): a `draft` with no words, the agent's to write
+    else: rid = store.add_review({'TaskId': task_id, 'MessageId': mid, 'RunId': run_id, 'Kind': 'draft', 'Status': 'pending', 'Reason': why})
     if (held or live) and (held or live).get('MessageId') != mid: store.update_review_message(rid, mid)
     rv = store.get_review(rid) or {}
-    if agent_drafted(rv):
-        # the agent that did the work wrote this reply itself (agent_reply): its words stand and no second
-        # model rewrites them - only a thread that moved on (or could not be checked) is flagged for a reread
-        who = str(rv.get('DraftBy'))[len(AGENT_DRAFT):] or 'the agent'
-        if not is_follow_up(rv):
-            store.update_review_reason(rid, f"{who}'s own reply from the session - approve to send"
-                                       + (' (the thread moved on after it was written - reread it)' if fresh.get('state') == 'changed' else ''), run_id)
-        if fresh.get('state') in ('changed', 'unresolved'): store.mark_review_stale(rid)
-        return
-    src = complete_result or resolution_text(rep)
-    if fresh.get('state') == 'changed' and fresh.get('latest'):
-        l = fresh['latest']
-        src += (f"\n\nTHE THREAD MOVED ON after the work began. Newest message from {l.get('FromName') or l.get('FromEmail') or 'them'} ({l.get('SentAt')}):\n"
-                f"{str(l.get('BodyText') or '')[:800]}\nAnswer what is asked NOW; say plainly if the result above does not cover it.")
-    # The report is intentionally compact UI copy. Draft from the complete final response (or
-    # transcript fallback), so every question the session answered remains available here.
-    try:
-        try: deliver = json.loads((held or {}).get('Deliver') or '{}') or {}
-        except (TypeError, ValueError): deliver = {}
-        if deliver.get('channel') and deliver.get('kind') != 'zoho_invoice':
-            from . import outbox
-            outbox.redraft_review(store, store.get_review(rid), src)
-        else:
-            responder.write_draft(store, task_id, rid, src, 'agent')
-    except Exception as e: logger.warning(f'reply draft failed for task {task_id}: {e}')
-    # a refresh that failed is an unresolved freshness state the owner sees: the draft waits, stale, for one that succeeds
-    if fresh.get('state') == 'unresolved': store.mark_review_stale(rid)
+    # a refresh that failed is an unresolved freshness state the owner sees: the reply waits, stale, for one that succeeds
+    if fresh.get('state') == 'unresolved' or (fresh.get('state') == 'changed' and agent_drafted(rv)): store.mark_review_stale(rid)
+    # ...and words written before the work from the mail alone (an older build's triage draft) promise what the run had not looked at:
+    # they are shown stale, never sent as the run's answer
+    elif held and not agent_drafted(rv) and str(rv.get('DraftText') or '').strip(): store.mark_review_stale(rid)
+    if not agent_drafted(rv): return rid
+    # the agent that did the work wrote this reply itself (agent_reply): its words stand and no second
+    # model rewrites them - only a thread that moved on (or could not be checked) is flagged for a reread
+    by = str(rv.get('DraftBy'))[len(AGENT_DRAFT):] or 'the agent'
+    if not is_follow_up(rv):
+        store.update_review_reason(rid, f"{by}'s own reply from the session - approve to send"
+                                   + (' (the thread moved on after it was written - reread it)' if fresh.get('state') == 'changed' else ''), run_id)
+
+
+# ...AND THE AGENT IS ASKED FOR IT, ONCE. An agent that ended its run itself (`taskuary --done`) without the reply it owes is told so, by the
+# road every Taskuary word to an agent takes (general.tell) - write it, or say none is needed. Once per reply owed, kept on the review's own
+# audit: an agent that ends again without writing it is not told twice (no loop), and the reply waits as owed, its agent's start lit
+# (advisor.reply_unwritten). A run the owner ended - Stop and save, Done - is not reopened for it: the same reply owed waits for their start.
+OWED = ('TASKUARY: your run ended and {who} is owed a reply that nobody has written. Write only that reply now (propose_reply, or '
+        '`taskuary --reply "<text>"`), or if none is needed say why (reply_not_needed, or `taskuary --reply-not-needed "<why>"`). The work '
+        'itself is done - nothing else.')
+ASKED = 'reply_asked'
+def owed_to(store, mid, rv: dict = None) -> str:
+    "Who the reply is owed to: the people a message the owner asked for goes to (outbox), else whoever wrote message `mid`."
+    try: d = json.loads((rv or {}).get('Deliver') or '{}') or {}
+    except (TypeError, ValueError): d = {}
+    if d.get('channel') and d.get('to'): return ', '.join(d['to']) if isinstance(d['to'], list) else str(d['to'])
+    m = store.get_message(mid) or {}
+    return m.get('FromName') or m.get('FromEmail') or 'the person who asked'
+def ask_for_reply(store, task_id: int, rid: int) -> str:
+    """Tell task `task_id`'s agent the reply on review `rid` is owed: 'told' / 'woke' as general.tell answers, '' where it was asked before,
+    is written or gone, or no agent can be asked - then the task says so in one line."""
+    rv = store.get_review(rid) or {}
+    if rv.get('Status') not in ('pending', 'held') or str(rv.get('DraftText') or '').strip(): return ''
+    if any(r.get('Action') == ASKED for r in store.list_audit('review', rid, 50) or []): return ''
+    from . import general
+    who = owed_to(store, rv.get('MessageId'), rv)
+    got = general.tell(store, task_id, OWED.format(who=who), 'router')
+    store.audit('review', rid, ASKED, 'router', detail={'how': got or 'nobody'})
+    if got: store.update_review_reason(rid, f'reply owed to {who} - its agent was asked to write it', rv.get('RunId'))
+    else: store.add_comment(task_id, 'router', 'agent', f'A reply to {who} is owed and no agent could be asked to write it.')
+    return got
 
 

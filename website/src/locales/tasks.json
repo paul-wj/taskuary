@@ -1,4 +1,6 @@
 {
+  "No answer yet - it may still be going. Nothing runs twice.": "尚未收到响应，操作可能仍在进行。同一操作不会重复执行。",
+  "It didn't go through - nothing was published. Try again.": "操作未成功，未发布任何内容。请重试。",
   "today at {time}": "今天 {time}",
   "today": "今天",
   "your usual for {name}": "你对 {name} 的惯常做法",
@@ -447,7 +449,6 @@
   "Free on your calendar - {people} do not share a calendar with you, so check with them.": "您的日历在此时间有空——{people} 未与您共享日历，请与他们确认。",
   "Away until {day}": "暂时收起至 {day}",
   "Bring it back on…": "重新显示于…",
-  "An agent is still open on this task. Press Stop and save first, then put it away.": "此任务上仍有一个智能体会话打开。请先按“停止并保存”，再将任务收起。",
   "Tomorrow": "明天",
   "In 2 weeks": "两周后",
   "In a month": "一个月后",
@@ -1839,5 +1840,18 @@
   "Use a folder on the computer running Taskuary. No GitHub connection is needed; choosing it does not start an agent.": "填写运行 Taskuary 的电脑上的目录。无需连接 GitHub；选择目录不会启动智能体。",
   "Choose a local code folder, or connect GitHub if your code is hosted there.": "选择本地代码目录；如果代码托管在 GitHub，也可以连接 GitHub。",
   "browser · an empty tab - show it": "浏览器 · 空白标签页 — 显示",
-  "Read {count} web pages": "读取了 {count} 个网页"
+  "Read {count} web pages": "读取了 {count} 个网页",
+  "Answer the agent's question…": "回答智能体的问题…",
+  "Loading the changes…": "正在加载更改…",
+  "Open speech settings": "打开语音设置",
+  "needs an email address - none found for {name}; Send waits for one": "需要一个电子邮件地址——没有找到 {name} 的地址；发送会等待一个",
+  "needs an email address - none found; Send waits for one": "需要一个电子邮件地址——没有找到任何地址；发送会等待一个",
+  "Move this part to a task of its own": "把这部分移为独立任务",
+  "Proposed · nothing moves until you approve": "仅为提案 · 你批准前不会移动",
+  "Its own task": "独立任务",
+  "moving…": "正在移动…",
+  "Save this as a routine": "将此保存为例行任务",
+  "Proposed · nothing is saved or run until you approve": "仅为提案 · 你批准前不会保存或运行",
+  "It runs": "会运行",
+  "when you run it": "你运行时"
 }

@@ -237,8 +237,10 @@ def followups(store, hours: int, want=('followup', 'promise')) -> list:
     not silence."""
     cut = (datetime.now() - timedelta(hours=hours)).strftime('%Y-%m-%d %H:%M:%S')
     out, away, seen, rows = [], None, set(), []
-    # ...a promise that is already a TASK on the owner (store.task_for_promise) is a row on the rail, not a line here
-    if 'promise' in want: rows += [('promise', r) for r in store.open_promises(_since(DAYS), cut) if not store.promise_task(r['MessageId'])]
+    # ...a promise that is already a TASK on the owner (store.task_for_promise), or kept on the open task it was made from
+    # (sentjudge.keep_on), is a row on the rail, not a line here
+    def rowed(r): return store.promise_task(r['MessageId']) or (r.get('TaskId') and (store.get_task(r['TaskId']) or {}).get('Status') not in ('done', 'dropped'))
+    if 'promise' in want: rows += [('promise', r) for r in store.open_promises(_since(DAYS), cut) if not rowed(r)]
     if 'followup' in want:
         rows += [('followup', r) for r in store.owner_last_words(_since(DAYS), cut) if (store.sent_verdict(r['MessageId']) or {}).get('AsksThem')]
     for kind, r in sorted(rows, key=lambda kr: _ts(kr[1].get('SentAt')), reverse=True):
@@ -1660,6 +1662,9 @@ def raised_by(store, t: dict, messages=()) -> dict | None:
     return {'by': str((line or {}).get('FromName') or 'Advisor'), 'text': text} if text and (i or line) else None
 
 
+IDEA_TRIES, RETRY_IDEAS = 'idea_triage_tries', 3
+
+
 def retry_stuck_ideas(store, report_id=None, report_title: str = None) -> int:
     """L3 (the owner, 2026-09-25): an open idea whose triage FAILED, or that waited for a brain, is judged again on
     the next run of the report that said it - under that report's name, not every report's as "Advisor" (I8)."""
@@ -1669,7 +1674,11 @@ def retry_stuck_ideas(store, report_id=None, report_title: str = None) -> int:
         try: t = (json.loads(i.get('ActionJson') or '{}') or {}).get('triage') or {}
         except ValueError: continue
         if t.get('error') or t.get('pending'): stuck.append(i)
+    # ...each at most RETRY_IDEAS times: one whose triage fails for its own reasons was asked again on every run, for ever (2026-11-10)
+    tries = json.loads(store.get_setting(IDEA_TRIES) or '{}')
+    stuck = [i for i in stuck if tries.get(str(i['IdeaId']), 0) < RETRY_IDEAS]
     if not stuck: return 0
+    store.set_setting(IDEA_TRIES, json.dumps({**tries, **{str(i['IdeaId']): tries.get(str(i['IdeaId']), 0) + 1 for i in stuck}}), 'assistant')
     try:
         from .llm import build_llm
         brain = build_llm(store, job='triage')
@@ -1817,6 +1826,9 @@ def run(store, llm=None, force: bool = False, instruction: str = None, *,
     work is triage's call); timeline=no puts down at once each idea triage made no task of."""
     src = source(store)
     if not force and not (src and src.get('Active')): return {'ran': False, 'said': 0}
+    # ...and past the day's ceiling for what nobody asked for, the clock's look waits for tomorrow (brainroute.auto_held); Run now still runs
+    from .brainroute import auto_held
+    if not force and (held := auto_held(store)): logger.info(f'assistant: the scheduled look waits - {held}'); return {'ran': False, 'said': 0, 'held': held}
     if instruction is None and src and report_id is None:
         instruction = (src['cfg'].get('ai_prompt') or '').strip() or None
     # Direct calls retain the seeded Assistant's configuration. Report-scheduled calls pass their
@@ -1828,7 +1840,7 @@ def run(store, llm=None, force: bool = False, instruction: str = None, *,
     with _LOCK, (store.reads_off_writer() if hasattr(store, 'reads_off_writer') else contextlib.nullcontext()):
         retry_stuck_ideas(store, report_id, report_title)
         return _run(store, llm, instruction, watch_source_ids or [], watch_sources or [],
-                    systems_only, report_id, report_title, always_post, blocks, judge)
+                    systems_only, report_id, report_title, always_post, blocks, judge, asked=force)
 
 
 def clock(store):
@@ -1838,7 +1850,8 @@ def clock(store):
     this on the reports' clock, off any request; each tick is cheap until it is due. Switching the Advisor report off stops both."""
     src = source(store)
     if not (src and src.get('Active')): return
-    from . import wsboot, lookout
+    from . import brainroute, wsboot, lookout
+    if brainroute.auto_held(store): return
     # ...THE ADVISOR NOTICES A NEW HAT (the owner, 2026-11-01): a connector or GitHub project whose traffic no workstream places is judged,
     # added when sure, else an Advisor card - and each section kept current once a week (cheap when nothing is new)
     wsboot.tick(store)
@@ -1887,8 +1900,17 @@ def own_identity(store, report_id) -> bool:
     except Exception: return True
 
 
+def mark_key(report_id=None) -> str: return f'advisor_read_mark:{report_id or ""}'
+def read_mark(store) -> str:
+    """What an Advisor look reads, as one stamp: the day, the newest mail that is not its own post, the newest task change, comment and
+    review decision. Equal to the last look's stamp: nothing it would read has moved."""
+    r = store._one('SELECT (SELECT MAX(MessageId) FROM message WHERE IFNULL(Channel,\'\')<>?) m, (SELECT MAX(UpdatedAt) FROM task) t, '
+                   '(SELECT MAX(CommentId) FROM comment) c, (SELECT MAX(ReviewId) FROM review) r, (SELECT MAX(DecidedAt) FROM review) d', (CHANNEL,)) or {}
+    return json.dumps([datetime.now().strftime('%Y-%m-%d'), *r.values()], default=str)
+
+
 def _run(store, llm, instruction, watch_source_ids, watch_sources, systems_only=False,
-         report_id=None, report_title=None, always_post=False, blocks=None, judge=None) -> dict:
+         report_id=None, report_title=None, always_post=False, blocks=None, judge=None, asked: bool = False) -> dict:
     c = cfg(store); now = datetime.now()
     # the report's own block choice drives its producers too - ticking "Work gone quiet" off and
     # still getting cold rows would be the card describing a choice nothing read
@@ -1923,12 +1945,19 @@ def _run(store, llm, instruction, watch_source_ids, watch_sources, systems_only=
     # working even if the owner turns off the free-form "idea" producer in Settings.
     configured = bool(_ids(watch_source_ids) or _inline(watch_sources))
     used, note, read, mids = bool(llm and (configured if systems_only else ('idea' in c['producers'] or configured))), '', '', {}
+    # A CALL ONLY WHERE SOMETHING MOVED (the owner, 2026-11-10: "client claims he barely used it. are we leaking tokens?"): every thirty
+    # minutes the whole payload went to the model on an install where nothing had arrived, changed or been decided since the last look -
+    # "posts nothing when nothing is new" posted nothing, and paid for the call. No new candidate and an unmoved mark: no call - but Run now
+    mark = read_mark(store)
+    if used and not asked and not cands and not configured and store.get_setting(mark_key(report_id)) == mark:
+        logger.info(f"assistant: {report_title or 'Advisor'} - nothing moved since its last look, no model call"); used = False
     # A SYSTEM WORTH CONNECTING is no candidate: the model reads the `connectors` block in think() and raises it itself,
     # or not (connect_line). No model, no line - there is nothing to judge it with, and no word match stands in.
     if used:
         try:
             say, note, read, mids = think(store, cands, llm, instruction, c['max'],
                                           watch_source_ids, watch_sources, systems_only, blocks, report_id)
+            store.set_setting(mark_key(report_id), mark, 'assistant')
             # the week starts when a check that READ the counts came back - never on a preview or a failed pass
             if AUTOMATION_HEAD in (read or ''):
                 store.set_setting(automation_key(store, report_id), now.isoformat(sep=' ', timespec='seconds'), 'assistant')

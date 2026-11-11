@@ -2,9 +2,12 @@
 // ever. I hate free text" ... "put a little animation on the corner of the past task - like button marked done not free text").
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { mergeDurableTurns, nextBadge, pressChip, pressLine, pressedNoteOf, pressedOf } from "../src/assistantTurns.js";
 import { label as btn, VERBS } from "../src/buttons.js";
 import { chipsOf, lastActIndex, sentChips } from "../src/funnelPile.js";
+const src = (f) => readFileSync(fileURLToPath(new URL(`../src/${f}`, import.meta.url)), "utf8");
 
 const item = (id, key, tid) => ({ id, role: "assistant", text: "", card: { kind: "task", key, tid, title: "Send Erin the signed form" } });
 
@@ -104,6 +107,8 @@ test("Next's badge is Read on a report, a dashboard or an fyi it read, and Next 
 // THE END OF THE WALK SAYS NOTHING (the owner, 2026-10-23: "yes remove the sentence, just the button"): the server sends no words on the
 // desk, and a line with no words and no item draws no bubble - only its buttons, on the row by the prompt
 test("a line with no words and no item is only its buttons", () => {
+  const view = src("AssistantView.jsx");
+  assert.match(view, /&& !m\.proposal && !String\(m\.text \|\| ""\)\.trim\(\) && !pressedOf\(m\)\)\n\s+return last \? <><BarVerbs owner=\{`line:\$\{m\.id\}`\} chips=\{barHolds \? \[\] : chipsOf\(m\)\}/);
   const end = { id: "a9", role: "assistant", text: "", chips: [{ verb: "walk", label: btn("walk") }, { verb: "open", key: "task:4", label: "Open TQ-0004 · Quarter plan" }] };
   assert.deepEqual(chipsOf(end).map((c) => c.verb), ["walk", "open"]);
 });

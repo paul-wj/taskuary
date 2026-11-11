@@ -1,0 +1,67 @@
+import { taskSource } from "./taskSource.mjs";
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+
+const src = (name) => fs.readFileSync(path.join(process.cwd(), "src", name), "utf8");
+
+test("the assistant offers ONE Send to agent, and the card asks coding or not", () => {
+  const cards = src("assistantCards.jsx");
+  // the card is what the thing IS; the verbs are the chat line's (concierge.CHIPS)
+  // ...no BUTTON per kind. The story's agent step names what an agent is ("Coding agent · researcher", 2026-09-28) -
+  // a label, not a verb
+  assert.doesNotMatch(cards, /<Button[^>]*>[^<{]*(Coding|Regular) agent[^<]*<\/Button>/);
+  assert.doesNotMatch(cards, /"Regular agent"/);
+  // one button (the owner, 2026-09-25) - and still two separate roads, never one guessed kind: the card's own
+  // question offers both - its words in buttons.json, the one list the server and the page read
+  const buttons = JSON.parse(fs.readFileSync(path.join(process.cwd(), "..", "taskuary", "buttons.json"), "utf8"));
+  assert.equal(buttons.verbs.regular_agent.label, "Send to agent");
+  assert.deepEqual(buttons.choices.agent.map(([v]) => v), ["coding_agent", "regular_agent"]);
+  assert.doesNotMatch(cards, /kind: coding \? "coding" : "general"/);
+});
+
+test("the timeline handoff asks for an agent type before Send is enabled", () => {
+  const ui = src("ui.jsx");
+  const handoff = ui.slice(ui.indexOf("export const SendToAgent"), ui.indexOf("export const TASK_STATES"));
+  assert.match(handoff, /Which kind of agent\?/);
+  assert.match(handoff, /choice\("agent", "coding_agent"\)/);       // the answers are buttons.json's choices
+  assert.match(handoff, /choice\("agent", "regular_agent"\)/);
+  assert.match(handoff, /disabled=\{busy \|\| !agentKind\}/);
+  assert.match(handoff, /\{ kind: agentKind/);
+});
+
+test("opening a general task reads state without starting an agent", () => {
+  const workspace = src("GeneralWorkspace.jsx");
+  const mount = workspace.slice(workspace.indexOf("useEffect(() => {", workspace.indexOf("export function GeneralWorkspace")));
+  assert.match(mount, /api\.get\(`\/api\/tasks\/\$\{task\.TaskId\}\/assistant`\)/);
+  const before = mount.indexOf("const updateProvider");
+  assert.ok(before > 0, "the provider change (which does start a session) comes after the mount");
+  assert.doesNotMatch(mount.slice(0, before), /assistant\/session/);
+});
+
+test("no live agent offers a Stop and save beside its chat - the x on its running turn is the one stop", () => {
+  const tasks = taskSource();
+  const start = tasks.indexOf("{term?.alive && !inRow && (", tasks.indexOf("Agent running"));
+  const controls = tasks.slice(start, tasks.indexOf("{report &&", start));
+  assert.ok(start >= 0);
+  // the owner, 2026-11-10: "no need for stop and save button" - nor any other ending beside the chat
+  assert.doesNotMatch(controls, /save-end|wrapUp/);
+  assert.doesNotMatch(controls, />Stop session<\/Button>/);
+  assert.doesNotMatch(controls, /handover<\/Button>/);
+  // ...nor the action row, on any kind of agent
+  assert.doesNotMatch(tasks, /id: "save-end"|stopSave/);
+});
+
+test("task references use readable sans-serif digits", () => {
+  const tasks = taskSource();
+  const ui = src("ui.jsx");
+  assert.match(tasks, /fontVariantNumeric: "tabular-nums"/);
+  assert.match(ui.slice(ui.indexOf("export const RefChip"), ui.indexOf("export const ActionChip")),
+    /IBM Plex Sans/);
+});
+
+test("the brain picked in the New sheet and on the task page travels with the role", () => {
+  assert.match(src("NewSheet.jsx"), /brain: brain \|\| null/);
+  assert.match(taskSource(), /brain: run\.brain \|\| null/);
+});

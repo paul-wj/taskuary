@@ -49,7 +49,7 @@ function AddSignin({ onSaved }) {
         inputProps={{ spellCheck: false }} sx={{ gridColumn: "1 / -1" }} />
       <Typography sx={{ gridColumn: "1 / -1", color: FAINT, fontSize: 12 }}>
         {t("Kept sealed on this computer. Taskuary types it into the page of that site when an agent signs in there - the agent never sees it.")}</Typography>
-      {err && <Typography role="alert" sx={{ gridColumn: "1 / -1", color: "#a33b3b", fontSize: 12.5 }}>{err}</Typography>}
+      {err && <Typography role="alert" sx={{ gridColumn: "1 / -1", color: "var(--tq-danger, #a33b3b)", fontSize: 12.5 }}>{errorText(err)}</Typography>}
       <Box sx={{ gridColumn: "1 / -1", display: "flex", gap: 1 }}>
         <Button size="small" variant="contained" disableElevation type="submit" disabled={busy || !f.site.trim() || !f.password}>
           {busy ? t("Saving…") : t("Save to vault")}</Button>
@@ -86,7 +86,7 @@ export default function SavedSignins() {
     }
     finally { setBusy(""); }
   };
-  if (err && !rows) return <Typography variant="body2" role="alert" sx={{ color: "#a33b3b", py: 1.5 }}>{errorText(err)}</Typography>;
+  if (err && !rows) return <Typography variant="body2" role="alert" sx={{ color: "var(--tq-danger, #a33b3b)", py: 1.5 }}>{errorText(err)}</Typography>;
   // ...and with none, one quiet line: an owner checking nothing is kept found no trace of the feature at all (2026-10-25)
   if (!rows?.length) return <Box data-tq-saved-signins="" sx={{ py: 1.5 }}>
     <Typography variant="body2" sx={{ color: FAINT, fontSize: 12.5 }}>
@@ -114,7 +114,7 @@ export default function SavedSignins() {
               title={t("Forgets the saved password and signs the browser out of this site")}>{busy === r.site && what === "remove" ? t("Removing…") : t("Remove")}</Button>
           </Box>
           {rowErr.site === r.site && rowErr.text && (
-            <Typography variant="body2" role="alert" data-tq-signin-err="" sx={{ color: "#a33b3b", mt: 0.5, fontSize: 12.5 }}>{errorText(rowErr.text)}</Typography>
+            <Typography variant="body2" role="alert" data-tq-signin-err="" sx={{ color: "var(--tq-danger, #a33b3b)", mt: 0.5, fontSize: 12.5 }}>{errorText(rowErr.text)}</Typography>
           )}
           {keyFor === r.site && !r.code && (
             <Box component="form" data-tq-signin-key="" sx={{ display: "flex", gap: 1, alignItems: "flex-start", mt: 1 }}

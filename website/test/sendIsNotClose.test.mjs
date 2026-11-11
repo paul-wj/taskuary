@@ -21,6 +21,30 @@ test("a send offers Mark done only where there is a task, and Next always", () =
   assert.deepEqual(sentChips(null).chips.map((c) => c.verb), ["next"], "no task, no Mark done");
 });
 
+test("the canvas keeps a sent item on the table: the card folds wearing its button, Mark done and Next on the row, nothing settles", () => {
+  const cards = read("assistantCards.jsx"), view = read("AssistantView.jsx");
+  // the press is the button's own label - a send and what is not a send alike - never a sentence (the owner, 2026-10-22)
+  assert.match(cards, /if \(ran && onSent\) onSent\(pressed, card\.tid, card\.ref\);\n\s+else onDone\?\.\(pressed\);/);
+  assert.doesNotMatch(cards, /and closes the task/);
+  const sent = view.slice(view.indexOf("const sent = (pressed"), view.indexOf("\n  };", view.indexOf("const sent = (pressed")));
+  assert.match(sent, /done: true, sent: true, \.\.\.\(pressed \? \{ pressed \} : \{\}\), \.\.\.sentChips\(tid, ref\)/);
+  assert.doesNotMatch(sent, /role: "receipt"/, "no line under the card");
+  assert.doesNotMatch(sent, /funnel\/settle|advance\(/, "a send neither settles the item nor walks on");
+  assert.match(view, /reply: <ReplyCard card=\{c\} onDone=\{actions\.done\} onSent=\{actions\.sent\}/);
+  // the folded card keeps a send's two words on the row; any other folded card keeps only Next
+  assert.match(view, /const moved = !!m\.card && \(!live \|\| foldedNow\) && !m\.sent;/);
+  // Mark done from the row closes the task it names: on the table, the walk's one close (railwalk.leave); off it, alone
+  assert.match(view, /if \(c\.verb === "close" && c\.tid\) \{[\s\S]{0,200}await leave\(on, "done"\)[\s\S]{0,300}runOperation\(api, "task\.complete", c\.tid\)/);
+  // ...and an Approve run from a proposal takes the server's own chips for its receipt (concierge.sent_chips)
+  assert.match(view, /\(out\.status !== "done" \|\| p\.kind === "review\.approve"\) && res\?\.chips\?\.length/);
+});
+
+test("no 'Sent to <who>.' line on the desk: a send is said by its badge alone, and a refused one still says why", () => {
+  const cards = read("assistantCards.jsx");
+  for (const gone of ["`Sent to ${who}.`", "The reply went to", "Done — the action ran.", "Done — ${co.then}", "Done — ${co.alt.then}"])
+    assert.ok(!cards.includes(gone), `still says: ${gone}`);
+  assert.match(cards, /sure\(o, "sent"\);/);          // the one press throws the server's reason to the card's reader (press.js)
+});
 
 test("whether a draft can leave is asked of capabilities.js, with the row's own CanSend kept for what it knows more", () => {
   const live = { known: true, send: { teams: false, email: true } };

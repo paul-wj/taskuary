@@ -155,9 +155,8 @@ def check(w: Walk, case: dict, out, before: int):
         row = next(r for r in items if walkworld.matches(r, src[case['urgent']]))
         assert lanes.is_urgent(row) and lanes.level_of(row) == 'task', f'{rid}: {case["urgent"]} is urgent, walked in its place'
     if 'lines' in case: assert w.lines() - before == case['lines'], f'{rid}: {w.lines() - before} new chat lines'
-    if case.get('opens'):
-        opens = [c.get('key') for c in out.get('chips') or [] if c.get('verb') == 'open']
-        assert opens == [w.key(x) for x in case['opens']], f'{rid}: the end offered {opens}'
+    # ...the end offers the walk again on the bar and nothing else: the rows it walks are on the rail, one click each (the owner, 2026-11-10)
+    if case.get('again'): assert [(c.get('verb'), c.get('bar')) for c in out.get('chips') or []] == [('walk', True)], f'{rid}: the end offered {out.get("chips")}'
     if case.get('desk'): assert railwalk.on(s) == w.key(case['desk']), f'{rid}: the desk is on {railwalk.on(s)}'
     walk = railwalk.peek(s)
     if 'back' in case: assert (walk.get('above') is not None) == case['back'], f'{rid}: Back {"on" if walk.get("above") else "off"} - above {walk.get("above")}'
@@ -207,6 +206,24 @@ def test_peek_says_what_next_reads(world):
         assert reads == (not any(walkworld.matches(r, src[sym]) for r in walkworld.rows(s))), f'{sym}: peek said reads={reads}'
     w.do('open R3'); w.do('next')
     assert w.on.startswith('fyis:') and railwalk.peek(s)['reads'], 'the batch Next put up is read by the next Next'
+
+def test_a_close_that_lands_after_another_row_was_opened_moves_nothing(world):
+    """Mark done on a working agent is answered when its write-up is in, a Send's close a beat after the send. A row the owner opened in
+    between is the one on his table: the close runs its act, and the walk - and so the table - stays on that row (`away`). It moved to
+    the row below the one closed, and the page drew that over the row he had just opened."""
+    from taskuary import railwalk
+    s, src = world
+    w = Walk(s, src)
+    w.do('open T1'); t1 = w.on
+    w.do('open T3'); t3 = w.on
+    out = railwalk.leave(s, t1, 'done', away=True)
+    assert out['item'] is None and out['away'] and t1 in out['read'] and 'kept' not in out
+    assert s.get_task(src['T1']['tid'])['Status'] == 'done', 'the act ran'
+    assert railwalk.on(s) == t3 == out['walk']['on'], 'the walk stays on the row he opened'
+    assert not any(walkworld.matches(r, src['T1']) for r in walkworld.rows(s))
+    assert railwalk.leave(s, w.key('T2'), 'next', away=True)['item'] is None and railwalk.on(s) == t3, "a hand-off's walk-on the same"
+    assert w.do('next')['item']['key'] == w.key('T4'), 'Next goes on from the row on the table'
+
 
 def test_next_says_what_it_read(world):
     """`read` on Next's answer: the rail rows that press read - the page took them off at the press and gives back only a row that is not

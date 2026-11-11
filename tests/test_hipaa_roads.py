@@ -179,7 +179,9 @@ class GeneralAgentRoad(unittest.TestCase):
         from taskuary import general
         s = MemoryStore(); fx = Factory(s); cid = card(s, model, **conf); jobs_on(s, cid, mode=mode)
         tid = fx.task(title='Compare payroll vendors', kind='general')
-        with Gateway(lambda b: answer) as g:
+        # the PLAIN road, a card that takes no tools: nothing a gateway model may refuse rides (the tool road is test_apiagent's)
+        with Gateway(lambda b: answer) as g, mock.patch('taskuary.browserview.installed', return_value=False), \
+             mock.patch('taskuary.apiagent.can', return_value=False):
             sess = general.GeneralSession(s, tid)
             self.assertEqual(sess.pick, f'connector:{cid}')
             reply = sess.send_prompt('Compare Payworth and Trainly')

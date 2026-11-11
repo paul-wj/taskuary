@@ -221,7 +221,7 @@ def _list_line(store) -> str:
 VERBS_OFFERED, THE_ITEM, WHAT_FAILED = 'VERBS OFFERED', 'THE ITEM', 'WHAT FAILED'
 # EACH LINE IS A FACT, NEVER THE BUTTON EXPLAINED (the owner, 2026-10-23: "buttons do the talking"; at most 60 characters) - and where the
 # script's verb is the rule's own, the strip says the rule's fact and drops this one (advisor.decide)
-ADVICE = {'answer_agent': 'The agent is waiting on your answer.', 'approve': '',
+ADVICE = {'approve': '',
           'reply': 'Someone is waiting on an answer from you.', 'continue': 'The agent stopped partway.'}
 # ...and like the real one it reads what was already done: a reply that went, with nothing written since, is closed, not answered
 # again - the scripted "Someone is waiting on an answer" stood over a close-out reading Sent (2026-10-19)
@@ -264,7 +264,7 @@ PLAY = {'working': ['next'], 'report_ok': ['next'], 'dashboard': ['next'], 'fyi_
         'invite_free': ['accept_invite'], 'invite_clash': ['propose_time'], 'unpushed': ['review_changes'], 'fyi_danger': ['not_ours'],
         'action_held': ['approve'], 'needs_agent': ['continue', 'regular_agent'], 'unsendable': ['copy', 'close'], 'duplicate': ['split', 'remove'],
         'watch_quiet': ['chase', 'let_go'], 'stopped_done': ['close'], 'done_list': ['close'], 'watch_handled': ['close'],
-        'agent_asking': ['answer_agent'], 'waiting': [], 'stopped': [], 'closed': []}
+        'agent_asking': [], 'waiting': [], 'stopped': [], 'closed': []}
 LATE = ('waiting_late', 'waiting_overdue', 'waiting_late_usual', 'goal_late', 'watch_quiet')
 _STATE = re.compile(r"^THE STATE \([^)]*\): (\w+) - .*?(?:; the fact: (.*))?$", re.M)
 DEMO_SAYS = 'This is the demo - '                     # every refusal sentence above starts so (SENDS, STARTS, OFF, REFUSALS)
@@ -598,13 +598,13 @@ TRANSCRIPT = [
     ('  9 passed', .8),
     ('Fixed and tested. Lakeview syncs again; the row with no manager is skipped and named once', 1.2),
     ('in the log, so the morning report still adds up.', .9),
-    ('Not pushing - that is yours to approve.', 1.6),
+    ('Push it to a branch and open a pull request for your review?', 1.6),
 ]
 TRANSCRIPTS = [TRANSCRIPT]
 
 def _brief_replay(title: str) -> list:
     """A coding task the seed did not write a recording for still replays its own words, never another task's."""
-    return [('$ claude', .4), ('', .2), (f'Reading the ask: {title}', 1.1), ('Nothing changed yet - waiting for you to say go.', 1.2)]
+    return [('$ claude', .4), ('', .2), (f'Reading the ask: {title}', 1.1), ('Nothing changed yet - shall I start on it?', 1.2)]
 
 # the GL reconciliation, as a general agent works it: in plain words, on the task's own conversation
 GL_CHAT = [
@@ -1129,7 +1129,7 @@ def seed_agent_day(store, f) -> int:
     """The general agent's finished work on six of the morning's asks. Returns how many messages it wrote."""
     from . import config, general, outputs, reports, verdicts
     made, tids = 0, {}
-    # ...six more rows on a rail the pipe caps at its default (funnel.knobs): a demo morning shows all of it, the batch of FYI included
+    # ...six more rows than the rail's old cap held (funnel_max, a retained value nothing applies now)
     store.set_setting('funnel_max', '40', 'demo')
     stamp = lambda table, col, rid, mins: store._exec(f'UPDATE {table} SET CreatedAt=? WHERE {col}=?', (_at(mins), rid))
     def mail(tid, who, email, channel, subject, body, mins, why='', out=False):
@@ -1278,7 +1278,9 @@ def seed_agent_day(store, f) -> int:
     said(t, 168.7, 'turn', None,
          {'about': 'Paying PhishGuard invoice INV-3391.', 'did': 'Filled the payment for INV-3391, $4,860.00 on the card ending 4417. '
           'Your turn on the page: press Pay.'})
-    said(t, 165, 'brief', 'Pressed Pay on the page')
+    # ...the press on the page is theirs, said as every press of theirs is (browsergate.pressed, general.PRESSES) - never a line by Taskuary
+    store.audit('task', t, 'browser_act_pressed', 'owner', 'human', {'site': 'portal.phishguard.example', 'btn': '"Pay"', 'by': 'page'})
+    store._exec('UPDATE audit SET CreatedAt=? WHERE Id=(SELECT MAX(Id) FROM audit)', (_at(165),))
     said(t, 164.2, 'turn', None,
          {'about': 'Paying PhishGuard invoice INV-3391.', 'did': 'Paid: **INV-3391, $4,860.00**, confirmation **PG-77120**. PhishGuard shows the '
                  'invoice as paid and sends its receipt to accounts payable. The browser is closed.',
@@ -1527,13 +1529,33 @@ class Replay:
         for text, pause in self.lines:
             if not self.alive: return
             time.sleep(pause)
-            self._emit(f'{text}\r\n')
+            self._emit(f'{text}\r\n'); self._record(text)
+        # ...ending on its question to the owner, recorded as a real run's is (workerstate): the row said "waiting on you" over a chat that
+        # showed nothing it waited on (the walk audit, 2026-11-10)
+        if self.lines and str(self.lines[-1][0]).rstrip().endswith('?'):
+            from . import workerstate
+            workerstate.record(self.store, self.task_id, self.sid, 'input_needed', text=self.lines[-1][0].strip())
         self.busy = False
         # the Board and the task card show a TAIL of this as text, not as a terminal - the dim
         # escape rode along with it and printed as a literal [2m on every card
         self._emit('\r\nthe agent is waiting for you - this is a demo, so it waits forever\r\n')
         self._moved()                                # working -> waiting on you
 
+    def _record(self, text):
+        """...and each line into the coding chat's record as a real ACP session's updates (codingchat.record_update): a step for each `→ Tool:`
+        line, its output after it, the rest the agent's words - the chat draws the run the Board types out."""
+        from . import codingchat
+        put, m = (lambda u: codingchat.record_update(self.task_id, self.sid, u)), re.match(r'→ (\w+): (.*)', text.strip())
+        if m:
+            self.calls = getattr(self, 'calls', 0) + 1; kind = {'Read': 'read', 'Bash': 'execute', 'Edit': 'edit'}.get(m[1], 'other')
+            put({'sessionUpdate': 'tool_call', 'toolCallId': f'd{self.calls}', 'kind': kind, 'title': m[2], 'status': 'completed',
+                 'rawInput': {'command' if kind == 'execute' else 'path': m[2].split('  (')[0]}})
+        elif text.startswith('  ') and text.strip():
+            put({'sessionUpdate': 'tool_call_update', 'toolCallId': f'd{getattr(self, "calls", 0)}', 'status': 'completed',
+                 'content': [{'type': 'content', 'content': {'type': 'text', 'text': text.strip()}}]})
+        # ...a question its own paragraph, as an agent writes one: the chat says it once, on its card (askOnce.withoutAsked)
+        elif text.strip() and not text.startswith('$'):
+            put({'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': f'\n\n{text.strip()}' if text.rstrip().endswith('?') else text.strip() + ' '}})
     def _emit(self, text):
         self.buf.append(text)
         self.last = time.time()

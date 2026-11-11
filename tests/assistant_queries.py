@@ -16,6 +16,7 @@ Grades: right | wrong | unsupported (no tool exists) | bare-Next (answered "Next
 import json, os, re
 from collections import Counter
 from contextlib import ExitStack
+from types import SimpleNamespace
 from unittest import mock
 
 # the table each ask is typed over - the demo world's own rows (demo.seed)
@@ -195,9 +196,9 @@ CASES = [
       note='no such setting: a task is shared from its own row'),
     Q('settings', 'connect my bank', None, c('setup', text='connect my bank'), 'open:#connector=teller', sort={'kind': 'connection', 'provider': 'teller'}, freq=2),
     # ── agents ──
-    Q('agents', 'stop the agent', 'agent', c('stop_agent'), 'light:stop_agent', freq=4, live=6),
+    Q('agents', 'stop the agent', 'agent', c('stop_agent'), 'did:agent.stop', freq=4, live=6, note='stopped through the x on its turn - no Stop and save to light'),
     Q('agents', 'stop the agent', 'agent', [c('stop_agent'), 'Nothing is running on it now - there is nothing to stop.'], 'words', freq=2,
-      note='no session is running on the task: Stop and save is not on its row'),
+      note='no session is running on the task: nothing is stopped, and it says so'),
     Q('agents', 'continue it', 'agent', [c('agent.continue', ref=T6), 'It has no saved session to pick up - Send to agent starts one.'], 'words', freq=3,
       note='the demo task has no saved session, so Continue is not on its row'),
     Q('agents', 'what is the agent doing?', 'agent', [c('agents.now'), 'It is reconciling the August export.'], 'read:agents.now', freq=4),
@@ -513,7 +514,7 @@ AREA_TASK = [
     Q('task', 'put "reconcile against the bank statement" in the agent box and start it', 'todo',
       [v(op='set', field='what_should_the_agent_do', value='reconcile against the bank statement') + '\n' + v(op='press', button='row:regular_agent')],
       'view:press:row:regular_agent', tools=('words',), view=TASK1V, freq=2, note='Send to agent starts work here and sends nothing out: pressed, not pointed'),
-    Q('task', 'stop the agent', 'agent', c('agent.stop'), 'light:stop_agent', view=TASK6V, freq=3, live=6),
+    Q('task', 'stop the agent', 'agent', c('agent.stop'), 'did:agent.stop', view=TASK6V, freq=3, live=6),
     Q('task', 'send this to the coding agent', 'coding', c('coding_agent', text='fix the census sync when a site has no manager'), 'did:dispatch.prepare',
       freq=3, note="the Agent section's one Send to agent starts either kind"),
     Q('task', 'continue the agent', 'agent', [c('agent.continue'), 'There is no saved session on TQ-0006 to pick up - Send to agent starts a new one.'], 'words',
@@ -1309,11 +1310,15 @@ _SEEDED = []   # run_all's demo world, built once: each of its turns gets a copy
 
 def _copy(t):
     """A new store over a copy of t's rows. Its own __init__ runs - every lock, cache and counter is its own - but over a database
-    that already has the schema, so the ~700 schema statements a blank store runs find nothing to do (0.01 s, not 0.09 s)."""
+    that already has the schema, so the ~700 schema statements a blank store runs find nothing to do (0.01 s, not 0.09 s).
+    A started home is copied started, its membership kept current as t's is (conftest.start_home's inline worker): what a case's
+    seed writes after it reaches the rail as it does in the app, which starts a home before anything is written to it."""
     import sqlite3
     from taskuary import store as S
     cx = sqlite3.connect(':memory:', check_same_thread=False, timeout=5.0); t.cx.backup(cx)
-    with mock.patch.object(S.sqlite3, 'connect', lambda *a, **k: cx): return S.MemoryStore()
+    with mock.patch.object(S.sqlite3, 'connect', lambda *a, **k: cx): s = S.MemoryStore()
+    if getattr(t, 'membership_worker', None): s.membership_worker = SimpleNamespace(kick=s.reconcile_processing_membership)
+    return s
 
 
 def _world():
@@ -1349,6 +1354,7 @@ def _guards(stack, sort=None, live=None, agenda=None):
     stack.enter_context(mock.patch.object(terminal, 'live_sessions', return_value=[{'taskId': int(live), 'sid': f's{live}'}] if live else []))
     # a running session on one task, where the case says so - what Stop and save is drawn by (concierge._agent_running)
     stack.enter_context(mock.patch.object(terminal, 'for_task', lambda tid, **k: {'sid': f's{tid}'} if live and int(tid) == int(live) else None))
+    stack.enter_context(mock.patch.object(concierge, 'stop_turn', lambda tid: bool(live) and int(tid) == int(live)))      # the x's road, never a real session
     stack.enter_context(mock.patch.object(ingest, '_spawn'))
     stack.enter_context(mock.patch.object(ingest, 'ask_later'))     # ...nor the model reading a promoted mail's ask (a hand-off makes its task)
     # ...and no agent starts, nothing is typed into a session: the dispatch door answers as a start would (concierge._start_agent, 2026-11-02),
@@ -1464,12 +1470,26 @@ def demo_turn(q: Q) -> dict:
     return {'grade': 'right' if line == 'out' else 'bare-Next' if said.strip() == 'Next.' else 'wrong', 'line': line, 'say': said}
 
 
-def run_all() -> list:
+def _started(s):
+    """The seeded world's rail read once, so the home is started before it is copied (conftest.start_home, on the first read of a
+    rail). Starting each turn's copy instead - ~1,200 of them - was half of run_all's four minutes once the rail had one builder."""
+    from taskuary import funnel, terminal
+    with mock.patch.object(terminal, 'live_sessions', return_value=[]): funnel.build(s, live_state=[])
+    funnel.invalidate(); funnel.forget_states()
+
+
+def seeded():
+    "The demo world every turn of a run copies: seeded once, started once."
+    s = _world(); _started(s); return s
+
+
+def run_all(cases=None, world=None) -> list:
+    """Every case's two turns (or `cases`' - a part of them, over the `world` its other parts share: test_assistant_queries.Corpus)."""
     # One seeding, not two a turn: seeding ~1,200 worlds was most of run_all's 3 minutes, and past pytest's faulthandler_timeout
     # (120 s) its watchdog dumps every thread's stack while the main thread runs - which on Windows CI crashed the run with an
     # access violation in whatever the main thread was doing (_strptime, a store read), or left it too slow for the job's 25 minutes
-    _SEEDED[:] = [_world()]
-    try: return [{'q': q, 'ideal': ideal_turn(q), 'demo': demo_turn(q)} for q in CASES]
+    _SEEDED[:] = [world or seeded()]
+    try: return [{'q': q, 'ideal': ideal_turn(q), 'demo': demo_turn(q)} for q in (CASES if cases is None else cases)]
     finally: _SEEDED.clear()
 
 

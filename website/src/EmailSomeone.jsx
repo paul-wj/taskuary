@@ -19,7 +19,8 @@ import { useLocale } from "./LocaleProvider.jsx";
 
 // what a task can send on (slots.KINDS): email, and the chats outbound.send_out carries
 export const TASK_CHANNELS = ["email", "teams", "whatsapp", "telegram", "imessage", "discord"];
-const NOTES = new Set(["coding_session", "agent_result"]);
+// ...and a view the chat drew (session_artifacts.view): kept for the chat to draw, never a file to hand anybody
+const NOTES = new Set(["coding_session", "agent_result", "view"]);
 // the task's own files: what its agents saved or showed, and what came in with its messages
 // ...and the files its agents left in the task's outputs folder (outputs.py, `outputs`: GET /api/task-outputs) - the workbook itself, which
 // the list never offered (2026-10-28); a page shown FROM that folder is the same file, offered once (agentRecord.madeOnce)
@@ -37,7 +38,7 @@ export const taskFiles = (detail, outputs = []) => {
 };
 
 const Label = ({ children }) => <Typography sx={{ fontSize: 11.5, fontWeight: 600, color: DIM, mb: 0.5 }}>{children}</Typography>;
-const field = { "& .MuiInputBase-root": { fontSize: 13, bgcolor: "#fcfaf7" } };
+const field = { "& .MuiInputBase-root": { fontSize: 13, bgcolor: "var(--tq-panel, #fcfaf7)" } };
 
 export default function EmailSomeone({ open, task, detail, onClose, onDrafted }) {
   useLocale();
@@ -84,7 +85,7 @@ export default function EmailSomeone({ open, task, detail, onClose, onDrafted })
           <Box sx={{ display: "flex", gap: 0.75, flexWrap: "wrap" }}>
             {targets.map((t) => (
               <Box key={t.channel} component="button" type="button" onClick={() => { setChannel(t.channel); setTo([]); setChat(null); setCc([]); }}
-                sx={{ display: "flex", alignItems: "center", gap: 0.6, px: 1.2, py: 0.6, cursor: "pointer", bgcolor: "#fff",
+                sx={{ display: "flex", alignItems: "center", gap: 0.6, px: 1.2, py: 0.6, cursor: "pointer", bgcolor: "var(--tq-panel, #fff)",
                   border: `1px solid ${channel === t.channel ? ACCENT : BORDER}`, borderRadius: 2, font: "inherit",
                   boxShadow: channel === t.channel ? `inset 0 0 0 1px ${ACCENT}` : "none",
                   fontSize: 12.5, fontWeight: 600, color: channel === t.channel ? INK : DIM }}>
@@ -96,7 +97,7 @@ export default function EmailSomeone({ open, task, detail, onClose, onDrafted })
         {email && boxes.length > 1 && (
           <Box>
             <Label>{t("From")}</Label>
-            <Select size="small" fullWidth value={from} onChange={(e) => setFrom(e.target.value)} sx={{ fontSize: 13, bgcolor: "#fcfaf7" }}>
+            <Select size="small" fullWidth value={from} onChange={(e) => setFrom(e.target.value)} sx={{ fontSize: 13, bgcolor: "var(--tq-panel, #fcfaf7)" }}>
               {boxes.map((b) => <MenuItem key={b.address} value={b.address} sx={{ fontSize: 13 }}>{b.address}
                 <Typography component="span" sx={{ ml: 1, fontSize: 11, color: FAINT }}>{b.card}</Typography></MenuItem>)}
             </Select>
@@ -131,7 +132,7 @@ export default function EmailSomeone({ open, task, detail, onClose, onDrafted })
             <Typography variant="caption" sx={{ color: FAINT, display: "block" }}>{t("Anything else: {attach} on the draft.", { attach: t(label("attach")) })}</Typography>
           </Box>
         )}
-        {err && <Typography variant="body2" sx={{ color: "#a33b3b" }}>{err.text || t(err.key)}</Typography>}
+        {err && <Typography variant="body2" sx={{ color: "var(--tq-danger, #a33b3b)" }}>{err.text || t(err.key)}</Typography>}
       </DialogContent>
       <ButtonBar>
         <Button variant="contained" disableElevation onClick={go} disabled={busy || !ready}>

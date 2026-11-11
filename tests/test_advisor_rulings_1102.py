@@ -2,7 +2,7 @@
 further lights nothing on a CODING agent and may light Mark done or Stop and save on a GENERAL one - the model's call, with the agent's kind in
 THE STATE and a check that refuses (never swaps) a close over a coding agent's ask; and a HABIT - one move on 80% of 5 or more of the owner's
 answers in a state - is said in THE STATE for the model to follow unless this item differs. Invented Northwind data only (CLAUDE.md)."""
-import json, re
+import json
 from unittest import mock
 import pytest
 from taskuary import advisor, calibrate, funnel, terminal
@@ -60,20 +60,9 @@ def test_a_close_over_a_coding_agents_ask_is_refused_to_nothing(s, verb):
     t, it = _asking(s, 'coding')
     d = advisor.checked(s, it, _verbs('close', 'stop_agent', 'answer_agent'), {'key': it['key'], 'state': 'agent_asking', 'verb': verb, 'line': 'x', 'evidence': []})
     assert d['verb'] is None and d['checked'] and d['line'] == '', 'refused to nothing - never swapped for another verb'
-    # ...the agent's own answer stands, and a coding agent in another state is not this check's
-    assert advisor.checked(s, it, _verbs('answer_agent'), {'key': it['key'], 'state': 'agent_asking', 'verb': 'answer_agent', 'line': ''})['verb'] == 'answer_agent'
+    # ...nor an "Answer it", a button no more (the owner, 2026-11-10: "Never need that button"), and a coding agent in another state is not this check's
+    assert advisor.checked(s, it, _verbs('answer_agent'), {'key': it['key'], 'state': 'agent_asking', 'verb': 'answer_agent', 'line': ''})['verb'] is None
     assert advisor.checked(s, it, _verbs(verb), {'key': it['key'], 'state': 'agent_done', 'verb': verb, 'line': ''})['verb'] == verb
-
-
-def test_on_the_strip_a_coding_agents_ask_lights_nothing_and_a_general_agents_lights_mark_done(s):
-    _, code = _asking(s, 'coding')
-    _, gen = _asking(s, 'general')
-    d = _decide(s, code, saying('close'))
-    assert (d['state'], d['verb']) == ('agent_asking', None), d
-    llm = saying('close')
-    d = _decide(s, gen, llm)
-    assert (d['state'], d['verb']) == ('agent_asking', 'close'), d
-    assert 'THE AGENT: a GENERAL agent' in llm.calls[0][1]
 
 
 # ── 6. A HABIT ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -88,17 +77,3 @@ def test_a_habit_is_one_move_on_eighty_percent_of_five_or_more_answers():
     _press(s, 14, 'stopped', 'stop_agent'); _press(s, 15, 'stopped', 'continue'); calibrate.clear()
     assert 'HABIT' not in calibrate.evidence(s, 'stopped', label=L), '4 of 6 is under the bar'
     assert calibrate.habit([('close', 4), ('next', 1)], 5) == '; a HABIT: close (4 of 5)' and calibrate.habit([], 0) == ''
-
-
-def test_the_prompt_carries_the_habit_and_a_model_that_follows_it_lights_that_move(s):
-    assert 'names a HABIT, light that move unless' in advisor.SYSTEM
-    _, gen = _asking(s, 'general')
-    for n in range(100, 106): _press(s, n, 'agent_asking', 'stop_agent')
-    calibrate.clear()
-    calls = []
-    def follows(system, user, **kw):
-        calls.append(user); m = re.search(r'a HABIT: ([^(]+?) \(', user)
-        return json.dumps({'verb': {'Stop and save': 'stop_agent', 'Mark done': 'close'}.get(m.group(1)) if m else None, 'line': '', 'evidence': []})
-    d = _decide(s, gen, follows)
-    assert 'a HABIT: Stop and save (6 of 6)' in calls[0]
-    assert (d['state'], d['verb']) == ('agent_asking', 'stop_agent'), d

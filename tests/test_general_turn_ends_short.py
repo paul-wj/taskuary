@@ -124,5 +124,97 @@ class AShortTurnWakesTheAgentOnceTests(unittest.TestCase):
         self.assertEqual(s.last_worker_event(tid, skip=ws.NOTES)['Kind'], 'turn_end')
 
 
+class TheTurnsOwnRecordAnswersFirstTests(unittest.TestCase):
+    """"No model call where stored facts already answer" (the owner's rule, 2026-11-10): what the turn put aside - sub-agents, background
+    jobs - is in its own record. Still running wakes it, all of it back does not, and only a turn that put nothing aside is read."""
+    def no_model(self, *a, **k): raise AssertionError('a model was asked what the record already says')
+
+    def test_a_subagent_that_came_back_is_finished_and_no_model_is_asked(self):
+        from taskuary import background
+        s = MemoryStore(); tid = researcher(s)
+        ws.record(s, tid, 'g5', 'turn_end', text=SHORT, source='api')
+        trace = [{'type': 'tool_call', 'name': 'Task', 'detail': {'tool_call_id': 't1', 'args': {'description': 'app walkthrough'}}},
+                 {'type': 'tool_result', 'name': 't1', 'detail': {'result': 'the walkthrough notes'}}]
+        self.assertEqual(background.left(trace), [])
+        woke = []
+        hooks.judge_ended(s, tid, 'g5', SHORT, brain=self.no_model, wait=True, then=woke.append, jobs=background.left(trace))
+        self.assertEqual(woke, [])
+
+    def test_work_still_running_wakes_it_without_a_model(self):
+        import os, tempfile, time
+        from datetime import datetime, timezone
+        from taskuary import background
+        s = MemoryStore(); tid = researcher(s)
+        ws.record(s, tid, 'g6', 'turn_end', text=SHORT, source='api')
+        use = {'type': 'tool_use', 'id': 'u1', 'name': 'Bash', 'input': {'command': 'pull the walkthrough', 'run_in_background': True}}
+        res = {'timestamp': datetime.now(timezone.utc).isoformat(), 'toolUseResult': {'backgroundTaskId': 'b1'},
+               'message': {'content': [{'type': 'tool_result', 'tool_use_id': 'u1'}]}}
+        fd, path = tempfile.mkstemp(suffix='.jsonl'); os.close(fd); self.addCleanup(os.remove, path)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(json.dumps({'message': {'content': [use]}}, separators=(',', ':')) + chr(10) + json.dumps(res, separators=(',', ':')) + chr(10))
+        trace = [{'type': 'tool_call', 'name': 'Bash', 'detail': {'tool_call_id': 'u1', 'args': use['input']}},
+                 {'type': 'tool_result', 'name': 'u1', 'detail': {'result': 'started b1'}}]
+        jobs = background.left(trace, path)
+        self.assertEqual([j['kind'] for j in jobs], ['shell'])
+        self.assertIsNone(background.left(trace))                    # ...a background job with no record of its end: the data cannot tell
+        woke = []
+        hooks.judge_ended(s, tid, 'g6', SHORT, brain=self.no_model, wait=True, then=woke.append, jobs=jobs)
+        self.assertEqual(woke, ['1 shell still running'])
+
+    def test_a_turn_that_put_nothing_aside_is_left_to_the_model(self):
+        from taskuary import background
+        self.assertIsNone(background.left([{'type': 'tool_call', 'name': 'WebSearch', 'detail': {'tool_call_id': 'w1', 'args': {}}},
+                                           {'type': 'tool_result', 'name': 'w1', 'detail': {}}]))
+        s = MemoryStore(); tid = researcher(s)
+        ws.record(s, tid, 'g7', 'turn_end', text=SHORT, source='api')
+        woke = []
+        hooks.judge_ended(s, tid, 'g7', SHORT, brain=verdict(True, 'the walkthrough'), wait=True, then=woke.append, jobs=None)
+        self.assertEqual(woke, ['the walkthrough'])
+
+
+class AnOwnersAskAnsweredWithNothingTests(unittest.TestCase):
+    """The owner, 2026-11-10: "it created reply with nothing in it. that's dumb. if you have nothing to reply just ask what should i reply?" -
+    a task from a mail listed an email to someone on the thread, the owner asked the agent to respond, and its turn ended with no words, no
+    card and no question. The agent is asked once to answer what he asked; if it says nothing again, its one question is "I could not draft
+    anything for that. What should I say, or what should I do?". An email nobody wrote is no debt the app chases ("goal is to help user not to
+    do action"): a turn that answered leaves it alone."""
+    EMPTY = '[[TASKUARY-DRAFT to="office@vendor.example" subject="Hello"]] [[/TASKUARY-DRAFT]]'
+    def no_judge(self, *a, **k): raise AssertionError('the rows already say the turn said nothing')
+
+    def test_it_is_woken_once_to_answer_and_an_empty_turn_again_asks_its_one_question(self):
+        s = MemoryStore(); a_claude(self); tid = researcher(s)
+        seen = turn(s, tid, self.EMPTY, judge=self.no_judge)
+        self.assertEqual(len(seen['prompts']), 2, 'once - never a loop')
+        self.assertIn('without a word to the owner', seen['prompts'][1]); self.assertIn('ask them your one question', seen['prompts'][1])
+        said = [c['Body'] for c in s.list_comments(tid) if c['ActorType'] == general.ASSISTANT_TYPE]
+        self.assertEqual(said[-1], general.COULD_NOT, 'in the chat, in its own name')
+        asked = s.last_worker_event(tid, skip=ws.NOTES)
+        self.assertEqual((asked['Kind'], asked['Text']), ('input_needed', general.COULD_NOT), 'the normal ask: the agent waits on the owner')
+
+    def test_a_turn_with_no_words_at_all_is_the_same_turn_that_said_nothing(self):
+        """The audit, 2026-11-10: a CLI's turn that ended on tool calls alone came back '' - filed as "the model returned an empty response",
+        the session ended and Continue lit, the owner's ask unanswered. It is the turn that said nothing: woken once, then its one question."""
+        s = MemoryStore(); a_claude(self); tid = researcher(s)
+        seen = turn(s, tid, '', judge=self.no_judge)
+        self.assertEqual(len(seen['prompts']), 2, 'woken once')
+        said = [c['Body'] for c in s.list_comments(tid) if c['ActorType'] == general.ASSISTANT_TYPE]
+        self.assertEqual(said[-1], general.COULD_NOT)
+        self.assertEqual(s.last_worker_event(tid, skip=ws.NOTES)['Kind'], 'input_needed', 'its question waits - never a failure')
+
+    def test_a_woken_turn_that_answers_keeps_its_own_words(self):
+        s = MemoryStore(); a_claude(self); tid = researcher(s)
+        seen = turn(s, tid, [self.EMPTY, 'I could not tell what to say to the vendor - keep the 12 seats, or change them?'], judge=self.no_judge)
+        said = [c['Body'] for c in s.list_comments(tid) if c['ActorType'] == general.ASSISTANT_TYPE]
+        self.assertEqual(len(seen['prompts']), 2); self.assertIn('keep the 12 seats', said[-1]); self.assertNotIn(general.COULD_NOT, said)
+
+    def test_a_turn_that_answered_or_set_up_a_card_is_not_woken_whatever_the_task_lists(self):
+        from taskuary import slots
+        for said in ('Done.', '[[TASKUARY-DRAFT to="office@vendor.example" subject="Hello"]]Hi - checking in.[[/TASKUARY-DRAFT]]'):
+            with self.subTest(said[:20]):
+                s = MemoryStore(); a_claude(self); tid = researcher(s)
+                slots.add(s, tid, [{'to': 'gail@vendor.example', 'about': 'the renewal'}], 'owner')     # an email nobody wrote: not chased
+                self.assertEqual(len(turn(s, tid, said)['prompts']), 1)
+
+
 if __name__ == '__main__':
     unittest.main()

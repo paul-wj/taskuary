@@ -1,19 +1,8 @@
 """A CHAT TASK'S WAITING MOVE IS THE AGENT'S (the owner, 2026-11-05: "we can remove reply ready for you since it can be any action"). The rail
 marks a general task's ready-to-send or waiting-agent row `chat`, and the page says "agent ready for you" over it (railStatus.chatReady); a
-coding task's row is not marked and keeps its own words. Invented world only (demo.seed)."""
-from taskuary import demo, funnel
+coding task's row is not marked and keeps its own words. Invented world only."""
+from taskuary import funnel
 from taskuary.store import MemoryStore
-
-
-def test_a_chat_tasks_ready_row_is_marked_and_a_coding_tasks_is_not():
-    s = MemoryStore(); demo.seed(s); funnel.invalidate()
-    tids = sorted({i['tid'] for i in funnel.pile(s, force=True)['items'] if i.get('lane') == 'approve' and i.get('tid')})
-    assert len(tids) >= 2, 'the demo has two drafts waiting on tasks'
-    s._exec("UPDATE task SET Kind='general' WHERE TaskId=?", (tids[0],)); s._exec("UPDATE task SET Kind='coding' WHERE TaskId=?", (tids[1],))
-    funnel.invalidate()
-    rows = {i['tid']: i for i in funnel.pile(s, force=True)['items'] if i.get('tid') in tids[:2] and i.get('lane') == 'approve'}
-    assert rows[tids[0]].get('chat') is True and not rows[tids[1]].get('chat')
-    assert all(i.get('lane') in funnel.CHAT_READY_LANES for i in funnel.pile(s, force=True)['items'] if i.get('chat'))
 
 
 def test_the_phone_and_the_assistant_say_agent_ready_for_you_for_a_chat_task_and_a_coding_task_keeps_its_words():
@@ -57,4 +46,17 @@ def test_after_the_owner_sends_a_chat_agent_is_done_until_typed_to_again():
     assert taskstate.state(s, s.get_task(tid), session={**live, 'waiting': False}) == 'working', 'typed to again: working'
     s._exec("UPDATE comment SET CreatedAt='2999-01-02 00:00:00' WHERE TaskId=?", (tid,))
     assert not taskstate.chat_moved_on(s, tid), 'it answered again since the send: waiting on you'
-    assert funnel.lane_word({'lane': 'report', 'kind': 'wrapup', 'chat_done': True}) == lanes.word('chat_done') == 'agent done'
+    assert funnel.lane_word({'lane': 'yours', 'kind': 'wrapup', 'chat_done': True}) == lanes.word('chat_done') == 'agent done'
+
+
+def test_a_chat_agent_whose_turn_was_stopped_is_not_done():
+    """The audit, 2026-11-10 (CI, on a slow runner): Remind me pressed while the agent worked stopped its turn, and in the beat before its
+    session rested the row lit Mark done - "agent done" over a turn that answered nothing. A stopped turn is no turn that ended."""
+    from taskuary import taskstate, workerstate as ws
+    s = MemoryStore()
+    tid = s.create_task({'Title': 'Plan the offsite', 'Kind': 'general', 'Status': 'in_progress'}, 'owner')
+    live = {'alive': True, 'waiting': True, 'state': 'parked', 'sid': 'g-1', 'mode': 'assistant'}
+    ws.record(s, tid, 'g-1', 'turn_end', text='The plan is above.', source='api')
+    assert taskstate.done_for_now(s, s.get_task(tid), live)
+    ws.record(s, tid, 'g-1', 'stopped', text='stopped', source='api')
+    assert not taskstate.done_for_now(s, s.get_task(tid), live) and taskstate.state(s, s.get_task(tid), session=live) != 'agentdone'

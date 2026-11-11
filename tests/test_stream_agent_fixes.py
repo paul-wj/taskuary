@@ -6,7 +6,7 @@ old, a finished turn woken again, Resume's words on a carry-on nobody pressed, "
 import json, shutil
 from unittest import mock
 
-from taskuary import agenttools, channels, config, general, hooks, ingest, outputs, server
+from taskuary import agenttools, channels, config, general, hooks, ingest, outputs, server, wrapup
 from taskuary.store import MemoryStore
 from test_carry_on import ingested, mail, store
 from test_freshness_walk import reads, stamp, teams_task
@@ -48,28 +48,28 @@ def test_a_carry_on_turn_is_never_resume():
     assert turn.endswith(ingest.CARRY_ON_PROMPT) and 'Resume' not in turn
 
 
-# ── F3: the owner's chat line re-reads the draft ───────────────────────────────────────────────────────────────────────────────────
+# ── F3: the owner's chat line re-reads the draft where no agent may take it (a reply task nothing works) ──────────────────────────────────
 def own_line(text): return {'ConversationId': 'teams:robin', 'SentAt': stamp(), 'Channel': 'teams', 'BodyText': text}
 
 
 def test_a_line_that_covers_the_draft_retires_it_with_why():
     s = MemoryStore(); tid, _first, rid = teams_task(s)
-    with reads('covered'): channels.retire_draft_answered_elsewhere(s, tid, own_line('reset it, try now'))
+    with reads('covered'): channels.owner_line(s, tid, {'channel': 'teams'}, None, own_line('reset it, try now'))
     assert s.get_review(rid)['Status'] == 'superseded'
-    assert any(channels.COVERED in c['Body'] for c in s.list_comments(tid))
+    assert any('yourself - no new response needed.' in c['Body'] and 'reset it' not in c['Body'] for c in s.list_comments(tid))
 
 
 def test_a_line_that_covers_part_cuts_the_draft_to_what_is_left():
     s = MemoryStore(); tid, _first, rid = teams_task(s)
     before = s.get_review(rid)
-    with reads('partly', 'The export fix lands tomorrow.'): channels.retire_draft_answered_elsewhere(s, tid, own_line('voice to text is fixed in 18'))
+    with reads('partly', 'The export fix lands tomorrow.'): channels.owner_line(s, tid, {'channel': 'teams'}, None, own_line('voice to text is fixed in 18'))
     rv = s.get_review(rid)
     assert (rv['Status'], rv['DraftText'], rv['MessageId']) == ('pending', 'The export fix lands tomorrow.', before['MessageId'])
 
 
 def test_an_unread_line_keeps_the_draft_and_says_check_it():
     s = MemoryStore(); tid, _first, rid = teams_task(s)
-    with mock.patch('taskuary.llm.build_llm', return_value=None): channels.retire_draft_answered_elsewhere(s, tid, own_line('on it'))
+    with mock.patch('taskuary.llm.build_llm', return_value=None): channels.owner_line(s, tid, {'channel': 'teams'}, None, own_line('on it'))
     assert (s.get_review(rid)['Status'], s.get_review(rid)['DraftText']) == ('pending', 'ok give me 5 mins')
     assert any(channels.CHECK_IT in c['Body'] for c in s.list_comments(tid))
 
@@ -103,6 +103,30 @@ def test_a_draft_for_the_newest_message_is_not_called_earlier():
     s.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft', 'Status': 'pending', 'DraftText': 'Yes, keep posting here.'})
     said = general.latest_block(s, tid)
     assert 'written for this message - keep it or improve it' in said and 'BEFORE the newest message' not in said
+
+
+def test_a_draft_the_thread_moved_past_is_never_called_written_for_the_newest_message():
+    # the owner, 2026-11-10: the agent drafted on a chat, the owner answered there from the phone, a minute later the sender asked something
+    # new - the join re-pinned the old draft to the new line (its freshness marker), and the woken agent was told that draft was "written for
+    # this message - keep it", so the answer to the first ask stood as the answer to the second
+    s = MemoryStore(); s.set_setting('owner_email', 'alex@northwind.example', 't'); s.remember_trust('whatsapp', 'whatsapp:15550001', 'You vouched')
+    wa = lambda ext, body, at: {'external_id': ext, 'channel': 'whatsapp', 'subject': 'Erin Blake', 'body': body, 'from_email': 'whatsapp:15550001',
+                                'from_name': 'Erin Blake', 'conversation_id': 'wa:erin', 'sent_at': at, 'source_name': 'Erin Blake', 'mail_meta': {'dm': True}}
+    llm = lambda sy, u, **k: json.dumps({'intent': 'reply_only', 'kind': 'task', 'why': 'w', 'asks_owner': True, 'title': 'Erin asks'})
+    with mock.patch('taskuary.ingest._spawn') as spawn, mock.patch.object(general, 'provider_options', return_value=[{'pick': 'cli:claude'}]):
+        tid = ingest.ingest_message(s, wa('w1', 'Are we still on for Thursday?', stamp(-600)), llm=llm)['task_id']
+        ingest.reply_to_agent(s, tid, s.pending_review(tid, kind='draft')['ReviewId'])          # the hand-over, as the spawn runs it
+        general.OPENING.discard(tid)
+        for who, kind, words in ((general.BRIEF_ACTOR, general.USER_TYPE, 'brief'), ('assistant', general.ASSISTANT_TYPE, 'Drafted it.')):
+            s._exec('UPDATE comment SET CreatedAt=? WHERE CommentId=?', (stamp(-500), s.add_comment(tid, who, kind, words)))
+        rid = wrapup.agent_reply(s, tid, 'Hi Erin - yes, Thursday stands.', 'assistant')['review_id']
+        spawn.reset_mock()
+        try: ingest.ingest_message(s, wa('w2', 'great - and can you bring the budget sheet?', stamp(-60)), llm=llm)
+        finally: general.OPENING.discard(tid)
+    assert [c[0][0].__name__ for c in spawn.call_args_list] == ['_replan_general']           # the agent is woken to answer it
+    said = general.latest_block(s, tid)
+    assert 'THE NEWEST MESSAGE - from Erin Blake' in said and 'budget sheet' in said
+    assert f'THE DRAFT WAITING NOW (rv{rid}' in said and 'written for this message' not in said and 'BEFORE the newest message' in said
 
 
 # ── F6, F11: the to-do list and the owner's reminder ───────────────────────────────────────────────────────────────────────────────
@@ -172,3 +196,122 @@ def test_the_owners_own_line_is_drawn_at_the_time_they_wrote_it():
     at('message', 'MessageId', mine, '2026-11-08 21:40:00')                  # filed on the task late, written early
     order = [w['words'] for m in general.shown_history(s, tid) for w in m.get('mail') or []]
     assert order.index('Ray, which build?') < order.index('Downloads pop up too')
+
+
+# ── the owner's line on a chat: the agent's to re-plan, never a side read in its name (the owner, 2026-11-09 and 2026-11-10) ──────────────
+CONV = 'wa:erin'
+
+
+def chat_task(s, live=False):
+    "A general task on a WhatsApp chat: Erin asked, the agent answered and left a draft; `live`: its next turn is already at work."
+    tid = s.create_task({'Title': 'Budget meeting today?', 'Kind': 'general', 'Status': 'open'}, 'router')
+    mid = s.add_message({'TaskId': tid, 'ExternalId': 'wa1', 'ConversationId': CONV, 'Channel': 'whatsapp', 'FromName': 'Erin Blake',
+                         'FromEmail': 'whatsapp:15550001', 'SentAt': stamp(-600), 'BodyText': 'still on for 3pm? and is the room booked?', 'Status': 'routed'})
+    for who, kind, words in ((general.BRIEF_ACTOR, general.USER_TYPE, 'brief'), ('assistant', general.ASSISTANT_TYPE, 'Drafted the answer.')):
+        s._exec('UPDATE comment SET CreatedAt=? WHERE CommentId=?', (stamp(-500), s.add_comment(tid, who, kind, words)))
+    rid = s.add_review({'TaskId': tid, 'MessageId': mid, 'ConversationId': CONV, 'Kind': 'draft_reply', 'Status': 'pending', 'SentAt': stamp(-600),
+                        'DraftText': 'Hi Erin - yes, 3pm stands, and the room is booked till 4.'})
+    if live: general.OPENING.add(tid)
+    return tid, rid
+
+
+def say_on_chat(s, text='yes 3pm, same room', at=None):
+    with mock.patch('taskuary.ingest._spawn') as spawn, mock.patch.object(channels, 'reread', side_effect=AssertionError('a side read')), \
+         mock.patch.object(general, 'provider_options', return_value=[{'pick': 'cli:claude'}]):
+        channels.ingest_own_message(s, {'external_id': 'me1', 'channel': 'whatsapp', 'conversation_id': CONV, 'sent_at': at or stamp(-60), 'body': text,
+                                        'from_email': 'me'}, 'your line in the chat')
+    return [(c[0][0].__name__, c[0][-1]) for c in spawn.call_args_list]
+
+
+def test_the_owners_line_over_a_waiting_draft_wakes_the_agent_and_nothing_else_touches_the_draft():
+    # the owner, 2026-11-09: "if we respond show on left side and then agent reevaluates if action still required" - a second model retired or
+    # cut the agent's draft in its name, and the agent never heard the line until something else woke it
+    s = MemoryStore(); tid, rid = chat_task(s)
+    try: went = say_on_chat(s)
+    finally: general.OPENING.discard(tid)
+    assert [w for w, _ in went] == ['_replan_general'] and 'yes 3pm, same room' in went[0][1] and 'you already answered on WhatsApp' in went[0][1]
+    rv = s.get_review(rid)
+    assert rv['Status'] == 'pending' and rv['DraftText'] == 'Hi Erin - yes, 3pm stands, and the room is booked till 4.'     # the agent's to keep or withdraw
+    lb = general.latest_block(s, tid)
+    assert 'WHAT THE OWNER REPLIED ON THE THREAD THEMSELVES' in lb and 'yes 3pm, same room' in lb and f'THE DRAFT WAITING NOW (rv{rid}' in lb
+
+
+def test_the_owners_line_while_a_turn_works_is_its_next_turn():
+    # the night run, 2026-11-09: a turn started a second before the owner's "yes 3pm, same room" ended "check your calendar before Send" - its
+    # closing words were re-read by a side model; now the line is the agent's own next turn, queued behind the one at work
+    s = MemoryStore(); tid, _ = chat_task(s, live=True)
+    try: went = say_on_chat(s)
+    finally: general.OPENING.discard(tid)
+    assert [w for w, _ in went] == ['_replan_pass'] and 'yes 3pm, same room' in went[0][1]
+
+
+def test_a_line_with_no_draft_and_no_turn_at_work_stays_context_for_the_next_turn():
+    # the owner, 2026-11-08: "it should show what i sent ... even if it does not trigger as a prompt"
+    s = MemoryStore(); tid, rid = chat_task(s); s.decide_review(rid, 'sent', None, 'owner')
+    assert say_on_chat(s) == [] and 'yes 3pm, same room' in general.latest_block(s, tid)
+
+
+def test_where_no_agent_may_take_the_line_the_one_read_still_settles_the_draft():
+    s = MemoryStore(); s.set_setting('answer_to_agent', 'off', 't'); tid, rid = chat_task(s)
+    with reads('covered'), mock.patch('taskuary.ingest._spawn') as spawn:
+        channels.ingest_own_message(s, {'external_id': 'me1', 'channel': 'whatsapp', 'conversation_id': CONV, 'sent_at': stamp(-60),
+                                        'body': 'yes 3pm, same room', 'from_email': 'me'}, 'your line in the chat')
+    assert not spawn.called and s.get_review(rid)['Status'] == 'superseded'
+
+
+def test_a_draft_rewritten_in_a_later_turn_is_that_turns_card_and_the_old_one_its_record():
+    # the owner, 2026-11-10 ("terrible bug?? why did this not create the draft email action card?"): a reply already waited - written before
+    # any turn of the agent's - and his line asked for a short one with a file. The agent's new letter was written INTO that old review, so its
+    # card stayed at the old draft's place far above, and the new turn drew no card at all
+    s = MemoryStore(); tid = s.create_task({'Title': 'Vendor review', 'Status': 'in_progress'}, 't')
+    mid = s.add_message({'TaskId': tid, 'ExternalId': 'm1', 'Channel': 'email', 'FromName': 'Paula Vance', 'FromEmail': 'paula@vendor.example',
+                         'SentAt': '2026-11-10 08:00:00', 'BodyText': 'Your review of the tool?', 'Status': 'routed'})
+    old = s.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft_reply', 'Status': 'pending', 'DraftText': 'A long review of every flaw.'})
+    s._exec("UPDATE review SET CreatedAt='2026-11-10 08:01:00' WHERE ReviewId=?", (old,))
+    for at, who, kind, words in (('2026-11-10 08:02:00', 'assistant', general.ASSISTANT_TYPE, 'Read it.'),
+                                 ('2026-11-10 09:00:00', 'owner', general.USER_TYPE, 'reply with the file attached, short, keep the real flaws')):
+        s._exec('UPDATE comment SET CreatedAt=? WHERE CommentId=?', (at, s.add_comment(tid, who, kind, words)))
+    new = wrapup.agent_reply(s, tid, 'Short version: two real flaws, sheet attached.', 'assistant')['review_id']
+    assert new != old, 'a new review - its card stands in the turn that wrote it'
+    assert s.get_review(old)['Status'] == 'closed_unsent' and s.get_review(old)['DecideNote'] == wrapup.REPLACED
+    turn = s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Replaced the waiting draft with the short one.')
+    assert s.snap_draft(new, turn)
+    [d] = general.draft_turns(s, tid)
+    assert (d['review'], d['turn']) == (new, f'comment-{turn}')
+
+
+def test_a_draft_the_agent_keeps_after_the_owner_prompted_is_raised_again_as_the_new_turn_s_card():
+    # the owner, 2026-11-10: "The second you write ptompt on email action it should go gray and then it should generate new email action box under
+    # it" - the page greys the old card for good once he has prompted past it, so a letter the agent files again unchanged (its own, from an
+    # earlier turn) is a new card in this turn - written into the old review it stayed grey, and no card was live
+    s = MemoryStore(); tid = s.create_task({'Title': 'Vendor review', 'Status': 'in_progress'}, 't')
+    mid = s.add_message({'TaskId': tid, 'ExternalId': 'm1', 'Channel': 'email', 'FromName': 'Paula Vance', 'FromEmail': 'paula@vendor.example',
+                         'SentAt': '2026-11-10 08:00:00', 'BodyText': 'Your review of the tool?', 'Status': 'routed'})
+    old = wrapup.agent_reply(s, tid, 'Two real flaws, details below.', 'assistant')['review_id']
+    s._exec("UPDATE review SET CreatedAt='2026-11-10 08:01:00' WHERE ReviewId=?", (old,))
+    s._exec('UPDATE comment SET CreatedAt=? WHERE CommentId=?', ('2026-11-10 09:00:00', s.add_comment(tid, 'owner', general.USER_TYPE, 'is that the right tone?')))
+    new = wrapup.agent_reply(s, tid, 'Two real flaws, details below.', 'assistant')['review_id']
+    assert new != old and s.get_review(old)['Status'] == 'closed_unsent' and s.get_review(old)['DecideNote'] == wrapup.REPLACED
+    assert s.get_review(old)['DraftText'] == 'Two real flaws, details below.', 'the old card keeps its words'
+    # ...and saved twice in the turn that wrote it, it is one card, rewritten in place
+    assert wrapup.agent_reply(s, tid, 'Two real flaws - and one small one.', 'assistant')['review_id'] == new
+
+
+def test_a_draft_made_before_the_owner_s_line_is_not_the_card_of_the_turn_that_answered_it():
+    # the recorded walk, 2026-11-10: a reply drafted on arrival stood under the mail; the owner typed a line, the agent answered it and left the
+    # draft alone - and the card jumped from above his line to under that answer's Next steps. The first answer after a draft wrote it only
+    # when no line came in between: an answer after his line was his line's
+    s = MemoryStore(); tid = s.create_task({'Title': 'Vendor review', 'Status': 'in_progress'}, 't')
+    mid = s.add_message({'TaskId': tid, 'ExternalId': 'm1', 'Channel': 'email', 'FromName': 'Paula Vance', 'FromEmail': 'paula@vendor.example',
+                         'SentAt': '2026-11-10 08:00:00', 'BodyText': 'Your review of the tool?', 'Status': 'routed'})
+    rid = s.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft_reply', 'Status': 'pending', 'DraftText': 'A long review of every flaw.'})
+    s._exec("UPDATE review SET CreatedAt='2026-11-10 08:01:00' WHERE ReviewId=?", (rid,))
+    for at, who, kind, words in (('2026-11-10 09:00:00', 'owner', general.USER_TYPE, 'make it shorter and attach the sheet'),
+                                 ('2026-11-10 09:00:30', 'assistant', general.ASSISTANT_TYPE, 'Ok.')):
+        s._exec('UPDATE comment SET CreatedAt=? WHERE CommentId=?', (at, s.add_comment(tid, who, kind, words)))
+    [d] = general.draft_turns(s, tid)
+    assert (d['review'], d['turn']) == (rid, None), 'it stands by its time, under the mail it answers'
+    # ...and one written while a turn worked is still that turn's, its answer stamped when the turn ends
+    s._exec("UPDATE review SET CreatedAt='2026-11-10 09:00:10' WHERE ReviewId=?", (rid,))
+    [d] = general.draft_turns(s, tid)
+    assert d['turn'] is not None and d['turn'].startswith('comment-')

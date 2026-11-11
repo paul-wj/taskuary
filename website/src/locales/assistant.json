@@ -1435,5 +1435,21 @@
   "Checked the thread for new messages": "已检查对话中的新消息",
   "To hand them to an agent, press a line under Came from - {agent} is among its moves; every line comes here, and you take off the ones it should not read.": "要将它们交给智能体，请点击“来源”下的对应行，{agent}是其可选操作之一；每一行都会出现在这里，你可以移除它不应读取的行。",
   "new message": "条新消息",
-  "new messages": "条新消息"
+  "new messages": "条新消息",
+  "which AI": "使用哪个 AI",
+  "Send to the agent": "发送给智能体",
+  "Starts the agent on this task with your words": "用你的话在此任务上启动智能体",
+  "Write to pick it back up…": "输入以重新拾起…",
+  "Write to pick the session back up…": "输入以重新拾起会话…",
+  "Enter sends it when this turn ends · Shift+Enter adds a line": "回车在本轮结束后发送 · Shift+回车换行",
+  "Enter sends it to the agent · Shift+Enter adds a line": "回车发送给智能体 · Shift+回车换行",
+  "Enter types it into the running agent · Shift+Enter adds a line": "回车输入到运行中的智能体 · Shift+回车换行",
+  "Enter picks the session back up with what you wrote · Shift+Enter adds a line": "回车用你写的内容重新拾起会话 · Shift+回车换行",
+  "The agent is starting - its turns show here as it works.": "智能体正在启动 - 工作时其轮次将在此显示。",
+  "No session has run on this task yet - write below to start one.": "此任务尚无会话运行 - 在下方输入以启动一个。",
+  "No AI is connected yet - what you type waits for one.": "尚未连接 AI - 你输入的内容将等待一个。",
+  "Ask about this": "询问此条",
+  "It did not start - press Send again.": "未能启动 - 请再次按发送。",
+  "Could not read it just now.": "刚才未能读取。",
+  "No AI has run on this task yet.": "此任务上还没有运行过 AI。"
 }

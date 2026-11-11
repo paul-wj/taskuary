@@ -13,7 +13,7 @@ import DoneAllIcon from "@mui/icons-material/DoneAll";
 import { ClosingCover, closeAgentWork } from "./closeAgent.jsx";
 import api from "./api";
 import { onLive } from "./live.js";
-import { PANEL, BORDER, DIM, FAINT, INK, ACCENT, ROLES, mono } from "./theme.jsx";
+import { PANEL, BORDER, DIM, FAINT, INK, ROLES, mono } from "./theme.jsx";
 import { TerminalPane } from "./TerminalView.jsx";
 
 const GeneralWorkspace = React.lazy(() => import("./GeneralWorkspace.jsx"));
@@ -192,7 +192,7 @@ export default function WallView({ onOpenTask, refresh = 0, active = true }) {
           {t("Every live session, side by side — code several agents at once. Drag a pane by its handle to rearrange; drag the bar under it to resize.")}
         </Typography>
         {!!panes.length && (
-          <Box sx={{ display: "flex", gap: 0.25, bgcolor: "#e7eae2", borderRadius: 2, p: "3px" }}>
+          <Box sx={{ display: "flex", gap: 0.25, bgcolor: "var(--tq-inset, #e7eae2)", borderRadius: 2, p: "3px" }}>
             {COLS.map((n) => (
               <Box key={n} component="button" type="button" aria-pressed={cols === n} onClick={() => setColsP(n)} title={n === 1 ? t("one at a time") : n === 2 ? t("two across (2×2)") : t("{count} across", { count: n })}
                 sx={{ minWidth: 30, textAlign: "center", height: 24, lineHeight: "24px", px: 1, borderRadius: 1.5, cursor: "pointer", border: 0, font: "inherit", appearance: "none",
@@ -233,17 +233,17 @@ export default function WallView({ onOpenTask, refresh = 0, active = true }) {
                 {/* Title owns the first row; live-agent status gets a second row and can never
                     squeeze the task name out. Only the handle is draggable, so the action buttons
                     remain buttons instead of occasionally starting a pane drag. */}
-                <Box sx={{ borderBottom: `1px solid ${BORDER}`, bgcolor: wrapBusy ? ROLES.working.tint : waiting ? ROLES.you.tint : "#faf8f5", flexShrink: 0 }}>
+                <Box sx={{ borderBottom: `1px solid ${BORDER}`, bgcolor: wrapBusy ? ROLES.working.tint : waiting ? ROLES.you.tint : "var(--tq-panel, #faf8f5)", flexShrink: 0 }}>
                   <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, px: 0.75, py: 0.35 }}>
                     <Box onPointerDown={(e) => startDrag(e, s.sid)}
                       role="button" aria-label={t("Drag {ref} to reorder", { ref: task.ref || `TQ-${String(s.taskId).padStart(4, "0")}` })} tabIndex={0}
                       title={t("Drag to reorder this pane")}
                       sx={{ width: 24, height: 26, display: "flex", alignItems: "center", justifyContent: "center",
                         flexShrink: 0, borderRadius: 1, cursor: "grab", touchAction: "none", userSelect: "none",
-                        "&:hover": { bgcolor: "#e7eae2" }, "&:active": { cursor: "grabbing" } }}>
+                        "&:hover": { bgcolor: "var(--tq-inset, #e7eae2)" }, "&:active": { cursor: "grabbing" } }}>
                       <DragIndicatorIcon sx={{ fontSize: 16, color: FAINT }} />
                     </Box>
-                    <Typography sx={{ ...mono, fontSize: 11, fontWeight: 600, color: ACCENT, flexShrink: 0 }}>{task.ref || `TQ-${String(s.taskId).padStart(4, "0")}`}</Typography>
+                    <Typography sx={{ ...mono, fontSize: 11, fontWeight: 600, color: "var(--tq-link, #55697a)", flexShrink: 0 }}>{task.ref || `TQ-${String(s.taskId).padStart(4, "0")}`}</Typography>
                     <Typography noWrap title={task.Title || s.cwd}
                       sx={{ fontSize: 12, fontWeight: 600, color: INK, minWidth: 0, flex: 1 }}>{task.Title || s.cwd}</Typography>
                     <Button size="small" variant="outlined" disabled={wrapBusy} onClick={() => closeAgent(s)}

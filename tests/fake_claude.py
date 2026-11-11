@@ -17,19 +17,24 @@ found where the Assistant puts them ("The owner says: " on a first round, "The o
 "FROM THE OWNER: " in a Continue's turn - server.continue_work), the
 first rule whose regex matches answers - `first` on a first round, `then` once it has looked something up, or `exit` with that code
 mid-turn (a CLI that dies). No rule: "Ok."
+FAKE_DIRECTOR (fake_director.py): an agent's turn - a kept conversation, or a run with Taskuary's tools - answers a scenario's words instead.
 FAKE_CLAUDE_LOG, when set, gets one JSON line per event ({pid, ev, t, ...}) for the latency breakdown."""
 import json, os, re, sys, time
+from fake_director import directed, folder_of, post
 
 T0 = time.time()
 args = sys.argv[1:]
 def arg(k): return args[args.index(k) + 1] if k in args and args.index(k) + 1 < len(args) else None
 def env(k, d): return float(os.environ.get(k) or d)
+if '--version' in args: print(f"{os.environ.get('FAKE_CLAUDE_VERSION') or '2.1.300'} (Claude Code)"); sys.exit(0)   # a stranger's task needs a new one (origin.py)
 if '--help' in args:                     # an older claude has no --setting-sources: FAKE_CLAUDE_OLD=1
     print('Usage: claude [options]\n  -p, --print\n' + ('' if os.environ.get('FAKE_CLAUDE_OLD') else '  --setting-sources <sources>\n')); sys.exit(0)
 SPAWN, THINK, PREFILL, TPS = env('FAKE_CLAUDE_SPAWN', 2.5), env('FAKE_CLAUDE_THINK', 0.7), env('FAKE_CLAUDE_PREFILL', 0.25), env('FAKE_CLAUDE_TPS', 70)
 LIVE, PARTIAL = 'stream-json' in (arg('--input-format') or ''), '--include-partial-messages' in args
 sid = arg('--resume') or f'fake-{os.getpid()}-{int(T0 * 1000) % 100000}'
-system = open(arg('--system-prompt-file'), encoding='utf-8').read() if arg('--system-prompt-file') else ''
+_sp = arg('--system-prompt-file') or arg('--append-system-prompt-file')
+system = open(_sp, encoding='utf-8').read() if _sp else ''
+if system and folder_of(): open(os.path.join(folder_of(), 'system.txt'), 'w', encoding='utf-8').write(system)
 script = json.load(open(os.environ['FAKE_CLAUDE_SCRIPT'], encoding='utf-8')) if os.environ.get('FAKE_CLAUDE_SCRIPT') else []
 
 
@@ -41,13 +46,19 @@ def log(ev, **kw):
 def out(j): sys.stdout.write(json.dumps(j) + '\n'); sys.stdout.flush()
 
 
+def act(p: dict):
+    """A rule's `post`: what the real agent's shell would run - `taskuary --reply ...` and kin - as the CLI sends it, on the session's own
+    task and token (cli._post): {"path": "/api/agent/reply", "body": {...}} - task_id is filled in (browser/cards-in-their-turn)."""
+    log('post', path=p['path'], got=post(p)[:400])
 def answer(prompt: str) -> str:
     then = 'You looked up ' in prompt or 'You asked Taskuary for ' in prompt
     m = re.search(r'^(?:The owner (?:says|asked)|FROM THE OWNER): (.*)$', prompt, re.M)
     said = m.group(1).strip() if m else prompt.strip().splitlines()[-1] if prompt.strip() else ''
     for r in script:
-        if not re.search(r['when'], said, re.I): continue
+        # ...`anywhere`: the rule reads the whole prompt - a task's turn names the owner's words its own way
+        if not re.search(r['when'], prompt if r.get('anywhere') else said, re.I): continue
         if r.get('exit') is not None: log('exit', code=r['exit']); sys.exit(r['exit'])   # a CLI that dies mid-turn (website/browser/agent-journey)
+        for p in r.get('post') or []: act(p)
         return r.get('then' if then else 'first') or r.get('first') or 'Ok.'
     return 'Ok.'
 
@@ -58,7 +69,9 @@ def turn(prompt: str, n: int):
     if n == 1: out({'type': 'system', 'subtype': 'init', 'session_id': sid, 'model': arg('--model') or 'default', 'tools': []})
     unseen = len(prompt) + (len(system) if n == 1 else 0)
     time.sleep(THINK + PREFILL * unseen / 10_000)
-    text = answer(prompt)
+    # ...a scenario's own turn (fake_director.py) is an agent's - a kept conversation, or a run with Taskuary's tools (a stranger's task runs one
+    # turn a process); a call beside it with no tools (a summary, a lesson) is answered at once
+    text = directed(prompt) if folder_of() and (LIVE or '--mcp-config' in args) else answer(prompt)
     log('first_token', n=n)
     chunks = re.findall(r'.{1,4}', text, re.S) or ['']
     start = time.time()
@@ -72,7 +85,7 @@ def turn(prompt: str, n: int):
          'duration_ms': int((time.time() - t) * 1000)})
 
 
-TAKES = {'--session-id', '--resume', '-r', '--settings', '--model', '--system-prompt-file', '--append-system-prompt', '--permission-mode',
+TAKES = {'--session-id', '--resume', '-r', '--settings', '--model', '--system-prompt-file', '--append-system-prompt-file', '--append-system-prompt', '--permission-mode',
          '--add-dir', '--tools', '--allowedTools', '--disallowedTools', '--mcp-config', '--setting-sources', '--output-format', '--input-format'}
 
 

@@ -10,7 +10,7 @@ that account into one list of steps, and keeps a copy beside the task's artifact
 pruning its logs next month does not take the record with it.
 
 A step is {k, text, name?, file?, at?}: k is `you` (what the agent was told), `brief` (what Taskuary told it - keep_seed),
-`thought`, `said`, `tool` (name + what it was pointed at), `plan` (its todo list) or `error`. Tool OUTPUT is left out on purpose - it is the noise the record
+`thought`, `said`, `tool` (name + what it was pointed at), `plan` (its todo list), `compact` (the CLI compacted its context) or `error`. Tool OUTPUT is left out on purpose - it is the noise the record
 is read past, and the agent's next thought or answer says what it made of it."""
 import json
 import re
@@ -140,22 +140,53 @@ def _hunks(sp) -> list:
             for h in (sp or [])[:50] if isinstance(h, dict) and isinstance(h.get('lines'), list)]
 
 
+# A COMPACTION IS THE CLI'S OWN, NOT ANYONE'S WORDS (the owner, 2026-11-10: "what is this garbage? automated compaction? it shoudl not show it
+# please just say it was compacted"): Claude writes a `compact_boundary` system entry, then the summary it carries on from as a USER entry
+# marked isCompactSummary - drawn as the owner's bubble, "This session is being continued..." and all. One `compact` step in their place
+COMPACTED = 'Conversation compacted'
+def _compact(out: list, at):
+    if not (out and out[-1]['k'] == 'compact'): out.append({'k': 'compact', 'text': COMPACTED, 'at': at})
+
+
+# ONLY WHAT A HUMAN TYPED IS THE OWNER'S (the owner, 2026-11-10: "this is obvious stuff that your stress test should be catching.."): Claude
+# writes its own user-role entries too - a background task's <task-notification>, another agent's message, "[Request interrupted by user]".
+# The log says who: `origin.kind` is 'human' on a typed line. A log too old to carry one is read by Claude's own test for its markers - a
+# leading <tag>, or the interrupt's bracket - and the line typed MID-TURN, which it keeps as a queued_command attachment, is the owner's too
+_CHROME = re.compile(r'^(?:<[a-z][\w-]*[\s>]|\[Request interrupted by user[^\]]*\])')
+def _typed(j: dict, x: str) -> bool:
+    kind = (j.get('origin') or {}).get('kind') if isinstance(j.get('origin'), dict) else None
+    return kind == 'human' if kind else not (_CHROME.match(x) or x.startswith('Caveat:'))
+def _texts(content) -> list: return [x for b in _blocks(content) if b.get('type') == 'text' and (x := str(b.get('text') or '').strip())]
+
+
 def _claude(path: Path) -> list:
     out, uses = [], {}
     for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
         try: j = json.loads(line)
         except ValueError: continue
+        if j.get('isCompactSummary') or (j.get('type') == 'system' and j.get('subtype') == 'compact_boundary'):
+            if not j.get('isSidechain'): _compact(out, j.get('timestamp'))
+            continue
+        q = j.get('attachment') if j.get('type') == 'attachment' and isinstance(j.get('attachment'), dict) else {}
+        if q.get('type') == 'queued_command' and not j.get('isSidechain'):
+            out += [{'k': 'you', 'text': _cut(x, YOU_N), 'at': j.get('timestamp') or q.get('timestamp')} for x in _texts(q.get('prompt')) if _typed(q, x)]
+            continue
         if j.get('isMeta') or j.get('isSidechain') or j.get('type') not in ('user', 'assistant'): continue
         at, msg = j.get('timestamp'), j.get('message') or {}
+        # ...an API error is a failure, said as one; any other line Claude writes in the agent's place ("No response requested.") is no one's
+        if j['type'] == 'assistant' and (j.get('isApiErrorMessage') or j.get('sessionFailureNotice')):
+            out.append({'k': 'error', 'text': _cut(' '.join(_texts(msg.get('content'))) or 'The model could not answer.', 400), 'at': at}); continue
+        if j['type'] == 'assistant' and msg.get('model') == '<synthetic>': continue
         # ...an edit's result carries the patch Claude wrote, line numbers and all: it replaces the before/after its call was handed
         res = j.get('toolUseResult') if isinstance(j.get('toolUseResult'), dict) else {}
         for b in _blocks(msg.get('content')):
             t = b.get('type')
             if t == 'tool_result' and (s := uses.get(b.get('tool_use_id'))) and (h := _hunks(res.get('structuredPatch'))): s['edit'] = {'hunks': h}
+            # ...A CALL THAT FAILED READS AS FAILED, with what it said (a held step's "Taskuary held this" too - the chat draws that held, not red)
+            if t == 'tool_result' and b.get('is_error') and (s := uses.get(b.get('tool_use_id'))):
+                s['status'], s['output'] = 'failed', _cut(' '.join(_texts(b.get('content'))) if isinstance(b.get('content'), list) else b.get('content'), 400)
             if j['type'] == 'user':
-                # the owner's words - not a tool result coming back, not a slash command's or a hook's plumbing
-                if t == 'text' and (x := str(b.get('text') or '').strip()) and not x.startswith(('<command-', '<local-command', '<system-reminder', 'Caveat:')):
-                    out.append({'k': 'you', 'text': _cut(x, YOU_N), 'at': at})
+                if t == 'text' and (x := str(b.get('text') or '').strip()) and _typed(j, x): out.append({'k': 'you', 'text': _cut(x, YOU_N), 'at': at})
             elif t == 'thinking' and str(b.get('thinking') or '').strip(): out.append({'k': 'thought', 'text': _cut(b['thinking'], THOUGHT_N), 'at': at})
             elif t == 'text' and str(b.get('text') or '').strip(): out.append({'k': 'said', 'text': _cut(b['text'], SAID_N), 'at': at})
             elif t == 'tool_use': out.append(s := _tool(b.get('name'), b.get('input'), at)); uses[b.get('id')] = s
@@ -171,6 +202,7 @@ def _codex(path: Path) -> list:
         try: j = json.loads(line)
         except ValueError: continue
         p, at = j.get('payload') or {}, j.get('timestamp')
+        if j.get('type') == 'compacted': _compact(out, at); continue           # ...and Codex's own compaction, its rollout's `compacted` item
         if j.get('type') == 'event_msg' and p.get('type') == 'user_message' and str(p.get('message') or '').strip():
             out.append({'k': 'you', 'text': _cut(p['message'], YOU_N), 'at': at})
         if j.get('type') != 'response_item': continue
@@ -438,10 +470,17 @@ def said(trace: list) -> str:
 
 def keep_turn(tid: int, reply_id, trace: list):
     """A general turn's tool calls and thinking, filed under the reply they led to (general.send_prompt)."""
-    steps = []
+    from .viewspec import MARK
+    steps, calls = [], {}
     for e in trace or []:
         k, name, d = e.get('type'), e.get('name'), e.get('detail')
-        if k == 'tool_call': steps.append(_tool(name, (d or {}).get('args') if isinstance(d, dict) else d))
+        if k == 'tool_call':
+            steps.append(s := _tool(name, (d or {}).get('args') if isinstance(d, dict) else d))
+            if isinstance(d, dict): calls[d.get('tool_call_id')] = s
+        # ...a VIEW the agent showed keeps its answer, the checked spec the chat draws (2026-11-09): its arguments are cut to strings here, so
+        # once the turn was filed the table or chart was gone from the chat - only the live turn had ever drawn one
+        elif k == 'tool_result' and isinstance(d, dict) and MARK in str(d.get('result') or '') and (s := calls.get(d.get('tool_call_id') or name)):
+            s['output'] = str(d['result'])
         elif k == 'progress' and name in ('thinking', 'reasoning') and str(d or '').strip(): steps.append({'k': 'thought', 'text': _cut(d, THOUGHT_N)})
         elif k == 'progress' and name in ('text', 'agent_message') and str(d or '').strip(): steps.append({'k': 'said', 'text': _cut(d, SAID_N)})
         elif k == 'tool_result' and isinstance(d, dict) and d.get('is_error'): steps.append({'k': 'error', 'text': _cut(d.get('result'), 400)})
@@ -469,16 +508,52 @@ def keep_seed(tid: int, seed: str):
     except OSError as e: logger.warning(f'the seed of task {tid} was not kept: {e}')
 
 
+# THE WAITING ROOM'S BATCH TYPED INTO A PTY (waitroom.batch) is Taskuary's head round the owner's notes: drawn whole it was their bubble, "While
+# you were working, the owner queued 1 note for you..." (the owner, 2026-11-09: only what they typed, or what came in on the thread, is an input)
+_QUEUED = re.compile(r'(?:While you were working, (?P<a>[\w ]+?) queued \d+ notes? for you\. Take them in order, after finishing the step you are on; '
+                     r'if one conflicts with work already done, say so instead of undoing it:|(?P<b>[\w ]+?) left \d+ notes? for you(?: after the last '
+                     r'session ended)?\. Take them in order:)')
+_LEFT = re.compile(r'\s*\(\d+ more notes? waits? behind this one.*$', re.S)
+def queued(text):
+    "[(k, text)] of a typed waiting-room batch - the owner's notes `you`, the rest `brief` - or None when `text` is not one."
+    s = ' '.join(str(text or '').split()); m = _QUEUED.search(s)
+    if not m: return None
+    if 'owner' not in (m.group('a') or m.group('b') or '').lower(): return [('brief', s)]
+    rest = s[m.end():]; tail = _LEFT.search(rest)
+    head, rest = (s[:m.end()] + (tail.group(0) if tail else '')).strip(), rest[:tail.start()] if tail else rest
+    notes = [n.strip() for n in re.split(r'(?:^|\s)\(\d+\)\s+', rest) if n.strip()]
+    return [('brief', head)] + [('you', n) for n in notes]
+
+
+_CONTINUED = 'This session is being continued from a previous conversation'     # Claude Code's chrome over a compact summary
+# A NOTE TASKUARY TYPED BEFORE IT MARKED ITS NOTES (2026-11-09/10): an approval's "The owner approved it and Taskuary ran `gh pr comment ...`"
+# was kept as no seed and drew as the owner's line - its fixed opening, Taskuary's own words, is the mark left (chatStream.TOLD, the same)
+TOLD = re.compile(r'^\s*(?:The owner (?:approved it|pressed .{1,60}? on what you set up)|Taskuary left \d+ notes? for you|While you were working, Taskuary queued \d+ notes?)')
+
+
 def mark_briefs(tid: int, steps: list) -> list:
-    "The told steps that are a seed Taskuary sent, as `brief`."
-    p = _seeds_path(tid)
-    if not p.is_file(): return steps
-    seeds = set()
-    for line in p.read_text(encoding='utf-8', errors='replace').splitlines():
-        try: seeds.add(json.loads(line).get('seed') or '')
-        except ValueError: continue
-    def ours(x): a = _flat(x.get('text'))[:SEED_N]; return any(s and a and (s.startswith(a) or a.startswith(s)) and min(len(a), len(s)) >= 20 for s in seeds)
-    return [{**x, 'k': 'brief'} if x.get('k') == 'you' and ours(x) else x for x in steps]
+    """The told steps that are a seed Taskuary sent, as `brief` - and the owner's words a seed carries ("FROM THE OWNER: ..."), as their own
+    `you` line just before it (outcomes.owner_split). A told step headed with those words is ours too, kept seed or not: only Taskuary writes
+    them (2026-11-09: a typed resume lost a space - "try now" landed "trynow" - matched no kept seed, and the chat drew the whole wrapper,
+    Resume's handover and all, as the owner's line). Compared without spacing, which a typed seed does not keep."""
+    from .outcomes import owner_split
+    p, seeds = _seeds_path(tid), set()
+    if p.is_file():
+        for line in p.read_text(encoding='utf-8', errors='replace').splitlines():
+            try: seeds.add(''.join(str(json.loads(line).get('seed') or '').split()).removesuffix('…'))
+            except ValueError: continue
+    def ours(x):
+        a = ''.join(_flat(x.get('text')).split())[:SEED_N]
+        return any(s and a and (s.startswith(a) or a.startswith(s)) and min(len(a), len(s)) >= 20 for s in seeds)
+    def mark(x):
+        # ...a record SAVED before 2026-11-10 kept the summary as a told step, its structure gone: the CLI's own fixed opening is the one mark left
+        if x.get('k') == 'you' and _flat(x.get('text')).startswith(_CONTINUED): return [{**x, 'k': 'compact', 'text': COMPACTED}]
+        if x.get('k') == 'you' and TOLD.match(_flat(x.get('text'))) and queued(x.get('text')) is None: return [{**x, 'k': 'brief'}]
+        if x.get('k') == 'you' and (b := queued(x.get('text'))) is not None: return [{**x, 'k': k, 'text': t} for k, t in b]
+        if x.get('k') not in ('you', 'brief') or (x['k'] == 'you' and not ours(x) and not owner_split(x.get('text'))[0]): return [x]
+        w, rest = owner_split(x.get('text'))
+        return ([{**x, 'k': 'you', 'text': w}] if w else []) + ([{**x, 'k': 'brief', 'text': rest}] if rest.strip() else [])
+    return [y for x in steps for y in mark(x)]
 
 
 def general_steps(store, tid: int) -> list:
@@ -618,6 +693,34 @@ def _supersede(s: dict, answered: str) -> None:
         rep['last'] = '\n\n'.join(p for p in re.split(r'\n\s*\n', rep['last']) if not (_flat(p) and any(_flat(p) in o for o in old))).strip()
 
 
+# A DRAWN VIEW IS KEPT WITH THE TASK (2026-11-10): the chat drew a view from its session's trace alone, which is the CLI's own log - cleaned up
+# or replaced, the view was gone. Each is kept as `show` checked it (session_artifacts.view); one no trace still holds is put back as the
+# step that drew it, in the session it was drawn in, at its time - the same renderer reads it (chatStream.viewOf). The trace wins: a view
+# it still carries, in any session, is not drawn twice. A view after every session's end belongs to a turn still at work, which draws its own.
+def with_views(sessions: list, arts: list) -> list:
+    from .viewspec import MARK
+    views = sorted((a for a in arts or [] if a.get('Kind') == session_artifacts.VIEW), key=lambda a: (str(a.get('CreatedAt') or ''), a['ArtifactId']))
+    if not views: return sessions
+    hay = json.dumps(sessions, default=str)
+    for a in views:
+        p = session_artifacts.confined(a.get('Path'))
+        try: spec = p.read_text(encoding='utf-8').strip() if p else ''
+        except OSError: spec = ''
+        once = json.dumps(spec)[1:-1]
+        if not spec or once in hay or json.dumps(once)[1:-1] in hay: continue
+        at = _when(a.get('CreatedAt'))
+        s = next((s for s in sessions if s.get('live') or _when(s.get('at')) >= at), None)
+        if not s: continue
+        said, vid = f"Shown in the owner's chat. {MARK}{spec}", f"view{a['ArtifactId']}"
+        if s.get('updates') is not None:
+            ups = s['updates']; i = next((i for i, u in enumerate(ups) if _local(u.get('_at')) > at), len(ups))
+            ups.insert(i, {'sessionUpdate': 'tool_call', 'toolCallId': vid, 'title': 'show', 'status': 'completed', 'rawOutput': said, '_at': at})
+        else:
+            st = s.setdefault('steps', []); i = next((i for i, x in enumerate(st) if x.get('at') and _local(x['at']) > at), len(st))
+            st.insert(i, {'k': 'tool', 'id': vid, 'name': 'show', 'text': '', 'output': said, 'at': at})
+    return sessions
+
+
 def record(store, tid: int) -> dict:
     """Every session this task has had, oldest first, each in the one shape the Agent work card draws:
     who ran it, its result, what it decided and changed, its plan, the files it wrote, and every step."""
@@ -632,8 +735,20 @@ def record(store, tid: int) -> dict:
             steps = mark_briefs(tid, steps)
             rec = {'steps': _bound(steps), 'source': source} if steps else {'steps': screen_steps(r.get('Text')), 'source': 'screen'}
         sessions.append({'sid': r.get('Sid'), 'by': r.get('Agent') or 'agent', 'cli': r.get('Brain') or '', 'cwd': r.get('Cwd') or '',
-                         'at': _when(r.get('CreatedAt')), 'source': rec.get('source') or '', 'steps': rec.get('steps') or [],
+                         'at': _when(r.get('CreatedAt')), 'source': rec.get('source') or '', 'steps': mark_briefs(tid, rec.get('steps') or []),
                          **{k: rec[k] for k in ('took', 'usage') if rec.get(k) is not None}})
+    # A RESUMED CONVERSATION IS ONE LOG (the stress round, 2026-11-10): `claude --resume` writes on into the file the session before it wrote,
+    # and each session read the whole of it - every earlier turn drawn again under the next. Each keeps the turns up to its own end; a step
+    # with no time, the newest
+    shared = {}
+    for x, r in zip(sessions, rows):
+        if r.get('ExtId'): shared.setdefault((x['cli'], r['ExtId']), []).append(x)
+    for group in (g for g in shared.values() if len(g) > 1):
+        prev = ''
+        for i, x in enumerate(sorted(group, key=lambda x: x['at'])):
+            last = i == len(group) - 1
+            x['steps'] = [st for st in x['steps'] if (last if not st.get('at') else prev < _local(st['at']) and (last or _local(st['at']) <= x['at']))]
+            prev = x['at']
     chat = general.chat_rows(store, tid)
     if chat and any(c.get('ActorType') == general.ASSISTANT_TYPE for c in chat):
         turns = []
@@ -653,6 +768,7 @@ def record(store, tid: int) -> dict:
             if _keeps_last(s, rep): rep['last'] = s['report']['last']
             s['report'] = rep | {'by': c.get('Actor') or '', 'at': _when(c.get('CreatedAt'))}
     arts = store.list_task_artifacts(tid)
+    with_views(sessions, arts)
     for a in sorted((a for a in arts if a.get('Kind') == 'agent_result'), key=lambda a: str(a.get('CreatedAt') or '')):
         p = session_artifacts.confined(a.get('Path'))
         if p and (s := _nearest(sessions, a.get('CreatedAt'))):

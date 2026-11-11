@@ -19,7 +19,7 @@ import SearchIcon from "@mui/icons-material/Search";
 import BlockIcon from "@mui/icons-material/Block";
 import PsychologyOutlinedIcon from "@mui/icons-material/PsychologyOutlined";
 import api from "./api";
-import { browserRecogniser, dictate, dictationError } from "./dictation.js";
+import { browserRecogniser, dictate, dictationError, inAppWindow, micFix } from "./dictation.js";
 import { voiceChoice, micRoute } from "./voiceChoice.js";
 import { onLive, touches } from "./live.js";
 import { outcomeOf } from "./dispatchOutcome.js";
@@ -52,7 +52,8 @@ import StorageIcon from "@mui/icons-material/Storage";
 import MicIcon from "@mui/icons-material/Mic";
 import MicOffIcon from "@mui/icons-material/MicOff";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
-import { IconButton as MuiIconButton, Popover, Tooltip as MuiTooltip } from "@mui/material";
+import { IconButton as MuiIconButton, Popover, Popper, Tooltip as MuiTooltip } from "@mui/material";
+import CloseIcon from "@mui/icons-material/Close";
 import { openAppLink } from "./appLinks.js";
 import { place, placeName } from "./words.js";
 import ConnectAi from "./ConnectAi.jsx";
@@ -67,6 +68,7 @@ export { agentAssignee, assignedAgent, assigneeLabel } from "./agentIdentity.js"
 import { ROLES, ACTION_COLORS, TAGS, ASSISTANT, ALERT, ALERT_INK, ALERT_TINT, ALERT_BD, BORDER, CATPPUCCIN, TASK_STATUS_COLORS, mono, DIM, FAINT, INK, PANEL, ACCENT2, PANEL2, label } from "./theme.jsx";
 import { AGENT_SHOWN, MESSAGE, shownAgent } from "./kinds.js";
 const message = (source, values = {}) => ({ source, values });
+import { codingChoice, codingChoices } from "./brainOptions.js";
 // a waiting note the Assistant passed on keeps the owner's words and its own version apart (waitroom.SEP): the owner's are what is shown
 export const ownWords = (note) => String(note || "").split("\x1f")[0].trim();
 
@@ -131,7 +133,7 @@ export const ChannelIcon = ({ channel, sx }) => {
   if (channel === "assistant") return <TaskuaryMark size={15} sx={sx} />;
   if (hasLogo(channel)) return <Logo name={channel} sx={sx} />;
   const Icon = CHANNEL_ICONS[channel] || TerminalIcon;
-  return <Icon sx={{ fontSize: 15, color: CHANNEL_COLORS[channel] || "#a9a294", ...sx }} />;
+  return <Icon sx={{ fontSize: 15, color: CHANNEL_COLORS[channel] || "var(--tq-warning, #a9a294)", ...sx }} />;
 };
 
 /* One dialog for everything that destroys something.
@@ -204,7 +206,7 @@ export const ConfirmDelete = ({ open, what, consequence, confirmLabel = "Delete"
 export const RefChip = ({ taskId, onClick }) => taskId ? (
   <Chip size="small" label={`TQ-${String(taskId).padStart(4, "0")}`} onClick={onClick}
     sx={{ fontFamily: "'IBM Plex Sans', 'Segoe UI', Arial, sans-serif", fontVariantNumeric: "tabular-nums",
-      letterSpacing: ".015em", fontWeight: 600, bgcolor: "#eae4d8", color: "#55697a",
+      letterSpacing: ".015em", fontWeight: 600, bgcolor: "var(--tq-inset, #eae4d8)", color: "var(--tq-link, #55697a)",
       height: 19, fontSize: 10.5 }} />
 ) : null;
 
@@ -225,7 +227,7 @@ export const ActionChip = ({ action, reviewStatus, taskStatus, needsYou, categor
   }
   // A finished task outranks everything else the chip could say.
   if (taskStatus === "done" && reviewStatus !== "pending") {
-    return <Chip size="small" label={t("done")} sx={{ bgcolor: "#dfeade", color: "#47654a", height: 19, fontSize: 10.5, fontWeight: 600 }} />;
+    return <Chip size="small" label={t("done")} sx={{ bgcolor: "var(--tq-inset, #dfeade)", color: "var(--tq-success, #47654a)", height: 19, fontSize: 10.5, fontWeight: 600 }} />;
   }
   // and "nobody is moving this" outranks the verdict: what happened to it matters less
   // than whether it is sitting on you right now
@@ -237,7 +239,7 @@ export const ActionChip = ({ action, reviewStatus, taskStatus, needsYou, categor
   // 'report' and 'feed' are NOT verdicts - nothing judged those items; they are here to be
   // read. Only 'ignored' means a policy actually rejected something.
   if (action === "triaging") {                     // decided in seconds: the pill breathes until then
-    return <Chip size="small" label={t("triaging…")} sx={{ bgcolor: "#e6e0d5", color: "#6f6960", height: 19, fontSize: 10.5, fontWeight: 600,
+    return <Chip size="small" label={t("triaging…")} sx={{ bgcolor: "var(--tq-inset, #e6e0d5)", color: "var(--tq-secondary, #6f6960)", height: 19, fontSize: 10.5, fontWeight: 600,
       "@keyframes tqBreathe": { "50%": { opacity: 0.45 } }, animation: "tqBreathe 1.4s ease-in-out infinite" }} />;
   }
   const key = ["report", "feed", "filed"].includes(action) ? action
@@ -248,16 +250,16 @@ export const ActionChip = ({ action, reviewStatus, taskStatus, needsYou, categor
   const decided = reviewStatus && !["pending", "auto"].includes(reviewStatus);
   const label = !decided ? t(c.label) : reviewStatus === "no_reply" ? t("no reply needed") : t("reviewed · {status}", { status: t(reviewStatus) });
   return <Chip size="small" label={label}
-    sx={{ bgcolor: decided ? (reviewStatus === "no_reply" ? "#e9e3d8" : "#dfeade") : c.bg,
-      color: decided ? (reviewStatus === "no_reply" ? "#867f74" : "#47654a") : c.fg, height: 19, fontSize: 10.5 }} />;
+    sx={{ bgcolor: decided ? (reviewStatus === "no_reply" ? "var(--tq-inset, #e9e3d8)" : "var(--tq-inset, #dfeade)") : c.bg,
+      color: decided ? (reviewStatus === "no_reply" ? "var(--tq-warning, #867f74)" : "var(--tq-success, #47654a)") : c.fg, height: 19, fontSize: 10.5 }} />;
 };
 
 /* ── Proof of work: the evidence behind a task, so approving is a judgement and not an act
    of faith. Everything here is measured (git, the session's own test output, the checks
    API) - and what is MISSING is stated, because a thin card must never read as a clean
    one. Fetches itself; renders nothing at all for a task with no evidence yet. ── */
-const PILL = { ok: { bg: "#dfeade", fg: "#47654a" }, bad: { bg: "#f0e2e4", fg: "#6b2733" },
-  wait: { bg: "#eae4d8", fg: "#55697a" }, none: { bg: "#e9e3d8", fg: "#867f74" } };
+const PILL = { ok: { bg: "var(--tq-inset, #dfeade)", fg: "var(--tq-success, #47654a)" }, bad: { bg: "var(--tq-inset, #f0e2e4)", fg: "var(--tq-danger, #6b2733)" },
+  wait: { bg: "var(--tq-inset, #eae4d8)", fg: "var(--tq-link, #55697a)" }, none: { bg: "var(--tq-inset, #e9e3d8)", fg: "var(--tq-warning, #867f74)" } };
 const Pill = ({ tone = "none", children }) => (
   <Box component="span" sx={{ ...PILL[tone], px: 0.85, py: 0.2, borderRadius: 99, fontSize: 10.5, fontWeight: 600 }}>
     {children}
@@ -307,8 +309,8 @@ export const ProofCard = ({ taskId, onOpenTask }) => {
           {p.files.slice(0, 24).map((f) => (
             <Box key={f.path} sx={{ display: "flex", gap: 1, alignItems: "baseline" }}>
               <Typography variant="caption" sx={{ ...mono, color: INK, fontSize: 10.5, flex: 1, minWidth: 0 }} noWrap>{f.path}</Typography>
-              <Typography variant="caption" sx={{ ...mono, color: "#47654a", fontSize: 10 }}>+{f.added}</Typography>
-              <Typography variant="caption" sx={{ ...mono, color: "#6b2733", fontSize: 10 }}>−{f.removed}</Typography>
+              <Typography variant="caption" sx={{ ...mono, color: "var(--tq-success, #47654a)", fontSize: 10 }}>+{f.added}</Typography>
+              <Typography variant="caption" sx={{ ...mono, color: "var(--tq-danger, #6b2733)", fontSize: 10 }}>−{f.removed}</Typography>
             </Box>
           ))}
         </Box>
@@ -316,7 +318,7 @@ export const ProofCard = ({ taskId, onOpenTask }) => {
       {ci?.checks?.failed?.length > 0 && (
         <Box sx={{ mt: 0.5 }}>
           {ci.checks.failed.map((f) => (
-            <Typography key={f.name} variant="caption" sx={{ color: "#6b2733", display: "block", fontSize: 10.5 }}>
+            <Typography key={f.name} variant="caption" sx={{ color: "var(--tq-danger, #6b2733)", display: "block", fontSize: 10.5 }}>
               ✗ {f.name}{f.summary ? ` — ${f.summary}` : ""}
             </Typography>
           ))}
@@ -331,12 +333,12 @@ export const ProofCard = ({ taskId, onOpenTask }) => {
         {ci ? (
           <>
             <Box component="a" href={ci.url} target="_blank" rel="noreferrer"
-              sx={{ fontSize: 11, fontWeight: 600, color: "#55697a", textDecoration: "none" }}>
+              sx={{ fontSize: 11, fontWeight: 600, color: "var(--tq-link, #55697a)", textDecoration: "none" }}>
               {ci.kind === "pr" ? t("open PR ↗") : t("the commit ↗")}
             </Box>
             <Box component="button" type="button" disabled={!!busy} onClick={() => act("ci")}
               sx={{ border: 0, bgcolor: "transparent", p: 0, font: "inherit",
-                fontSize: 11, fontWeight: 600, color: busy ? FAINT : "#55697a", cursor: "pointer" }}>
+                fontSize: 11, fontWeight: 600, color: busy ? FAINT : "var(--tq-link, #55697a)", cursor: "pointer" }}>
               {busy === "ci" ? t("Checking CI…") : t("re-check CI")}
             </Box>
           </>
@@ -347,29 +349,29 @@ export const ProofCard = ({ taskId, onOpenTask }) => {
             <Box component="span" onClick={() => !busy && act("land")}
               title={p.flow === "direct" ? t("pushes the commits already in the checkout straight onto the default branch")
                 : t("opens a DRAFT pull request from this task's branch — it merges only when you approve the task's close-out")}
-              sx={{ fontSize: 11, fontWeight: 600, color: busy ? FAINT : "#55697a", cursor: "pointer" }}>
+              sx={{ fontSize: 11, fontWeight: 600, color: busy ? FAINT : "var(--tq-link, #55697a)", cursor: "pointer" }}>
               {busy === "land" ? t("landing…") : p.flow === "direct" ? t("push straight to the branch") : t("open a draft PR")}
             </Box>
             <Box component="span" onClick={() => !busy && act(`land?flow=${p.flow === "direct" ? "pr" : "direct"}`)}
               title={t("just this once, the other way")}
-              sx={{ fontSize: 11, color: busy ? FAINT : FAINT, cursor: "pointer", "&:hover": { color: "#55697a" } }}>
+              sx={{ fontSize: 11, color: busy ? FAINT : FAINT, cursor: "pointer", "&:hover": { color: "var(--tq-link, #55697a)" } }}>
               {p.flow === "direct" ? t("or a draft PR") : t("or push direct")}
             </Box>
           </>
         )}
         {onOpenTask && (
           <Box component="span" onClick={() => onOpenTask(taskId)}
-            sx={{ fontSize: 11, fontWeight: 600, color: "#55697a", cursor: "pointer" }}>{t("the whole session")}</Box>
+            sx={{ fontSize: 11, fontWeight: 600, color: "var(--tq-link, #55697a)", cursor: "pointer" }}>{t("the whole session")}</Box>
         )}
       </Box>
-      {p.error && <Typography variant="caption" sx={{ color: "#6b2733", display: "block", mt: 0.5 }}>{translateDescriptor(p.error)}</Typography>}
+      {p.error && <Typography variant="caption" sx={{ color: "var(--tq-danger, #6b2733)", display: "block", mt: 0.5 }}>{translateDescriptor(p.error)}</Typography>}
     </Box>
   );
 };
 
 export const StatusDot = ({ ok, warn }) => (
   <Box component="span" sx={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", mr: 1,
-    bgcolor: ok ? ROLES.done.solid : warn ? ROLES.working.solid : "#cfc9bf" }} />
+    bgcolor: ok ? ROLES.done.solid : warn ? ROLES.working.solid : "var(--tq-inset, #cfc9bf)" }} />
 );
 
 // Expandable "prompt sent to agent" block inside a run trace - collapsed by default.
@@ -436,13 +438,13 @@ export const DiffBlock = ({ text }) => {
   if (!text) return null;
   const lines = String(text).split("\n");
   const style = (l) => l.startsWith("+++") || l.startsWith("---") || l.startsWith("diff --git")
-    ? { color: "#2b2a26", fontWeight: 600, bgcolor: "#e9e3d8" }
-    : l.startsWith("@@") ? { color: "#6f8a6e", bgcolor: "#e3e6e1" }
-      : l.startsWith("+") ? { color: "#47654a", bgcolor: "#dfeade" }
-        : l.startsWith("-") ? { color: "#6b2733", bgcolor: "#f0e2e4" }
-          : { color: "#5e685f" };
+    ? { color: "var(--tq-text, #2b2a26)", fontWeight: 600, bgcolor: "var(--tq-inset, #e9e3d8)" }
+    : l.startsWith("@@") ? { color: "var(--tq-success, #6f8a6e)", bgcolor: "var(--tq-inset, #e3e6e1)" }
+      : l.startsWith("+") ? { color: "var(--tq-success, #47654a)", bgcolor: "var(--tq-inset, #dfeade)" }
+        : l.startsWith("-") ? { color: "var(--tq-danger, #6b2733)", bgcolor: "var(--tq-inset, #f0e2e4)" }
+          : { color: "var(--tq-secondary, #5e685f)" };
   return (
-    <Box sx={{ border: "1px solid #e1dcd5", borderRadius: 1.5, overflow: "auto", maxHeight: 360, bgcolor: "#fff" }}>
+    <Box sx={{ border: "1px solid var(--tq-border, #e1dcd5)", borderRadius: 1.5, overflow: "auto", maxHeight: 360, bgcolor: "var(--tq-panel, #fff)" }}>
       {lines.map((l, i) => (
         <Box key={i} component="pre" sx={{ ...mono, m: 0, px: 1.25, py: 0.1, fontSize: 11,
           lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-all", ...style(l) }}>
@@ -467,10 +469,10 @@ export const DiffFiles = ({ files, cwd, branch }) => {
         {cwd}{branch ? ` · ${branch}` : ""}
       </Typography>
       {files.map((f, i) => (
-        <Box key={f.path} sx={{ border: `1px solid ${BORDER}`, borderRadius: 1.5, mb: 0.75, overflow: "hidden", bgcolor: "#fff" }}>
+        <Box key={f.path} sx={{ border: `1px solid ${BORDER}`, borderRadius: 1.5, mb: 0.75, overflow: "hidden", bgcolor: "var(--tq-panel, #fff)" }}>
           <Box onClick={() => flip(i)}
             sx={{ display: "flex", alignItems: "center", gap: 1, px: 1.25, py: 0.7, cursor: "pointer",
-              bgcolor: "#f4f1ec", "&:hover": { bgcolor: "#e9e3d8" } }}>
+              bgcolor: "var(--tq-panel, #f4f1ec)", "&:hover": { bgcolor: "var(--tq-inset, #e9e3d8)" } }}>
             <ChevronRightIcon sx={{ fontSize: 16, color: FAINT, flexShrink: 0,
               transform: open.has(i) ? "rotate(90deg)" : "none", transition: "transform .12s" }} />
             <Typography sx={{ ...mono, fontSize: 11.5, color: INK, flex: 1, minWidth: 0,
@@ -478,8 +480,8 @@ export const DiffFiles = ({ files, cwd, branch }) => {
               {f.path}
             </Typography>
             {/* the two numbers people actually scan a file list for */}
-            <Typography sx={{ ...mono, fontSize: 11, color: "#47654a", fontVariantNumeric: "tabular-nums" }}>+{f.added}</Typography>
-            <Typography sx={{ ...mono, fontSize: 11, color: "#6b2733", fontVariantNumeric: "tabular-nums" }}>−{f.removed}</Typography>
+            <Typography sx={{ ...mono, fontSize: 11, color: "var(--tq-success, #47654a)", fontVariantNumeric: "tabular-nums" }}>+{f.added}</Typography>
+            <Typography sx={{ ...mono, fontSize: 11, color: "var(--tq-danger, #6b2733)", fontVariantNumeric: "tabular-nums" }}>−{f.removed}</Typography>
           </Box>
           {open.has(i) && (f.binary
             ? <Typography variant="caption" sx={{ color: FAINT, display: "block", px: 1.5, py: 1 }}>{t("Binary file — git reports it changed, there is no text to show.")}</Typography>
@@ -513,6 +515,40 @@ export const useVoiceReady = () => {
   return v && { ...v, choice: voiceChoice(), recheck: () => setN((x) => x + 1) };
 };
 
+// A MIC THAT HEARD NOTHING SAYS WHY (the owner, 2026-11-09: "you start it and end it and no words show up???") - the stop of an empty
+// recording or session named nothing, or "nothing audible" for a moment. Each says what heard nothing and what to check.
+export const heardNothing = (who) => `${who} heard no words - check the microphone is the right one and not muted in the computer's sound settings, then press the mic and talk`;
+// a refused microphone: the Taskuary window has no address bar to allow it in, so it points at Windows' own setting there
+export const micRefused = (name, inWindow = inAppWindow()) => name === "NotAllowedError"
+  ? (inWindow ? "Windows kept the microphone from this window - turn on \"Let desktop apps access your microphone\" in Windows' microphone privacy settings" : dictationError("not-allowed"))
+  : inWindow ? "No microphone Windows will lend this window - plug one in or pick it in Windows' Sound settings"
+  : "No microphone this browser can use - plug one in or allow it in the address bar";
+
+// SILENCE IS NOT SENT TO BE MADE UP (the owner, 2026-11-09): a model handed a silent clip writes a sentence anyway, and the webm a
+// recording makes cannot be measured on the server - so the recording measures itself: the loudest ~20 ms window's RMS (0-1) and its
+// length ride along as X-Voice-Level / X-Voice-Seconds, and the server answers a silent one "nothing heard" (voice.silent). A meter that
+// never ran (no AudioContext, a suspended one) sends no level, so it can never call real speech silence.
+export const levelMeter = (stream, AC = typeof window !== "undefined" && (window.AudioContext || window.webkitAudioContext)) => {
+  const t0 = Date.now();
+  let peak = 0, n = 0, ctx = null, timer = null;
+  try {
+    ctx = new AC(); ctx.resume?.().catch(() => {});
+    const an = ctx.createAnalyser(); an.fftSize = 1024; ctx.createMediaStreamSource(stream).connect(an);
+    const buf = new Float32Array(an.fftSize);
+    timer = setInterval(() => {
+      if (ctx.state !== "running") return;
+      an.getFloatTimeDomainData(buf); n += 1;
+      peak = Math.max(peak, Math.sqrt(buf.reduce((a, x) => a + x * x, 0) / buf.length));
+    }, 25);
+  } catch { ctx = null; }
+  return { stop: () => {
+    clearInterval(timer); try { ctx?.close?.(); } catch { /* closed already */ }
+    const h = { "X-Voice-Seconds": ((Date.now() - t0) / 1000).toFixed(2) };
+    if (n) h["X-Voice-Level"] = peak.toFixed(4);
+    return h;
+  } };
+};
+
 // One mic. Press to record, press again to stop; the clip goes to /api/voice/transcribe as its
 // raw bytes and the text lands through onText - into a prompt box, or straight into a session.
 export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) => {
@@ -528,9 +564,19 @@ export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) =
   const [err, setErr] = React.useState("");
   const [ask, setAsk] = React.useState(null), [srDown, setSrDown] = React.useState(false);
   // ...and a mic that stops SAYS WHY, beside it, not in a tooltip nobody hovers (the owner, 2026-10-28: "it just turns right off")
-  const errAt = React.useRef(0), recRef = React.useRef(null); recRef.current = rec;
-  const flash = (s) => { setErr(s); clearTimeout(errAt.current); errAt.current = setTimeout(() => setErr(""), 8000); };
-  React.useEffect(() => () => { clearTimeout(errAt.current); recRef.current?.cancel?.(); }, []);
+  // ...and IT STAYS SAID until the next press or its x (the owner, 2026-11-09: "this is not a error??" - an 8 s tooltip had faded before
+  // it was read): a line beside the mic, with the fix as a button. A Windows setting opened from it is checked again when the window
+  // comes back into focus, so the mic is live the moment the setting is
+  const recRef = React.useRef(null), anchor = React.useRef(null); recRef.current = rec;
+  const flash = (s) => setErr(s || "");
+  React.useEffect(() => () => { recRef.current?.cancel?.(); }, []);
+  const fix = micFix(err);
+  const openSettings = async (which) => {
+    try { await api.post("/api/voice/open-settings", null, { params: { which } }); }
+    catch (e) { flash(e?.response?.data?.detail || "Windows would not open its settings - open Settings > Privacy & security yourself"); return; }
+    const back = () => { window.removeEventListener("focus", back); setErr(""); voice?.recheck(); };
+    window.addEventListener("focus", back);
+  };
   const [hover, setHover] = React.useState(false);
   // NO VOICE AI, NO LIVE MIC (the owner, 2026-10-15: "if there is no voice provider the mic icon ... should be crossed out with popup
   // to configure voice ai before it will activate") - ...UNLESS A VOICE IS FOUND, AND THEN NO PRESS TO TURN IT ON (the owner, 2026-11-01:
@@ -549,7 +595,7 @@ export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) =
   const viaBuiltin = !!(builtin && !viaBrowser && (route === "windows" || (route === "browser" && voice?.choice === "auto")));
   const viaLive = !!(viaBuiltin && builtin.live && !speechAsk);     // Windows voice typing hears the microphone itself: a session, not a clip
   const off = !!(voice && route !== "connector" && !viaBrowser && !viaBuiltin);
-  const press = (e) => { if (!off && !(viaBuiltin && speechAsk)) return start(); setAsk(e.currentTarget); voice.recheck(); };
+  const press = (e) => { setErr(""); if (!off && !(viaBuiltin && speechAsk)) return start(); setAsk(e.currentTarget); voice.recheck(); };
   const [turning, setTurning] = React.useState(false);
   const turnOn = async () => {
     setTurning(true);
@@ -591,33 +637,35 @@ export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) =
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const type = window.MediaRecorder?.isTypeSupported?.("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : undefined;
       const mr = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
-      const chunks = [];
+      const chunks = [], meter = levelMeter(stream);
       mr.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
       mr.onstop = async () => {
+        const measured = meter.stop();
         stream.getTracks().forEach((t) => t.stop());
         const clip = new Blob(chunks, { type: mr.mimeType || "audio/webm" });
         setBusy(true);
         try {
           const blob = clip;
-          const { data } = await api.post("/api/voice/transcribe", blob, { headers: { "Content-Type": blob.type || "audio/webm" } });
-          if (data.text) onText?.(data.text); else flash(message("nothing audible"));
-        } catch (e) { flash(e?.response?.data?.detail || message("transcription failed")); }
+          const { data } = await api.post("/api/voice/transcribe", blob, { headers: { "Content-Type": blob.type || "audio/webm", ...measured } });
+          // the latest handler (the box may have re-rendered while it transcribed), and an empty answer says why, never a bare "nothing"
+          if (data.text) live.current.onText?.(data.text); else flash(heardNothing(voice?.label || "The voice AI"));
+        } catch (e) { flash(e?.response?.data?.detail || "transcription failed"); }
         setBusy(false);
       };
       mr.start(); setRec(mr);
-    } catch (e) { flash(e?.name === "NotAllowedError" ? message(dictationError("not-allowed")) : message("No microphone this browser can use - plug one in or allow it in the address bar")); }
+    } catch (e) { flash(micRefused(e?.name)); }
   };
   // WINDOWS VOICE TYPING (voice.py LIVE; the owner, 2026-11-02: "use desktop if the machine has it"): the server listens on this
   // computer's microphone from the press to the next one. Each phrase lands as it settles - one by one into the chat box (onInterim),
   // all at the stop elsewhere, as the browser's dictation does - and the stop waits for a phrase still being said
   const listen = async () => {
     setBusy(true);
-    let id, seen = 0, all = "", timer = null, over = false;
-    const take = (said = []) => { seen += said.length; for (const t of said) { if (live.current.onInterim) live.current.onText?.(t); else all = all ? `${all} ${t}` : t; } };
+    let id, seen = 0, all = "", timer = null, over = false, heard = false;
+    const take = (said = []) => { seen += said.length; heard ||= said.length > 0; for (const t of said) { if (live.current.onInterim) live.current.onText?.(t); else all = all ? `${all} ${t}` : t; } };
     const end = (error) => {
       if (over) return; over = true; clearInterval(timer); setRec(null); setBusy(false); if (ctl) ctl.current = null;
       if (all) live.current.onText?.(all);
-      if (error) flash(error);
+      if (error || !heard) flash(error || heardNothing("Windows voice typing"));
     };
     try { id = (await api.post("/api/voice/listen")).data.id; }
     catch (e) { setBusy(false); flash(e?.response?.data?.detail || message("Windows voice typing would not start")); return; }
@@ -629,7 +677,7 @@ export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) =
       stop: async () => {
         clearInterval(timer); setBusy(true);
         try { const { data } = await api.post(`/api/voice/listen/${id}/stop`, null, { params: { since: seen } }); take(data.said); end(data.error); }
-        catch { end(""); }
+        catch (e) { end(e?.response?.data?.detail || "Windows voice typing stopped before it said what it heard - press the mic again"); }
       },
       cancel: () => { if (!over) { over = true; clearInterval(timer); api.post(`/api/voice/listen/${id}/stop`).catch(() => {}); } },
     };
@@ -645,14 +693,25 @@ export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) =
     : voice?.choice !== "auto" ? t("The selected built-in speech service is unavailable here — check Windows / browser voice in Connections")
     : t("Voice is off — no voice AI is set up yet"));
   return (<>
-    <MuiTooltip title={ask ? "" : err ? <span data-tq-mic-err="">{translateDescriptor(err)}</span> : title} open={!ask && (!!err || (hover && !!title))}
-      onOpen={() => setHover(true)} onClose={() => setHover(false)}><span>
+    <MuiTooltip title={ask ? "" : err ? <span data-tq-mic-err="">{translateDescriptor(err)}</span> : title} open={!ask && !err && hover && !!title}
+      onOpen={() => setHover(true)} onClose={() => setHover(false)}><span ref={anchor}>
       <MuiIconButton size="small" onClick={rec ? stop : press} disabled={busy || !voice} sx={sx} data-tq-mic={off ? "off" : "on"}
         aria-label={rec ? t("stop recording") : off ? t("voice is off - set up a voice AI") : t("dictate")}>
-        {busy ? <CircularProgress size={size - 4} /> : rec ? <StopCircleIcon sx={{ fontSize: size, color: "#8a3646" }} />
+        {busy ? <CircularProgress size={size - 4} /> : rec ? <StopCircleIcon sx={{ fontSize: size, color: "var(--tq-danger, #8a3646)" }} />
           : off ? <MicOffIcon sx={{ fontSize: size, opacity: 0.7 }} /> : <MicIcon sx={{ fontSize: size }} />}
       </MuiIconButton>
     </span></MuiTooltip>
+    <Popper open={!!err && !ask && !!anchor.current} anchorEl={anchor.current} placement="top-start" sx={{ zIndex: 1500 }}>
+      <Box data-tq-mic-err="" role="alert" sx={{ display: "flex", alignItems: "flex-start", gap: 1, p: 1.25, mb: 0.75, maxWidth: 360, bgcolor: "var(--tq-panel, #fff)",
+        border: "1px solid var(--tq-edge-red, #e3c9ce)", borderRadius: 1.5, boxShadow: "0 4px 14px rgba(0,0,0,.08)" }}>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Typography sx={{ fontSize: 12.5, color: INK, lineHeight: 1.45 }}>{err}</Typography>
+          {fix && <Button size="small" variant="contained" disableElevation data-tq-mic-fix={fix.settings || "voice"} sx={{ textTransform: "none", mt: 0.75 }}
+            onClick={() => fix.settings ? openSettings(fix.settings) : (setErr(""), openAppLink(place("voice").href))}>{fix.label}</Button>}
+        </Box>
+        <MuiIconButton size="small" aria-label="dismiss" onClick={() => setErr("")} sx={{ p: 0.25, mt: -0.25 }}><CloseIcon sx={{ fontSize: 15 }} /></MuiIconButton>
+      </Box>
+    </Popper>
     <Popover open={!!ask} anchorEl={ask} onClose={() => setAsk(null)} data-tq-voice-ask
       anchorOrigin={{ vertical: "top", horizontal: "center" }} transformOrigin={{ vertical: "bottom", horizontal: "center" }}
       slotProps={{ paper: { sx: { p: 1.75, maxWidth: 320, borderRadius: 2, mt: -0.75 } } }}>
@@ -680,6 +739,8 @@ export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) =
       <Box sx={{ display: "flex", gap: 1, mt: 1.5, flexWrap: "wrap" }}>
         {viaBuiltin && speechAsk && <Button size="small" variant="contained" disableElevation sx={{ textTransform: "none" }} disabled={turning}
           data-tq-speech-on="" onClick={turnOn}>{turning ? t("Turning it on…") : t("Turn it on")}</Button>}
+        {viaBuiltin && speechAsk && <Button size="small" variant="text" sx={{ textTransform: "none" }} data-tq-speech-settings=""
+          onClick={() => { setAsk(null); openSettings("speech"); }}>{t("Open speech settings")}</Button>}
         <Button size="small" variant={viaBuiltin && speechAsk ? "text" : "contained"} disableElevation sx={{ textTransform: "none" }}
           onClick={() => { setAsk(null); openAppLink(place("voice").href); }}>{voice?.choice !== "auto" ? t("Voice settings") : t("Set up voice AI")}</Button>
       </Box>
@@ -687,11 +748,11 @@ export const MicButton = ({ onText, onInterim, onActive, ctl, size = 18, sx }) =
   </>);
 };
 
-export const ChoiceRow = ({ icon, label, hint, tint = "#eae4d8", onClick, first, busy }) => (
+export const ChoiceRow = ({ icon, label, hint, tint = "var(--tq-inset, #eae4d8)", onClick, first, busy }) => (
   <Box onClick={busy ? undefined : onClick}
     sx={{ display: "flex", alignItems: "center", gap: 1.1, px: 1.25, py: 0.55, cursor: busy ? "default" : "pointer",
       borderTop: first ? "none" : `1px solid ${BORDER}`, transition: "background .12s",
-      "&:hover": { bgcolor: busy ? "transparent" : "#f4f1ec" }, "&:hover .thubChoiceGo": { opacity: 1, transform: "none" } }}>
+      "&:hover": { bgcolor: busy ? "transparent" : "var(--tq-panel, #f4f1ec)" }, "&:hover .thubChoiceGo": { opacity: 1, transform: "none" } }}>
     <Box sx={{ width: 24, height: 24, borderRadius: 1.5, bgcolor: tint, flexShrink: 0,
       display: "flex", alignItems: "center", justifyContent: "center" }}>{icon}</Box>
     {/* one line per choice: the label, then its hint trailing in the same line (ellipsis on
@@ -774,9 +835,11 @@ const agentsOf = (data) => ({
   brains: data.brains || {}, brainList: data.brain_list || [], brainModels: data.brain_models || {},
   // the brains a NON-coding hand-off may choose: one per installed CLI, then the API connectors
   generalBrains: data.general_brains || [],
+  // ...and every AI a CODING task can run on - each CLI and each active AI card - with what a start naming none runs (resolve_brain)
+  codingOptions: data.coding_options || [], codingPick: data.coding_pick || "",
 });
 // agentsRead: [] read is "no AI connected"; [] not yet read is nothing yet. codingReady: a coding agent can start (agents.coding_ready)
-const AGENTS_UNREAD = { agents: [], models: {}, cmds: {}, kinds: {}, brains: {}, brainList: [], brainModels: {}, generalBrains: [], agentsRead: false, codingReady: false, devMode: false };
+const AGENTS_UNREAD = { agents: [], models: {}, cmds: {}, kinds: {}, brains: {}, brainList: [], brainModels: {}, generalBrains: [], codingOptions: [], codingPick: "", agentsRead: false, codingReady: false, devMode: false };
 export const useAgents = () => {
   const [v, setV] = useState(() => agentsLast || AGENTS_UNREAD);
   useEffect(() => {
@@ -809,7 +872,7 @@ export const ModelSelect = ({ info = {}, model, onModel, size = 30, whose = "too
   const fs = sx?.fontSize || 12.5;
   return (
     <Select size="small" displayEmpty value={model || ""} onChange={(e) => onModel(e.target.value)} MenuProps={menuProps} inputProps={{ "aria-label": t("Model") }}
-      sx={{ fontSize: 12.5, height: size, bgcolor: "#fff", minWidth: 150, ...sx }}>
+      sx={{ fontSize: 12.5, height: size, bgcolor: "var(--tq-panel, #fff)", minWidth: 150, ...sx }}>
       <MenuItem value="" sx={{ fontSize: fs }}>
         {empty || (info.default ? t("default · {model}", { model: info.default }) : t("the {whose}'s default model", { whose: t(whose) }))}
       </MenuItem>
@@ -846,12 +909,18 @@ export const AgentPicker = ({ agents, models, agent, model, onAgent, onModel, si
     ? agents.filter((a) => !["coding", "cli"].includes(String(kinds[a] || "").toLowerCase())) : agents;
   // A BRAIN THAT IS GONE IS STILL WHAT THIS TASK NAMES. `brains` is the installed list now, so a
   // value outside it used to select brains[0] silently - the picker showed a CLI nobody chose.
-  const list = coding ? (brain && !brains.includes(brain) ? [brain, ...brains] : brains) : roles;
-  const value = coding ? brain : agent;
+  const list = roles;
+  // A CODING TASK RUNS ON A CLI OR AN AI CARD (brainOptions.codingChoices): every one is listed, and blank shows what will run. A card
+  // reaches the start as `pick`, so a picker whose caller sends none (onPick) offers the CLIs alone.
+  const { codingOptions, codingPick } = useAgents();
+  const code = codingChoices({ options: (codingOptions || []).filter((o) => onPick || o.kind === "cli"), brains, brain, pick, codingPick });
+  const value = agent;
   // A HAND-OFF LEAVES THE PROFILE IT HAS: blank, and no picker asks (below).
   const handOff = !coding && !!onPick;
-  const selected = handOff ? value : (list.includes(value) ? value : (list[0] || value));
-  const info = (coding ? brainModels[selected] : models[selected]) || {};
+  const selected = coding ? code.value : handOff ? value : (list.includes(value) ? value : (list[0] || value));
+  const onCard = coding && String(selected).startsWith("connector:");
+  const card = onCard ? generalBrains.find((b) => b.pick === selected) || {} : {};
+  const info = (coding ? (onCard ? { models: card.models, default: card.model } : brainModels[String(selected).slice(4)]) : models[selected]) || {};
   const chosenBrain = generalBrains.find((b) => b.pick === pick) || {};
   // NO CODING TOOL CHOSEN, SAID IN PLACE OF A BLANK PICKER (owner-approved, 2026-10-21): the picker drew an empty box and the start
   // found a tool on the computer by itself. The server refuses that start too (terminal.start_on_task).
@@ -863,18 +932,23 @@ export const AgentPicker = ({ agents, models, agent, model, onAgent, onModel, si
           (triage's role, else the assistant's own), behind the scenes; the profiles themselves are kept in Docs -> Profiles. */}
       {/* ...each picker named for the Assistant (pageView.labelOf reads aria-label): unnamed, New's and the task's pickers were never on
           the view it was sent, and "use Claude Code for it" had nothing to pick (the audit of New, 2026-11-02) */}
-      {!handOff && <Select size="small" value={selected || ""} inputProps={{ "aria-label": coding ? t("Coding tool") : t("Profile") }}
-        onChange={(e) => (coding ? onBrain : onAgent)(e.target.value)}
-        sx={{ fontSize: 12.5, height: size, bgcolor: "#fff", minWidth: 120 }}>
-        {list.map((a) => (
-          <MenuItem key={a} value={a} sx={{ fontSize: 12.5 }}>
-            {a}{coding && brainModels[a] && brainModels[a].installed === false ? t(" · not installed") : ""}
+      {coding && <Select size="small" value={selected || ""} inputProps={{ "aria-label": t("Coding tool") }} data-tq-coding-brain=""
+        onChange={(e) => { const c = codingChoice(e.target.value); onBrain?.(c.brain); onPick?.(c.pick); }}
+        sx={{ fontSize: 12.5, height: size, bgcolor: "var(--tq-panel, #fff)", minWidth: 120 }}>
+        {code.list.map((o) => (
+          <MenuItem key={o.value} value={o.value} data-tq-coding-option={o.value} sx={{ fontSize: 12.5 }}>
+            {o.label}{o.kind === "cli" && brainModels[o.key] && brainModels[o.key].installed === false ? t(" · not installed") : ""}
           </MenuItem>
         ))}
       </Select>}
+      {!coding && !handOff && <Select size="small" value={selected || ""} inputProps={{ "aria-label": "Profile" }}
+        onChange={(e) => onAgent(e.target.value)}
+        sx={{ fontSize: 12.5, height: size, bgcolor: "var(--tq-panel, #fff)", minWidth: 120 }}>
+        {list.map((a) => <MenuItem key={a} value={a} sx={{ fontSize: 12.5 }}>{a}</MenuItem>)}
+      </Select>}
       {handOff && (
         <Select size="small" displayEmpty value={pick || ""} inputProps={{ "aria-label": t("Brain") }} onChange={(e) => { onPick(e.target.value); onModel(""); }}
-          sx={{ fontSize: 12.5, height: size, bgcolor: "#fff", minWidth: 150 }}>
+          sx={{ fontSize: 12.5, height: size, bgcolor: "var(--tq-panel, #fff)", minWidth: 150 }}>
           <MenuItem value="" sx={{ fontSize: 12.5 }}>
             {!generalBrains.length ? t("No AI connected") : browser ? t("an AI that can use the browser") : t("the brain it runs on")}
           </MenuItem>
@@ -936,13 +1010,13 @@ export const NotMine = ({ messageId, onDone, onLock, row, first, compact = false
   };
   if (saved) return (
     <Box sx={row ? { px: 1.25, py: 1 } : undefined}>
-      <Typography variant="caption" sx={{ color: "#47654a", fontWeight: 600, display: "block" }}>
+      <Typography variant="caption" sx={{ color: "var(--tq-success, #47654a)", fontWeight: 600, display: "block" }}>
         {t("✓ noted — triage will apply this to {scope} from now on", { scope: saved.scope === "global" ? t("every sender") : saved.scope === "subject" ? t("any mail about “{topic}”", { topic: saved.scopeKey }) : saved.scopeKey })}
       </Typography>
       {/* the verdict works from here on; tasks opened BEFORE it are still sitting there, and
           saying nothing about them is how a fix reads as "still not learning" */}
       {!!saved.alsoCovered?.length && (
-        <Typography variant="caption" sx={{ color: "#55697a", display: "block", mt: 0.25 }}>
+        <Typography variant="caption" sx={{ color: "var(--tq-link, #55697a)", display: "block", mt: 0.25 }}>
           {t(saved.alsoCovered.length === 1 ? "{count} open task already match it ({refs}) — close them the same way if they are not yours either." : "{count} open tasks already match it ({refs}) — close them the same way if they are not yours either.", { count: saved.alsoCovered.length, refs: saved.alsoCovered.slice(0, 4).map((item) => `TQ-${String(item.taskId).padStart(4, "0")}`).join(", ") + (saved.alsoCovered.length > 4 ? ", …" : "") })}
         </Typography>
       )}
@@ -953,8 +1027,8 @@ export const NotMine = ({ messageId, onDone, onLock, row, first, compact = false
       onClick={() => setOpen(true)} title={t("Not our responsibility — explain why once so triage remembers")}
       sx={{ width: 190, height: 34, px: 1.5, justifyContent: "flex-start", borderRadius: 2,
         textTransform: "none", fontWeight: 600, fontSize: 12, whiteSpace: "nowrap", boxShadow: "none",
-        color: "#5a3e83", bgcolor: "#f8f5fc", border: "1px solid #d9cbea",
-        "&:hover": { bgcolor: "#f1eafa", borderColor: "#bca3d8", boxShadow: "none" } }}>
+        color: "var(--tq-purple, #5a3e83)", bgcolor: "var(--tq-panel, #f8f5fc)", border: "1px solid var(--tq-edge-purple, #d9cbea)",
+        "&:hover": { bgcolor: "var(--tq-panel, #f1eafa)", borderColor: "var(--tq-edge-purple, #bca3d8)", boxShadow: "none" } }}>
       {t(btnLabel("not_ours"))}
       <Box component="span" aria-hidden sx={{ ml: 1, px: 0.65, py: 0.08, borderRadius: 0.8,
         bgcolor: "rgba(90,62,131,.1)", fontSize: 8.5, fontWeight: 600, letterSpacing: 0.7,
@@ -963,10 +1037,10 @@ export const NotMine = ({ messageId, onDone, onLock, row, first, compact = false
   );
   if (!open) return row ? (
     <ChoiceRow first={first} tint="#e9e3d8" onClick={() => setOpen(true)}
-      icon={<BlockIcon sx={{ fontSize: 15, color: "#867f74" }} />}
+      icon={<BlockIcon sx={{ fontSize: 15, color: "var(--tq-warning, #867f74)" }} />}
       label={t(btnLabel("not_ours"))} hint={t("say why once — triage remembers it for this topic, or this sender")} />
   ) : (
-    <Button size="small" sx={{ color: "#867f74", fontSize: 11 }} onClick={() => setOpen(true)}
+    <Button size="small" sx={{ color: "var(--tq-warning, #867f74)", fontSize: 11 }} onClick={() => setOpen(true)}
       title={t("Not our responsibility — and remember why, so triage learns it")}>{t(btnLabel("not_ours"))}</Button>
   );
   return (
@@ -981,16 +1055,16 @@ export const NotMine = ({ messageId, onDone, onLock, row, first, compact = false
       {scope === "subject" && (
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, mb: 0.75 }}>
           <Typography variant="caption" sx={{ color: FAINT, whiteSpace: "nowrap" }}>{t("mail about")}</Typography>
-          <TextField fullWidth size="small" value={topic} sx={{ bgcolor: "#fff" }}
+          <TextField fullWidth size="small" value={topic} sx={{ bgcolor: "var(--tq-panel, #fff)" }}
             inputProps={{ style: { fontSize: 12.5, padding: "4px 8px" } }}
             onChange={(e) => { setTopicEdited(true); setTopic(e.target.value); }} />
         </Box>
       )}
-      <TextField fullWidth multiline minRows={2} size="small" value={note} sx={{ bgcolor: "#fff" }}
+      <TextField fullWidth multiline minRows={2} size="small" value={note} sx={{ bgcolor: "var(--tq-panel, #fff)" }}
         onChange={(e) => { setEdited(true); setNote(e.target.value); }} />
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 0.75, flexWrap: "wrap" }}>
         <Select size="small" value={scope || "sender"} onChange={(e) => setScope(e.target.value)}
-          sx={{ fontSize: 11.5, height: 26, bgcolor: "#fff" }}>
+          sx={{ fontSize: 11.5, height: 26, bgcolor: "var(--tq-panel, #fff)" }}>
           {/* the topic first, because a verdict is usually about a KIND OF WORK and whoever
               happens to send it next is not the point */}
           {topic && <MenuItem value="subject" sx={{ fontSize: 12 }}>{t("any mail about this")}</MenuItem>}
@@ -1024,9 +1098,10 @@ export const SendToAgent = ({ messageId, subject, taskKind, onOpenTask, dense, r
   const [agentKind, setAgentKind] = useState("");
   const coding = agentKind === "coding";
   const [open, setOpen] = useState(false);
-  const { agents, models, kinds, brainList, brainModels } = useAgents();
+  const { agents, models, kinds, brainList, brainModels, generalBrains } = useAgents();
   const [agent, setAgent] = useState("");          // the coding profile, by kind; blank = the server finds it
   const [brain, setBrain] = useState("");          // WHICH CLI runs it; blank = the brain settings name
+  const [pick, setPick] = useState("");            // ...or which AI card (`connector:<id>`)
   const [model, setModel] = useState("");
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1039,7 +1114,7 @@ export const SendToAgent = ({ messageId, subject, taskKind, onOpenTask, dense, r
     setBusy(true); setErr("");
     try {
       const { data } = await api.post(`/api/messages/${messageId}/dispatch`,
-        { kind: agentKind, agent: coding ? (agent || null) : null, brain: coding ? (brain || null) : null,
+        { kind: agentKind, agent: coding ? (agent || null) : null, brain: coding ? (brain || null) : null, pick: coding && !brain ? (pick || null) : null,
           model: model || null, instruction: prompt.trim() || null });
       const outcome = outcomeOf(data);
       if (outcome.state === "needs_repo") { setRepoAsk({ taskId: data.taskId, agent: data.agent || agent }); }
@@ -1061,7 +1136,7 @@ export const SendToAgent = ({ messageId, subject, taskKind, onOpenTask, dense, r
   if (sent) return (
     <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: dense ? 0.5 : 1 }}>
       <TaskuaryMark size={16} />
-      <Typography variant="caption" sx={{ color: "#47654a", fontWeight: 600 }}>
+      <Typography variant="caption" sx={{ color: "var(--tq-success, #47654a)", fontWeight: 600 }}>
         {outcomeOf(sent)?.text || t("{agent} is on it in a live session — {ref}", { agent: sent.agent || t("The agent"), ref: sent.ref })}
       </Typography>
       <Button size="small" sx={{ fontSize: 11 }} onClick={() => onOpenTask?.(sent.taskId)}>{t("watch it live →")}</Button>
@@ -1078,7 +1153,7 @@ export const SendToAgent = ({ messageId, subject, taskKind, onOpenTask, dense, r
       sx={{ width: 190, height: 34, px: 1.5, borderRadius: 2, textTransform: "none", fontSize: 12,
         justifyContent: "flex-start", fontWeight: 600, whiteSpace: "nowrap", color: DIM, bgcolor: PANEL,
         border: `1px solid ${BORDER}`, boxShadow: "none",
-        "&:hover": { color: INK, bgcolor: PANEL, borderColor: "#d8cfbe", boxShadow: "none" } }}>
+        "&:hover": { color: INK, bgcolor: PANEL, borderColor: "var(--tq-border, #d8cfbe)", boxShadow: "none" } }}>
       {t("Send to agent…")}
     </Button>
   );
@@ -1090,6 +1165,7 @@ export const SendToAgent = ({ messageId, subject, taskKind, onOpenTask, dense, r
         <Box sx={{ flex: 1, minWidth: 8 }} />
         {coding && <AgentPicker agents={agents} models={models} agent={agent} model={model} coding
           brains={brainList} brainModels={brainModels} brain={brain} onBrain={(b) => { setBrain(b); setModel(""); }}
+          generalBrains={generalBrains} pick={pick} onPick={setPick}
           onAgent={setAgent} onModel={setModel} size={26} />}
       </Box>
       <Box sx={{ display: "flex", gap: 0.75, mb: agentKind ? 0.75 : 0, flexWrap: "wrap" }}>
@@ -1104,7 +1180,7 @@ export const SendToAgent = ({ messageId, subject, taskKind, onOpenTask, dense, r
       {agentKind && <TextField fullWidth multiline minRows={2} size="small" autoFocus value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           placeholder={coding ? t('What should it do? e.g. "Find why this failed and fix it, then tell me what changed."') : t(MESSAGE)}
-          sx={{ bgcolor: "#fff" }} />}
+          sx={{ bgcolor: "var(--tq-panel, #fff)" }} />}
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 0.75 }}>
         <Typography variant="caption" sx={{ color: FAINT, flex: 1, minWidth: 0 }} noWrap>
           {subject ? t("it gets the full message “{subject}” + your operator docs as context", { subject }) : t("it gets the full message + your operator docs as context")}
@@ -1112,11 +1188,11 @@ export const SendToAgent = ({ messageId, subject, taskKind, onOpenTask, dense, r
         <Button size="small" sx={{ fontSize: 11, color: DIM }} onClick={() => setOpen(false)}>{t("Cancel")}</Button>
         <Button size="small" variant="contained" disableElevation disabled={busy || !agentKind} onClick={send}
           startIcon={busy ? <CircularProgress size={11} sx={{ color: "#fff" }} /> : null}
-          sx={{ fontSize: 11.5, bgcolor: "#6f8a6e", "&:hover": { bgcolor: "#5b7259" } }}>
+          sx={{ fontSize: 11.5, color: "#fff", bgcolor: "#6f8a6e", "&:hover": { bgcolor: "#5b7259" } }}>
           {busy ? t("sending…") : t(btnLabel(agentKind === "coding" ? "coding_agent" : "regular_agent"))}
         </Button>
       </Box>
-      {err && <Typography variant="caption" sx={{ color: "#6b2733", display: "block", mt: 0.5 }}>{translateDescriptor(err)}</Typography>}
+      {err && <Typography variant="caption" sx={{ color: "var(--tq-danger, #6b2733)", display: "block", mt: 0.5 }}>{translateDescriptor(err)}</Typography>}
     </Box>
   );
 };
@@ -1132,10 +1208,10 @@ export const SendToAgent = ({ messageId, subject, taskKind, onOpenTask, dense, r
 // was waiting on the owner looked exactly like the rows that were merely parked (2026-09-16).
 export const TASK_STATES = [
   { key: "needs_you", label: WORD.blocked, solid: ALERT, c: { bg: ALERT, fg: "#fffdfb", bd: ALERT } },
-  { key: "working", label: WORD.working, solid: "#6f8a6e", c: { bg: "#e3e6e1", fg: "#6f8a6e", bd: "#d2d6cf" } },
-  { key: "queued", label: WORD.queued, solid: "#a09787", c: { bg: "#eae4d8", fg: "#55697a", bd: "#d8cfbe" } },
-  { key: "done", label: WORD.closed, solid: "#47654a", c: { bg: "#dfeade", fg: "#47654a", bd: "#c8d9c7" } },
-  { key: "dropped", label: WORD.dropped, solid: "#a09787", c: { bg: "#e9e3d8", fg: "#867f74", bd: "#e1dcd5" } },
+  { key: "working", label: WORD.working, solid: "#6f8a6e", c: { bg: "var(--tq-inset, #e3e6e1)", fg: "var(--tq-success, #6f8a6e)", bd: "var(--tq-border, #d2d6cf)" } },
+  { key: "queued", label: WORD.queued, solid: "#a09787", c: { bg: "var(--tq-inset, #eae4d8)", fg: "var(--tq-link, #55697a)", bd: "var(--tq-border, #d8cfbe)" } },
+  { key: "done", label: WORD.closed, solid: "#47654a", c: { bg: "var(--tq-inset, #dfeade)", fg: "var(--tq-success, #47654a)", bd: "var(--tq-border, #c8d9c7)" } },
+  { key: "dropped", label: WORD.dropped, solid: "#a09787", c: { bg: "var(--tq-inset, #e9e3d8)", fg: "var(--tq-warning, #867f74)", bd: "var(--tq-border, #e1dcd5)" } },
 ];
 const ST = Object.fromEntries(TASK_STATES.map((x) => [x.key, x]));
 // A CLI that has printed nothing for this long is parked at its own prompt - the next move
@@ -1204,20 +1280,20 @@ export const StateChip = ({ task }) => {
 
 export const TaskStatusChip = ({ status }) => {
   useLocale();
-  return <Chip size="small" label={t(String(status || "").replace(/_/g, " "))} sx={{ bgcolor: "transparent", border: `1px solid ${TASK_STATUS_COLORS[status] || "#a9a294"}55`,
-    color: TASK_STATUS_COLORS[status] || "#a9a294", height: 19, fontSize: 10.5 }} />;
+  return <Chip size="small" label={t(String(status || "").replace(/_/g, " "))} sx={{ bgcolor: "transparent", border: `1px solid ${TASK_STATUS_COLORS[status] || "var(--tq-border-strong, #a9a294)"}55`,
+    color: TASK_STATUS_COLORS[status] || "var(--tq-border-strong, #a9a294)", height: 19, fontSize: 10.5 }} />;
 };
 
 const LC = {
-  neutral: { bg: "#f4f1ec", fg: "#55697a", bd: "#d8cfbe" },
-  working: { bg: "#e3e6e1", fg: "#526b55", bd: "#cbd5c9" },
-  you: { bg: "#e3eadf", fg: "#3f5943", bd: "#c4d2c0" },          // on you is sage, the palette's (2026-10-06), not oxblood
+  neutral: { bg: "var(--tq-panel, #f4f1ec)", fg: "var(--tq-link, #55697a)", bd: "var(--tq-border, #d8cfbe)" },
+  working: { bg: "var(--tq-inset, #e3e6e1)", fg: "var(--tq-success, #526b55)", bd: "var(--tq-border, #cbd5c9)" },
+  you: { bg: "var(--tq-inset, #e3eadf)", fg: "var(--tq-success, #3f5943)", bd: "var(--tq-border, #c4d2c0)" },          // on you is sage, the palette's (2026-10-06), not oxblood
   // theme.jsx has always called ALERT "the needs-you pill" and this wore the tint instead - the
   // same weight as four calmer phases, so the one state where work has STOPPED until the owner
   // answers read like the rest (the owner, 2026-09-11: "make the needs you a little redder").
   needsYou: { bg: "#5f7a5f", fg: "#fffdfb", bd: "#5f7a5f" },  // ...solid, as the On you pill is
-  done: { bg: "#dfeade", fg: "#47654a", bd: "#c8d9c7" },
-  reply: { bg: "#f1ead9", fg: "#765f38", bd: "#ded0ad" },
+  done: { bg: "var(--tq-inset, #dfeade)", fg: "var(--tq-success, #47654a)", bd: "var(--tq-border, #c8d9c7)" },
+  reply: { bg: "var(--tq-tint-brass, #f1ead9)", fg: "var(--tq-warning, #765f38)", bd: "var(--tq-edge-brass, #ded0ad)" },
   bad: { bg: ROLES.bad.tint, fg: ROLES.bad.ink, bd: ROLES.bad.bd },
 };
 
@@ -1259,7 +1335,7 @@ export const cleanText = (s) => keepAddresses(s).replace(PROVENANCE, "").replace
 // a mail's text with its addresses as links (mailLinks.js), each opened in a new tab - the system browser, from the desktop window - and
 // `links`, the words its HTML put a link behind (message.Links)
 export const LinkedText = ({ text, links }) => linkParts(text, links).map((p, i) => p.href
-  ? <a key={i} href={p.href} target="_blank" rel="noopener noreferrer" style={{ color: "#55697a", overflowWrap: "anywhere" }}>{p.text}</a>
+  ? <a key={i} href={p.href} target="_blank" rel="noopener noreferrer" style={{ color: "var(--tq-link, #55697a)", overflowWrap: "anywhere" }}>{p.text}</a>
   : <React.Fragment key={i}>{p.text}</React.Fragment>);
 
 // Mail carries the whole thread quoted underneath the new text. Find where the new part
@@ -1289,10 +1365,10 @@ api.get("/api/settings").then(({ data }) => loadTz(data.data || [])).catch(() =>
 export const Crumb = ({ section, onBack, title }) => (
   <Box sx={{ mb: 2.5 }}>
     <Typography variant="caption" onClick={onBack}
-      sx={{ color: "#55697a", fontWeight: 600, cursor: "pointer", "&:hover": { textDecoration: "underline" } }}>
+      sx={{ color: "var(--tq-link, #55697a)", fontWeight: 600, cursor: "pointer", "&:hover": { textDecoration: "underline" } }}>
       {section}
     </Typography>
-    <Typography sx={{ color: "#2b2a26", fontWeight: 600, fontSize: 20, lineHeight: 1.2, mt: 0.25 }}>{title}</Typography>
+    <Typography sx={{ color: "var(--tq-text, #2b2a26)", fontWeight: 600, fontSize: 20, lineHeight: 1.2, mt: 0.25 }}>{title}</Typography>
   </Box>
 );
 
@@ -1308,7 +1384,7 @@ export const SideRail = ({ title, note, items, value, onChange, q, setQ, placeho
       <Typography sx={{ color: INK, fontWeight: 600, fontSize: 16, mb: 1.5 }}>{title}</Typography>
       {setQ && (
         <TextField fullWidth placeholder={placeholder} value={q} onChange={(e) => setQ(e.target.value)}
-          sx={{ mb: 1.5, bgcolor: "#fff", borderRadius: 2 }}
+          sx={{ mb: 1.5, bgcolor: "var(--tq-panel, #fff)", borderRadius: 2 }}
           InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon sx={{ fontSize: 17, color: FAINT }} /></InputAdornment> }} />
       )}
       {items.map((it) => {
@@ -1324,8 +1400,8 @@ export const SideRail = ({ title, note, items, value, onChange, q, setQ, placeho
           <Box key={key} onClick={() => { setQ?.(""); onChange(key); }}
             sx={{ display: "flex", alignItems: "center", gap: 1, px: 1.25, height: 34, borderRadius: 1.75,
               cursor: "pointer", fontSize: 12.5, fontWeight: on ? 600 : 400,
-              color: on ? "#41525f" : DIM, bgcolor: on ? "#eae4d8" : "transparent",
-              "&:hover": { bgcolor: on ? "#eae4d8" : "#f4f1ec" } }}>
+              color: on ? "var(--tq-link, #41525f)" : DIM, bgcolor: on ? "var(--tq-inset, #eae4d8)" : "transparent",
+              "&:hover": { bgcolor: on ? "var(--tq-inset, #eae4d8)" : "var(--tq-panel, #f4f1ec)" } }}>
             <Box sx={{ flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
               {it.label ?? it}
             </Box>
@@ -1339,15 +1415,17 @@ export const SideRail = ({ title, note, items, value, onChange, q, setQ, placeho
   </Box>
 );
 
-export const UnderTabs = ({ tabs, value, onChange }) => (
-  <Box sx={{ display: "flex", gap: 2.5, borderBottom: "1px solid #e1dcd5", mb: 2, flexWrap: "wrap" }}>
+// `under`: a line under a tab's name, where each tab is a choice that needs saying (a system's two ways to connect, ConnectorsView.SystemWays)
+export const UnderTabs = ({ tabs, value, onChange, under = null }) => (
+  <Box role={under ? "tablist" : undefined} sx={{ display: "flex", gap: 2.5, borderBottom: "1px solid var(--tq-border, #e1dcd5)", mb: 2, flexWrap: "wrap" }}>
     {tabs.map((t) => (
-      <Box key={t} onClick={() => onChange(t)}
-        sx={{ pb: 1, cursor: "pointer", fontSize: 13, fontWeight: 600, mb: "-1px", flexShrink: 0,
-          color: value === t ? "#55697a" : DIM,
+      <Box key={t} onClick={() => onChange(t)} role={under ? "tab" : undefined} aria-selected={under ? value === t : undefined} data-tq-tab={t}
+        sx={{ pb: 1, cursor: "pointer", fontSize: 13, fontWeight: 600, mb: "-1px", flexShrink: under ? 1 : 0, ...(under ? { flex: "1 1 220px", maxWidth: 360 } : {}),
+          color: value === t ? "var(--tq-link, #55697a)" : DIM,
           borderBottom: `2px solid ${value === t ? "#55697a" : "transparent"}`,
-          "&:hover": { color: "#2b2a26" } }}>
+          "&:hover": { color: "var(--tq-text, #2b2a26)" } }}>
         {t}
+        {under?.[t] && <Box component="span" sx={{ display: "block", fontWeight: 400, fontSize: 12.5, color: DIM, mt: 0.25 }}>{under[t]}</Box>}
       </Box>
     ))}
   </Box>
@@ -1358,13 +1436,13 @@ export const UnderTabs = ({ tabs, value, onChange }) => (
 export const LandingCard = ({ icon, title, desc, onOpen, foot }) => (
   <Box onClick={onOpen} sx={{ display: "flex", gap: 1.5, cursor: "pointer", alignItems: "flex-start",
     "&:hover .thubPgTitle": { textDecoration: "underline" } }}>
-    <Box sx={{ width: 38, height: 38, borderRadius: 2, bgcolor: "#fff", border: "1px solid #e1dcd5",
+    <Box sx={{ width: 38, height: 38, borderRadius: 2, bgcolor: "var(--tq-panel, #fff)", border: "1px solid var(--tq-border, #e1dcd5)",
       display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
       boxShadow: "0 1px 2px rgba(30,50,38,.05)" }}>
       {icon}
     </Box>
     <Box sx={{ minWidth: 0 }}>
-      <Typography className="thubPgTitle" sx={{ color: "#55697a", fontWeight: 600, fontSize: 14.5, lineHeight: 1.3 }}>{title}</Typography>
+      <Typography className="thubPgTitle" sx={{ color: "var(--tq-link, #55697a)", fontWeight: 600, fontSize: 14.5, lineHeight: 1.3 }}>{title}</Typography>
       <Typography variant="body2" sx={{ color: DIM, mt: 0.25 }}>{desc}</Typography>
       {foot && <Box onClick={(e) => e.stopPropagation()}>{foot}</Box>}
     </Box>
@@ -1384,7 +1462,7 @@ export const Empty = ({ children }) => (
 
 export const scoreBar = (v) => (
   <Tooltip title={v?.toFixed ? v.toFixed(2) : v}>
-    <Box sx={{ width: 54, height: 4, bgcolor: PANEL2, border: "1px solid #e1dcd5", borderRadius: 3, overflow: "hidden", display: "inline-block", mr: 1 }}>
+    <Box sx={{ width: 54, height: 4, bgcolor: PANEL2, border: "1px solid var(--tq-border, #e1dcd5)", borderRadius: 3, overflow: "hidden", display: "inline-block", mr: 1 }}>
       <Box sx={{ width: `${Math.min(100, (v || 0) * 100)}%`, height: "100%", bgcolor: "#55697a" }} />
     </Box>
   </Tooltip>
@@ -1426,12 +1504,12 @@ export const PromptThumbs = ({ imgs, onDrop, h = 40, note = true }) => {
   return !imgs.length ? null : <Box sx={{ display: "flex", gap: 0.75, flexWrap: "wrap", alignItems: "center", mt: 0.5 }}>
     {imgs.map((im) => (
       <Box key={im.id} sx={{ position: "relative" }}>
-        <Box component="img" src={im.url} alt="" sx={{ height: h, borderRadius: 0.75, border: "1px solid #ddd2b9", display: "block" }} />
+        <Box component="img" src={im.url} alt="" sx={{ height: h, borderRadius: 0.75, border: "1px solid var(--tq-edge-brass, #ddd2b9)", display: "block" }} />
         <Box component="button" type="button" onClick={() => onDrop(im.id)} aria-label={t("Remove this image")} sx={{ position: "absolute", top: -5, right: -5, width: 14, height: 14, borderRadius: 99,
           bgcolor: "#6b5f45", color: "#fff", fontSize: 9, lineHeight: "14px", textAlign: "center", cursor: "pointer", border: 0, p: 0 }}>×</Box>
       </Box>
     ))}
-    {note && <Typography variant="caption" sx={{ color: "#6b5f45", fontSize: 10 }}>
+    {note && <Typography variant="caption" sx={{ color: "var(--tq-warning, #6b5f45)", fontSize: 10 }}>
       {imgs.length === 1 ? t("goes with the prompt, as a file the agent opens") : t("{count} images go with the prompt", { count: imgs.length })}
     </Typography>}
   </Box>
@@ -1501,20 +1579,20 @@ export const TellAgent = ({ taskId, taskRef, compact = false, onQueued }) => {
       placeholder={compact && flash ? translateDescriptor(flash) : ph}
       onChange={(e) => setText(e.target.value)} onPaste={onPaste}
       onKeyDown={(e) => { if (!many && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); queue(); } }}
-      sx={{ bgcolor: "#fffdfb", "& .MuiInputBase-input": { fontSize: compact ? 11.5 : 12.5 },
+      sx={{ bgcolor: "var(--tq-panel, #fffdfb)", "& .MuiInputBase-input": { fontSize: compact ? 11.5 : 12.5 },
         ...(compact ? { "& .MuiInputBase-root": { py: "3px", px: 1 } } : {}) }} />
   );
   const thumbs = <PromptThumbs imgs={imgs} onDrop={dropImg} h={compact ? 28 : 40} />;
   const queueRows = pending.map((w, i) => (
         <Box key={w.WId} sx={{ display: "flex", gap: 0.75, alignItems: "baseline" }}>
-          <Typography variant="caption" sx={{ ...mono, color: "#6b5f45", fontSize: 9.5, flexShrink: 0 }}>{i + 1}.</Typography>
+          <Typography variant="caption" sx={{ ...mono, color: "var(--tq-warning, #6b5f45)", fontSize: 9.5, flexShrink: 0 }}>{i + 1}.</Typography>
           {/* the owner's own words, never the Assistant's version kept beside them (waitroom.parts, the owner 2026-11-04) */}
           <Typography variant="body2" noWrap={compact} title={ownWords(w.Note)}
             sx={{ fontSize: compact ? 11 : 11.5, flex: 1, minWidth: 0, whiteSpace: compact ? "nowrap" : "pre-wrap", color: INK }}>{ownWords(w.Note)}</Typography>
           <Typography variant="caption" onClick={async () => {
               try { await api.delete(`/api/tasks/${taskId}/waitroom/${w.WId}`); } catch { failed(message("Couldn't withdraw it - it may already have gone in.")); }
               load(); }}
-            sx={{ color: FAINT, cursor: "pointer", fontSize: 10, "&:hover": { color: "#8a3646" } }}>{t("withdraw")}</Typography>
+            sx={{ color: FAINT, cursor: "pointer", fontSize: 10, "&:hover": { color: "var(--tq-danger, #8a3646)" } }}>{t("withdraw")}</Typography>
         </Box>
   ));
   // The full task page keeps the durable queue list open. The Wall gets the same list only as a
@@ -1530,32 +1608,32 @@ export const TellAgent = ({ taskId, taskRef, compact = false, onQueued }) => {
     return (
       <Box sx={{ position: "relative", height: 40 }}>
         {fail && (
-          <Box role="alert" sx={{ position: "absolute", zIndex: 6, left: 0, right: 0, bottom: "calc(100% + 4px)", bgcolor: "#f3e7e9",
+          <Box role="alert" sx={{ position: "absolute", zIndex: 6, left: 0, right: 0, bottom: "calc(100% + 4px)", bgcolor: "var(--tq-inset, #f3e7e9)",
             border: "1px solid #8a364655", borderRadius: 1.5, px: 1, py: 0.5 }}>
-            <Typography variant="caption" sx={{ color: "#8a3646", fontSize: 11 }}>{translateDescriptor(fail)}</Typography>
+            <Typography variant="caption" sx={{ color: "var(--tq-danger, #8a3646)", fontSize: 11 }}>{translateDescriptor(fail)}</Typography>
           </Box>
         )}
         {showQ && pending.length > 0 && (
           <Box sx={{ position: "absolute", zIndex: 5, left: 0, right: 0, bottom: "calc(100% + 4px)",
             maxHeight: 104, overflowY: "auto", display: "flex", flexDirection: "column", gap: 0.3,
-            bgcolor: "#fffdfb", border: "1px solid #ddd2b9", borderRadius: 1.5, p: 0.75,
+            bgcolor: "var(--tq-panel, #fffdfb)", border: "1px solid var(--tq-edge-brass, #ddd2b9)", borderRadius: 1.5, p: 0.75,
             boxShadow: "0 5px 16px rgba(60,50,35,.14)" }}>
             {queueRows}
           </Box>
         )}
-        <Box sx={{ height: 40, boxSizing: "border-box", overflow: "hidden", bgcolor: "#f1ead9",
-          border: "1px solid #ddd2b9", borderRadius: 1.5, px: 0.75, py: 0.45 }}>
+        <Box sx={{ height: 40, boxSizing: "border-box", overflow: "hidden", bgcolor: "var(--tq-tint-brass, #f1ead9)",
+          border: "1px solid var(--tq-edge-brass, #ddd2b9)", borderRadius: 1.5, px: 0.75, py: 0.45 }}>
           <Box sx={{ height: "100%", display: "flex", alignItems: "center", gap: 0.5 }}>
           <Box title={pending.length ? t(pending.length === 1 ? "{count} prompt waiting to go in — click to peek for 3 seconds; open the full task to withdraw them" : "{count} prompts waiting to go in — click to peek for 3 seconds; open the full task to withdraw them", { count: pending.length }) : stateLine}
             onClick={peekQueue}
             sx={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center",
-              width: 20, height: 24, color: "#6b5f45", flexShrink: 0, userSelect: "none",
+              width: 20, height: 24, color: "var(--tq-warning, #6b5f45)", flexShrink: 0, userSelect: "none",
               cursor: pending.length ? "pointer" : "default" }}>
             <Typography sx={{ ...mono, fontSize: 11, fontWeight: 600, color: "inherit" }}>✎</Typography>
             {pending.length > 0 && (
               <Box sx={{ position: "absolute", top: -4, right: -5, minWidth: 14, height: 14, px: 0.3,
                 display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 99,
-                bgcolor: "#6b5f45", color: "#fffdfb", border: "1px solid #f1ead9",
+                bgcolor: "#6b5f45", color: "#fffdfb", border: "1px solid var(--tq-border, #f1ead9)",
                 ...mono, fontSize: 8, fontWeight: 600, lineHeight: 1 }}>
                 {pending.length > 99 ? "99+" : pending.length}
               </Box>
@@ -1565,43 +1643,43 @@ export const TellAgent = ({ taskId, taskRef, compact = false, onQueued }) => {
           {imgs.length > 0 && (
             <Tooltip title={t(imgs.length === 1 ? "{count} image attached — click to remove" : "{count} images attached — click to remove", { count: imgs.length })}>
               <Box component="button" onClick={dropImgs}
-                sx={{ ...mono, height: 24, px: 0.6, borderRadius: 1, border: "1px solid #ddd2b9",
-                  bgcolor: "#fffdfb", color: "#6b5f45", cursor: "pointer", fontSize: 9.5, whiteSpace: "nowrap" }}>
+                sx={{ ...mono, height: 24, px: 0.6, borderRadius: 1, border: "1px solid var(--tq-edge-brass, #ddd2b9)",
+                  bgcolor: "var(--tq-panel, #fffdfb)", color: "var(--tq-warning, #6b5f45)", cursor: "pointer", fontSize: 9.5, whiteSpace: "nowrap" }}>
                 ▧ {imgs.length} ×
               </Box>
             </Tooltip>
           )}
-          <MicButton size={15} sx={{ color: "#6b5f45", p: 0.25 }} onText={(t) => setText((s) => (s.trim() ? `${s.trimEnd()} ${t}` : t))} />
+          <MicButton size={15} sx={{ color: "var(--tq-warning, #6b5f45)", p: 0.25 }} onText={(t) => setText((s) => (s.trim() ? `${s.trimEnd()} ${t}` : t))} />
           <Button size="small" variant="contained" disableElevation onClick={queue} disabled={!text.trim() && !imgs.length}
-            sx={{ bgcolor: "#8a7a5c", "&:hover": { bgcolor: "#6b5f45" }, minWidth: 0, px: 1, py: 0.2, fontSize: 11, lineHeight: 1.4, whiteSpace: "nowrap" }}>{verb}</Button>
+            sx={{ color: "#fff", bgcolor: "#8a7a5c", "&:hover": { bgcolor: "#6b5f45" }, minWidth: 0, px: 1, py: 0.2, fontSize: 11, lineHeight: 1.4, whiteSpace: "nowrap" }}>{verb}</Button>
           </Box>
         </Box>
       </Box>
     );
   }
   return (
-    <Box sx={{ bgcolor: "#f1ead9", border: "1px solid #ddd2b9", borderRadius: 2, p: 1.25 }}>
+    <Box sx={{ bgcolor: "var(--tq-tint-brass, #f1ead9)", border: "1px solid var(--tq-edge-brass, #ddd2b9)", borderRadius: 2, p: 1.25 }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, mb: 0.5 }}>
-        <Typography sx={{ ...mono, fontSize: 9.5, letterSpacing: 1, color: "#6b5f45", fontWeight: 600 }}>
+        <Typography sx={{ ...mono, fontSize: 9.5, letterSpacing: 1, color: "var(--tq-warning, #6b5f45)", fontWeight: 600 }}>
           {t("✎ TELL THE AGENT")}{taskRef ? ` · ${taskRef}` : ""}{pending.length ? ` · ${t("{count} waiting to go in", { count: pending.length })}` : ""}
         </Typography>
         <Box sx={{ flex: 1 }} />
-        {stateLine && <Typography variant="caption" sx={{ color: "#6b5f45", fontSize: 10.5 }}>{stateLine}</Typography>}
+        {stateLine && <Typography variant="caption" sx={{ color: "var(--tq-warning, #6b5f45)", fontSize: 10.5 }}>{stateLine}</Typography>}
         <Typography variant="caption" onClick={() => setMany((m) => !m)}
-          sx={{ color: "#6b5f45", fontSize: 10.5, cursor: "pointer", textDecoration: "underline", ml: 1 }}>
+          sx={{ color: "var(--tq-warning, #6b5f45)", fontSize: 10.5, cursor: "pointer", textDecoration: "underline", ml: 1 }}>
           {many ? t("one note") : t("paste a list")}
         </Typography>
       </Box>
       <Box sx={{ display: "flex", gap: 1 }}>
         {input}
-        <MicButton sx={{ alignSelf: "flex-end", color: "#6b5f45" }} onText={(t) => setText((s) => (s.trim() ? `${s.trimEnd()} ${t}` : t))} />
+        <MicButton sx={{ alignSelf: "flex-end", color: "var(--tq-warning, #6b5f45)" }} onText={(t) => setText((s) => (s.trim() ? `${s.trimEnd()} ${t}` : t))} />
         <Button size="small" variant="contained" disableElevation onClick={queue} disabled={!text.trim() && !imgs.length}
-          sx={{ alignSelf: "flex-end", bgcolor: "#8a7a5c", "&:hover": { bgcolor: "#6b5f45" }, whiteSpace: "nowrap" }}>
+          sx={{ alignSelf: "flex-end", color: "#fff", bgcolor: "#8a7a5c", "&:hover": { bgcolor: "#6b5f45" }, whiteSpace: "nowrap" }}>
           {many ? t(lines === 1 ? "Queue {count} prompt" : "Queue {count} prompts", { count: lines || "" }) : verb}</Button>
       </Box>
       {thumbs}
-      {flash && <Typography variant="caption" sx={{ color: "#47654a", display: "block", mt: 0.5 }}>{translateDescriptor(flash)}</Typography>}
-      {fail && <Typography variant="caption" role="alert" sx={{ color: "#8a3646", display: "block", mt: 0.5 }}>{translateDescriptor(fail)}</Typography>}
+      {flash && <Typography variant="caption" sx={{ color: "var(--tq-success, #47654a)", display: "block", mt: 0.5 }}>{translateDescriptor(flash)}</Typography>}
+      {fail && <Typography variant="caption" role="alert" sx={{ color: "var(--tq-danger, #8a3646)", display: "block", mt: 0.5 }}>{translateDescriptor(fail)}</Typography>}
       {queued}
       {wait.data.some((w) => w.DeliveredAt) && (
         <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.5 }}>
@@ -1623,8 +1701,8 @@ export const TellAgentButton = ({ taskId, taskRef, count = 0, small = false }) =
       {small ? (
         <Box component="span" onClick={show} title={t("Tell the agent something — queued until it stops")}
           sx={{ display: "inline-flex", alignItems: "center", gap: 0.4, px: 0.6, py: 0.15, borderRadius: 99, cursor: "pointer",
-            bgcolor: "#f1ead9", color: "#6b5f45", border: "1px solid #ddd2b9", fontSize: 9.5, fontWeight: 600, whiteSpace: "nowrap",
-            "&:hover": { bgcolor: "#e9dfc5" } }}>
+            bgcolor: "var(--tq-tint-brass, #f1ead9)", color: "var(--tq-warning, #6b5f45)", border: "1px solid var(--tq-edge-brass, #ddd2b9)", fontSize: 9.5, fontWeight: 600, whiteSpace: "nowrap",
+            "&:hover": { bgcolor: "var(--tq-tint-brass, #e9dfc5)" } }}>
           ✎ {label}
         </Box>
       ) : (
@@ -1633,7 +1711,7 @@ export const TellAgentButton = ({ taskId, taskRef, count = 0, small = false }) =
           sx={{ width: 190, height: 34, px: 1.5, justifyContent: "flex-start", borderRadius: 2,
             textTransform: "none", fontSize: 12, fontWeight: 600, whiteSpace: "nowrap", color: DIM, bgcolor: PANEL,
             border: `1px solid ${BORDER}`, boxShadow: "none",
-            "&:hover": { color: INK, bgcolor: PANEL, borderColor: "#d8cfbe", boxShadow: "none" } }}>
+            "&:hover": { color: INK, bgcolor: PANEL, borderColor: "var(--tq-border, #d8cfbe)", boxShadow: "none" } }}>
           {label}
         </Button>
       )}
@@ -1826,7 +1904,7 @@ export const WorkStrip = ({ taskId, live, session, provenance, defaultCollapsed 
     // the DOM and never on screen
     <Box sx={{ mb: 0.75, border: `1px solid ${BORDER}`, borderRadius: 2, bgcolor: PANEL, overflow: "hidden", flexShrink: 0 }}>
       <Box onClick={toggle} title={open ? t("Fold the detail away") : t("Open: the agent's list beside the files it wrote")}
-        sx={{ px: 1.5, py: 0.5, display: "flex", flexWrap: "wrap", gap: 0.5, alignItems: "center", cursor: "pointer", borderBottom: open ? `1px solid ${BORDER}` : 0, "&:hover": { bgcolor: "#faf8f5" } }}>
+        sx={{ px: 1.5, py: 0.5, display: "flex", flexWrap: "wrap", gap: 0.5, alignItems: "center", cursor: "pointer", borderBottom: open ? `1px solid ${BORDER}` : 0, "&:hover": { bgcolor: "var(--tq-panel, #faf8f5)" } }}>
         <Typography component="span" sx={{ ...mono, fontSize: 10, color: FAINT, width: 12 }}>{open ? "▾" : "▸"}</Typography>
         <Typography component="span" sx={{ ...mono, fontSize: 9.5, color: DIM, fontWeight: 600, letterSpacing: ".06em", mr: 0.25 }}>{t("AGENT ACTIVITY")}</Typography>
         {d.prov?.from && <Chip size="small" label={t("from: {value}", { value: d.prov.from })} sx={pillSx("muted")} />}
@@ -1937,12 +2015,12 @@ export const FilterPills = ({ options, value, onChange }) => (
   // phone dragged the whole page sideways. It scrolls inside itself instead, with the scrollbar
   // hidden: the pills are the affordance.
   <Box sx={{ display: "inline-flex", alignItems: "center", gap: 0.25, p: 0.4, height: 34, boxSizing: "border-box",
-    bgcolor: "#e9e3d8", maxWidth: "100%",
+    bgcolor: "var(--tq-inset, #e9e3d8)", maxWidth: "100%",
     overflowX: "auto", scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" },
-    border: "1px solid #e1dcd5", borderRadius: 2.5 }}>
+    border: "1px solid var(--tq-border, #e1dcd5)", borderRadius: 2.5 }}>
     {options.map((o) => {
       const key = o.key ?? o, on = value === key;
-      const c = o.c || { bg: "#eae4d8", fg: "#55697a", bd: "#d8cfbe" };
+      const c = o.c || { bg: "var(--tq-inset, #eae4d8)", fg: "var(--tq-link, #55697a)", bd: "var(--tq-border, #d8cfbe)" };
       return (
         <Box key={key} onClick={() => onChange(key)}
           sx={{ px: 1.25, py: 0.45, borderRadius: 1.75, cursor: "pointer", fontSize: 11.5,
@@ -1951,14 +2029,14 @@ export const FilterPills = ({ options, value, onChange }) => (
             bgcolor: on ? c.bg : "transparent", color: on ? c.fg : DIM,
             border: `1px solid ${on ? c.bd : "transparent"}`,
             boxShadow: on ? "0 1px 2px rgba(30,50,38,.08)" : "none",
-            transition: "all .15s", "&:hover": on ? {} : { bgcolor: "#eae5dd", color: "#2b2a26" } }}>
+            transition: "all .15s", "&:hover": on ? {} : { bgcolor: "var(--tq-inset, #eae5dd)", color: "var(--tq-text, #2b2a26)" } }}>
           {o.label ?? (o || "all")}
           {/* the count is a BADGE, not the last word of the label - glued on with a space,
               "needs you 2" reads as one phrase and the number disappears into the name */}
           {o.n != null && (
             <Box component="span" sx={{ px: 0.55, py: 0.05, borderRadius: 99, fontSize: 10, fontWeight: 600,
               fontVariantNumeric: "tabular-nums", lineHeight: 1.5,
-              bgcolor: on ? "rgba(255,255,255,.7)" : "#e6e2da", color: on ? c.fg : "#867f74" }}>{o.n}</Box>
+              bgcolor: on ? "rgb(var(--tq-panel-rgb, 255 255 255) / .7)" : "var(--tq-inset, #e6e2da)", color: on ? c.fg : "var(--tq-warning, #867f74)" }}>{o.n}</Box>
           )}
         </Box>
       );
@@ -2036,9 +2114,11 @@ export const ContactPicker = ({ value, onChange, onPick, placeholder = "name or 
 // Cohn ?") could only be dropped (the owner, 2026-10-06: "i should be able to edit the email address"). Saves on pick.
 // ...the line wears the sender's name ("Erin Blake <erin@…>", replyDelivery.deliveryTo); the box and the save carry the addresses alone -
 // saved back as it stood, the name went into the envelope as the address
-export const ToRow = ({ to, onSave, disabled }) => {
+// ...and an email with NO address asks for one (`needs`, replyDelivery.needsAddress): the box open and focused, never a name in To
+export const ToRow = ({ to, onSave, disabled, needs = false, who = "" }) => {
   useLocale();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(needs && !disabled);
+  useEffect(() => { if (needs && !disabled) setOpen(true); }, [needs, disabled]);
   const [text, setText] = useState("");
   const [err, setErr] = useState("");
   const people = useContacts();
@@ -2056,16 +2136,21 @@ export const ToRow = ({ to, onSave, disabled }) => {
           placeholder="name or email address" sx={{ width: 300 }}
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); save(text); }
                               if (e.key === "Escape") { setOpen(false); setErr(""); } }} />
+      ) : needs ? (
+        <Typography {...(disabled ? {} : pressable(() => { setText(""); setOpen(true); }))} variant="body2" data-tq-to-change
+          sx={{ ...FOCUS_RING, color: "var(--tq-warning, #6b4a1f)", fontWeight: 600, cursor: disabled ? "default" : "pointer" }}>needs an email address</Typography>
       ) : (
         <>
           <Typography variant="body2" sx={{ color: INK, fontWeight: 600 }} noWrap>{to || t("nobody yet")}</Typography>
           {/* ...opened on the address it has: "change" emptied To while the footer still named the old one (the UI audit, 2026-10-21) */}
           {!disabled && <Typography {...pressable(() => { setText(bareAddresses(to).join(", ")); setOpen(true); })} data-tq-to-change
-            sx={{ ...FOCUS_RING, fontSize: 11.5, color: "#55697a", cursor: "pointer", fontWeight: 600, "&:hover": { textDecoration: "underline" } }}>
+            sx={{ ...FOCUS_RING, fontSize: 11.5, color: "var(--tq-link, #55697a)", cursor: "pointer", fontWeight: 600, "&:hover": { textDecoration: "underline" } }}>
             {t("Change")}</Typography>}
         </>
       )}
-      {!!err && <Typography variant="caption" sx={{ color: "#6b2733" }}>{translateDescriptor(err)}</Typography>}
+      {!!err && <Typography variant="caption" sx={{ color: "var(--tq-danger, #6b2733)" }}>{translateDescriptor(err)}</Typography>}
+      {needs && !err && open && <Typography variant="caption" data-tq-to-needed="" sx={{ color: "var(--tq-warning, #6b4a1f)" }}>
+        {who ? t("needs an email address - none found for {name}; Send waits for one", { name: who }) : t("needs an email address - none found; Send waits for one")}</Typography>}
     </Box>
   );
 };
@@ -2087,14 +2172,14 @@ export const CcRow = ({ cc, setCc, channel, label: name = "CC" }) => {
   };
   return (
     <Box sx={{ display: "flex", alignItems: "center", gap: 0.8, mb: 0.75, flexWrap: "wrap", minWidth: 0 }}>
-      <Typography sx={{ color: "#6f8a6e", fontSize: 9.5, fontWeight: 600, letterSpacing: "1.5px", flexShrink: 0 }}>{t(name)}</Typography>
+      <Typography sx={{ color: "var(--tq-success, #6f8a6e)", fontSize: 9.5, fontWeight: 600, letterSpacing: "1.5px", flexShrink: 0 }}>{t(name)}</Typography>
       {(cc || []).map((a) => (
         <Box key={a} sx={{ display: "inline-flex", alignItems: "center", gap: 0.5, px: 0.8, py: 0.15,
-          borderRadius: 99, bgcolor: "#eef1ec", border: "1px solid #d9e0d6" }}>
+          borderRadius: 99, bgcolor: "var(--tq-inset, #eef1ec)", border: "1px solid var(--tq-border, #d9e0d6)" }}>
           <Typography sx={{ fontSize: 11.5, color: INK }}>{a}</Typography>
           <Box component="button" type="button" aria-label={t("Remove {address} from {label}", { address: a, label: name })}
             onClick={() => setCc((cc || []).filter((x) => x !== a))}
-            sx={{ cursor: "pointer", color: FAINT, fontSize: 12, lineHeight: 1, border: 0, bgcolor: "transparent", p: 0, fontFamily: "inherit", "&:hover": { color: "#6b2733" } }}>✕</Box>
+            sx={{ cursor: "pointer", color: FAINT, fontSize: 12, lineHeight: 1, border: 0, bgcolor: "transparent", p: 0, fontFamily: "inherit", "&:hover": { color: "var(--tq-danger, #6b2733)" } }}>✕</Box>
         </Box>
       ))}
       {open ? (
@@ -2104,12 +2189,12 @@ export const CcRow = ({ cc, setCc, channel, label: name = "CC" }) => {
                               if (e.key === "Escape") { setOpen(false); setErr(""); } }} />
       ) : (
         <Typography {...pressable(() => setOpen(true))}
-          sx={{ ...FOCUS_RING, fontSize: 11.5, color: "#55697a", cursor: "pointer", fontWeight: 600,
+          sx={{ ...FOCUS_RING, fontSize: 11.5, color: "var(--tq-link, #55697a)", cursor: "pointer", fontWeight: 600,
                 "&:hover": { textDecoration: "underline" } }}>
           {(cc || []).length ? t("Add another") : t("Add {label}", { label: name })}
         </Typography>
       )}
-      {!!err && open && <Typography variant="caption" sx={{ color: "#6b2733" }}>{translateDescriptor(err)}</Typography>}
+      {!!err && open && <Typography variant="caption" sx={{ color: "var(--tq-danger, #6b2733)" }}>{translateDescriptor(err)}</Typography>}
     </Box>
   );
 };
@@ -2118,11 +2203,11 @@ export const CcRow = ({ cc, setCc, channel, label: name = "CC" }) => {
 // held like CC and sent with Send. `subject`: what goes now; `onChange` takes the owner's words
 export const SubjectRow = ({ subject, onChange, disabled }) => (
   <Box sx={{ display: "flex", alignItems: "center", gap: 0.8, mb: 0.75, minWidth: 0 }}>
-    <Typography sx={{ color: "#6f8a6e", fontSize: 9.5, fontWeight: 600, letterSpacing: "1.5px", flexShrink: 0 }}>SUBJECT</Typography>
+    <Typography sx={{ color: "var(--tq-success, #6f8a6e)", fontSize: 9.5, fontWeight: 600, letterSpacing: "1.5px", flexShrink: 0 }}>SUBJECT</Typography>
     <Box component="input" data-tq-subject="" value={subject || ""} disabled={disabled} aria-label="Subject" placeholder="(no subject)"
       onChange={(e) => onChange(e.target.value)}
-      sx={{ ...FOCUS_RING, flex: 1, minWidth: 0, border: 0, borderBottom: "1px dashed #d9e0d6", bgcolor: "transparent", font: "inherit",
-        fontSize: 13, fontWeight: 600, color: INK, py: 0.25, outline: 0, "&:focus": { borderBottomColor: "#6f8a6e" } }} />
+      sx={{ ...FOCUS_RING, flex: 1, minWidth: 0, border: 0, borderBottom: "1px dashed var(--tq-border, #d9e0d6)", bgcolor: "transparent", font: "inherit",
+        fontSize: 13, fontWeight: 600, color: INK, py: 0.25, outline: 0, "&:focus": { borderBottomColor: "var(--tq-border-strong, #6f8a6e)" } }} />
   </Box>
 );
 

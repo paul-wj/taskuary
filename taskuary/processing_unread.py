@@ -167,10 +167,9 @@ def _agent_finished(store, tid, active, review, read_at, now):
 AGENT_STOPS = ('blocked', 'stopped', 'saved')
 
 
-def _agent_spoke_at(store, tid):
+def _agent_spoke_at(evs):
     """When the task's run last said anything (a question, a turn ending, a session ending) - the moment its row became
-    the owner's again. None with no run word, where the old read stands."""
-    evs = store.worker_events(tid) if tid else []
+    the owner's again. None with no run word, where the old read stands. `evs`: the task's events, off its record (taskstate)."""
     return processing_all._stamp(evs[-1].get('CreatedAt')) if evs else None
 
 
@@ -232,7 +231,7 @@ def sweep_task(store, idea: dict, action: dict) -> dict | None:
     return store.get_task(int(action['task']))
 
 
-def card_for(store, item, compact, live_state, now, states=None, noise=None):
+def card_for(store, item, compact, live_state, now, states=None, noise=None, leads=frozenset()):
     """`noise`: _noise_hidden, read once by a build for all its cards (a setting read per card was 10,000 queries)."""
     from . import funnel
     from .processing_reads import state
@@ -267,7 +266,12 @@ def card_for(store, item, compact, live_state, now, states=None, noise=None):
     from .processing_all import _has_conversation
     # NEWS AFTER THE AGENT (the owner, 2026-10-12): a sender wrote again after the agent's last session - the task is that
     # message now, on you, not "handed to an agent" nor "you ended the session" from days before
-    news = funnel.news_since_agent(store, tid) if active and tid and not workers else None
+    # ONE RECORD PER TASK PER CARD (taskstate.TaskState): the news, why it idles, whether its agent left and how its run ended were
+    # each asked of the store again by the function that wanted them - the task and its events read three times over for one lane
+    from . import taskstate
+    recs = {}
+    st = lambda t: recs.get(t) or recs.setdefault(t, taskstate.task_state(store, tid=t))
+    news = st(tid).news if active and tid and not workers else None
     queued = active and not workers and not persisted_working and not news and (
         str(task.get('Assignee') or '').startswith('agent:') or funnel.general_not_started(task, _has_conversation(view, tid), view.get('routes', []))
         or funnel.held_for_repo(task))    # a start that stopped on "which repository?" is on the rail until you pick one
@@ -283,12 +287,16 @@ def card_for(store, item, compact, live_state, now, states=None, noise=None):
     if not tid and not review and not closed:
         from .jiraapi import reference_closed
         closed = reference_closed(row) or _decided(view, allowed) or _idea_off(store, view, compact, now)
-    # ...and the noise the old rail filtered (R5): withdrawn lines, auto-replies, a thread you already answered
-    if not tid and not review and not closed and row.get('MessageId') and (_noise_hidden(store) if noise is None else noise): closed = _noise(row, view)
+    # ...and the noise the old rail filtered (R5): withdrawn lines, auto-replies, a thread you already answered. An OPEN
+    # Jira reference is never "answered" by the owner's own comment on it (kept `context`, the tracker's line, tied to the
+    # issue's updated stamp) - a reference is resolved by its close (reference_closed), not by who commented last
+    if not tid and not review and not closed and row.get('MessageId') and (_noise_hidden(store) if noise is None else noise):
+        from .jiraapi import reference_open
+        closed = _noise(row, view) and not reference_open(row)
     if row.get('MessageId'):
         if review:
             exact = next(m for m in view['messages'] if m['MessageId'] == (review.get('MessageId') or row['MessageId']))   # a task's email has none
-            row = processing_all.message_row(exact, item, processing_all._thread_index([item]), now.strftime('%Y-%m-%d %H:%M:%S'))
+            row = processing_all.message_row(exact, item, processing_all._thread_index([item]), now.strftime('%Y-%m-%d %H:%M:%S'), leads=leads)
             row.update(ReviewId=review['ReviewId'], ReviewStatus='pending', ReviewKind=review.get('Kind'),
                        HasDraft=bool(review.get('DraftText')))
         cards = funnel.from_feed(store, [row], canonical=True)
@@ -418,7 +426,7 @@ def card_for(store, item, compact, live_state, now, states=None, noise=None):
     # queue that clears itself; every cause underneath it needs the owner instead (2026-09-14). The row says
     # which in a few words: "handed to coder, not started yet" sat on a task held for the owner, that
     # nothing would ever start (the owner, 2026-10-16) - held, failed and a real queue are three facts.
-    idle = funnel.idle_state(store, card['tid']) if card.get('tid') and (card['lane'] == 'queued' or queued and card['lane'] in ('asked', 'yours')) else None
+    idle = st(card['tid']).idle if card.get('tid') and (card['lane'] == 'queued' or queued and card['lane'] in ('asked', 'yours')) else None
     if queued and card['lane'] in ('asked', 'yours'): card.update(lane='queued', why=(idle or {}).get('row') or 'not started yet')
     if card['lane'] == 'queued' and card.get('tid'):
         card['why_idle'] = idle['line']
@@ -427,19 +435,18 @@ def card_for(store, item, compact, live_state, now, states=None, noise=None):
         # that stopped, and the owner is the only one who moves it: `stopped`, wearing the cause as its
         # word (the owner, 2026-09-17: "stopped should stay on stopped and shown to user to handle").
         # ...and a session YOU ended is `session saved`, not `agent stopped` (A1, 2026-09-25): its report is written
-        if funnel.agent_left(store, card['tid']):
-            card.update(lane='saved' if funnel.session_saved(store, card['tid']) else 'stopped', why=card['why_idle'])
+        if (left := st(card['tid']).left): card.update(lane=left, why=card['why_idle'])
     # HOW ITS LAST RUN ENDED, in the run's own word (workerstate.ended) - the reading the task list and the Board take (taskstate):
     # a run that failed or was stopped read "on you" here and one that finished "waiting to start", whatever the worker had said (G7)
     if tid and active and not workers and not persisted_working and not news and not review and card['lane'] in ('yours', 'queued'):
         from . import workerstate as ws
-        end = ws.ended(store, tid)
+        end = st(tid).end
         if end in ws.TERMINAL:
-            last = store.last_worker_event(tid, kinds=ws.TERMINAL) or {}
+            last = st(tid).last(ws.TERMINAL) or {}
             # a failure in plain words (funnel.run_failed): "connect a CLI agent or an AI provider ..." reached the row as it was
-            said = ((funnel.run_failed(store, tid) or {}).get('sentence') if end == 'failed' else '') or ' '.join(str(last.get('Text') or '').split())
+            said = ((st(tid).failed or {}).get('sentence') if end == 'failed' else '') or ' '.join(str(last.get('Text') or '').split())
             said = said[:160]
-            card.update(lane='saved' if funnel.session_saved(store, tid) else 'stopped',
+            card.update(lane='saved' if st(tid).saved else 'stopped',
                         why=f"{agent_word(task.get('Kind'))} {'failed' if end == 'failed' else 'stopped'}" + (f': {said}' if said else ''))
         elif end == 'finished' and (waits := store.waiting_on_owner(tid)):
             # ...but a run that finished with a post, an email or another act waiting for the owner's press is that press, not "finished - read
@@ -447,7 +454,7 @@ def card_for(store, item, compact, live_state, now, states=None, noise=None):
             from .general import handles
             card.update(lane='approve', why=' '.join(str(waits.get('Reason') or 'a step waits for your yes').split())[:160], **({'chat': True} if handles(task) else {}))
         elif end == 'finished':
-            last = store.last_worker_event(tid, kinds=('finished',)) or {}
+            last = st(tid).last(('finished',)) or {}
             said = ' '.join(str(last.get('Text') or '').split())[:160]
             # `finished`: what the move reads (funnel_presentation.move_of) - Mark done, not "who should take it?" (the owner, 2026-10-22)
             card.update(lane='yours', finished=True, why=f"{agent_word(task.get('Kind'))} finished" + (f': {said}' if said else ' - read what it found'))
@@ -469,7 +476,7 @@ def card_for(store, item, compact, live_state, now, states=None, noise=None):
         who = row.get('Working') or SHOWN
         card.update(kind='agent', lane='working', working=who, agent=who)
     elif active and not review:
-        card = funnel.paused_conversation(store, card)
+        card = funnel.paused_conversation(store, card, st(card['tid']) if card.get('tid') else None)
     # ...but the reply is still there behind the agent: closing from its card dismisses it, so the card
     # says so ("Close without sending") rather than losing it quietly
     if review and card.get('kind') == 'agent': card.update(rid=None, draft=False, reply_pending=True)
@@ -497,7 +504,7 @@ def card_for(store, item, compact, live_state, now, states=None, noise=None):
     # AN OPEN TASK UNDER TASKS STAYS ON THE RAIL, read or not (the walk has one owner, 2026-10-30, rule 4): Next on it writes nothing,
     # opening it reads only its "+N", and only closing it or Remind me takes it off. It used to be "passed" - read, marked, drawn in a
     # band of its own and skipped for the rest of the walk (2026-09-23, 2026-10-21) - and the walk skipped the work it was walking.
-    since = _agent_spoke_at(store, tid) if card['lane'] in AGENT_STOPS else None
+    since = _agent_spoke_at(st(tid).events) if tid and card['lane'] in AGENT_STOPS else None
     held = bool(tid and active and not read.get('deferred') and card['lane'] in OWNER_LANES)
     # AN AGENT FINISHED IT (same message: "same for finished agent task?"): a task its agent closed is a
     # result nobody has looked at yet. It is on the rail once until it is read; a task the owner closed stays closed and gone.
@@ -652,6 +659,15 @@ def on_rail(card) -> bool:
     return bool(card.get('unread') or ((card.get('deferred') or card.get('watching')) and card.get('tid') and not card.get('closed')))
 
 
+def rail_of(cards: list) -> list:
+    """The rows of a build that are ON THE RAIL (on_rail) - less an Advisor idea about a mail whose own row is still unread on it. The
+    mail's row is the line until it is read, then the idea's: the two stood one under the other, the Advisor's row saying again what
+    the mail's row said (one thing, one place - railcheck names it). The builder's unread rail and funnel.pile both read this."""
+    on = [c for c in cards if on_rail(c)]
+    mail = {c['mid'] for c in on if c.get('mid') and c.get('kind') != 'idea' and c.get('unread')}
+    return [c for c in on if not (c.get('kind') == 'idea' and c.get('mid') in mail)]
+
+
 def _fyi_mail(c) -> bool:
     return (c.get('lane') == 'fyi' and c.get('kind') == 'fyi' and not c.get('tid') and bool(c.get('cid'))
             and str(c.get('channel') or '').lower() == 'email')
@@ -696,7 +712,9 @@ def build(store, *, now=None, live_state=None, include_read=False, only=None,
     from . import funnel, terminal
     now = now or datetime.now()
     keep = None if keys is None else (lambda item, want=frozenset(keys): not want.isdisjoint(names(item)))
-    live_state = terminal.live_sessions(tail=6) if live_state is None else live_state
+    # the light road (funnel.observe): a card reads a session's state and its last lines, never its files - `git status` ran once per
+    # live session on every build
+    live_state = funnel.observe() if live_state is None else live_state
     query = query_for(store, only, history=not full_history)
     for attempt in (1, 2):
         processing_all.wait_settled(store)
@@ -707,21 +725,22 @@ def build(store, *, now=None, live_state=None, include_read=False, only=None,
         # the snapshot deserves one more try; a census that is still unsettled after it is a state
         # the rail has to live in, not a reason to have no rail (processing_all.compact_inventory).
         # The pile then carries coverage.degraded and says so rather than disappearing.
+        leads = processing_all.stamped_leads(snapshot['items'])     # one count serves the rows and the review cards (card_for)
         try:
             rows, coverage, counts = processing_all.compact_inventory(
-                snapshot, query, include_excluded=include_read, degraded_ok=attempt == 2, keep=keep)
+                snapshot, query, include_excluded=include_read, degraded_ok=attempt == 2, keep=keep, leads=leads)
             break
         except processing_all.AllError as e:      # a write landed between the settle check and the snapshot: once more
             if attempt == 2 or e.detail.get('code') != 'processing_coverage_pending': raise
     by_id = {item['item_id']: item for item in snapshot['items']}
     states = store.funnel_states()
     noise = _noise_hidden(store)
-    cards = [card_for(store, by_id[row['item_id']], row, live_state, now, states, noise) for row in rows]
+    cards = [card_for(store, by_id[row['item_id']], row, live_state, now, states, noise, leads) for row in rows]
     # ...and a task put away with Remind me stays on the rail, in For later, saying its day - it is still open work, and
     # the rail is where open work lives (2026-09-29). It is never actionable, so the walk does not offer it early.
-    kept = on_rail
     # ...a goal's child told by the goal's row is not a row, read or unread (on_rail)
-    cards = [card for card in cards if (include_read or kept(card)) and not card.get('ranked_wait') and not card.get('folded')]
+    cards = [card for card in cards if not card.get('ranked_wait') and not card.get('folded')]
+    if not include_read: cards = rail_of(cards)
     # Calendar keeps its established adapter; source filtering applies to it too.
     query = query_for(store, only)
     if processing_all._matches('calendar', '', query):

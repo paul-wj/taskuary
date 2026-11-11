@@ -100,6 +100,5 @@ test("an important line lands in the task's Advisor section, and every other str
     assert.equal(taskNote(d(state, line)), null, state);
   assert.equal(taskNote(d("draft_ready", "")), null, "a silent decision says nothing anywhere");
   assert.equal(taskNote({ none: "no_ai", for: "task:7" }), null, "no AI is no line at all");
-
 });
 

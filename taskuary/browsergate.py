@@ -320,9 +320,9 @@ def check(store, tid: int, sid: str, cmd: str, brain=None) -> dict:
             proposals.queue(store, tid, {'action': 'browser_act', 'sid': str(sid), 'args': args, 'command': ' '.join([EXE, *args]),
                                          'url': pg['url'], 'site': site, 'what': v['what'], 'why': v['why']}, 'agent')
             store.audit('task', tid, 'browser_act_held', 'taskuary', 'system', {'verb': a['verb'], 'site': site, 'why': v['why']})
-        return _deny(f"{HELD}: {v['what']} ({v['why']}). It is on the task for the owner to approve; once they do, Taskuary runs this "
-                     "exact command in your browser and tells you what happened. Do not try it another way. End your turn now, or "
-                     "go on with work that does not need it.")
+        return _deny(f"{HELD}: {v['what']} ({v['why']}). It is now a card in this task for the owner's press; once they approve it, Taskuary "
+                     "runs this exact command in your browser and tells you what happened. Never ask them in words to approve or click it, and "
+                     "do not try it another way. End your turn now, or go on with work that does not need it.")
     if (browserview.ENDED_ON.get(str(sid)) or ('',))[0] == 'failed': browserview.ended_on(sid)     # it went on past the failure
     return {}
 
@@ -380,35 +380,56 @@ def _perform(store, tid: int, p: dict, run=None) -> dict:
         why = 'something on the page covers that control' if 'covered by' in said else said[-200:] or 'the browser could not do it'
         _tell(store, tid, f"The owner approved it, but the browser could not do it: {said[-300:] or 'agent-browser failed'}. Nothing was done. "
                           "Look at the page as it is now and reach the same place another way - a menu or banner covering the control can be "
-                          "opened or closed first, or the page opened by its address - then continue.")
+                          "opened or closed first, or the page opened by its address - then continue.", wake=True)
         if p.get('sid'): browserview.ended_on(sid, 'failed', store, tid)
         store.audit('task', tid, 'browser_act_refused', 'owner', 'human', {'site': p.get('site'), 'what': p.get('what')})
         return {'performed': None, 'refused': f"{p.get('site') or 'The page'} did not take it - {why}. The agent was told and goes on another way."}
     now = str(browserview.state(sid, fresh=True).get('url') or '')
     _tell(store, tid, f"The owner approved it and Taskuary ran `{p.get('command')}` in your browser. It said: {said[-300:] or 'done'}. "
-                      f"The page is now {now or 'unknown'} - look at it and continue.")
-    store.audit('task', tid, 'browser_act_done', 'owner', 'human', {'site': p.get('site'), 'what': p.get('what')})
+                      f"The page is now {now or 'unknown'} - look at it, then " + NEXT[0].lower() + NEXT[1:], wake=True)
+    store.audit('task', tid, 'browser_act_done', 'owner', 'human', {'site': p.get('site'), 'what': p.get('what'), 'command': str(p.get('command') or '')[:300],
+                                                          'said': now or said[-300:]})
     return {'performed': p.get('what') or p.get('command'), 'site': p.get('site'), 'page': now}
 
 
-def declined(store, tid: int, p: dict) -> None:
-    _tell(store, tid, f"The owner did not approve it: {p.get('what') or p.get('command')} was NOT done. Do not try it another way - "
-                      'carry on without it, or ask the owner what they want instead.')
+# THE OWNER'S NO IS SAID AS THEIRS, AND ONCE (agent walk 2, 2026-11-10): Reject on a held push reached the agent as the adapter's "User
+# refused permission to run tool" - the sentence it also gets when Taskuary blocks a step by itself - so it ended its turn asking for the
+# same push again. One sentence for every road a no comes by (a dismissed card, the held steps of a turn, the Allow/Reject buttons)
+OWNER_NO = ("That is the owner's own answer, not a block of Taskuary's. Do not try it another way and do not ask for the same step again - "
+            'carry on without it, and ask only if you need to know what they want instead.')
+def not_approved(what) -> str: return f'The owner did not approve it: {what} was NOT done. {OWNER_NO}'
+def declined(store, tid: int, p: dict) -> None: _tell(store, tid, not_approved(p.get('what') or p.get('command')))
 
 
-def _tell(store, tid: int, text: str, wait: bool = False) -> None:
+# the turn an approval wakes says what happened. ...AND NOTHING ABOUT WHAT DID NOT (agent walk 2, 2026-11-10): told "(with its link, if it
+# gave one)", the agent closed every sent mail with "No link came back with it."
+NEXT = ('Tell the owner in a line what it did and what comes next, then carry on. A link the result gave goes in that line; where it gave '
+        'none, say nothing about links.')
+
+
+def _tell(store, tid: int, text: str, wait: bool = False, wake: bool = False) -> None:
     """Words to the agent working the task, as a sign-in's are told (signin._continue) - ON A THREAD: a general chat's send_prompt is
     the agent's whole next turn, so Approve sat on "running..." for minutes, or up to WAIT_TURN and then nobody was told (2026-10-25).
-    Not told, the task says so. A task with none running gets the comment only. `wait`: tests."""
+    Not told, the task says so. A task with none running gets the comment only - unless the words are a yes that RAN (`wake`): an agent
+    that answered and rests is started on them, as any approval starts it (general.tell). It was left asleep, the step done and nobody to say
+    so or go on (the spine audit, 2026-11-09). A no wakes nobody: it is heard with the owner's next line. `wait`: tests."""
     import threading
     from . import terminal as term, workerstate as ws
     sess = ws._live(tid)
-    if not sess: return store.add_comment(tid, 'taskuary', 'agent', f'{text} (No agent is running on this task to tell.)')
+    if not sess:
+        try:
+            from . import general
+            woke = wake and general.tell(store, tid, text)
+        except Exception as e: woke = logger.warning(f'browsergate: task {tid} - its resting agent was not started - {e}')
+        return None if woke else store.add_comment(tid, 'taskuary', 'agent', f'{text} (No agent is running on this task to tell.)')
+    # ...A LIVE ONE IS TOLD HERE, NOT BY THE WAITING ROOM (general.tell's road for everything else): a press on the page is one quiet line
+    # and nothing more (the spine audit, 2026-11-09: "said once: no second line by Taskuary above it") - the waiting room draws its note in
+    # a chat as a line of Taskuary's own
     if term.stranger_now(store, tid, sess): return None           # the task says why nothing went in
     def go():
         try:
             if hasattr(sess, 'send_prompt'): sess.send_prompt(text, as_owner=False)
-            else: term.type_into(sess, text)
+            else: term.type_into(sess, text, brief=True)       # Taskuary's note, never the owner's line
         except Exception as e:
             logger.warning(f'browsergate: task {tid} - the agent was not told - {e}')
             store.add_comment(tid, 'taskuary', 'agent', f'{text} (The agent could not be told: {str(e)[:200]} - open the task and tell it.)')
@@ -467,7 +488,7 @@ def hand_over(store, tid: int, sid: str, act: dict, pg: dict, v: dict, site: str
     c = control(act, pg)
     btn = f'"{c["name"]}"' if c.get('name') else f'the {c["role"]}' if c.get('role') else 'the button'
     text, url = PRESS_LINE.format(btn=btn), pg.get('url') or ''
-    rid = PRESS + ws.request_id_for(f'{sid} {url} {text}')
+    rid = ws.fresh_id(store, tid, PRESS + ws.request_id_for(f'{sid} {url} {text}'))
     if not handing(store, tid, sid, rid):
         if c.get('ref'):
             try: _run(sid, ['scrollintoview', f"@{c['ref']}"], 15, 'scroll')
@@ -477,10 +498,12 @@ def hand_over(store, tid: int, sid: str, act: dict, pg: dict, v: dict, site: str
         ws.record(store, tid, sid, 'input_needed', request_id=rid, text=text, choices=[browserview.TURN_DONE] if chat else None, source='api')
         store.audit('task', tid, 'browser_act_handed', 'taskuary', 'system', {'verb': act.get('verb'), 'site': site, 'why': v.get('why')})
         if watch: threading.Thread(target=watch, args=(store, tid, sid, rid), daemon=True, name=f'press-watch-{tid}').start()
-    return _deny(f"{HELD}: {v['what']} ({v['why']}) is the owner's own press. Taskuary handed them the page as you left it, scrolled to "
-                 f"{btn}: they check it and press it themselves in this browser. End your turn now with one short line to the owner (no "
-                 "marker - the page is already theirs) and run no browser command until you are told what happened: that they pressed it "
-                 "and what the page shows then, or that they did not. Never press it yourself or try it another way.")
+    # ...SAID AS IT IS, NOT WHERE IT SITS ON A SCREEN (the owner, 2026-11-10: "i cant see the screen"): told "they press it themselves in this
+    # browser", the agent sent him to "the browser pane" in prose - a pane that is not drawn unless the app shows it. The app knows; the agent does not
+    return _deny(f"{HELD}: {v['what']} ({v['why']}) is the owner's own press. It is now a card in this task waiting for it, the page left as "
+                 f"you filled it on {btn}. End your turn now with one short line saying what is ready for them (no marker) - never ask them in "
+                 "words to click anything, and never say where it is on their screen. Run no browser command until you are told what "
+                 "happened: that they pressed it and what the page shows then, or that they did not. Never press it yourself or try it another way.")
 
 
 def _look(c, name: str) -> dict | None:
@@ -557,15 +580,60 @@ def pressed(store, tid: int, rid: str, now: dict) -> bool:
     title = ' '.join(str(now.get('title') or '').split())[:160]
     shows = f'"{title}" ({now.get("href")})' if title else str(now.get('href') or 'another page')
     if h.get('kind') == 'turn':
-        _trigger(store, tid, h['sid'], f"Did it on {h['site']}.")
         _tell(store, tid, f"The owner did the step you handed them ({h.get('what') or 'on the page'}) and the page moved on; it now shows {shows}. "
                           "Look at it and continue.")
         store.add_comment(tid, 'owner', 'agent', f"You did the step on {h['site']} - the agent goes on.")
     else:
-        _trigger(store, tid, h['sid'], f"Pressed {h['btn']} on {h['site']}.")
         _tell(store, tid, f"The owner pressed {h['btn']} on the page themselves; the page now shows {shows}. Look at it and continue.")
         store.add_comment(tid, 'owner', 'agent', f"You pressed {h['btn']} on {h['site']} - the agent goes on.")
-    store.audit('task', tid, 'browser_act_pressed', 'owner', 'human', {'site': h['site']})
+    # ...and the chat says it once, as their press (general.PRESSES): it read "You browser act pressed." under a line by Taskuary saying the same
+    store.audit('task', tid, 'browser_act_pressed', 'owner', 'human', {'site': h['site'], 'btn': '' if h.get('kind') == 'turn' else h['btn'], 'by': 'page'})
+    return True
+
+
+def gone(sid: str) -> bool:
+    "Is the page a step was handed over on gone: no live session of ours under its id (idled, stopped, a restart), or its browser closed?"
+    from . import browserview, terminal as term
+    s = term.SESSIONS.get(str(sid))
+    return not (s is not None and getattr(s, 'alive', False)) or not browserview.state(str(sid), fresh=True).get('open')
+
+
+# A STEP ON A PAGE THAT IS GONE SAYS SO, AND ITS ONE PRESS IS THE MOVE THAT WORKS (the owner, 2026-11-10: "i cant see the screen"). A hand-over
+# outlives its browser - a restart, a stopped session - and its card still read "press Save on the page" with Done, over no page at all; the
+# Done told the agent the owner had finished. Its press now has the agent open the page again and put the step back in front of them.
+GONE_LINE = ('The page for this step has closed, so it cannot be done there now - nothing was pressed. {again} has the agent open it again '
+             'and put the step back in front of you.')
+def shown_ask(req: dict | None) -> dict | None:
+    "An open ask as the task draws it: a step handed over on a page that is gone, said so, with Try again for its press."
+    from . import browserview, buttons
+    if not req or not str(req.get('request_id') or '').startswith(browserview.TURN_PREFIX) or not gone(req.get('sid')): return req
+    again = buttons.label('try_again')
+    return {**req, 'text': GONE_LINE.format(again=again), 'choices': [again], 'gone': True}
+
+
+def done(store, tid: int, rid: str) -> bool:
+    """THE VIEW'S DONE IS THE OWNER'S PRESS (the spine audit, 2026-11-09). It went to a chat as words typed in their name - a bubble they
+    never wrote, a turn of its own, known here only by matching those words. It closes the hand-over as the page moving on does, and the
+    agent is told by Taskuary that they SAY it is done: nothing saw the page move, so it looks first. A resting agent is started on it.
+    False when the hand-over was closed already (a second press, or the watch got there first). On a page that is gone (shown_ask) the press
+    is its Try again: the agent opens the page again and hands the step back."""
+    from . import browserview, buttons, workerstate as ws
+    req = next((r for r in ws.open_requests(ws.events(store, tid)) if r['RequestId'] == rid), None)
+    lost = bool(req) and gone(req['Sid'])
+    h = _close(store, tid, rid, 'Try again' if lost else 'Done')
+    if not h: return False
+    turn = h.get('kind') == 'turn' or not str(rid).startswith(PRESS)
+    if lost:
+        store.audit('task', tid, 'browser_act_not_pressed', 'owner', 'human', {'site': h['site'], 'why': 'the page had closed'})
+        url = browserview.last_page(tid) or 'its address'
+        _tell(store, tid, f"The page you handed the owner ({h.get('what') or h.get('btn') or 'a step on it'}, on {h['site']}) closed before it could be done "
+                          f"there, so Taskuary cannot tell whether it was. They pressed {buttons.label('try_again')}: open it again (`agent-browser open {url}`), "
+                          "look, and if the step still needs them, bring the page back to it and hand it over again the way you did before.", wake=True)
+        return True
+    step = f"the step you handed them ({h.get('what') or 'on the page'})" if turn else f"pressing {h['btn']}"
+    store.audit('task', tid, 'browser_act_pressed', 'owner', 'human', {'site': h['site'], 'btn': '' if turn else h['btn'], 'by': 'done'})
+    _tell(store, tid, f"The owner pressed Done: they say they finished {step} on the page. Taskuary did not see the page move - "
+                      "look at it as it is now and continue.", wake=True)
     return True
 
 
@@ -574,8 +642,7 @@ def not_pressed(store, tid: int, rid: str, why: str) -> bool:
     h = _close(store, tid, rid, why)
     if not h: return False
     step = f"do the step you handed them ({h.get('what') or 'on the page'})" if h.get('kind') == 'turn' else f"press {h['btn']}"
-    _tell(store, tid, f"The owner did not {step}: {why}. It was NOT done - the page is as you left it. Do not do it yourself or try it "
-                      "another way; carry on without it, or ask the owner what they want instead.")
+    _tell(store, tid, f"The owner did not {step}: {why}. It was NOT done - the page is as you left it. Do not do it yourself. {OWNER_NO}")
     store.audit('task', tid, 'browser_act_not_pressed', 'owner', 'human', {'site': h['site'], 'why': why})
     return True
 
@@ -584,7 +651,7 @@ def owner_said(store, tid: int, sid: str, text: str) -> str:
     """The owner answered an open hand-over in words - the chat's box, a pane's answer - and it closes. What Taskuary adds for the agent: for
     their Done nothing (it looks at the page); for anything else what Taskuary saw - it was not pressed. '' when no hand-over is open. Their
     words are the agent's to read, never matched against a list here."""
-    from . import browserview
+    from . import browserview, proposals
     req = handing(store, tid, sid)
     if not req: return ''
     words = ' '.join(str(text or '').split()).rstrip('.!')
@@ -595,14 +662,9 @@ def owner_said(store, tid: int, sid: str, text: str) -> str:
         return (f"THE OWNER SPOKE WHILE {h.get('btn') or 'the button'} WAITED FOR THEIR PRESS, after Taskuary had stopped watching the page - "
                 "it cannot say whether they pressed it. Look at the page as it is now before anything else; never press it yourself.")
     store.audit('task', tid, 'browser_act_not_pressed', 'owner', 'human', {'site': h.get('site'), 'why': 'answered in words'})
+    # ...AND NOTHING WAITS ON THEM NOW, said so (the owner, 2026-11-10: "i cant see the screen"): told only that it was not pressed, the agent
+    # answered that Save was "held for your press in the browser pane beside this chat" - no card, no pane, "agent done", Mark done lit
     return (f"THE OWNER ANSWERED IN WORDS INSTEAD OF PRESSING {h.get('btn') or 'the button'} on the page you handed them. As far as Taskuary "
-            "saw, it was NOT pressed - the page is as you left it. Do what they say; never press it yourself.")
+            f"saw, it was NOT pressed - the page is as you left it, and nothing waits for their press now. Do what they say. {proposals.AGAIN}")
 
 
-def _trigger(store, tid: int, sid: str, line: str) -> None:
-    "A chat shows what woke the agent's next answer, as a sign-in's does (signin._continue): one short line by Taskuary."
-    from . import terminal as term
-    try:
-        from .general import BRIEF_ACTOR, USER_TYPE
-        if hasattr(term.SESSIONS.get(str(sid)), 'send_prompt'): store.add_comment(tid, BRIEF_ACTOR, USER_TYPE, line)
-    except Exception as e: logger.debug(f'browsergate: the trigger line for task {tid} was not filed - {e}')

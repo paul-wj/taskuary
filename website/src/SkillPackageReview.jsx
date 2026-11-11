@@ -7,6 +7,7 @@ import { t } from './i18n.js';
 import { useLocale } from './LocaleProvider.jsx';
 import { BORDER, DIM, FAINT, INK, PANEL2, mono } from './theme.jsx';
 import { fileChange, skillError, skillState } from './skillLibrary.js';
+import { press, failLine } from './press.js';
 
 export function SkillPackageFiles({ pack, kind, source, digest, baseDigest = null }) {
   useLocale();
@@ -66,11 +67,18 @@ export default function SkillPackageReview({ generationId, onChanged, onOpenTask
   const act = async kind => {
     setBusy(true); setError('');
     try {
-      const response = kind === 'approve'
-        ? await api.post(`/api/reviews/${record.review_id}/decide`, { verb: 'approve' })
-        : await api.post(`/api/skill-library/generations/${record.id}/${kind}`, { draft_digest: record.draft_digest || '', feedback });
-      const result = response.data;
-      if (result?.ok === false || result?.status === 'error' || result?.send_error) throw new Error(result.error?.message || result.error || result.send_error || t('The Skill operation failed.'));
+      if (kind === 'approve') {
+        const outcome = await press(api, record.review_id, { verb: 'approve' }, 2);
+        if (outcome.kind === 'unknown') await load();
+        if (outcome.kind !== 'ok' && outcome.kind !== 'already') {
+          if (outcome.kind === 'error') throw outcome.thrown;
+          const error = outcome.data?.error;
+          throw new Error(error?.message || error || t(failLine(outcome, 'published')));
+        }
+      } else {
+        const { data: result } = await api.post(`/api/skill-library/generations/${record.id}/${kind}`, { draft_digest: record.draft_digest || '', feedback });
+        if (result?.ok === false || result?.status === 'error' || result?.send_error) throw new Error(result.error?.message || result.error || result.send_error || t('The Skill operation failed.'));
+      }
       await load(); onChanged?.();
     } catch (e) { setError(skillError(e)); }
     setBusy(false);

@@ -135,7 +135,7 @@ class ScreenChooserTests(unittest.TestCase):
     def test_a_pick_is_delivered_as_its_number(self):
         typed = []
         with mock.patch.dict(terminal.SESSIONS, {'run1': self.t}, clear=True), self._showing(self.SCREEN), \
-             mock.patch.object(terminal, 'type_into', side_effect=lambda t, text: typed.append(text)):
+             mock.patch.object(terminal, 'type_into', side_effect=lambda t, text, **kw: typed.append(text)):
             req = ws.reconcile_screen_request(self.s, self.t, True)
             out = ws.answer(self.s, self.tid, req['request_id'], 'Upload-only for now, no form engine')
         self.assertTrue(out['delivered'])
@@ -211,7 +211,8 @@ class FunnelTests(unittest.TestCase):
         items = funnel.from_agents(self.s, live_state=live)
         self.assertEqual(len(items), 1); it = items[0]
         self.assertTrue(it['asking']); self.assertEqual(it['request_id'], 'q1'); self.assertEqual(it['choices'], ['a', 'b'])
-        self.assertIn('Which repository should I use?', it['why']); self.assertEqual(it['tail'], ['Which repository should I use?'])
+        self.assertEqual(it['tail'], ['Which repository should I use?'])
+        self.assertNotIn('Which repository', it['why'], 'nothing is asked on the rail: the row says it waits, the card in the task asks')
         live[0]['request'] = {'request_id': 'p1', 'kind': 'approval_needed', 'text': 'Run alembic upgrade head?', 'choices': []}
         it = funnel.from_agents(self.s, live_state=live)[0]
         self.assertIn('approval', it['why'].lower()); self.assertEqual(it['request_kind'], 'approval_needed')

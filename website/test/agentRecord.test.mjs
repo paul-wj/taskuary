@@ -52,7 +52,6 @@ test("a brief is its own step, listed for a coding run and left to the chat for 
   assert.deepEqual(recordSteps(run).map((s) => s.k), ["brief", "you", "thought", "tool", "result"]);
   const chat = { source: "conversation", steps: [{ k: "brief", text: "A QUICK LOOK CAME FIRST." }, { k: "tool", name: "Read", text: "a.csv" }] };
   assert.deepEqual(recordSteps(chat).map((s) => s.k), ["tool"]);
-
 });
 
 test("facts name who, when and how much", () => {

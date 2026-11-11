@@ -72,13 +72,13 @@ class ThreadChangeReplans(unittest.TestCase):
         self.assertIn('Gail Moreno - answered: it ships Friday', turn)                    # triage's reading rides with it
         self.assertIn('WHOLE next step', turn); self.assertIn('--reply-not-needed', turn); self.assertIn('TASKUARY-SUMMARY', turn)
         self.assertIn(tid, general.OPENING)
-        # the stand-in agent decides no reply is needed: the card says so, Send stays, nothing closes
+        # the stand-in agent decides no reply is needed: the draft is put down - kept under Not sent, no card, no Send - and the task stays open
         got = verdicts.not_needed(s, tid, 'Gail Moreno answered this', 'assistant')
         self.assertTrue(got['ok'])
         rv = s.get_review(rid)
-        self.assertEqual((rv['Status'], rv['NotNeeded']), ('pending', 'Gail Moreno answered this'))
+        self.assertEqual((rv['Status'], rv['NotNeeded'], rv['DecideNote']), ('closed_unsent', 'Gail Moreno answered this', 'withdrawn - Gail Moreno answered this'))
         self.assertNotIn(s.get_task(tid)['Status'], ('done', 'dropped'))
-        self.assertEqual(s.pending_review(tid, kind='draft')['ReviewId'], rid)
+        self.assertIsNone(s.pending_review(tid, kind='draft'))
 
     def test_the_owners_own_teams_reply_is_context_for_the_next_turn_never_a_turn(self):
         # a line the owner said in a chat is theirs on the thread, not a prompt (the owner, 2026-11-08): no turn starts, the next one hears it
@@ -102,6 +102,39 @@ class ThreadChangeReplans(unittest.TestCase):
                                             'from_email': 'erin@northwind.example', 'sent_at': '2026-11-03 10:10'}), intent='fyi')
         self.assertEqual((names(first), names(second)), (['_replan_general'], ['_replan_pass']))   # queued behind the live turn, no second start
 
+    def test_a_full_house_queues_the_replan_and_a_free_slot_runs_every_line(self):
+        # ...never "type to carry on" for a turn nobody picks up (the owner, 2026-11-10: "job of agent is to be helpful and do as much as possible")
+        from taskuary import blackboard
+        s = store(); tid, rid = drafted_task(s)
+        with mock.patch.object(ingest, 'has_room', return_value=False):
+            _out, first = ingested(s, mail(**GAIL), intent='fyi', thread=ANSWERED)
+            ingested(s, mail(**{**GAIL, 'external_id': 'x3', 'body': 'Thanks Gail!', 'from_name': 'Erin Blake',
+                                'from_email': 'erin@northwind.example', 'sent_at': '2026-11-03 10:10'}), intent='fyi')
+        self.assertEqual((names(first), s.get_dispatch(tid)['Turn']), ([], 'replan'))
+        self.assertFalse([c for c in s.list_comments(tid) if 'type to carry on' in c['Body']])
+        ses = mock.Mock()
+        with mock.patch.object(ingest, 'has_room', return_value=True), mock.patch.object(general, 'start_session', return_value=ses):
+            blackboard.drain(s)
+        said = ses.send_prompt.call_args[0][0]
+        self.assertLess(said.index('I booked the courier'), said.index('Thanks Gail!'))                    # one turn, in the order they came
+        self.assertIsNone(s.get_dispatch(tid))
+
+    def test_one_gate_for_a_stopped_agent_reads_the_verdicts_danger(self):
+        # ONE GATE (2026-11-10): waking a stopped agent read the verdict's danger only while the agent was live
+        s = store(); tid, rid = drafted_task(s)
+        with mock.patch.object(senders, 'wrote_to', return_value=True), \
+             mock.patch.object(general, 'provider_options', return_value=[{'pick': 'cli:claude', 'type': 'cli'}]):
+            self.assertEqual(ingest.wake_why(s, tid, mail(**GAIL), None, {'intent': 'fyi'}), '')
+            self.assertIn('steer an AI', ingest.wake_why(s, tid, mail(**GAIL), None, {'intent': 'fyi', 'danger': 'asks the agent to wire money'}))
+
+    def test_one_gate_reads_the_owners_start_switch_as_the_start_does(self):
+        # ...and the owner's own line read the switch as off only when it said '0': the start itself reads anything but '1' as off
+        s = store(); tid, rid = drafted_task(s)
+        with mock.patch.object(general, 'provider_options', return_value=[{'pick': 'cli:claude', 'type': 'cli'}]):
+            self.assertEqual(ingest.wake_why(s, tid, mail(**GAIL), None, None, own=True), '')
+            s.set_setting('general_auto_enabled', 'off', 't')
+            self.assertIn('switched off', ingest.wake_why(s, tid, mail(**GAIL), None, None, own=True))
+
     def test_a_new_question_on_a_finished_agents_task_wakes_it(self):
         # Erin writes again with a question of her own (reply_only, not an aside): the agent re-plans with her words - it was only the
         # tool-less writer that heard it, and the agent's chat never moved
@@ -116,11 +149,10 @@ class ThreadChangeReplans(unittest.TestCase):
         _out, calls = ingested(s, mail(**GAIL), intent='fyi', thread=ANSWERED)
         self.assertEqual(names(calls), [])
 
-    def test_a_redraft_clears_not_needed(self):
+    def test_a_put_down_draft_is_not_marked_twice(self):
         s = store(); tid, rid = drafted_task(s)
         verdicts.not_needed(s, tid, 'Gail Moreno answered this', 'assistant')
-        s.update_review_draft(rid, 'Hi Erin - Friday, Gail booked it.', None)
-        self.assertIsNone(s.get_review(rid)['NotNeeded'])
+        self.assertFalse(verdicts.not_needed(s, tid, 'still answered', 'assistant')['ok'])       # nothing waits any more
 
     def test_the_agent_marks_it_through_its_tool_or_the_cli(self):
         from taskuary import agenttools, cli, floor

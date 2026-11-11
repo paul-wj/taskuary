@@ -6,14 +6,14 @@
 import React, { useEffect, useState } from "react";
 import { Box, Button, CircularProgress, MenuItem, TextField, Typography } from "@mui/material";
 import api from "./api.js";
-import { ID_HINT, channelLine, membersOf } from "./agentChannels.js";
+import { ID_HINT, channelLine, membersOf, permissionLead } from "./agentChannels.js";
 import ChatPicker from "./ChatPicker.jsx";
 import { chatHint, chatUrl, noChats } from "./chatPicker.js";
 import { ACCENT, BORDER, DIM, FAINT, INK, mono } from "./theme.jsx";
 
 const btn = { minHeight: 30, py: 0, px: 1.3, fontSize: 12.5, textTransform: "none" };
-const card = { my: 1.5, p: 1.5, border: `1px solid ${BORDER}`, borderRadius: 1.5, bgcolor: "#fff" };
-const Head = ({ children }) => <Typography sx={{ color: ACCENT, fontSize: 9.5, fontWeight: 600, letterSpacing: "1.5px", mb: 0.4 }}>{children}</Typography>;
+const card = { my: 1.5, p: 1.5, border: `1px solid ${BORDER}`, borderRadius: 1.5, bgcolor: "var(--tq-panel, #fff)" };
+const Head = ({ children }) => <Typography sx={{ color: "var(--tq-link, #55697a)", fontSize: 9.5, fontWeight: 600, letterSpacing: "1.5px", mb: 0.4 }}>{children}</Typography>;
 const why = (e, d) => e?.response?.data?.detail || e?.message || d;
 
 // ── the agent asks: one card per request waiting on the owner ─────────────────────────────────────────────────────────
@@ -26,21 +26,25 @@ export function PermissionCards({ taskId, items = [], onAnswered }) {
     catch (e) { setErr(why(e, "That answer did not reach the agent")); }
     setBusy("");
   };
-  return items.map((p) => (
+  return items.map((p) => { const l = permissionLead(p); return (
     <Box key={p.id} data-tq-permission={p.id} sx={card} role="group" aria-label="The agent asks permission">
       <Head>THE AGENT ASKS</Head>
-      <Typography variant="body2" sx={{ color: INK }}>It {p.line.replace(/\x60([^\x60]+)\x60/g, "“$1”")}.</Typography>
+      <Typography variant="body2" sx={{ color: INK }}>{l.lead}</Typography>
+      {l.why && <Typography variant="caption" sx={{ display: "block", color: DIM, mt: 0.2 }}>{l.why}</Typography>}
+      {l.command && <Box component="details" open={l.open || undefined} data-tq-permission-command sx={{ mt: 0.4, fontSize: 12, color: DIM, "& summary": { cursor: "pointer" },
+        "& code": { display: "block", whiteSpace: "pre-wrap", overflowWrap: "anywhere", mt: 0.4, fontSize: 11.5, fontFamily: mono, color: INK } }}>
+        <summary>Show the command</summary><code>{l.command}</code></Box>}
       <Box sx={{ display: "flex", gap: 0.75, flexWrap: "wrap", mt: 0.8 }}>
         {p.options.map((o) => <Button key={o.kind} size="small" disableElevation disabled={!!busy} data-tq-permission-answer={o.kind}
           variant={o.kind === "allow_once" ? "contained" : "outlined"}
-          sx={{ ...btn, ...(o.kind === "allow_once" ? {} : o.kind.startsWith("reject") ? { color: "#7a2f3c", borderColor: BORDER } : { color: INK, borderColor: BORDER }) }}
+          sx={{ ...btn, ...(o.kind === "allow_once" ? {} : o.kind.startsWith("reject") ? { color: "var(--tq-danger, #7a2f3c)", borderColor: BORDER } : { color: INK, borderColor: BORDER }) }}
           startIcon={busy === `${p.id}:${o.kind}` ? <CircularProgress size={12} color="inherit" /> : null}
           onClick={() => answer(p, o.kind)}>{o.label}</Button>)}
       </Box>
       <Typography variant="caption" sx={{ display: "block", color: FAINT, mt: 0.5 }}>
         {p.risky ? "It sends or pushes, so there is no Always for it. " : ""}No answer by {String(p.until || "").slice(11, 16)} refuses it.</Typography>
-      {err && <Typography variant="body2" sx={{ mt: 0.5, color: "#7a2f3c" }}>{err}</Typography>}
-    </Box>));
+      {err && <Typography variant="body2" sx={{ mt: 0.5, color: "var(--tq-danger, #7a2f3c)" }}>{err}</Typography>}
+    </Box>); });
 }
 
 // ── the setup: the bindings, Unbind, and Add a channel ─────────────────────────────────────────────────────────────────
@@ -89,7 +93,7 @@ export function ChannelSetup({ taskId = null, onLoaded, rowOf = null }) {
           <Box sx={{ flex: 1, minWidth: 0 }}>{rowOf ? rowOf(c) : (
             <Typography variant="body2" sx={{ color: INK }} noWrap title={channelLine(c)}>{channelLine(c)}
               {c.repoName && <Box component="span" sx={{ color: DIM }}> · {c.repoName}</Box>}</Typography>)}</Box>
-          <Button size="small" sx={{ ...btn, color: "#7a2f3c" }} data-tq-agent-channel-unbind={c.id} onClick={() => unbind(c)}>{sure === c.id ? "Yes, unbind" : "Unbind"}</Button>
+          <Button size="small" sx={{ ...btn, color: "var(--tq-danger, #7a2f3c)" }} data-tq-agent-channel-unbind={c.id} onClick={() => unbind(c)}>{sure === c.id ? "Yes, unbind" : "Unbind"}</Button>
           {sure === c.id && <Button size="small" sx={{ ...btn, color: DIM }} onClick={() => setSure(null)}>Keep it</Button>}
         </Box>))}
       {!v.kinds.length && <Typography variant="body2" sx={{ color: DIM }}>Connect WhatsApp, Telegram, Slack or Teams first (Connections).</Typography>}
@@ -125,7 +129,7 @@ export function ChannelSetup({ taskId = null, onLoaded, rowOf = null }) {
             cannot approve, land, push or send anything. The agent's answers are posted back to the chat.</Typography>}
         </>}
       </>}
-      {err && <Typography variant="body2" role="alert" sx={{ mt: 0.75, color: "#7a2f3c" }}>{err}</Typography>}
+      {err && <Typography variant="body2" role="alert" sx={{ mt: 0.75, color: "var(--tq-danger, #7a2f3c)" }}>{err}</Typography>}
     </Box>);
 }
 

@@ -319,9 +319,9 @@ def main():
     ap.add_argument('--downvote', type=int, metavar='ID', help='this Hub entry is wrong or stale - say why with --body')
     ap.add_argument('--comment', type=int, metavar='ID', help='add to a Hub entry without re-posting it: the text goes in --body')
     ap.add_argument('--done', metavar='SUMMARY', nargs='?', const='',
-                    help='finish the task this session is working: close it, file the report from '
-                         'this transcript, and draft the reply the sender gets (you are not '
-                         'sending it - the owner approves it). Give one sentence on what you did '
+                    help='finish the task this session is working: close it and file the report from '
+                         'this transcript. Save the reply the sender gets first (--reply) - one owed and not '
+                         'saved is asked of you. Give one sentence on what you did '
                          'or found. Do not run this while waiting on the owner.')
     # ...and how it WAITS on somebody else (waiton.py): their reply brings the task back to the owner, with Continue
     ap.add_argument('--waiting-on', metavar='WHO',
@@ -337,8 +337,8 @@ def main():
                          "(their name or address) - without it, it answers the newest mail on the task. Use - to read it from stdin.")
     ap.add_argument('--reply-file', metavar='PATH', help='--reply, read from a file (for a long or multi-line reply)')
     ap.add_argument('--reply-not-needed', metavar='WHY', help='the reply waiting on this task is no longer needed (someone else answered, '
-                                                             'the owner already did) - say why in one line. The draft stays, marked, with '
-                                                             "the owner's Send still on it; nothing is sent, deleted or closed.")
+                                                             'the owner already did) - say why in one line. The draft is put down, '
+                                                             "kept under Not sent; nothing is sent or deleted.")
     ap.add_argument('--withdraw-draft', metavar='WHY', help='the reply draft waiting on this task no longer answers the newest message - '
                                                            'take it off the table, why in one line. It is kept under Not sent; nothing is sent.')
     ap.add_argument('--follow-up', action='store_true',
@@ -358,6 +358,7 @@ def main():
                                                          'the ask, or an earlier mail when that is the right next step')
     ap.add_argument('--only', action='store_true', help="with --reply: to that mail's sender alone, nobody copied (something sensitive)")
     ap.add_argument('--cc', action='append', default=None, metavar='ADDRESS', help='who else is copied (repeat for more): with --reply, instead of the thread; with --draft, on that email')
+    ap.add_argument('--guessed', action='append', default=None, metavar='ADDRESS', help='with --draft: an address on it you guessed (none on record) - the card says so')
     ap.add_argument('--why-to', default='', metavar='LINE', help='with --reply: one line on why it goes to whom it goes, when it is not the plain reply all')
     ap.add_argument('--subject', default='', help='the subject line')
     # ...and a BATCH's items (batch.py): one finding per item, as the agent finishes each
@@ -446,7 +447,8 @@ def main():
             except OSError as e: print(f'not saved: cannot read {a}: {e.strerror or e}'); return
         who = os.environ.get('TASKUARY_AGENT') or 'agent'
         got = (_post('/api/agent/draft', {'task_id': int(tid), 'text': text, 'to': args.to, 'subject': args.subject, 'slot': args.slot,
-                                          'agent': who, 'files': files, 'cc': args.cc or [], 'mailbox': args.sender}, stranger) if drafting
+                                          'agent': who, 'files': files, 'cc': args.cc or [], 'mailbox': args.sender,
+                                          'guessed': args.guessed or []}, stranger) if drafting
                else _post('/api/agent/reply', {'task_id': int(tid), 'text': text, 'agent': who, 'files': files, 'follow_up': args.follow_up,
                                                 'to': args.to, 'answers': args.answers, 'only': args.only, 'cc': args.cc, 'why_to': args.why_to}, stranger))
         if not got: return
@@ -486,7 +488,7 @@ def main():
         got = _post('/api/agent/not-needed', {'task_id': int(tid), 'why': args.reply_not_needed, 'agent': os.environ.get('TASKUARY_AGENT') or 'agent'}, stranger)
         if not got: return
         r, out = got
-        print("marked not needed - the draft stays for the owner, Send still sends it." if out.get('ok')
+        print("marked not needed - the draft is put down, kept under Not sent." if out.get('ok')
               else f"not marked: {out.get('why') or out.get('detail') or r.text[:200]}")
         return
     if args.withdraw_draft:

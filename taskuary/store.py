@@ -138,7 +138,7 @@ def _fold(value):
     return str(value or '').casefold()
 
 
-REVIEW_COLS = ('TaskId', 'MessageId', 'RunId', 'Kind', 'DraftText', 'FinalText', 'Status', 'Reason', 'Deliver')
+REVIEW_COLS = ('TaskId', 'MessageId', 'RunId', 'Kind', 'DraftText', 'FinalText', 'Status', 'Reason', 'Deliver', 'Origin')
 EMPTY_DRAFT = 'the draft came back empty'     # update_review_draft's refusal: the card's plain line reads it (sendState.draftState)
 POLICY_COLS = ('Name', 'Kind', 'Pattern', 'Action', 'Reason', 'SortOrder', 'Active', 'Mailbox')
 SOURCE_COLS = ('Channel', 'Address', 'Owner', 'ConnectorId', 'Active', 'ConfigJson')
@@ -269,6 +269,10 @@ def retoken_doc(text: str, old_name: str, old_email: str = '') -> str:
 # instead, or every New chat used a TQ number (125 of 261 in two weeks, 2026-10-09) and the owner's
 # numbering read as skipping.
 INTERNAL_TASK_BASE = 1_000_000_000
+# WORK IS WHAT HAS A TQ NUMBER. The app's own conversations (the Assistant's chat) are stored as tasks above the base and are nobody's
+# job: the lists triage is shown of the owner's open work leave them out, and no message lands on one (ingest.joinable). The chat was
+# "the owner's own task, touched a minute ago" on every arrival, and a reply on a closed thread was read as its job and joined it
+WORK = f't.TaskId<{INTERNAL_TASK_BASE}'
 def task_ref(task_id): return f'TQ-{int(task_id):04d}'
 # the mails an Advisor line names in its words ("Erin mid 41 vs Gail mid 42"): Came from (idea_sources) and what its trust rests on
 # (origin.idea_rests_on) read them the same way - every one, uncapped, for the trust
@@ -371,9 +375,25 @@ _CODING_WAS = "`coding` is for work INSIDE a system this install holds the code 
 # when it's live" - and the owner had to Continue it to deploy (2026-10-20). The stop is a question now, and AGENT.md says a
 # reply never promises a later step. Both go into a document the owner edited where the old text still reads as shipped.
 _DEPLOY_WAS = '- Do not push, deploy, publish or release unless the brief says you may: commit locally and stop.'
-_DEPLOY_NOW = ("- Push, deploy, publish or release only when the brief or John's Continue says to - otherwise commit locally and stop.\n"
-               '  When the ask is met only once the change is LIVE, that stop is a question, not the end: ask John here, "ready to\n'
-               '  deploy <what> to <where> - go ahead?", and wait - no `--reply`, no `--done`. On yes: deploy, check it is live, then finish.')
+_DEPLOY_ASKED = ("- Push, deploy, publish or release only when the brief or John's Continue says to - otherwise commit locally and stop.\n"
+                 '  When the ask is met only once the change is LIVE, that stop is a question, not the end: ask John here, "ready to\n'
+                 '  deploy <what> to <where> - go ahead?", and wait - no `--reply`, no `--done`. On yes: deploy, check it is live, then finish.')
+# ...and that question, asked in words, left the owner typing "yes" under a card with no button (2026-11-09, the ~20th time: "i thought
+# actions should be cards/buttons???"). The stop is propose_land now - the landing card's Push / Push & deploy (landing.py) - and a repo
+# trusted to act on its own is pushed and deployed without stopping at all.
+_DEPLOY_HELD = ("- Push, deploy, publish or release when the brief or John's Continue says to, or your prompt says you may push and deploy (a\n"
+                '  repo John trusts to act on its own) - then do it, check it is live, and finish. Otherwise commit locally and stop.\n'
+                "  When the ask is met only once the change is LIVE, that stop is John's button, never a question in words: call\n"
+                '  `propose_land` - `how` push and `deploy` the branch that deploys it (pr, merge or rebase for a branch of your own) - and\n'
+                '  wait; no "go ahead?", no `--reply`, no `--done`. His press pushes it and tells you: check it is live, then finish.')
+# ...AND IT SAYS WHAT FOLLOWS THE PRESS (the owner, 2026-11-10: "it should prompt you, should i deploy and respond once deployed"):
+# the card, one line on what the agent does after it, and the press wakes it to do that (_DEPLOY_HELD -> _DEPLOY_NOW)
+_DEPLOY_NOW = ("- Push, deploy, publish or release when the brief or John's Continue says to, or your prompt says you may push and deploy (a\n"
+               '  repo John trusts to act on its own) - then do it, check it is live, and finish. Otherwise commit locally and stop.\n'
+               "  When the ask is met only once the change is LIVE, that stop is John's button, never a question in words: call\n"
+               '  `propose_land` - `how` push and `deploy` the branch that deploys it (pr, merge or rebase for a branch of your own) - and\n'
+               '  say in one line what follows it (the reply to whoever asked); no "go ahead?", no `--reply` before it, no `--done`. His press\n'
+               '  pushes it and wakes you: check it is live, then do that.')
 # A coding agent started in the wrong repository found the job was not there and closed the task "Nothing to do" (the owner,
 # 2026-10-27: "coding agent should be able to at least ask can I change repos"). CODING.md now says to ask; an edited copy takes
 # the section under the line it follows, where that line still reads as shipped (coding_asks_to_move).
@@ -391,19 +411,27 @@ _FANOUT_NOW = ('\n## Several to-dos at once\n'
                "done means. Review each one's work, tick it once it checks out, and run the tests once at the end.\n"
                'To-dos that depend on each other stay in order.\n')
 _PROMISE_AT = '- "Nothing to do here" is also an ending'
+_PROMISE_HELD = ('- A reply goes when what it says is true. Never promise a later step ("I\'ll let you know when it\'s live"): do\n'
+                 '  it, or ask for the go-ahead and wait. If something is genuinely left, say plainly what, and who does it.\n')
 _PROMISE_NOW = ('- A reply goes when what it says is true. Never promise a later step ("I\'ll let you know when it\'s live"): do\n'
-                '  it, or ask for the go-ahead and wait. If something is genuinely left, say plainly what, and who does it.\n')
+                '  it, or set up the press it waits on and write the reply once it is true. If something is genuinely left, say plainly what, and who does it.\n')
 # THE LOGIN RULE LIVES IN CODE (the owner, 2026-11-04, and the Task 3.4 review): a login the thread asks for and the owner's own files hold
 # goes in the drafted reply - the owner's Send is the decision - never the conversation. AGENT.md and ASSISTANT.md ride on a STRANGER's task
 # too, so neither carries it: general.GOAL_LINE, on the owner's own tasks only, is its one home. An edited copy stops tracking its template,
 # so the login lines an earlier wording put in it come out where they still read word for word (login_rule_in_code). {name: (froms, to)}
+# ...whose own line then said "say what you would do and wait" (_THEIRS_HELD): theirs to decide BY A PRESS, the step set up as its card
+# (_THEIRS_NOW, the owner, 2026-11-10) - the login lines come out to today's wording, and an edited copy that holds the earlier one takes it
+_THEIRS_HELD = ('- Money, legal, HR, credentials, permissions, production configuration, deletions and anything\n'
+                '  irreversible are theirs to decide. Say what you would do and wait.\n')
+_THEIRS_NOW = ('- Money, legal, HR, credentials, permissions, production configuration, deletions and anything\n'
+               '  irreversible are theirs to decide - by a press, never a question in words: set the step up as its card and say in\n'
+               '  one line what you will do once they press it; their press wakes you to do it.\n')
 _LOGIN_RULES = {
     'agent': (('- Money, legal, HR, credentials, permissions, production configuration, deletions and anything\n'
                '  irreversible are theirs to decide. Say what you would do and wait. A login or key the thread asks\n'
                '  {{owner_first}} to supply, kept in their own files, is decided by their Send: find it and put it in the\n'
                '  reply you draft, never in the conversation, your steps, a summary, a comment or a log.\n',),
-              '- Money, legal, HR, credentials, permissions, production configuration, deletions and anything\n'
-              '  irreversible are theirs to decide. Say what you would do and wait.\n'),
+              _THEIRS_NOW),
     # ...and the wording before it, whose "never paste a secret into the conversation or a draft" forbids the draft the ruling asks for
     'assistant': (('  searching the disk. A file such as an .env holds settings: read the value the job needs.\n'
                    '- When the thread asks {{owner}} to supply a login, a key or other details their own files hold, find\n'
@@ -495,7 +523,7 @@ CREATE TABLE IF NOT EXISTS route (RouteId INTEGER PRIMARY KEY, MessageId INTEGER
   Decision TEXT, Score REAL, Reason TEXT, CandidatesJson TEXT, RoutedBy TEXT, CreatedAt TEXT,
   RawOutput TEXT, ParseError TEXT, VerdictJson TEXT);
 CREATE TABLE IF NOT EXISTS comment (CommentId INTEGER PRIMARY KEY, TaskId INTEGER, Actor TEXT,
-  ActorType TEXT, Body TEXT, CreatedAt TEXT);
+  ActorType TEXT, Body TEXT, CreatedAt TEXT, LineId TEXT);
 CREATE TABLE IF NOT EXISTS audit (Id INTEGER PRIMARY KEY, EntityType TEXT, EntityId INTEGER,
   Action TEXT, Actor TEXT, ActorType TEXT, RunId INTEGER, Detail TEXT, PrevHash TEXT, RowHash TEXT, CreatedAt TEXT);
 CREATE TABLE IF NOT EXISTS agent (AgentId INTEGER PRIMARY KEY, Name TEXT UNIQUE, Kind TEXT,
@@ -505,7 +533,7 @@ CREATE TABLE IF NOT EXISTS run (RunId INTEGER PRIMARY KEY, TaskId INTEGER, Agent
   SessionId TEXT, DiffText TEXT, DispatchedBy TEXT, StartedAt TEXT, UpdatedAt TEXT, FinishedAt TEXT);
 CREATE TABLE IF NOT EXISTS review (ReviewId INTEGER PRIMARY KEY, TaskId INTEGER, MessageId INTEGER,
   RunId INTEGER, Kind TEXT, DraftText TEXT, FinalText TEXT, Status TEXT DEFAULT 'pending',
-  Reason TEXT, DecidedBy TEXT, DecidedAt TEXT, DecideNote TEXT, CreatedAt TEXT, Deliver TEXT);
+  Reason TEXT, DecidedBy TEXT, DecidedAt TEXT, DecideNote TEXT, CreatedAt TEXT, Deliver TEXT, Origin TEXT);
 CREATE TABLE IF NOT EXISTS policy (PolicyId INTEGER PRIMARY KEY, Name TEXT, Kind TEXT, Pattern TEXT,
   Action TEXT, Reason TEXT, SortOrder INTEGER DEFAULT 100, Active INTEGER DEFAULT 1, CreatedBy TEXT, Mailbox TEXT);
 CREATE TABLE IF NOT EXISTS source (SourceId INTEGER PRIMARY KEY, Channel TEXT, Address TEXT,
@@ -830,6 +858,8 @@ PILE_BLIND_SETTINGS = (
     'assistant_last_undo',       # concierge.LAST_UNDO - what the phone's Undo pill runs
     'rail_walk',                 # railwalk.KEY - where the one walk stands, written by every walk move (the pile is the line it reads)
     'assistant_active_at',       # welcome.ACTIVE_KEY - the owner's last press, written after every one (owner_presence)
+    'landing:',                  # landing.KEY - a coding agent's edits and commits, written by its hook on every Edit (the task page's landing card
+                                 # reads it; no rail card does) - each one emptied the pile while an agent worked (2026-11-09)
 )
 
 # Settings whose key changed: (old, new), moved once as the store opens (Store.__init__) so an install keeps its value.
@@ -1206,6 +1236,8 @@ class SQLiteStore:
                 self.cx.execute('ALTER TABLE route ADD COLUMN VerdictJson TEXT')
             # why a reply draft could not be written (PW-046): the review stays pending and
             # reply-needed, the reason is shown beside it with a retry, never mistaken for a draft
+            # the name the page gave a line it sent (general.wait_line): the page knows its own line by it, never by its words
+            if 'LineId' not in {r[1] for r in self.cx.execute('PRAGMA table_info(comment)')}: self.cx.execute('ALTER TABLE comment ADD COLUMN LineId TEXT')
             rvcols = {r[1] for r in self.cx.execute('PRAGMA table_info(review)')}
             if 'DraftError' not in rvcols:
                 self.cx.execute('ALTER TABLE review ADD COLUMN DraftError TEXT')
@@ -1234,9 +1266,21 @@ class SQLiteStore:
             # WHICH MAIL THE DRAFT ANSWERS (the delivery target), kept apart from MessageId, the newest mail it saw (freshness); and the drafter's one line on why
             if 'AnswersMid' not in rvcols: self.cx.execute('ALTER TABLE review ADD COLUMN AnswersMid INTEGER')
             if 'DraftWhy' not in rvcols: self.cx.execute('ALTER TABLE review ADD COLUMN DraftWhy TEXT')
-            # ...and the agent's word that the reply is NO LONGER NEEDED (someone else answered, the owner already did): the card says so
-            # with Send still on it - never deleted, never sent, nothing closed; a redraft clears it (Task 4.5, 2026-11-04)
+            # ...and what an ACT's press failed on (review_act_failed): it lived only in the answer to that press - a reload drew the card as
+            # if never pressed, and its agent was told nothing (the spine audit, 2026-11-09). Read only while the review still waits
+            if 'ActError' not in rvcols: self.cx.execute('ALTER TABLE review ADD COLUMN ActError TEXT')
+            # ...and the agent's word that the reply is NO LONGER NEEDED (someone else answered, the owner already did) - kept as the why
             if 'NotNeeded' not in rvcols: self.cx.execute('ALTER TABLE review ADD COLUMN NotNeeded TEXT')
+            # ...and WHAT FILED IT ('triage': a reply triage owes; 'chase': the owner's chase), where its kind does not say. It was read off
+            # the first words of Reason - the line the card shows the owner, which a redraft rewrites (the spine audit, 2026-11-09). The rows
+            # filed under those words are marked once, here
+            if 'Origin' not in rvcols:
+                self.cx.execute('ALTER TABLE review ADD COLUMN Origin TEXT')
+                for mark, origin in (('needs a reply:%', 'triage'), ('chase:%', 'chase')): self.cx.execute('UPDATE review SET Origin=? WHERE Reason LIKE ?', (origin, mark))
+            # ...which retires the draft now (verdicts.not_needed, 2026-11-09). One marked under the old rule still sat pending with Send under it:
+            # it goes where a withdrawn draft goes - closed unsent, under Not sent, Bring it back still sends it
+            self.cx.execute("UPDATE review SET Status='closed_unsent', DecidedBy='agent', DecidedAt=?, DecideNote='withdrawn - '||NotNeeded "
+                            "WHERE Status='pending' AND IFNULL(NotNeeded,'')<>'' AND DeliveryClaim IS NULL AND IFNULL(DeliveryState,'')<>'sent'", (_now(),))
             # the triage-generated checklist (PW-075): JSON items with stable ids, separate from Status
             tcols = {r[1] for r in self.cx.execute('PRAGMA table_info(task)')}
             if 'Checklist' not in tcols:
@@ -1462,7 +1506,8 @@ class SQLiteStore:
             qcols = {r[1] for r in self.cx.execute('PRAGMA table_info(dispatchq)')}
             for col, typ in (('Value', 'REAL'), ('Floor', 'REAL'), ('Why', 'TEXT'),    # rank.py: value-ordered queue
                              ('Attempts', 'INTEGER DEFAULT 0'), ('LastError', 'TEXT'), ('NextAt', 'TEXT'), ('State', 'TEXT'),   # PW-085: the retry budget
-                             ('Brief', 'TEXT')):        # what a general start was to be asked (ingest._auto_general), kept for the drain
+                             ('Brief', 'TEXT'),         # what a general start was to be asked (ingest._auto_general), kept for the drain
+                             ('Turn', 'TEXT')):         # a stopped agent's next turn waiting for a slot, not a fresh start (ingest.queue_turn)
                 if col not in qcols: self.cx.execute(f'ALTER TABLE dispatchq ADD COLUMN {col} {typ}')
             have = {r[1] for r in self.cx.execute('PRAGMA table_info(connector)')}
             if 'Roles' not in have: self.cx.execute('ALTER TABLE connector ADD COLUMN Roles TEXT')
@@ -1796,6 +1841,23 @@ class SQLiteStore:
                     if '\r\n' in body: now = now.replace('\n', '\r\n')
                     self.cx.execute('UPDATE doc SET Content=?, UpdatedAt=? WHERE Name=?', (body.replace(was, now), _now(), name))
                 self.cx.execute("INSERT INTO setting (Name, Value, UpdatedBy) VALUES ('coding_asks_before_deploy', '1', 'migration')")
+            # ...and THAT STOP IS A BUTTON, NOT A QUESTION IN WORDS (_DEPLOY_ASKED -> _DEPLOY_NOW): where the asked text still reads as shipped, once
+            if not self.cx.execute("SELECT 1 FROM setting WHERE Name='coding_proposes_push'").fetchone():
+                row = self.cx.execute("SELECT Content FROM doc WHERE Name='coding'").fetchone()
+                body = (row['Content'] or '') if row else ''
+                nl = '\r\n' if '\r\n' in body else '\n'
+                was, now = _DEPLOY_ASKED.replace('\n', nl), _DEPLOY_NOW.replace('\n', nl)
+                if body.count(was) == 1: self.cx.execute("UPDATE doc SET Content=?, UpdatedAt=? WHERE Name='coding'", (body.replace(was, now), _now()))
+                self.cx.execute("INSERT INTO setting (Name, Value, UpdatedBy) VALUES ('coding_proposes_push', '1', 'migration')")
+            # ...and WHAT FOLLOWS THE PRESS IS SAID WITH THE CARD (_DEPLOY_HELD -> _DEPLOY_NOW, _PROMISE_HELD -> _PROMISE_NOW): into an edited
+            # CODING.md / AGENT.md where the earlier wording still reads as shipped, once
+            if not self.cx.execute("SELECT 1 FROM setting WHERE Name='guide_says_what_follows_the_press'").fetchone():
+                for name, was, now in (('coding', _DEPLOY_HELD, _DEPLOY_NOW), ('agent', _PROMISE_HELD, _PROMISE_NOW), ('agent', _THEIRS_HELD, _THEIRS_NOW)):
+                    row = self.cx.execute('SELECT Content FROM doc WHERE Name=?', (name,)).fetchone()
+                    body = (row['Content'] or '') if row else ''
+                    if '\r\n' in body: was, now = was.replace('\n', '\r\n'), now.replace('\n', '\r\n')
+                    if body.count(was) == 1: self.cx.execute('UPDATE doc SET Content=?, UpdatedAt=? WHERE Name=?', (body.replace(was, now), _now(), name))
+                self.cx.execute("INSERT INTO setting (Name, Value, UpdatedBy) VALUES ('guide_says_what_follows_the_press', '1', 'migration')")
             # ...and WORK IN ANOTHER REPOSITORY IS A QUESTION (_ELSEWHERE_NOW), into an edited CODING.md the same way, once
             if not self.cx.execute("SELECT 1 FROM setting WHERE Name='coding_asks_to_move'").fetchone():
                 row = self.cx.execute("SELECT Content FROM doc WHERE Name='coding'").fetchone()
@@ -2042,9 +2104,11 @@ class SQLiteStore:
             # data heal: dbs written before review dedupe can hold stacked pending reviews
             # of the same kind on one task - keep the newest, supersede the rest. NOT a task's emails (slots.py): several
             # pending at once is what they are, and every start retired all but the newest (TQ-0957, 2026-10-05). Nor a reply to
-            # ANOTHER PERSON on the same task: an agent's reply to one requester and one to a second are two letters (2026-11-02)
+            # ANOTHER PERSON on the same task: an agent's reply to one requester and one to a second are two letters (2026-11-02). Nor
+            # a task's PROPOSALS: one turn's two held pushes are two steps of one act, and every open of the store retired all but the last
+            # (2026-11-09, the one-card walk: the merge vanished, its push stood alone)
             self.cx.execute("""UPDATE review SET Status='superseded'
-                               WHERE Status='pending' AND Kind<>'slot' AND ReviewId NOT IN (
+                               WHERE Status='pending' AND Kind NOT IN ('slot','action') AND ReviewId NOT IN (
                                    SELECT MAX(rv.ReviewId) FROM review rv LEFT JOIN message m ON m.MessageId=rv.MessageId
                                    WHERE rv.Status='pending'
                                    GROUP BY rv.TaskId, rv.Kind, lower(IFNULL(m.FromEmail, IFNULL(m.FromName, ''))))""")
@@ -2349,7 +2413,7 @@ class SQLiteStore:
             self._exec("UPDATE review SET Status='superseded', DecidedBy=?, DecidedAt=? "
                        "WHERE TaskId=? AND Status='pending'", (actor, _now(), task_id))
             # ...and so does the Advisor idea the task was MADE from: left open, 96 ideas outlived their closed tasks
-            # (2026-10-10). Only SourceRef - an idea that merely cites a task may name a separate follow-up (funnel.from_forgotten).
+            # (2026-10-10). Only SourceRef - an idea that merely cites a task may name a separate follow-up.
             self._exec("UPDATE idea SET Status='done', DecidedBy='task', DecidedAt=? WHERE Status IN ('open','snoozed') AND "
                        "IdeaId IN (SELECT CAST(substr(SourceRef,16) AS INTEGER) FROM task WHERE TaskId=? AND SourceRef LIKE 'assistant:idea:%')",
                        (_now(), task_id))
@@ -2389,8 +2453,6 @@ class SQLiteStore:
                 facts.update(playbook=_pb.of_task(was_row), asked=bool(v and v.get('intent') in ('task', 'reply_only')
                                                                     and not (own and str(own.get('SentAt') or '') >= str(li.get('SentAt') or ''))))
             outcomes.record(self, 'task.closed', 'task', task_id, actor, facts=facts)
-            from . import advisor
-            advisor.notice(self, 'task.closed', 'task', task_id)        # the Advisor on the event (advisor.py)
         self._bump_snapshots()
         # Timeline rows carry task/review state too, so a task transition changes both views.
         self._poke('feed-changed', 'task-changed', task_id=task_id)
@@ -2457,7 +2519,7 @@ class SQLiteStore:
         self._write_checklist(task_id, items, actor)
         return items
     def merge_task_checklist(self, task_id, texts, actor: str, src=None) -> list:
-        """Add the items a later message brings; nothing existing moves or unticks. Returns the new ones, each with `src`, the
+        """Add the items a later message brings; nothing existing moves or unticks (a correction rewords one: ingest.reword_todos). Returns the new ones, each with `src`, the
         message that brought it, when one did."""
         items = self.task_checklist(task_id)
         have, used_ids, new = {i['text'] for i in items}, {i.get('id') for i in items}, []
@@ -2528,14 +2590,19 @@ class SQLiteStore:
             hit[0]['done'] = bool(done)
             self._write_checklist(task_id, items, actor)
         return True
-    def checklist_markdown(self, task_id, ids: bool = False) -> str:
+    def checklist_markdown(self, task_id, ids: bool = False, shell: bool = True) -> str:
         """`ids`: the agent's copy - each box an agent may tick carries its id, for `taskuary --tick <id>` (the owner, 2026-10-22:
-        agents tick the to-dos they finish). An email box ticks when its email goes and a goal's step when its task closes."""
+        agents tick the to-dos they finish). An email box ticks when its email goes and a goal's step when its task closes.
+        `shell`: a slot's line says the command that fills it - a session whose hands are its shell (the coding seed). A chat's copy names
+        the slot by its id instead, and its brief says the one way it fills it (general.by_tool): told the command, the tool and the marked
+        block at once, an agent wrote "an email to Ray Colton" a second time beside the line that asked for it (the agent walk, 2026-11-10)."""
         # a slot says where it goes and how to fill it: the seed line is byte-capped, so the command rides here (slots.py)
         def line(i):
             o = i.get('out') if isinstance(i.get('out'), dict) else None
-            maybe = f" (could be {' or '.join(o['candidates'][:3])} - fill with --to)" if o and o.get('candidates') else ''
-            tail = (f" -> email to {o.get('to')}{maybe}, " + ('drafted' if i.get('rid') else f"fill with `taskuary --slot {i['id']} --draft \"<text>\"`")) if o else ''
+            maybe = f" (could be {' or '.join(o['candidates'][:3])} - {'fill with --to' if shell else 'say which in `to`'})" if o and o.get('candidates') else ''
+            how = 'drafted' if i.get('rid') else f"fill with `taskuary --slot {i['id']} --draft \"<text>\"`"
+            if not shell: how = f"slot {i['id']} - {'drafted' if i.get('rid') else 'to draft'}"
+            tail = f" -> email to {o.get('to')}{maybe}, {how}" if o else ''
             tag = f" [{i['id']}]" if ids and agent_tickable(i) else ''
             return f"- [{'x' if i.get('done') else ' '}] {i['text']}{tag}{tail}" + (f" (note: {i['note']})" if i.get('note') else '')
         return '\n'.join(line(i) for i in self.task_checklist(task_id))
@@ -2880,6 +2947,9 @@ class SQLiteStore:
                 (json.dumps(state, separators=(',', ':')), source, conversation))
         self._poke('feed-changed')
         return state
+    def last_version(self, base):
+        "The newest stored version of tracker item `base` (gh:o/r#42, jira:OPS-12): its bare id or a rev_id of it - never a comment on it."
+        return self._one("SELECT * FROM message WHERE ExternalId=? OR ExternalId LIKE ? ORDER BY MessageId DESC LIMIT 1", (base, base + '@%'))
     # ── what the hub knows about a sender / a topic (counsel.dossier, responder) ─────────────
     def messages_from(self, email, since, limit=8):
         return self._rows("SELECT * FROM message WHERE lower(FromEmail)=? AND Status NOT IN ('context','history','skipped') AND SentAt>=? "
@@ -3066,6 +3136,11 @@ class SQLiteStore:
     def last_inbound_in(self, conversation_id):
         return self._one("SELECT * FROM message WHERE ConversationId=? AND Status NOT IN ('context','history','skipped') AND IFNULL(Direction,'in')<>'out' "
                          'ORDER BY SentAt DESC LIMIT 1', (conversation_id,))
+    def inbound_before(self, conversation_id, at):
+        "The newest line the other side wrote on the thread up to `at` - what the owner's line there answers (sentjudge._item)."
+        if not conversation_id: return None
+        return self._one("SELECT * FROM message WHERE ConversationId=? AND IFNULL(Direction,'in')<>'out' AND Status NOT IN ('context','skipped') "
+                         'AND SentAt<=? ORDER BY SentAt DESC, MessageId DESC LIMIT 1', (conversation_id, str(at or '9999')))
     def shown_message_of(self, mid):
         """The newest message the feed SHOWS on the thread of one it hides (the owner's own sent mail, a back-filled `history` start):
         its task's, else its conversation's - None when nothing of that thread is shown. A hidden row is no row of its own, but its
@@ -3162,7 +3237,7 @@ class SQLiteStore:
             "SELECT t.TaskId, t.Title, t.Status, t.Kind, t.Summary, t.Source, t.OriginBase, IFNULL(t.UpdatedAt, t.CreatedAt) Touched, "
             "       GROUP_CONCAT(DISTINCT lower(m.FromEmail)) Senders, GROUP_CONCAT(DISTINCT m.ConversationId) Convs "
             "  FROM task t LEFT JOIN message m ON m.TaskId=t.TaskId "
-            " WHERE t.Status NOT IN ('done','dropped') "
+            f" WHERE t.Status NOT IN ('done','dropped') AND {WORK} "
             " GROUP BY t.TaskId ORDER BY IFNULL(t.UpdatedAt, t.CreatedAt) DESC LIMIT ?", (limit,))
     def tasks_open_brief(self, limit=40):
         """The OPEN tasks and Watching items, newest activity first, each with what triage read it to ask (ThreadJson), the channel and the
@@ -3175,7 +3250,7 @@ class SQLiteStore:
             f"       IFNULL(t.UpdatedAt, t.CreatedAt) Touched, {first.format('Channel')} Channel, {first.format('FromName')} FromName, "
             "       (SELECT GROUP_CONCAT(DISTINCT lower(IFNULL(m.FromEmail, m.FromName))) FROM message m WHERE m.TaskId=t.TaskId) Senders, "
             "       (SELECT GROUP_CONCAT(Title, ' ; ') FROM (SELECT b.Title FROM batch_item b WHERE b.TaskId=t.TaskId ORDER BY b.Place, b.ItemId)) Items "
-            "  FROM task t WHERE t.Status NOT IN ('done','dropped') ORDER BY IFNULL(t.UpdatedAt, t.CreatedAt) DESC, t.TaskId DESC LIMIT ?", (limit,))
+            f"  FROM task t WHERE t.Status NOT IN ('done','dropped') AND {WORK} ORDER BY IFNULL(t.UpdatedAt, t.CreatedAt) DESC, t.TaskId DESC LIMIT ?", (limit,))
     def task_people(self, tids) -> dict:
         """{TaskId: [{name, email, channel}]} - who wrote on each task, by display name, never the owner's own lines: what a name on
         another channel is compared against (context.same_name)."""
@@ -3202,7 +3277,7 @@ class SQLiteStore:
         What they had in hand when they sent a mail of their own (context.worked_before)."""
         return self._rows(
             "SELECT t.TaskId, t.Title, t.Summary, MAX(a.CreatedAt) Touched FROM audit a JOIN task t ON t.TaskId=CAST(a.EntityId AS INTEGER) "
-            " WHERE a.EntityType='task' AND a.Actor='owner' AND a.CreatedAt>=? AND a.CreatedAt<=? AND t.Status NOT IN ('done','dropped') "
+            f" WHERE a.EntityType='task' AND a.Actor='owner' AND a.CreatedAt>=? AND a.CreatedAt<=? AND t.Status NOT IN ('done','dropped') AND {WORK} "
             " GROUP BY t.TaskId ORDER BY Touched DESC LIMIT ?", (since, before, limit))
     def owner_started(self, conversation_id):
         """The owner's own sent message that STARTED this thread, when no task holds the thread yet - else None."""
@@ -5118,7 +5193,7 @@ class SQLiteStore:
     def set_message_danger(self, mid, text, aim=None):
         """What this message's text tries to make an AI or the owner do (one sentence), or nothing: the newest reading's word stands -
         and `aim`, whom: 'owner' for a scam on them, 'agent' (the default) for text written to steer the AI."""
-        t = ' '.join(str(text or '').split())[:200]
+        t = ' '.join(str(text or '').split())[:320]
         self._exec('UPDATE message SET Danger=?, DangerAim=? WHERE MessageId=?', (t or None, (aim if aim in ('owner', 'agent') else 'agent') if t else None, mid))
     def set_message_rank(self, mid, value: float, why: str, actor: str):
         """Where in the judging queue this arrival sits, and the words it got there by."""
@@ -5242,9 +5317,9 @@ class SQLiteStore:
             except Exception: continue
         return out
     def list_routes(self, task_id): return self._rows('SELECT * FROM route WHERE TaskId=? ORDER BY RouteId', (task_id,))
-    def add_comment(self, task_id, actor, actor_type, body):
-        return self._exec('INSERT INTO comment (TaskId,Actor,ActorType,Body,CreatedAt) VALUES (?,?,?,?,?)',
-                          (task_id, actor, actor_type, body, _now()))
+    def add_comment(self, task_id, actor, actor_type, body, line_id=None):
+        return self._exec('INSERT INTO comment (TaskId,Actor,ActorType,Body,CreatedAt,LineId) VALUES (?,?,?,?,?,?)',
+                          (task_id, actor, actor_type, body, _now(), line_id))
     def add_comment_once(self, task_id, actor, actor_type, body):
         """Append a turn unless it is already the last turn on this task.
 
@@ -5271,16 +5346,17 @@ class SQLiteStore:
         rows = self._rows('SELECT * FROM comment WHERE TaskId=? ORDER BY CommentId', (task_id,))
         return rows if internal else [c for c in rows if not is_internal(c)]
     def drop_comment(self, comment_id): self._exec('DELETE FROM comment WHERE CommentId=?', (comment_id,))
-    def take_lines(self, task_id, kind, as_kind, words=str) -> list:
+    def take_lines(self, task_id, kind, as_kind, words=str, ids=None) -> list:
         """THE OWNER'S LINES KEPT FOR A TURN, taken by it (general.send_prompt): each `kind` row moved to the END of the conversation as an
         `as_kind` row - its words read out of the kept body by `words`, the time it was typed kept - so the conversation reads in the order the
         agent read it. In one step under the lock: two turns never take one line. [the rows as they waited], oldest first."""
         with self.lock:
-            got = [dict(r) for r in self.cx.execute('SELECT * FROM comment WHERE TaskId=? AND ActorType=? ORDER BY CommentId', (task_id, kind))]
+            got = [dict(r) for r in self.cx.execute('SELECT * FROM comment WHERE TaskId=? AND ActorType=? ORDER BY CommentId', (task_id, kind))
+                   if ids is None or r['CommentId'] in ids]       # `ids`: only the lines a session was handed - one kept since waits for its turn
             for r in got:
                 self.cx.execute('DELETE FROM comment WHERE CommentId=?', (r['CommentId'],))
-                self.cx.execute('INSERT INTO comment (TaskId,Actor,ActorType,Body,CreatedAt) VALUES (?,?,?,?,?)',
-                                (task_id, r['Actor'], as_kind, words(r['Body']), r['CreatedAt']))
+                self.cx.execute('INSERT INTO comment (TaskId,Actor,ActorType,Body,CreatedAt,LineId) VALUES (?,?,?,?,?,?)',
+                                (task_id, r['Actor'], as_kind, words(r['Body']), r['CreatedAt'], r.get('LineId')))
             if got: self.cx.commit(); self._writes += 1
         if got: self._poke('task-changed', task_id=task_id)
         return got
@@ -5430,12 +5506,13 @@ class SQLiteStore:
 
     # the dispatch queue: tasks held back from auto-start because a running agent's work would
     # likely collide (BehindTaskId) or every session slot is busy (NULL) - see blackboard.drain
-    def enqueue_dispatch(self, task_id, behind, agent, reason, value=None, why=None, brief=None):
+    def enqueue_dispatch(self, task_id, behind, agent, reason, value=None, why=None, brief=None, turn=None):
         if self._one('SELECT 1 x FROM dispatchq WHERE TaskId=?', (task_id,)):
             if brief: self._exec('UPDATE dispatchq SET Brief=? WHERE TaskId=?', (brief, task_id))     # the newer ask is the one to start on
+            if turn: self._exec('UPDATE dispatchq SET Turn=? WHERE TaskId=?', (turn, task_id))
             return None
-        qid = self._exec('INSERT INTO dispatchq (TaskId,BehindTaskId,Agent,Reason,CreatedAt,Value,Floor,Why,Brief) VALUES (?,?,?,?,?,?,?,?,?)',
-                         (task_id, behind, agent, reason, _now(), value, value, why, brief))
+        qid = self._exec('INSERT INTO dispatchq (TaskId,BehindTaskId,Agent,Reason,CreatedAt,Value,Floor,Why,Brief,Turn) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                         (task_id, behind, agent, reason, _now(), value, value, why, brief, turn))
         # Queued is already assigned work: waiting for a free desk must not look unowned. The
         # profile name survives the queue and the eventual session, regardless of whether triage
         # or the owner created the task.
@@ -5529,7 +5606,7 @@ class SQLiteStore:
         # person can deliberately ask for a follow-up draft after their last sent message; that
         # new instruction must stay pending. Once any draft is already pending, the normal sync
         # path in channels.py still retires it when a newer owner reply arrives.
-        triage_reply = str(fields.get('Reason') or '').startswith('needs a reply:')
+        triage_reply = fields.get('Origin') == 'triage'
         if fields.get('Status') == 'pending' and triage_reply and fields.get('MessageId'):
             target = self.get_message(fields['MessageId']) or {}
             conv, after = target.get('ConversationId'), target.get('SentAt')
@@ -5643,8 +5720,12 @@ class SQLiteStore:
                     except (TypeError, ValueError, KeyError): pass
                 env['delivery'] = state
                 if attempted: env['attempted_at'] = attempted
-                self.cx.execute('UPDATE review SET DeliveryState=?, DeliveryClaim=?, DeliveryEnvelope=?, DeliveryAttemptedAt=?, Deliver=? WHERE ReviewId=? AND Status=\'pending\' AND DeliveryClaim IS NULL',
-                                (state, token, saved, attempted, json.dumps(env), rid))
+                # ...and WHY THE LAST ATTEMPT DID NOT GO is that attempt's, not this one's: every attempt that does not send writes its own
+                # reason (finish_review_delivery), so one that does send must not leave "Not sent: ..." on a sent mail (the agent walk,
+                # 2026-11-09: refused once, sent on the retry, and its agent was told "not sent" and offered to send it again)
+                self.cx.execute('UPDATE review SET DeliveryState=?, DeliveryClaim=?, DeliveryEnvelope=?, DeliveryAttemptedAt=?, Deliver=?, '
+                                'Reason=CASE WHEN ? THEN NULL ELSE Reason END WHERE ReviewId=? AND Status=\'pending\' AND DeliveryClaim IS NULL',
+                                (state, token, saved, attempted, json.dumps(env), bool(previous), rid))
                 self.cx.commit(); self._writes += 1
                 _DELIVERY_CLAIMS.add(token)
                 claimed = {'token': token, 'previous': previous, 'snapshot': json.loads(saved)}
@@ -5831,6 +5912,10 @@ class SQLiteStore:
     def set_review_not_needed(self, rid, why):
         self._exec("UPDATE review SET NotNeeded=? WHERE ReviewId=? AND Status='pending'", (by_sentence(why, 300) or None, rid))
         self._review_changed(rid)
+    def review_act_failed(self, rid, error, by):
+        "An act's press that failed: kept on the review, which still waits - with who pressed and when, as a failed send keeps them (finish_review_delivery)."
+        self._exec("UPDATE review SET ActError=?, DecidedBy=?, DecidedAt=? WHERE ReviewId=? AND Status IN ('pending','held')", (str(error or '')[:300] or None, by, _now(), rid))
+        self._review_changed(rid)
     def set_review_sid(self, rid, sid):
         self._exec('UPDATE review SET DraftSid=? WHERE ReviewId=?', (sid, rid)); self._review_changed(rid)
     def save_review_draft(self, rid, draft):
@@ -5938,8 +6023,20 @@ class SQLiteStore:
             return sid
         return self._insert('source', fields, SOURCE_COLS)
     def touch_source(self, sid):
-        self._exec('UPDATE source SET LastPolledAt=? WHERE SourceId=?', (_now(), sid))
+        self._touch('UPDATE source SET LastPolledAt=? WHERE SourceId=?', (_now(), sid))
         self._processing_ignored_writes += 1
+    # A HEARTBEAT NEVER WAITS ON THE DATABASE (2026-11-09). A poll's "polled at" stamp waited out SQLite's whole 5 s busy timeout while another
+    # process wrote - holding store.lock all the while: the WhatsApp poll held it 6 s at a time, every press and read in the app behind it.
+    # The stamp is written when the database is free within TOUCH_WAIT_MS, else skipped: the next poll stamps it (and reads a little again).
+    TOUCH_WAIT_MS = 200
+    def _touch(self, q, p=()):
+        with self.lock:
+            self.cx.execute(f'PRAGMA busy_timeout={self.TOUCH_WAIT_MS}')
+            try: return self._exec(q, p)
+            except sqlite3.OperationalError as e:
+                if 'locked' not in str(e) and 'busy' not in str(e): raise
+                logger.debug(f'store: a heartbeat stamp skipped - the database is busy ({e})'); return None
+            finally: self.cx.execute('PRAGMA busy_timeout=5000')
     def patch_source_poll_state(self, source_id, *, config_set=None, config_remove=(),
                                 last_polled_at=_POLL_UNSET, expect_fields=None, expect_config=None):
         """Atomically checkpoint source progress; False means the captured source changed."""
@@ -6146,7 +6243,7 @@ class SQLiteStore:
         if error: self._exec('''UPDATE connector SET LastError=?, LastErrorAt=? WHERE ConnectorId=?
                                 AND NOT (LastError IS ? AND COALESCE(LastErrorAt, '') BETWEEN ? AND ?)''',
                              (error[:500], now, cid, error[:500], since, now))
-        else: self._exec('''UPDATE connector SET LastSyncAt=?, LastError=NULL, LastErrorAt=NULL WHERE ConnectorId=?
+        else: self._touch('''UPDATE connector SET LastSyncAt=?, LastError=NULL, LastErrorAt=NULL WHERE ConnectorId=?
                             AND NOT (LastError IS NULL AND LastErrorAt IS NULL AND COALESCE(LastSyncAt, '') BETWEEN ? AND ?)''',
                          (now, cid, since, now))
         self._processing_ignored_writes += 1
@@ -6166,6 +6263,11 @@ class SQLiteStore:
         r = self._one('SELECT UpdatedBy FROM setting WHERE Name=?', (name,))
         return str((r or {}).get('UpdatedBy') or '')
     def set_setting(self, name, value, actor):
+        # A write that says what the row already says - the same value from the same writer - changes nothing, so it moves no stamp and
+        # empties no cache: a setting rewritten on a loop (a pane's size, a router note) used to throw the whole pile away each time
+        # (2026-11-09). str() as SQLite keeps it: a number written as 3 reads back '3' only through the TEXT column's affinity.
+        was = self._one('SELECT Value, UpdatedBy FROM setting WHERE Name=?', (name,))
+        if was is not None and was['UpdatedBy'] == actor and (was['Value'] == value or (value is not None and was['Value'] == str(value))): return
         self._exec('INSERT INTO setting (Name, Value, UpdatedBy) VALUES (?,?,?) ON CONFLICT(Name) DO UPDATE SET Value=?, UpdatedBy=?',
                    (name, value, actor, value, actor))
         if name == 'ingest_status':
@@ -6630,8 +6732,10 @@ class SQLiteStore:
         # console. Working carries the agent's name so the chip can say who.
         live, parked = {r['TaskId']: SHOWN for r in self.running_runs()}, {}       # Taskuary, never the profile (kinds.shown)
         try:
-            from . import terminal as hub_term
-            observed_live = hub_term.live_sessions(tail=0) if live_state is _LIVE_UNSET else live_state
+            # the light road: a feed row reads who works a task, never the session's files - one feed read ran `git status` in
+            # every live session's checkout, and a task's own read makes one (funnel.item_for_key)
+            from . import funnel
+            observed_live = funnel.observe(0) if live_state is _LIVE_UNSET else live_state
             for t in observed_live:
                 if not t.get('taskId'): continue
                 live[t['taskId']] = shown_agent(t)

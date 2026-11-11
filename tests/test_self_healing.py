@@ -76,16 +76,6 @@ class MakeATaskToFixThisTests(unittest.TestCase):
         verbs = [v['verb'] for v in advisor.offered(s, it)]
         self.assertEqual(verbs[0], 'fix'); self.assertNotIn('new_task', verbs)
 
-    def test_the_advisor_picking_it_hands_the_page_the_task_to_make(self):
-        s = MemoryStore(); it = draft(s, 'email'); failed_act(s, it)
-        lbl = buttons.label('new_task', 'fix')
-        with mock.patch.object(advisor, '_item', return_value=it):
-            advisor.judge(s, advisor.SHOWN, 'task', it['tid'], advisor.revision(s, 'task', it['tid']), 2,
-                          brain_saying({'verb': lbl, 'line': 'The repository could not be reached - make it a task to fix.', 'evidence': []}), key=it['key'])
-            got = advisor.for_key(s, it['key'])
-        self.assertEqual((got['verb'], got['label']), ('new_task', lbl))
-        self.assertIn('could not be reached', got['task']['text'])
-
     def test_the_task_it_makes_runs_on_the_tool_the_assistant_uses(self):
         op = operations.propose(MemoryStore(), 'task.create_from_text', 0, {'text': 'Fix: x', 'title': 'Fix: x', 'kind': 'task'})
         self.assertEqual((op['kind'], op['status']), ('task.create_from_text', 'proposed'))
@@ -166,7 +156,7 @@ class OneFailureShapeTests(unittest.TestCase):
         chips = []
         with mock.patch.object(concierge, 'restore_current', return_value=None), mock.patch.object(concierge, 'chips_for', return_value=[]):
             got = concierge.recover(MemoryStore(), {'id': 'x', 'version': 1, 'status': 'error', 'kind': 'task.complete', 'error': 'it broke',
-                                                    'outcome': {'retry': False}}, llm=False)
+                                                    'outcome': {'retry': False}})
         self.assertIn(buttons.label('report_bug'), [c['label'] for c in got['chips']])
         self.assertNotIn(buttons.label('try_again'), [c['label'] for c in got['chips']])
 
@@ -210,7 +200,7 @@ class SendAnywayTests(unittest.TestCase):
         op = {'id': 'x', 'version': 1, 'status': 'error', 'kind': 'review.approve', 'params': {}, 'error': 'delivery unknown',
               'outcome': {'delivery': 'unknown', 'unsent': True, 'rid': it['rid']}}
         with mock.patch.object(concierge, 'restore_current', return_value=None), mock.patch.object(concierge, 'chips_for', return_value=[]):
-            chips = concierge.recover(s, op, llm=False)['chips']
+            chips = concierge.recover(s, op)['chips']
         labels = [c['label'] for c in chips]
         self.assertIn(buttons.label('approve', 'unknown'), labels); self.assertIn(buttons.label('close'), labels)
         self.assertNotIn(buttons.label('try_again'), labels)

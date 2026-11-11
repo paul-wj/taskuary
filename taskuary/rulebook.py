@@ -5,8 +5,10 @@ never read the item, and an agent that finished and asked to go further lit noth
 2026-11-02, for the hundredth time: "never ever use hard coded rules, let the ai see everything and all tools in progressive fashion and it
 should work". So what is left here is FACTS: the item's state named from what the app keeps - a draft and whether it can send from here, the
 agent's state, a failure, the calendar, the days waited, the lane - never the words of a mail, with the fact sentence for it (words.json
-`advice_rule`: an age, a clash, a failure, a promise nothing backs). advisor._prompt hands the state, its sentence, every verb the row
-offers and what the owner chose before in that state (calibrate.evidence) to the model, which decides every light (advisor.decide).
+`advice_rule`: an age, a clash, a failure, a promise nothing backs).
+
+And ONE move read off them (recommended, 2026-11-09: "the agents while running should recommend actions, no assistant"): the button a
+task's row fills comes from its agent's own turn and these facts - no model, no Advisor. The Advisor judges only its own idea rows.
 
 A sentence is only a checkable fact the card does not show, never one explaining a button ("buttons do the talking", the owner)."""
 import json, re
@@ -15,7 +17,7 @@ from loguru import logger
 from . import words
 
 RULES = words.ADVICE_RULE
-CHASE_DAYS = 3           # a wait past 3 working days is NAMED late (waiting_late) - a fact the model weighs, never a button lit by itself
+CHASE_DAYS = 3           # a wait past 3 working days is late (waiting_late): its agent is woken to chase (checkback.late), else Chase is lit
 # a failure is the fact whatever is lit: its sentence stands on the strip where the model's own line is empty (advisor._out)
 FAILED = frozenset({'failed', 'failed_cause', 'report_failed'})
 EV = '_evidence'         # a fact's own ids (usual.py), carried beside the line's facts and handed on as the decision's evidence
@@ -218,7 +220,7 @@ def state(store, item: dict, verbs: list) -> tuple:
     if wb == 'quiet': return 'watch_quiet', {}
     # THE WRITER SAID WHAT IT NEEDS (store.set_review_draft_needs): no failure - the work is an agent's, so Continue the one that worked it,
     # else Send to agent. Its reason is on the card already, so nothing is said (walk 2026-10-29: it lit "New task to fix this")
-    if advisor.draft_needs(store, it): return 'needs_agent', {}
+    if advisor.draft_needs(store, it) or advisor.reply_unwritten(store, it): return 'needs_agent', {}
     # A DASHBOARD's refresh lands under Reports like a report run and Next walks past it (the owner, 2026-10-23): looked at, never acted
     # on - so silent, Next lit. Its Share (and a report's) is on the row for the Advisor to SEE, never the move a rule lights: sending a
     # result somewhere is the owner's own idea, not the obvious next step
@@ -262,8 +264,8 @@ def state(store, item: dict, verbs: list) -> tuple:
     if kind == 'agent' or (tid and lane in ('stopped', 'saved')):
         at = last_word(store, tid) if tid else None
         # ...A STOPPED RUN THAT FINISHED ITS WORK is put down, not picked up (the Advisor audit, 2026-10-28: on a stopped agent the owner
-        # pressed Continue 3 of 16 times and Mark done 11) - and a plain stop lights nothing (NO DEFAULT VERB, the owner, 2026-10-28): its
-        # Continue comes only from the finish check, with what it dropped said beside it
+        # pressed Continue 3 of 16 times and Mark done 11) - and one stopped with its work unfinished is carried on: its Continue is lit
+        # (rulebook.MOVES; the owner, 2026-11-10: "job of agent is to be helpful and do as much as possible")
         return ('stopped_done', {'when': finished_quiet(store, tid, at)}) if tid and left_result(store, tid) else ('stopped', {'ago': ago(at)})
     if lane == 'forgotten':
         who, days = slipped(store, it, t)
@@ -286,7 +288,7 @@ def state(store, item: dict, verbs: list) -> tuple:
         return ('waiting_late', {'who': who, 'days': days}) if days >= CHASE_DAYS else ('waiting', {})
     if kind == 'idea': return 'idea', {}
     # A PHISH FILED FYI IS PUT DOWN, NEVER HANDED ON (the owner, 2026-10-30): its row lit Send to agent - the one press that feeds a scam to
-    # an agent. Not ours is its move, at once and with no model read, and Send to agent waits in the ▾ (FyiCard's Foot `tuck`)
+    # an agent. Not ours is its move, lit (MOVES), and Send to agent waits in the ▾ (FyiCard's Foot `tuck`)
     if kind == 'fyi' and it.get('danger'): return 'fyi_danger', {}
     if kind == 'fyi': return 'fyi', {}
     ins = _inbound(store, it)
@@ -311,24 +313,7 @@ def state(store, item: dict, verbs: list) -> tuple:
             return 'asked_late', {'who': late['who'], 'usual': late['usual'], 'age': late['age'], EV: late['evidence']}
         return 'asked', {'who': _name(ins[-1]), 'ago': ago(ins[-1].get('SentAt') or ins[-1].get('CreatedAt'))}
     if t and (cl := advisor._checklist(t)) and all(c.get('done') for c in cl): return 'done_list', {'n': len(cl)}
-    if t and untouched(store, t): return 'untouched', {}
     return 'own', {}
-
-
-# UNTOUCHED TOO LONG (the design rev 2: "an ask with no answer, a promise past its day" - the owner, 2026-10-28: "there to hold your hand
-# when something was dropped"): an open task of the owner's own that nothing has moved for UNTOUCHED_DAYS working days. That it sat is a
-# fact the app keeps; WHAT is still owed on it, to whom, and the move that gets it going are the model's to read (the UNTOUCHED line
-# in its prompt) - never a word list.
-UNTOUCHED_DAYS = 5
-
-
-def untouched(store, t: dict) -> int:
-    """Working days nothing has moved on an open task - its own change, a message on it, its agent's last word - or 0 under UNTOUCHED_DAYS."""
-    if not t or t.get('Status') not in ('open', 'in_progress'): return 0
-    m = store._one('SELECT MAX(IFNULL(SentAt,CreatedAt)) AS at FROM message WHERE TaskId=?', (int(t['TaskId']),)) or {}
-    ats = [a for a in (_dt(t.get('UpdatedAt')), _dt(t.get('CreatedAt')), _dt(m.get('at')), _dt(last_word(store, t['TaskId']))) if a]
-    n = working_days(max(ats)) if ats else 0
-    return n if n >= UNTOUCHED_DAYS else 0
 
 
 # WHAT LEAVES WITH A DRAFT (the design rev 2, data leaving; the owner, 2026-10-28: "a line on top ... it should recommend action", never a
@@ -421,6 +406,103 @@ def facts(store, item: dict, verbs: list) -> dict:
     return {'state': st, 'line': line, **({'evidence': ev} if ev and line else {})}
 
 
+# ── THE TASK'S RECOMMENDED MOVE (the owner, 2026-11-09) ─────────────────────────────────────────────────────────────────────────────
+# The Advisor read every task with a model and lit a button over the agent's own word (its finish check was right 7% of the time). Now the
+# one filled button is read off what the task already says, the same for every kind and brain: a held action's Approve; a failed run's own
+# way past it (the row's lead: the place that fixes it, or Try again); the Send of a draft that waits on the owner - whoever wrote it, an
+# agent or triage - never one whose channel is not connected; Mark done where the agent's turn summary said nothing is left; and with no
+# summary at all (a coding agent's terminal writes none, and a task no agent touched has none) Mark done where the facts say it is over.
+# An agent at work or asking fills nothing: its own pane is the way on.
+OVER = frozenset({'agent_done', 'stopped_done', 'answered', 'done_list', 'watch_handled'})
+QUIET = frozenset({'closed', 'working', 'agent_asking'})
+# an answer owed to the owner gone late: its agent is woken once to draft the chase (checkback.late), and where none was, Chase is lit
+LATE = frozenset({'waiting_late', 'waiting_overdue', 'waiting_late_usual', 'goal_late', 'watch_quiet'})
+NOTHING_LEFT = 'Its agent said nothing is left to do'
+# THE MOVE A STATE'S OWN FACT NAMES (the owner, 2026-11-10: "job of agent is to be helpful and do as much as possible. it shoudl prompt you,
+# should i deploy"): these lit nothing, and their line was hidden too - work left unpushed is looked at, an agent stopped with its work
+# unfinished is carried on, an ask no agent started on is handed to one (as needs_agent is), a phish filed FYI is put down ("Not ours is its
+# move"), and the duplicate of a pair is folded into the one that stays ("fold it into that one")
+MOVES = {'unpushed': ('review_changes',), 'stopped': ('continue',), 'asked': ('regular_agent',), 'asked_late': ('regular_agent',),
+         'fyi_danger': ('not_ours', 'remove'), 'duplicate': ('split', 'remove')}
+
+
+def landing_asks(store, tid) -> bool:
+    """Whether the task's landing card asks its question - Push, or how its branch lands (landing.state) - whose own first button is filled
+    there: the row lights nothing over it. Read only for work left unpushed."""
+    from . import landing
+    try: return bool(tid) and (landing.asked(store, tid) or bool((landing.state(store, int(tid)) or {}).get('ask')))
+    except Exception as e: logger.debug(f'rulebook: no landing read for {tid} - {e}'); return False
+
+
+def agent_word(store, tid) -> str | None:
+    """What the agent's newest turn summary (general.SUMMARY_TYPE) leaves the owner: 'on_you' while a step of its list is theirs,
+    'nothing_left' where it said so, '' where it said neither - and None with no summary (no agent ran, or one that writes none)."""
+    from . import advisor, general
+    try:
+        last = next((c for c in reversed(store.list_comments(int(tid), internal=True)) if c.get('ActorType') == general.SUMMARY_TYPE), None)
+        summ = json.loads(last['Body']) if last else None
+    except (TypeError, ValueError, KeyError): summ = None
+    if not isinstance(summ, dict): return None
+    if any(c.get('on_you') and not c.get('done') and c.get('text') for c in advisor._checklist(store.get_task(int(tid)))): return 'on_you'
+    return 'nothing_left' if summ.get('nothing_left') else ''
+
+
+def _recommended(store, it: dict, verbs: list | None, f: dict | None, unlit: bool = False) -> dict | None:
+    from . import advisor, checkback
+    if it.get('kind') == 'idea': return None                # an idea is the Advisor's own row, and its light the Advisor's
+    verbs = advisor.offered(store, it) if verbs is None else verbs
+    f = f or facts(store, it, verbs)
+    st, tid, lead = f['state'], it.get('tid'), (verbs[0]['verb'] if verbs else '')
+    pick = lambda *vs: next((v for v in vs if not advisor.pressable(store, it, v, verbs)), None)
+    why = f.get('line') or ''
+    if st in QUIET: v = None
+    # ...a reply owed that nothing has written, on a task no agent started on by itself (the setting, a stranger held, no room): the
+    # agent writes it now, so its start is the move - the one that worked it before, else Send to agent (the owner, 2026-11-10)
+    elif st == 'needs_agent': v = pick('continue', 'regular_agent')
+    elif st == 'action_held': v = None if advisor.unconnected(store, it) else pick('approve', 'send_close')
+    # ...what failed is never sent again as it stood: its own fix or Try again where the row leads with one, else nothing
+    elif lead == 'fix' or st in FAILED: v = pick(lead) if lead in ('fix', 'continue') else None
+    elif st == 'draft_ready' or ((w := store.waiting_on_owner(int(tid)) if tid else None) and (w.get('FinalText') or w.get('DraftText'))):
+        v = None if advisor.unconnected(store, it) else pick('send_close', 'approve')
+    # ...a late answer no agent was woken for is chased from the row (the owner, 2026-11-10: "job of agent is to be helpful and do as much as
+    # possible") - over an older turn's word too; one that was woken says itself what it did about it
+    elif st in LATE and not (tid and checkback.woke(store, tid)): v = pick('chase')
+    # ...the agent's own word decides wherever it wrote one: a turn that said neither fills nothing, whatever the facts read
+    elif tid and (said := agent_word(store, tid)) is not None: v, why = (pick('close'), NOTHING_LEFT) if said == 'nothing_left' else (None, '')
+    # ...and with no word of an agent's over it, the move the state's own fact names (MOVES)
+    else: v = pick('close') if st in OVER else None if st == 'unpushed' and landing_asks(store, tid) else pick(*MOVES.get(st, ()))
+    if v: return {'verb': v, 'label': advisor._label(verbs, v, it), 'why': why, 'state': st}
+    # ...and A ROW WITH NOTHING LIT SAYS WHY, on the desk as on the phone (the owner, 2026-11-10: "if it's consistent do it"): `unlit` asks for
+    # the state's own sentence with no verb - the very line advisor.decide says for it, read off the same facts
+    return {'verb': None, 'label': '', 'why': f['line'], 'state': st} if unlit and f.get('line') else None
+
+
+def recommended(store, item: dict, verbs: list = None, f: dict = None, unlit: bool = False) -> dict | None:
+    """{verb, label, why, state} - the one move the item's row fills - or None for nothing filled. `verbs`: the row's buttons where the
+    caller read them already (advisor.offered); `f`: its facts; `unlit`: a row with nothing filled still comes back with its state's line
+    (verb None) where it has one - what a row draws. Never raises: a row that cannot be read fills nothing."""
+    from . import advisor
+    try:
+        with advisor.reading(): return _recommended(store, item or {}, verbs, f, unlit) if item else None
+    except Exception as e:
+        logger.warning(f"rulebook: no recommended move for {(item or {}).get('key')} - {e}"); return None
+
+
+def recommended_task(store, tid, known: dict = None) -> dict | None:
+    """The same for a task by its id (the task page's own payload): its card as the rail last stood, never a rail build. `known`: what
+    the page's read holds of the task already (concierge._shows, and its `messages`) - that read is made on every live write while an
+    agent works."""
+    from . import advisor
+    known = dict(known or {})
+    with advisor.reading({int(tid): known.pop('messages')} if 'messages' in known else None):
+        try:
+            item = advisor._item(store, 'task', int(tid), build=False)
+            verbs = advisor.offered(store, item, known) if item and item.get('kind') != 'idea' else None
+        except Exception as e:
+            logger.debug(f'rulebook: no card for task {tid} - {e}'); item = verbs = None
+        return recommended(store, item, verbs, unlit=True)
+
+
 def chase_thread(store, item: dict) -> dict | None:
     """WHERE A CHASE GOES for a wait the rule calls late but no follow-up ledger slipped (the 'theirs' lane past CHASE_DAYS working
     days, a goal step past its day): {tid, who, mid} - the task the wait is on (the goal's late step, not the goal), the address it
@@ -443,9 +525,12 @@ def chase_thread(store, item: dict) -> dict | None:
     tid = int(t['TaskId'])
     held = next((str(x).split(':', 1)[-1] for x in (t.get('WaitingOn'), t.get('Assignee')) if '@' in str(x or '')), '').strip().lower()
     me = str(store.get_setting('owner_email') or '').strip().lower()
-    m = store._one("SELECT MessageId, FromEmail FROM message WHERE TaskId=? AND IFNULL(Direction,'in')<>'out' AND Status!='context' "
-                   "AND IFNULL(FromEmail,'')<>'' AND lower(FromEmail)<>? AND (?='' OR lower(FromEmail)=?) ORDER BY IFNULL(SentAt,CreatedAt) DESC LIMIT 1",
-                   (tid, me, held, held))
+    # ...from somebody who reads a reply (wrapup.reads_replies, the stress round 2026-11-10): a signing service's "viewed" or a list's digest
+    # filed on the task since was the newest mail, and Chase named the machine
+    from .wrapup import reads_replies
+    m = next((x for x in store._rows("SELECT MessageId, FromEmail, Channel, SenderClass, Status FROM message WHERE TaskId=? AND IFNULL(Direction,'in')<>'out' "
+                                     "AND Status!='context' AND IFNULL(FromEmail,'')<>'' AND lower(FromEmail)<>? AND (?='' OR lower(FromEmail)=?) "
+                                     'ORDER BY IFNULL(SentAt,CreatedAt) DESC LIMIT 50', (tid, me, held, held)) if reads_replies(x)), None)
     who = str((m or {}).get('FromEmail') or held or '').lower()
     return {'tid': tid, 'who': who, 'mid': int(m['MessageId']) if m else None} if '@' in who else None
 
@@ -470,10 +555,10 @@ def quiet_watch(store, item: dict) -> bool:
 
 
 def adds(store, item: dict) -> list:
-    """The verbs the row draws only when the Advisor names them: Chase on every waiting lane and goal with somebody to write to (the
-    design's "Chase (offered on every waiting lane)" and "(added to goals)") - whether it is time to chase is the model's to read from the
-    days waited, never a threshold here; Let it go on a watch back after a quiet week. The row draws the advised move in its type
-    (ActionRow.AdvisorNext); the phone already carries it on the slipped lane."""
+    """The verbs the row draws only when they are its lit move: Chase on every waiting lane and goal with somebody to write to (the
+    design's "Chase (offered on every waiting lane)" and "(added to goals)") - lit once the wait is late (LATE) and no agent was woken to
+    chase it; Let it go on a watch back after a quiet week. The task's row draws a lit Chase (TaskPage's `chase` verb); the phone already
+    carries it on the slipped lane."""
     it = item or {}
     lane, kind = it.get('lane'), str(it.get('kind') or '')
     if it.get('tid') and quiet_watch(store, it): return (['chase'] if chase_thread(store, it) else []) + ['let_go']

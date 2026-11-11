@@ -90,6 +90,11 @@ def test_a_push_or_a_send_is_never_allowed_by_a_rule_and_never_offered_always(s)
     assert box == ['allow_once']
     for words in ('send the invoice to the vendor', 'post the release notes', 'pay the Payworth bill'):
         assert perm.normal({'tool': 'mcp', 'title': words})['risky']
+    # ...a COMMAND is read for what it does, never for its words: one that only mentions a push keeps its Always, and a web write
+    # worded with none of the old list's words loses it
+    for cmd, out in (('git log --grep push', False), ('grep -r send_invoice src', False), ('git push origin main', True),
+                     ('curl -X PUT https://vendor.example/api/items/7 -d @row.json', True)):
+        assert perm.normal({'tool': 'Bash', 'kind': 'execute', 'command': cmd})['risky'] is out, cmd
 
 
 def test_only_the_owner_answers(s):
@@ -121,3 +126,66 @@ def test_with_developer_mode_off_nothing_is_put_to_anyone(s):
     tid = coding(s)
     with mock.patch('taskuary.agents.developer_mode', return_value=False):
         assert perm.ask(s, tid, perm.from_acp(ACP), wait=5) == 'reject_once' and not perm.pending(store=s)
+
+
+# THE CARD SAYS WHAT THE STEP DOES, AND THE PRESS SAYS WHAT WAS ALLOWED (the agent walk, 2026-11-09). A long shell line reached the owner
+# as 'It wants to run "git add ... | tail -1; gi"' - cut mid-word, the step it was held for (the pull request) past the cut - and their
+# answer stood in the chat as "You permission answered."
+LONG = 'git add ' + ' '.join(f'ledger/rounding_{i:02d}.py' for i in range(20)) + ' && git commit -m "Round once" && gh pr create --fill'
+HELD = {**ACP, 'toolCall': {'toolCallId': 'call-9', 'title': LONG, 'kind': 'execute',
+                            'rawInput': {'command': LONG, 'description': 'Open the pull request for the rounding fix'}},
+        'options': [o for o in ACP['options'] if o['kind'].endswith('_once')]}
+
+
+def test_a_held_step_is_asked_by_what_it_does_with_its_command_whole(s):
+    from taskuary import shellgate
+    assert len(LONG) > 300
+    tid = coding(s)
+    t, box = asking(s, tid, perm.from_acp(HELD))
+    p = perm.pending(tid, s)[0]
+    assert (p['about'], p['what'], p['why']) == ('Open the pull request for the rounding fix', 'open a pull request', shellgate.OUT)
+    assert p['command'] == LONG, 'the fold shows the whole of it'
+    shown = p['line'].split('`')[1]
+    assert shown.endswith('\u2026') and LONG.startswith(shown[:-1]) and LONG[len(shown) - 1] == ' ', f'cut on a word, and marked: {shown[-30:]!r}'
+    perm.answer(s, tid, p['id'], 'allow_once'); t.join(3)
+    assert box == ['allow_once']
+    # ...a step that holds nothing of the shell gate's is asked the way it always was
+    t, box = asking(s, tid, perm.from_acp(ACP))
+    p = perm.pending(tid, s)[0]
+    assert (p['about'], p['what'], p['command']) == ('', '', 'npm test -- money') and 'npm test -- money' in p['line']
+    perm.answer(s, tid, p['id'], 'reject_once'); t.join(3)
+
+
+def test_the_owners_answer_is_a_line_that_says_what_it_allowed(s):
+    from taskuary import general
+    tid = coding(s)
+    for params, press, want in ((HELD, 'allow_once', 'You allowed: Open the pull request for the rounding fix.'),
+                                (HELD, 'reject_once', 'You refused: Open the pull request for the rounding fix.'),
+                                (ACP, 'allow_always', 'You allowed, from now on: Run the money tests.')):
+        t, box = asking(s, tid, perm.from_acp(params))
+        perm.answer(s, tid, perm.pending(tid, s)[0]['id'], press); t.join(3)
+        said = [l['content'][0]['text'] for l in general.press_lines(s, tid)]
+        assert said[-1] == want, said
+    assert not any('permission answered' in x for x in said)
+
+
+def test_a_request_the_last_run_left_open_is_refused_and_said_when_taskuary_starts_again(s):
+    """Taskuary was killed while the agent waited on Allow (the agent walk, 2026-11-09): the next run drew no card and no line, and the
+    step it had asked for read as the last thing the agent did. Nobody in the new process holds the request - it says so, once."""
+    tid = coding(s); s.update_task(tid, {'Status': 'in_progress'}, 'test')
+    t, _ = asking(s, tid, perm.from_acp(ACP), wait=60)
+    assert ws.status(s, tid)['state'] == 'approval_needed'
+    said = lambda: [c['Body'] for c in s.list_comments(tid) if 'Taskuary closed first' in c['Body']]
+    assert perm.refuse_orphans(s) == [] and not said(), 'a request this process still holds is its own'
+    with perm._LOCK: held = dict(perm.PENDING); perm.PENDING.clear()     # the process is gone: its sessions and what it held with it
+    term.SESSIONS.clear()
+    try:
+        term.recover_after_restart(s)
+        assert said() == ["The agent's request was refused - Taskuary closed first: it wants to run `npm test -- money`"
+                          f" ({os.path.join(REPO, 'money.js')})."]
+        st = ws.status(s, tid)
+        assert (st['requests'], st['state']) == ([], 'disconnected'), "the run's ending is its last word, with nothing left asking"
+        assert perm.refuse_orphans(s) == [] and len(said()) == 1, 'said once: a run the record has ended is left as it reads'
+    finally:
+        with perm._LOCK: perm.PENDING.update(held)
+        ws.release(tid); t.join(5)

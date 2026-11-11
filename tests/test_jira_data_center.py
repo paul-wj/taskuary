@@ -258,17 +258,43 @@ def test_feed_revisions_and_comments_share_one_unread_reference():
     bodies = [m['BodyText'] for m in snapshot['items'][0]['view']['messages']]
     assert 'The large-file export still fails' in bodies
     assert any(body.endswith('\nRepair the export for large files') for body in bodies)
-    pile = funnel.build(s, now=datetime.now(), reconcile=False, live_state=[])
+    pile = funnel.build(s, now=datetime.now(), live_state=[])
     assert [(r['processing_id'], r['lane']) for r in pile['items']] == [(original, 'fyi')]
     funnel.settle(s, pile['items'][0]['key'], 'surfaced', read=True)
     s.reconcile_processing_membership()
-    assert funnel.build(s, now=datetime.now(), reconcile=False, live_state=[])['items'] == []
+    assert funnel.build(s, now=datetime.now(), live_state=[])['items'] == []
     report['fields']['description'] = 'Repair the export for large files and empty files'
     with wire(JiraWire([report])): pm.poll_jira(s, c, since, file_only=True)
     s.reconcile_processing_membership()
-    later = funnel.build(s, now=datetime.now(), reconcile=False, live_state=[])['items']
+    later = funnel.build(s, now=datetime.now(), live_state=[])['items']
     assert [(r['processing_id'], r['unread']) for r in later] == [(original, True)]
     assert s._rows('SELECT TaskId FROM task') == []
+    s.close()
+
+
+def test_open_reference_with_the_owner_own_comment_stays_on_the_rail():
+    """The owner's own comment on an open tracker item is kept `context` (the tracker's line, history,
+    not work) and shares the issue's updated stamp. A reference is resolved by its close, not by who
+    commented last - so its own line must not read as "answered" (processing_unread._noise's last word
+    is yours) and take the still-open reference off the rail. Routed through triage, the way the
+    browser's Sync files an unfamiliar issue, not the feed-only road the feed tests take."""
+    from taskuary import funnel
+    s, c = setup()
+    s.set_setting('calendar_enabled', '0', 'test')
+    s.reconcile_processing_membership()
+    s.activate_processing_reads(fixed_now=datetime.now().isoformat(), live_state=[])
+    report = issue(1)
+    report['fields']['comment'] = {'comments': [{'id': '70', 'author': {'key': 'user-alex', 'name': 'alex',
+        'displayName': 'Alex'}, 'body': 'I am working on the export',
+        'created': datetime.now().astimezone().isoformat()}]}
+    since = datetime.now() - timedelta(hours=1)
+    fyi = lambda *a, **k: json.dumps({'intent': 'fyi', 'why': 'informational'})   # the demo files unfamiliar issues
+    with wire(JiraWire([report])): pm.poll_jira(s, c, since, llm=fyi)            # the ordinary road: triage files it
+    assert s.message_by_external('jira:NW-1:c70')['Status'] == 'context'          # the owner's own line, never work
+    s.reconcile_processing_membership()
+    pile = funnel.build(s, now=datetime.now(), live_state=[])
+    assert any('NW-1' in r['title'] for r in pile['items']), 'the open reference must be on the rail'
+    assert s._rows('SELECT TaskId FROM task') == []                               # triage kept it taskless
     s.close()
 
 
@@ -328,7 +354,7 @@ def test_existing_reference_rows_converge_when_their_provider_identity_matches(t
 def _jira_reference_pile(s):
     from taskuary import funnel
     s.reconcile_processing_membership()
-    return funnel.build(s, now=datetime.now(), reconcile=False, live_state=[])['items']
+    return funnel.build(s, now=datetime.now(), live_state=[])['items']
 
 
 @pytest.mark.parametrize('status,category,resolution', [

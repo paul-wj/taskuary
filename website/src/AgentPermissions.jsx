@@ -46,7 +46,7 @@ export default function AgentPermissions({ onLoaded }) {
             {tool ? (
               <>
                 <Select size="small" value={level} disabled={busy === c.ConnectorId} onChange={(e) => save(c, { Scope: e.target.value })}
-                  sx={{ minWidth: 170, fontSize: 12.5, bgcolor: "#fff" }}>
+                  sx={{ minWidth: 170, fontSize: 12.5, bgcolor: "var(--tq-panel, #fff)" }}>
                   {Object.entries(LEVELS).map(([k, label]) => (
                     <MenuItem key={k} value={k} sx={{ fontSize: 12.5 }}>{t(label)}{!c.Scope && k === level ? t(" (default)") : ""}</MenuItem>
                   ))}
@@ -65,7 +65,7 @@ export default function AgentPermissions({ onLoaded }) {
         );
       })}
       {rows && !live.length && <Typography variant="body2" sx={{ color: DIM }}>{t("No connection is switched on yet — add one under Connections.")}</Typography>}
-      {err && <Typography variant="body2" sx={{ color: "#7a2f3c", mt: 1 }}>{typeof err === "string" ? err : t(err.source)}</Typography>}
+      {err && <Typography variant="body2" sx={{ color: "var(--tq-danger, #7a2f3c)", mt: 1 }}>{typeof err === "string" ? err : t(err.source)}</Typography>}
     </Box>
   );
 }

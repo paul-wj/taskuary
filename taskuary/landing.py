@@ -10,6 +10,12 @@ next turn ("resolve these conflicts, then say done"). A merge commit onto a base
 working tree (merge-tree + commit-tree + a compare-and-swap of the branch ref), so the agents working in the checkout are not disturbed.
 
 The agent may PROPOSE how (propose_land); the same question shows with its pick marked, and only the owner's answer lands anything.
+
+WORK ON THE SHARED BASE IS A PUSH, ASKED WITH BUTTONS (the owner, 2026-11-09, ~20th time: "i thought actions should be cards/buttons??? why is
+this text??"). A coding agent that committed straight onto master ended its turn "Ready to push 3a1b9a8 and deploy <app> (master -> deploy) - go
+ahead?" over this card, which on a shared base asked nothing, so the owner typed "yes". Its own commits not yet on origin are the question now:
+Push (origin/<base> up to its newest own commit) and, where a deploy branch is known - the agent's proposal, else the one last deployed to from
+this repo - Push & deploy (that commit pushed to the deploy branch too). Never forced: a branch that moved refuses, and says so.
 """
 from .timewords import plural
 import json, os, re, time
@@ -18,7 +24,9 @@ from loguru import logger
 from .store import task_ref
 
 KEY = 'landing'                      # :<tid> -> {cwd, base, start, branch, proposal?, landed?}
-HOW = {'rebase': 'Rebase and fast-forward', 'merge': 'Merge commit', 'pr': 'Open a PR', 'discard': 'Discard'}
+HOW = {'rebase': 'Rebase and fast-forward', 'merge': 'Merge commit', 'pr': 'Open a PR', 'discard': 'Discard', 'push': 'Push', 'deploy': 'Push & deploy'}
+OWN_HOW, PUSH_HOW = ('rebase', 'merge', 'pr', 'discard'), ('push', 'deploy')   # a branch of its own lands; work on the shared base is pushed
+DEPLOY_KEY = 'deploy_branch'         # :<owner/repo> -> the branch the owner last pushed to deploy it - the next card's Push & deploy
 DIFF_CAP = 400_000
 
 
@@ -89,7 +97,7 @@ def _alone(tid, cwd) -> bool:
     "No other task's live session works in this checkout."
     from . import peers
     from .blackboard import norm
-    return not any(t.task_id != tid and norm(t.cwd) == norm(cwd) for t in peers._cli_sessions())
+    return not any(t.task_id != tid and norm(t.cwd) == norm(cwd) for t in peers.working())
 
 
 def _stat(cwd, a, b) -> list:
@@ -268,8 +276,14 @@ def state(store, tid: int, full: bool = False) -> dict | None:
            'at': _stamp(int(_git(cwd, 'log', '-1', '--format=%ct', br) or 0)) if mine else o['at'],
            'files': files, 'changed': len(files), 'plus': sum(f['plus'] for f in files), 'minus': sum(f['minus'] for f in files),
            'landed': r.get('landed'), 'proposal': r.get('proposal')}
-    out['ask'] = mine and ahead > 0 and not r.get('landed')
-    out['answers'] = [{'how': k, 'label': v} for k, v in HOW.items() if k != 'discard' or mine] if out['ask'] else []
+    out['push'] = None if mine else _unpushed(store, cwd, base, o['commits'], r.get('proposal'), out['repo'])
+    out['ask'] = (mine and ahead > 0 and not r.get('landed')) or bool(out['push'])
+    # ...a question the agent RAISED (its proposal) is passed once the conversation moves on (proposals.move_on): greyed, nothing pressable,
+    # until the agent raises it again. Unpushed work with no proposal is the checkout's own fact, raised by no turn - it stays live
+    out['passed'] = bool(out['ask'] and (r.get('proposal') or {}).get('passed') and not r.get('landed'))
+    if out['passed']: out['ask'] = False
+    hows = (OWN_HOW if mine else PUSH_HOW[:1 + bool((out['push'] or {}).get('deploy'))]) if out['ask'] else ()
+    out['answers'] = [{'how': k, 'label': HOW[k]} for k in hows]
     out['line'] = said(out)
     if full: out['diff'] = (_git(cwd, 'diff', _fork(cwd, base, br, start), br) if mine else _own_diff(cwd, o))[:DIFF_CAP]
     return out
@@ -298,11 +312,35 @@ def changes(store, tid: int) -> dict | None:
     return {'base': base, 'start': start[:7], 'since': r.get('at'), 'shared': not mine, 'diff': diff[:DIFF_CAP], 'cut': len(diff) > DIFF_CAP}
 
 
+_BRANCH = re.compile(r'(?!-)(?!.*(?:\.\.|//|@\{|\.lock$|/$|\.$))[A-Za-z0-9._/-]{1,100}')
+def _branch_ok(b) -> bool: return bool(_BRANCH.fullmatch(str(b or '')))    # git's own ref rules, the ones a name typed by an agent breaks
+
+
+def _deploy_to(store, prop, repo) -> str:
+    "The branch a push deploys to: the agent's proposal, else the one the owner last deployed this repo to - '' when neither says."
+    d = (prop or {}).get('deploy') or (store.get_setting(f'{DEPLOY_KEY}:{repo.lower()}', '') if repo else '')
+    return d if _branch_ok(d) else ''
+
+
+def _unpushed(store, cwd, base, commits, prop, repo) -> dict | None:
+    """The task's own commits on the shared base that origin does not have yet: {'tip', 'ahead', 'to', 'deploy'} - None when there is no
+    origin to push to, or nothing of its own left to push. The tip is its newest own commit still on the base."""
+    up = sha(cwd, f'refs/remotes/origin/{base}')
+    if not (up and commits): return None
+    tip = ''                                     # the newest by the graph, not the clock: two commits in one second sort either way
+    for c in commits:
+        if is_ancestor(cwd, c, base) and (not tip or is_ancestor(cwd, tip, c)): tip = c
+    if not tip or is_ancestor(cwd, tip, up): return None
+    return {'tip': tip, 'ahead': int(_git(cwd, 'rev-list', '--count', f'{up}..{tip}') or 0), 'to': base, 'deploy': _deploy_to(store, prop, repo)}
+
+
 def said(s: dict) -> str:
     "One line: what changed and what is asked."
     if not s: return ''
     n = f"{plural(s['changed'], 'file')} changed, +{s['plus']} -{s['minus']}"
     if s.get('landed'): return f"{s['branch']} landed ({HOW.get(s['landed'].get('how'), s['landed'].get('how'))}) - {n}."
+    if (p := s.get('push')): return (f"{plural(p['ahead'], 'commit')} on {s['base']} not on origin yet, up to {p['tip'][:7]}: {n}. Push it"
+                                     + (f" and deploy it to {p['deploy']}?" if p['deploy'] else '?'))
     if s['ask']: return f"{s['branch']} is {plural(s['ahead'], 'commit')} ahead of {s['base']}: {n}. How should it land?"
     if s['own']: return f"{s['branch']} has nothing {s['base']} does not already have."
     return f"The agent worked on {s['base']} itself, shared with other agents - {n} by its own commits and edits; there is no branch of its own to land."
@@ -313,18 +351,28 @@ def _repo(cwd) -> str:
     return shellgate.repo_of(cwd)
 
 
-def propose(store, tid: int, how: str, why: str = '', actor: str = 'agent') -> dict:
-    """The agent's own read of how its work should land: the close-out's question shows it marked. It lands nothing."""
-    how = str(how or '').strip().lower()
+def propose(store, tid: int, how: str, why: str = '', actor: str = 'agent', deploy: str = '') -> dict:
+    """The agent's own read of how its work should land: the close-out's question shows it marked. It lands nothing. On the shared base
+    that is a push - `deploy` names the branch a push to deploys (the card's Push & deploy)."""
+    how, deploy = str(how or '').strip().lower(), str(deploy or '').strip()
     if how not in HOW: raise ValueError(f"how is one of: {', '.join(HOW)}")
+    if deploy and not _branch_ok(deploy): raise ValueError(f'{deploy!r} is not a branch name to deploy to')
+    if how == 'push' and deploy: how = 'deploy'
+    if how == 'deploy' and not deploy: raise ValueError('deploy needs the branch it deploys to: `deploy`')
+    r = record(store, tid)
+    # ...raised again after it was passed (pass_over): asking is the agent's to judge, never refused - its card is live again
+    if (r.get('proposal') or {}).pop('passed', None): _save(store, tid, r)
+    if deploy:                                    # ...read into the question below: its Push & deploy button is drawn from it
+        r['proposal'] = {**(r.get('proposal') or {}), 'deploy': deploy}; _save(store, tid, r)
     s = state(store, tid)
     if not s: raise ValueError('no session of this task started in a git checkout - there is nothing to land')
     if not s['ask']: raise ValueError(s['line'])
     if how == 'discard' and not s['own']: raise ValueError('discard is only for a branch of your own')
+    if how not in {a['how'] for a in s['answers']}: raise ValueError(f"how is one of: {', '.join(a['how'] for a in s['answers'])} here - {s['line']}")
     r = record(store, tid)
-    r['proposal'] = {'how': how, 'why': ' '.join(str(why or '').split())[:400], 'at': time.strftime('%Y-%m-%d %H:%M:%S')}
+    r['proposal'] = {'how': how, 'why': ' '.join(str(why or '').split())[:400], 'at': time.strftime('%Y-%m-%d %H:%M:%S'), **({'deploy': deploy} if deploy else {})}
     _save(store, tid, r)
-    store.add_comment(tid, actor, 'agent', f"Proposes to land {s['branch']}: {HOW[how]}" + (f" - {r['proposal']['why']}" if r['proposal']['why'] else '') + '.')
+    store.add_comment(tid, actor, 'agent', f"Proposes to land {s['branch']}: {HOW[how]}" + (f' to {deploy}' if deploy else '') + (f" - {r['proposal']['why']}" if r['proposal']['why'] else '') + '.')
     store.audit('task', tid, 'land_proposed', actor, detail={'how': how})
     try:                                          # ...and asked on a chat bound to the task (agentchannels.py): answered there by the owner alone
         from . import agentchannels
@@ -333,21 +381,124 @@ def propose(store, tid: int, how: str, why: str = '', actor: str = 'agent') -> d
     return {'ok': True, 'says': f"The owner sees the landing question with {HOW[how]} marked - nothing lands until they answer it."}
 
 
+# A GIT ACT PROPOSED ANY WAY IS THE CARD'S BUTTONS (the owner, 2026-11-09: "actions should be cards/buttons"): `propose {"action": "push"}`,
+# a TASKUARY-PROPOSE mark of `land` or `open_pr` - with "Agents may push / deploy" off a land/open_pr proposal was REFUSED, and the agent,
+# left with no road, asked "go ahead?" in words. On a task whose work is in a checkout each is the landing card's question instead: the
+# owner's press is the push, so no agent switch gates it. Elsewhere (no checkout, nothing to land) the proposal goes its old way.
+GIT_ACTS = {'push': 'push', 'deploy': 'push', 'push_direct': 'push', 'land': '', 'open_pr': 'pr'}
+
+
+def from_proposal(store, tid: int, p: dict) -> dict | None:
+    "A proposed git act as the landing card's question (propose) - None when it is not one, or the task has nothing to land."
+    a = str((p or {}).get('action') or '').strip()
+    if a not in GIT_ACTS: return None
+    s = state(store, tid)
+    if not (s and (s['ask'] or s.get('passed'))): return None        # ...a passed question is raised again
+    how = 'pr' if s['own'] and GIT_ACTS[a] in ('', 'pr') else 'push' if not s['own'] else GIT_ACTS[a]
+    if s['own'] and how == 'push': how = 'pr'                     # a branch of its own goes out as a pull request, never straight over the base
+    return propose(store, tid, how, str(p.get('why') or ''), deploy=str(p.get('deploy') or p.get('target') or '') if not s['own'] else '')
+
+
+# AN AGENT'S OWN `git push` IS THE CARD'S QUESTION TOO (the agent walk, 2026-11-09). Told to call propose_land, a coding agent ran
+# `git add ... && git commit ... && git push` in its shell instead, and the owner got "THE AGENT ASKS - It wants to run ..." with Allow once /
+# Reject - the line cut mid-word, the push not on it - beside a card built to ask it with one Push. A plain push of the task's own work from
+# its own checkout is that card's question, on every road a shell step is held by (shellgate.check, acpgate.decide). What the button is
+# not - forced, tags, a delete, another remote or checkout, a push inside another shell's string - is held the way any other step is.
+_PUSH_OPTS = frozenset('-u --set-upstream -q --quiet -v --verbose --progress --porcelain'.split())
+_TO_NOWHERE = re.compile(r'\s\d?>{1,2}\s*(?:&\d|/dev/null|\$null|nul)(?=\s|$|[;&|)])', re.I)     # `2>&1`, `>/dev/null`: no part of what is pushed
+_MOVES = frozenset('cd pushd popd chdir set-location sl'.split())
+
+
+def _push_of(argv: list) -> tuple | None:
+    "(src, dst) of one plain `git push [origin [src[:dst]]]`, '' where git's own default decides - None for anything else."
+    from .shellgate import _name
+    if len(argv) < 2 or _name(argv[0]) != 'git' or argv[1] != 'push': return None
+    opts, w = {t for t in argv[2:] if t.startswith('-')}, [t for t in argv[2:] if not t.startswith('-')]
+    if opts - _PUSH_OPTS or len(w) > 2 or w[:1] not in ([], ['origin']): return None
+    src, _, dst = (w[1] if len(w) > 1 else '').partition(':')
+    if src.startswith('+') or (len(w) > 1 and not src): return None             # forced, or `:branch` - a delete
+    return src, dst or src
+
+
+def _top(cwd) -> str: return os.path.normcase(os.path.realpath(_git(cwd, 'rev-parse', '--show-toplevel') or cwd))
+
+
+def push_asked(store, tid: int, cmd: str, cwd: str = '', about: str = '') -> tuple | None:
+    """A shell line that pushes this task's own work, as the card's question. (True, words for the agent): the push is on the card, marked.
+    (False, words): the line does more than push - none of it runs, and the agent is told to ask with propose_land after the rest.
+    None: the card's buttons are not this push (or there is no card: Developer mode off, no checkout) - held like any other step."""
+    from . import agents, shellgate
+    from .browsergate import _segments
+    r = record(store, tid)
+    if not (cwd and r.get('cwd') and agents.developer_mode(store)): return None
+    todo, segs = shellgate.acts(cmd, cwd), _segments(_TO_NOWHERE.sub(' ', str(cmd or ''))) or []
+    pushes = [p for a in segs if (p := _push_of(a))]
+    if not todo or len(pushes) != len(todo) or any(a['what'] != shellgate.GIT['push'] for a in todo): return None
+    if any(shellgate._words(a)[0] in _MOVES for a in segs) or _top(cwd) != _top(r['cwd']): return None
+    s = state(store, tid)
+    if not s: return None
+    cur, to = head_branch(cwd), set()
+    for src, dst in pushes:
+        src, dst = (cur if x in ('', 'HEAD') else x.removeprefix('refs/heads/') for x in (src, dst))
+        if not src or src != s['branch'] or (s['own'] and dst != src) or not _branch_ok(dst): return None
+        to.add(dst)
+    live = set() if s['own'] else to - {s['base']}
+    if len(live) > 1: return None
+    how, deploy = 'pr' if s['own'] else 'push', next(iter(live), '')
+    button = HOW['deploy' if deploy else how]
+    if len(segs) > len(pushes):                   # the commit in the same line has not run: there is nothing to put on the card yet
+        return False, (f"Taskuary did not run this line: a push from this task's checkout is the owner's {button} button, never a shell step. Run "
+                       f"the rest of it without the push, then call propose_land (how {how}{f', deploy {deploy}' if deploy else ''}) - they get "
+                       "the button, and Taskuary tells you when it went.")
+    # ...a passed question is still the owner's press: the agent's own push raises it again, never runs (proposals.move_on)
+    if not (s['ask'] or s.get('passed')): return None
+    try:
+        if s.get('passed') or ((s['proposal'] or {}).get('how'), (s['proposal'] or {}).get('deploy') or '') != ('deploy' if deploy else how, deploy):
+            propose(store, tid, how, about, deploy=deploy)
+    except ValueError: return None
+    return True, (f"{shellgate.HELD}: this push is the owner's {button} button on the task now, not a shell step - {state(store, tid)['line']} Nothing "
+                  "is pushed until they press it, and Taskuary tells you when it went. Do not push another way. The button is the ask: say in "
+                  "one line what waits on it - never ask in words. End your turn now, or go on with work that does not need it.")
+
+
+
+
+def asked(store, tid) -> bool:
+    """Does a landing question of the agent's wait, as the record alone says it (no git - a rail build asks): it proposed one, nothing landed
+    since, and the conversation has not moved past it (pass_over)."""
+    r = record(store, tid); p = r.get('proposal') or {}
+    return bool(p) and not p.get('passed') and str((r.get('landed') or {}).get('at') or '') < str(p.get('at') or '')
+
+
+def pass_over(store, tid: int) -> bool:
+    "The landing question the agent raised, passed as the conversation moves on (proposals.move_on). True when one was."
+    r = record(store, tid); p = r.get('proposal') or {}
+    if not p or p.get('passed') or str((r.get('landed') or {}).get('at') or '') >= str(p.get('at') or ''): return False
+    r['proposal'] = {**p, 'passed': time.strftime('%Y-%m-%d %H:%M:%S')}; _save(store, tid, r)
+    return True
+
+
 class Refused(RuntimeError): pass
 
 
 def _conflict(store, tid: int, s: dict, how: str, files: list) -> dict:
     """Aborted, so nothing landed half-done - and the conflict is the agent's next turn."""
-    from . import waitroom
     names = ', '.join(files[:30]) or 'files git did not name'
     text = (f"LANDING CONFLICT: {HOW[how]} of {s['branch']} onto {s['base']} stopped on conflicts in {names}. It was aborted - nothing "
             f"landed and the checkout is as it was. Resolve these conflicts on {s['branch']} (rebase it onto {s['base']}, or merge "
             f"{s['base']} into it), commit, then say done - the owner lands it again.")
     store.add_comment(tid, 'router', 'agent', f"{HOW[how]} stopped on conflicts in {names} - aborted, nothing landed; the agent has it now.")
     store.audit('task', tid, 'land_conflict', 'router', 'agent', {'how': how, 'files': files[:30]})
-    try: waitroom.add(store, tid, text, 'router')
-    except Exception as e: logger.warning(f'{task_ref(tid)}: the landing conflict could not be handed to the agent - {e}')
+    _hand_back(store, tid, text)
     return {'ok': False, 'conflict': files, 'says': f"Conflicts in {names} - nothing landed. The agent is resolving them."}
+
+
+def _hand_back(store, tid, text):
+    "Taskuary's words to the task's agent by the one road (general.tell) - and where none ever worked it, the task says so, once."
+    from . import general
+    try: told = general.tell(store, tid, text, 'router')
+    except Exception as e: told = logger.warning(f'{task_ref(tid)}: the landing was not handed back to the agent - {e}')
+    if not told: store.add_comment_once(tid, 'taskuary', 'agent', 'No agent has worked this task, so none was told what landed.')
 
 
 def _ff(cwd, base, br):
@@ -361,12 +512,29 @@ def _ff(cwd, base, br):
 
 
 def land(store, tid: int, how: str, actor: str = 'owner') -> dict:
-    """The owner's answer to the landing question, carried out. {'ok', 'says', ...}; a conflict is {'ok': False, 'conflict': [...]}."""
+    """The owner's answer to the landing question, carried out. {'ok', 'says', ...}; a conflict is {'ok': False, 'conflict': [...]}.
+    A REFUSED PRESS IS KEPT, AND ITS AGENT HAS IT (rules part 4, the stress round 2026-11-10): a push the remote turned down - someone pushed
+    first: "pull and rebase, then push again" - was said only in the press's own answer. Nothing on the task after a reload, the agent that
+    could rebase never told, and the next Push refused the same way. A line in the chat, and the refusal handed to the agent by the one road."""
     how = str(how or '').strip().lower()
+    try: return _land(store, tid, how, actor)
+    except Refused as e:
+        store.audit('task', tid, 'land_refused', actor, detail={'how': how, 'why': str(e)[:300]})
+        _hand_back(store, tid, f"The owner pressed {HOW.get(how, how)} on your work and it was refused: {e}. Nothing went out, and the question "
+                               "stays on the task. Do what that needs from your side, then ask for it again (propose_land) - or say in a line why you cannot.")
+        raise
+
+
+def _land(store, tid: int, how: str, actor: str) -> dict:
     if how not in HOW: raise ValueError(f"how is one of: {', '.join(HOW)}")
     s = state(store, tid)
+    if s and s.get('passed'):
+        from .proposals import PASSED_SAID
+        raise ValueError(PASSED_SAID)
     if not s or not s['ask']: raise ValueError((s or {}).get('line') or 'nothing to land on this task')
     if how == 'discard' and not s['own']: raise ValueError('discard is only offered for a branch the agent made itself')
+    if how not in {a['how'] for a in s['answers']}: raise ValueError(f"{HOW[how]} is not offered here - {s['line']}")
+    if how in PUSH_HOW: return _push(store, tid, s, how, actor)
     cwd, base, br = s['cwd'], s['base'], s['branch']
     head, said_ = head_branch(cwd), ''
     if how == 'rebase':
@@ -451,7 +619,7 @@ def revert(store, tid: int, picks: list, actor: str = 'owner') -> dict:
     cwd, br = s['cwd'], s['branch']
     start = _fork(cwd, s['base'], br, record(store, tid).get('start'))           # the parts as the card's diff numbered them (state)
     if (head := head_branch(cwd)) != br: raise Refused(f'reverting a part needs {br} checked out in {cwd}; it is on {head or "a detached HEAD"} - nothing changed')
-    if any(norm(t.cwd) == norm(cwd) for t in peers._cli_sessions()):
+    if any(norm(t.cwd) == norm(cwd) for t in peers.working(at_rest=False)):
         raise Refused('an agent is working in this checkout - stop it or let it finish first; nothing changed')
     by = {}
     for p in picks: by.setdefault(str(p.get('path') or ''), []).append(p)
@@ -492,7 +660,36 @@ def _landed(store, tid, how, said_, actor, at_sha='', **extra) -> dict:
     _save(store, tid, r)
     store.add_comment(tid, actor, 'human', said_)
     store.audit('task', tid, 'landed', actor, detail={'how': how, 'sha': at_sha[:12], **extra})
+    # ...AND THE AGENT GOES ON, as it does after a push (_push): a branch landed or a pull request opened was the press its turn waited on
+    # (the owner, 2026-11-09: "when you hit approve the agent continues and says what it did and what the next steps are")
+    if how not in PUSH_HOW:
+        from .browsergate import NEXT
+        _hand_back(store, tid, f"{said_} The owner pressed {HOW[how]} on your branch. {NEXT}")
     return {'ok': True, 'how': how, 'says': said_, **extra}
+
+
+def _push(store, tid, s, how, actor) -> dict:
+    """Push the task's own commits on the shared base: origin/<base> up to its newest one, and for Push & deploy that commit to the deploy
+    branch too. Never forced - a branch that moved refuses, and says what was and was not pushed. Kept as ci's PUSHED mark, so the CI watch
+    follows it as it follows any push."""
+    from . import ci
+    cwd, base, p = s['cwd'], s['base'], s['push']
+    tip, done = p['tip'], []
+    for b in [base] + ([p['deploy']] if how == 'deploy' else []):
+        rc, out, err = _run(cwd, 'push', 'origin', f'{tip}:refs/heads/{b}', timeout=180)
+        if rc:
+            why = ci.TOKEN_URL.sub('https://', (err or out))[:300]
+            fix = ' - pull and rebase, then push again (never forced)' if re.search(r'non-fast-forward|fetch first|rejected', why) else ''
+            raise Refused(f"the push of {tip[:7]} to {b} was refused: {why}{fix}" + (f' - {done[0]} was pushed' if done else ' - nothing was pushed'))
+        done.append(b)
+    if how == 'deploy' and s['repo']: store.set_setting(f"{DEPLOY_KEY}:{s['repo'].lower()}", p['deploy'], actor)
+    ci._save_push(store, tid, {'repo': s['repo'], 'branch': base, 'from': base, 'sha': tip, 'commits': p['ahead'], 'state': 'pushed',
+                               'url': f"https://github.com/{s['repo']}/commit/{tip}" if s['repo'] else '', 'checks': None, 'checked_at': None}, actor)
+    said_ = f"Pushed {plural(p['ahead'], 'commit')} to origin/{base} ({tip[:7]})" + (f" and deployed it to {p['deploy']}." if how == 'deploy' else '.')
+    out = _landed(store, tid, how, said_, actor, tip, **({'deploy': p['deploy']} if how == 'deploy' else {}))
+    # ...the press was the go-ahead the agent waits on: its next turn checks it and finishes
+    _hand_back(store, tid, f"{said_} The owner pressed {HOW[how]} on your proposal. " + ("Check it is live, then finish." if how == 'deploy' else "Finish the task."))
+    return out
 
 
 def _pr(store, tid, s, actor) -> dict:

@@ -153,6 +153,35 @@ VISION_TYPES = ('image/png', 'image/jpeg', 'image/gif', 'image/webp')
 VISION_MAX, VISION_BYTES = 4, 5 * 1024 * 1024      # per call: how many images, and how big each
 
 
+def _jpeg_parts(b: bytes):
+    "A JPEG's header segments [(marker, bytes)] and the rest from its first scan on, or None when it is not one we can walk."
+    if b[:2] != b'\xff\xd8': return None
+    out, i = [], 2
+    while i + 4 <= len(b) and b[i] == 0xFF:
+        m, n = b[i + 1], int.from_bytes(b[i + 2:i + 4], 'big')
+        if m == 0xDA: return out, b[i:]
+        out.append((m, b[i:i + 2 + n])); i += 2 + n
+    return None
+
+
+def vision_safe(ct: str, b64: str) -> str:
+    """A GRAYSCALE JPEG WITH AN ADOBE MARKER IS REFUSED BY GOOGLE: Vertex answers "The provided file is malformed or corrupted and could
+    not be decoded" (400) for a one-channel JPEG carrying Photoshop's APP14 segment - a signature logo saved from Photoshop, on every mail
+    of a thread, so a HIPAA AI agent could never start on it (2026-11-09). APP14 only says how to read 3- or 4-channel colour; on one channel
+    it means nothing, so it is dropped and every decoder reads the same picture. Anything else goes as it came."""
+    if ct != 'image/jpeg': return b64
+    try: b = base64.b64decode(b64)
+    except ValueError: return b64
+    got = _jpeg_parts(b)
+    if not got: return b64
+    segs, rest = got
+    sof = next((s for m, s in segs if m in (0xC0, 0xC1, 0xC2)), None)
+    if not sof or len(sof) < 10 or sof[9] != 1 or not any(m == 0xEE for m, _ in segs): return b64
+    return base64.b64encode(b'\xff\xd8' + b''.join(s for m, s in segs if m != 0xEE) + rest).decode()
+# ...and a picture the model still cannot open costs the image, never the turn: the question is asked again without it (llm._build)
+_IMAGE_REFUSED = re.compile(r'could not be decoded|malformed or corrupted|invalid image|unable to process (input )?image|image.{0,30}(not supported|unsupported)', re.I)
+
+
 def readable_images(store, message_ids, cap: int = VISION_MAX) -> list:
     """[(media_type, base64)] for the images on these messages, or [] when the owner has vision
     switched off. SVG and PDF are skipped: no provider takes them as image input."""
@@ -188,6 +217,18 @@ PROVIDER_DEFAULT = {'anthropic': 'claude-opus-5', 'openai': 'gpt-4o-mini', 'open
 # thinking before it writes, so a 400-token triage came back with no message at all - read as a refused format, then as an error with
 # no reason, and a connected Vertex AI sorted no mail (2026-10-15). Once more with this much room; empty after that says so.
 ROOM = 8000
+# ...and an answer CUT SHORT by its thinking is no answer either: the HIPAA AI gateway's Gemini spent 360 of the Assistant's 380 tokens
+# reasoning and handed back 16 words with finish_reason 'length' - "Tell me what you'd like the routine to do-what", a CALL cut at
+# `{"params` - and the chat showed the stub (the owner, 2026-11-09). A route seen thinking is asked with ROOM from then on.
+_THINKS = set()            # (type, endpoint, model) whose answers were seen cut by reasoning tokens
+def cut_by_thinking(j: dict) -> bool:
+    "A 'length' finish whose budget went mostly to reasoning: the visible words are a stub, not the answer the cap allowed."
+    ch, u = (j.get('choices') or [{}])[0], j.get('usage') or {}
+    r = ((u.get('completion_tokens_details') or {}).get('reasoning_tokens')) or 0
+    return ch.get('finish_reason') == 'length' and r > 0 and r * 2 >= (u.get('completion_tokens') or r)
+
+
+class _ImageRefused(Exception): "A 400 that is the picture, not the question (_IMAGE_REFUSED)."
 
 
 class _Empty(Exception):
@@ -231,6 +272,11 @@ ONE_SHOT = 1500        # seconds a one-shot look-up through a CLI may run (make_
 
 # the CLIs whose PreToolUse hook can REFUSE a shell call, so a browser act can be held (browsergate.py's header says why the rest can't)
 HOLDS_CLI = frozenset({'claude'})
+
+def _general(store, task_id) -> bool:
+    try: return str((store.get_task(int(task_id)) or {}).get('Kind') or '') != 'coding'
+    except (TypeError, ValueError): return False
+
 
 def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, trace=None, cancel=None,
                  resume=None, cli_tools: bool = False, extra_env: dict = None, read_only: bool = None,
@@ -299,6 +345,8 @@ def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, tra
         if stranger_mode == 'auto':
             # its folder is its cwd already; --add-dir says so to Claude whatever cwd a resume or a profile brings (R25)
             prof['args'] = clis.auto_args(c, args) + ['--add-dir', sd, '--settings', origin.session_settings(store, task_id)]
+            from . import agenttools                    # ...and the owner's harmless tools, Remind me's among them (agenttools.STRANGER_TOOLS)
+            prof['args'] = agenttools.insert(['', *prof['args']], agenttools.stranger_args(hub_agents.cli_of(prof, agent_name), task_id, prof['args']))[1:]
             prof['acp_ok'] = False      # the reviewer rides argv; ACP's own permission answer allows everything
         elif stranger_mode == 'look': prof['args'], prof['acp_ok'] = clis.readonly_args(c, args), False     # its floor is argv's too
         if stranger_mode in ('auto', 'look'):
@@ -321,7 +369,15 @@ def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, tra
         prof['args'] = agenttools.insert(['', *args], agenttools.session_args(store, hub_agents.cli_of(prof, agent_name), task_id, args))[1:]
     # ...and a general chat with a browser gets the browser hold as its own hook (hooks.browser_settings): only Claude's hook can refuse
     # a call (browsergate.HOLDS), and a stranger's run already carries its one --settings file
-    if hold_sid and not no_hands and stranger_mode not in ('auto', 'look') and hub_agents.cli_of(prof, agent_name) in HOLDS_CLI:
+    # ...and A GENERAL TASK'S CLAUDE READS NONE OF THE OWNER'S OWN SETUP (hooks.general_settings): no user settings, plugins or MCP
+    # servers but Taskuary's, their own CLAUDE.md left out. A coding task keeps it all - it works in their code, as they would
+    trusted = task_id and not no_hands and stranger_mode not in ('auto', 'look')
+    cli = hub_agents.cli_of(prof, agent_name)
+    if trusted and cli == 'claude' and _general(store, task_id) and hub_agents.cli_has_flag(prof['cmd'], '--setting-sources'):
+        from . import hooks
+        if (f := hooks.general_settings(task_id, hold_sid or '')):
+            prof['args'] = list(prof.get('args') or []) + ['--setting-sources', 'project,local', '--strict-mcp-config', '--settings', f]
+    elif hold_sid and trusted and cli in HOLDS_CLI:
         from . import hooks
         if (f := hooks.browser_settings(hold_sid)): prof['args'] = list(prof.get('args') or []) + ['--settings', f]
     # WHICH GEAR this job rides. Session work - coding and general alike - takes the MAIN model;
@@ -364,8 +420,8 @@ def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, tra
     else: prof['timeout'] = int(prof.get('timeout') or ONE_SHOT)     # a look-up is one-shot: it keeps a leash
     def llm(system, user, max_tokens=MAX_TOKENS, images=None, want=None):
         """max_tokens is advisory here - a CLI has no such flag; the system prompt already says
-        how long the answer should be. `images` is accepted and dropped: a CLI reads files off
-        disk itself, and the prompt already names their paths. `want` is accepted and dropped
+        how long the answer should be. `images` go to a one-shot claude or codex exec (agents.sees_images: triage has no tools to
+        open a file, 2026-11-09); any other CLI drops them and reads files off disk itself, by the paths the prompt names. `want` is accepted and dropped
         too, and takes_want is never set: there is no wire to put a schema on, so the prompt and
         the caller's recheck (ask_json) are the whole contract here."""
         from .agents import run_cli, run_context
@@ -379,9 +435,11 @@ def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, tra
         # A chat already under way did this all along: its rounds resume one session. One-shot brains keep their own id.
         # ...and the store and task the ACP road's permission answers read (acpgate: the send filter, a step held on THIS task)
         with run_context(store, task_id if not no_hands else None):
+
             try:
                 out, sid, _diff = run_cli(run_prof, prompt, trace or (lambda *a: None),
-                                          resume=llm.session_id if keep else resume, **kwargs)
+                                          resume=llm.session_id if keep else resume,
+                                          **({'images': images} if images else {}), **kwargs)
             except hub_agents.OmpTurnError as e:
                 if e.session_id: llm.session_id = e.session_id
                 raise
@@ -507,7 +565,7 @@ class _Scrubbed:
     """
     def __init__(self, brain): object.__setattr__(self, '_brain', brain)
     def __call__(self, system, user, *a, **kw):
-        return self._brain(redact.scrub(system), redact.scrub(user), *a, **kw)
+        return self._brain(system.map(redact.scrub) if isinstance(system, Stable) else redact.scrub(system), redact.scrub(user), *a, **kw)
     def __getattr__(self, k): return getattr(object.__getattribute__(self, '_brain'), k)
     def __setattr__(self, k, v): setattr(object.__getattribute__(self, '_brain'), k, v)
 
@@ -604,16 +662,18 @@ def _build_llm(store, pick=None, model=None, trace=None, cancel=None, resume=Non
                 return None
         want = candidate[10:] if candidate.startswith('connector:') else None
         want_id = int(want) if want and want.isdigit() else None
+        from .agents import PICKED_ONLY
         for c in store.list_connectors():
             # a local model server (ollama) is the one brain that needs no key to be real
             ready = c['Active'] and (c['HasSecret'] or c['Type'] == 'ollama')
-            selected = not want or (c['ConnectorId'] == want_id if want_id is not None else c['Type'] == want)
+            selected = (c['Type'] not in PICKED_ONLY) if not want else (c['ConnectorId'] == want_id if want_id is not None else c['Type'] == want)
             if c['Type'] in AI_TYPES and ready and selected:
                 full = store.get_connector(c['ConnectorId'], with_secret=True)
                 config = {**json.loads(full.get('ConfigJson') or '{}'), '_cid': full['ConnectorId']}   # a rotated sign-in token is saved back to its card
-                # an API key's strong gear is the card's own strong_model, swapped in for the call (blank: no strong tier)
-                if gear == 'strong' and not chosen_model and str(config.get('strong_model') or '').strip():
-                    config = {**config, 'model': str(config['strong_model']).strip()}
+                # an API key's strong and light gears are the card's own strong_model / light_model, swapped in for the call (blank:
+                # no such tier) - into the box its requests name, Azure's deployment (firstrun.TIER_BOX)
+                box, tier = ('deployment' if full['Type'] == 'azure_openai' else 'model'), {'strong': 'strong_model', 'light': 'light_model'}.get(gear)
+                if tier and not chosen_model and str(config.get(tier) or '').strip(): config = {**config, box: str(config[tier]).strip()}
                 if chosen_model: config = {**config, 'model': chosen_model}
                 return _Cooling(store, candidate, make_llm(full['Type'], config, full.get('Secret')))
         return None
@@ -657,6 +717,8 @@ def _build_llm(store, pick=None, model=None, trace=None, cancel=None, resume=Non
     failover.takes_web = any(getattr(b, 'takes_web', False) for _, b in brains)
     # a prompt that says lookups exist is written before the answering brain is known: every brain of the chain must have them
     failover.looks_up = all(getattr(b, 'looks_up', getattr(b, 'takes_web', False)) for _, b in brains)
+    # a tool loop runs on the primary alone: a backup's own tools and conversation are not this one's (apiagent.py)
+    failover.chat = getattr(brains[0][1], 'chat', None) if brains[0][0] == primary else None
     return failover
 
 
@@ -706,7 +768,9 @@ def ask_json(brain, system: str, user: str, want: dict = None, need=(), **kw) ->
 
     carries = getattr(brain, 'takes_want', None)
     if want is not None and carries: kw['want'] = want
-    def short(a): return [k for k in need if not (a.data or {}).get(k)] if carries is False else []
+    # `false` and 0 are answers: reading them as left out asked every "no" a second time, and the second time it said yes
+    def blank(v): return v is None or (not v and not isinstance(v, (bool, int, float)))
+    def short(a): return [k for k in need if blank((a.data or {}).get(k))] if carries is False else []
     first = ask(user)
     if first.data is not None and not short(first): return _stepped(brain, system, user, want, need, kw, first)
     again = (f"\n\nYour last answer left out: {', '.join(short(first))}. Answer the whole JSON object "
@@ -798,11 +862,7 @@ def _chatgpt_llm(cfg: dict, refresh_token: str):
     if not refresh_token: raise RuntimeError('not signed in - click "Sign in with ChatGPT" on the ChatGPT card')
     picked = {}
     def llm(system, user, max_tokens=MAX_TOKENS, images=None, want=None, web=False):
-        tok = ca.access_token(cfg, refresh_token)
-        if 'model' not in picked:
-            listed = [s for s, _ in ca.models(tok)] if not cfg.get('model') else []
-            picked['model'] = cfg.get('model') or (listed[0] if listed else '')
-            if not picked['model']: raise RuntimeError('the ChatGPT plan lists no models this account can use')
+        tok = ca.access_token(cfg, refresh_token); model_of(tok)
         # images and web search are both in the plan preview "when the model accepts them" - asked for, and dropped
         # one at a time only when the plan answers that it cannot serve them
         try: return ca.complete(tok, picked['model'], system, user, max_tokens, want, images=images, web=web)
@@ -814,6 +874,22 @@ def _chatgpt_llm(cfg: dict, refresh_token: str):
             if not images: raise
             note = f'[{len(images)} attached image(s) not shown - this model reads text only]\n\n{user}'
             return ca.complete(tok, picked['model'], system, note, max_tokens, want)
+    def model_of(tok):
+        if 'model' not in picked:
+            listed = [s for s, _ in ca.models(tok)] if not cfg.get('model') else []
+            picked['model'] = cfg.get('model') or (listed[0] if listed else '')
+            if not picked['model']: raise RuntimeError('the ChatGPT plan lists no models this account can use')
+        return picked['model']
+    # A TOOL LOOP ON THE PLAN (apiagent.py) through its Responses API, the conversation carried in the OpenAI chat shape like every card
+    def chat(messages, tools, max_tokens=MAX_TOKENS, tool_choice=None, **_):
+        tok = ca.access_token(cfg, refresh_token)
+        system, items, fns = to_responses(messages, tools)
+        try: return from_responses(ca.respond(tok, model_of(tok), system, items, fns, **({'tool_choice': tool_choice} if tool_choice else {})))
+        except ca.Unsupported as e: raise RuntimeError(f'chatgpt error 400: {e}') from e
+    def search(question, max_tokens=2000):
+        tok = ca.access_token(cfg, refresh_token)
+        return ca.complete(tok, model_of(tok), SEARCH_ASK, question, max_tokens, web=True)
+    llm.chat, llm.search = chat, search
     llm.takes_want = llm.takes_web = True
     return llm
 
@@ -923,6 +999,56 @@ def said_text(msg: dict) -> str:
     return next((str((x.get('function') or {}).get('arguments') or '') for x in calls if (x.get('function') or {}).get('arguments')), '')
 
 
+# THE STABLE PART OF A CALL IS READ FROM THE PROVIDER'S CACHE (the owner, 2026-11-10: "32 million tokens? sounds very expensive" ... "keep the
+# triage context cached and then just the new info should query it"). Triage's guide is the same on every mail, an agent's system, tools and
+# conversation the same on every step. A prompt builder says which part is stable with stable(): its blocks, least often changing first, then
+# what is this call's own. Each card turns that into what its provider needs:
+# - the Messages API caches only what is marked (cache_control on each stable block; '1h' for a guide that stays the same for hours - a write
+#   costs 2x then, a read 0.1x; the default 5 minutes for an agent's steps seconds apart);
+# - OpenAI, and Gemini 2.5+ behind a gateway, cache a repeated prefix by themselves (OpenAI from 1,024 tokens; Gemini Flash from 4,096) - there
+#   the order alone hits. A LiteLLM gateway also takes cache_control and makes a Vertex cachedContent of the marked part, but on Gemini that
+#   turns the free implicit cache off for it and bills storage, so it is the card's choice (`cache: explicit` in its settings), not the default;
+# - a card that refuses the marker (a 400 naming it) is asked again without it, and never marked again (_NO_CACHE).
+# Whatever reads it as text - a CLI's prompt file, a log - reads the same words: Stable is a str.
+EPHEMERAL, CACHE_FROM = {'type': 'ephemeral'}, 2_000      # characters: under ~512 tokens no provider caches at all
+_NO_CACHE = set()          # (type, endpoint, model) that refused a cache marker
+# how each card's provider caches: 'explicit' takes the marker; 'implicit' caches a repeated prefix by itself (OpenAI-style APIs; Gemini behind a
+# gateway - its newest Flash models cache implicitly only, at a 90% discount, from ~4-6K tokens, for up to a day). The Messages API is marked in
+# make_llm's own branch. A card's `cache` setting overrides its type's; a type not listed is implicit
+CACHE_MARKS = {'anthropic': 'explicit', 'hipaa_ai': 'implicit', 'vertex_ai': 'implicit', 'gemini': 'implicit', 'openai': 'implicit',
+               'azure_openai': 'implicit', 'openrouter': 'implicit', 'deepseek': 'implicit'}
+_CACHE_REFUSED = re.compile(r'cache_control|cached_?content|cache', re.I)
+
+
+class Stable(str):
+    "A system prompt as its stable blocks then this call's own `rest` - the same words as ''.join(blocks) + rest wherever it is read as text."
+    def __new__(cls, blocks, rest: str = '', ttl: str = None):
+        bs = [str(b) for b in blocks if b]
+        s = super().__new__(cls, ''.join(bs) + str(rest or '')); s.blocks, s.rest, s.ttl = bs, str(rest or ''), ttl
+        return s
+    def map(self, f): return Stable([f(b) for b in self.blocks], f(self.rest) if self.rest else '', self.ttl)
+
+
+def stable(*blocks, rest: str = '', ttl: str = None) -> Stable: return Stable(blocks, rest, ttl)
+
+
+def blocks(system, marks: int = 4, ttl: bool = True, seconds: bool = False):
+    """`system` as content blocks with cache_control on its stable blocks (the last `marks` of them, each long enough to cache); a plain
+    string long enough is one marked block; None when nothing is worth marking. `seconds`: the TTL as LiteLLM's Gemini wants it ('3600s')."""
+    parts = getattr(system, 'blocks', None)
+    if parts is None: parts, rest, life = ([str(system)], '', None) if len(system or '') >= CACHE_FROM else (None, '', None)
+    else: rest, life = system.rest, system.ttl
+    if not parts: return None
+    life = life and ttl and ({'1h': '3600s', '5m': '300s'}.get(life, life) if seconds else life)
+    mark = {**EPHEMERAL, **({'ttl': life} if life else {})}
+    out = [{'type': 'text', 'text': b, **({'cache_control': mark} if k >= len(parts) - marks and len(''.join(parts[:k + 1])) >= CACHE_FROM else {})}
+           for k, b in enumerate(parts)]
+    return out + ([{'type': 'text', 'text': rest}] if rest.strip() else [])
+
+
+def cached(system, marks: int = 4): return blocks(system, marks) or str(system)
+
+
 def make_llm(t, cfg: dict, key: str):
     m, effort = split_effort(cfg.get('model'))
     if effort: cfg = {**cfg, 'model': m}
@@ -956,12 +1082,29 @@ def make_llm(t, cfg: dict, key: str):
             forced = ({'tools': [{'name': want.get('name') or 'answer', 'description': 'Answer with these fields.',
                                   'input_schema': want.get('schema') or want}],
                        'tool_choice': {'type': 'tool', 'name': want.get('name') or 'answer'}} if want else {})
-            r = ask(model=model, max_tokens=max_tokens, system=system, messages=[{'role': 'user', 'content': content}], **forced)
+            r = ask(model=model, max_tokens=max_tokens, system=cached(system), messages=[{'role': 'user', 'content': content}], **forced)
             if r.stop_reason == 'refusal': raise RuntimeError('model refused the request')
             if want:
                 call = next((b for b in r.content if b.type == 'tool_use'), None)
                 if call is not None: return json.dumps(call.input)
             return next((b.text for b in r.content if b.type == 'text'), '')
+        # ONE STEP OF A TOOL LOOP (apiagent.py) on the Messages API: the conversation and tools arrive in the OpenAI shape every other
+        # card speaks and go back in it, so the loop, its gate and its tools are the one road (to_anthropic / from_anthropic)
+        def chat(messages, tools, max_tokens=MAX_TOKENS, tool_choice=None, **_):
+            system, msgs, fns = to_anthropic(messages, tools)
+            if fns: fns[-1] = {**fns[-1], 'cache_control': EPHEMERAL}
+            if msgs and msgs[-1]['content']: msgs[-1]['content'][-1] = {**msgs[-1]['content'][-1], 'cache_control': EPHEMERAL}
+            kw = {'tools': fns, **({'tool_choice': {'type': tool_choice}} if tool_choice in ('none', 'auto', 'any') else {})} if fns else {}
+            try: r = ask(model=model, max_tokens=max_tokens, messages=msgs, **({'system': cached(system, marks=2)} if system else {}), **kw)
+            except anthropic.BadRequestError as e: raise RuntimeError(f'anthropic error 400: {str(e)[:300]}') from e
+            if r.stop_reason == 'refusal': raise RuntimeError('model refused the request')
+            return from_anthropic(r.content)
+        # ...and its OWN web search: Anthropic's server tools, on a call of its own as on every card (the CLI's WebSearch)
+        def search(question, max_tokens=2000):
+            got = _anthropic_web(ask, model, SEARCH_ASK, [{'type': 'text', 'text': question}], max_tokens)
+            if not (got or '').strip(): raise RuntimeError('anthropic: web search is not available on this model')
+            return got
+        llm.chat, llm.search = chat, search
         llm.takes_want = llm.takes_web = True
         return llm
     if t == 'openai':
@@ -1020,6 +1163,15 @@ def make_llm(t, cfg: dict, key: str):
     else:
         raise RuntimeError(f'unknown AI connector type: {t}')
     ek = (t, urls[0], model)
+    marked = lambda system: ((cfg.get('cache') or CACHE_MARKS.get(t, 'implicit')) == 'explicit' and ek not in _NO_CACHE
+                             and blocks(system, seconds=True)) or str(system)
+    def unmarked(r, msgs) -> bool:
+        "A refused cache marker (a 400 naming it): taken off this request and never put on this card again."
+        if r.status_code not in (400, 422) or not msgs or isinstance(msgs[0].get('content'), str) or msgs[0].get('role') != 'system': return False
+        if not _CACHE_REFUSED.search(r.text or ''): return False
+        _NO_CACHE.add(ek); msgs[0] = {**msgs[0], 'content': ''.join(b.get('text') or '' for b in msgs[0]['content'])}
+        from loguru import logger
+        logger.info(f'{t}: the card refused a cache marker - asked without one from now on'); return True
 
     def llm(system, user, max_tokens=MAX_TOKENS, images=None, want=None, web=False):
         if web and not want and t in ('openai', 'azure_openai'):
@@ -1029,12 +1181,13 @@ def make_llm(t, cfg: dict, key: str):
         # max_completion_tokens"), older Azure api-versions reject max_completion_tokens,
         # older Azure resources 404 the v1 url - and not every model behind this one schema can
         # be handed a response_format. Walk the grid until one works.
-        content = ([{'type': 'image_url', 'image_url': {'url': f'data:{ct};base64,{b64}'}}
+        content = ([{'type': 'image_url', 'image_url': {'url': f'data:{ct};base64,{vision_safe(ct, b64)}'}}
                     for ct, b64 in (images or [])] + [{'type': 'text', 'text': user}]) if images else user
         # AN EMPTY TURN IS NO TURN: Gemini and Claude behind a gateway both refuse one ("contents.parts must not be empty", "text content
         # blocks must be non-empty") where OpenAI let it by - a blank system is left out, and a blank ask is the system's words
         if not str(user or '').strip() and not images: system, content = '', system
-        msgs = ([{'role': 'system', 'content': system}] if str(system or '').strip() else []) + [{'role': 'user', 'content': content}]
+
+        msgs = ([{'role': 'system', 'content': marked(system)}] if str(system or '').strip() else []) + [{'role': 'user', 'content': content}]
         thinking_off = cfg.get('disable_thinking') is True      # the card's Disable thinking switch: send enable_thinking=false, omit the field when it is off
         last = None
 
@@ -1050,6 +1203,7 @@ def make_llm(t, cfg: dict, key: str):
                     # a local model may spend its first call loading weights off disk, a reasoning deployment its time on a long
                     # prompt - room to answer, and a quick give-up on an endpoint that is not there
                     r = post_retrying(url, headers, body, (CONNECT_TIMEOUT, READ_TIMEOUT))
+                    if unmarked(r, msgs): r = post_retrying(url, headers, body, (CONNECT_TIMEOUT, READ_TIMEOUT))
                     # a spent budget first: it is no refused effort or format, and asking again in another shape only spends a request
                     if budget_spent(r): raise BudgetSpent(BUDGET_LINE.format(name='HIPAA AI' if t == 'hipaa_ai' else t))
                     # ...a proxy may turn it down with a 422 of its own (the gateway in front of another provider's model)
@@ -1061,10 +1215,12 @@ def make_llm(t, cfg: dict, key: str):
                         aiusage.openai(r.json())
                         ch = (r.json().get('choices') or [{}])[0]
                         said = said_text(ch.get('message') or {})
+                        if cut_by_thinking(r.json()): _THINKS.add(ek); raise _Empty('length')
                         if said.strip(): return said
                         raise _Empty(ch.get('finish_reason') or 'none given')
                     last = r
                     if r.status_code == 404: break                      # wrong surface -> next url
+                    if r.status_code == 400 and images and _IMAGE_REFUSED.search(r.text): raise _ImageRefused(r.text[:300])
                     if r.status_code == 400 and 'max_completion_tokens' in r.text: continue
                     if fmt and refused_format(r): return None           # cannot carry this format -> ask with the next one
                     raise RuntimeError(f'{t} error {r.status_code} at {url.split("?")[0]}{tried(r)}: {r.text[:300]}')
@@ -1077,7 +1233,13 @@ def make_llm(t, cfg: dict, key: str):
         # endpoint refused a format is remembered, so every mail after the first asks only what it takes.
         fmts = [{'type': 'json_schema', 'json_schema': {**want, 'strict': True}}, {'type': 'json_object'}] if want else []
         where = (urls[0], model)
+        if ek in _THINKS: max_tokens = max(max_tokens, ROOM)
         def ask():
+            try: return asked()
+            except _ImageRefused:
+                msgs[-1]['content'] = f'{user}\n\n({len(images)} attached image(s) could not be opened by this AI and were left out.)'
+                return asked()
+        def asked():
             for i, fmt in enumerate(fmts + [None]):
                 if fmt and i < _FORMAT_FROM.get(where, 0): continue
                 out = once(fmt)
@@ -1085,15 +1247,68 @@ def make_llm(t, cfg: dict, key: str):
                     if fmt or want: _FORMAT_FROM[where] = i
                     return out
             raise RuntimeError(f'{t} error {last.status_code} at {urls[-1].split("?")[0]}{tried(last)}: {last.text[:300]}')
-        try: return ask()
-        except _Empty as e:
-            if str(e) != 'length' or max_tokens >= ROOM:
+        # ...and an empty 'stop' is asked once more as it was: Gemini behind the HIPAA AI gateway now and then thinks and writes nothing
+        spent = 0
+        while True:
+            try: return ask()
+            except _Empty as e:
+                spent += 1
+                if str(e) == 'length' and max_tokens < ROOM: max_tokens = ROOM; continue
+                if str(e) != 'length' and spent < 3: continue
+                if str(e) == 'length':
+                    raise RuntimeError(f'{t}: the model ran out of room before answering, even with {ROOM} tokens (finish_reason {e}) - '
+                                       f'model {model}; pick a non-thinking model on its card') from None
                 raise RuntimeError(f'{t} sent back no answer (finish_reason {e}) - model {model}') from None
-        max_tokens = ROOM
-        try: return ask()
-        except _Empty as e:
-            raise RuntimeError(f'{t}: the model ran out of room before answering, even with {ROOM} tokens (finish_reason {e}) - '
-                               f'model {model}; pick a non-thinking model on its card') from None
+    # ONE STEP OF A TOOL LOOP (apiagent.py): the model's message - its words and/or tool_calls - for a whole conversation and the tools
+    # it may call, in the OpenAI schema every endpoint here speaks. Without it an API brain was one system + one user message and nothing
+    # it could DO: a HIPAA-only install, with no CLI, answered "logging in cannot be done from here" (the owner, 2026-11-09). LiteLLM
+    # carries `tools` on to the Gemini and Claude models behind a gateway (verified live on the HIPAA AI card, 2026-11-09).
+    def chat(messages, tools, max_tokens=MAX_TOKENS, **extra):
+        last = None
+        if messages and messages[0].get('role') == 'system': messages = [{**messages[0], 'content': marked(messages[0].get('content') or '')}, *messages[1:]]
+        for url in urls:
+            for tok_param in ('max_completion_tokens', 'max_tokens'):
+                body = {'messages': messages, 'tools': tools, tok_param: max_tokens, **extra, **({'model': model} if model else {}),
+                        **({'reasoning_effort': effort} if effort and ek not in _NO_EFFORT else {})}
+                r = post_retrying(url, headers, body, (CONNECT_TIMEOUT, READ_TIMEOUT))
+                if unmarked(r, messages): body['messages'] = messages; r = post_retrying(url, headers, body, (CONNECT_TIMEOUT, READ_TIMEOUT))
+                if budget_spent(r): raise BudgetSpent(BUDGET_LINE.format(name='HIPAA AI' if t == 'hipaa_ai' else t))
+                if r.status_code in (400, 422) and body.pop('reasoning_effort', None) and _EFFORT_REFUSED.search(r.text or ''):
+                    r = post_retrying(url, headers, body, (CONNECT_TIMEOUT, READ_TIMEOUT))
+                if r.status_code == 200:
+                    aiusage.openai(r.json())
+                    return (r.json().get('choices') or [{}])[0].get('message') or {}
+                last = r
+                if r.status_code == 404: break
+                if r.status_code == 400 and 'max_completion_tokens' in (r.text or ''): continue
+                raise RuntimeError(f'{t} error {r.status_code} at {url.split("?")[0]}{tried(r)}: {r.text[:300]}')
+        raise RuntimeError(f'{t} error {last.status_code} at {urls[-1].split("?")[0]}{tried(last)}: {last.text[:300]}')
+    llm.chat = chat
+
+    # THE MODEL'S OWN WEB SEARCH, through the gateway (the owner, 2026-11-09: "why can't the model itself do web search?"): LiteLLM's
+    # web_search_options is Google Search grounding for a Gemini model and Anthropic's web search for a Claude one. Asked on a call of its
+    # own - beside function tools it is ignored (Gemini called the other tool, Claude said it could not search; verified live 2026-11-09)
+    def search(question, max_tokens=2000):
+        # each provider's own search where it has one: OpenAI's and Azure's Responses `web_search` (what a plain question already used,
+        # LOOKING THINGS UP below), Google Search grounding on Google's own Gemini API - the gateway's web_search_options otherwise
+        if t in ('openai', 'azure_openai'):
+            got = _responses_web(t, cfg, headers, model, SEARCH_ASK, question, None, max(max_tokens, 4000), effort if ek not in _NO_EFFORT else '')
+            if (got or '').strip(): return got
+        if g := _google_url(t, cfg, model): return _google_search(g, headers, question)
+        body = {'messages': [{'role': 'user', 'content': f'{SEARCH_ASK} {question}'}],
+                'max_tokens': max_tokens, 'web_search_options': {'search_context_size': 'medium'}, **({'model': model} if model else {})}
+        r = post_retrying(urls[0], headers, body, (CONNECT_TIMEOUT, READ_TIMEOUT))
+        if budget_spent(r): raise BudgetSpent(BUDGET_LINE.format(name='HIPAA AI' if t == 'hipaa_ai' else t))
+        if r.status_code != 200: raise RuntimeError(f'{t} error {r.status_code}: {r.text[:300]}')
+        aiusage.openai(r.json())
+        m = (r.json().get('choices') or [{}])[0].get('message') or {}
+        cites = list(dict.fromkeys(str((a.get('url_citation') or a).get('url') or '') for a in m.get('annotations') or [] if isinstance(a, dict)))
+        said = said_text(m).strip()
+        if not said: raise RuntimeError('the search came back empty')
+        return said + ('\n\nSOURCES\n' + '\n'.join(c for c in cites if c) if any(cites) else '')
+    # ...only where the card HAS a search of its own: a model asked with an option it ignores answers from memory as if it had looked
+    # (groq, mistral, a local model); without one apiagent's web_search goes to a connected search card and says when there is none
+    if t in NATIVE_SEARCH: llm.search = search
     llm.takes_want = True
     llm.takes_web = t in ('openai', 'azure_openai')
     return llm
@@ -1123,6 +1338,114 @@ def _saw(kind, name, detail):
     if not t: return
     try: t(kind, name, detail)
     except Exception: pass                      # a watcher that fails never fails the answer
+
+
+SEARCH_ASK = 'Search the web and answer, naming each source with its address:'
+# the cards whose model searches the web itself (llm.search): the Responses API's web_search, Google Search grounding, Anthropic's server
+# tool, LiteLLM's web_search_options on a gateway (HIPAA AI, OpenRouter), and Perplexity, whose every answer is a search
+NATIVE_SEARCH = ('openai', 'azure_openai', 'hipaa_ai', 'openrouter', 'perplexity', 'gemini', 'vertex_ai')
+
+
+def _args(a) -> dict:
+    if isinstance(a, dict): return a
+    try: return json.loads(a or '{}') or {}
+    except ValueError: return {}
+
+
+def _anthropic_parts(c) -> list:
+    "A chat message's content as Messages API blocks: its text, and a data-url picture as an image block."
+    if not isinstance(c, list): return [{'type': 'text', 'text': str(c)}] if str(c or '').strip() else []
+    out = []
+    for p in c:
+        if not isinstance(p, dict): continue
+        u = str((p.get('image_url') or {}).get('url') or '') if p.get('type') == 'image_url' else ''
+        if u.startswith('data:') and ';base64,' in u:
+            ct, b64 = u[5:].split(';base64,', 1)
+            out.append({'type': 'image', 'source': {'type': 'base64', 'media_type': ct, 'data': b64}})
+        elif str(p.get('text') or '').strip(): out.append({'type': 'text', 'text': p['text']})
+    return out
+
+
+def to_anthropic(messages: list, tools: list) -> tuple:
+    """An OpenAI-shaped conversation and its function tools as the Messages API takes them: (system, messages, tools). A tool's answer is a
+    tool_result block in the next user turn; turns of one role in a row are one turn (the API alternates)."""
+    sys, out = [], []
+    def add(role, blocks):
+        if out and out[-1]['role'] == role: out[-1]['content'] += blocks
+        else: out.append({'role': role, 'content': blocks})
+    for m in messages:
+        r, c = m.get('role'), m.get('content')
+        if r == 'system': sys.append(str(c or '')); continue
+        if r == 'tool': add('user', [{'type': 'tool_result', 'tool_use_id': m.get('tool_call_id') or '', 'content': str(c or '')}]); continue
+        blocks = _anthropic_parts(c) + [{'type': 'tool_use', 'id': x.get('id') or '', 'name': (x.get('function') or {}).get('name') or '',
+                                         'input': _args((x.get('function') or {}).get('arguments'))} for x in m.get('tool_calls') or []]
+        if blocks: add('assistant' if r == 'assistant' else 'user', blocks)
+    fns = [{'name': f['name'], 'description': f.get('description') or '', 'input_schema': f.get('parameters') or {'type': 'object', 'properties': {}}}
+           for x in tools or [] for f in [x.get('function') or x]]
+    return '\n\n'.join(x for x in sys if x.strip()), out, fns
+
+
+def from_anthropic(blocks) -> dict:
+    "The Messages API's answer as the chat message apiagent reads: its words, and each tool_use as a tool_call."
+    g = lambda b, k: b.get(k) if isinstance(b, dict) else getattr(b, k, None)
+    calls = [{'id': g(b, 'id'), 'type': 'function', 'function': {'name': g(b, 'name'), 'arguments': json.dumps(g(b, 'input') or {})}}
+             for b in blocks or [] if g(b, 'type') == 'tool_use']
+    said = '\n\n'.join(g(b, 'text') or '' for b in blocks or [] if g(b, 'type') == 'text').strip()
+    return {'role': 'assistant', 'content': said, **({'tool_calls': calls} if calls else {})}
+
+
+def to_responses(messages: list, tools: list) -> tuple:
+    "The same conversation as Responses API input items: (instructions, items, tools)."
+    sys, items = [], []
+    for m in messages:
+        r, c = m.get('role'), m.get('content')
+        if r == 'system': sys.append(str(c or '')); continue
+        if r == 'tool': items.append({'type': 'function_call_output', 'call_id': m.get('tool_call_id') or '', 'output': str(c or '')}); continue
+        if r == 'assistant':
+            if (said := said_text({'content': c})).strip(): items.append({'role': 'assistant', 'content': said})
+            items += [{'type': 'function_call', 'call_id': x.get('id') or '', 'name': (x.get('function') or {}).get('name') or '',
+                       'arguments': (x.get('function') or {}).get('arguments') or '{}'} for x in m.get('tool_calls') or []]
+            continue
+        parts = c if isinstance(c, list) else [{'type': 'text', 'text': str(c or '')}]
+        items.append({'role': 'user', 'content': [{'type': 'input_image', 'image_url': p['image_url']['url']} if p.get('type') == 'image_url'
+                                                  else {'type': 'input_text', 'text': str(p.get('text') or '')} for p in parts if isinstance(p, dict)]})
+    fns = [{'type': 'function', 'name': f['name'], 'description': f.get('description') or '',
+            'parameters': f.get('parameters') or {'type': 'object', 'properties': {}}}
+           for x in tools or [] for f in [x.get('function') or x]]
+    return '\n\n'.join(x for x in sys if x.strip()), items, fns
+
+
+def from_responses(items: list) -> dict:
+    "Responses output items as the chat message apiagent reads."
+    calls = [{'id': o.get('call_id') or o.get('id'), 'type': 'function', 'function': {'name': o.get('name'), 'arguments': o.get('arguments') or '{}'}}
+             for o in items or [] if o.get('type') == 'function_call']
+    said = '\n\n'.join(c.get('text') or '' for o in items or [] if o.get('type') == 'message'
+                        for c in o.get('content') or [] if c.get('type') == 'output_text').strip()
+    return {'role': 'assistant', 'content': said, **({'tool_calls': calls} if calls else {})}
+
+
+def _google_url(t, cfg, model) -> str:
+    """Google's own generateContent for a Gemini model on Google's API - where Google Search grounding lives; the OpenAI-compatible surface
+    has no search. '' for a card that reaches Gemini some other way (a gateway in front of it keeps web_search_options)."""
+    if t == 'gemini' and not (cfg.get('base_url') or '').strip():
+        return f"https://generativelanguage.googleapis.com/v1beta/models/{(model or '').removeprefix('models/')}:generateContent"
+    if t == 'vertex_ai' and model.startswith('google/'):
+        loc = (cfg.get('location') or 'global').strip()
+        host = 'aiplatform.googleapis.com' if loc == 'global' else f'{loc}-aiplatform.googleapis.com'
+        return f"https://{host}/v1/projects/{cfg['project'].strip()}/locations/{loc}/publishers/{model.replace('/', '/models/', 1)}:generateContent"
+    return ''
+
+
+def _google_search(url, headers, question) -> str:
+    h = {'x-goog-api-key': headers.get('x-goog-api-key') or headers.get('Authorization', '').removeprefix('Bearer ')}
+    body = {'contents': [{'role': 'user', 'parts': [{'text': f'{SEARCH_ASK} {question}'}]}], 'tools': [{'google_search': {}}]}
+    r = post_retrying(url, h, body, (CONNECT_TIMEOUT, READ_TIMEOUT))
+    if r.status_code != 200: raise RuntimeError(f'google search error {r.status_code}: {r.text[:300]}')
+    c = (r.json().get('candidates') or [{}])[0]
+    said = ''.join(p.get('text') or '' for p in (c.get('content') or {}).get('parts') or []).strip()
+    cites = list(dict.fromkeys(str((g.get('web') or {}).get('uri') or '') for g in (c.get('groundingMetadata') or {}).get('groundingChunks') or []))
+    if not said: raise RuntimeError('the search came back empty')
+    return said + ('\n\nSOURCES\n' + '\n'.join(x for x in cites if x) if any(cites) else '')
 
 
 ANTHROPIC_WEB = ([{'type': 'web_search_20260209', 'name': 'web_search', 'max_uses': 5},

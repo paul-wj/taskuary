@@ -15,7 +15,7 @@ import { label as bLabel, hint as bHint } from "./buttons.js";
 import { errorPresentation, errorText } from "./apiError.js";
 import SearchEverything, { OPEN_SEARCH, searchPicked } from "./SearchEverything.jsx";
 import { fadeBand } from "./timelineFade.js";
-import { syncFace, syncPhaseLabel } from "./syncTiming.js";
+import { syncFace, syncLine, syncPhaseLabel } from "./syncTiming.js";
 import { observeSync } from "./syncObserver.js";
 import { onWrote } from "./wrote.js";
 import { availablePickerChannels, channelsForCategory } from "./feedFilters.js";
@@ -101,9 +101,9 @@ function FilterButton({ cat, pick, channels, srcByChannel, srcQ, setSrcQ, onChan
       <Box component="button" type="button" onClick={(e) => setEl(e.currentTarget)}
         data-tq-filter="true" aria-label={t("Filter the rail - {label}", { label })}
         sx={{ flex: 1, minWidth: 0, height: 30, display: "flex", alignItems: "center", gap: 0.75, px: 1.25,
-          borderRadius: "8px", border: `1px solid ${narrowed ? "#b9c3cb" : BORDER}`, bgcolor: narrowed ? "#e4e9ee" : PANEL,
+          borderRadius: "8px", border: `1px solid ${narrowed ? "var(--tq-border, #b9c3cb)" : BORDER}`, bgcolor: narrowed ? "var(--tq-inset, #e4e9ee)" : PANEL,
           cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 600, color: narrowed ? INK : DIM, textAlign: "left",
-          "&:hover": { borderColor: "#b9c3cb", bgcolor: narrowed ? "#e4e9ee" : PANEL } }}>
+          "&:hover": { borderColor: "var(--tq-border, #b9c3cb)", bgcolor: narrowed ? "var(--tq-inset, #e4e9ee)" : PANEL } }}>
         <FilterAltIcon sx={{ fontSize: 15, color: narrowed ? ACCENT : DIM, flexShrink: 0 }} />
         <Box component="span" sx={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</Box>
         <ChevronRightIcon sx={{ fontSize: 14, color: FAINT, transform: "rotate(90deg)", flexShrink: 0 }} />
@@ -118,13 +118,13 @@ function FilterButton({ cat, pick, channels, srcByChannel, srcQ, setSrcQ, onChan
             <Chip key={o.key} size="small" label={t(o.label)} data-tq-kind={o.key || "all"}
               onClick={() => onChange(o.key, pick)}
               sx={{ height: 24, fontSize: 11, fontWeight: 600, borderRadius: 99,
-                bgcolor: cat === o.key ? "#e4e9ee" : PANEL2, color: cat === o.key ? "#41525f" : DIM,
-                border: `1px solid ${cat === o.key ? "#cbd4dc" : BORDER}` }} />
+                bgcolor: cat === o.key ? "var(--tq-inset, #e4e9ee)" : PANEL2, color: cat === o.key ? "var(--tq-link, #41525f)" : DIM,
+                border: `1px solid ${cat === o.key ? "var(--tq-border, #cbd4dc)" : BORDER}` }} />
           ))}
         </Box>
         <Typography sx={{ fontSize: 9.5, fontWeight: 600, letterSpacing: ".1em", textTransform: "uppercase", color: FAINT, mb: 0.75 }}>{t("Source")}</Typography>
         <TextField fullWidth placeholder={t("search sources…")} value={srcQ} onChange={(e) => setSrcQ(e.target.value)}
-          sx={{ bgcolor: "#fff", mb: 0.5 }} inputProps={{ style: { fontSize: 12, padding: "5px 8px" } }} />
+          sx={{ bgcolor: "var(--tq-panel, #fff)", mb: 0.5 }} inputProps={{ style: { fontSize: 12, padding: "5px 8px" } }} />
         <Box sx={{ maxHeight: 220, overflowY: "auto", mx: -0.5 }}>
           <MenuItem selected={!pick} onClick={() => onChange(cat, "")} sx={{ fontSize: 12, borderRadius: 1 }}>{t("all sources")}</MenuItem>
           {/* 96 discovered buckets turned this into a page-long wall. It is a bounded, searchable
@@ -156,7 +156,7 @@ function FilterButton({ cat, pick, channels, srcByChannel, srcQ, setSrcQ, onChan
         </Box>
         {narrowed && (
           <Button size="small" onClick={() => { onChange("", ""); close(); }}
-            sx={{ mt: 0.75, fontSize: 11, textTransform: "none", color: ACCENT }}>{t("Show everything")}</Button>
+            sx={{ mt: 0.75, fontSize: 11, textTransform: "none", color: "var(--tq-link, #55697a)" }}>{t("Show everything")}</Button>
         )}
       </Popover>
     </>
@@ -371,6 +371,7 @@ export default function FeedView({ onOpenTask, onChanged, active = true, top = n
   const [bgSync, setBgSync] = useState(false);     // the startup catch-up - rows stay readable
   const [syncWhat, setSyncWhat] = useState("");
   const [syncPhase, setSyncPhase] = useState("");
+  const [syncNums, setSyncNums] = useState({});      // {landed, back} of the running sync, and `brought` for a moment after it (syncLine)
   const [syncUnknown, setSyncUnknown] = useState(false);
   // A REFUSED SYNC SAYS SO IN THE CLOCK'S OWN SLOT (the UX walk, 2026-10-22): it read as "status unavailable". It is the line's
   // status, not a receipt - gone at the next press or clean status. A CONNECTION that failed is not the sync's: it rings the bell
@@ -417,11 +418,17 @@ export default function FeedView({ onOpenTask, onChanged, active = true, top = n
     const what = data.status?.what || data.ingest?.what || "";
     setSyncUnknown(false);
     setSyncPhase(data.status?.phase || "");
+    // what the sync that just ended brought in stays a moment, then the clock comes back - only this sync's (`at` on the server's clock)
+    const brought = data.brought && data.now - data.brought.at < 15 ? data.brought : null;
     if (running) {
       clearTimeout(completionTimer.current);
-      setBgSync(true); setSyncWhat(what);
+      setBgSync(true); setSyncWhat(what); setSyncNums({ landed: data.status?.landed || 0, back: data.status?.back || 0 });
+    } else if ((wasRunning.current || completedBetweenChecks) && brought) {
+      setBgSync(false); setSyncWhat(""); setSyncNums({ brought }); load(rowsLen.current);
+      clearTimeout(completionTimer.current);
+      completionTimer.current = setTimeout(() => setSyncNums({}), 6000);
     } else if (wasRunning.current) {
-      setBgSync(false); setSyncWhat(""); load(rowsLen.current);
+      setBgSync(false); setSyncWhat(""); setSyncNums({}); load(rowsLen.current);
     } else if (completedBetweenChecks) {
       setBgSync(true); setSyncWhat({ source: "check finished", values: {} }); load(rowsLen.current);
       clearTimeout(completionTimer.current);
@@ -547,8 +554,8 @@ export default function FeedView({ onOpenTask, onChanged, active = true, top = n
                   onClick={() => (n.key === "new" && !onGo ? setNewOpen(true) : onGo?.(n.go, n.key))}
                   sx={{ display: "flex", alignItems: "center", gap: 1.25, width: "100%", height: 30, px: 1.25, border: 0,
                     borderRadius: "8px", cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, textAlign: "left",
-                    color: navOn === n.key ? INK : "#4d4a43", bgcolor: navOn === n.key ? "#e4e9ee" : "transparent",
-                    "& svg": { fontSize: 16, color: "#6e685f" }, "&:hover": { bgcolor: navOn === n.key ? "#e4e9ee" : PANEL2 } }}>
+                    color: navOn === n.key ? INK : "var(--tq-secondary, #4d4a43)", bgcolor: navOn === n.key ? "var(--tq-inset, #e4e9ee)" : "transparent",
+                    "& svg": { fontSize: 16, color: "var(--tq-secondary, #6e685f)" }, "&:hover": { bgcolor: navOn === n.key ? "var(--tq-inset, #e4e9ee)" : PANEL2 } }}>
                   <Icon />{t(n.label)}
                 </Box>
               </Tooltip>
@@ -608,8 +615,9 @@ export default function FeedView({ onOpenTask, onChanged, active = true, top = n
             <Typography variant="caption" noWrap data-tq-sync-line="" title={syncErr ? errorText(syncErr) : undefined}
               sx={{ color: syncErr ? ALERT_INK : syncing || bgSync ? ACCENT : FAINT, fontSize: 10.5, minWidth: 0, textAlign: "center" }}>
               {syncErr ? `✗ ${errorText(syncErr)}` : syncUnknown ? t("Sync status unavailable — rechecking")
-                : <NextIn atRef={nextAtRef} render={(nextIn) => syncFace({ busy: syncing || bgSync, what: translateDescriptor(syncWhat), every, lastAt: lastSync, nextIn, checked: true, started: syncStarted,
-                    terse: !(syncing || bgSync) })} />}
+                : !(syncing || bgSync) && syncNums.brought ? syncLine({ brought: syncNums.brought })
+                : <NextIn atRef={nextAtRef} render={(nextIn) => syncFace({ busy: syncing || bgSync, every, lastAt: lastSync, nextIn, checked: true, started: syncStarted,
+                    what: (bgSync && syncLine({ busy: true, phase: syncPhase, what: syncWhat, ...syncNums })) || translateDescriptor(syncWhat), terse: !(syncing || bgSync) })} />}
             </Typography>
             <Button size="small" variant="text" disabled={!syncUnknown && (syncing || bgSync)} onClick={() => syncNow(false)}
               title={syncing || bgSync ? translateDescriptor(syncWhat) : bHint("sync_now", syncUnknown ? "unknown" : undefined)}

@@ -194,6 +194,47 @@ def test_failed_omp_backup_keeps_session_under_its_own_provider():
     assert build.call_args.kwargs['pick'] == 'cli:omp'
     assert build.call_args.kwargs['resume'] == 'omp-thread'
 
+
+def test_the_fresh_conversation_is_the_same_turn_under_the_same_instructions(tmp_path):
+    """The retry was a second copy of the turn's assembly, written by hand, and it had drifted (the spine audit, 2026-11-09): the fresh
+    conversation was not told of the files sent with the turn, and was built without the right to look things up or its place among the
+    open CLIs. It is the one turn asked again: no id to resume, and the conversation said in full."""
+    store = MemoryStore(); connect(store); tid = task(store)
+    store.add_comment(tid, 'owner', general.USER_TYPE, 'Use the August period, not September.')
+    f = tmp_path / 'numbers.csv'; f.write_text('a,b')
+    session = general.GeneralSession(store, tid, pick='cli:claude')
+    session.cli_sid = 'expired'; session._remember_session()
+    seen = []
+    def failed(system, user, **kw): seen.append((system, user)); raise RuntimeError('session not found')
+    def restored(system, user, **kw): seen.append((system, user)); return 'Continuing the August report.'
+    restored.session_id = 'replacement'
+    with mock.patch.object(llm, 'build_llm', side_effect=[failed, restored]) as build:
+        session.send_prompt('Carry on with these', attachments=[str(f)])
+    (first, turn), (again, whole) = seen
+    assert again == first, 'one set of instructions, whichever conversation hears them'
+    assert 'August period' not in turn and 'August period' in whole
+    assert all('ATTACHED FILES' in u and 'numbers.csv' in u for u in (turn, whole))
+    a, b = (c.kwargs for c in build.call_args_list)
+    assert a['resume'] == 'expired' and b['resume'] is None
+    assert {**a, 'resume': None} == b and b['keep'] == f'general:{tid}' and 'August period' in b['fallback_user']
+
+
+def test_a_session_closed_under_its_turn_stops_it_and_starts_no_fresh_conversation():
+    """Mark done on a working agent closes its session and its CLI dies under the turn: that is a stop, never "could not resume" - the whole
+    turn was said again to a fresh conversation on the closed task, and its answer landed there 25 s later (the agent walk, 2026-11-09)."""
+    import threading
+    store = MemoryStore(); connect(store); tid = task(store)
+    session = general.GeneralSession(store, tid, pick='cli:claude')
+    session.cli_sid = 'live'; session._remember_session()
+    def killed(system, user, **kw): session.close(learn=False, report=False); raise RuntimeError('the agent process ended')
+    again = mock.Mock(return_value='Both drafts are still waiting for your Send.')
+    stop = threading.Event()
+    with mock.patch.object(llm, 'build_llm', side_effect=[killed, again]), pytest.raises(general.Stopped):
+        session.send_prompt('Carry on', cancel=stop)
+    assert not again.called, 'nothing was asked of a second conversation'
+    assert stop.is_set(), 'the turn is told to stop: a brain with no process to kill reads this'
+    assert not [c for c in store.list_comments(tid, internal=True) if c.get('ActorType') == general.ASSISTANT_TYPE]
+
 def test_backup_provider_receives_history_without_primary_session_id():
     store = MemoryStore(); connect(store); connect(store, 'codex')
     store.set_setting('triage_backup_ai', 'cli:codex', 'owner')

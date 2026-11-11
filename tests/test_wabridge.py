@@ -1,6 +1,7 @@
 """The WhatsApp bridge, managed by Taskuary: install if needed, start detached, report the phase -
 so neither a person nor an agent runs a server in the foreground and waits on it."""
 import json, os, threading, time, unittest
+from pathlib import Path
 from unittest import mock
 from fastapi.testclient import TestClient
 from taskuary import server, wabridge
@@ -141,14 +142,14 @@ class BridgeManagerTests(unittest.TestCase):
         # wait=True runs the worker inline: a threaded worker outlived its mocks on a slow CI box and
         # kept the lock, so the next test's start() was a no-op and both went red
         with mock.patch.object(wabridge, 'node', return_value=''):
-            self.assertEqual(wabridge.start(wait=True)['phase'], 'failed')
+            self.assertEqual(wabridge.start(wait=True, fetch_node=False)['phase'], 'failed')
         self.assertIn('nodejs.org', wabridge.state()['detail'])
 
     def test_install_then_start_detached_and_a_dying_bridge_is_reported(self):
         class P:
             pid = 4242
             def poll(self): return None
-        with mock.patch.object(wabridge, 'node', return_value='node'), mock.patch.object(wabridge, 'stage', return_value=wabridge.run_dir()) as stg, \
+        with mock.patch.object(wabridge, 'node', return_value='node'), mock.patch.object(wabridge, 'npm', return_value='npm'),              mock.patch.object(wabridge, 'stage', return_value=wabridge.run_dir()) as stg, \
              mock.patch.object(wabridge.subprocess, 'run', return_value=mock.Mock(returncode=0, stdout='', stderr='')) as run, \
              mock.patch.object(wabridge.subprocess, 'Popen', return_value=P()) as pop, mock.patch.object(wabridge.time, 'sleep'), \
              mock.patch('builtins.open', mock.mock_open()), mock.patch.object(wabridge, 'pid_on_port', return_value=0), \
@@ -205,7 +206,7 @@ class BridgeManagerTests(unittest.TestCase):
         wa = next(x for x in server.store.list_connectors() if x['Type'] == 'whatsapp')
         with mock.patch.object(wabridge, 'start', return_value={'phase': 'installing', 'detail': 'npm install'}) as st:
             r = c_api.post(f"/api/connectors/{wa['ConnectorId']}/wa/bridge/start").json()
-        self.assertEqual(r['phase'], 'installing'); st.assert_called_once_with(False, filter_policy=mock.ANY)
+        self.assertEqual(r['phase'], 'installing'); st.assert_called_once_with(False, filter_policy=mock.ANY, fetch_node=True)
         slack = next(x for x in server.store.list_connectors() if x['Type'] == 'slack')
         self.assertEqual(c_api.post(f"/api/connectors/{slack['ConnectorId']}/wa/bridge/start").status_code, 404)
         from taskuary import messengers
@@ -306,6 +307,28 @@ class PortInUseTests(unittest.TestCase):
         with mock.patch.object(wabridge, '_proc', return_value=('chrome.exe', 'chrome.exe --type=renderer')):
             self.assertEqual(wabridge._unlock(wabridge.run_dir()), '')
         self.assertFalse(self.lock.exists())
+
+    def test_a_bridge_in_another_folder_on_the_same_pairing_is_ended_when_it_is_provably_ours(self):
+        """2026-11-10: a pairing copied to another folder is the same login, and its bridge read beside the new one. bridge.mjs claims
+        the pairing user-wide and names the holder in wa-auth.held-by; ours is ended, one that cannot be named is refused."""
+        import tempfile
+        claims = Path(tempfile.mkdtemp()); self.addCleanup(__import__('shutil').rmtree, claims, True)
+        held_by, claim = wabridge.run_dir() / 'wa-auth.held-by', claims / '0123456789abcdef.lock'
+        self.addCleanup(held_by.unlink, missing_ok=True)
+        claim.write_text('7070'); held_by.write_text(json.dumps({'pid': 7070, 'lock': str(claim)}))
+        who = {7070: ('node.exe', '"C:\\Program Files\\nodejs\\node.exe" bridge.mjs')}
+        with mock.patch.object(wabridge, '_proc', side_effect=lambda pid: who.get(pid, ('', ''))), \
+             mock.patch.object(wabridge, '_kill', side_effect=lambda pid: (self.killed.append(pid), who.pop(pid, None))):
+            self.assertEqual(wabridge._unlock(wabridge.run_dir()), '')
+        self.assertEqual(self.killed, [7070]); self.assertFalse(held_by.exists())
+        held_by.write_text(json.dumps({'pid': 7071, 'lock': str(claim)}))
+        with mock.patch.object(wabridge, '_proc', return_value=None):
+            self.assertIn('pairing is in use by pid 7071', wabridge._unlock(wabridge.run_dir()))
+        self.assertEqual(self.killed, [7070], 'a process nobody can name is never ended')
+        held_by.write_text(json.dumps({'pid': 7072, 'lock': str(claim)}))
+        with mock.patch.object(wabridge, '_proc', return_value=('', '')):                  # gone: its claim is stale and cleared
+            self.assertEqual(wabridge._unlock(wabridge.run_dir()), '')
+        self.assertFalse(claim.exists())
 
     def test_a_bridge_that_dies_on_a_held_port_after_a_slow_start_is_failed_not_running(self):
         self.port.clear()
@@ -497,7 +520,7 @@ class SupervisorTests(unittest.TestCase):
         said = wabridge.supervise(self.s, self.c, self.err, now=9000.0)
         self.assertIn(f'after {wabridge.GIVE_UP} starts in a row', said)
         self.assertIn('node is not installed', said); self.assertIn('Restart bridge', said)
-        with mock.patch.object(wabridge, 'node', return_value=''): wabridge.start(wait=True)     # the owner's Restart bridge
+        with mock.patch.object(wabridge, 'node', return_value=''): wabridge.start(wait=True, fetch_node=False)     # the owner's Restart bridge
         self.assertEqual((wabridge._SUP['tries'], wabridge._SUP['gave_up']), (0, ''), 'a start somebody asked for is a fresh count')
 
     def test_a_bridge_that_came_back_and_died_at_once_keeps_its_count(self):
@@ -583,6 +606,52 @@ class HomeStagingTests(unittest.TestCase):
         wabridge.stage()
         self.assertFalse((self.home / 'wa-auth').exists(), 'the old pairing is not brought back')
 
+    def installed(self, version):
+        p = self.home / 'node_modules' / '@whiskeysockets' / 'baileys'; p.mkdir(parents=True, exist_ok=True)
+        (p / 'package.json').write_text(json.dumps({'name': '@whiskeysockets/baileys', 'version': version}))
+
+    def npm(self, ok=True):
+        """npm install, faked: in the folder it is run in, the pinned Baileys appears - or it fails and nothing does."""
+        calls = []
+        def run(cmd, cwd=None, **k):
+            calls.append(cwd)
+            if not ok: return mock.Mock(returncode=1, stdout='', stderr='npm error network request failed')
+            p = Path(cwd) / 'node_modules' / '@whiskeysockets' / 'baileys'; p.mkdir(parents=True)
+            (p / 'package.json').write_text(json.dumps({'version': json.loads((Path(cwd) / 'package.json').read_text())['dependencies']['@whiskeysockets/baileys']}))
+            return mock.Mock(returncode=0, stdout='', stderr='')
+        return calls, mock.patch.object(wabridge.spawn, 'run', side_effect=run)
+
+    def test_installed_modules_older_than_the_pin_are_reinstalled_once_and_the_pairing_is_kept(self):
+        """2026-11-10: node_modules was installed when missing and never again - a bridge kept whatever "^6.7.0" meant that day."""
+        pin = json.loads((self.pkg / 'package.json').read_text())['dependencies']['@whiskeysockets/baileys']
+        self.assertRegex(pin, r'^\d+\.\d+\.\d+$', 'an exact version, so every install is the same Baileys')
+        self.home.mkdir(parents=True); (self.home / 'wa-auth').mkdir(); (self.home / 'wa-auth' / 'creds.json').write_text('paired here')
+        self.installed('6.17.16')
+        wabridge.stage(); self.assertIn('6.17.16, not ' + pin, wabridge.drift(self.home))
+        calls, run = self.npm()
+        with run, mock.patch.object(wabridge, 'npm', return_value='npm'):
+            pops = self.launch(lambda: wabridge.start(wait=True))
+            self.assertEqual(calls, [str(self.home / '.update')], 'installed beside the running modules, not over them')
+            self.assertEqual(json.loads((self.home / 'node_modules' / '@whiskeysockets' / 'baileys' / 'package.json').read_text())['version'], pin)
+            self.assertEqual((self.home / 'wa-auth' / 'creds.json').read_text(), 'paired here')
+            self.assertFalse((self.home / '.update').exists() or (self.home / 'node_modules.old').exists())
+            self.assertEqual(len(pops), 1); self.assertEqual(wabridge.state()['phase'], 'running')
+            self.launch(lambda: wabridge.start(wait=True))
+        self.assertEqual(len(calls), 1, 'matching modules are not installed again')
+
+    def test_an_update_that_fails_leaves_the_old_modules_running_and_says_so_once(self):
+        self.home.mkdir(parents=True); self.installed('6.7.10')
+        calls, run = self.npm(ok=False)
+        with run, mock.patch.object(wabridge, 'npm', return_value='npm'):
+            pops = self.launch(lambda: wabridge.start(wait=True))
+            st = wabridge.state()
+            self.assertEqual((st['phase'], len(pops)), ('running', 1), 'the bridge runs on what it had')
+            self.assertTrue(st['detail'].startswith("could not update WhatsApp's connector"), st['detail'])
+            self.assertEqual(json.loads((self.home / 'node_modules' / '@whiskeysockets' / 'baileys' / 'package.json').read_text())['version'], '6.7.10')
+            self.launch(lambda: wabridge.start(wait=True))
+        self.assertEqual(len(calls), 1, 'not tried on every start')
+        self.assertFalse(wabridge.state()['detail'].startswith('could not update'), 'said once')
+
     def test_the_supervisor_starts_a_dead_bridge_from_the_home(self):
         s = MemoryStore(); wa = s.get_connector_by_type('whatsapp')
         s.save_connector({'ConnectorId': wa['ConnectorId'], 'Active': 1}, 'owner')
@@ -621,6 +690,17 @@ class LinkCheckTests(unittest.TestCase):
         self.assertIsNone(self.check(st, 1000))
         self.assertIn('nothing is coming in', self.check(st, 1000 + wabridge.LINK_GRACE))
         self.assertIsNone(self.check({'connected': True}, 1000 + wabridge.LINK_GRACE + wabridge.LINK_EVERY))
+
+    def test_linked_but_reading_nothing_says_pair_again_and_a_readable_message_clears_it(self):
+        """2026-11-10: "Connected" on the card, nothing came in, and the bridge's log was all "failed to decrypt message"."""
+        from taskuary import messengers
+        since = 1000.0
+        st = lambda n, at=since: {'connected': True, 'unreadable': {'count': n, 'since': at, 'lastAt': at}}
+        self.assertIsNone(self.check(st(messengers.UNREADABLE_MIN), since + 60), 'a burst is not yet a broken link')
+        self.assertIsNone(self.check(st(messengers.UNREADABLE_MIN - 1), since + messengers.UNREADABLE_FOR + 120), 'a few failures are not one')
+        err = self.check(st(messengers.UNREADABLE_MIN), since + messengers.UNREADABLE_FOR + 240)
+        self.assertIn('cannot be read', err); self.assertIn('Pair again', err)
+        self.assertIsNone(self.check(st(0, 0), since + messengers.UNREADABLE_FOR + 360), 'a message read since: the link is fine')
 
     def test_read_once_a_minute(self):
         n = []

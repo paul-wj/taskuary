@@ -139,7 +139,7 @@ class CoreTests(unittest.TestCase):
         spawn.assert_not_called(); wt.assert_called_once()
         t = s.get_task(out['task_id'])
         self.assertEqual((t['Kind'], t['Status']), ('coding', 'open'))                      # a task, on the Board, not worked
-        self.assertTrue(any(c['Body'].startswith('Waiting for you:') for c in s.list_comments(out['task_id'])))
+        self.assertTrue(any(c['Body'].startswith('No agent started:') for c in s.list_comments(out['task_id'])))
         self.assertIn('you have never written to them', s._rows('SELECT * FROM route ORDER BY RouteId DESC')[0]['Reason'])
         # the same stranger writes again: still a stranger. Their own first mail, held for the owner,
         # used to make the second one 'known' and start the agent the hold exists to stop (audit 2026-09-02)
@@ -228,36 +228,25 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(store_mod.DEFAULT_SETTINGS['timeline_fade'], 'normal')
         self.assertEqual(MemoryStore().get_settings()['timeline_fade'], 'normal')
 
-    def test_reply_only_is_drafted_by_the_main_ai_not_a_coding_agent(self):
-        """A question needs an answer, not an agent. Drafting used to require a CLI agent
-        named 'responder' - nobody has one, so reply mail sat undrafted, and the fallback
-        was the CODING agent opening a repo to write two sentences."""
+    def test_reply_only_is_the_tasks_agents_to_write_never_a_coding_session(self):
+        """A question is answered by the task's agent, started at arrival like any work (the owner, 2026-11-10: "no more triage
+        creates draft. agent should be doing it"). A one-shot writer used to draft it in one model call; before that the fallback
+        was the CODING agent opening a repo to write two sentences. The review waits as a reply owed, with no draft, and what is
+        set going is the hand-over to the general agent - never a coding session, never a model call of triage's own."""
         from unittest import mock
         import taskuary.ingest as ing
-
-        class InlineThread:
-            def __init__(self, target=None, args=(), daemon=None): self.t, self.a = target, args
-            def start(self): self.t(*self.a)
-
         s = MemoryStore()
-        s.set_setting('auto_draft_enabled', '1', 't')
         s.upsert_agent('coding', 'coding', 'cli', '{"cmd": "claude"}')    # the only agent, and NOT for this
-        seen = {}
-        def fake_llm(system, user, **kw):
-            seen['system'], seen['user'] = system, user
-            return 'Yes - Monday is covered. I will confirm the cover with Dana.'
-        with mock.patch.object(ing, 'threading') as th, \
-             mock.patch('taskuary.llm.build_llm', return_value=fake_llm), \
+        with mock.patch.object(ing, '_spawn') as spawn, \
+             mock.patch('taskuary.llm.build_llm', side_effect=AssertionError('nothing drafts at arrival')), \
              mock.patch('taskuary.terminal.start_on_task') as sess:
-            th.Thread = InlineThread
             out = ingest_message(s, self.msg(external_id='r1', subject='Tuesday?',
                                              body='are you available tuesday?'), llm=REPLY_LLM)
-        sess.assert_not_called()                                           # no agent was opened at it
+        sess.assert_not_called()                                           # no coding session was opened at it
         rv = s.list_reviews('pending')[0]
         self.assertEqual(rv['TaskId'], out['task_id'])
-        self.assertIn('Monday is covered', rv['DraftText'])
-        self.assertIn('are you available tuesday?', seen['user'])          # the thread went in
-        self.assertIn('Output ONLY the message body', seen['system'])
+        self.assertFalse((rv.get('DraftText') or '').strip())              # owed, not written
+        self.assertEqual([(c.args[0].__name__, c.args[2:4]) for c in spawn.call_args_list], [('reply_to_agent', (out['task_id'], rv['ReviewId']))])
 
     def test_skip_policy_hides_flood_senders(self):
         s = MemoryStore()
@@ -831,10 +820,10 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(parse_cli_json('{"result": "OK", "session_id": "abc"}'), ('OK', 'abc'))
         self.assertEqual(parse_cli_json('plain'), ('plain', None))
 
-    def test_finishing_hands_the_reply_to_the_responder(self):
-        """A finished session does not write email. It reports; the SAME responder that answers
-        reply-only mail turns that report into the draft you approve - and the draft has to
-        survive the close, which used to supersede it on the spot."""
+    def test_finishing_raises_the_reply_owed_and_no_writer_drafts_it(self):
+        """A finished session's reply is the AGENT's (the owner, 2026-11-10: "no more triage creates draft. agent should be doing
+        it"): one it did not write waits as the reply owed, with no words on it - no tool-less writer drafts it from the report - and
+        it survives the close, which used to supersede it on the spot."""
         from unittest import mock
         from taskuary.wrapup import finish
         s = MemoryStore()
@@ -851,14 +840,13 @@ class CoreTests(unittest.TestCase):
         with mock.patch('taskuary.llm.build_llm', return_value=fake_llm):
             finish(s, tid, rep)
         pend = s.list_reviews('pending')
-        self.assertEqual((len(pend), pend[0]['Kind'], s.get_task(tid)['Status']), (1, 'draft_reply', 'waiting'))
-        self.assertIn('import is running again', pend[0]['DraftText'])
-        self.assertIn('fixed the date parse', seen['user'])            # the report is the source of truth
-        self.assertIn('FINISHED', seen['system'])                      # ...and it reports, never promises
+        self.assertEqual((len(pend), pend[0]['Kind'], s.get_task(tid)['Status']), (1, 'draft', 'waiting'))
+        self.assertFalse(pend[0].get('DraftText'))
+        self.assertEqual(seen, {})                                     # no model was asked for it
 
-    def test_finished_reply_uses_the_complete_eight_item_result(self):
+    def test_a_pressed_reply_uses_the_complete_eight_item_result(self):
         """The task card's compact report must not become a lossy reply source. A real session
-        answered eight separate issues; all eight have to reach the responder with room to write."""
+        answered eight separate issues; all eight have to reach the writer the owner's Draft with AI asks, with room to write."""
         from unittest import mock
         from taskuary import wrapup, responder
         s = MemoryStore()
@@ -872,9 +860,8 @@ class CoreTests(unittest.TestCase):
         def fake_llm(system, user, **kw):
             seen.update(system=system, user=user, tokens=kw.get('max_tokens'))
             return final
-        compact = {'summary': 'Issue 1 was checked.', 'determination': '', 'actions': ''}
         with mock.patch('taskuary.llm.build_llm', return_value=fake_llm):
-            wrapup.finish(s, tid, compact, complete_result=wrapup.reply_source('ignored', final))
+            responder.draft_reply(s, tid, resolution='COMPLETE FINAL RESPONSE FROM THE WORK SESSION:\n' + final, pressed=True)
         for n in range(1, 9):
             self.assertIn(f'Issue {n}: completed with result {n}.', seen['user'])
         self.assertIn('EVERY distinct question', seen['system'])
@@ -903,7 +890,7 @@ class CoreTests(unittest.TestCase):
         rid = s.add_review({'TaskId': tid, 'Kind': 'draft_reply', 'Status': 'pending', 'Reason': 'r'})
         self.assertFalse(hasattr(agents, 'dispatch'))            # deleted, not left dormant
         with mock.patch('taskuary.llm.build_llm', return_value=lambda sys_, usr, **kw: 'Fixed - it posts to August now.'):
-            out = responder.write_draft(s, tid, rid, 'Actions: fixed it')
+            out = responder.write_draft(s, tid, rid, pressed=True)
         self.assertIn('August', out)
         self.assertEqual(s.get_review(rid)['DraftText'], out)
 

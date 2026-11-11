@@ -65,10 +65,26 @@ class ANonStartIsNotAStartTests(unittest.TestCase):
         c, s = TestClient(server.app), server.store
         tid = s.create_task({'Title': 'no repo anywhere', 'Kind': 'coding', 'Status': 'open'}, 'router')
         with mock.patch.object(hub_term, 'start_on_task',
-                               side_effect=ValueError('no local path for org/app, and a search of your code folders found no checkout with that git remote')):
+                               side_effect=hub_term.NeedsRepo('no local path for org/app, and a search of your code folders found no checkout with that git remote')):
             out = c.post(f'/api/tasks/{tid}/dispatch', json={'kind': 'coding', 'agent': 'coding'}).json()
         self.assertEqual(out['dispatch'], 'needs_repo')
         self.assertFalse(out['started'], 'a caller that reads `started` is told the truth')
+
+    def test_send_to_agent_with_no_ai_says_why_and_lights_connect_an_ai(self):
+        # the door refused it (_no_brain) with a bare 422 and its sentence alone - the page had nothing to press; the same refusal any
+        # failed start answers carries its fix (failures.classify): Connect an AI beside the one line
+        from taskuary import agents, general, words
+        c, s = TestClient(server.app), server.store
+        tid = s.create_task({'Title': 'Put the Q3 deck together', 'Kind': 'general', 'Status': 'open'}, 'owner')
+        # ...the door's own refusal (server._brainless - the suite stands it down, conftest), as it answers a home with no AI
+        no_ai = lambda coding: f"{agents.NO_AI} to run this agent - connect one under {words.name('ai')}, then start it again"
+        with mock.patch.object(server, '_brainless', no_ai):
+            r = c.post(f'/api/tasks/{tid}/dispatch', json={'kind': 'general'})
+        self.assertEqual(r.status_code, 422)
+        self.assertTrue(r.json()['detail'].startswith('No AI is connected'), r.text)
+        self.assertEqual(r.json()['fix']['label'], 'Connect an AI')
+        self.assertIsNone(general.session_for(tid), 'no session opened over nothing')
+        self.assertEqual(s.operations_for(tid)[-1]['Status'], 'error')      # ...and kept on the task, where the Advisor reads it
 
     def test_the_task_keeps_saying_it_was_not_started_until_a_repo_is_picked(self):
         """The answer was one line on a sheet that closed at once, and the task said "nobody on it" (the owner, 2026-10-12:
@@ -77,7 +93,7 @@ class ANonStartIsNotAStartTests(unittest.TestCase):
         c, s = TestClient(server.app), server.store
         tid = s.create_task({'Title': 'go through the budget inputs', 'Kind': 'coding', 'Status': 'open'}, 'owner')
         with mock.patch.object(hub_term, 'start_on_task',
-                               side_effect=ValueError('no local path for org/app, and a search of your code folders found no checkout with that git remote')):
+                               side_effect=hub_term.NeedsRepo('no local path for org/app, and a search of your code folders found no checkout with that git remote')):
             c.post(f'/api/tasks/{tid}/dispatch', json={'kind': 'coding', 'agent': 'coding'})
             c.post(f'/api/tasks/{tid}/dispatch', json={'kind': 'coding', 'agent': 'coding'})
         self.assertTrue(funnel.held_for_repo(s.get_task(tid)))

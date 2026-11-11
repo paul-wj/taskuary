@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { heldActsLine, proposalPresentation, reviewStatusLabel, reviewText } from "../src/reviewProposal.js";
+import { heldActsLine, proposalPresentation, reviewStatusLabel, resultOf, reviewText } from "../src/reviewProposal.js";
 import { getLocale, setLocale } from "../src/i18n.js";
+
+// The presentation words below are read in English (Node has no navigator.language; the app runs in the owner's locale).
+setLocale("en");
 
 const playbook = {
   Kind: "action",
@@ -156,7 +159,51 @@ test("a held delete names the folder it aims at, and the line over the card says
   assert.match(proposalPresentation(push).context, /it leaves this computer/);
   const browse = { Kind: "action", DraftText: JSON.stringify({ action: "browser_act", sid: "g1", command: "agent-browser click @e1" }) };
   assert.doesNotMatch(heldActsLine([del]), /browser/);
-  assert.match(heldActsLine([del]), /^This step waits for your yes\./);
+  assert.match(heldActsLine([del]), /^This step waits for your yes/);
   assert.match(heldActsLine([browse]), /^The agent's browser waits/);
   assert.match(heldActsLine([browse, del]), /^These steps wait/);
 });
+
+// THE OWNER, 2026-11-09: a held run's card was only "Approve runs: <a long PowerShell line>" with nothing saying why. It leads with the
+// agent's own words for the call, else what the gate read it as, and why it waits; the raw line is folded under "Show the command"
+test("a held shell step leads with what it does and why, its command folded", () => {
+  const p = (x) => proposalPresentation({ Kind: "action", Reason: "held before it ran, in the agent's shell: delete build in ledger - it can't be undone",
+    DraftText: JSON.stringify({ action: "shell_act", sid: "s1", command: "Remove-Item -Recurse -Force C:\work\ledger\build", what: "delete build in ledger",
+      why: "it can't be undone", ...x }) });
+  const own = p({ about: "clean checkout before the release build" });
+  assert.equal(own.lead, "Clean checkout before the release build");
+  assert.equal(own.leadWhy, "Held before it ran - it can't be undone: it would delete build in ledger.");
+  assert.equal(own.folded, true);
+  const gate = p({});
+  assert.equal(gate.lead, "Delete build in ledger"); assert.equal(gate.leadWhy, "Held before it ran - it can't be undone.");
+});
+
+test("a break-out card says the new task and what moves to it, and its result names the task", () => {
+  const p = { action: "break_out", title: "Renew the Trainly seats", summary: "Erin's ask about seats, apart from the invoice", messages: [12], items: [],
+    moves: "Erin Blake: can we renew the Trainly seats before Friday?" };
+  assert.equal(reviewText({ Kind: "action", DraftText: JSON.stringify(p) }),
+    "Erin's ask about seats, apart from the invoice\n\nErin Blake: can we renew the Trainly seats before Friday?");
+  const card = proposalPresentation({ Kind: "action", DraftText: JSON.stringify(p), Reason: "the agent proposes to move 1 message to a task of its own" });
+  assert.equal(card.destination, "Renew the Trainly seats");
+  assert.equal(card.readOnly, true);
+  const done = { ...p, result: { task: 9, ref: "TQ-0009", said: "TQ-0009 is the new task: Renew the Trainly seats" } };
+  assert.deepEqual(resultOf({ Kind: "action", Status: "approved", FinalText: JSON.stringify(done) }),
+    { said: "Approved · moved to its own task", what: "TQ-0009 is the new task: Renew the Trainly seats", url: "", command: "" });
+});
+
+test("a save-as-routine card shows the script whole and read-only, with when it runs on its own line", () => {
+  const script = "import sys, json\nprint(json.dumps([]))";
+  const p = { action: "save_routine", title: "Late fees", script, runs: "daily 07:00", prompt: "Say which invoices carry a fee.",
+    reads: { type: "local_file", path: "C:/exports/ar-*.csv" } };
+  const rv = { Kind: "action", DraftText: JSON.stringify(p), Reason: 'the agent proposes to save a script as the routine "Late fees", to run daily 07:00' };
+  assert.equal(reviewText(rv), `It reads: C:/exports/ar-*.csv · local file\n\n${script}\n\nThen an AI step reads what it printed: Say which invoices carry a fee.`);
+  assert.equal(reviewText({ Kind: "action", DraftText: JSON.stringify({ action: "save_routine", title: "Late fees", script }) }), script);
+  const card = proposalPresentation(rv);
+  assert.equal(card.destination, "daily 07:00 · Late fees");
+  assert.equal(card.readOnly, true);
+  const done = { ...p, result: { source: 7, link: "#report=7", said: 'Saved the routine "Late fees" - it runs daily 07:00.' } };
+  assert.deepEqual(resultOf({ Kind: "action", Status: "approved", FinalText: JSON.stringify(done) }),
+    { said: "Approved · saved the routine", what: 'Saved the routine "Late fees" - it runs daily 07:00.', url: "", command: "" });
+});
+
+

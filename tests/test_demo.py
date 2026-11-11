@@ -10,7 +10,8 @@ nothing is a design, a deny list is a control - and the list is written so that 
 added next month is refused until somebody decides otherwise.
 """
 import os
-import time, unittest
+import tempfile, time, unittest
+from pathlib import Path
 from unittest import mock
 
 from taskuary import demo
@@ -262,7 +263,7 @@ class TheAdvisorSpeaksInTheDemoTests(unittest.TestCase):
     def test_an_item_on_the_table_gets_a_verb(self):
         """The demo is where newcomers first meet the Advisor: an item on the table is decided at once, never pending - and NO DEFAULT
         VERB (the owner, 2026-10-28): a button is lit only beside its fact, so the scripted line that only explains the button lights none."""
-        from taskuary import advisor, funnel
+        from taskuary import advisor, funnel, rulebook
         s = MemoryStore(); demo.seed(s)
         with on(), mock.patch('taskuary.terminal.live_sessions', lambda tail=0: []):
             funnel.invalidate()
@@ -273,7 +274,8 @@ class TheAdvisorSpeaksInTheDemoTests(unittest.TestCase):
             got = advisor.for_key(s, keys[0])
         funnel.invalidate()
         self.assertTrue(got.get('state'), got); self.assertNotIn('pending', got)
-        self.assertTrue(not got.get('verb') or got['verb'] == 'next' or got.get('line'), got)
+        # ...or the move the state's own fact names (rulebook.MOVES: an ask no agent took lights Send to agent - the owner, 2026-11-10)
+        self.assertTrue(not got.get('verb') or got['verb'] == 'next' or got.get('line') or got['state'] in rulebook.MOVES, got)
 
 
 class TheWorldTests(unittest.TestCase):
@@ -383,6 +385,23 @@ class TheWorldTests(unittest.TestCase):
             self.assertIn('Keep the inter-company rows?', i['line'])
         finally: r.close()
 
+    def test_a_replays_chat_shows_its_run_and_the_question_its_row_waits_on(self):
+        """The walk audit, 2026-11-10: the coding issue's row read "agent waiting on you" over a chat that showed nothing - the replay typed only
+        to its screen. It records its run as an ACP session does and ends on its question, so the chat shows what the row says."""
+        from taskuary import codingchat, session_artifacts, terminal
+        s = MemoryStore()
+        tid = s.create_task({'Title': 'the export', 'Kind': 'coding', 'Status': 'open'}, 'o')
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(session_artifacts, 'root', lambda: Path(d)), mock.patch.object(terminal, 'SESSIONS', {}):
+            r = demo.Replay(s, tid, lines=[(t, 0.001) for t, _ in demo.TRANSCRIPT]); terminal.SESSIONS[r.sid] = r
+            for _ in range(500):
+                if not r.busy: break
+                time.sleep(0.01)
+            chat = codingchat.chat(s, tid)
+            kinds = [u['sessionUpdate'] for u in chat['sessions'][-1]['updates']]
+            self.assertIn('tool_call', kinds); self.assertIn('agent_message_chunk', kinds)
+            self.assertEqual((chat['asking'] or {}).get('text'), demo.TRANSCRIPT[-1][0])
+            r.close()
+
     def test_a_replay_says_when_it_moves(self):
         """Stopping to wait, and being closed, are session transitions: each wakes the views as a real run's events do (G7)."""
         from taskuary import live
@@ -421,10 +440,11 @@ class TheSameWorldAtEveryHourTests(unittest.TestCase):
             with fake_clock(day.replace(hour=h, minute=mi)), mock.patch.object(terminal, 'live_sessions', return_value=[]):
                 funnel.invalidate(); funnel.forget_states(); funnel._SOURCES.update(at=0.0, by={})
                 s = MemoryStore(); demo.seed(s); funnel.invalidate()
-                seen[f'{h:02d}:{mi:02d}'] = sorted((i['kind'], i['key']) for i in funnel.build(s)['items'])
+                # a row's own key is minted when its home starts; the names it answers to are the same in every home
+                seen[f'{h:02d}:{mi:02d}'] = sorted((i['kind'], sorted(a for a in i['aliases'] if not a.startswith('processing:'))) for i in funnel.build(s)['items'])
         funnel.invalidate()
         first = next(iter(seen.values()))
-        self.assertEqual(sum(k == 'fyi' for k, _ in first), 4, first)
+        self.assertEqual(sum(k == 'fyi' for k, _ in first), 12, first)
         for at, pile in seen.items(): self.assertEqual(pile, first, at)
 
 

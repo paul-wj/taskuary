@@ -58,6 +58,30 @@ class SchemaTests(unittest.TestCase):
         view = (ROOT / 'website' / 'src' / 'SettingsView.jsx').read_text(encoding='utf-8')
         self.assertNotIn('m.type === "profile"', view); self.assertNotIn('profileNames', view)
 
+    def test_the_top_search_finds_a_panel_by_what_it_holds(self):
+        """The saved sign-ins are a panel, not a knob: "password" and "vault" found nothing in the top search (2026-11-10)."""
+        from taskuary import search
+        for q in ('password', 'vault', 'saved sign-ins', 'saved sign', 'saved passwords'):
+            hrefs = [h['href'] for h in search._settings(q.split())]
+            self.assertIn('#settings=config&group=Agent%20permissions&key=panel%3Asignins', hrefs, q)
+
+    def test_a_panel_is_added_beside_the_setting_never_in_its_place(self):
+        """"where do I change my signature" is the Email signature knob: the hand signature panel took the Assistant's link (CI, 2026-11-10).
+        A panel joins for a word only it has ("hand signature", "password"), or a heading that says more ("saved sign") - and one whose own
+        words hold a word typed joins BEHIND the knob, never dropped (the owner, 2026-11-10: "login" found no Saved sign-ins)."""
+        from taskuary import search
+        from taskuary.store import MemoryStore
+        s, sig = MemoryStore(), '#settings=config&group=Replies&key=email_signature'
+        for q in ('where do I change my signature', 'change my signature', 'signature'):
+            got = [h['href'] for h in search.places(s, q)]
+            self.assertEqual(got[0], sig, q)
+            self.assertGreater(got.index('#settings=config&group=Replies&key=panel%3Ahandsig'), got.index(sig), q)
+        self.assertIn('#settings=config&group=Replies&key=panel%3Ahandsig', [h['href'] for h in search.places(s, 'my hand signature')])
+        self.assertEqual(search.places(s, 'saved passwords')[0]['title'], 'Saved sign-ins')
+        self.assertEqual(search.places(s, 'saved sign')[0]['title'], 'Saved sign-ins')
+        for k, p in settings_schema.panels().items():
+            self.assertIn(p['group'], settings_schema.GROUPS, k)
+
 
 if __name__ == '__main__':
     unittest.main()

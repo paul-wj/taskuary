@@ -26,6 +26,13 @@ from .funnel_presentation import present as _present, attach as _attach
 from .processing_order import attention_band, gave_up, priority_rank
 from .workerstate import says as agent_says, sub_state, request_line   # funnel.says is a message's subject
 
+
+# NOTHING IS ASKED ON THE RAIL (the owner, 2026-11-10: "why would we ask anything in the assistant rail? remove that no need for that
+# ever"): a row whose agent asked says only that it waits on you - the question is the card inside the task, where it is answered. An
+# approval or a stall is no question, and keeps its words
+def rail_line(agent, req: dict) -> str:
+    return agent_says('parked', agent) if sub_state(req=req) == 'asking' else request_line(agent, req)
+
 # ONE VOCABULARY, in taskuary/lanes.json - the words, roles and marks a lane wears, loaded here and
 # imported by the desktop (website/src/funnelPile.js) from the same file. They were two hand-kept
 # tables in two languages and had already drifted: this file said a report lane reads 'landed' while
@@ -79,20 +86,9 @@ SOON_MIN, ALERT_MIN, STARTED_MIN = 120, lanes.ALERT_MIN, 5   # calendar visibili
 SETUP_GRACE_MIN = 15              # a walk-through the owner is still in does not raise its own hand
 LATER_HOURS = 3                   # "not now" - it comes back this much later
 FEED_DAYS = 7
-# the owner's two knobs (Settings > Assistant): how far back the pipe reaches for ordinary mail - a
-# first launch must not surface a year of never-triaged mail - and how much it holds at once.
-# Drafts waiting for a yes and agents parked on a question ignore the window: they are on you
-# whenever they happened.
+# what two Settings knobs ship as (settings_defaults.json is written from them): how far back unread ordinary mail
+# reaches (funnel_hours, read by the store) and the cap the rail once had (funnel_max, a retained value nothing applies).
 HOURS_DEFAULT, MAX_DEFAULT = 12, 25
-# The assistant's OWN lines get a longer window than mail. A mail going quiet after twelve hours
-# is fine; its standing note that something is loose is the opposite - it is still true tomorrow,
-# and expiring it is how "TQ-0329 hasn't moved, Paula asked for that file today" left the pipe
-# unseen (the owner, 2026-09-04: "ideas ... should come back every time assistant thinks of
-# something new"). Measured on the owner's own store: at 12h two of the 64 open ideas reach the
-# pipe, at 24h five, at 72h thirty-eight - so a day is the point where more becomes a flood
-# rather than a reminder. An idea whose facts change is re-said, which bumps LastSaid and brings
-# it back on its own; this window is only about how long an undecided one waits to be seen.
-IDEA_HOURS = 24
 # A failed run is named by convention: reports.py sends '<title> - FAILED' (reports.run_report_source
 # reads the same suffix back). Matching those words ANYWHERE in the subject called 'Process Error
 # Check - 0 rows' a failure, because the report's own name contains 'Error' (the owner, 2026-09-03:
@@ -115,6 +111,10 @@ DWELL = 12.0                       # seconds a new state must survive before the
 _REPORT_SUMMARY = re.compile(r'(?im)^summary:\s*(.+)$')
 _LIVE_UNSET = object()
 _LOCK = threading.Lock()
+# THE RAIL LAST BUILT, kept past invalidate() (2026-11-09): every write empties _CACHE, and a press or the Advisor that found it empty waited
+# behind the next build - Mark done 67 s, the Advisor 84 s, while a busy agent's writes and two tabs rebuilt it in turn. What only needs
+# the rail as it stood (known) reads this, and never takes _LOCK. `began`: when the build behind it started (pile's convoy check).
+_KNOWN = {'store': None, 'pile': None, 'full': None, 'began': 0.0}
 
 
 MUTES_KEY = 'funnel_mutes'            # the owner's standing "never show me these again" rules
@@ -165,16 +165,16 @@ def says(r: dict) -> str:
     # reading "rrdbreports@northwind.example - Northwind - PCC ..."). Only the agent rows ever preferred it.
     # the TASK's title first - it is the whole job, where a follow-up's own line is only the latest
     # thing said about it - then this message's own verdict line, for the rows that never became work
-    title = _short(r.get('Title') or r.get('TriageTitle') or '', 140)
-    if title and not _CHAT_TITLE.match(title): return title
-    subj = _short(r.get('Subject') or '', 140)
+    # ...and the chat's own name stands aside only where it IS the title - the subject a connector wrote, copied over when triage named
+    # none: a title triage wrote stands whatever its words ("Chat with Gail about the budget" was swapped for the opening line)
+    title, subj = _short(r.get('Title') or r.get('TriageTitle') or '', 140), _short(r.get('Subject') or '', 140)
+    if title and not (title == subj and _CHAT_TITLE.match(title)): return title
     said = f"{r.get('FromName') or ''} in {r.get('SourceName') or ''}"
     if subj and subj != said and not _CHAT_TITLE.match(subj): return subj
     return _cut(_gist(r.get('Preview') or r.get('BodyText') or '', 240), PILL) or subj
 
 
 CHAT_READY_LANES = ('blocked', 'approve')
-def lane_index(lane: str) -> int: return LANES.index(lane) if lane in LANES else len(LANES)
 
 
 def _item(key, kind, lane, title, *, who='', when='', since='', why='', mid=None, tid=None, rid=None,
@@ -275,6 +275,9 @@ def _preview(store, r: dict):
 def from_feed(store, rows: list, *, canonical=False) -> list:
     out, agents, reviews, threads = [], set(), set(), {}
     speaks, more = thread_speaker(rows), {}
+    from .ingest import own_addresses
+    from .wrapup import reads_reply_row
+    own = own_addresses(store)
     for r in rows:
         if not canonical and _feed_skip(r): continue
         # Generated Assistant reports carry durable ideas. Those ideas are produced below as the
@@ -301,7 +304,9 @@ def from_feed(store, rows: list, *, canonical=False) -> list:
                     # the mail's own subject beside triage's title, and the danger triage read in it (message.Danger) - shown, never a gate
                     subject=_short(r.get('Subject') or '', 140), danger=_short(r.get('Danger') or '', 200) or None,
                     # ...and whom it is aimed at, the owner or the agent: a scam on the owner is said as one (the owner, 2026-10-30)
-                    danger_aim=(r.get('DangerAim') or 'agent') if r.get('Danger') else None)
+                    danger_aim=(r.get('DangerAim') or 'agent') if r.get('Danger') else None,
+                    # ...and whether anybody reads a reply to it: a card's own Reply stands only then (wrapup.reads_reply_row, the owner 2026-11-10)
+                    replies=reads_reply_row(store, r, own))
         if r.get('Jira'): base['jira'] = r['Jira']
         subj = says(r)
         if r.get('MsgStatus') == 'triaging':
@@ -523,9 +528,12 @@ def held_clause(reason) -> str | None:
 # A START THAT ASKED "WHICH REPOSITORY?" (the owner, 2026-10-12: "if i don't fill it out it should warn me at least?"): the
 # answer was a line on a sheet that closed at once, and the task said "nobody on it" as if nothing had been asked for
 HELD_REPO = 'held:repo'
-# ...and how a start's refusal says it: the checkout guard's own sentences (terminal.open_session), read by every door that starts one. Only a
-# repository somebody NAMED and nobody can find is asked about now - one nothing placed opens in its task's folder and the agent picks (repochoice)
-NEEDS_REPO = re.compile(r'no local path|does not exist', re.I)
+# ...and how a start's refusal is known: the checkout guard's own refusal (terminal.NeedsRepo), by its type through whatever door re-raised it -
+# never its sentence. Only a repository somebody NAMED and nobody can find is asked about now - one nothing placed opens in its task's
+# folder and the agent picks (repochoice)
+def needs_repo(e) -> bool:
+    from .terminal import NeedsRepo
+    return any(isinstance(x, NeedsRepo) for x in (e, getattr(e, '__cause__', None), getattr(e, '__context__', None)))
 
 def held_for_repo(t) -> bool: return HELD_REPO in re.split(r'[\s,]+', str((t or {}).get('Tags') or ''))
 
@@ -537,21 +545,9 @@ def hold_for_repo(store, tid, reason=''):
 
 
 def news_since_agent(store, tid) -> dict | None:
-    """The message somebody sent AFTER the agent's last session ended - what an open task is about now - or None.
-
-    An agent finished, the task closed, and days later the sender wrote again: the task reopened, correctly, and then
-    opened on the old session's "You ended the session - its report is written" as if that were the news (the owner,
-    2026-10-12: "it has to be clear what is going on ... it was reopened since x happened so reopen coding session")."""
-    from . import terminal
-    t = store.get_task(tid) or {}
-    if not t or t.get('Status') in ('done', 'dropped'): return None
-    if getattr(terminal.session_for(tid), 'alive', False): return None
-    tr = store.last_transcript(tid) or {}
-    evs = store.worker_events(tid) or []
-    ended = max(str(tr.get('CreatedAt') or ''), str(evs[-1].get('CreatedAt') or '') if evs else '')
-    if not ended: return None                     # no agent ever ran: nothing for news to come after
-    m = store.last_inbound_on_task(tid) or {}
-    return m if str(m.get('SentAt') or '') > ended else None
+    "The message somebody sent AFTER the agent's last session ended - what an open task is about now - or None (taskstate.TaskState.news)."
+    from . import taskstate
+    return taskstate.task_state(store, tid=tid).news
 
 
 def news_line(store, tid, m=None) -> str:
@@ -575,13 +571,15 @@ def _sentence(x: str) -> str:
     return x if not x or x.endswith(('.', '!', '?')) else _cap(x.rstrip(' -;,')) + '.'
 
 
-def run_failed(store, tid, live_too: bool = False) -> dict | None:
+def run_failed(store, tid, live_too: bool = False, st=None) -> dict | None:
     """{sentence, fix} when the task's last run ended FAILED by its own word (workerstate.ended), nothing live on it: the reason in
-    plain words (failures.classify) and the place that fixes it - Connect an AI for an agent with no AI to run on - else None."""
+    plain words (failures.classify) and the place that fixes it - Connect an AI for an agent with no AI to run on - else None.
+    `st`: the task's record (taskstate.TaskState), when the caller holds it - its ending is read there."""
     from . import workerstate
     from .failures import classify
-    if workerstate.ended(store, tid, live_too) != 'failed': return None          # live_too: whatever the session does (R2)
-    last = store.last_worker_event(tid, kinds=('failed',)) or {}
+    # live_too: whatever the session does (R2)
+    if (workerstate.ended(store, tid, live_too) if st is None or live_too else st.end) != 'failed': return None
+    last = (st.last(('failed',)) if st else store.last_worker_event(tid, kinds=('failed',))) or {}
     c = classify(' '.join(str(last.get('Text') or '').split()) or 'it stopped without saying why', tid=tid)
     return {'sentence': _sentence(c['sentence']), 'fix': c['fix']}
 
@@ -605,15 +603,28 @@ def _news_i18n(store, tid, message):
                        day=_story_i18n('today') if day == 'today' else day, time=when[11:16], agent=_story_i18n(who))
 
 
-def timed_out(store, tid) -> str:
+def timed_out(store, tid, st=None) -> str:
     "The run's own sentence when its last word is a turn that ran out of time (general.TIMED_OUT), nothing live on it - else ''."
     from . import general, workerstate
-    last = store.last_worker_event(tid, skip=workerstate.NOTES)
-    ok = last and last['Kind'] == 'stopped' and last.get('Source') == general.TIMED_OUT and workerstate.ended(store, tid) == 'stopped'
+    last = st.last(skip=workerstate.NOTES) if st else store.last_worker_event(tid, skip=workerstate.NOTES)
+    ok = (last and last['Kind'] == 'stopped' and last.get('Source') == general.TIMED_OUT
+          and (workerstate.ended(store, tid) if st is None else st.end) == 'stopped')
     return str(last.get('Text') or '') if ok else ''
 
 
-def idle_state(store, tid) -> dict:
+def held_offer(store, tid, msgs=None) -> dict | None:
+    """THE HOLD'S PRESSES, one function for every surface that draws them (the held box, the chat's HeldStart, the phone): the Trust presses
+    worded for the channel (senders.trust_offer), and `once` - whether Run anyway can start it. A hold that is a start REFUSED for a
+    stranger's words (ingest.held_start) offers no Run anyway: on the same AI it is refused again, and a press that cannot work is not
+    shown (the owner's rules, part 3: tell the truth; the recorded walk, 2026-11-10)."""
+    from .ingest import REFUSED
+    from .senders import trust_offer
+    if (offer := trust_offer(store, tid, msgs)) is None: return None
+    last = next((a['Action'] for a in store.list_audit('task', tid, 50) if a.get('Action') in (REFUSED, 'release', 'release_once')), None)
+    return {**offer, 'once': last != REFUSED}
+
+
+def idle_state(store, tid, st=None) -> dict:
     """Why nothing is running on a task that was handed to an agent and never began: {'kind', 'line', 'row'}.
 
     "waiting to start" says the state and not the cause, so the owner reads it as a queue that will
@@ -630,12 +641,14 @@ def idle_state(store, tid) -> dict:
     and nothing restarts by itself. Then a run that really ran and stopped. Then triage's own words
     about why it declined to start (the first-time-sender gate writes them, and a no-reply address
     will never clear it). `line` is '' when the task is not actually idle - the caller decides who asks.
+
+    `st`: the task's record (taskstate.TaskState), when the caller holds one. The facts are its own - this words them, in this order.
     """
-    from . import terminal
+    from . import taskstate
     from .blackboard import is_permanent, failed_line
-    t = store.get_task(tid) or {}
+    st = st or taskstate.task_state(store, tid=tid)
+    t = st.t
     agent = agent_word(t.get('Kind'))
-    tags = str(t.get('Tags') or '')
     old = ' It has been waiting since yesterday.' if str(t.get('CreatedAt') or '')[:10] < datetime.now().strftime('%Y-%m-%d') else ''
     def out(kind, line, row='', line_i18n=None, row_i18n=None):
         static_rows = {'asks to move - where is the code?', 'not started - it needs to know where the code is',
@@ -645,20 +658,19 @@ def idle_state(store, tid) -> dict:
         if line_i18n: result['line_i18n'] = line_i18n
         if row_i18n or row in static_rows: result['row_i18n'] = row_i18n or _story_i18n(row)
         return result
-    news = news_since_agent(store, tid)
-    if news: return out('news', news_line(store, tid, news), line_i18n=_news_i18n(store, tid, news))
-    # A time-limited run paused; it was not stopped by the owner.
-    if (to := timed_out(store, tid)): return out('left', to, 'cut off by a time limit - continue it')
-    if terminal.SAVED in [x.strip() for x in tags.split(',')]:
-        return out('saved', 'You stopped it and its report is written.',
-                   line_i18n=_story_i18n('You stopped it and its report is written.'))
-    if terminal.INTERRUPTED in [x.strip() for x in tags.split(',')]:
+    if st.news: return out('news', news_line(store, tid, st.news), line_i18n=_news_i18n(store, tid, st.news))
+    # ...and a run that RAN OUT OF TIME says so in its own words, whatever mark the task wears: "You stopped it" stood over a turn killed at
+    # its limit, the owner having stopped nothing (2026-11-04) - it paused, and Continue picks it up (general.TIMED_OUT)
+    if (to := timed_out(store, tid, st)): return out('left', to, 'cut off by a time limit - continue it')
+    if st.saved: return out('saved', 'You stopped it and its report is written.',
+                            line_i18n=_story_i18n('You stopped it and its report is written.'))
+    if st.interrupted:
         return out('interrupted', f'Taskuary closed while {agent} had this, so its work stopped there. Nothing restarts by itself.' + old,
                    line_i18n=_idle_i18n('Taskuary closed while {agent} had this, so its work stopped there. Nothing restarts by itself.', agent, old))
     if held_for_repo(t):
         # plain words: "repository" is on the jargon list (words.json) - the row's own Choose where the code is answers it
         # ...and a run that found the work is in other code asked to move it (wrapup.asks_to_move): it did start, so it never says "before it can start"
-        if store.last_transcript(tid):
+        if st.transcript:
             return out('held', f'Waiting for you. {agent[:1].upper() + agent[1:]} found the work is not in this code and asks where to move it - '
                                'change where the code is and it starts there.', 'asks to move - where is the code?',
                        line_i18n=_idle_i18n('Waiting for you. {Agent} found the work is not in this code and asks where to move it - change where the code is and it starts there.', agent))
@@ -695,14 +707,18 @@ def idle_state(store, tid) -> dict:
         return out('queued', f'Waiting its turn. Every agent slot is busy, and {agent} starts on this when one frees up.' + old,
                    'queued - starts when a slot frees',
                    line_i18n=_idle_i18n('Waiting its turn. Every agent slot is busy, and {agent} starts on this when one frees up.', agent, old))
+    # A LIVE SESSION IS NOT "NOT STARTED" (the stress test, 2026-11-02): a general session leaves no run row and no transcript while it lives, so
+    # a parked one fell through every fact below to "Not started yet" - and NOT "LEFT" EITHER (the audit, 2026-11-10): a coding session parked
+    # over its reply read "ran on this and left without finishing it" off the transcript an earlier session of it filed
+    if (live := live_session_state(tid, agent)): return out('live', *live, line_i18n=_story_i18n(live[0]))
     # A RUN THAT FAILED SAYS SO, with its reason in plain words (owner-approved, 2026-10-21): it read "Not started yet. Nothing has
     # started the assistant on this." under a chip saying stopped, while the run's own last word was why it failed
-    if (f := run_failed(store, tid)):
+    if (f := st.failed):
         reason = f['sentence']
         return out('failed', f"Failed - {reason}", f"failed - {reason[:1].lower()}{reason[1:]}",
                    line_i18n=_story_i18n('Failed - {reason}', reason=reason),
                    row_i18n=_story_i18n('failed - {reason}', reason=f'{reason[:1].lower()}{reason[1:]}'))
-    if any(r.get('Status') in ('stopped', 'failed', 'error') for r in (store.list_runs(tid) or [])):
+    if any(r.get('Status') in ('stopped', 'failed', 'error') for r in st.runs):
         return out('left', f'{_cap(agent)} ran on this and stopped without finishing it.' + old,
                    line_i18n=_idle_i18n('{Agent} ran on this and stopped without finishing it.', agent, old))
     # ...and a pty worker leaves NO run row at all - it writes a transcript on the way out, which is
@@ -715,13 +731,13 @@ def idle_state(store, tid) -> dict:
     # answered, and the step said the agent "left without finishing" over its own finished record)
     # ...and nothing came in since, or news_since_agent would have said so above: "Nothing has started on what came in since" was
     # said over a batch whose session closed with nothing new on it at all (TQ-1112 shape) - the task is simply still open
-    if session_finished(store, tid):
+    if st.finished:
         return out('left', f'{_cap(agent)} finished its work - its record is below. The task is still open.' + old,
                    line_i18n=_idle_i18n('{Agent} finished its work - its record is below. The task is still open.', agent, old))
-    if store.last_transcript(tid):
+    if st.transcript:
         return out('left', f'{_cap(agent)} ran on this and left without finishing it.' + old,
                    line_i18n=_idle_i18n('{Agent} ran on this and left without finishing it.', agent, old))
-    msg, lifted = store.last_inbound_on_task(tid) or {}, False
+    msg, lifted = st.inbound, False
     for r in reversed(store.message_routes(msg.get('MessageId')) or []) if msg.get('MessageId') else []:
         said = held_clause(r.get('Reason'))
         if said is None: continue
@@ -741,23 +757,29 @@ def idle_state(store, tid) -> dict:
             # THE HOLD OFFERS ITS WAY OUT (the owner, 2026-10-26: "we should have button on untrusted user to either trust user or trust
             # domain and then we won't have issue again"): the box that says why nothing started carries the two presses, worded for
             # the channel (senders.trust_offer)
-            from .senders import trust_offer
             return {**out('held', f'Waiting for you. {_sentence(said)}' + old, 'held for you - not started',
-                          line_i18n=_idle_i18n('Waiting for you. {reason}', agent, old, reason=_sentence(said))), 'trust': trust_offer(store, tid)}
+                          line_i18n=_idle_i18n('Waiting for you. {reason}', agent, old, reason=_sentence(said))), 'trust': held_offer(store, tid)}
         return out('held', f'Waiting for you. {_sentence(said)}' + old, 'held for you - not started',
                    line_i18n=_idle_i18n('Waiting for you. {reason}', agent, old, reason=_sentence(said)))
+    # ...and a start refused for a stranger's words since (ingest.held_start) is that same hold, its Trust presses with it - never "couldn't
+    # start" over a Trust nowhere to press (the owner, 2026-11-10: "this is also weird bug?")
+    from .ingest import HOLD_TAG, NOT_STARTED
+    refused = lambda: next((_cap(_sentence(str(c['Body'])[len(NOT_STARTED):])) for c in reversed(store.list_comments(tid) or [])
+                            if str(c.get('Body') or '').startswith(NOT_STARTED)), '')
+    if HOLD_TAG in st.tags and (said := refused()):
+        return {**out('held', f'Waiting for you. {said}' + old, 'held for you - not started',
+                      line_i18n=_story_i18n('Waiting for you. {reason}', reason=_story_i18n(said))), 'trust': held_offer(store, tid)}
     if not auto_code_enabled(store) and (t.get('Kind') or '') == 'coding':
         return out('held', f'Waiting for you. Starting {agent} by itself is switched off, so it waits for you.' + old,
                    'held for you - not started',
                    line_i18n=_idle_i18n('Waiting for you. Starting {agent} by itself is switched off, so it waits for you.', agent, old))
     # ...the box says the hold is gone, and that it still waits for the owner's own Start: trusting is not starting (2026-10-26)
-    # ...and A LIVE SESSION IS NOT "NOT STARTED" (the stress test, 2026-11-02): a general session leaves no run row and no transcript while it
-    # lives, so a parked one fell through every fact above to "Not started yet. Nothing has started the assistant on this." - beside "needs you"
-    if (live := live_session_state(tid, agent)):
-        source = 'Waiting for you. {Agent} finished its turn and waits on you.' if live[1] == 'waiting on you' else '{Agent} is working on this.'
-        return out('live', *live, line_i18n=_idle_i18n(source, agent))
     if lifted: return out('idle', f'Not started yet. The sender is trusted now - start {agent} when you want it; what was held never starts by itself.' + old,
                           'not started yet', line_i18n=_idle_i18n('Not started yet. The sender is trusted now - start {agent} when you want it; what was held never starts by itself.', agent, old))
+    # ...and ANY START REFUSED ON ITS WAY IN says its reason here, as the log line that refused it did (ingest.not_started): a reply owed held
+    # by the day's ceiling, a switch or no AI read "Nothing has started the agent on this" in the box while the line under it said why
+    if not st.runs and not st.events and (said := refused()): return out('held', f'Waiting for you. {said}' + old, 'held for you - not started',
+                                 line_i18n=_story_i18n('Waiting for you. {reason}', reason=_story_i18n(said)))
     return out('idle', f'Not started yet. Nothing has started {agent} on this.' + old, 'not started yet',
                line_i18n=_idle_i18n('Not started yet. Nothing has started {agent} on this.', agent, old))
 
@@ -800,15 +822,15 @@ def agent_story(store, tid) -> dict | None:
     owner, 2026-10-11: "it should say what the agent did so far and was interrupted or it never started"). Facts only:
     not_started_why's sentence, and for work that went, the run's own worker events - no model. None when no agent
     was ever meant to have the task. The caller hides it behind a live session."""
-    from . import general, terminal
-    t = store.get_task(tid) or {}
+    from . import general, terminal, taskstate
+    st = taskstate.task_state(store, tid=tid); t = st.t          # one record: the story and its idle line tell the same facts
     if not t or t.get('Status') in ('done', 'dropped'): return None
-    tags = [x.strip() for x in str(t.get('Tags') or '').split(',')]
     who = agent_word(t.get('Kind'))
-    if (news := news_since_agent(store, tid)):
-        return {'kind': 'news', 'line': news_line(store, tid, news), 'line_i18n': _news_i18n(store, tid, news)}
-    left, q, st = agent_left(store, tid), store.get_dispatch(tid), idle_state(store, tid)
-    held, why = st['kind'] == 'held', st['line']
+
+    if st.news: return {'kind': 'news', 'line': news_line(store, tid, st.news), 'line_i18n': _news_i18n(store, tid, st.news)}
+    idle = st.idle
+    left, q = bool(st.left), store.get_dispatch(tid)
+    held, why = idle['kind'] == 'held', idle['line']
     if not (str(t.get('Assignee') or '').startswith('agent:') or left or q or held):
         # ...but WHY NONE WAS MEANT is said where the agent would be (the email walk, 2026-10-29): the owner's own task and a reply
         # opened on an empty Agent section, the reason only in triage's panel ("on your list - no agent works it")
@@ -816,21 +838,22 @@ def agent_story(store, tid) -> dict | None:
         return {'kind': 'none', 'line': why} if why else None
     # the sentence is whole and leads with its state ("Waiting for you.", "Couldn't start."): the page adds nothing before it
     # ...and a run that FINISHED is finished, not "not started" over its own "finished its work" sentence (G7, 2026-10-20)
-    if not left: return {'kind': 'held' if held else 'queued' if q else 'finished' if session_finished(store, tid)
-                                 else 'live' if st['kind'] == 'live' else 'idle', 'line': why,
-                         **{k: st[k] for k in ('line_i18n', 'row_i18n', 'why_i18n') if k in st},
-                         **({'trust': st['trust']} if held and st.get('trust') else {})}
-    evs = store.worker_events(tid) or []
+
+    if not left: return {'kind': 'held' if held else 'queued' if q else 'finished' if st.finished
+                                 else 'live' if idle['kind'] == 'live' else 'idle', 'line': why,
+                         **{k: idle[k] for k in ('line_i18n', 'row_i18n', 'why_i18n') if k in idle},
+                         **({'trust': idle['trust']} if held and idle.get('trust') else {})}
+    evs = st.events
     sid = str(evs[-1]['Sid']) if evs else None
     run = [e for e in evs if str(e['Sid']) == sid]
     cut = next((e for e in reversed(run) if e['Kind'] == 'disconnected' and e.get('Source') in terminal.INTERRUPTING), None)
-    interrupted = terminal.INTERRUPTED in tags
+    interrupted = st.interrupted
     # a restart that finds the session already dead writes no worker event - release_task's note on the task is the cut
     if interrupted and not cut:
         n = next((c for c in reversed(store.list_comments(tid) or []) if c.get('Actor') in terminal.INTERRUPTING), None)
         if n: cut = {'Kind': 'disconnected', 'Source': n['Actor'], 'CreatedAt': n['CreatedAt'], 'Sid': sid}; run = [*run, cut]
     how = 'restarted' if cut and cut.get('Source') == 'startup' else 'closed'
-    line, line_i18n = why, st.get('line_i18n')
+    line, line_i18n = why, idle.get('line_i18n')
     if interrupted and cut:
         t0, t1 = _dt(run[0]['CreatedAt']), _dt(cut['CreatedAt'])
         mins = int((t1 - t0).total_seconds() // 60) if t0 and t1 else None
@@ -850,37 +873,35 @@ def agent_story(store, tid) -> dict | None:
     if len(steps) > 8: steps = steps[:1] + steps[-7:]
     said = next((e for e in reversed(run) if e['Kind'] == 'turn_end' and str(e.get('Text') or '').strip()), None)
     # ...and a run that FAILED is a failure, with the place that fixes it when there is one (Connect an AI): the step offers Try again
-    failed = st['kind'] == 'failed' and not interrupted
+    failed = idle['kind'] == 'failed' and not interrupted
     # ...and A RUN THAT FAILED SAYS WHY FIRST, whatever cut it after (the owner, 2026-10-26: "you can't see what you have to do"): a
     # restart's note led the Result and "could not start: this tool has no built-in reviewer" sat at the foot of the transcript under it
-    ran = run_failed(store, tid) or {}
+    ran = st.failed or {}
     why = ran.get('sentence') or ''
     return {'kind': 'interrupted' if interrupted else 'failed' if failed else 'left', 'line': line, 'steps': steps,
             'said': _said(said['Text']) if said else '', 'said_at': said['CreatedAt'] if said else None,
             **({'why': why} if why and why.rstrip('.') not in line else {}),
             **({'line_i18n': line_i18n} if line_i18n else {}),
-            **{k: st[k] for k in ('row_i18n', 'why_i18n') if k in st},
+            **{k: idle[k] for k in ('row_i18n', 'why_i18n') if k in idle},
             **({'fix': ran.get('fix')} if failed else {})}
 
 
 def no_agent_why(store, t: dict) -> str:
-    """Why no agent works a task of a kind no agent works (task, reply): the newest "No agent started:" line written on it
-    (ingest.not_started), else the ending its route recorded (ingest's `act`, the route reason's last clause). '' for agent work."""
+    """Why no agent works a task of a kind no agent works (task, reply): the ending its route recorded (ingest's `act`, the route reason's
+    last clause) - a start refused on it since is its hold (idle_state). '' for agent work."""
     from . import general
     from .ingest import NOT_STARTED
     if not t or t.get('Kind') in task_kinds.AGENT or general.handles(t): return ''
-    tid = t['TaskId']
-    said = next((str(c['Body']) for c in reversed(store.list_comments(tid) or []) if str(c.get('Body') or '').startswith(NOT_STARTED)), '')
-    if said: return said
-    r = next((r for r in reversed(store.list_routes(tid) or []) if r.get('Decision') != 'attach' and r.get('Reason')), None)
+    r = next((r for r in reversed(store.list_routes(t['TaskId']) or []) if r.get('Decision') != 'attach' and r.get('Reason')), None)
     tail = str(r['Reason']).rsplit(' · ', 1)[-1].strip().rstrip('.') if r else ''
     return f'{NOT_STARTED} {tail}.' if tail else ''
 
 
 def left_by_facts(tags, runs) -> str:
-    """'saved' | 'stopped' | '' from the task's tags and its runs - the rule the rail (agent_left) and All
-    (processing_all.row_lane) now share, so one task cannot read "waiting to start" in one and "agent stopped" in the
-    other (A16, 2026-09-25)."""
+    """'saved' | 'stopped' | '' from the task's tags and its runs - the rule the rail (taskstate.TaskState.left), the task's key
+    (TaskState.key) and All (processing_all.row_lane) share, so one task cannot read "waiting to start" in one and "agent stopped"
+    in the other (A16, 2026-09-25). All reads no further than this: its row is built from the census's view, which carries the
+    tags and the runs and not the worker's events or the transcript the record goes on to read."""
     from . import terminal
     tg = [x.strip() for x in str(tags or '').split(',')]
     if terminal.SAVED in tg: return 'saved'
@@ -898,33 +919,22 @@ def general_not_started(task: dict, has_conversation: bool, routes=()) -> bool:
 
 
 def session_saved(store, tid) -> bool:
-    """The owner ended the agent's session and its result is written (Stop and save): `session saved`, never
-    "left without finishing" (A1, 2026-09-25). A new session clears it (terminal.open_session)."""
-    from . import terminal
-    return terminal.SAVED in [x.strip() for x in str((store.get_task(tid) or {}).get('Tags') or '').split(',')]
+    "The owner ended the agent's session and its result is written - `session saved` (taskstate.TaskState.saved)."
+    from . import taskstate
+    return taskstate.task_state(store, tid=tid).saved
 
 
 def agent_left(store, tid) -> bool:
-    """An agent HAD this and is gone: the interrupted tag, a run that stopped, or a transcript with nothing
-    live behind it - the first three causes not_started_why names, in its order. The lane word for that
-    is `stopped`, never `queued`: a restart killed the agent's session on TQ-0616, the task list said
-    interrupted / needs you, and the rail said "handed to an agent, not started yet" (2026-09-17)."""
-    from . import terminal
-    t = store.get_task(tid) or {}
-    if news_since_agent(store, tid): return False        # what is open now is the message, not the session that went before it
-    if terminal.INTERRUPTED in [x.strip() for x in str(t.get('Tags') or '').split(',')]: return True
-    if session_saved(store, tid): return True
-    if any(r.get('Status') in ('stopped', 'failed', 'error') for r in (store.list_runs(tid) or [])): return True
-    # ...or the run's own last word says it failed or was stopped (workerstate.ended) - the reading taskstate takes (G7)
-    from . import workerstate
-    if workerstate.ended(store, tid) in workerstate.TERMINAL: return True
-    return bool(store.last_transcript(tid)) and not session_finished(store, tid)
+    "An agent HAD this and is gone - a session saved, cut off, stopped or failed, or a transcript nothing finished (taskstate.TaskState.left)."
+    from . import taskstate
+    return bool(taskstate.task_state(store, tid=tid).left)
 
 
-def session_finished(store, tid) -> bool:
+def session_finished(store, tid, evs=None) -> bool:
     """Did the LAST session end by finishing - it said it was done (its `finished` event), or its report was written
-    after it began? Then nothing was left half-done: a task open again after it is open for what arrived since."""
-    evs = store.worker_events(tid) or []
+    after it began? Then nothing was left half-done: a task open again after it is open for what arrived since.
+    `evs`: the task's worker events, when the caller has read them."""
+    if evs is None: evs = store.worker_events(tid) or []
     if not evs: return False                     # no account of the session at all: nothing says it finished
     sid = str(evs[-1]['Sid'])
     run = [e for e in evs if str(e['Sid']) == sid]
@@ -972,20 +982,26 @@ def agent_found(store, tid) -> str:
 
 
 def chat_done(store, task: dict, when=None) -> dict:
-    "A chat agent done for now - its turn asked nothing - as the task's wrap-up row: after a Send, that the reply went (taskstate.chat_moved_on)."
+    """A chat agent done for now - its turn asked nothing - as the task's wrap-up row: after a Send, that the reply went (taskstate.chat_moved_on).
+    In the task's own lane: the task is still open and still the owner's, so its row stays under Tasks where it was (rows never move
+    sections). It was built on `report`, a lane from before the rail had sections - and an open task jumped to the Reports pile the
+    moment its reply went, then left the rail at the next Next as a report that had been read (the agent walk, 2026-11-09)."""
     from . import taskstate
     tid = task['TaskId']
     why = ('your reply went out - the agent is done for now, and the task is still open' if taskstate.chat_moved_on(store, tid)
            else 'the agent is done for now - type to carry on, and the task is still open')
-    return _item(f"wrap:{tid}", 'wrapup', 'report', task.get('Title') or f'task {tid}', who='you', when=when, tid=tid,
+    return _item(f"wrap:{tid}", 'wrapup', 'yours', task.get('Title') or f'task {tid}', who='you', when=when, tid=tid,
                  priority=task.get('Priority'), chat_done=True, why=why)
 
 
-def paused_conversation(store, item: dict) -> dict:
-    """Render resumable general work as a paused agent conversation, never as an unowned task."""
+def paused_conversation(store, item: dict, st=None) -> dict:
+    """Render resumable general work as a paused agent conversation, never as an unowned task.
+    `st`: the task's record (taskstate.TaskState), when the row's builder holds one."""
     tid = item.get('tid')
     if not tid or item.get('lane') == 'working': return item
-    task = store.get_task(tid) or {}
+    from . import taskstate
+    st = st or taskstate.task_state(store, tid=tid)
+    task = st.t
     if task.get('Status') not in ('open', 'waiting', 'in_progress') or not store.saved_session(tid): return item
     try:
         from . import general
@@ -994,12 +1010,11 @@ def paused_conversation(store, item: dict) -> dict:
         # input, and the task reads as the task (a reply ready, on you), never "agent stopped" or "conversation saved" (the owner, 2026-11-05)
         # ...and AS IT READ LIVE (the owner, 2026-11-07): its open question still asks you, and a turn that asked nothing is done for now
         if general.idled(tid, store):
-            from . import taskstate
             if (q := taskstate.open_question(store, tid)):
                 return item | {'key': f'agent:{tid}', 'kind': 'agent', 'lane': 'blocked', 'asking': True, 'agent': 'assistant', 'mode': 'assistant',
                                'tail': [str(q.get('text') or '')[:300]], 'request_id': q.get('request_id'), 'request_kind': q.get('kind'),
-                               'since': _ts(q.get('at')) or item.get('since'), 'why': request_line(None, q)}
-            if item.get('lane') in ('yours', 'queued') and not store.waiting_on_owner(tid) and taskstate.state(store, task) == 'agentdone':
+                               'since': _ts(q.get('at')) or item.get('since'), 'why': rail_line(None, q)}
+            if item.get('lane') in ('yours', 'queued') and not store.waiting_on_owner(tid) and st.key == 'agentdone':
                 return item | {k: v for k, v in chat_done(store, task).items() if k in ('key', 'kind', 'lane', 'who', 'why', 'chat_done')}
             return item
     except Exception:
@@ -1012,8 +1027,8 @@ def paused_conversation(store, item: dict) -> dict:
     from .continuity import since_line, mail_since
     # ...and nothing is ASKING: no session is live here (session_for above), so `blocked` - "agent waiting on you", the hand - was
     # untrue of every saved or failed one (2026-10-22 walk). It is saved or stopped, and a failed last run says it failed (R2)
-    failed = run_failed(store, tid)
-    return item | {'key': f'agent:{tid}', 'kind': 'agent', 'lane': 'saved' if session_saved(store, tid) else 'stopped', 'paused': True,
+    failed = st.failed
+    return item | {'key': f'agent:{tid}', 'kind': 'agent', 'lane': 'saved' if st.saved else 'stopped', 'paused': True,
                    'agent': 'assistant', 'mode': 'assistant', 'tail': [last[:600]] if last else [],
                    'news': bool(mail_since(store, tid)), **({'failed': True} if failed else {}),
                    'why': (f"Failed - {failed['sentence']}" if failed else '')
@@ -1026,7 +1041,7 @@ def from_agents(store, live_state=_LIVE_UNSET, now: datetime = None) -> list:
     out = []
     fresh_setup = ((now or datetime.now()) - timedelta(minutes=SETUP_GRACE_MIN)).strftime('%Y-%m-%d %H:%M:%S')
     if live_state is _LIVE_UNSET:
-        try: live = term.live_sessions(tail=6)
+        try: live = observe()
         except Exception: return out
     else:
         live = live_state
@@ -1058,49 +1073,23 @@ def from_agents(store, live_state=_LIVE_UNSET, now: datetime = None) -> list:
             out.append(_item(f"agent:{tid}", 'agent', 'blocked', task.get('Title') or f'task {tid}', who=agent, when=t.get('started'),
                              tid=tid, agent=agent, priority=task.get('Priority'), since=req.get('at') or t.get('started'), asking=req.get('kind') == 'input_needed', tail=[str(req.get('text') or '')[:300]], sid=t.get('sid'),
                              channel=src, mode=t.get('mode') or 'terminal', request_id=req.get('request_id'), request_kind=req.get('kind'), choices=list(req.get('choices') or []),
-                             why=request_line(agent, req), questions=list(t.get('questions') or []), held=bool(t.get('held'))))
+                             why=rail_line(agent, req), questions=list(t.get('questions') or []), held=bool(t.get('held'))))
             continue
         # ONE READING of "is it asking" (A15, 2026-09-25): the session's own state and sentence (terminal.worker_fields,
         # general.info) - the rail read the screen with a question regex of its own, and could say "asked you" where the
         # Timeline, reading the session, said "is waiting on you". No words on the tail decide it any more (2026-10-11):
         # a session with no state of its own is parked, never "asked you" from a "?" in what it wrote.
         asking = t.get('state') == 'asking'
-        # ...A CHAT AGENT THAT ASKED NOTHING is done for now (the owner, 2026-11-07; after a Send too, 2026-11-06): its row said "Taskuary is
-        # waiting on you" - it is the task's wrap-up, "agent done", until something is typed again. A reply or an email it drafted still waits on you
-        from . import general
-        if not asking and t.get('mode') == 'assistant' and general.handles(task) and not store.waiting_on_owner(tid):
+        # ...AN AGENT THAT ASKED NOTHING is done for now (the owner, 2026-11-07; after a Send too, 2026-11-06; a coding agent's as well,
+        # 2026-11-10): its row said "Taskuary is waiting on you" - it is the task's wrap-up, "agent done", until something is typed again. A
+        # reply or an email it drafted still waits on you. One reading with the task's own state (taskstate.done_for_now)
+        from . import taskstate
+        if not asking and taskstate.done_for_now(store, task, {**t, 'mode': t.get('mode') or 'terminal'}):       # a row with no mode is a pane's, as below
             out.append(chat_done(store, task, t.get('started'))); continue
         out.append(_item(f"agent:{tid}", 'agent', 'blocked', task.get('Title') or f'task {tid}', who=agent, when=t.get('started'),
                          tid=tid, agent=agent, priority=task.get('Priority'), asking=asking, tail=tail[-4:], sid=t.get('sid'), mode=t.get('mode') or 'terminal',
                          channel=src,
                          why=t.get('line') or agent_says('asking' if asking else 'parked', agent)))
-    return out
-
-
-def from_proposals(store, used_rids: set, used_tids: set = frozenset()) -> list:
-    """A pending proposal with no mail and no task behind it - a switch the owner asked for in the
-    chat, waiting for their yes. Every other review reaches the pile through its message row, so a
-    task-less one could only be approved from the chat line that proposed it, and that scrolls away."""
-    out = []
-    for rv in store.list_reviews('pending'):
-        if rv.get('Kind') != 'action' or rv.get('MessageId') or rv.get('TaskId') or rv['ReviewId'] in used_rids: continue
-        out.append(_item(f"review:{rv['ReviewId']}", 'action', 'approve', rv.get('Reason') or 'a change waits for your yes',
-                         who='you asked for it', when=rv.get('CreatedAt'), rid=rv['ReviewId'],
-                         why='a setting waits for your yes - nothing changes until you approve it'))
-    # a task's emails (slots.py) have no message row to ride on, so they arrive here - ONE row per task, its NEWEST draft
-    # first (as the processing rail leads): approving it puts the next one up with the count one smaller. A task already
-    # on the rail (`used_tids`: its message, its reply) is not listed again - its card holds the emails (2026-10-06: a
-    # reply row and an email row for one task)
-    from . import slots
-    per = {}
-    for rv in store.list_reviews('pending'):
-        if rv.get('Kind') == slots.KIND and rv.get('TaskId') and rv['ReviewId'] not in used_rids and rv['TaskId'] not in used_tids:
-            per.setdefault(rv['TaskId'], []).append(rv)
-    for tid, rvs in per.items():
-        first, n = max(rvs, key=lambda r: r['ReviewId']), len(rvs)
-        out.append(_item(f"review:{first['ReviewId']}", 'review', 'approve', (store.get_task(tid) or {}).get('Title') or first.get('Reason') or 'emails wait for your yes',
-                         tid=tid, when=first.get('CreatedAt'), rid=first['ReviewId'], draft=True,
-                         why=f"{plural(n, 'email')} drafted for you to send"))
     return out
 
 
@@ -1129,7 +1118,7 @@ def slipped_followup(store, action: dict, now: datetime = None) -> tuple:
     """SLIPPED (spec 2026-10-12): a follow-up quiet past THAT person's day is the owner's move, in the slipped lane. The day is
     the ledger's (outcomes.late_after), the default the owner's (Settings -> Advisor); someone away never slips, and a reply
     from them ends it. Returns (lane, days past the person's day, days quiet, the person's day): lane is 'forgotten', 'answered'
-    (close the idea) or None - one rule for the legacy pile and the processing rail."""
+    (close the idea) or None - one rule for the rail and the Advisor's own read of it."""
     a = action or {}
     if a.get('type') != 'followup' or not a.get('who_email') or not a.get('asked_at') or a.get('away'): return (None, 0, 0, 0)
     from . import outcomes
@@ -1144,94 +1133,6 @@ def slipped_followup(store, action: dict, now: datetime = None) -> tuple:
 def slipped_why(who_email: str, quiet: int, day: int) -> str:
     from .processing_unread import holder_name
     return f"No answer from {holder_name('person:' + str(who_email or ''))} in {quiet} days - late for them after {day}"
-
-
-def from_forgotten(store, used_mids: set, used_tids: set, used_cids: set = frozenset(),
-                   reconcile: bool = True) -> list:
-    """The assistant's own open lines (assistant.py posts them on its half-hourly check: the ask that
-    slipped, the promise, the thread gone quiet). They enter the pipe when SAID - LastSaid, not the
-    age of the thread they are about - so a four-day-old silence raised this morning is this morning's."""
-    out, seen_cids = [], set()
-    for i in store.list_ideas('open'):
-        try: a = json.loads(i.get('ActionJson') or '{}')
-        except ValueError: a = {}
-        if i.get('Kind') == 'prep': continue                      # the calendar lane already has the meeting itself
-        # the report's card said work=no for this post: news to read on the Timeline, not a row here
-        if a.get('work') is False: continue
-        # A closed source task does NOT mean the Assistant post was read. The post may also name a
-        # separate follow-up or a pattern learned across several tasks (for example, recurring blank
-        # logins). It leaves Unread only through its own idea state, never as a side effect of closing
-        # the task it cited. (Closing the task it is ABOUT - its `about`, or its mail - writes that state: _task_ideas.)
-        m0 = (store.get_message(a['mid']) or {}) if a.get('mid') else {}
-        tid = a.get('tid') or m0.get('TaskId')
-        if not tid and m0.get('ConversationId'):
-            # the mail itself never joined the task, but its thread did: the thread's task is the fact
-            try: tid = next((c.get('TaskId') for c in store.thread_messages(conversation_id=m0['ConversationId'], limit=12) if c.get('TaskId')), None)
-            except Exception: tid = None
-        # ...and a line about a thread the owner has since REPLIED on is over too - the reply is the follow-up
-        from .assistant import sent_reply_for
-        sent = sent_reply_for(store, {'action': a})
-        if sent and _ts(sent.get('DecidedAt') or sent.get('CreatedAt')) >= _ts(i.get('LastSaid') or i.get('FirstSeen')):
-            if reconcile: store.set_idea_status(i['IdeaId'], 'done', 'funnel')
-            continue
-        if a.get('mid') in used_mids or (a.get('tid') and a['tid'] in used_tids): continue
-        # nothing to do until TRIAGE says otherwise (the owner, 2026-09-07: "assistant ideas and
-        # slipped stuff should be fyi unless triage turns it into task"). It used to open as 'slipped'
-        # - or 'report' for a systems section - so an idea whose verdict failed, or that was still
-        # waiting for an AI connector to reach one, was shown as work nobody had called work.
-        # the shared verdict decides the lane (PW-200), by the one rule the canonical rail uses too
-        from .processing_all import idea_lane
-        lane, tri = idea_lane(i), a.get('triage') or {}
-        slip, late, quiet, day = slipped_followup(store, a)
-        if slip == 'answered':                                   # they wrote back: the line is over, like the owner's own reply
-            if reconcile: store.set_idea_status(i['IdeaId'], 'done', 'funnel')
-            continue
-        if slip: lane = slip
-        why = a.get('why') or 'the assistant raised this'
-        # in words, not the exception: "'claude' not found on PATH" tells someone who never wrote code nothing (U16)
-        if tri.get('error'): why = f"couldn't sort this yet - it tries again on the next check; {why}"
-        elif tri.get('pending'): why = f'waiting to be sorted - no AI is connected yet; {why}'
-        m = (store.get_message(a['mid']) or {}) if a.get('mid') else {}
-        cid = m.get('ConversationId')
-        if cid and (cid in used_cids or cid in seen_cids): continue     # one line per conversation
-        if cid: seen_cids.add(cid)
-        # THE TASK IS THE ACTION'S OWN `tid`, written where the line was made (the Advisor's candidate, or the model's `about`).
-        # A TQ ref read out of the line's text and the model's `why` used to pick the task here - the same guess as the reverted
-        # _followed_up, and a line naming two tasks went to whichever matched first (the owner, 2026-10-11: no regex decides meaning)
-        out.append(_item(f"idea:{i['IdeaId']}", 'idea', lane, i['Text'], when=i.get('LastSaid') or i.get('FirstSeen'), mid=a.get('mid'), tid=a.get('tid'),
-                         who=m.get('FromName') or m.get('FromEmail') or '', channel=m.get('Channel') or '',
-                         idea=i['IdeaId'], idea_kind=i.get('Kind'), action=a, why=why, priority=tri.get('priority'), workstream=i.get('Workstream') or '',
-                         who_email=a.get('who_email') or '', late_days=late,
-                         urgent_request=tri.get('intent') in ('task', 'reply_only') and (bool(tri.get('urgent')) or priority_rank(tri.get('priority')) == 0)))
-    return out
-
-
-def from_wrapped(store, now: datetime, busy: set) -> list:
-    """Sending a reply and ending an agent run never close a task (the owner controls completion), so a
-    task can sit in 'waiting' with the reply sent and the result saved. That last step is the owner's
-    - the assistant puts it in front of them once: close it, or keep it open."""
-    out = []
-    for t in store.list_tasks(active_only=True):
-        tid = t['TaskId']
-        # in_progress means an agent has it: there is nothing to close yet, whether or not a session
-        # is alive right now (the same rule build() uses to put such a task on the shelf)
-        if t.get('Status') not in ('open', 'waiting') or tid in busy or t.get('SourceRef') == 'assistant:dock': continue
-        if t.get('ReviewStatus') == 'pending' or store.waiting_on_owner(tid): continue
-
-        from . import slots
-        if slots.open_(store, tid): continue           # its emails still wait (slots.py): not a task to wrap up yet
-        sent = store.sent_reply(task_id=tid)
-        # ...or the owner answered from their own mail client: a reply typed in Outlook ends the work
-        # exactly as much as one approved here, and this used to see only Taskuary's own sends
-        own = None if sent else store.own_reply_on_thread(task_id=tid)
-        if not (sent or own): continue
-        found = agent_found(store, tid)
-        when = (sent.get('DecidedAt') or sent.get('CreatedAt')) if sent else own.get('SentAt')
-        out.append(_item(f"wrap:{tid}", 'wrapup', 'report', t.get('Title'), who='you', when=when, tid=tid, summary=found,
-                         mid=reply_to(store, tid), priority=t.get('Priority'),
-                         sent=_short(sent.get('FinalText') or sent.get('DraftText') if sent else own.get('BodyText'), 200),
-                         why='the reply went out' + (' and the agent finished' if found else '') + ' - the task is still open'))
-    return out
 
 
 # ── the pile ─────────────────────────────────────────────────────────────────────────────────
@@ -1323,66 +1224,6 @@ def _order(items: list) -> list:
     return sorted(items, key=order_key)
 
 
-_LATER_LANES = ('yours', 'theirs', 'asked', 'approve', 'blocked', 'queued', 'broken', 'stopped', 'saved')
-
-
-def _ts_dt(value):
-    try: return datetime.strptime(str(value)[:19].replace('T', ' '), '%Y-%m-%d %H:%M:%S')
-    except ValueError: return None
-
-
-def _apply_states(items: list, states: dict, now: datetime, keep_surfaced: bool = False) -> list:
-    """Apply the owner's decisions to the assistant's work queue.
-
-    A surfaced row is read and the feed's Unread view removes it. Unresolved approvals and agent
-    questions still remain in this internal queue (marked surfaced) so the assistant can report
-    that work accurately without presenting it again as the next unread item.
-    """
-    stamp = now.strftime('%Y-%m-%d %H:%M:%S')
-    out = []
-    for i in items:
-        st = states.get(i['key'])
-        if st:
-            # done is for good - except on a CONDITION whose error has changed since (a broken connection's
-            # sig): that is a new failure, not the one put down
-            if st['Status'] == 'done' and not (i.get('kind') == 'connection' and st.get('Note') and st['Note'] != i.get('sig')): continue
-            if st['Status'] in ('later', 'skip') and (not st.get('Until') or _ts(st['Until']) > stamp):
-                # FOR LATER (the canvas redesign, 2026-09-29): an open task put away stays on the rail, saying its day -
-                # never offered by the walk before it (next_item skips `deferred`)
-                if i.get('tid') and st.get('Until') and i['lane'] in _LATER_LANES:
-                    out.append(i | {'deferred': True, 'defer_until': st['Until'], 'back_at': st['Until']})
-                continue
-            if st['Status'] == 'surfaced':
-                # shown, but CHANGED since - the agent rewrote the draft, the question moved on: new again
-                if i.get('sig') and st.get('Note') and st['Note'] != i['sig']:
-                    out.append(i); continue
-                if i.get('kind') == 'connection': out.append(i); continue
-                # READ IS GONE from the queue - but an OPEN TASK is never read off the rail: Next leaves it in its place under Tasks
-                # (the walk has one owner, 2026-10-30, rule 4), and no clock and no band says it was passed
-                if not keep_surfaced and not (i.get('tid') and i['lane'] in _LATER_LANES) and i['lane'] not in ('blocked', 'approve', 'working'): continue
-                # an fyi's shown-state note is the summary the assistant wrote for it (PW-151); a sig'd item's note is its sig
-                if i.get('lane') == 'fyi' and not i.get('sig') and st.get('Note'): i = i | {'summary': st['Note']}
-        out.append(i)
-    return out
-
-
-def knobs(store) -> tuple[int, int]:
-    s = store.get_settings()
-    def n(k, d):
-        try: return max(1, int(s.get(k) or d))
-        except (TypeError, ValueError): return d
-    return n('funnel_hours', HOURS_DEFAULT), n('funnel_max', MAX_DEFAULT)
-
-
-def _aged_out(i: dict, now: datetime, hours: int) -> bool:
-    """Older than the owner's window is yesterday's - the pipe is what came in lately, not an archive.
-    A meeting, a parked agent, a draft waiting for a yes: on you whenever they happened."""
-    if i['lane'] in ('blocked', 'broken', 'time', 'approve', 'working'): return False
-    if i['kind'] == 'idea': hours = max(hours, IDEA_HOURS)      # ...and never shorter than a day
-    when = _dt(i.get('since') or i.get('when'))
-    return bool(when) and when < now - timedelta(hours=hours)
-
-
 RUN_STALE_MIN = 20        # a 'running' run row nobody has touched for this long is not working anything
 
 def working_tids(store, live_state=_LIVE_UNSET, now: datetime = None) -> set:
@@ -1398,7 +1239,7 @@ def working_tids(store, live_state=_LIVE_UNSET, now: datetime = None) -> set:
     out = {r['TaskId'] for r in store.running_runs()
            if r.get('TaskId') and str(r.get('UpdatedAt') or r.get('StartedAt') or '') >= fresh}
     try:
-        live = term.live_sessions(tail=0) if live_state is _LIVE_UNSET else live_state
+        live = observe(0) if live_state is _LIVE_UNSET else live_state
         for t in live:
             if not t.get('taskId'): continue
             waiting = t.get('waiting') if t.get('waiting') is not None else (t.get('idle') or 0) >= term.IDLE_WAITING
@@ -1407,166 +1248,13 @@ def working_tids(store, live_state=_LIVE_UNSET, now: datetime = None) -> set:
     return out
 
 
-def build(store, now: datetime = None, keep_surfaced: bool = False,
-          reconcile: bool = True, live_state=_LIVE_UNSET,
+def build(store, now: datetime = None, keep_surfaced: bool = False, live_state=_LIVE_UNSET,
           full_history: bool = False, keys=None) -> dict:
-    """`keys`: a lookup - the shared builder cards only what answers to them (processing_unread.build); the legacy
-    pile builds whole and the caller's match finds the same item in it."""
-    now = now or datetime.now()
-    if getattr(store, 'processing_reads_active', lambda: False)():
-        from .processing_unread import build as shared_build
-        return shared_build(store, now=now, include_read=keep_surfaced,
-                            live_state=None if live_state is _LIVE_UNSET else live_state,
-                            full_history=full_history, keys=keys)
-    # Explicit Current/named-item lookup must not lose its subject behind the
-    # ordinary transport cap. Its existing history/read/grouping rules still apply.
-    feed_limit = -1 if keep_surfaced else 400
-    rows = (store.feed(limit=feed_limit, days=FEED_DAYS) if live_state is _LIVE_UNSET
-            else store.feed(limit=feed_limit, days=FEED_DAYS, live_state=live_state))
-    items = from_feed(store, rows)
-    # the live session knows more about a parked agent than its feed row does (its last lines,
-    # whether it asked) - so its item replaces the row's
-    agents = {a['key']: a for a in from_agents(store, live_state=live_state, now=now)}
-    items = [agents.pop(i['key']) | {'mid': i.get('mid')} if i['key'] in agents else i for i in items] + list(agents.values())
-    # A saved general-agent conversation survived the restart even though its in-memory worker did
-    # not. Keep it on the agent road, explicitly paused, with the existing Resume action.
-    items = [paused_conversation(store, i) if i.get('kind') != 'agent' else i for i in items]
-    # ...and the mail that STARTED a task whose agent is now waiting is not a second item: the
-    # agent's question is the thing to answer, and answering it is answering the mail
-    parked = {i['tid'] for i in items if i['kind'] == 'agent'}
-    items = [i for i in items if not (i['kind'] in ('asked', 'todo', 'fyi') and i.get('tid') in parked)]
-    items += from_proposals(store, {i['rid'] for i in items if i.get('rid')}, {i['tid'] for i in items if i.get('tid')})
-    items += from_calendar(store, now)
-    # (a failing connection is not a row: it is the bell's alone - problems.py, the owner 2026-10-26)
-    # Only a row still inside the walk window may suppress a fresh Assistant follow-up about the
-    # same conversation. Once filed/automated mail was admitted to Unread, an old message could
-    # occupy used_cids here, hide this morning's follow-up, and then age out itself below—leaving
-    # neither one in the queue.
-    hours, _cap = knobs(store)
-    # Only a source row that is itself still unread can suppress an Assistant idea about the same
-    # message/task/thread. Previously a source row marked surfaced remained in `used_*` until the
-    # final state pass below; it hid the newer Assistant idea and was then removed itself, leaving
-    # neither one visible while Unread claimed All done.
-    states = store.funnel_states()
-    current = _apply_states([i for i in items if not _aged_out(i, now, hours)], states, now)
-    used_mids = {i['mid'] for i in current if i.get('mid')}
-    used_tids = {i['tid'] for i in current if i.get('tid')}
-    used_cids = {i['cid'] for i in current if i.get('cid')}
-    items += from_forgotten(store, used_mids, used_tids, used_cids, reconcile=reconcile)
-    # Closed is authoritative. The final report remains on the task, but a task the owner or agent
-    # has closed is no longer work to walk through and must never be reintroduced into the funnel.
-    # an agent mid-job: nothing to do here yet, whatever the mail or the idea says about the task - so it
-    # rides at the TOP of the pipe as 'in hand', and drops to the front when the agent stops or asks
-    busy = working_tids(store, live_state=live_state, now=now)
-    from . import terminal as term
-    # Keep the live session's identity on the working row. The message row used to change only its
-    # key/lane, so the Assistant knew something was in hand but its card still had no sid, tail or
-    # agent and rendered as "coding - nobody on it" after the agent was started from Tasks/Board.
-    if live_state is _LIVE_UNSET:
-        try: live_by_tid = {t['taskId']: t for t in term.live_sessions(tail=6) if t.get('taskId')}
-        except Exception: live_by_tid = {}
-    else:
-        live_by_tid = {t['taskId']: t for t in live_state if t.get('taskId')}
-    live_tids = busy | {i['tid'] for i in items if i['kind'] == 'agent' and i.get('tid')}   # working, parked or asking: an agent is on it
-    stale_before = (now - timedelta(minutes=RUN_STALE_MIN)).strftime('%Y-%m-%d %H:%M:%S')
-    # ...and a task whose STATUS says in_progress is in the middle of being worked, whether or not a
-    # session is alive right now: the owner reads it that way ("it's in middle of working... it should
-    # say working so it's not in funnel"), and it comes back to the front the moment the watcher moves
-    # it to waiting or the agent asks (2026-09-03).
-    # 'in_progress' means an agent is mid-job, and the owner reads it that way even between sessions
-    # ("it's in middle of working... it should say working so it's not in funnel"). But nobody moves
-    # the status back when a session DIES, so the status alone held a task in the working lane for
-    # ever: TQ-0006 sat there with no session and "nothing for you", and the outage task fell out of
-    # the pipe entirely (the 2026-09-03 break test). Mid-job is a live agent, or a task somebody has
-    # touched in the last RUN_STALE_MIN; anything older is abandoned, and comes back to the owner.
-    def mid_job(tid):
-        t = store.get_task(tid) or {}
-        if t.get('Status') != 'in_progress': return False
-        if tid in live_tids: return True
-        # ...and a session that ENDED by finishing is not mid-job, however recent: its report is written and nobody is on it
-        # (TQ-1112 shape: closed, still in_progress for two minutes while the ending wrote, and read as "agents working")
-        return str(t.get('UpdatedAt') or t.get('CreatedAt') or '') >= stale_before and not session_finished(store, tid)
-    def held(tid): return bool(tid) and (tid in busy or mid_job(tid))
-    # ...and a drafted reply with an agent still WORKING the task: the latest action is the status, and
-    # working is newer than any draft the agent made along the way (the owner, 2026-09-24). Only a live
-    # worker, never the in_progress clock - a reply waits on nothing once the agent has stopped.
-    def in_hand(i):
-        if i['kind'] == 'review': return i.get('tid') in busy
-        return i['kind'] not in ('agent', 'action') and (i.get('working') or held(i.get('tid')))
-    # ...under the SAME key the parked agent will have (agent:<tid>), so shown-once and the page's live
-    # row follow the task through stopping and starting instead of losing it at each change
-    def held_item(i):
-        if not in_hand(i): return i
-        live = live_by_tid.get(i.get('tid')) or {}
-        who = i.get('working') or (task_kinds.shown(live) if live else task_kinds.SHOWN)
-        if i['kind'] == 'review': i = i | {'kind': 'agent', 'rid': None, 'draft': False, 'reply_pending': True}
-        return i | {'key': f"agent:{i['tid']}" if i.get('tid') else i['key'], 'lane': 'working',
-                    'why': f"{who} has it - nothing for you until it stops or asks",
-                    'working': who, 'agent': who,
-                    'sid': live.get('sid'), 'tail': live.get('tail') or [],
-                    'mode': live.get('mode') or 'terminal'}
-    items = [held_item(i) for i in items]
-    # ...and a CHAT task's waiting move is the agent's, whatever it is (the owner, 2026-11-05: "we can remove reply ready for you since it can be
-    # any action"): its row says "agent ready for you" (lanes.json `chat_ready`) - a coding task keeps its own words
-    if (tids := {i['tid'] for i in items if i.get('tid') and i.get('lane') in CHAT_READY_LANES}):
-        from . import general
-        chats = {r['TaskId'] for r in store._rows(f"SELECT TaskId, Kind FROM task WHERE TaskId IN ({','.join('?' * len(tids))})", tuple(tids))
-                 if general.handles(r)}
-        items = [i | {'chat': True} if i.get('tid') in chats and i.get('lane') in CHAT_READY_LANES else i for i in items]
-    # the wrap-up on a task an agent still holds is not a question yet either
-    seen = set(); items = [i for i in items if not (i['key'] in seen or seen.add(i['key']))]
-    hours, cap = knobs(store)
-    items = [i for i in items if not _aged_out(i, now, hours)]
-    items = [i for i in _apply_states(items, states, now, keep_surfaced) if not i.get('ranked_wait')]
-    # The wrap-up is merged HERE, once the pile is what the owner has left: a task whose message they
-    # have already read (or that triage filed as fyi - "Thank you!") is a task nobody closed, and the
-    # wrap-up is the one thing still on them. Merged before the read, the row they had just cleared
-    # suppressed it and the task fell out of the pipe altogether (2026-09-03).
-    wrapped = _apply_states(from_wrapped(store, now, busy), states, now, keep_surfaced)
-    wrap_tids = {w['tid'] for w in wrapped}
-    # ...and it outranks a row that is on the rail for its open task alone (from_feed open_only): an
-    # open task whose reply already went out is better told as "the reply went out - the task is
-    # still open" than as work with nobody on it. A line triage kept as WORK stays what it is.
-    items = [i for i in items if not (i['lane'] == 'fyi' or i.get('open_only')) or i.get('tid') not in wrap_tids]
-    held = {i['tid'] for i in items if i.get('tid')}
-    items = items + [w for w in wrapped if w['tid'] not in held]
-    # a task's row is placed by when the TASK arrived, not by its newest mail or its agent (order_key, the owner 2026-10-22)
-    # ...or its FIRST mail, when that came first: triage makes the task a little after the mail that asked for it. The row's own time
-    # is its NEWEST activity - an agent starting or asking - so it counts only for a task with no mail at all: it moved a row an hour
-    # down when its agent asked, and Next, walking on below the place that row had held, found nothing (tests/test_lifecycle.py)
-    def made_at(tid):
-        sent = [m.get('SentAt') for m in (store.list_messages(tid) if hasattr(store, 'list_messages') else [])[:1]]
-        return [x for x in ((store.get_task(tid) or {}).get('CreatedAt'), *sent) if x], bool(sent)
-    made = {tid: made_at(tid) for tid in {i['tid'] for i in items if i.get('tid')}}
-    def first(i, made_at):
-        stamps, mailed = made_at
-        at = not_ahead([s for s in (*stamps, *(() if mailed else (i.get('sort_at') or i.get('since') or i.get('when'),))) if _activity_time(s)])
-        return min(at, key=_activity_time) if at else (stamps or [None])[0]
-    from .processing_unread import came_back
-    back = {tid: came_back(store, tid, store.list_messages(tid) if hasattr(store, 'list_messages') else []) for tid in made}
-    items = _order([i | {'arrived_at': back[i['tid']] or first(i, made[i['tid']])} if i.get('tid') and made.get(i['tid']) and not i.get('arrived_at') else i
-                    for i in items])
-    # the owner's standing rules: what they told us to stop showing them never enters again. Only the
-    # lanes with nothing to do - a rule must not be able to hide something asking them for something.
-    rules = mutes(store)
-    quiet = [i for i in items if i['lane'] in MUTED_LANES and any(muted(r, i) for r in rules)] if rules else []
-    if quiet:
-        items = [i for i in items if i not in quiet]
-        logger.debug(f'funnel: {len(quiet)} item(s) held back by your standing rules')
-    # never more than the owner wants to look at: the rest waits its turn (and its arrivals still land)
-    # ...but a task an agent is working is never capped away - and it keeps its place in the order, among the other tasks: it
-    # was shelved after everything else, under a section of its own (the owner, 2026-10-21)
-    queue = [i for i in items if i['lane'] != 'working']
-    hidden = max(0, len(queue) - cap) if not keep_surfaced else 0
-    if hidden:
-        drop = {id(i) for i in queue[cap:]}
-        items = [i for i in items if id(i) not in drop]
-    items = [i | {'order_band': _band(i)} for i in items]  # same band for rendered cards and alerts
-    rev = hashlib.sha1('|'.join(f"{i['key']}:{i['lane']}:{int(bool(i.get('settling')))}" for i in items).encode()).hexdigest()[:12] + f':{hidden}:{len(quiet)}'
-    return {'rev': rev, 'items': items, 'hidden': hidden, 'muted': len(quiet),
-            'rules': [str(r.get('why') or ' '.join(r.get('words') or []))[:120] for r in rules],
-            'lanes': [{'lane': l, 'word': LANE_WORDS[l][0], 'role': LANE_WORDS[l][1],
-                       'n': sum(1 for i in items if i['lane'] == l)} for l in LANES]}
+    """The rail, from the one builder there is (processing_unread.build). `keys`: a lookup - it cards only what answers to them."""
+    from .processing_unread import build as shared_build
+    return shared_build(store, now=now or datetime.now(), include_read=keep_surfaced,
+                        live_state=None if live_state is _LIVE_UNSET else live_state,
+                        full_history=full_history, keys=keys)
 
 
 def _chat_only(store, low, high) -> bool:
@@ -1584,15 +1272,42 @@ def _rail_top(store):
     return top() if callable(top) else None
 
 
-def workers_signature(live_state) -> str | None:
-    """What the pile reads from the live sessions, hashed the way the store's snapshot hashes it - so a
-    worker that stopped, asked or finished since the cache was built is a different pile. None when
-    the sessions cannot be observed right now."""
+# A WORKING AGENT'S SCREEN IS NOT A NEW PILE (2026-11-09). The signature hashed every field of every session, its last six screen
+# lines too, and a working agent prints every second: hardly a read of the pile while one worked came back warm (81 of 102 that
+# morning took over a second, the worst 33 s), and the Advisor, the walk and every open tab each rebuilt it in turn behind one lock -
+# a Not for me sat ~45 s. A working row only SHOWS its tail (laid on fresh as the pile is served: _fresh_tails); a parked one is read
+# off it (from_agents), so its tail stays in. The git-dirty files, the witness's work and the browser are on no card at all.
+SCREEN_ONLY = ('files', 'work', 'browser')
+
+
+def _attention(t) -> dict:
     from .processing_projection import _worker_attention
+    row = {k: v for k, v in _worker_attention(t).items() if k not in SCREEN_ONLY}
+    if not row['waiting']: row.pop('tail', None)
+    return row
+
+
+def workers_signature(live_state) -> str | None:
+    """What the pile reads from the live sessions, hashed - so a worker that stopped, asked or finished since the cache was built is a
+    different pile, and one that only printed another line is not. None when the sessions cannot be observed right now."""
     if live_state is None: return None
-    rows = sorted(json.dumps(_worker_attention(t), ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
-                  for t in live_state)
+    rows = sorted(json.dumps(_attention(t), ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False) for t in live_state)
     return hashlib.sha256('\n'.join(rows).encode()).hexdigest()
+
+
+def observe(tail: int = 6):
+    """The live sessions as the pile's checks read them: the light road - no `git status` per session, no witness (SCREEN_ONLY)."""
+    from . import terminal as term
+    try: return term.live_sessions(tail=tail, details=False)
+    except TypeError: return term.live_sessions(tail=tail)       # a stand-in that predates `details`
+
+
+def _fresh_tails(p: dict, observed) -> dict:
+    """A cached pile served with each working row's screen as it is NOW - the one thing the signature lets move under it."""
+    tails = {t['sid']: t['tail'] for t in observed or () if t.get('sid') and t.get('tail') is not None}
+    for i in p.get('items') or ():
+        if i.get('lane') == 'working' and i.get('sid') in tails: i['tail'] = tails[i['sid']]
+    return p
 
 
 _OBSERVE = object()
@@ -1609,12 +1324,14 @@ def _moved(store, workers) -> bool:
 
 def warm(store) -> bool:
     """A read of the pile now is served from the cache: built for this store, in its time, and nothing written or moved since."""
-    from . import terminal as term
-    try: workers = workers_signature(term.live_sessions(tail=6))
+    try: workers = workers_signature(observe())
     except Exception: return False
-    with _LOCK:
+    # ...and a build running now is no warm rail: asked behind it, a walk press waited out the whole build only to be told no (2026-11-09)
+    if not _LOCK.acquire(blocking=False): return False
+    try:
         return (_CACHE.get('store') is store and bool(_CACHE.get('pile')) and time.time() - _CACHE.get('at', 0) < PILE_EVERY
                 and not _moved(store, workers))
+    finally: _LOCK.release()
 
 
 def pile(store, force: bool = False, quiet: bool = False, observed=_OBSERVE, seen=None) -> dict:
@@ -1626,14 +1343,14 @@ def pile(store, force: bool = False, quiet: bool = False, observed=_OBSERVE, see
     the sessions as seen now - taken here when not handed in). So a turn can take its selection from
     here instead of building the rail a second time (design B, 2026-09-17). `quiet` skips the
     watcher: a Next that turns out stale must reach no write, and announce() writes notices."""
-    from . import live, terminal as term
-    seen_generation = _CACHE.get('generation', 0)
+    from . import live
+    seen_generation, asked = _CACHE.get('generation', 0), time.perf_counter()
     # the newest write stamp a build begun now has seen (live.seq: the page's reload check) - taken before the workers are, whose
     # moves are stamped too; a caller that observed them itself says when (`seen`), or the build claims no stamp at all
     own = seen is None and observed is _OBSERVE
     if own: seen = live.seq()
     if observed is _OBSERVE:
-        try: observed = term.live_sessions(tail=6)
+        try: observed = observe()
         except Exception: observed = None            # unobservable: never compare, always rebuild (the build says why)
     workers = workers_signature(observed)
     with _LOCK:
@@ -1654,29 +1371,37 @@ def pile(store, force: bool = False, quiet: bool = False, observed=_OBSERVE, see
         # the write - saw the shown item's stamp move and refused the press (PW-118: a comment landed on the task about to be shown)
         refreshed_while_waiting = (same_store and force and _CACHE['pile']
                                    and _CACHE.get('generation', 0) != seen_generation and not moved())
+        # ...and a read that waited out a build BEGUN AFTER it was asked has that build: it holds every write made before the ask. Without it
+        # each reader queued behind a build rebuilt in turn while an agent kept writing - a tab, the Advisor and a press, one after another
+        # (a write after the ask that emptied _CACHE since is the next read's, not this one's)
+        if (_CACHE.get('generation', 0) != seen_generation and _KNOWN.get('store') is store and _KNOWN['pile']
+                and _KNOWN.get('began', 0.0) > asked): return _fresh_tails(_KNOWN['pile'], observed)
         if same_store and _CACHE['pile'] and (refreshed_while_waiting or (not force and time.time() - _CACHE['at'] < PILE_EVERY)):
-            return _CACHE['pile']
+            return _fresh_tails(_CACHE['pile'], observed)
         # ...the stamp and the workers as the BUILD begins, not as the wait for the lock did: a read that waited out another build
         # was built with a press's write that landed meanwhile and still claimed the older stamp - the page read the rail again for a
         # write it held (CI's slower runners, reads-once). Same order as above: stamp, then workers, then the dirty-row mark.
         if own:
             seen = live.seq()
-            try: observed = term.live_sessions(tail=6)
+            try: observed = observe()
             except Exception: observed = None
             workers = workers_signature(observed)
-        mark = _rail_top(store)                        # taken BEFORE the build: a write during it counts as after
+        mark, began = _rail_top(store), time.perf_counter()   # taken BEFORE the build: a write during it counts as after
         # the watcher speaks first: a transition changes the pile too. Quiet, it keeps what it last said.
         events = ((_CACHE['pile'] or {}).get('events') or [] if same_store else []) if quiet else announce(store)
-        # ONE build serves the pile and the item the page is holding: the shared builder computes
+        # ONE build serves the pile and the item the page is holding: the builder computes
         # every card's read state anyway, and the pile is its unread subset (processing_unread.build)
-        shared = getattr(store, 'processing_reads_active', lambda: False)()
-        full = build(store, keep_surfaced=True) if shared else None
-        if shared:
-            from .processing_unread import on_rail
-            items = [i for i in full['items'] if on_rail(i)]
-            p = {**full, 'items': items, 'lanes': [{**l, 'n': sum(i['lane'] == l['lane'] for i in items)} for l in full['lanes']],
-                 'counts': {**full['counts'], 'unread': len(items), 'actionable': sum(i['actionable'] for i in items)}}
-        else: p = build(store)
+        from .processing_unread import rail_of
+        full = build(store, keep_surfaced=True)
+        items = rail_of(full['items'])
+        p = {**full, 'items': items, 'lanes': [{**l, 'n': sum(i['lane'] == l['lane'] for i in items)} for l in full['lanes']],
+             'counts': {**full['counts'], 'unread': len(items), 'actionable': sum(i['actionable'] for i in items)}}
+        # A CLOSE ON ITS WAY IS CLOSED (the owner, 2026-11-09: "i marked task done, the one before came back and then disappeared again"):
+        # Mark done on an agent's task writes it up first and closes after (writeup.closing); a read meanwhile drew it again for a read or two
+        from . import writeup
+        if (gone := {i['tid'] for i in p['items'] if i.get('tid') and writeup.closing(i['tid'])}):
+            items = [i for i in p['items'] if i.get('tid') not in gone]
+            p = {**p, 'items': items, 'lanes': [{**l, 'n': sum(i['lane'] == l['lane'] for i in items)} for l in p.get('lanes') or []]}
         for i in p['items']: _attach(i)                  # how each row reads, once, for the rail and the phone alike
         _label_workstreams(store, p['items'])            # ...and which workstream each task row is under, for its small label
         p['alerts'] = alerts(store, p['items'])
@@ -1699,9 +1424,10 @@ def pile(store, force: bool = False, quiet: bool = False, observed=_OBSERVE, see
             logger.debug(f'batch progress did not reach the rail: {e}'); p['batch_progress'] = {}
         p['events'] = events
         p['live_seq'] = seen
-        _CACHE.update(at=time.time(), pile=p, store=store, full=full['items'] if shared else None,
+        _CACHE.update(at=time.time(), pile=p, store=store, full=full['items'],
                       generation=_CACHE.get('generation', 0) + 1, mark=mark, workers=workers)
-        _keep_threads(store, [*(full['items'] if shared else ()), *p['items']])
+        _KNOWN.update(store=store, pile=p, full=_CACHE['full'], began=began)
+        _keep_threads(store, [*full['items'], *p['items']])
         return p
 
 
@@ -1738,12 +1464,6 @@ def page_fyi(payload: dict, n: int, keep=()) -> dict:
 def full_items(store) -> list | None:
     """The cached build with read items kept, for a same-request lookup of the item on the table."""
     return _CACHE['full'] if _CACHE.get('store') is store and _CACHE['pile'] else None
-
-
-def built_as_of_now(store) -> bool:
-    """Has nothing been written since the cached rail's build began? (Unknowable - no dirty-row top - counts as yes.)"""
-    top = _rail_top(store)
-    return top is None or _CACHE.get('store') is not store or _CACHE.get('mark') == top
 
 
 def unwritten_full_items(store) -> list | None:
@@ -1793,6 +1513,12 @@ def rail_item(store, key: str) -> dict | None:
 def cached_pile(store) -> dict | None:
     """The rail as last built, or None - never a build (the Tasks list asks, and must not pay for one)."""
     return _CACHE['pile'] if _CACHE.get('store') is store else None
+def cached_at(store) -> float: return _CACHE.get('at', 0.0) if _CACHE.get('store') is store else 0.0
+def known(store) -> dict | None:
+    """The rail as last built, however much was written since - None only before the first build. Never a build, never a wait."""
+    return _KNOWN['pile'] if _KNOWN.get('store') is store else None
+def building() -> bool: return _LOCK.locked()          # a pile build (or its cache check) holds the lock right now
+def known_full(store) -> list | None: return _KNOWN['full'] if _KNOWN.get('store') is store else None
 
 
 def invalidate(): _CACHE.update(at=0.0, pile=None, store=None, full=None, mark=None, workers=None); _SOURCES.update(at=0.0, by={})
@@ -1812,7 +1538,7 @@ def agent_states(store) -> dict:
     """Every task an agent has, or had: what it is doing now. {tid: (state, agent)}"""
     from . import terminal as term
     out = {}
-    try: live = term.live_sessions(tail=6)
+    try: live = observe()
     except Exception: live = []
     for t in live:
         tid = t.get('taskId')
@@ -1974,7 +1700,7 @@ def next_item(store, key: str = None, include_surfaced: bool = False, items: lis
         # every chat read, every 30 s tick, and outside the window it paid for the WHOLE history each time (P4).
         pool = items if items is not None else build(store, keep_surfaced=True, keys=[key])['items']
         item = next((i for i in pool if i['key'] == key or key in i.get('aliases', [])), None)
-        if item is None and getattr(store, 'processing_reads_active', lambda: False)():
+        if item is None:
             item = next((i for i in build(store, keep_surfaced=True, full_history=True, keys=[key])['items']
                          if i['key'] == key or key in i.get('aliases', [])), None)
         return shut(store, _present_one(store, item)) or batch_item(store, key)
@@ -2210,8 +1936,8 @@ def reset_walk(store):
 
 
 def alerts(store, items: list = None) -> list:
-    """What interrupts the conversation, whatever it is on: a meeting inside fifteen minutes and an
-    agent that just asked. Each once - acknowledged alerts stay quiet until the fact changes."""
+    """What interrupts the PHONE's conversation, whatever it is on (remote_assistant.push_alerts): a meeting inside fifteen minutes and an
+    agent that just asked. Each once - acknowledged alerts stay quiet until the fact changes. The desk never reads them (server._pile_payload)."""
     items = items if items is not None else build(store)['items']
     states = store.funnel_states()
     out = []
@@ -2225,7 +1951,9 @@ def alerts(store, items: list = None) -> list:
         # a minute apart in two wordings (2026-09-29 audit) - an interruption to say there is nothing to do
         elif i['kind'] == 'agent' and i['lane'] == 'blocked':
             out.append({'key': f"alert:{i['key']}", 'item': i['key'], 'kind': 'agent', 'lane': i['lane'], 'asking': bool(i.get('asking')),
-                        'text': f"{i.get('why') or agent_says('parked', i.get('agent') or task_kinds.SHOWN)} ({i.get('ref') or i['title']})"})
+                        # ...with the question's own words where it asked: an alert is read where there is no card (the phone), and the row's
+                        # `why` no longer carries them (rail_line)
+                        'text': f"{agent_says('asking', i.get('agent'), i['tail'][-1]) if i.get('asking') and i.get('request_kind') and i.get('tail') else i.get('why') or agent_says('parked', i.get('agent') or task_kinds.SHOWN)} ({i.get('ref') or i['title']})"})
         elif i['lane'] == 'asked' and i['kind'] in ('asked', 'todo') and i.get('who'):
             out.append({'key': f"alert:{i['key']}", 'item': i['key'], 'kind': 'asked', 'lane': 'asked', 'text': f"{i['who']} asked you: {i['title']}"})
         elif i['lane'] in ('time', 'approve') and i['kind'] != 'meeting':      # a meeting further out is not yet news
@@ -2238,22 +1966,6 @@ def alerts(store, items: list = None) -> list:
     return ([a | {'order_band': bands.get(a['item'], 3)} for a in out
              if (states.get(a['key']) or {}).get('Status') != 'ack']
             + notices(store, states))                                  # the watcher's own, kept until Open or Later
-
-
-def desk_alerts(alerts_: list) -> list:
-    """The by-the-way lines the DESKTOP draws: all but an agent's question (the owner, 2026-10-21: "general agent question should only
-    be once on the canvas ... save 'The agent asked' for whatsapp"). The question is in its Agent work pane's answer box; the phone,
-    which has no box, still says the agent asked (remote_assistant.push_alerts reads the pile's own alerts)."""
-    return [a for a in alerts_ or [] if not (a.get('kind') == 'agent' and a.get('asking'))]
-
-
-def more_urgent(items: list, current_key: str = None) -> list:
-    """What waits in a promoted lane while the owner is on something lesser - for the assistant to
-    mention in a clause, and for the page to raise as a by-the-way."""
-    cur = next((i for i in items if i['key'] == current_key), None)
-    band = _band(cur) if cur else 3
-    return [i for i in items if not i.get('surfaced') and not i.get('settling')
-            and not _not_yet(i) and _band(i) < band and i['key'] != current_key]
 
 
 def summary(items: list, coming: bool = True) -> str:

@@ -11,6 +11,7 @@
 // MAX_KEPT messages in memory with a sequence number; Taskuary remembers where it got to.
 import http from "node:http";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import makeWASocket, { useMultiFileAuthState, DisconnectReason, downloadMediaMessage } from "@whiskeysockets/baileys";
@@ -65,7 +66,28 @@ const quoting = (jid, q) => {
 const lids = createLidMap();                 // phone <-> LID, so a person picked by number is heard when WhatsApp writes by LID
 const chatGate = createChatGate(undefined, lids);
 const chatRoster = createChatRoster({ canon: chatGate.canonical, alt: lids.alt });   // JIDs/names/recency only; never message bodies
-const health = createHealth();               // the facts the card's status line reads off /status
+// EVERY MESSAGE ID THE BRIDGE HAS READ, kept on disk beside the pairing: WhatsApp hands a message over again when its ack was lost to a
+// dropped connection or a restart, and libsignal refuses the copy - the key was spent on the first one ("Key used already or never
+// filled"). A copy of a message already taken is expected and quiet; one never taken is a real loss (health.mjs).
+const SEEN = path.resolve("wa-seen.json"), SEEN_MAX = 5000;
+const seen = new Set((() => { try { return JSON.parse(fs.readFileSync(SEEN, "utf8")); } catch { return []; } })());
+const saw = (ids) => {
+  if (!ids.some((id) => !seen.has(id))) return;
+  for (const id of ids) { seen.delete(id); seen.add(id); }
+  while (seen.size > SEEN_MAX) seen.delete(seen.values().next().value);
+  try { fs.writeFileSync(SEEN + ".tmp", JSON.stringify([...seen])); fs.renameSync(SEEN + ".tmp", SEEN); }
+  catch (e) { console.log("could not keep the read message ids:", e?.message || e); }
+};
+// ...and one never taken is asked for again. Baileys sends its own retry receipt for most failures, but a spent key it only refuses
+// (messages-recv: NACK, no retry, no event) - so the owner's phone is asked to send that message once more, as Baileys does for one
+// that arrives "unavailable" (requestPlaceholderResend). What comes back arrives as an ordinary message with the same id.
+const askAgain = (key, spent) => {
+  console.error(`WhatsApp message ${key?.id || "?"} could not be read on this computer${spent ? " - asking the phone to send it again" : ""}`);
+  if (!spent || !key?.id || !sock?.requestPlaceholderResend) return;
+  sock.requestPlaceholderResend(key).catch((e) => console.log("could not ask the phone for the message again:", e?.message || e));
+};
+const health = createHealth(undefined, {    // the facts the card's status line reads off /status
+  known: (k) => seen.has(k?.id) || (!!k?.remoteJid && !chatGate.admits(k.remoteJid)), unreadable: askAgain });
 const waLogger = health.tap(WA.DEFAULT_CONNECTION_CONFIG?.logger?.child?.({}));
 let loggedOut = false;
 const polls = createPolls();                 // the newest poll per chat and its secret: what opens a vote
@@ -92,21 +114,42 @@ process.on("unhandledRejection", (reason) => {
 // chance to clean up) is taken over; a pid since reused by another program Taskuary sees by its command line and clears.
 const LOCK = path.resolve("wa-auth.lock");
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e?.code === "EPERM"; } };
-const lockPairing = () => {
+const claim = (file) => {
   for (let i = 0; i < 3; i++) {
     try {
-      fs.writeFileSync(LOCK, String(process.pid), { flag: "wx" });
-      process.on("exit", () => { try { if (fs.readFileSync(LOCK, "utf8").trim() === String(process.pid)) fs.unlinkSync(LOCK); } catch {} });
+      fs.writeFileSync(file, String(process.pid), { flag: "wx" });
+      process.on("exit", () => { try { if (fs.readFileSync(file, "utf8").trim() === String(process.pid)) fs.unlinkSync(file); } catch {} });
       return 0;
     } catch (e) {
       if (e?.code !== "EEXIST") throw e;
       let held = 0;
-      try { held = Number(fs.readFileSync(LOCK, "utf8").trim()) || 0; } catch {}
+      try { held = Number(fs.readFileSync(file, "utf8").trim()) || 0; } catch {}
       if (held && held !== process.pid && alive(held)) return held;
-      fs.rmSync(LOCK, { force: true });
+      fs.rmSync(file, { force: true });
     }
   }
   return -1;
+};
+// ...AND PER PAIRING, NOT PER FOLDER (2026-11-10). wa-auth.lock sits in the folder the bridge runs in, and a pairing copied to another
+// folder (carried over from the package folder, or the folder copied by hand) is the same login: a bridge left running there connected
+// beside the new one, each spending message keys the other's copy of the session still expects. The pairing is named by its identity
+// key (creds.json) and claimed in one place for the whole user; a second claimant says who holds it in wa-auth.held-by, where Taskuary
+// (wabridge._unlock) reads it and ends that bridge when it can prove it is one of ours.
+const PAIRINGS = process.env.WA_PAIRING_LOCKS || path.join(os.tmpdir(), "taskuary-wa-pairings");
+const pairingId = () => {
+  try {
+    const k = JSON.parse(fs.readFileSync(path.resolve("wa-auth", "creds.json"), "utf8"))?.signedIdentityKey?.public;
+    return k ? crypto.createHash("sha1").update(JSON.stringify(k)).digest("hex").slice(0, 16) : "";
+  } catch { return ""; }       // not paired yet: a fresh identity no other folder has
+};
+const lockPairing = () => {
+  const held = claim(LOCK), id = held ? "" : pairingId();
+  if (held || !id) return held;
+  fs.mkdirSync(PAIRINGS, { recursive: true });
+  const file = path.join(PAIRINGS, `${id}.lock`), other = claim(file);
+  if (other > 0) fs.writeFileSync(path.resolve("wa-auth.held-by"), JSON.stringify({ pid: other, lock: file }));
+  else fs.rmSync(path.resolve("wa-auth.held-by"), { force: true });
+  return other;
 };
 for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => process.exit(0));     // so the lock goes with a plain stop
 
@@ -306,6 +349,11 @@ async function connect() {
     // "append" (messages-recv: node.attrs.offline), and this dropped every one: on a connection that fell over every half hour, nothing
     // ever came in. History sync is off (shouldSyncHistoryMessage), so no "append" here is history; a repeat is dropped by its id downstream.
     if (type !== "notify" && type !== "append") return;
+    // what was read (a stub Baileys keeps for one it could not decrypt has no message): a copy of it later is a repeat, not a loss
+    const read = ms.filter((m) => m?.key?.id && m.message);
+    saw(read.map((m) => m.key.id));
+    // ...and only a message somebody wrote ends a stretch of unreadable ones: the phone's own key shares decrypt on a link that reads nothing else
+    for (const m of read) { const c = content(m.message); health.arrived(m.key.id, !!(text(m.message) || c.audioMessage || c.imageMessage || c.documentMessage)); }
     for (const m of ms) {
       const k = m.key || {};
       // the author's other form, when the stanza carried it; a 1:1 chat's own LID only from the other side's message

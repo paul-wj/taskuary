@@ -386,6 +386,13 @@ def _events(t, p: dict) -> None:
             from .background import is_wake
             ws.record(st, tid, sid, 'working', text=ws.WAKE if is_wake(p.get('prompt')) else '', source='hook')
             if not is_wake(p.get('prompt')):                # ...and the owner's words are their next move after a stop (outcomes.py)
+                try:                                         # ...past every card raised before it (proposals.move_on, 2026-11-10)
+                    from . import proposals
+                    # ...said to it as Taskuary's next line: the prompt that passed them is already in (general.tell, the one road)
+                    if (note := proposals.passed_note(st, proposals.move_on(st, tid))):
+                        from . import general
+                        general.tell(st, tid, note)
+                except Exception as e: logger.debug(f'task {tid}: a held step stayed pending - {e}')
                 try:
                     from . import outcomes
                     outcomes.moved_on(st, tid, p.get('prompt'))
@@ -475,20 +482,19 @@ def _events(t, p: dict) -> None:
                 try: browserview.your_turn(st, tid, sid, turn)
                 except Exception as e: logger.warning(f'task {tid}: the page the agent handed over was not raised - {e}')
             try:                                        # the ledger: what the owner does next after a stop (outcomes.py); never breaks a hook
-                from . import advisor, ci, outcomes
+                from . import ci, outcomes
                 agent = getattr(t, 'agent', '') or 'agent'
-                # ...and the Advisor hears of it once per stretch - unless the turn ASKED: then the ask below is the event, and a
-                # stop judged here would be stale the moment the question is recorded (the review, 2026-10-12)
-                if outcomes.stopped(st, tid, f'agent:{agent}', facts={'pr': bool(ci.pr_of(st, tid)), 'agent': agent}) and not asks and signing is None and turn is None:
-                    advisor.notice(st, 'agent.stopped', 'task', tid)
+                outcomes.stopped(st, tid, f'agent:{agent}', facts={'pr': bool(ci.pr_of(st, tid)), 'agent': agent})
             except Exception as e: logger.debug(f'task {tid}: the stop was not ledgered - {e}')
             # ...as plain questions: a marker's words are no chooser, so they carry no chips (the owner, 2026-11-03)
             g = ws.group_key('|'.join(q for q, _ in asks)) if len(asks) > 1 else None
             for i, (q, _) in enumerate(asks, 1):
                 ws.record(st, tid, sid, 'input_needed', request_id=ws.question_id(g, i) if g else ws.request_id_for(q),
                           text=q, source='hook')
-            # ...and a turn that asked only in PROSE is the model's to read, in the background - never a word list's
-            if not asks and signing is None and turn is None and said.strip() and not ws.open_requests(ws.events(st, tid, sid)): judge_turn(st, tid, sid, said)
+            # ...and a turn that asked only in its PROSE asked nothing here (the owner, 2026-11-10: "why would we ask anything in the
+            # assistant rail? remove that no need for that ever"). A light model used to read every last message and write its own
+            # wording of a question onto the row - over a card already standing in the task with the same ask. What the agent means
+            # the owner to answer it asks with its question tool or its marker; a turn without one is parked, and its words are in the chat
             # the response ended, the WORK did not: a shell, a monitor or a subagent it left running and will be woken by
             # (background.py) - Claude's own list, else the jobs its hooks started (Copilot), else Claude's transcript.
             # Devin is not here on purpose: it does not wake for a background shell, so one left running is the owner's
@@ -511,55 +517,11 @@ def _events(t, p: dict) -> None:
     except Exception as e: logger.debug(f'worker event from hook skipped: {e}')
 
 
-# DID THE TURN ASK THE OWNER? (the owner, 2026-10-11: "everything should be ai".) A question asked through the CLI's
-# own tool, the [[TASKUARY-ASK]] marker or a chooser arrives as a request on its own. One asked only in the prose that
-# ended the turn has no such signal, and the screen used to be read for it with a word list - "?" at a line's end,
-# "should i", "do you want" - so a report closing on a rhetorical question became "asked you", and the owner's next
-# note went in as its answer. The light model reads the Stop's last message instead: once per turn (cached on the
-# words), on its own thread, so no hook and no button waits on it. Until it answers - or with no brain at all - the
-# session is what it honestly is: parked, waiting on you.
-JUDGE_SYSTEM = ('You read the last message a coding agent wrote before it stopped and handed the turn back to its owner. '
-                'Decide one thing: does the agent need the owner to ANSWER something before the work can go on - a decision, '
-                'a choice between options, a missing fact, a permission? A report of finished work, a rhetorical question, '
-                'or an offer of optional extra help after the work is done is not that. Reply with JSON only: '
-                '{"asks": true or false, "question": "the question in the agent\'s own words, one sentence; empty when asks is false"}')
-JUDGE_WANT = {'type': 'object', 'properties': {'asks': {'type': 'boolean'}, 'question': {'type': 'string'}}, 'required': ['asks']}
-_JUDGED, _JUDGED_MAX = {}, 256          # (sid, sha of the words) -> the question or '' - a Stop the spool replays costs nothing
-
-
-def judge_turn(store, tid: int, sid: str, said: str, brain=None, wait: bool = False):
-    "Read the turn's last message for a question to the owner; record it as an open request when there is one."
-    import hashlib
-    key = (str(sid), hashlib.sha1(said.encode('utf-8', 'replace')).hexdigest())
-    def go():
-        from . import workerstate as ws
-        if key in _JUDGED: q = _JUDGED[key]
-        else:
-            try:
-                from .llm import build_llm, ask_json
-                b = brain or build_llm(store, job='judge')
-                if not b: return
-                v = ask_json(b, JUDGE_SYSTEM, f"THE AGENT'S LAST MESSAGE:\n{said[-4000:]}", want=JUDGE_WANT, need=('asks',)).data or {}
-            except Exception as e: logger.debug(f'turn judge skipped for {sid}: {e}'); return
-            if not isinstance(v, dict) or not isinstance(v.get('asks'), bool): return     # unreadable is no verdict, and is not cached
-            q = ' '.join(str(v.get('question') or '').split())[:600] if v['asks'] else ''
-            if v['asks'] and not q: q = ' '.join(said.split())[-300:]
-            if len(_JUDGED) >= _JUDGED_MAX: _JUDGED.pop(next(iter(_JUDGED)))
-            _JUDGED[key] = q
-        if not q: return
-        # ...and only while that turn is still the newest word: a prompt the owner submitted while the model read has
-        # moved on past the question, and a request recorded after it would stand over the new turn
-        evs = ws.events(store, tid, sid)
-        if not evs or evs[-1]['Kind'] != 'turn_end' or evs[-1].get('Text') != said[:4000]: return
-        ws.record(store, tid, sid, 'input_needed', request_id=ws.request_id_for(q), text=q, source='judge')
-    if wait: return go()
-    threading.Thread(target=go, daemon=True, name=f'turn-judge-{sid}').start()
-
-
-# ...AND DID A HEADLESS TURN END SHORT? A general agent's CLI is not woken by work it left in the background, so a turn ending "I have
+# DID A HEADLESS TURN END SHORT? A general agent's CLI is not woken by work it left in the background, so a turn ending "I have
 # the mail side - I'm waiting for the app walkthrough to finish, then I'll write the brief" was filed as its answer, and the task
-# read "researcher answered · agent waiting on you" over a brief that would never come (the owner, 2026-10-21). The same judge reads
-# it - the model, never a phrase list. It used to file such a turn as the run FAILING and end the session; the owner, 2026-11-05: "failure
+# read "researcher answered · agent waiting on you" over a brief that would never come (the owner, 2026-10-21). What the turn's own
+# record says comes first (background.left: work it started still running, or all of it back) - "no model call where stored facts
+# already answer" (2026-11-10); only where it cannot tell does a light model read it - never a phrase list. It used to file such a turn as the run FAILING and end the session; the owner, 2026-11-05: "failure
 # means nothing to the user". Now it only says what the turn still waits on, to `then(why)` - the general agent wakes itself once to do it
 # (general.GeneralSession.wake). Nothing is recorded: the session stays open and the turn's answer stands.
 ENDED_SYSTEM = ('You read the last message an agent wrote before its turn ended. Nothing will wake the agent again until its owner '
@@ -572,7 +534,7 @@ ENDED_SYSTEM = ('You read the last message an agent wrote before its turn ended.
                 '{"unfinished": true or false, "why": "what it is still '
                 'waiting on, in a few plain words; empty when unfinished is false"}')
 ENDED_WANT = {'type': 'object', 'properties': {'unfinished': {'type': 'boolean'}, 'why': {'type': 'string'}}, 'required': ['unfinished']}
-_ENDED = {}
+_ENDED, _ENDED_MAX = {}, 256          # (sid, sha of the words) -> what it still waits on or '' - a Stop the spool replays costs nothing
 BACKGROUND = True          # the suite turns the read off its own thread (tests/conftest.py), as advisor.BACKGROUND; `wait` still reads
 
 
@@ -601,15 +563,18 @@ def held_for(store, tid: int, sid: str) -> bool:
 def finished(summ) -> bool: return isinstance(summ, dict) and summ.get('nothing_left') is True
 
 
-def judge_ended(store, tid: int, sid: str, said: str, brain=None, wait: bool = False, then=None, summ=None):
+def judge_ended(store, tid: int, sid: str, said: str, brain=None, wait: bool = False, then=None, summ=None, jobs=None):
     """Read a headless turn's last message for work it left unfinished; hand `then` what it still waits on, when it did - never a failure.
-    `summ`: the turn's own summary - one that says it is finished (nothing_left) is never read."""
+    `summ`: the turn's own summary - one that says it is finished (nothing_left) is never read. `jobs`: what the turn's record says of the
+    work it put aside (background.left) - still running wakes it, [] (all back) does not, and only None leaves it to the model."""
     import hashlib
+    from . import background
     if finished(summ): return
     key = (str(sid), hashlib.sha1(said.encode('utf-8', 'replace')).hexdigest())
     def go():
         from . import workerstate as ws
-        if key in _ENDED: why = _ENDED[key]
+        if jobs is not None: why = background.summary(jobs)
+        elif key in _ENDED: why = _ENDED[key]
         else:
             try:
                 from .llm import build_llm, ask_json
@@ -619,13 +584,13 @@ def judge_ended(store, tid: int, sid: str, said: str, brain=None, wait: bool = F
             except Exception as e: logger.debug(f'turn-end judge skipped for {sid}: {e}'); return
             if not isinstance(v, dict) or not isinstance(v.get('unfinished'), bool): return
             why = (' '.join(str(v.get('why') or '').split())[:300] or 'work of its own') if v['unfinished'] else ''
-            if len(_ENDED) >= _JUDGED_MAX: _ENDED.pop(next(iter(_ENDED)))
+            if len(_ENDED) >= _ENDED_MAX: _ENDED.pop(next(iter(_ENDED)))
             _ENDED[key] = why
         if not why: return
         # ...and a turn that ended on a step held for the owner's Approve (shellgate, browsergate) is waiting on them, not short: it read
         # "Failed - it ended its turn still waiting on the owner to press Approve" with Try again over the held delete (2026-11-03)
         if held_for(store, tid, sid): return
-        # ...only while that turn is still the newest word, as judge_turn: the owner may have written since
+        # ...only while that turn is still the newest word: the owner may have written since
         evs = [e for e in ws.events(store, tid, sid) if e['Kind'] not in ws.NOTES]
         if not evs or evs[-1]['Kind'] != 'turn_end' or evs[-1].get('Text') != said[:4000]: return
         if then:
@@ -735,18 +700,34 @@ def browser_settings(sid: str) -> str:
     """Claude's --settings for ONE general chat with a browser: the browser hook, naming this session (`?sid=`), whatever user_wide()
     says. The user-wide hook can't tell a headless chat from the owner's own Claude, and on a second home there is none at all - so
     the hold rides with the session (2026-10-25). Claude ADDS these to the user's hooks; the strictest answer wins."""
-    from . import config
+    return _session_file(f'browser-{sid}', {'hooks': {'PreToolUse': [_browser_hold(sid)]}})
+
+
+def _browser_hold(sid: str) -> dict:
     from urllib.parse import quote
-    base, token = base_url(), agent_token()
-    cmd = browser_command(base, token).replace(BROWSER_MARK, f'{BROWSER_MARK}?sid={quote(str(sid))}', 1)
-    d = {'hooks': {'PreToolUse': [{'matcher': BROWSER_MATCH, 'hooks': [{'type': 'command', 'command': cmd, 'timeout': BROWSER_WAIT + 10}]}]}}
+    cmd = browser_command(base_url(), agent_token()).replace(BROWSER_MARK, f'{BROWSER_MARK}?sid={quote(str(sid))}', 1)
+    return {'matcher': BROWSER_MATCH, 'hooks': [{'type': 'command', 'command': cmd, 'timeout': BROWSER_WAIT + 10}]}
+
+
+def _session_file(name: str, d: dict) -> str:
+    from . import config
     p = config.home() / 'sessions'; p.mkdir(parents=True, exist_ok=True)
-    f = p / f'browser-{sid}.json'
-    want = json.dumps(d, indent=1)
+    f, want = p / f'{name}.json', json.dumps(d, indent=1)
     try:
         if not f.exists() or f.read_text(encoding='utf-8') != want: f.write_text(want, encoding='utf-8')
-    except OSError as e: logger.warning(f'browser hold not attached to {sid}: {e}'); return ''
+    except OSError as e: logger.warning(f'session settings {name} not written: {e}'); return ''
     return str(f)
+
+
+def general_settings(task_id, sid: str = '') -> str:
+    """Claude's ONE --settings for a general task's session, which reads none of the owner's own Claude setup (the owner, 2026-11-09:
+    a WhatsApp task's agent read their coding-style guide, their plugins' skills, and searched mail through their claude.ai connector).
+    --setting-sources leaves out their user settings - and with them the user-wide hooks this app reports through - so Taskuary's
+    own hooks ride here, with the browser hold naming its chat; their own CLAUDE.md, which no setting source reaches, is excluded.
+    Claude keeps only the last --settings it is given, so this is the whole file."""
+    d = {'hooks': session_hooks(), 'claudeMdExcludes': [f'{Path.home().as_posix()}/.claude/CLAUDE.md', f'{Path.home().as_posix()}/.claude/**']}
+    if sid: d['hooks']['PreToolUse'].append(_browser_hold(sid))
+    return _session_file(f'general-{task_id}' + (f'-{sid}' if sid else ''), d)
 
 
 def ask(payload: dict, wait: float = None) -> dict:
@@ -811,21 +792,38 @@ def browser(payload: dict, brain=None, sid: str = '') -> dict:
     # publish, a mail) waits for the owner too (shellgate.py, the Advisor's risky-step hold, the owner 2026-10-28), and so does a desktop
     # act that can't be undone (agentdesktop.py, 2026-10-31)
     # ...and a delete outside the agent's own folder, read against the folder it runs in (shellgate.deletes, 2026-11-03)
-    browse, out, desk = browsergate.EXE in cmd.lower(), shellgate.acts(cmd, str(payload.get('cwd') or '')), agentdesktop.EXE in cmd.lower()
-    if not browse and not out and not desk: return {}
+    if not needs_gate(cmd, str(payload.get('cwd') or '')): return {}
     t = _pane(payload, 'claude') or _general(payload, sid)
     st = getattr(t, 'store', None) if t else None
     if not t or not st: return {}
+    # ...asked in the CLI's own prompt where the owner can answer it there, held for the task's Approve where nobody can (shellgate.asks)
+    return command_gate(st, t.task_id, t.sid, cmd, tool, str(payload.get('cwd') or getattr(t, 'cwd', '') or ''), shellgate.asks(st, t),
+                        about=str((payload.get('tool_input') or {}).get('description') or ''), brain=brain)
+
+
+def needs_gate(cmd: str, cwd: str = '') -> bool:
+    "The cheap test first: does this shell line touch the browser, the desktop, or leave the machine / delete outside its folder?"
+    from . import agentdesktop, browsergate, shellgate
+    return browsergate.EXE in cmd.lower() or agentdesktop.EXE in cmd.lower() or bool(shellgate.acts(cmd, cwd))
+
+
+def command_gate(st, tid: int, sid: str, cmd: str, tool: str = 'Bash', cwd: str = '', ask: bool = False, about: str = '', brain=None) -> dict:
+    """THE ONE DECISION for a shell command an agent of ours is about to run - a CLI's (its PreToolUse hook, browser above) and an API
+    agent's (apiagent.run_command) alike: {} runs it; anything else holds it, with the reason in permissionDecisionReason (or `ask`, the
+    CLI's own prompt). A step that leaves the machine or deletes outside its folder (shellgate), a desktop act or a browser act that can't
+    be undone (agentdesktop, browsergate) waits for the owner; everything else runs, as on a CLI."""
+    from . import agentdesktop, browsergate, shellgate
+    browse, out, desk = browsergate.EXE in cmd.lower(), shellgate.acts(cmd, cwd), agentdesktop.EXE in cmd.lower()
+    if not browse and not out and not desk: return {}
     # ...and the browser comes up HERE, at the agent's first navigate - never before it has an address (browserview.on_demand)
     if browse:
         from . import browserview
-        try: browserview.on_demand(t.sid, cmd)
-        except Exception as e: logger.warning(f'the browser for {t.sid} did not start on its first page - {e}')
-    # ...asked in the CLI's own prompt where the owner can answer it there, held for the task's Approve where nobody can (shellgate.asks)
-    if out: return shellgate.check(st, t.task_id, t.sid, cmd, tool, str(payload.get('cwd') or getattr(t, 'cwd', '') or ''), shellgate.asks(st, t))
+        try: browserview.on_demand(sid, cmd)
+        except Exception as e: logger.warning(f'the browser for {sid} did not start on its first page - {e}')
+    if out: return shellgate.check(st, tid, sid, cmd, tool, cwd, ask, about=about)
     # a line that drives both is judged desktop first: either one held holds the whole line
-    if desk and (held := agentdesktop.check(st, t.task_id, t.sid, cmd, brain)): return held
-    return browsergate.check(st, t.task_id, t.sid, cmd, brain) if browse else {}
+    if desk and (held := agentdesktop.check(st, tid, sid, cmd, brain)): return held
+    return browsergate.check(st, tid, sid, cmd, brain) if browse else {}
 
 
 def run_sid(payload: dict, tid: int) -> str:

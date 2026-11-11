@@ -1,5 +1,6 @@
 import { fmtTime } from "./dates.js";
 import { getLocale, t } from "./i18n.js";
+import { span } from "./timeWords.js";
 // The server's scheduler wakes every 30 seconds. Far from the next scheduled sync the Timeline
 // can check quietly; near (and just after) the due time it must watch closely or a short refresh
 // can start and finish between UI checks and the sync glyph never moves.
@@ -30,4 +31,20 @@ export const syncFace = ({ busy = false, what = "", every = 10, lastAt = null, n
   if (terse) return started ? "" : t("{state} {time}", { state: verb, time: at });
   const nxt = nextIn == null ? "" : nextIn <= 0 ? t(" · next sync due now") : t(" · next in {time}", { time: `${Math.floor(nextIn / 60)}:${String(nextIn % 60).padStart(2, "0")}` });
   return t("{state} {time}{next}", { state: verb, time: at, next: nxt });
+};
+
+// WHAT A SYNC IS BRINGING IN, from the server's own numbers (the owner, 2026-11-10: "we need the app to say how far back it's going and
+// next to the word sync show brin[g]ing in emails count"): `back` = the hours a connection read for the first time reaches back,
+// `landed` = how many came in so far (server._reading). A first read says how far back it goes; any sync its count once it has one;
+// and the count it ended on stays a moment after (`brought`). '' = nothing of its own to say, and the clock's words stand.
+const lastOf = (h) => span(h * 60, true).replace(/^1 /, "");      // "the last 3 days", "the last day"
+// HOW FAR BACK A NEW CONNECTION'S FIRST SYNC GOES, its card's own choice (the owner, 2026-11-10: "first sync should be 3 days.. or you can
+// make drop down"): these, and the window the server says it will use now (`ReadsBack`, channels.first_read_hours) where that is another
+export const FIRST_DAYS = [1, 3, 7, 14, 30];
+export const backChoices = (now = 0) => [...new Set([...FIRST_DAYS, Number(now) || 0])].filter((d) => d > 0).sort((a, b) => a - b).map((d) => [d, span(d * 1440, true)]);
+export const broughtLine = (n, hours) => (hours ? `brought in ${n} from the last ${lastOf(hours)}` : n ? `brought in ${n}` : "");
+export const syncLine = ({ busy = false, phase = "", what = "", landed = 0, back = 0, brought = null } = {}) => {
+  if (!busy) return brought ? broughtLine(brought.n || 0, brought.hours || 0) : "";
+  if (phase && phase !== "fetching") return landed ? [`brought in ${landed}`, what.replace(/^syncing( · )?/, "")].filter(Boolean).join(" · ") : "";
+  return back ? `going back ${span(back * 60, true)}${landed ? ` · bringing in ${landed}…` : "…"}` : landed ? `bringing in ${landed}…` : "";
 };

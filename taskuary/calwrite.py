@@ -461,6 +461,13 @@ def first_free(store, msg: dict, act: str) -> tuple:
     return free[0]['start'], free[0]['end']
 
 
+def head_of(env: dict) -> str:
+    "The card's words for a calendar answer, from its envelope: \"Accept Budget sync - Wed Nov 11, 2:30-3:00 PM\" - the card and its agent read one."
+    act, subject, line = env.get('act'), env.get('subject') or 'the meeting', env.get('when') or ''
+    return {'accept': f'Accept {subject} - {line}', 'decline': f'Decline {subject} - {line}', 'propose': f'Propose {line} for {subject}',
+            'schedule': f"Invite {', '.join(env.get('to') or []) or 'them'} to {subject} - {line}"}.get(act, f'{act} {subject}')
+
+
 def draft(store, mid: int, act: str, start: str = None, end: str = None, actor: str = 'owner', note: str = None) -> dict:
     """The answer, drafted into the approval queue: a review on the message (and its task) whose envelope is the calendar
     act. {reviewId, taskId, say}. A new time with none named is the first free one (first_free); `note` replaces the line the
@@ -489,10 +496,11 @@ def draft(store, mid: int, act: str, start: str = None, end: str = None, actor: 
     line = when(*at, all_day=bool(c and c.get('all_day') and act in ('accept', 'decline')))
     # the card's words, said here once: the time the calendar is told, and for a counter-proposal the time it replaces
     env.update(when=line, **({'was': when(c.get('start'), c.get('end'))} if act == 'propose' and c.get('start') else {}))
-    head = {'accept': f'Accept {subject} - {line}', 'decline': f'Decline {subject} - {line}',
-            'propose': f"Propose {when(start, end)} for {subject}", 'schedule': f'Invite {", ".join(who) or "them"} to {subject} - {line}'}[act]
+    head = head_of(env)
     old = next((r for r in store.reviews_for_message(int(mid)) if r.get('Status') == 'pending' and env_of(r).get('kind') == 'calendar'), None)
-    if old: store.decide_review(old['ReviewId'], 'rejected', old.get('DraftText'), actor, 'replaced by another calendar answer')
+    # ...REPLACED, never turned down (the stress round, 2026-11-10): marked rejected, its agent heard "turned down rv1" over an answer the owner
+    # only changed - a no that nobody said
+    if old: store.decide_review(old['ReviewId'], 'superseded', old.get('DraftText'), actor, 'replaced by another calendar answer')
     text = NOTE[act].format(when=when(start, end) if start else '') if note is None else str(note).strip()[:4000]
     rid = store.add_review({'TaskId': msg.get('TaskId'), 'MessageId': int(mid), 'Kind': 'outbound', 'Status': 'pending', 'DraftText': text, 'Deliver': json.dumps(env),
                             'Reason': f"{head}{' · ' + clash if clash else ''} - press {send_word()} and the calendar is told"})
@@ -697,17 +705,23 @@ def answer(store, tid: int, act: str, start: str = None, end: str = None, note: 
 
 
 def meeting(store, tid: int, who, subject: str, minutes: int = 30, within: str = '', start: str = None, end: str = None, note: str = '',
-            online: bool = True, actor: str = 'agent') -> dict:
-    """The agent's "set up a meeting" on task `tid`: who by name or address (people_of - a name nobody can place is said back, never
-    guessed), the first free time on the owner's calendar and theirs (suggest) unless one is named. {ok, review, to, when, link, says}."""
+            online: bool = True, actor: str = 'agent', guessed=()) -> dict:
+    """The agent's "set up a meeting" on task `tid`: who by name or address (people_of - a name nobody can place is said back), the first
+    free time on the owner's calendar and theirs (suggest) unless one is named. {ok, review, to, when, link, says}. `guessed`: addresses
+    the agent guessed for a name with none on record - the invite card says so (slots.with_guess), the owner's Send is the check (the owner,
+    2026-11-09: invites follow the emails' guess-and-mark rule)."""
     to, miss = people_of(store, who)
-    if miss: raise ValueError(f"no address for {_and(miss)} in the owner's mail or directory - give the address, or ask the owner for it")
+    if miss: raise ValueError(f"no address for {_and(miss)} in the owner's mail or directory - give the address, or your best guess "
+                              "(their first name at the company's domain) named in `guessed`")
     if not (start and end):
         free = suggest(store, to, minutes, within)['slots']
         if not free: raise ValueError('no free time in those days - name other days (within) or a start and end')
         start, end = free[0]['start'], free[0]['end']
     to, subject, acct = _checked(store, to, subject, start, end)
     got = _invite(store, int(tid), to, subject, start, end, note, actor, acct, online)
+    if (g := [a for a in (str(x).strip().lower() for x in guessed or ()) if a in {t.lower() for t in to}]):
+        from .slots import with_guess
+        store.update_review_reason(got['reviewId'], with_guess((store.get_review(got['reviewId']) or {}).get('Reason'), g))
     env = env_of(store.get_review(got['reviewId']))
     return {'ok': True, 'review': got['reviewId'], 'to': to, 'when': env['when'], 'link': env.get('link') or '',
             'says': _told(got['head'] + (f" ({got['clash']})" if got['clash'] else ''))}

@@ -2,9 +2,12 @@
 // greyed with the server's reason; a result the store holds is named, never re-sent; and the cards that carry a result register it.
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import { SHARE_ID, SETTING_HREF, WAYS, offersSetting, shareBody, shareVerb, shareable, sharedNote, waysOf } from "../src/share.js";
 import { clustersOf, rowOf, typeOf } from "../src/actionRow.js";
 import { verbOfRow } from "../src/buttons.js";
+const src = (f) => fs.readFileSync(path.join(import.meta.dirname, "../src", f), "utf8");
 
 test("one button, one name: Share, from buttons.json, the row id `share`", () => {
   assert.equal(SHARE_ID, "share");
@@ -62,6 +65,30 @@ test("the badge's hover says where it went; an email says nothing is sent before
   const url = "http://192.168.1.20:7787/share/x";
   assert.ok(sharedNote("link", { url }, false).includes(url));
   assert.notEqual(sharedNote("link", { url }, true), sharedNote("link", { url }, false));
+});
+
+
+test("Settings lists the open links under the switch, each with Revoke", () => {
+  const s = src("SettingsView.jsx");
+  assert.match(s, /Sharing: panel\("panel:sharedlinks", <SharedLinks \/>\)/);
+  assert.match(src("SharedLinks.jsx"), /api\.delete\(`\/api\/shares\/\$\{id\}`\)/);
+});
+
+test("an email drafted from Share opens on the table for its Send (the owner, 2026-10-23)", () => {
+  assert.match(src("assistantCards.jsx"), /onShared: \(how, out\) => \{ if \(how === "email" && out\?\.task_id\) onOpenTask\?\.\(out\.task_id\); \}/);
+  const page = src("TaskPage.jsx");
+  assert.match(page, /onOpenTask\?\.\(out\.task_id\)/);
+  assert.match(page, /loadDetail\(selected\); onChanged\?\.\(\); setOpenStage\("reply"\);/);
+  assert.match(src("Share.jsx"), /if \(w\.key === "summary"\) return summary\?\.\(\);/);
+});
+
+test("Allow saving files on the Microsoft and Google cards - a choice, never the default", () => {
+  const fa = src("FileAccess.jsx"), cv = src("ConnectorsView.jsx");
+  assert.match(fa, /export const ALLOW_FILES = "Allow saving files"/);
+  assert.match(fa, /api\.post\(`\/api\/connectors\/\$\{conn\.ConnectorId\}\/google\/files`, \{ on \}\)/);
+  assert.match(cv, /api\.post\(`\/api\/connectors\/\$\{conn\.ConnectorId\}\/ms\/signin`,\s+\{ files: !!want, code, client_id: cfg\.client_id \|\| null, tenant_id: cfg\.tenant_id \|\| null \}\)/);
+  assert.match(cv, /useState\(!!cfg\.allow_files\)/);
+  assert.match(cv, /conn\.Type === "gmail" && <GoogleFiles/);
 });
 
 

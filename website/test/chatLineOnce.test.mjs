@@ -36,11 +36,11 @@ test("Taskuary's own brief is not the owner's line: a held line waits for theirs
 
 test("the chat draws its held lines through notShown, and a failed answer takes its held copy back", () => {
   const gw = read("GeneralWorkspace.jsx");
-  assert.match(gw, /\.\.\.notShown\(held, mineDrawn\)\]\.map\(\(l\) =>/);
+  assert.match(gw, /const shown = notShown\(held, mine\);\s*return \[\.\.\.waitingShown\(waiting, shown, mine, messages\)[^\n]*\.\.\.shown\];[\s\S]*<FootLines waiting=\{waiting\} held=\{held\} messages=\{messages\}/);
   assert.doesNotMatch(gw, /\{held\.map\(\(l\) => <div key=\{l\.id\}/);
-  assert.match(gw, /\.catch\(\(x\) => \{ setHeld\(\(h\) => h\.filter\(\(l\) => l\.id !== id\)\); c\.setText\(w\)/);
-  // ...and a coding source's lines are held the same way, on the same road: its typed lines are the thread's own (chatStream.rowMessages)
-  assert.match(gw, /\(road \? road\(w, files\.map\(\(a\) => a\.path\)\) : api\.post\(`\/api\/tasks\/\$\{task\.TaskId\}\/assistant\/messages`/);
+  assert.match(gw, /\.catch\(\(x\) => \{ setHeld\(\(h\) => h\.filter\(\(l\) => l\.id !== id\)\); setSent\(null\); c\.setText\(w\)/);
+  // ...and a coding source's lines are held the same way, on the same road - one post for every agent (general.take_line, 2026-11-10)
+  assert.match(gw, /api\.post\(`\/api\/tasks\/\$\{task\.TaskId\}\/assistant\/messages`, \{ text: w, attachments: files\.map\(\(a\) => a\.path\), line_id: id \}, \{ timeout: 0 \}\)\s*\.then\(\(\) => road\?\.\(\)\)/);
 });
 
 // 2. THE FILES LEAVE THE BOX WITH THE SEND. They were cleared only when the agent's whole turn was done - minutes of chips over a box that had
@@ -51,18 +51,9 @@ test("the chat box lets go of its files once the send is accepted, and keeps the
   assert.match(gw, /if \(event\.type !== "error"\) took\(\);/, "the first word back from the server is the send accepted");
   assert.doesNotMatch(gw, /onClearAttachments\(\); onSent\(event\.payload\)/, "never every file at the turn's end: one added meanwhile stays");
   // ...a line held while it works carries the box's files, and puts them back if it did not go
-  assert.match(gw, /\{ text: w, attachments: files\.map\(\(a\) => a\.path\) \}/);
+  assert.match(gw, /\{ text: w, attachments: files\.map\(\(a\) => a\.path\), line_id: id \}/);
   assert.match(gw, /onAttachBack\(files\)/);
   assert.match(gw, /const clearAttachments = useCallback\(\(paths\) =>/);
-});
-
-// 3. AN FYI HANDFUL IS "6 messages": the row and the section already say FYI
-test("an FYI handful's chip, title and kicker say how many, not 'nothing to decide'", () => {
-  const cards = read("assistantCards.jsx");
-  assert.doesNotMatch(cards, /`\$\{plural\(n, "message"\)\} - nothing to decide`/);
-  assert.doesNotMatch(cards, /`\$\{plural\(n, "message"\)\} · nothing to decide`/);
-  assert.doesNotMatch(cards, /kicker=\{`\$\{items\.length\} fyi · nothing to decide`\}/);
-  assert.match(cards, /title=\{batch \? plural\(n, "message"\) : card\.title\}/);
 });
 
 // 4. EVERY BOX: the Came-from chip and the files on the box's own line, left of the words - never a row of their own over it
@@ -94,8 +85,8 @@ test("every tq-aui-composer is the one OneBox, and it always has the paperclip a
   assert.match(read("GeneralWorkspace.jsx"), /<OneBox root=\{ComposerPrimitive\.Root\}/);
   assert.match(box, /<PromptBox /);
   assert.match(read("ItemSections.jsx"), /<PromptBox /);
-  // ...and a coding CLI's files reach it named after the words by their paths
-  assert.match(read("GeneralWorkspace.jsx"), /const said = withImages\(w, files\);/);
+  // ...and a coding CLI's files reach it named after the words by their paths - the server's one road names them (waitroom._lines)
+  assert.match(read("GeneralWorkspace.jsx"), /attachments: files\.map\(\(a\) => a\.path\), line_id: id/);
 });
 
 // ...AND EVERY BOX ON A TASK PAGE (the owner, 2026-11-06: "stop building each unique prompt box. it should be shared"): Continue's note and the

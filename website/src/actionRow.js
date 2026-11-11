@@ -13,7 +13,7 @@ const live = new Map();          // id -> the latest verb (its run closes over t
 const ofs = new Map();           // id -> the card that registered it: the item a button drawn from it was drawn for (press)
 const owners = new Map();        // owner -> { verbs, ref, at }
 const subs = new Set();
-const view = (v) => ({ id: v.id, label: v.label, group: v.group, tone: v.tone || "s", title: v.title || "", disabled: !!v.disabled, why: v.why || "", ...(v.blank ? { blank: v.blank } : {}), promote: v.promote !== false, lead: !!v.lead, ...(v.send ? { send: true } : {}), ...(v.closes ? { closes: true } : {}), ...(v.fill ? { fill: true } : {}), ...(v.beside ? { beside: true } : {}), ...(v.onCard ? { onCard: true } : {}), ...(v.card ? { card: true } : {}), ...(v.steady ? { steady: true } : {}), ...(v.tucked ? { tucked: true } : {}), ...(v.spine ? { spine: v.spine } : {}), ...(v.stage ? { stage: v.stage } : {}), ...(v.laid ? { laid: v.laid } : {}) });
+const view = (v) => ({ id: v.id, label: v.label, group: v.group, tone: v.tone || "s", title: v.title || "", disabled: !!v.disabled, why: v.why || "", ...(v.blank ? { blank: v.blank } : {}), promote: v.promote !== false, lead: !!v.lead, ...(v.send ? { send: true } : {}), ...(v.closes ? { closes: true } : {}), ...(v.fill ? { fill: true } : {}), ...(v.beside ? { beside: true } : {}), ...(v.onCard ? { onCard: true } : {}), ...(v.card ? { card: true } : {}), ...(v.steady ? { steady: true } : {}), ...(v.tucked ? { tucked: true } : {}), ...(v.spine ? { spine: v.spine } : {}), ...(v.stage ? { stage: v.stage } : {}), ...(v.laid ? { laid: v.laid } : {}), ...(v.bar ? { bar: true } : {}) });
 let snap = { list: [], ref: "" }, sig = "";
 // THE WALK'S TWO WAYS, ONE PILL (the owner, 2026-10-27: "We have a Next button - let's have a Back button that goes up the line as well ...
 // on the first one no Back, like no Next on the last one. Combine Next/Back into one big pill called Nav"): Back is the walk's step up the
@@ -110,6 +110,26 @@ export function useRowHold(sig, ready, shape = "") {
 // ...while it holds, the row drawn follows the live one only where they are the same buttons for the same item - a label turned to its
 // busy word ("Reopening…"), a flag - so the press still answers at once
 export const sameRow = (a, b) => { const ids = (r) => (r?.list || []).map((v) => `${v.id}@${v.at || ""}`).join("|") + (r?.end ? "|end" : ""); return ids(a) === ids(b); };
+// THE HELD ROW, AS DRAWN (ActionRow): the row kept up while the new one is not whole, its Back and Next the live row's (greyed from a press
+// until its move lands, the owner 2026-11-03; lit as they are now, 2026-11-04), and `liveOf` the live verb a held button's press runs - or none.
+// ...AND A HELD BUTTON THAT WOULD DO NOTHING IS DRAWN GREYED (the owner, 2026-11-09: "I thought it's greyed out until you can click it
+// again"): a second Mark done in the ~1.5 s the next task took to load did nothing, under a button that looked live. `inert` marks it, and
+// it comes back the moment its press runs something again - the same rule press uses, so what looks live is what acts
+export function heldRow(kept, now) {
+  if (kept === now) return { verbs: now, liveOf: (id) => now.list.find((x) => x.id === id) };
+  const nav = (v) => v.group === "next" || v.group === "back";
+  const navNow = (v) => now.list.find((x) => x.group === v.group && !x.disabled) || { ...v, disabled: true };
+  // ...a held button acts where its live verb stands for no item, or for the same item still on the table (2026-10-27: Run another agent did
+  // nothing while a write-up re-drew the row) - never the item being left's own; a held Back or Next is the live row's, whatever the item
+  // under it names it (a batch registers chat:next; the stress walk, 2026-11-02)
+  const of = (h) => (nav(h) ? now.list.find((x) => x.group === h.group && !x.disabled)
+    : now.list.find((x) => x.id === h.id && (!x.at || (!!h.at && x.at === h.at))));
+  const list = [...kept.list.map((v) => (nav(v) ? navNow(v) : of(v) && !of(v).disabled ? v : { ...v, disabled: true, inert: true })),
+    ...now.list.filter((x) => nav(x) && !x.disabled && !kept.list.some((k) => k.group === x.group))];
+  return { verbs: { ...kept, list }, liveOf: (id) => { const h = list.find((x) => x.id === id); return h ? of(h) : undefined; } };
+}
+// ...a ▾ whose every move is held inert greys with them: opened, it held nothing a press would run
+export const heldOff = (vs) => vs.length > 0 && vs.every((v) => v.inert);
 // EVERY PRESS IS AN ACT THE ADVISOR MUST SEE (2026-10-19): its line was read when the item opened and never again, so after Send it
 // still said the sender was waiting. Whoever shows advice hears each press once it settles (onPressed) and reads it again.
 // A card's own button that acts without the row (the draft's Send under it) says so the same way: acted(id).
@@ -219,7 +239,7 @@ const ROOM = 4;                                            // how many chips the
 const isDone = (v) => v.id === "done" || /:done$/.test(String(v.id));
 // THE ADVISOR'S PICK (advisor.py, {verb, label}) as the row verb it names: the same id (the task registers `reply`, `continue`), the
 // chip's own words, or the task's own id for the same act read off buttons.json's `row` lists - the Advisor's `close` is the row's
-// `done`, `defer` its `remind`, `stop_agent` its `save-end` - so it fills the REAL button and never draws a second one beside it
+// `done`, `defer` its `remind` - so it fills the REAL button and never draws a second one beside it
 // (it drew a second Reply on the strip, 2026-10-13). An old saved pick of a removed verb (`done`, `later`) lands on the live one.
 const normalWord = (s) => String(s || "").trim().toLowerCase();
 // The Advisor returns catalogue words in English; only catalogue-owned words may be translated for matching.
@@ -268,7 +288,9 @@ export const aimed = (item, e = null, now = Date.now()) => {
   const l = lastPress;
   // ...a press with nothing on the table (Walk me through my tasks, the opener's own buttons) was aimed at no item, so what comes up after
   // it was never drawn under another item's press: the walk's first Next is the owner's (walk-again-last-task, 2026-10-25)
-  if (l?.item && item !== l.item && (Number(e?.detail) > 1 || now - l.at < ONE_PRESS_MS)) return false;
+  // ...and A PRESS ON NO ITEM reads none: only a double-click's second click holds it. The walk's end draws its walk again at Next's own
+  // press, and pressed 0.3 s later it did nothing under a lit button (the overnight audit, 2026-11-10)
+  if (l?.item && item !== l.item && (Number(e?.detail) > 1 || (!!item && now - l.at < ONE_PRESS_MS))) return false;
   lastPress = { item, at: now };
   return true;
 };
@@ -297,12 +319,6 @@ export function rowOf({ list, ref, end: last = false, off = "" }, pick = null) {
     const fill = (xs) => xs.map((v) => (v.id === advised.id ? primary : v));
     decide = fill(decide); agent = fill(agent); more = fill(more);
   }
-  // ...WITH ONE EXCEPTION, the owner's (2026-10-20): while an agent is RUNNING its row's Stop and save is dark with no Advisor line -
-  // the Advisor stays quiet over a working agent, and the one move there is ending it. A verb asks for that with `fill`; it is
-  // marked `own` so the dead-end walk's DARK rule can tell it from the Advisor's
-  // ...and only while the strip says NOTHING: under a line ("it says when it needs you", "Connect an AI") the line's own move is the lit
-  // one, and a dark Stop and save beside it invited stopping an agent that needed nothing (the UI audit's C2, 2026-10-21; advice.stripWord)
-  if (!advised && !pick) agent = agent.map((v) => (v.fill ? { ...v, tone: "p", own: true } : v));
   // MARK DONE IS ALWAYS ON THE BAR, beside Next - never behind More (the owner, 2026-10-06: "mark done should show next to next on every
   // single task not inside the more button"). With no decision waiting it leads the bar; dark only when it is the advice.
   const done = more.find((v) => v.id === "done");
@@ -355,7 +371,7 @@ export const TYPES = [["move", ""], ["change", "Change"]];
 export const NAV = "Nav";                 // the pill Back and Next share, labelled like the types
 const TYPE_OF = {
   reply: "reply", approve: "reply", send_close: "reply", redraft: "reply", palt: "reply", reject: "reply", email: "reply", hand: "reply", attach: "reply", "email-file": "reply", copy: "reply",
-  "start-agent": "agent", "run-another": "agent", "strong-again": "agent", continue: "agent", "send-general": "agent", diff: "agent", "save-end": "agent",
+  "start-agent": "agent", "run-another": "agent", "strong-again": "agent", continue: "agent", "send-general": "agent", diff: "agent",
   done: "close", "close-note": "close", reopen: "close",
   remind: "task", watch: "task", nat: "task", reshape: "task",
   // what the task's pills used to change (section 1's redesign, 2026-10-16): the pills read now, the row changes
@@ -479,8 +495,7 @@ export const shortParts = (m) => ({ ...m, back: m.backShort ?? m.back, next: m.n
 // chat (the owner, 2026-11-06: no Close out) - to Agent; Not a task and Remind me, about where the task came from, to Came from (2026-10-29). Folded, a pane carries them on its
 // spine, between its name and its status; open, inside it - and never on the bar. A press opens that pane and starts the step there
 // (TaskPage's "a press opens its section"). ...and THE BAR IS BACK AND NEXT ALONE (the owner, 2026-10-29): what acts on the whole task -
-// Mark done first, Change, Share, Close with a note, Attach a file - goes to the task's title bar (`head`, `change`, `share`), and a live
-// agent's Stop and save to its pane's strip (`live`).
+// Mark done first, Change, Share, Close with a note, Attach a file - goes to the task's title bar (`head`, `change`, `share`).
 // The task page's verbs say which pane is open (`laid`; none where it lays no panes - a phone, the Tasks
 // tab): carried WITH the verbs, so the row never draws a set where the item's moves and the panes they ride on disagree (row-draws-once).
 // The row draws the rest and hands the stage moves here, by pane (putSpineVerbs, useSpineVerbs)
@@ -488,7 +503,7 @@ const CHAT_STAGE = new Set(["reply", "redraft", "chase", "accept_invite", "decli
 const FROM_STAGE = new Set(["nat", "remind", "watch"]);
 // ...a verb may name its pane itself (`stage`): an FYI's Should be a task rides its Came from, where a task's Not a task does
 export const stageOf = (v) => { const k = String(v?.id || "").split(":").pop(), t = typeOf(v);
-  return v?.stage || (CHAT_STAGE.has(k) ? "agent" : FROM_STAGE.has(k) ? "from" : t === "agent" && k !== "save-end" && k !== "diff" ? "agent" : ""); };
+  return v?.stage || (CHAT_STAGE.has(k) ? "agent" : FROM_STAGE.has(k) ? "from" : t === "agent" && k !== "diff" ? "agent" : ""); };
 const NONE = [], ITEM_OWN = new Set(["mine"]);
 let spineVerbs = {}, spineSig = "";
 const spineSubs = new Set(), spineSub = (f) => { spineSubs.add(f); return () => spineSubs.delete(f); }, spineDraw = () => spineSubs.forEach((f) => f());
@@ -498,11 +513,20 @@ export const useSpineVerbs = (sec) => useSyncExternalStore(spineSub, () => spine
 export const useSpineAll = () => useSyncExternalStore(spineSub, () => spineVerbs);
 // ...the row: Back and Next alone; each pane's stage moves in the move pill's order (`spine`: the word a folded pane shows - Draft reply
 // where nothing is drafted yet); the title bar's the task's own, Mark done first - a live agent's too: the press stops and saves first
-export function splitRow(row, on) {
-  if (!on) return { row, by: {} };
-  const nav = { ...row, decide: [], agent: [], more: [] };
-  // ...an item that lays ONE pane of its own (`only`: an FYI's Came from) takes that pane's moves off the bar and leaves it the rest
+// THE BAR IS NAVIGATION ONLY (the owner, 2026-11-10: "on bottom the only buttons should be nav. all other buttons should be on task no????"):
+// `desk` is the desk's bar under the chat. With nothing laid out to carry them, an item's moves go to its own row ON THE ITEM (`item`:
+// AssistantView's ItemMoves, over the card on the table) - an FYI batch's bar read Back, All read, next and a CHANGE pill. Only Back and Next
+// stand on the bar, and a verb that says it belongs there (`bar`: the empty rail's New and Change my setup, the owner's one exception that day).
+// A phone's row is its task view's own (inline): it keeps every move
+export function splitRow(row, on, desk = false) {
+  desk = desk === true;                // ...a caller's old third argument (the verbs list) is not the desk
+  const nav = { ...row, decide: [], agent: [], more: [] }, bar = (xs) => xs.filter((v) => v.bar), barred = { ...nav, decide: bar([...row.decide, ...row.agent, ...row.more]) };
+  const unbar = (xs) => xs.filter((v) => !v.bar);
+  const item = () => { const { move, change, share } = pillsOf(row); return [...unbar(move), ...unbar([...change, ...share]).map((v) => ({ ...v, quiet: true }))]; };
+  if (!on) return desk ? { row: barred, by: { item: item() } } : { row, by: {} };
+  // ...an item that lays ONE pane of its own (`only`: an FYI's Came from) takes that pane's moves off the bar - and the rest go to the item's row
   if (on.only) { const { move, change } = pillsOf(row), here = [...move, ...change].filter((v) => stageOf(v) === on.only), off = (xs) => xs.filter((v) => !here.includes(v));
+    if (desk) return { row: barred, by: { [on.only]: here, item: item().filter((v) => !here.some((h) => h.id === v.id)) } };
     return { row: { ...row, decide: off(row.decide), agent: off(row.agent), more: off(row.more) }, by: { [on.only]: here } }; }
   // ...and one laid on the desk in a task's three sections (ItemSections: a report, a dashboard, an FYI) puts EVERY move on the pane it is about,
   // as a task's ride its panes (the owner, 2026-10-31: "i thought we moved all buttons to the agent canvas?? report should be white with buttons
@@ -533,7 +557,7 @@ export function splitRow(row, on) {
 export const TASK_GROUPS = [
   ["finish", "Finish", ["done", "reopen", "close-note", "send_close", "approve", "elsewhere"]],
   ["later", "Pass on", ["hand", "remind", "nat", "watch", "defer", "let_go", "not_ours", "not_ours_sender", "not_ours_kind", "block_sender"]],
-  ["agent", "Agent", ["run-another", "send-general", "start-agent", "continue", "strong-again", "rerun", "diff", "attach", "email-file", "save-end", "prepare",
+  ["agent", "Agent", ["run-another", "send-general", "start-agent", "continue", "strong-again", "rerun", "diff", "attach", "email-file", "prepare",
     "reply", "redraft", "palt", "reject", "chase", "email", "copy", "accept_invite", "decline_invite", "propose_time", "find_time"]],
   ["more", "More", ["share", "change"]],
 ];

@@ -92,11 +92,30 @@ def waiting(store, tid: int, t=None) -> list:
     """THE OWNER'S LINES NO TURN HAS TAKEN YET, on every screen (the owner, 2026-11-08: "i asked another question and the text was never sent into
     the prompt"): the waiting room's notes not yet handed over, and what a live ACP session holds for its next turn - each drawn as theirs,
     "Waiting for the agent", until a turn takes it. The general chat's own road (general.waiting_lines); [{id, text, at}], oldest first."""
+    from . import general
     from .waitroom import TEAMMATE, parts
-    out = [{'id': f"w{x['WId']}", 'text': parts(x.get('Note'))[0], 'at': x.get('CreatedAt')} for x in store.waiting_notes(int(tid))
-           if (x.get('CreatedBy') or 'owner') not in ('router', TEAMMATE)]
+    # IN THE ORDER A LINE MOVES (general.take_line): kept, then held by the session, then drawn in its record - read in that order, so a line
+    # read gone from one is already in the next, and named once by its kept row's id (`line`) wherever two reads both hold it (chat)
+    kept = general.waiting_lines(store, int(tid))
+    out = kept + [{'id': f"w{x['WId']}", 'text': parts(x.get('Note'))[0], 'at': x.get('CreatedAt')} for x in store.waiting_notes(int(tid))
+                  if (x.get('CreatedBy') or 'owner') not in ('router', TEAMMATE)]
     held = list(getattr(t, '_q', None) or []) if t is not None else []
-    return out + [{'id': f'q{i}', 'text': w, 'at': None} for i, (_t, _b, shown, _d) in enumerate(held) for w in shown]
+    # ...and the owner's words a reopening's first prompt leads with ("FROM THE OWNER: ..." - Continue): held until its adapter is up, ten seconds
+    # and more, they were on no screen but the one that sent them (the owner, 2026-11-10)
+    from .outcomes import owner_split
+    lines = lambda text, brief, shown: shown or ([w] if brief and (w := owner_split(text)[0]) else [])
+    # ...each named as the page knows it (`line`, the name it was sent under - as a kept row is named), its kept row's id beside it (`kept`): named
+    # by that id, the page drew the line twice while the session held it (the browser walk, 2026-11-10)
+    return out + [{'id': f'q{i}', 'text': w['text'], 'at': None, 'kept': w.get('line'), **({'line': w['name']} if w.get('name') else {})}
+                  if isinstance(w, dict) else {'id': f'q{i}', 'text': w, 'at': None}
+                  for i, (_t, _b, shown, _d) in enumerate(held) for w in lines(_t, _b, shown) if not (isinstance(w, dict) and w.get('drawn'))]
+
+
+def _once(waiting: list, sessions: list) -> list:
+    "Each owner's line once: a kept row the session holds too, or one its record already draws, is drawn there - not twice."
+    drawn = {(u.get('_meta') or {}).get('line') for s in sessions for u in s.get('updates') or []} - {None}
+    held = {w.get('kept') for w in waiting if str(w['id']).startswith('q')} - {None}
+    return [w for w in waiting if (w.get('kept') if str(w['id']).startswith('q') else w['id']) not in drawn | (set() if str(w['id']).startswith('q') else held)]
 
 
 # ...each step's time in the server's own zone, as every stamp the page reads (store.norm_stamp): a CLI log stamps UTC, and the turn read
@@ -104,13 +123,26 @@ def waiting(store, tid: int, t=None) -> list:
 def _local(steps: list) -> list: return [{**s, 'at': sessionrecord._local(s['at'])} if s.get('at') else s for s in steps]
 
 
+def _worded(ups: list) -> list:
+    """Each run of the agent's words ONE update, read as a chat's answer is (selfclose.asked_inline): its [[TASKUARY-ASK]] came a token at a time,
+    and the coding chat drew the bare marker where a general one draws the question (the audit, 2026-11-10)."""
+    from .selfclose import asked_inline
+    words = lambda u: u.get('sessionUpdate') == 'agent_message_chunk' and (u.get('content') or {}).get('type') == 'text'
+    out = []
+    for u in ups:
+        if words(u) and out and words(out[-1]): out[-1] = {**out[-1], 'content': {'type': 'text', 'text': out[-1]['content']['text'] + str(u['content'].get('text') or '')}}
+        else: out.append(u)
+    return [{**u, 'content': {'type': 'text', 'text': asked_inline(u['content']['text'])[0]}} if words(u) else u for u in out]
+
+
 def _session(tid: int, sid: str, cli: str, ext: str, at: str, live: bool = False) -> dict:
     s = {'sid': sid, 'cli': cli or '', 'at': str(at or '').replace('T', ' ')[:19], 'live': live}
-    if (ups := acp_updates(tid, sid)): return {**s, 'source': 'acp', 'updates': ups}
+    if (ups := acp_updates(tid, sid)): return {**s, 'source': 'acp', 'updates': _worded(ups)}
     saved = sessionrecord._saved_path(tid, sid)
     # a live session's log is read fresh - its saved copy, if any, is from an earlier save of the same pane
     if not live and saved.is_file():
-        try: return {**s, 'source': 'saved', 'steps': _local((json.loads(saved.read_text(encoding='utf-8')) or {}).get('steps') or [])}
+        # ...marked again as it is read: a record saved before 2026-11-09 holds the owner's words inside Taskuary's wrapper (mark_briefs)
+        try: return {**s, 'source': 'saved', 'steps': _local(sessionrecord.mark_briefs(tid, (json.loads(saved.read_text(encoding='utf-8')) or {}).get('steps') or []))}
         except (OSError, ValueError): pass
     steps, src = sessionrecord.cli_steps(cli, ext)
     return {**s, 'source': src or 'none', 'steps': _local(sessionrecord.mark_briefs(tid, steps)) if steps else []}
@@ -135,10 +167,57 @@ def sessions(store, tid: int) -> list:
 def chat(store, tid: int) -> dict:
     """What the coding chat draws (GeneralWorkspace.jsx): the sessions' steps or ACP updates, the mail that came in, and the live CLI - one that
     idled out (acpcoding.idle_out) still, at rest: the chat stays as it was, and its box is the input that brings it back."""
-    from . import acpcoding, permissions
+    from . import acpcoding, general, permissions, taskstate
     t = _live(int(tid)) or (acpcoding.IDLED.get(int(tid)) if acpcoding.idled(int(tid), store) else None)
     from .landing import has_checkout
-    return {'task': int(tid), 'sessions': sessions(store, tid), 'mails': mails(store, tid), 'live': live_of(t),
+    # A LINE MOVES ONE WAY - kept, held by its session, drawn in its record - so it is read in that order: read after the sessions, a line
+    # taken between the two reads was in neither (CI, 2026-11-10). One caught in two is drawn once, by its kept row's id (_once)
+    was, w = general.at_work(int(tid)), waiting(store, tid, t)
+    ss = owned(store, tid, sessions(store, tid))
+    # ...and what the indicator and the lines read, from the one function the general chat's payload calls (general.line_state)
+    return {'task': int(tid), 'sessions': ss, 'mails': mails(store, tid), 'live': live_of(t),
             'checkout': has_checkout(store, tid, getattr(t, 'cwd', '') or ''),
-            'waiting': waiting(store, tid, t),
+            **general.line_state(store, int(tid), _once(w, ss), was),
+            # ...and the owner's presses, each one quiet line at its time - the general chat's own (general.press_lines): a coding task's Remind me
+            # or Push left no line in its chat at all (the audit, 2026-11-10)
+            'presses': general.press_lines(store, int(tid)),
+            # ...and what it asks the owner, by the general chat's own read (taskstate.asking)
+            'asking': taskstate.asking(store, store.get_task(int(tid)) or {'TaskId': int(tid)}, t if getattr(t, 'alive', False) else None),
+            # ...and the turn each card stands in, the general payload's `turns` and `drafts` read off this record (cards)
+            **cards(store, int(tid), ss),
             'permissions': permissions.pending(int(tid), store)}         # what the agent waits on the owner's button for
+
+
+def owned(store, tid: int, ss: list) -> list:
+    """ONLY WHAT THE OWNER TYPED IS DRAWN AS HIS (the owner's rules, part 3: "the same fact reads the same"): an ACP adapter sends user-role
+    messages of its own - a slash command's output and the like - and the chat drew them in his bubble. Every line he typed is recorded
+    (general.take_line; before it, the waiting room's notes), so a user-role update Taskuary did not mark and that is not one of his is the
+    agent's (chatStream.stepsFromAcp draws `agent` as its words)."""
+    from . import general
+    from .waitroom import parts
+    his = {' '.join(str(c.get('Body') or '').split()) for c in store.list_comments(int(tid), internal=True)
+           if c.get('ActorType') == general.USER_TYPE and c.get('Actor') == 'owner'}
+    his |= {' '.join(parts(x.get('Note'))[0].split()) for x in store.waitroom(int(tid), limit=500) if (x.get('CreatedBy') or 'owner') == 'owner'}
+    mine = lambda u: ' '.join(str((u.get('content') or {}).get('text') or '').split()) in his
+    mark = lambda u: u if u.get('sessionUpdate') != 'user_message_chunk' or u.get('_meta') else {**u, '_meta': {'taskuary': 'owner' if mine(u) else 'agent'}}
+    return [{**s, 'updates': [mark(u) for u in s['updates']]} if s.get('updates') else s for s in ss]
+
+
+def cards(store, tid: int, ss: list) -> dict:
+    """WHERE EACH CARD STANDS IN THE CODING CHAT, BY ITS TURN - the general payload's `turns` and `drafts` (general.draft_turns), read off this record:
+    the page compared times itself and named its turns by position, so nothing here could name one (2026-11-11). A card is of the turn whose step
+    was newest when it was raised, named as the page names that step (`sid#n`, its place in what `chat` hands it - chatStream.chatRows); raised on
+    arrival, or after his line before the turn's first step: none. A draft is stale once his line came after it and no step of the agent's since."""
+    def whose(u):
+        k, m = u.get('sessionUpdate') or u.get('k'), (u.get('_meta') or {}).get('taskuary')
+        return 'his' if k == 'you' or (k == 'user_message_chunk' and m == 'owner') else '' if k in ('brief', 'user_message_chunk', 'gap', 'screen') else 'agent'
+    at_ = lambda x: str(x or '').replace('T', ' ')[:19]
+    steps = sorted(((at_(u.get('_at') or u.get('at') or s.get('at')), f"{s['sid']}#{i}", whose(u)) for s in ss
+                    for i, u in enumerate(s.get('updates') or s.get('steps') or [])), key=lambda x: x[0])
+    turn = lambda at: next((n if w == 'agent' else None for t, n, w in reversed(steps) if t <= at_(at) and w), None)
+    his = lambda at: next((t for t, _, w in steps if t > at_(at) and w == 'his'), None)
+    rows = store._rows("SELECT ReviewId, Kind, Status, CreatedAt, DraftText FROM review WHERE TaskId=? AND Kind<>'slot' ORDER BY ReviewId", (tid,))
+    drafts = [{'review': r['ReviewId'], 'turn': turn(r['CreatedAt']), 'at': r['CreatedAt'], 'stale': stale, 'before': later if stale else None}
+              for r in rows if r['Status'] == 'pending' and r['Kind'] in ('draft_reply', 'draft') and str(r.get('DraftText') or '').strip()
+              for later in [his(r['CreatedAt'])] for stale in [bool(later) and not any(t > later and w == 'agent' for t, _, w in steps)]]
+    return {'turns': {str(r['ReviewId']): turn(r['CreatedAt']) for r in rows}, 'drafts': drafts}

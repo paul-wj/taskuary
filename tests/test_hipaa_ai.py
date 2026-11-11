@@ -76,6 +76,80 @@ class ModelsByJobTests(unittest.TestCase):
         self.assertEqual(r['discovery'], {'fast': 'gemini-3.8-flash', 'agent': 'claude-sonnet-5-5'})
         self.assertEqual((s.get_setting('triage_ai'), s.get_setting('assistant_ai')), ('cli:claude', f'connector:{cid}'))
 
+    def test_switching_it_on_never_takes_a_job_a_brain_already_runs(self):
+        """2026-11-09: switched on in Connections, the card took the general agent off the Claude Code the blank slot already ran on, and
+        wrote it as the owner's pick - a general ask then started on a gateway nobody chose. A ready CLI, or another AI card on, keeps
+        every blank job blank; with neither, the card fills them, saved for the owner, never as their choice."""
+        from taskuary import firstrun
+        for ready, other in ((['claude'], False), ([], True)):
+            s = MemoryStore()
+            if other: s.save_connector({'ConnectorId': s.get_connector_by_type('azure_openai')['ConnectorId'], 'Secret': 'az-key-123456', 'Active': 1}, 'owner')
+            cid = s.get_connector_by_type('hipaa_ai')['ConnectorId']
+            s.save_connector({'ConnectorId': cid, 'Secret': 'hai-code-123', 'Active': 1}, 'owner')
+            with mock.patch('taskuary.llm.list_models', return_value=self.MODELS), mock.patch('taskuary.agents.ready_brains', return_value=ready):
+                firstrun.models_by_job(s, {}, cid, only_blank=True)
+            self.assertEqual([s.get_setting(k) or '' for k in ('triage_ai', 'concierge_ai', 'assistant_ai')], ['', '', ''], (ready, other))
+        s = MemoryStore(); cid = s.get_connector_by_type('hipaa_ai')['ConnectorId']
+        s.save_connector({'ConnectorId': cid, 'Secret': 'hai-code-123', 'Active': 1}, 'owner')
+        with mock.patch('taskuary.llm.list_models', return_value=self.MODELS), mock.patch('taskuary.agents.ready_brains', return_value=[]):
+            firstrun.models_by_job(s, {}, cid, only_blank=True)
+        self.assertEqual((s.get_setting('assistant_ai'), s.setting_writer('assistant_ai')), (f'connector:{cid}', 'migration'))
+
+
+class CardTiersTests(unittest.TestCase):
+    """Set up or tested, an AI card's EMPTY model boxes are filled from what it lists (the owner, 2026-11-09) - never one they filled."""
+    MODELS = ['gemini-3.8-flash', 'claude-sonnet-5-5', 'claude-opus-5-5', 'gemini-2.5-pro', 'hipaa-ai']
+    OWNERS = {'model': 'claude-sonnet-5-5', 'light_model': 'gemini-3.8-flash', 'strong_model': 'claude-opus-5-5'}
+
+    def _card(self, conf=None, typ='hipaa_ai'):
+        s = MemoryStore(); cid = s.get_connector_by_type(typ)['ConnectorId']
+        s.save_connector({'ConnectorId': cid, 'Secret': 'hai-code-123', 'Active': 1, 'ConfigJson': json.dumps(conf or {})}, 'owner')
+        return s, cid
+
+    def _conf(self, s, cid): return json.loads(s.get_connector(cid)['ConfigJson'])
+
+    def test_the_ranking_reads_the_family_words(self):
+        from taskuary import firstrun
+        self.assertEqual(firstrun.tier_models(self.MODELS, 'hipaa-ai'), self.OWNERS)
+        self.assertEqual(firstrun.tier_models(['gpt-5', 'gpt-5-mini', 'gpt-4.1']), {'model': 'gpt-4.1', 'light_model': 'gpt-5-mini', 'strong_model': 'gpt-5'})
+        self.assertEqual(firstrun.tier_models(['only-one']), {'model': 'only-one', 'light_model': '', 'strong_model': ''})
+        self.assertEqual(firstrun.tier_models([]), {'model': '', 'light_model': '', 'strong_model': ''})
+
+    def test_the_gateway_card_gets_exactly_the_owners_three(self):
+        from taskuary import firstrun
+        s, cid = self._card({'base_url': 'https://ai.northwind.example/v1'})
+        with mock.patch('taskuary.llm.list_models', return_value=self.MODELS): firstrun.fill_tiers(s, cid)
+        self.assertEqual({k: self._conf(s, cid).get(k) for k in self.OWNERS}, self.OWNERS)
+
+    def test_a_box_the_owner_filled_is_kept(self):
+        from taskuary import firstrun
+        s, cid = self._card({'strong_model': 'gemini-2.5-pro'})
+        with mock.patch('taskuary.llm.list_models', return_value=self.MODELS): firstrun.fill_tiers(s, cid)
+        c = self._conf(s, cid)
+        self.assertEqual((c['strong_model'], c['model'], c['light_model']), ('gemini-2.5-pro', 'claude-sonnet-5-5', 'gemini-3.8-flash'))
+
+    def test_one_model_is_the_model_and_no_strong_tier(self):
+        from taskuary import firstrun
+        s, cid = self._card()
+        with mock.patch('taskuary.llm.list_models', return_value=['claude-sonnet-5-5', 'hipaa-ai']): firstrun.fill_tiers(s, cid)
+        c = self._conf(s, cid)
+        self.assertEqual((c.get('model'), c.get('strong_model'), c.get('light_model')), ('claude-sonnet-5-5', None, None))
+
+    def test_azure_fills_its_tiers_beside_the_deployment_it_names(self):
+        from taskuary import firstrun
+        s, cid = self._card({'endpoint': 'https://az.example', 'deployment': 'mine'}, 'azure_openai')
+        with mock.patch('taskuary.llm.list_models', return_value=['gpt-4.1', 'gpt-5', 'gpt-5-mini']): firstrun.fill_tiers(s, cid)
+        c = self._conf(s, cid)
+        self.assertEqual((c['deployment'], c['strong_model'], c['light_model'], c.get('model')), ('mine', 'gpt-5', 'gpt-5-mini', None))
+
+    def test_the_cards_test_and_save_fill_it(self):
+        from fastapi.testclient import TestClient
+        from taskuary import server
+        s = MemoryStore(); cid = s.get_connector_by_type('hipaa_ai')['ConnectorId']
+        with mock.patch.object(server, 'store', s), mock.patch('taskuary.llm.list_models', return_value=self.MODELS),              mock.patch('taskuary.agents.ready_brains', return_value=['claude']):
+            TestClient(server.app).post('/api/connectors', json={'ConnectorId': cid, 'Secret': 'hai-code-123', 'Active': 1})
+        self.assertEqual({k: self._conf(s, cid).get(k) for k in self.OWNERS}, self.OWNERS)
+
 
 class _Gateway:
     """A gateway on this computer that answers /v1/models and /v1/chat/completions - or turns every code away (`status`)."""
@@ -262,3 +336,83 @@ def test_hipaa_ai_takes_effort_and_drops_it_quietly_when_its_gateway_refuses():
     s = MemoryStore(); cid = s.get_connector_by_type('hipaa_ai')['ConnectorId']
     s.save_connector({'ConnectorId': cid, 'Secret': 'hai-code-123', 'Active': 1, 'ConfigJson': json.dumps({'model': 'hipaa-ai'})}, 'owner')
     assert brainroute.lift(s, f'connector:{cid}', 'strong', cfg={}) == 'hipaa-ai@high'
+
+
+def _jpeg(channels: int, adobe: bool) -> bytes:
+    "A JPEG's header as a decoder walks it: Adobe's APP14 when asked, a frame of `channels`, a scan."
+    seg = lambda m, body: bytes([0xFF, m]) + (len(body) + 2).to_bytes(2, 'big') + body
+    sof = seg(0xC0, b'\x08\x00\x10\x00\x10' + bytes([channels]) + b''.join(bytes([i + 1, 0x11, 0]) for i in range(channels)))
+    return b'\xff\xd8' + (seg(0xEE, b'Adobe\x00\x64\x00\x00\x00\x00\x00') if adobe else b'') + sof + seg(0xDA, b'\x01\x01\x00\x00\x3f\x00') + b'\x12\x34\xff\xd9'
+
+
+def test_a_grayscale_jpeg_goes_without_the_adobe_marker_google_refuses():
+    """2026-11-09: a signature logo - a one-channel JPEG saved from Photoshop - on every mail of a thread made Vertex answer "The provided
+    file is malformed or corrupted and could not be decoded" (400), so a HIPAA AI agent could never start on it. APP14 means nothing on one
+    channel and is dropped; a colour JPEG, which needs it, and any other picture go as they came."""
+    import base64
+    b64 = lambda b: base64.b64encode(b).decode()
+    got = base64.b64decode(llm.vision_safe('image/jpeg', b64(_jpeg(1, True))))
+    assert got == _jpeg(1, False) and b'Adobe' not in got
+    for ct, b in (('image/jpeg', _jpeg(3, True)), ('image/jpeg', _jpeg(1, False)), ('image/png', _jpeg(1, True)), ('image/jpeg', b'not a jpeg')):
+        assert llm.vision_safe(ct, b64(b)) == b64(b)
+    assert llm.vision_safe('image/jpeg', '%%%') == '%%%'
+
+
+def _refusing_pictures(sent):
+    "A gateway that cannot decode any picture it is sent - and answers the same question without one."
+    def post(url, headers=None, json=None, timeout=None):
+        sent.append(json); r = mock.Mock()
+        if any(isinstance(m['content'], list) for m in json['messages']):
+            r.status_code, r.text = 400, ('{"error":{"message":"litellm.BadRequestError: Vertex_aiException - The provided file is malformed '
+                                          'or corrupted and could not be decoded."}}')
+        else: r.status_code, r.text = 200, ''; r.json.return_value = {'choices': [{'message': {'content': 'done'}}]}
+        return r
+    return post
+
+
+def test_a_picture_the_model_cannot_open_costs_the_picture_never_the_turn():
+    "Any picture the gateway still cannot decode is asked about again without it, saying so - the agent's turn goes on."
+    sent, fn = [], llm.make_llm('hipaa_ai', {'base_url': 'https://gateway.example/v1'}, 'hai-code-123')
+    with mock.patch('taskuary.llm.requests.post', side_effect=_refusing_pictures(sent)):
+        assert fn('s', 'what is in it?', images=[('image/jpeg', 'AAAA')]) == 'done'
+    assert sent[-1]['messages'][-1]['content'].startswith('what is in it?\n\n(1 attached image(s) could not be opened')
+
+
+def test_a_refused_turn_is_said_in_words_with_no_address_and_no_json():
+    """The agent's line was "hipaa_ai error 400 at https://<gateway>/v1/chat/completions: {"error":{"message":"litellm.BadRequestError: ..."
+    (2026-11-09). It names the AI and its reason; the address and the JSON stay in the log."""
+    from taskuary import failures, general
+    e = RuntimeError('hipaa_ai error 400 at https://gateway.example/v1/chat/completions: {"error":{"message":"litellm.BadRequestError: '
+                     'Vertex_aiException BadRequestError - {\\n  \\"error\\": {\\n    \\"code\\": 400,\\n    \\"message\\": \\"The provided file is '
+                     'malformed or corrupted and could not be decoded.\\",\\n')
+    assert general.refused_line(e, 'HIPAA AI (API)') == ('HIPAA AI refused the request - it said: The provided file is malformed or corrupted '
+                                                         'and could not be decoded. Type to try again, or pick another AI in Settings.')
+    said = failures.classify(e)['sentence']
+    assert said.startswith('HIPAA AI refused the request') and 'gateway.example' not in said and '{' not in said
+    assert general.refused_line(RuntimeError('openai error 400 at https://api.example.com/v1/chat/completions: nope')) == \
+        'openai refused the request. Type to try again, or pick another AI in Settings.'
+    assert general.refused_line(RuntimeError('something else broke')) == ''
+
+
+def test_a_blank_job_never_falls_to_hipaa_ai_only_a_job_set_to_it_runs_there():
+    # the owner, 2026-11-09: "it should not be used unless set in settings" - no CLI ready and nothing picked is no brain, not the gateway
+    from taskuary import agents
+    s = MemoryStore(); cid = s.get_connector_by_type('hipaa_ai')['ConnectorId']
+    s.save_connector({'ConnectorId': cid, 'Secret': 'hai-code-123', 'Active': 1,
+                      'ConfigJson': json.dumps({'base_url': 'https://ai.northwind.example/v1'})}, 'owner')
+    assert agents.ready_connector(s) is None and llm.brain_status(s, '')['ready'] is False
+    s.set_setting('assistant_ai', f'connector:{cid}', 'owner')
+    assert llm.brain_status(s, f'connector:{cid}')['ready'] is True
+
+
+def test_a_session_saved_on_hipaa_ai_follows_the_setting_once_it_is_put_back():
+    # the owner, 2026-11-09: tasks started while HIPAA AI was wrongly the general agent's brain stayed on it after the reset
+    from taskuary import general
+    s = MemoryStore(); cid = s.get_connector_by_type('hipaa_ai')['ConnectorId']; pick = f'connector:{cid}'
+    s.save_connector({'ConnectorId': cid, 'Secret': 'hai-code-123', 'Active': 1}, 'owner')
+    tid = s.create_task({'Title': 'Ask the bank for an allowlist', 'Kind': 'general', 'Status': 'open'}, 'owner')
+    s.save_session(tid, pick, '', 'n1', 'k1')
+    s.set_setting('assistant_ai', pick, 'owner')
+    assert general._unset_gateway(s, pick) is False                 # set: a saved session on it is kept
+    s.set_setting('assistant_ai', '', 'owner')
+    assert general._unset_gateway(s, pick) is True and general.default_pick(s, s.get_task(tid)) != pick

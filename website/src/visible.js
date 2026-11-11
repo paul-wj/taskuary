@@ -35,3 +35,51 @@ export function pollWhileActive(active, fn, ms) {
   if (typeof document === "undefined" || document.visibilityState !== "hidden") fn();
   return pollWhileVisible(fn, ms);
 }
+
+// A POLL THAT CALMS WHILE NOTHING MOVES (2026-11-09). A running agent's page read its task every 3 s and its chat every 2.5 s, at
+// 0.4-4 s a read on a busy home, the same answer nearly every time - and each read waited behind the rail's build for the next
+// press. `fn` resolves false when its read changed nothing: the gap doubles, up to `most`; any other answer (a change, an error)
+// snaps it back to `ms`. Writes still arrive at once over the live socket (task-changed) - this is only the safety net. `first`:
+// read at once, as pollWhileActive does. Hidden, it waits; shown again, it reads at once and starts from `ms`.
+export function pollCalming(active, fn, ms, most = ms * 4, first = true) {
+  if (!active) return undefined;
+  let gap = ms, id = 0, dead = false;
+  const hidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
+  const arm = () => { clearTimeout(id); id = 0; if (!dead && !hidden()) id = setTimeout(beat, gap); };
+  async function beat() {
+    let moved = true;
+    try { moved = (await fn()) !== false; } catch { moved = true; }
+    gap = moved ? ms : Math.min(most, gap * 2);
+    arm();
+  }
+  const onChange = () => { if (hidden()) { clearTimeout(id); id = 0; } else { gap = ms; clearTimeout(id); beat(); } };
+  if (first && !hidden()) beat(); else arm();
+  if (typeof document !== "undefined") document.addEventListener("visibilitychange", onChange);
+  return () => {
+    dead = true; clearTimeout(id);
+    if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onChange);
+  };
+}
+
+// A BURST OF WAKE-UPS IS ONE READ (2026-11-09). A working agent's hooks poke task-changed every few seconds, and the coding chat read
+// itself again on each one - beside its own poll, about once a second at 0.5-3 s a read, each queued beside the press the owner was
+// making. `wake()` runs `fn` at once when it has not run for `ms`, else once at the end of that gap; never two at a time (a wake
+// during a read is one more read after it). Returns [wake, stop].
+export function coalesced(fn, ms) {
+  let last = -Infinity, id = 0, busy = false, again = false, dead = false;
+  const run = async () => {
+    id = 0;
+    if (dead) return;
+    if (busy) { again = true; return; }
+    busy = true; last = Date.now();
+    try { await fn(); } catch { /* a failed read is the next wake's to retry */ }
+    busy = false;
+    if (again && !dead) { again = false; wake(); }
+  };
+  function wake() {
+    if (dead || id) return;
+    if (busy) { again = true; return; }
+    id = setTimeout(run, Math.max(0, last + ms - Date.now()));
+  }
+  return [wake, () => { dead = true; clearTimeout(id); id = 0; }];
+}

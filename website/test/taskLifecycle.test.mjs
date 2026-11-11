@@ -4,6 +4,10 @@ import {
   AGENT, agentPhase, focusStage, hasCorrespondent, ownerControlsCompletion, replySource, sessionWord, wentOut, pendingProposals, pendingReplyReview, replyPhase,
   sentReplyReview, taskPhase, timelinePhases,
 } from "../src/taskLifecycle.js";
+import { setLocale } from "../src/i18n.js";
+
+// The phase words below read English: the locale is pinned, never the host's.
+setLocale("en");
 
 test("a self-forward has nobody to answer: the owner's own mail is never the reply's correspondent", () => {
   const self = { MessageId: 2, Channel: "email", FromEmail: "alex@northwind.example", FromOwner: true, Direction: "in" };
@@ -48,7 +52,6 @@ test("timeline exposes task state beside current agent or reply attention", () =
     { task: "done", agent: null, reply: "sent" });
 });
 
-
 test("one stage is open: the last thing owed wins, and a closed task shows itself", () => {
   const draftReady = { kind: "coding", task: "open", agent: "stopped and saved", reply: "ready to send", hasSender: true };
   assert.equal(focusStage(draftReady), "reply");                                    // sending it is what closes the task
@@ -79,7 +82,6 @@ test("a general chat that has answered is agent state, not \"not started\"", () 
   assert.equal(agentPhase({}), "waiting to start");
   assert.equal(focusStage({ kind: "general", task: "open", agent: "stopped and saved", reply: "not drafted" }), "agent");
 });
-
 
 // A PROPOSAL IS A DECISION TOO. A playbook drafted after a coding job, or a setting proposed in
 // chat, has no sender and still needs a yes - so the stage cannot be gated on there being someone
@@ -157,4 +159,5 @@ test("a session's new word is a change the task page takes, and the same word is
   assert.equal(agentPhase({ session: asking }), AGENT.waiting);
   assert.equal(sessionWord(null), "");
 });
+
 

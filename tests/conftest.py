@@ -333,6 +333,11 @@ def isolated_runtime_boundaries():
         except OSError:
             return False
         args = [str(x) for x in command[1:]]
+        # ...and a script a TEST wrote, run the one way reports.run_python_script runs one: isolated (-I), a single file, and that
+        # file inside this run's own temp root - never a path on the machine (tests/test_script_step.py)
+        if args[:1] == ['-I'] and len(args) == 2:
+            try: Path(args[1]).resolve().relative_to(_TEST_ROOT); return True
+            except (ValueError, OSError): return False
         if args[:1] == ['-c']:
             script = args[1] if len(args) > 1 else ''
             # Exact hashes of the synthetic stdin/PTY programs reviewed at checkpoint 2689679,
@@ -499,6 +504,9 @@ def isolated_runtime_boundaries():
 
 
 def pytest_configure(config):
+    # a run of the audit corpus that was interrupted leaves its director's mark beside the stand-ins, and every stand-in agent of every
+    # later run then waits on a director that is not there (an hour of false reproductions, 2026-11-11) - a session starts without it
+    Path(__file__).with_name('.fake-director').unlink(missing_ok=True)
     config.addinivalue_line('markers', 'acp: the test drives the ACP road itself, so it keeps clis.ADAPTERS (no_real_acp_adapters)')
 
 
@@ -577,6 +585,26 @@ def no_sessions_left_behind():
     from taskuary import terminal
     was = dict(terminal.SESSIONS); yield
     terminal.SESSIONS.clear(); terminal.SESSIONS.update(was)
+
+
+@pytest.fixture(autouse=True, scope='module')
+def no_calendar_left_behind():
+    """faults.world holds its calendar fresh for good (assistant._AGENDA, a meeting twenty minutes out): a module that built it and never
+    put it back handed that meeting to every module after it - on CI's order the walk led with it and the rail carried it, two red
+    tests a shard later (2026-11-10). Per module, not per test: a module-scoped world may share its calendar across its own tests."""
+    from taskuary import assistant
+    was = dict(assistant._AGENDA); yield
+    assistant._AGENDA.clear(); assistant._AGENDA.update(was)
+
+
+@pytest.fixture(autouse=True, scope='module')
+def no_store_left_behind():
+    """The app's store a module found is the one the next module finds. A module that put its own in server.store and never put the
+    first back cut every later module off from the mail it had saved - one that keeps the store it was imported with
+    (`S = server.store`) saved a message the routes then could not find: nine 404s a shard later, in whichever part of CI the two
+    happened to share (2026-11-10). Per module: a module may keep one store of its own across its tests."""
+    srv = sys.modules.get('taskuary.server'); was = getattr(srv, 'store', None); yield
+    if was is not None: srv.store = was
 
 
 @pytest.fixture(autouse=True, scope='session')
@@ -683,6 +711,56 @@ def an_ai_is_connected(request):
     srv = sys.modules.get('taskuary.server')
     if getattr(request.module, 'REAL_BRAIN_GATE', False) or srv is None: yield; return
     with mock.patch.object(srv, '_brainless', lambda coding: ''): yield
+
+
+def start_home(store):
+    """What app start does to a home before anything reads its rail (server lifespan -> processing_startup.initialize, less its
+    backup file) - and membership then kept current as the background worker keeps it (processing_all.MembershipWorker), here
+    inline: a read that follows a write waits for the worker, so it sees the write."""
+    from taskuary.store import SQLiteStore
+    if not isinstance(store, SQLiteStore): return False
+    if not store.processing_reads_active():
+        # a harness world that starts its own home once it is whole: a reader of its own (the Advisor's thread) may look while it
+        # is still being written, and a home started under the writer refuses the writer's next put-down
+        if getattr(store, 'starts_itself', False): return False
+        from types import SimpleNamespace
+        from taskuary import funnel
+        for left in range(9, -1, -1):       # app start admits no writer between the two; a test's own thread (a draft, a notice) may be one
+            store.reconcile_processing_membership()
+            # the rail's own clock, which a test may have set (tests/fake_clock.py): a home starts at the hour its mail was stamped in
+            try: store.activate_processing_reads(fixed_now=funnel.datetime.now().isoformat(), live_state=[]); break
+            except ValueError:
+                if not left: raise
+        if getattr(store, 'membership_worker', None) is None: store.membership_worker = SimpleNamespace(kick=store.reconcile_processing_membership)
+    return True
+
+
+_UNSTARTED = [False]      # the module now running is about a home before it starts
+
+
+@pytest.fixture(autouse=True, scope='session')
+def every_rail_is_a_started_home():
+    """The rail has one builder and it reads a STARTED home - the app starts every home before its first read. A test's bare
+    store is started the same way the first time its rail is read (funnel.build, funnel.pile), as a seeded demo home is, and
+    the worker has caught up with what was written since - before the read, as it has for a page that asks a moment after a
+    write, so the read is not itself a write. For the whole run, not a test at a time: a world built once for a class or a
+    module (setUpClass, a module's fixture) reads its rail before any test's own fixture is up."""
+    from taskuary import funnel, processing_all
+    def started(read):
+        def on_a_started_home(store, *a, **k):
+            if not _UNSTARTED[0] and start_home(store): processing_all.wait_settled(store)
+            return read(store, *a, **k)
+        return on_a_started_home
+    patch = pytest.MonkeyPatch()
+    for name in ('build', 'pile'): patch.setattr(funnel, name, started(getattr(funnel, name)))
+    yield
+    patch.undo()
+
+
+@pytest.fixture(autouse=True, scope='module')
+def a_module_about_the_home_before_it_starts(request):
+    """Such a module sets UNSTARTED_HOME = True, and its rails are read as they are."""
+    _UNSTARTED[0] = bool(getattr(request.module, 'UNSTARTED_HOME', False)); yield; _UNSTARTED[0] = False
 
 
 @pytest.fixture

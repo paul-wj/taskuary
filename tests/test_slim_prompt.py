@@ -45,7 +45,7 @@ def test_the_browser_offer_is_short_and_its_rules_are_one_read_away():
     for want in ('NO BROWSER IS OPEN', 'agent-browser open <url>', 'never a browser tool of your own CLI', 'guide `browser`', 'NEVER type a password',
                  'CAPTCHA'):
         assert want in held, want
-    assert 'THEY press it on the page themselves' in held and 'TASKUARY CANNOT HOLD' in asks and 'TASKUARY CANNOT HOLD' not in held
+    assert 'THEY press it' in held and 'TASKUARY CANNOT HOLD' in asks and 'TASKUARY CANNOT HOLD' not in held
     assert len(held) < len(browserview.brief(held=True, open_now=False)) / 2
     g = guides.read('browser')
     for want in ('TASKUARY-SIGNIN', 'TASKUARY-YOURTURN', 'snapshot -i -c', 'WHEN YOU ASK FOR A SIGN-IN'): assert want in g, want
@@ -62,13 +62,42 @@ def test_the_guide_is_a_tool_and_the_coding_tools_stay_with_coding():
 
 def test_each_rule_is_said_once_and_true():
     s = MemoryStore(); system = general._prompt(s, chat(s))[0]
-    assert 'nothing wakes you again' not in system and 'never plan on it' in general.FINISH_LINE
+    assert 'nothing wakes you again' not in system and 'plan on nothing else' in general.FINISH_LINE
     assert 'Several questions' not in selfclose.ASK_LINE and 'recommended answer' in selfclose.ASK_LINE
     assert "own artifact tool" not in system and 'Ask when a necessary fact is missing' not in system
     for once in ('Check each step by what the tool returned', 'Never the same failing call', 'Deliver one final file'):
         assert system.count(once) <= 1, once
     # the new lines, each in one place
-    for want in ("beats triage's", 'their most likely answer', 'never close with an offer'):
+    for want in ("beats triage's", 'never a guess written as their answer', 'never close with an offer'):
         assert want in system, want
+    # ...and AGENT.md agrees with it: "draft their most likely answer ... ask only when it hangs on someone else" (2026-11-08) told the same
+    # agent the opposite of the owner's newer word, for the same case - a fact or choice only the owner has
+    assert 'their most likely answer' not in system and 'truly hangs on someone else' not in system
+    # the reply is the agent's to write or to ask about (the owner, 2026-11-10: "think through what the user would want and ask clarifying
+    # question, if you know the answer then just create reply") - said once
+    for once in ('A MESSAGE THAT NEEDS AN ANSWER IS YOURS TO ANSWER', 'ask them that one thing here in the task instead of drafting a guess'):
+        assert system.count(once) == 1, once
     assert 'IS the confirmation' in selfclose.SUMMARY_LINE and 'group chat' in selfclose.SUMMARY_LINE
     assert 'the thread wins' in general.learned_block(s, 'x') or not general.learned_block(s, 'x')
+
+
+def test_the_rarer_proposal_shapes_are_a_guide_away_not_in_every_tools_list():
+    # the tool descriptions were shortened (2026-11-09): what a post, a GitHub issue or a tracker write takes is read when one is made
+    d = agenttools.TOOLS['propose'][1]
+    assert '`propose` topic' in d and 'jira_move' not in d
+    got = agenttools.call(MemoryStore(), 1, 'guide', {'topic': 'propose'}, {})
+    for want in ('linkedin_post', 'github_issue', 'jira_move', 'monday_', 'Post button'): assert want in got, want
+
+
+# A STEP THAT WAITS ON THE OWNER IS A CARD, AND ITS PRESS IS WHAT THE AGENT PLANS ON (the owner, 2026-11-10: "it shoudl prompt you, should i
+# deploy and respond once deployed??? isnt' this the goal?"): told "say what you would do and wait" and "ask for the go-ahead", a coding agent
+# asked to release a committed fix answered "releasing it is your decision" and drafted "I'll confirm once it is live" - no card, no press
+def test_a_step_that_waits_on_the_owner_is_set_up_as_its_card_and_says_what_follows_the_press():
+    s = MemoryStore(); system = general._prompt(s, chat(s))[0]
+    for gone in ('Say what you would do and wait', 'ask for the go-ahead and wait', 'when a step needs their say-so'): assert gone not in system, gone
+    assert 'never a question in words: set the step up as its card' in system
+    assert 'their press on a card you set up wakes you' in general.FINISH_LINE and 'say in one line what you will do once they press it' in system
+    # ...every press on its card wakes it (verdicts.decide -> general.approved): "send" is no longer a wake it has to ask for
+    assert '"send" (a draft' not in selfclose.SUMMARY_LINE and '"handoff"' in selfclose.SUMMARY_LINE
+    from pathlib import Path
+    assert 'say in one line what follows it' in (Path(general.__file__).parent / 'templates' / 'coding.md').read_text(encoding='utf-8')

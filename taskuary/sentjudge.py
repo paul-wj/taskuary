@@ -28,7 +28,8 @@ SYSTEM = ("You read messages the OWNER sent and say what each one means for foll
           "- promise: true when the owner committed THEMSELF to do or send something later ('I'll send it Friday', 'On it, by EOD', "
           "'I can have it to you tomorrow', 'leave it with me'). Something already done in this very message is not a promise.\n"
           "- what: for a promise, the thing promised as a short verb phrase in the owner's voice, without the date "
-          "('send the revised budget'); otherwise ''.\n"
+          "('send the revised budget'); otherwise ''. It names the thing itself: when the owner's words only say 'it' or 'that', "
+          "read what from THE MESSAGE IT ANSWERS ('send Gail the October accrual numbers', never 'send it').\n"
           "- due: for a promise with a day, that day as YYYY-MM-DD, worked out from the date the message was SENT ('today'/'EOD' "
           "= the sent day, 'tomorrow' = the next day, 'Friday' = the next Friday on or after it); null when no day was given.\n"
           "- delivered: for a promise, true when one of YOUR LATER WORDS shown under it plainly delivers it; otherwise false.\n"
@@ -83,12 +84,47 @@ def _item(store, m: dict, open_: list, later: list, work: list = ()) -> str:
     to = store.last_inbound_in(m['ConversationId']) or {}
     out = [f"[m{m['MessageId']}] sent {_day(m.get('SentAt'))} to {to.get('FromName') or to.get('FromEmail') or 'them'} "
            f"re \"{' '.join(str(m.get('Subject') or '').split())[:90]}\":\n  \"{_words(m)}\""]
+    # ...and THE MESSAGE IT ANSWERS (the night run, 2026-11-09): the owner's "sending it tonight" on a chat became a task titled "Send it" -
+    # their words alone never say what "it" is, and a chat line has no subject to say it either
+    if (q := store.inbound_before(m['ConversationId'], m.get('SentAt'))) and (w := _words(q, 300)):
+        out.append(f"  THE MESSAGE IT ANSWERS, from {q.get('FromName') or q.get('FromEmail') or 'them'}: \"{w}\"")
     if open_: out.append('  OPEN PROMISES on this thread: ' + '; '.join(
         f"[m{p['MessageId']}] \"{p.get('PromiseWhat') or _words(p, 120)}\"" + (f" (due {p['PromiseDue']})" if p.get('PromiseDue') else '') for p in open_))
     if later: out.append('  YOUR LATER WORDS on this thread: ' + '; '.join(f"{_day(x.get('SentAt'))}: \"{_words(x, 200)}\"" for x in later))
     if work: out.append('  OPEN WORK (this message is on no task yet): ' + '; '.join(
         f"[task {w['tid']}] \"{w['title'][:120]}\"" + (f" - {w['summary']}" if w.get('summary') else '') + f" ({w['why']})" for w in work))
     return '\n'.join(out)
+
+
+def _check_what(store, m: dict, what, due) -> str:
+    return f"the promise to {store.promisee(m) or 'them'} to {what or 'follow up'}, due {due}: see whether it has gone out"
+
+def keep_on(store, tid: int, m: dict, what: str, due, why: str):
+    """THE OWNER'S OWN PROMISE STAYS ON THE TASK IT BELONGS TO - never a second task for one job. Two roads end here: a mail sent from
+    the mail app that the judge read as part of open work (2026-10-26), and a reply sent FROM an open task (the owner, 2026-11-10: it
+    "stays on the task it was sent from", a check-back there - the reply to a colleague's ask had become a second task on the rail
+    beside the ask it answered, with the same thing owed on both). Its day is the task's due day (the owner, 2026-10-26: "if date
+    promised then due date otherwise just a note"), never pushing an earlier one out, which the owner or the sender set for a reason.
+    With a day and an agent on the task, that agent looks that morning whether it went (checkback.py - one line, said by set_check);
+    never over a check-back the agent set itself, and never on a stranger's task (general.take_lesson_and_check's rule)."""
+    from . import checkback, general, origin, remind
+    t = store.get_task(tid) or {}
+    cur = str(t.get('DueAt') or '')[:10]
+    sets = bool(due) and (not cur or due < cur)
+    if sets: remind.set_due(store, tid, due, 'promise')
+    if due and general.handles(t) and not checkback.of_task(t) and origin.of_task(store, tid)[0] != 'stranger':
+        try: checkback.set_check(store, tid, due, _check_what(store, m, what, due), 'promise'); return
+        except ValueError as e: logger.debug(f'sentjudge: no check-back for the promise on task {tid} - {e}')    # its day is already gone
+    said = (f" by {due} - set as this task's due date" if sets else f" by {due} - the task stays due {cur}, the earlier day" if due else '')
+    store.add_comment(tid, 'promise', 'agent', f"You told {store.promisee(m) or 'them'} you would {what or 'follow up'}{said}. Kept on this task, {why}.")
+
+
+def kept_done(store, mid: int):
+    "A promise kept_on a task was delivered: the check-back set for it there has nothing left to look for (one the agent set is its own)."
+    from . import checkback
+    m, v = store.get_message(mid) or {}, store.sent_verdict(mid) or {}
+    t = store.get_task(m['TaskId']) if m.get('TaskId') else None
+    if (c := checkback.of_task(t)) and c['what'] == _check_what(store, m, v.get('What'), v.get('Due'))[:checkback.WHAT_CHARS]: checkback.cancel(store, t['TaskId'], 'promise')
 
 
 def _ask(llm, items: list) -> list:
@@ -136,21 +172,15 @@ def judge(store, llm=None, days: int = DAYS) -> int:
             try: tid = int(v.get('task')) if v.get('task') is not None else None
             except (TypeError, ValueError): tid = None
             on = tid in shown and store.sent_onto_task(m['MessageId'], tid, f"your sent mail - part of {task_ref(tid)}'s work, so its thread is that task's")
-            if on and promise and not done:
-                # ...its day is the task's due day (the owner, 2026-10-26: "if date promised then due date otherwise just a note") -
-                # never pushing an earlier one out, which the owner or the sender set for a reason
-                due, cur = _date(v.get('due')), str((store.get_task(tid) or {}).get('DueAt') or '')[:10]
-                sets = bool(due) and (not cur or due < cur)
-                if sets:
-                    from . import remind
-                    remind.set_due(store, tid, due, 'promise')
-                said = (f" by {due} - set as this task's due date" if sets else f" by {due} - the task stays due {cur}, the earlier day" if due else '')
-                store.add_comment(tid, 'promise', 'agent', f"You told {store.promisee(m) or 'them'} you would {what or 'follow up'}{said}. "
-                                  'Kept on this task, the work it is part of.')
-            elif promise and not done:                                # the owner's own word is their task, with its day (spec 2026-10-12)
-                store.task_for_promise(m['MessageId'], what, _date(v.get('due')))
+            # ...and a reply sent FROM a task still open is that task's too (keep_on): a task of its own only for a reply outside any open one
+            home = store.get_task(m['TaskId']) if m.get('TaskId') and not on else None
+            if promise and not done:
+                if on: keep_on(store, tid, m, what, _date(v.get('due')), 'the work it is part of')
+                elif home and home.get('Status') not in ('done', 'dropped'): keep_on(store, home['TaskId'], m, what, _date(v.get('due')), 'the one you answered from')
+                else: store.task_for_promise(m['MessageId'], what, _date(v.get('due')))    # the owner's own word is their task, with its day (spec 2026-10-12)
             for pid in v.get('delivers') or []:
-                if str(pid) in opened: store.deliver_promise(opened[str(pid)], m['MessageId'])   # only a promise it was shown
+                if str(pid) not in opened: continue                                        # only a promise it was shown
+                store.deliver_promise(opened[str(pid)], m['MessageId']); kept_done(store, opened[str(pid)])
             n += 1
         return n
 

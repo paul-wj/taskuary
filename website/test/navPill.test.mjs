@@ -3,6 +3,7 @@
 // line the way Next walks down it, crossing sections in reverse; it never folds, and neither does Next. Invented rows throughout.
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { BACK, fitRow, foldsOf, navEnd, navOf, put, rowDrawable, rowNow, rowOf, rowWidth, walkMove } from "../src/actionRow.js";
 
 const v = (id, group, extra = {}) => ({ id, group, tone: "s", label: id, title: "", disabled: false, why: "", promote: true, lead: false, ...extra });
@@ -48,4 +49,20 @@ test("the row's end flag rides the snapshot, and the walk's Back is no item's ve
   put("nav:t", null);
 });
 
-
+// the rail's line, invented: two tasks (one urgent in its place), one put For later, a report, an idea, two fyi
+// WHICH ROW IS ABOVE is the server's (railwalk.back, 2026-10-30): the rail's order read upward from the row on screen, For later and
+// rows still settling off the line, a read row gone - pinned by the walk table (tests/fixtures/walk_table.json W05-W07, W12, W19, W20,
+// W39, W45, W47) and its browser runner. The page only asks, and greys Back where the walk says nothing is above.
+test("the view registers Back beside the floor and asks the walk for the row above; Next is hidden on the last one from the walk's own word", () => {
+  const view = fs.readFileSync(new URL("../src/AssistantView.jsx", import.meta.url), "utf8");
+  assert.match(view, /if \(resetting \|\| busy \|\| turnFlight\.current \|\| deferredChat\.current\.size \|\| !backTo\) return undefined;/,
+    "nothing above, or a move out: nothing happens (greyed - one move at a time, 2026-11-03)");
+  assert.match(view, /return surface\(null, null, null, false, "back"\);/, "the walk's own Back: the row above, from the server");
+  // ...and not greyed on a rail row under the top while the walk's word catches up (the stress walk, 2026-11-02) - only while a move is out
+  // ...and at the walk's end, nothing on the table, Back goes to the last row walked (railwalk.back from its end; the owner, 2026-11-10)
+  assert.match(view, /const walkEnd = !currentItem && !table\.key && !table\.place && !!walkNow\?\.ended && walkNow\.above;/);
+  assert.match(view, /const backTo = !firstRun && !old && !walk && \(table\.speaks \? \(onWalk \? walkNow\.above : underTop \? "above" : null\) : walkEnd \|\| null\), moving = busy \|\| deferring \|\| resetting;/);
+  assert.match(view, /const atEnd = !!current && table\.speaks && onWalk && !walkNow\.below;/, "no Next on the last one: the walk says nothing is below");
+  const row = fs.readFileSync(new URL("../src/ActionRow.jsx", import.meta.url), "utf8");
+  assert.ok(row.indexOf("data-tq-walk-back") < row.indexOf("data-tq-next=\"\""), "Back on the left, Next on the right");
+});

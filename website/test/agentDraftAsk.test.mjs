@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-
 import { alreadyAnswered, answeredLine } from "../src/agentDraftAsk.js";
 
-// AN AGENT'S DRAFT IS A CARD IN THE ONE CHAT (the owner, 2026-11-06), and a draft the owner already answered says so. Invented people only.
+// AN AGENT'S DRAFT IS A CARD IN THE ONE CHAT (the owner, 2026-11-06). One the owner answered themselves is retired, never bannered (2026-11-09).
+// Invented people only.
 const mine = { ReviewId: 7, Kind: "draft_reply", Status: "pending", DraftText: "Hi Erin - which week should the report cover?", DraftBy: "agent:Claude Code",
   MessageId: 40, FromName: "Erin Blake", FromEmail: "erin@northwind.example" };
 

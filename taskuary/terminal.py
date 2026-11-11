@@ -14,6 +14,9 @@ from loguru import logger
 from .timewords import plural
 from . import redact     # imports nothing of ours: safe at module level
 
+
+class NeedsRepo(ValueError): "The checkout guard's refusal: a repository named with no checkout found, or a working folder gone - the owner picks where (funnel.needs_repo)."
+
 SCROLLBACK = 200_000        # chars kept for late joiners / reconnects
 # Put in every socket's queue, in order with the bytes, when the pty changes size. A pane kept alive out of sight goes
 # on taking output; it has to wrap at the size the child is painting for, or it is wrong when it is shown again.
@@ -303,8 +306,9 @@ class Term:
         # no arguments to know which agent, task and checkout it is speaking for
         self.pty = (_WinPty if os.name == 'nt' else _UnixPty)(
             argv, cwd, rows, cols, {**terminal_host_env(argv, self.sid), **_bv.env(self.sid),
-                                    **session_env(agent or label, task_id, cwd, sid=self.sid, stranger=mode == 'auto')},
-            mode == 'auto', **({'family': cli} if cli == 'omp' else {}))
+
+                                    **session_env(agent or label, task_id, cwd, sid=self.sid, stranger=mode != 'full')}, mode != 'full',
+                                    **({'family': cli} if cli == 'omp' else {}))
         self.alive = True
         # started LAST, and store comes in through the constructor: a CLI that dies immediately
         # used to reach keep() before the caller had handed the session anywhere to file itself
@@ -466,7 +470,9 @@ class Term:
             while self.alive and not self.n and time.time() - start < SEED_WAIT: time.sleep(.1)
             if not self.settle(3): return                 # a breath after first output - the toe probes the rest
             self.seeded = fit_typed(text)
-            toe, rest = self.seeded[:20], self.seeded[20:]
+            # ...the toe never ends on a space: a TUI's box trims it, and "FROM THE OWNER: try now" landed "trynow" (2026-11-09)
+            cut = next((i for i in range(20, len(self.seeded)) if not self.seeded[i - 1].isspace()), len(self.seeded))
+            toe, rest = self.seeded[:cut], self.seeded[cut:]
             for attempt in range(SEED_RETRIES):
                 self.write(toe)                           # attempt > 0 = retyped: the first toe was eaten
                 end = time.time() + 12                    # generous: a loaded CI runner echoes LATE, and a
@@ -1156,7 +1162,7 @@ def open_session(store, agent: str = None, task_id: int = None, repo: str = None
                 if agent: remember_path(store, agent, repo, found)
                 logger.info(f'found {repo} at {found} - remembered on {agent or label}')
         if not cwd:
-            raise ValueError(f'no local path for {repo}, and a search of your code folders found no '
+            raise NeedsRepo(f'no local path for {repo}, and a search of your code folders found no '
                              f'checkout with that git remote. Pick the repository on the task - the repo '
                              f'chip beside its agent, or the chooser this refusal opens - choose {repo} and '
                              f'give it the path; otherwise the session would open in '
@@ -1170,7 +1176,7 @@ def open_session(store, agent: str = None, task_id: int = None, repo: str = None
         from . import repochoice
         cwd = profile['cwd'] if profile.get('cwd') and not profile.get('cwd_map') else repochoice.scratch(task_id)
     cwd = cwd or profile.get('cwd') or os.getcwd()
-    if not os.path.isdir(cwd): raise ValueError(f'working directory does not exist: {cwd}')
+    if not os.path.isdir(cwd): raise NeedsRepo(f'working directory does not exist: {cwd}')
     # WHICH CHECKOUT comes first, and only then which binary: resolving the CLI up here meant a box
     # without it answered "'claude' not found on PATH" to a task whose real problem was that nothing
     # said where it belonged - the wrong sentence, and the one the owner cannot act on.
@@ -1184,12 +1190,15 @@ def open_session(store, agent: str = None, task_id: int = None, repo: str = None
         try:
             mode = _origin.launch_mode(store, task_id, cli_named(profile, argv), str(profile.get('cmd') or ''))
             # its stranger file sits in its own folder outside the checkout (R25): added, so reading it never asks
-            sd = str(_origin.stranger_dir(task_id)) if mode == 'auto' else ''
+            sd = str(_origin.stranger_dir(task_id)) if mode != 'full' else ''
         except _origin.Refusal as e: raise _origin.refused(e)
-        if mode == 'auto':
+        if mode == 'look': argv = _clis.readonly_args(cli_named(profile, argv), list(argv))       # its own read-only mode: it reads and answers
+        elif mode == 'auto':
             argv, theme = _take_settings(argv)          # one --settings: the session's own file carries the theme
             # ...and an option straight after it closes --add-dir's list, so the prompt is never read as a folder
             argv = _clis.auto_args(cli_named(profile, argv), list(argv)) + ['--add-dir', sd, '--settings', _origin.session_settings(store, task_id, theme)]
+            from . import agenttools                    # ...and the owner's harmless tools, Remind me's among them (agenttools.STRANGER_TOOLS)
+            argv = agenttools.insert(argv, agenttools.stranger_args(cli_named(profile, argv), task_id, argv))
         # TRUSTED WORK GETS TASKUARY'S OWN TOOLS, and the owner's own MCP tools minus the ones that send (the owner, 2026-10-25):
         # Claude and Codex, whose flags for both are proven (agenttools.session_args); a stranger's session keeps its strict mode
         elif mode == 'full':
@@ -1327,14 +1336,17 @@ def open_session(store, agent: str = None, task_id: int = None, repo: str = None
         if extra: t.seeded, t.accepted = seed, True   # the CLI submits it itself; kept so harvest drops the echo
         else: t.seed(seed)               # no prompt argument on this CLI: type it in, verified
     # A reply drafted from the mail alone promises what this session has not worked out yet, so
-    # it stops waiting on the task and comes back rewritten from the report - see wrapup.raise_reply.
+    # it stops waiting on the task and comes back as the agent's to write - see wrapup.raise_reply.
     if task_id:
         # ONE START, whatever the door (A22, 2026-09-25): the interruption is over, a saved session is live again, and the
         # task is no longer queued - the task page's own terminal door skipped all three and left them stale
         resume_task(store, task_id, actor); store.tag_task(task_id, SAVED, False, actor); store.clear_dispatch(task_id)
         store.tag_task(task_id, 'held:repo', False, actor)    # funnel.HELD_REPO: the repository it waited for is found
-    if task_id and store.hold_reviews(task_id, 'held while an agent works the task - the reply is written from what it finds'):
-        logger.debug(f'held the pending reply on task {task_id} while {agent or "a session"} works it')
+    # ...and a reply an EARLIER session drafted is out of sight while this one works, as a chat's start does (general.start_session): the
+    # arrival draft stays where it stands, greyed once the owner prompts past it - holding it emptied a coding chat of its card (2026-11-11)
+    if task_id and actor not in INTERRUPTING:
+        from . import wrapup
+        wrapup.hold_stale(store, task_id, t.sid)
     store.audit('terminal', 0, 'open', actor, detail={'sid': t.sid, 'agent': agent, 'cwd': cwd, 'task': task_id})
     return t
 
@@ -1856,9 +1868,10 @@ def with_fence_rule(rules: str) -> str:
     if not rules: return rules
     if FENCE_OPEN not in rules: rules = f'{rules} {FENCE_LINE}'
     if '--tick' not in rules: rules = f'{rules} {TICK_LINE}'
-    if 'Taskuary tools' not in rules:                   # the toolbox (2026-10-25): an owner's copy from before it still hears of it
-        from .agenttools import TOOLS_LINE
-        rules = f'{rules} {TOOLS_LINE}'
+    from .agenttools import SHOW_RULE, TOOLS_LINE, VERIFY_RULE
+    if 'Taskuary tools' not in rules: rules = f'{rules} {TOOLS_LINE}'      # the toolbox (2026-10-25): an owner's copy from before it still hears of it
+    if 'unless the show tool returned it' not in rules: rules = f'{rules} {SHOW_RULE}'      # ...and how a file reaches them (2026-11-09)
+    if 'effect you did not verify' not in rules: rules = f'{rules} {VERIFY_RULE}'
     if 'one final file' not in rules:                   # one file per thing asked (2026-10-28): an owner's copy from before it hears it too
         from .outputs import ONE_FILE
         rules = f'{rules} Files you make: {ONE_FILE}'
@@ -1910,6 +1923,21 @@ def no_emails(text: str) -> str:
     return _EMAIL.sub('[email removed]', text or '')
 
 
+def repo_line(store, tid: int, t: dict, repo: str = None, cwd: str = None) -> str:
+    "WHICH CODE a session is told it works in - none, the repositories to pick from, or its checkout. A CLI's seed and an AI card's brief."
+    from . import repochoice as _rc
+    # A general question is told so out loud. Without this the folder the CLI happens to have
+    # started in was announced as "REPO: ... work only here", and an agent asked to prepare for a
+    # meeting went reading that codebase for the answer.
+    if repo_tag(t) == NO_REPO:
+        return ('NO REPOSITORY - this is a general question, not a change to a codebase. '
+                'Answer it from what you are given and what you can look up; do not go '
+                'hunting for code to edit.')
+    # ...and a session no structure placed is in its task's own folder: it is handed the repositories to pick from (repochoice)
+    if not repo and _rc.is_scratch(tid, cwd): return _rc.block(store, tid, cwd)
+    return f"REPO: {repo or cwd} - you are already in it; work only here." if repo or cwd else ''
+
+
 def seed_text(store, tid: int, instruction: str = None, repo: str = None, cwd: str = None, instruction_theirs: bool = False, cli: str = '') -> str:
     """What gets typed into a fresh session, and the ONLY context it should need: the ask, the
     mail behind it, which checkout to work in, and the coding rules. One line - a newline
@@ -1932,17 +1960,7 @@ def seed_text(store, tid: int, instruction: str = None, repo: str = None, cwd: s
     stranger, theirs = _origin.of_task(store, tid)[0] == 'stranger', []
     parts = [f"TASK {task_ref(tid)} - {t.get('Title') or ''}."]
     def say(text, theirs_too=False): (theirs if stranger and theirs_too else parts).append(text)
-    # A general question is told so out loud. Without this the folder the CLI happens to have
-    # started in was announced as "REPO: ... work only here", and an agent asked to prepare for a
-    # meeting went reading that codebase for the answer.
-    from . import repochoice as _rc
-    if repo_tag(t) == NO_REPO:
-        parts.append('NO REPOSITORY - this is a general question, not a change to a codebase. '
-                     'Answer it from what you are given and what you can look up; do not go '
-                     'hunting for code to edit.')
-    # ...and a session no structure placed is in its task's own folder: it is handed the repositories to pick from (repochoice)
-    elif not repo and _rc.is_scratch(tid, cwd): parts.append(_rc.block(store, tid, cwd))
-    elif repo or cwd: parts.append(f"REPO: {repo or cwd} - you are already in it; work only here.")
+    if (where := repo_line(store, tid, t, repo, cwd)): parts.append(where)
     # the blackboard: agents sharing THIS checkout, told to a newcomer once, up front. Another
     # repo's agents are deliberately absent - awareness costs prompt tokens, so it is spent
     # only where a collision is physically possible.
@@ -1972,7 +1990,9 @@ def seed_text(store, tid: int, instruction: str = None, repo: str = None, cwd: s
     if not stranger and (heard := peers.take(store, tid)): parts.append(heard)
     # the owner's own words stay in the prompt (the reviewer should read them as the owner's); text a caller built from a message does not
     if instruction and instruction.strip():
-        if stranger and not instruction_theirs: parts.append(f'FROM THE OWNER: {instruction.strip()}')
+        if stranger and not instruction_theirs:
+            from .outcomes import OWNER_HEAD      # ...once: Continue's fresh road hands it already headed (server.continue_work)
+            parts.append(instruction.strip() if instruction.strip().upper().startswith(OWNER_HEAD) else f'{OWNER_HEAD} {instruction.strip()}')
         else: say(f'ASK: {fence(instruction.strip()) if instruction_theirs else instruction.strip()}', theirs_too=True)
     # A finished session can be continued with a new ask. Its PTY is gone, but its result is
     # durable task context: hand that result to the next terminal so "now make the changes" does
@@ -2076,25 +2096,28 @@ def seed_text(store, tid: int, instruction: str = None, repo: str = None, cwd: s
     # The job, spelled out. An agent handed a bare task description went looking for the ticket
     # it came from - Taskuary's own API, its database, the mailbox - and spent its first minute
     # re-fetching what is already in this paragraph.
+    # ...and THE TASK is what is not looked up, never the API (the agent walk, 2026-11-10): the line read "Do NOT call the Taskuary
+    # API" over a context file that says to POST to it for the owner's systems, and beside `taskuary` commands and tools that ARE it
     issues_ok, push_ok = store.github_permissions()
     parts.append('WHAT TO DO: work it from THIS message alone - diagnose, fix it if it is fixable, else say plainly '
-                 'what the problem is and what it would take. Do NOT call the Taskuary API, read its database or '
-                 'hunt for this task elsewhere - everything known about it is above' + (' and in the context file. ' if cpath else '. ')
+                 'what the problem is and what it would take. Do NOT look this task up again - in Taskuary, its database '
+                 'or the mailbox: everything known about it is above' + (' and in the context file. ' if cpath else '. ')
                  + ('GitHub is the issue tracker here: open and update issues for the work as the team expects. '
                     if issues_ok else
                     'Do NOT create GitHub issues, PRs or other tracker items unless this message asks for one - '
                     'Taskuary IS the tracker and this task is the record. ')
                  + ('You may push and deploy as the work needs. ' if push_ok else
-                    'Do NOT push, deploy or release unless told to - commit and stop; must it go live? Ask and wait. ')
+                    'Do NOT push, deploy or release unless told to - commit and stop; to go live, propose_land (how push, deploy <branch>) '
+                    '- never ask it in words. ')
                  + 'Missing required detail? Change nothing: ask one concrete question here, say if the sender must '
                    'answer, and wait.')
     # how this session ENDS. Without it the only ending is a person clicking Done, so a task
     # finished overnight produced no report and the sender got no answer (selfclose.py).
     from . import selfclose
-    from .wrapup import OWN_ASK, no_correspondent
+    from .wrapup import no_correspondent, nobody_line
     if not stranger and no_correspondent(store, tid):
         # an owner-opened session still hears it is theirs to end (STAY_LINE's mark), just without STAY_LINE's reply road
-        parts.append(f"{OWN_ASK} No `taskuary --reply` or propose_reply here. " + (
+        parts.append(f"{nobody_line(store, tid)} No `taskuary --reply` or propose_reply here. " + (
                      'THE OWNER OPENED THIS SESSION: `taskuary --done` is refused. Summarize, then wait.' if selfclose.stays_open(store, tid) else
                      'WHEN FINISHED: run `taskuary --done "<one sentence>" --no-reply`.' if selfclose.mode(store) != 'off' else ''))
     elif selfclose.stays_open(store, tid): parts.append(selfclose.STAY_LINE)
@@ -2358,6 +2381,19 @@ def _ask_quietly(session, ask: str, tid: int, brief: bool = False):
     except Exception as e: logger.warning(f'task {tid}: the general agent could not take the work - {e}')     # said on the task by the turn
 
 
+def _on_card(store, tid: int, card: str, model: str = None, instruction: str = None, actor: str = 'owner') -> dict:
+    """A coding task whose AI is a card (general.on_card), reached by a road that opens terminals - new mail's carry-on, a queue drain, the
+    waiting room: its card's session, in the checkout its CLI would have, as the Send button starts it. It stays a coding task."""
+    from . import general
+    t = store.get_task(tid) or {}
+    general.place_coding(store, tid)
+    session = general.start_session(store, tid, model=model, pick=card, actor=actor)
+    ask = str(instruction or ('' if general.history(store, tid) else t.get('Summary') or t.get('Title') or '')).strip()
+    brief = not (instruction and actor == 'owner')       # Taskuary's brief (general.BRIEF_ACTOR), never put under YOU
+    if ask: threading.Thread(target=_ask_quietly, args=(session, ask, tid, brief), daemon=True, name=f'general-{tid}').start()
+    return {**session.info(), 'taskId': tid, 'existing': False, 'general': True}
+
+
 NO_CODING_TOOL = 'Pick a coding tool first - connect one under Connections, then start the coding agent again'
 
 
@@ -2388,6 +2424,13 @@ def start_on_task(store, tid: int, agent: str = '', model: str = None, instructi
     if model is None and brain is None and not resume and not _chain:
         b = workflows.brain_of_task(store, t)
         if b and b['key']: model, brain = b['model'] or None, b['key']
+    # A CODING TASK WHOSE AI IS A CARD STARTS ON ITS CARD BY EVERY ROAD (general.on_card; the spine audit, 2026-11-09): only the Send button
+    # asked, so new mail on it, a queue drain or the waiting room after a restart opened a CLI's pane on a task set to a card - or, with
+    # no CLI here, made it general work (_as_general) and it lost its checkout and its coding rules. A brain or a conversation named here
+    # keeps its own; and with developer mode off only a task its card has already worked (the switch takes nothing from work under way)
+    from . import general as _g
+    if not resume and not _chain and (hub_agents.developer_mode(store) or _g.history(store, tid)) and (card := _g.on_card(store, t, brain=brain)):
+        return _on_card(store, tid, card, model, instruction, actor)
     # ...and in Auto mode, hard work opens on the CLI's strong gear (brainroute, 2026-10-25); a model or a resume named here keeps its own
     from . import brainroute, general
     # ...where a model is the owner's pick: the CLI's own default, sent back by a picker that shows it, is none (general.chosen_model)
@@ -2520,7 +2563,7 @@ _WORKING = re.compile(r'esc to interrupt|esc to cancel|\(thinking\)|[⠋⠙⠹�
 # Only the CLI's OWN chrome is read here - its footer, its prompt glyph, its key hints - never what the agent WROTE (the
 # owner, 2026-10-11: "everything should be ai"). A turn that ended on "Should I also update the tests?" read as parked from
 # its words alone, and so did a report closing on a rhetorical "?". A quiet unknown CLI still parks on the IDLE_WAITING
-# fallback, and whether the agent's last message ASKED the owner is the model's read of it (hooks.judge_turn).
+# fallback, and what the agent ASKS the owner it asks with its question tool or its marker - nothing reads its prose for one.
 _PARKED = re.compile(r'shift\+tab to cycle|\? for shortcuts|bypass permissions on|auto mode on|type your message|'
                      r'\b(press enter|choose an option|select an option|enter to (confirm|select))\b|^\s*[›>❯](?:\s*\d+\.)?', re.I)
 # A QUESTION the owner has to answer, as opposed to a screen that is merely idle. A chooser names
@@ -2720,7 +2763,7 @@ def stranger_now(store, tid, t=None) -> str:
     "STRANGER_NOW when the live session on `tid` (or `t`) runs full and the task now reads as a stranger's - said once on the task - else ''."
     t = t or next((x for x in list(SESSIONS.values()) if getattr(x, 'task_id', None) == tid and getattr(x, 'alive', False)), None)
     # ...a general chat (send_prompt) is no full-tools CLI: its floor is its own (general.py), judged at every turn it takes
-    if not t or not tid or getattr(t, 'mode', 'full') == 'auto' or hasattr(t, 'send_prompt'): return ''
+    if not t or not tid or getattr(t, 'mode', 'full') != 'full' or hasattr(t, 'send_prompt'): return ''
     from . import origin
     try: o = origin.of_task(store, tid)[0]
     except Exception as e: o = 'stranger'; logger.warning(f'task {tid}: could not read who wrote on it, so nothing goes in - {e}')
@@ -2848,7 +2891,7 @@ def _until(cond, secs: float, t) -> bool:
     return cond()
 
 
-def type_into(t, text: str, done=None):
+def type_into(t, text: str, done=None, brief: bool = False):
     """Type `text` into a live session the way seed() proved works: flattened to one line (a
     newline is Enter in a TUI), fed in frame-sized bites (a one-shot paste drops bytes
     mid-stream), then Enter until the box answers. Runs on its own thread; returns at once.
@@ -2860,7 +2903,13 @@ def type_into(t, text: str, done=None):
     while it works. `done(ok)` hears the outcome; a line that never left the box is cleared out of it
     first (^U, never Esc: that interrupts the agent), so nothing half-said sits there under its turn."""
     text = clean_typed(text)
-    if is_acp(t): return t.say(text, done=done)     # an ACP session takes a prompt, never keystrokes
+    # ...`brief`: TASKUARY'S WORDS, NEVER THE OWNER'S (the owner, 2026-11-09: "i hit approve why was this then an input on the right side??"):
+    # the note an approved step hands the agent drew as the owner's bubble. Only what the owner typed, or what came in on the task's thread,
+    # is an input; over ACP the prompt is marked Taskuary's, on a pty it is kept as a seed the record reads as a brief (sessionrecord.mark_briefs)
+    if is_acp(t): return t.prompt(text, brief=True, done=done) if brief else t.say(text, done=done)    # a prompt, never keystrokes
+    if brief and (tid := getattr(t, 'task_id', None)):
+        from . import sessionrecord as _sr
+        _sr.keep_seed(tid, text)
     def go():
         for i in range(0, len(text), SEED_CHUNK):
             t.write(text[i:i + SEED_CHUNK])
@@ -2954,6 +3003,17 @@ def session_for(task_id):
     what wrapping up needs to read."""
     mine = [x for x in list(SESSIONS.values()) if x.task_id == task_id]
     return next((x for x in mine if x.alive), None) or (max(mine, key=lambda x: x.started) if mine else None)
+
+
+def cancel_turn(task_id) -> bool:
+    """Stop THIS TURN of a task's coding session - the x on its running turn (server /agent/cancel) and the Assistant's "stop the agent"
+    alike: ACP's session/cancel, a pty's Esc, the key its CLI stops on. The session stays and what is typed next carries on."""
+    live = session_for(task_id)
+    if not live: return False
+    if is_acp(live): return bool(live.cancel())
+    if not getattr(live, 'alive', False): return False
+    live.write('\x1b')
+    return True
 
 
 def transcript_for(store, task_id) -> tuple:
@@ -3083,6 +3143,11 @@ def recover_after_restart(store) -> int:
     """Clear persisted worker state that cannot survive a Taskuary process restart."""
     # Sessions and headless-run threads are process-owned; none can be live before the new process
     # has started one. Repair both halves so the Board never invents a worker from yesterday.
+    # ...and a permission request a killed run left open is refused and said first, so the run's ending is its last word (permissions.refuse_orphans)
+    try:
+        from . import permissions
+        permissions.refuse_orphans(store)
+    except Exception as e: logger.warning(f'permission requests left open by the last run not closed: {e}')
     for run in store.running_runs():
         store.update_run(run['RunId'], {'Status': 'stopped'}, finished=True)
     released = 0
@@ -3090,13 +3155,6 @@ def recover_after_restart(store) -> int:
         released += int(release_task(store, task['TaskId'], 'startup',
                                     'Taskuary restarted after the agent session ended. '
                                     'The task is open again - nobody is working it.'))
-    # ...and the Advisor hears of every interrupted task HERE, never at shutdown (teardown runs no model). A close is the one
-    # stop the Stop hook never fires for, so TQ-1048 sat with "nothing restarts by itself" and no line under it (the owner,
-    # 2026-10-12). notice() judges once per item revision, so every launch may say it again for free.
-    from . import advisor
-    for task in store.list_tasks(active_only=True):
-        if INTERRUPTED in [x.strip() for x in str(task.get('Tags') or '').split(',')]:
-            advisor.notice(store, 'agent.stopped', 'task', task['TaskId'])
     return released
 
 

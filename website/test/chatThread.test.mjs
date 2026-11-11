@@ -25,6 +25,3 @@ test("a voice note says so once, and an attachment-only message has no words", (
   assert.deepEqual(splitBody("Sounds good.\n\n(🎤 voice note (17s) from WhatsApp, transcribed by Groq (Whisper))"), { words: "Sounds good.", voice: true });
   assert.deepEqual(splitBody("(no text - see the attachment)"), { words: "", voice: false });
 });
-
-
-

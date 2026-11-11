@@ -120,7 +120,7 @@ export const CliConnectionsPage = ({ onBack }) => {
               connected one, so a disconnected Qwen read as "it came back" and Gemini as "set up without asking" (the owner,
               2026-10-07: "it should not be installed automatically unless you say detect it") */}
           <Chip size="small" label={t(cli.configured ? "Connected" : "Not connected")}
-            sx={cli.configured ? { bgcolor: "#e6ebef", color: "#41525f", fontWeight: 600 } : { bgcolor: "transparent", color: DIM, border: `1px dashed ${BORDER}` }} />
+            sx={cli.configured ? { bgcolor: "var(--tq-inset, #e6ebef)", color: "var(--tq-link, #41525f)", fontWeight: 600 } : { bgcolor: "transparent", color: DIM, border: `1px dashed ${BORDER}` }} />
         </Box>
         {cli.description && <Typography variant="body2" sx={{ color: DIM, mb: 1 }}>{cli.description === CLI_DESCRIPTIONS[cli.name] ? t(cli.description) : cli.description}</Typography>}
         {cli.configured

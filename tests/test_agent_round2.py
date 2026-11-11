@@ -104,7 +104,7 @@ class PlaybookMenuTests(unittest.TestCase):
     def test_a_menu_is_short_and_absent_when_off(self):
         s = MemoryStore()
         self.assertLess(len(playbooks.agent_menu(None, s)), 700)
-        playbooks.set_on('w9', False); self.assertNotIn('w9', playbooks.agent_menu(None, s))
+        playbooks.set_on('w9', False); self.assertNotIn('- w9:', playbooks.agent_menu(None, s))     # its line - the folder's own name is random letters
         s.set_setting('playbooks_enabled', '0', 't'); self.assertNotIn('PLAYBOOKS - ', general._prompt(s, owner_task(s))[0])
 
     def test_a_brain_with_no_hands_is_handed_the_matched_one_whole(self):
@@ -216,6 +216,58 @@ class CheckBackTests(unittest.TestCase):
                 checkback.due(s, datetime.now() + timedelta(hours=2), spawn=lambda fn, *a: fn(*a))
         self.assertEqual(len(prompts), 1); self.assertTrue(prompts[0][1].get('brief'))
         self.assertIn('the payment to Payworth cleared', prompts[0][0]); self.assertTrue(prompts[0][0].startswith('TASKUARY: the check-back'))
+
+    def test_a_wait_gone_late_wakes_its_agent_once_on_the_same_clock(self):
+        """Ray has not answered the W-9 for a week (the owner, 2026-11-10: "job of agent is to be helpful and do as much as possible. it
+        shoudl prompt you"): nothing woke the task's agent. Now the reminders' clock hands it one turn saying who is late on what - once per
+        lateness, through the check-back road - and never where the owner's own line could not wake it (the switch, no conversation)."""
+        from taskuary import advisor, rulebook
+        s = MemoryStore(); tid = owner_task(s, 'Vendor W-9', Status='waiting')
+        s._exec("UPDATE task SET WaitingOn='ray.colton@northwind.example' WHERE TaskId=?", (tid,))
+        s.add_message({'TaskId': tid, 'Direction': 'out', 'Subject': 'W-9?', 'Body': 'Could you send the W-9?', 'Channel': 'email',
+                       'SentAt': f'{datetime.now() - timedelta(days=7):%Y-%m-%d %H:%M:%S}', 'Status': 'routed'})
+        it = {'key': f'task:{tid}', 'kind': 'todo', 'lane': 'theirs', 'tid': tid}
+        fired = []
+        with mock.patch.object(advisor, '_item', lambda *a, **k: it), mock.patch.object(checkback, 'fire', side_effect=lambda st, t, what: fired.append((t, what))), \
+             mock.patch('taskuary.ingest._spawn', lambda fn, *a: fn(*a)), mock.patch('taskuary.ingest.has_room', return_value=True), \
+             mock.patch.object(general, 'provider_options', return_value=[{'pick': 'api:x', 'type': 'api'}]):
+            with mock.patch.object(general, 'history', return_value=[{'role': 'user', 'text': 'x'}]):
+                s.set_setting('general_auto_enabled', '0', 'owner'); remind.tick(s); self.assertEqual(fired, [], 'the switch is off')
+                s.set_setting('general_auto_enabled', '1', 'owner'); remind.tick(s); remind.tick(s)
+        self.assertEqual(len(fired), 1); self.assertEqual(fired[0][0], tid)
+        self.assertIn('Ray Colton', fired[0][1]); self.assertIn('chase', fired[0][1])
+        self.assertTrue(checkback.woke(s, tid)); self.assertFalse(s.get_task(tid).get('CheckBackAt'))
+        self.assertIsNone(rulebook.recommended(s, it), 'its woken agent speaks for it: no Chase lit over its turn')
+
+    def test_a_late_answer_starts_a_first_agent_where_none_has_worked(self):
+        """The same lateness on a task no agent has worked (the owner, 2026-11-10: "yes"): it starts the task's first agent with the same turn,
+        through the start check every start passes - the switch off says why once on the task and leaves Chase lit; a full house queues it."""
+        from taskuary import advisor, ingest, rulebook
+        def late_task(title):
+            tid = owner_task(s, title, Status='waiting')
+            s._exec("UPDATE task SET WaitingOn='ray.colton@northwind.example' WHERE TaskId=?", (tid,))
+            s.add_message({'TaskId': tid, 'Direction': 'out', 'Subject': 'W-9?', 'Body': 'Could you send the W-9?', 'Channel': 'email',
+                           'SentAt': f'{datetime.now() - timedelta(days=7):%Y-%m-%d %H:%M:%S}', 'Status': 'routed'})
+            return tid, {'key': f'task:{tid}', 'kind': 'todo', 'lane': 'theirs', 'tid': tid}
+        s = MemoryStore(); tid, it = late_task('Vendor W-9')
+        fired, room = [], [True]
+        with mock.patch.object(advisor, '_item', lambda st, k, t, **kw: {**it, 'key': f'task:{t}', 'tid': t}), \
+             mock.patch.object(checkback, 'fire', side_effect=lambda st, t, what: fired.append((t, what))), \
+             mock.patch('taskuary.ingest._spawn', lambda fn, *a: fn(*a)), mock.patch('taskuary.ingest.has_room', side_effect=lambda *a: room[0]), \
+             mock.patch.object(general, 'provider_options', return_value=[{'pick': 'api:x', 'type': 'api'}]):
+            s.set_setting('general_auto_enabled', '0', 'owner'); remind.tick(s); remind.tick(s)
+            self.assertEqual(fired, [], 'the switch is off')
+            said = [c['Body'] for c in s.list_comments(tid) if c['Body'].startswith(ingest.NOT_STARTED)]
+            self.assertEqual(len(said), 1, 'why is said once'); self.assertIn('switched off', said[0])
+            self.assertEqual((rulebook.recommended(s, it) or {}).get('verb'), 'chase', 'Chase stays lit where none started')
+            s.set_setting('general_auto_enabled', '1', 'owner')
+            other, _ = late_task('Signed lease'); remind.tick(s); remind.tick(s)
+            self.assertEqual([t for t, _ in fired], [other], 'a first agent, once, on the task none has worked')
+            self.assertIn('Ray Colton', fired[0][1]); self.assertIn('chase', fired[0][1])
+            room[0] = False; third, _ = late_task('Insurance card'); remind.tick(s)
+        self.assertEqual(len(fired), 1); self.assertTrue(checkback.woke(s, third))
+        self.assertEqual((s.get_dispatch(third) or {}).get('Turn'), 'replan', 'a full house queues its turn')
+        self.assertIn('Ray Colton', (s.get_dispatch(third) or {}).get('Brief') or '')
 
     def test_the_door_the_tool_and_the_cli_flag(self):
         s = MemoryStore(); tid = owner_task(s)

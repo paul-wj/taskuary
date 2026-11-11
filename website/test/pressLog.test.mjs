@@ -3,10 +3,13 @@
 // heard before they run. Nothing on screen changes for it.
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import { announce, onPressing } from "../src/actionRow.js";
 import { label } from "../src/buttons.js";
 import { deskPress, notePress, pagePress, verbOf, verbOfLabel } from "../src/pressLog.js";
 import { isWrite } from "../src/wrote.js";
+const src = (f) => fs.readFileSync(path.join(process.cwd(), "src", f), "utf8");
 
 const v = (id, group, extra = {}) => ({ id, group, tone: "s", label: id, title: "", disabled: false, why: "", promote: true, lead: false, ...extra });
 
@@ -22,11 +25,12 @@ test("the desk: nothing lit is recorded as nothing lit, with every live button -
   assert.deepEqual(got, { pressed: "close", lit: "", live: ["close", "next", "approve", "redraft"], greyed: ["remove"] });   // a greyed button is no choice - but kept as greyed (A4)
 });
 
-test("the desk: what the row filled is what was lit - the Advisor's pick, Next under a 'nothing to do' line, a running agent's Stop", () => {
+test("the desk: what the row filled is what was lit - the Advisor's pick, Next under a 'nothing to do' line", () => {
   const snap = { ref: "", list: [v("continue", "agent"), v("done", "more"), v("next", "next")] };
   assert.equal(deskPress(snap, { verb: "continue", label: "Continue" }, "done").lit, "continue");
   assert.equal(deskPress(snap, { verb: "next" }, "next").lit, "next");
-  assert.equal(deskPress({ ref: "", list: [v("save-end", "agent", { fill: true }), v("next", "next")] }, null, "next").lit, "stop_agent");
+  // ...and nothing a row fills by itself: a running agent's Stop and save did, and is gone (the owner, 2026-11-10)
+  assert.equal(deskPress({ ref: "", list: [v("diff", "agent", { fill: true }), v("next", "next")] }, null, "next").lit, "");
 });
 
 test("the Tasks tab: a button is known by its one name, and the filled one is what was lit", () => {
@@ -58,3 +62,10 @@ test("the draft's own buttons are heard before they run, as the row's are", () =
   assert.deepEqual(heard, ["12:approve"]);
 });
 
+test("the Tasks tab hears every press on its own page, and only while it is the tab in view", () => {
+  const tp = src("TaskPage.jsx");
+  assert.match(tp, /if \(canvas \|\| !active \|\| !el\) return undefined;/);
+  assert.match(tp, /el\.addEventListener\("click", heard, true\);/);
+  assert.match(tp, /notePress\(api, \{ key: `task:\$\{selRef\.current\}`, surface: "task", \.\.\.got, advised: recRef\.current\?\.verb \|\| null \}\)/);
+  assert.match(tp, /<Box ref=\{pageRef\} data-tq-task-page=/);
+});

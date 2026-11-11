@@ -11,7 +11,8 @@ the agent ASKS (clis.ADAPTERS sets the mode that makes it ask) and the answer is
     "never sent without the owner's press" outranks keeping a tool, as it does there.
   - A shell step that goes out or deletes outside the agent's folder is HELD (shellgate.check: on the task as a proposal for the
     owner's Approve), and so is an HTTP client that writes to a host off this machine (curl -X POST, -d, Invoke-RestMethod -Method
-    Post...) - by each tool's own grammar, never by words in a mail.
+    Post...) - by each tool's own grammar, never by words in a mail. The hook road reads the same command by the same function
+    (shellgate.acts), so one command is held alike on both.
   - Everything else - reads, edits in its folder, searches, a page fetched - is allowed, as the bypass allowed it.
 
 THE OWNER'S BUTTONS (step 3, permissions.py). With Developer mode on, what these rules HOLD is put to the owner as it happens: Allow once
@@ -27,13 +28,7 @@ from . import acp
 
 OWN = 'taskuary'
 ALLOWED, REFUSED, HELD = 'allowed', 'refused', 'held'
-_HTTP = {'curl', 'wget', 'http', 'https', 'xh', 'invoke-webrequest', 'iwr', 'invoke-restmethod', 'irm'}
-_WRITE_METHOD = re.compile(r'^(post|put|patch|delete)$', re.I)
-# curl's short flags are case-sensitive (-F is a form post, -f is --fail); the long ones and PowerShell's -Body / -InFile are not
-_SHORT = ('-d', '-F', '-T')
-_DATA = ('--data', '--data-raw', '--data-binary', '--data-urlencode', '--json', '--form', '--upload-file', '-body', '-infile',
-         '--post-data', '--post-file', '--body-data', '--body-file')
-_LOCAL = re.compile(r'^https?://(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:\d+)?(/|$)', re.I)
+CARD = 'card'           # held, and already the owner's button (the landing card's Push): never asked a second time with Allow once / Reject
 
 
 def tool_of(tc: dict) -> dict:
@@ -63,29 +58,6 @@ def _mcp(store, cli: str, server: str, tool: str) -> tuple:
     return REFUSED, f'{server} is not a server the send filter knows'
 
 
-def http_writes(cmd: str) -> str:
-    "'' unless an HTTP client in the line writes to a host off this machine - then what it does, in words."
-    from .browsergate import _segments
-    from .shellgate import _words, _name
-    for argv in _segments(cmd) or []:
-        tool, _w = _words(argv)
-        if tool in ('bash', 'sh', 'powershell', 'pwsh', 'cmd'):
-            inner = next((http_writes(t) for t in argv[1:] if ' ' in t.strip() and http_writes(t)), '')
-            if inner: return inner
-            continue
-        if tool not in _HTTP: continue
-        a = [str(t) for t in argv[1:]]
-        urls = [t for t in a if re.match(r'^https?://', t, re.I)]
-        if urls and all(_LOCAL.match(u) for u in urls): continue                       # Taskuary's own API: the guard answers there
-        meth = next((a[i + 1] for i, t in enumerate(a[:-1]) if t.lower() in ('-x', '--request', '-method')), '')
-        meth = meth or next((t[2:] for t in a if t.startswith('-X') and len(t) > 2), '')
-        data = any(t in _SHORT or t.lower().split('=', 1)[0] in _DATA or (t.startswith('-d') and not t.startswith('--') and len(t) > 2) for t in a)
-        if _WRITE_METHOD.match(meth) or data:
-            host = re.sub(r'^https?://([^/?#]+).*', r'\1', urls[0]) if urls else 'a web address'
-            return f'send data to {host} ({_name(argv[0])})'
-    return ''
-
-
 def decide(tc: dict, ctx: dict) -> tuple:
     """(answer, why) for one toolCall. ctx: store, task_id, cli, cwd, sid."""
     t, store = tool_of(tc), ctx.get('store')
@@ -93,16 +65,20 @@ def decide(tc: dict, ctx: dict) -> tuple:
     if not t['command']: return ALLOWED, ''
     from . import shellgate
     cwd = str((tc.get('rawInput') or {}).get('cwd') or ctx.get('cwd') or '') if isinstance(tc.get('rawInput'), dict) else str(ctx.get('cwd') or '')
-    if (out := http_writes(t['command'])): return REFUSED, f'{out} - it leaves this computer, and only the owner sends'
     if not shellgate.acts(t['command'], cwd): return ALLOWED, ''
     tid = ctx.get('task_id')
     if store is None or not str(tid or '').isdigit():
         return REFUSED, '; '.join(dict.fromkeys(a['what'] for a in shellgate.acts(t['command'], cwd))) + ' - it waits for the owner'
     shell = 'PowerShell' if re.search(r'powershell|pwsh', t['name'] + t['command'], re.I) else 'Bash'
-    # ...put to the owner as buttons (answerer): the Approve card is filed only if they do not answer, so nothing waits twice
-    if ctx.get('owner_asks') and not shellgate.trusted(store, cwd, todo := shellgate.acts(t['command'], cwd)):
-        return HELD, '; '.join(dict.fromkeys(a['what'] for a in todo)) + ' - it waits for your answer'
-    said = shellgate.check(store, int(tid), str(ctx.get('sid') or ''), t['command'], shell=shell, cwd=cwd, ask=False)
+    raw = tc.get('rawInput') if isinstance(tc.get('rawInput'), dict) else {}
+    todo = shellgate.acts(t['command'], cwd)
+    if not shellgate.trusted(store, cwd, todo):
+        from . import landing
+        # a push of the task's own work is the landing card's Push (landing.push_asked) - before any other button is drawn for it
+        if (lands := landing.push_asked(store, int(tid), t['command'], cwd, str(raw.get('description') or ''))): return (CARD if lands[0] else REFUSED), lands[1]
+        # ...put to the owner as buttons (answerer): the Approve card is filed only if they do not answer, so nothing waits twice
+        if ctx.get('owner_asks'): return HELD, '; '.join(dict.fromkeys(a['what'] for a in todo)) + ' - it waits for your answer'
+    said = shellgate.check(store, int(tid), str(ctx.get('sid') or ''), t['command'], shell=shell, cwd=cwd, ask=False, about=str(raw.get('description') or ''))
     if not said: return ALLOWED, 'a repo the owner trusts to act on its own'
     return HELD, said['hookSpecificOutput']['permissionDecisionReason']
 
@@ -113,19 +89,30 @@ def owner_asks(ctx: dict) -> bool:
     return ctx.get('store') is not None and str(ctx.get('task_id') or '').isdigit() and agents.developer_mode(ctx['store'])
 
 
+# THE OWNER'S OWN NO ON THE STEP, in their voice (the owner, 2026-11-10): it read "Taskuary refused it: the owner said no" - the app
+# taking the credit for their press
+YOU_REJECTED = 'You rejected this'
+
+
 def put_to_owner(ctx: dict, params: dict, why: str) -> tuple:
     "(answer, why) once the owner has answered a held call (permissions.ask) - or not: then the Approve card, and a refusal."
-    from . import permissions, shellgate
+    from . import permissions, shellgate, workerstate as ws
     store, tid, late = ctx['store'], int(ctx['task_id']), []
     req = {**permissions.from_acp(params), 'sid': str(ctx.get('sid') or (params or {}).get('sessionId') or '')}
     got = permissions.ask(store, tid, req, timed_out=lambda: late.append(1))
     if got.startswith('allow'): return ALLOWED, 'the owner allowed it'
-    if not late: return REFUSED, 'the owner said no'
+    if not late:
+        # ...and the agent hears WHOSE no it was: the adapter's refusal reads the same for Taskuary's own block (browsergate.OWNER_NO). Into
+        # the turn it is in where the adapter steers, else as its next words; a run with no session of ours hears it with the owner's next line
+        if ws._live(tid):
+            r = permissions.normal(req)
+            shellgate.declined(store, tid, {'what': permissions.asked(r | permissions.held_for(r, str(ctx.get('cwd') or ''))), 'command': r['command']})
+        return REFUSED, YOU_REJECTED
     tc = (params or {}).get('toolCall') or {}
     raw = tc.get('rawInput') if isinstance(tc.get('rawInput'), dict) else {}
     t, cwd = tool_of(tc), str(raw.get('cwd') or ctx.get('cwd') or '')
     shell = 'PowerShell' if re.search(r'powershell|pwsh', t['name'] + t['command'], re.I) else 'Bash'
-    said = shellgate.check(store, tid, str(ctx.get('sid') or ''), t['command'], shell=shell, cwd=cwd, ask=False) if t['command'] else {}
+    said = shellgate.check(store, tid, str(ctx.get('sid') or ''), t['command'], shell=shell, cwd=cwd, ask=False, about=str(raw.get('description') or '')) if t['command'] else {}
     return HELD, (said.get('hookSpecificOutput') or {}).get('permissionDecisionReason') or why
 
 
@@ -140,7 +127,7 @@ def answerer(ctx: dict, trace=None, held: dict = None):
         if answer == HELD and asks: answer, why = put_to_owner(ctx, params, why)
         out = acp.pick(params.get('options'), answer == ALLOWED)
         iid = str(tc.get('toolCallId') or '')
-        if answer != ALLOWED and held is not None: held[iid] = why if answer == HELD else f'Taskuary refused it: {why}'
+        if answer != ALLOWED and held is not None: held[iid] = why if answer in (HELD, CARD) or why == YOU_REJECTED else f'Taskuary refused it: {why}'
         name = tool_of(tc)['name'] or str(tc.get('title') or 'tool')
         (logger.info if answer == ALLOWED else logger.warning)(f'acp permission: {name} {answer}' + (f' - {why}' if why else ''))
         if trace: trace('permission', name, {'tool_call_id': iid, 'answer': answer, 'why': why, 'title': str(tc.get('title') or '')[:200]})

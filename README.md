@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/ldbumble/taskuary/actions/workflows/ci.yml/badge.svg)](https://github.com/ldbumble/taskuary/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ldbumble/taskuary/badge)](https://scorecard.dev/viewer/?uri=github.com/ldbumble/taskuary)
-[![PyPI](https://img.shields.io/pypi/v/taskuary.svg?cacheSeconds=300&release=0.3.11.23&asof=0.3.11.23-live)](https://pypi.org/project/taskuary/)
+[![PyPI](https://img.shields.io/pypi/v/taskuary.svg?cacheSeconds=300&release=0.3.11.39&asof=0.3.11.39)](https://pypi.org/project/taskuary/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776ab.svg)](https://github.com/ldbumble/taskuary)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/ldbumble/taskuary?style=flat&color=d4a72c&label=%E2%98%85%20stars)](https://github.com/ldbumble/taskuary/stargazers)
@@ -21,7 +21,7 @@ Mail, chats, approvals and reports land in one list, and you can work that list 
 
 ![The Assistant's Game view: an office where every task, message and agent is a figure, opening on the whole floor and zooming into each room - the Agent Floor, the Meeting Room where people wait on you, the Gym, the Coffee Room, the Memory Archive, and the Assistant Core.](https://raw.githubusercontent.com/ldbumble/taskuary/master/docs/hero.webp?v=smooth)
 
-Taskuary is early—currently **v0.3.11.23**—so breaking changes are still possible before 1.0.
+Taskuary is early—currently **v0.3.11.39**—so breaking changes are still possible before 1.0.
 
 <p align="center">
   <a href="https://taskuary.com/demo/"><img
@@ -32,6 +32,8 @@ Taskuary is early—currently **v0.3.11.23**—so breaking changes are still pos
 <p align="center"><sub>A day of fictional work and a general agent's finished turns: a LinkedIn post, a reply with a workbook, a dashboard. Nothing connects or sends.</sub></p>
 
 <p align="center"><b><a href="https://taskuary.com/docs/">Read the documentation</a></b> — installation, the first run, what to connect, and every setting.</p>
+
+The sun/moon button in the top-right corner switches the whole app between light and dark. The choice stays in this browser and follows other open tabs; before you choose, Taskuary follows your system appearance. Your terminal palette stays independent.
 
 ## What Taskuary can do
 

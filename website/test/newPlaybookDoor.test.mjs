@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { canvasRequestFromHash } from "../src/canvasLinks.js";
-import { askPlaybook, takePlaybookAsk } from "../src/playbookOpen.js";
+import { NEW_PB, askPlaybook, takePlaybookAsk } from "../src/playbookOpen.js";
 
 
 test("New's link lands on the Playbooks shelf with New playbook asked for - each ask numbered, so a second opens it again", () => {
