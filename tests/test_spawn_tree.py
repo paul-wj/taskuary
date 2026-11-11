@@ -41,11 +41,27 @@ def test_exited_process_and_pty_do_not_invoke_taskkill():
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows taskkill behavior')
+def test_taskkill_success_stops_pty_while_its_exit_is_not_yet_observed():
+    class Pty:
+        pid = 1234
+        alive = True
+        def isalive(self): return self.alive
+        def kill(self, sig): self.alive = False
+        def terminate(self, force=False):
+            if force: self.alive = False
+    process = Pty()
+    with mock.patch.object(spawn, 'run', return_value=subprocess.CompletedProcess([], 0, b'', b'')):
+        spawn.stop_tree(process)
+    assert not process.alive
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows taskkill behavior')
 def test_taskkill_failure_reports_live_pty_after_stopping_root():
     class Pty:
         pid = 1234
         alive = True
         def isalive(self): return self.alive
+        def kill(self, sig): self.alive = False
         def terminate(self, force=False): self.alive = False
     process = Pty()
     with mock.patch.object(spawn, 'run', return_value=subprocess.CompletedProcess([], 1, b'', b'failed')):

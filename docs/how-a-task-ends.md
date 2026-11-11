@@ -19,6 +19,12 @@ always does all five of these:
 4. the item leaves the work rail
 5. the "yours to end" mark comes off (see below)
 
+With a live session, Mark done saves the transcript and report, stops the session, then closes
+the task in the same background job. On Windows, OMP stops its owned process tree first; a root
+fallback uses `Popen.kill()` or `PtyProcess.terminate(force=True)` according to the process API,
+never an argument-free PTY `kill()`. If saving the result or stopping the tree fails, the task
+stays open with the reason recorded; a failed write-up is not successful completion.
+
 ## Decision tree
 
 ```mermaid

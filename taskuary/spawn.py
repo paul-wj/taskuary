@@ -203,7 +203,8 @@ def stop_tree(process):
             failure = str(exc)
         try:
             if _process_alive(process):
-                if callable(getattr(process, 'kill', None)): process.kill()
+                # Popen.kill() takes no signal; winpty.kill(sig) does. Match the liveness API above.
+                if callable(getattr(process, 'poll', None)): process.kill()
                 else: process.terminate(force=True)
         except (OSError, AttributeError) as exc:
             failure = failure or str(exc)
