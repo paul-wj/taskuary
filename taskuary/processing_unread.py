@@ -280,7 +280,9 @@ def card_for(store, item, compact, live_state, now, states=None, noise=None):
                                             or not _arrived_after_close(task, view))
     # DECIDED IS OFF, WHEREVER IT WAS DECIDED (R4, 2026-09-25): a draft sent, rejected or answered "no reply" on the
     # Review page, or an idea dismissed in the chat, stayed on the rail as an unread fyi. Off until THEY write again.
-    if not tid and not review and not closed: closed = _decided(view, allowed) or _idea_off(store, view, compact, now)
+    if not tid and not review and not closed:
+        from .jiraapi import reference_closed
+        closed = reference_closed(row) or _decided(view, allowed) or _idea_off(store, view, compact, now)
     # ...and the noise the old rail filtered (R5): withdrawn lines, auto-replies, a thread you already answered
     if not tid and not review and not closed and row.get('MessageId') and (_noise_hidden(store) if noise is None else noise): closed = _noise(row, view)
     if row.get('MessageId'):

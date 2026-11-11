@@ -169,6 +169,18 @@
 .tq-pile-moved .w { flex: 0 0 auto; }
 .tq-pile-moved .ref { flex: 0 0 auto; color: #55697a; font-variant-numeric: tabular-nums; border-bottom: 1px solid #c9d2d9; cursor: pointer; }
 .tq-pile-moved .ref:hover { border-bottom-color: #55697a; }
+/* A Jira reference wears its own status (2026-11-10: distinguish Jira statuses): the provider's status word
+   in a small badge beside the subject - "Open" and "In Progress" must read differently, never as the row's
+   local state. The word is RAW (jiraStatus.js, never translated); only the tone is local. A compact chip,
+   not a second button, in the app's own palette: new work the task band's sage, in flight the brand's slate,
+   done the filed oat; an unknown category has no tone and stays quiet. On a narrow rail it gives way before
+   the title, down to its word - the full status is in the row's hover (jiraStatusTip). */
+.tq-pile-jira { flex: 0 1 auto; min-width: 0; max-width: 9em; overflow: hidden; text-overflow: ellipsis;
+  padding: 0 6px; border-radius: 99px; border: 1px solid #d8d0c3; background: #f4f1ea; color: #5e574c;
+  font: 500 10px/15px 'IBM Plex Sans', system-ui, sans-serif; letter-spacing: 0; white-space: nowrap; }
+.tq-pile-jira.tone-new { border-color: #c4d2c0; background: #e3eadf; color: #3f5943; }
+.tq-pile-jira.tone-indeterminate { border-color: #cbd4dc; background: #e4e9ee; color: #41525f; }
+.tq-pile-jira.tone-done { border-color: #d8d0c3; background: #ebe6de; color: #5e574c; }
 .tq-moved .tq-ref-link { font: inherit; font-weight: 600; padding: 0; background: none; border: 0; border-bottom: 1px solid #c9d2d9; }
 .tq-pile-tag { flex: 0 0 auto; display: inline-block; padding: 0 6px; border-radius: 99px; border: 1px solid #ddd6cb; background: #eee9e1; color: #6f6960; font: 600 9px/15px 'IBM Plex Sans', system-ui, sans-serif; letter-spacing: .01em; white-space: nowrap; }
 /* the current one opens up: the second line says why it is here */
@@ -444,6 +456,14 @@
 .tq-item-msg-h.press { cursor: pointer; border-radius: 6px; }
 .tq-item-msg-h.press:hover b { text-decoration: underline; }
 .tq-item-msg-h b { font-size: 12.5px; color: #262521; font-weight: 600; white-space: nowrap; }
+/* the message's own Jira state (2026-11-10: distinguish Jira statuses): the raw status word on the message's
+   line, the same chip the rail row wears (tq-pile-jira) - only its tone is local, the word stays the provider's
+   (jiraStatus.js); no snapshot, no chip. */
+.tq-item-msg-h .tq-jira-state { flex: 0 0 auto; padding: 0 6px; border-radius: 99px; border: 1px solid #d8d0c3;
+  background: #f4f1ea; color: #5e574c; font: 500 10px/15px 'IBM Plex Sans', system-ui, sans-serif; white-space: nowrap; }
+.tq-item-msg-h .tq-jira-state.tone-new { border-color: #c4d2c0; background: #e3eadf; color: #3f5943; }
+.tq-item-msg-h .tq-jira-state.tone-indeterminate { border-color: #cbd4dc; background: #e4e9ee; color: #41525f; }
+.tq-item-msg-h .tq-jira-state.tone-done { border-color: #d8d0c3; background: #ebe6de; color: #5e574c; }
 .tq-item-msg-h .at { margin-left: auto; font-size: 10.5px; color: #8a8378; white-space: nowrap; }
 .tq-item-msg-h .chev { color: #746e64; font-size: 10px; }
 .tq-item-msg-t { margin-top: 3px; font-size: 13.5px; font-weight: 600; line-height: 1.4; color: #2f2d29; overflow-wrap: anywhere; }

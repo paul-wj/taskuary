@@ -232,3 +232,231 @@ def test_feed_imports_old_unresolved_assignments_without_creating_work():
     rows = s._rows("SELECT TaskId, ConversationId FROM message WHERE Channel='jira'")
     assert rows == [{'TaskId':None, 'ConversationId':'jira:NW-1'}]
 
+
+def test_feed_revisions_and_comments_share_one_unread_reference():
+    from taskuary import funnel, processing_all, processing_unread
+    s, c = setup()
+    s.set_setting('calendar_enabled', '0', 'test')
+    s.reconcile_processing_membership()
+    s.activate_processing_reads(fixed_now=datetime.now().isoformat(), live_state=[])
+    report = issue(1)
+    since = datetime.now() - timedelta(hours=1)
+    with wire(JiraWire([report])): pm.poll_jira(s, c, since, file_only=True)
+    s.reconcile_processing_membership()
+    original = s.resolve_processing_target('legacy_funnel', 'msg:1')['item_id']
+    report['fields']['description'] = 'Repair the export for large files'
+    report['fields']['comment'] = {'comments': [{'id':'93', 'author':{'key':'user-erin'},
+        'body':'The large-file export still fails', 'created':datetime.now().astimezone().isoformat()}]}
+    with wire(JiraWire([report])):
+        pm.poll_jira(s, c, since, file_only=True)
+        pm.poll_jira(s, c, since, file_only=True)
+    s.reconcile_processing_membership()
+    snapshot = s.processing_inventory_snapshot(fixed_now=datetime.now().isoformat(), live_state=[])
+    rows, _, _ = processing_all.compact_inventory(snapshot, processing_unread.query_for(s))
+    assert [r['item_id'] for r in rows] == [original]
+    assert rows[0]['counts']['messages'] == 3
+    bodies = [m['BodyText'] for m in snapshot['items'][0]['view']['messages']]
+    assert 'The large-file export still fails' in bodies
+    assert any(body.endswith('\nRepair the export for large files') for body in bodies)
+    pile = funnel.build(s, now=datetime.now(), reconcile=False, live_state=[])
+    assert [(r['processing_id'], r['lane']) for r in pile['items']] == [(original, 'fyi')]
+    funnel.settle(s, pile['items'][0]['key'], 'surfaced', read=True)
+    s.reconcile_processing_membership()
+    assert funnel.build(s, now=datetime.now(), reconcile=False, live_state=[])['items'] == []
+    report['fields']['description'] = 'Repair the export for large files and empty files'
+    with wire(JiraWire([report])): pm.poll_jira(s, c, since, file_only=True)
+    s.reconcile_processing_membership()
+    later = funnel.build(s, now=datetime.now(), reconcile=False, live_state=[])['items']
+    assert [(r['processing_id'], r['unread']) for r in later] == [(original, True)]
+    assert s._rows('SELECT TaskId FROM task') == []
+    s.close()
+
+
+@pytest.mark.parametrize('bootstrap', ['reconcile', 'backfill'])
+def test_reference_grouping_preserves_site_and_explicit_task_boundaries(bootstrap):
+    s, _ = setup()
+    tid = s.create_task({'Title':'Owner work', 'Kind':'task'}, 'test')
+    messages = [
+        ('site-a-1', 'jira.northwind.example/jira', 'jira:NW-1', None),
+        ('site-a-2', 'jira.northwind.example/jira', 'jira:NW-1', None),
+        ('site-b-1', 'jira.northwind.example/other', 'jira:NW-1', None),
+        ('other-issue', 'jira.northwind.example/jira', 'jira:NW-2', None),
+        ('task-message', 'jira.northwind.example/jira', 'jira:NW-1', tid),
+    ]
+    mids = [s.add_message({'ExternalId':ext, 'SourceName':site, 'ConversationId':conv,
+        'TaskId':task, 'Channel':'jira', 'Status':'feed', 'Subject':'Export', 'BodyText':ext})
+        for ext, site, conv, task in messages]
+    if bootstrap == 'backfill': s.backfill_processing('jira-reference-fixture', fixed_now=datetime.now().isoformat(), live_state=[])
+    s.reconcile_processing_membership()
+    roots = [s.resolve_processing_target('legacy_funnel', f'msg:{mid}')['item_id'] for mid in mids]
+    assert roots[0] == roots[1]
+    assert len({roots[0], *roots[2:]}) == 4
+    assert roots[-1] == s.resolve_processing_target('legacy_funnel', f'task:{tid}')['item_id']
+    if bootstrap == 'reconcile':
+        s.backfill_processing('jira-reference-fixture', fixed_now=datetime.now().isoformat(), live_state=[])
+        assert [s.resolve_processing_target('legacy_funnel', f'msg:{mid}')['item_id'] for mid in mids] == roots
+    s.close()
+
+
+@pytest.mark.parametrize('column,other', [('SourceName', 'jira.northwind.example/other'), ('ConversationId', 'jira:NW-2')])
+def test_existing_reference_rows_converge_when_their_provider_identity_matches(tmp_path, column, other):
+    from taskuary.store import SQLiteStore
+    path = tmp_path / 'jira-references.db'
+    s = SQLiteStore(str(path))
+    shared = {'Channel':'jira', 'Status':'feed', 'SourceName':'jira.northwind.example/jira',
+        'ConversationId':'jira:NW-1', 'Subject':'Export', 'BodyText':'Repair the export'}
+    first = s.add_message({**shared, 'ExternalId':'reference-first'})
+    second = s.add_message({**shared, 'ExternalId':'reference-second', column:other})
+    s.reconcile_processing_membership()
+    root = s.resolve_processing_target('legacy_funnel', f'msg:{first}')['item_id']
+    old = s.resolve_processing_target('legacy_funnel', f'msg:{second}')['item_id']
+    assert old != root
+    s._exec(f'UPDATE message SET {column}=? WHERE MessageId=?', (shared[column], second))
+    before = s._rows('SELECT * FROM message ORDER BY MessageId')
+    s.reconcile_processing_membership()
+    assert s.resolve_processing_target('legacy_funnel', f'msg:{second}')['item_id'] == root
+    assert s.processing_snapshot(old)['item']['ItemId'] == root
+    assert s._rows('SELECT * FROM message ORDER BY MessageId') == before
+    s.close()
+    s = SQLiteStore(str(path))
+    s.reconcile_processing_membership()
+    assert s.resolve_processing_target('legacy_funnel', f'msg:{second}')['item_id'] == root
+    assert {m['MessageId'] for m in s.processing_snapshot(root)['view']['messages']} == {first, second}
+    s.close()
+
+
+def _jira_reference_pile(s):
+    from taskuary import funnel
+    s.reconcile_processing_membership()
+    return funnel.build(s, now=datetime.now(), reconcile=False, live_state=[])['items']
+
+
+@pytest.mark.parametrize('status,category,resolution', [
+    ('Shipped', 'done', {'name':'Fixed'}),
+    ('Closed', 'done', None),
+    ('In Progress', 'indeterminate', {'name':'Won’t Fix'}),
+])
+def test_closed_jira_reference_leaves_fyi_and_reopened_issue_returns_unread(status, category, resolution):
+    from taskuary import funnel
+    s, c = setup()
+    s.set_setting('calendar_enabled', '0', 'test')
+    s.reconcile_processing_membership()
+    s.activate_processing_reads(fixed_now=datetime.now().isoformat(), live_state=[])
+    report = issue(1)
+    report['fields']['resolution'] = None
+    since = datetime.now() - timedelta(hours=1)
+    with wire(JiraWire([report])): pm.poll_jira(s, c, since, file_only=True)
+    first = _jira_reference_pile(s)[0]
+    assert first['jira']['status'] == 'Open' and first['jira']['category'] == 'new'
+    funnel.settle(s, first['key'], 'surfaced', read=True)
+    assert _jira_reference_pile(s) == []
+    before = s._rows('SELECT MessageId,BodyText,Status FROM message ORDER BY MessageId')
+    report['fields'].update(status={'name':status, 'statusCategory':{'key':category}}, resolution=resolution,
+                            updated=(datetime.now().astimezone() + timedelta(seconds=1)).isoformat())
+    with wire(JiraWire([report])): pm.poll_jira(s, c, since, file_only=True)
+    assert _jira_reference_pile(s) == []
+    assert s._rows('SELECT MessageId,BodyText,Status FROM message ORDER BY MessageId') == before
+    state = json.loads(s.get_message(first['mid'])['MailMetaJson'])['jira']
+    assert state['closed'] and state['status'] == status
+    report['fields'].update(status={'name':'Open', 'statusCategory':{'key':'new'}}, resolution=None,
+                            updated=(datetime.now().astimezone() + timedelta(seconds=2)).isoformat())
+    with wire(JiraWire([report])): pm.poll_jira(s, c, since, file_only=True)
+    reopened = _jira_reference_pile(s)
+    assert [(r['key'], r['unread'], r['jira']['closed']) for r in reopened] == [(first['key'], True, False)]
+    assert s._rows('SELECT MessageId,BodyText,Status FROM message ORDER BY MessageId') == before
+    s.close()
+
+
+def test_custom_status_name_does_not_decide_whether_jira_is_closed():
+    s, c = setup()
+    s.set_setting('calendar_enabled', '0', 'test')
+    report = issue(1)
+    report['fields'].update(status={'name':'Closed for investigation', 'statusCategory':{'key':'indeterminate'}}, resolution=None)
+    with wire(JiraWire([report])): pm.poll_jira(s, c, datetime.now()-timedelta(hours=1), file_only=True)
+    rows = _jira_reference_pile(s)
+    assert len(rows) == 1 and not rows[0]['jira']['closed']
+    assert rows[0]['jira']['status'] == 'Closed for investigation'
+    s.close()
+
+
+@pytest.mark.parametrize('still_assigned', [True, False])
+def test_old_closed_reference_is_refreshed_outside_the_recent_update_window(still_assigned):
+    s, c = setup()
+    s.set_setting('calendar_enabled', '0', 'test')
+    mid = s.add_message({'Channel':'jira', 'ExternalId':'jira:NW-1@legacy', 'ConversationId':'jira:NW-1',
+        'SourceName':'jira.northwind.example/jira', 'Subject':'NW-1 Export', 'BodyText':'Old reference', 'Status':'feed'})
+    closed = issue(1)
+    closed['fields'].update(status={'name':'Delivered', 'statusCategory':{'key':'done'}}, resolution={'name':'Fixed'},
+                            updated='2025-01-01T12:00:00+00:00')
+    fake = JiraWire([closed])
+    def upstream(method, url, **kw):
+        jql = (kw.get('params') or {}).get('jql', '')
+        if url.endswith('/search') and ('"NW-1"' not in jql or (not still_assigned and 'assignee = currentUser()' in jql)):
+            return Response({'issues':[], 'total':0, 'startAt':0})
+        return fake(method, url, **kw)
+    with wire(upstream): pm.poll_jira(s, c, datetime.now()-timedelta(minutes=2), file_only=True)
+    assert _jira_reference_pile(s) == []
+    assert s.get_message(mid)['BodyText'] == 'Old reference'
+    assert json.loads(s.get_message(mid)['MailMetaJson'])['jira']['status'] == 'Delivered'
+    s.close()
+
+
+def test_jira_resolution_does_not_hide_a_pending_approval_or_close_local_work():
+    s, c = setup()
+    s.set_setting('calendar_enabled', '0', 'test')
+    report = issue(1)
+    since = datetime.now()-timedelta(hours=1)
+    with wire(JiraWire([report])): pm.poll_jira(s, c, since, file_only=True)
+    first = _jira_reference_pile(s)[0]
+    rid = s.add_review({'MessageId':first['mid'], 'Kind':'reply', 'Status':'pending', 'DraftText':'Owner draft'})
+    tid = s.create_task({'Title':'Separate local work', 'Kind':'task', 'Status':'open'}, 'owner')
+    s.add_message({'TaskId':tid, 'Channel':'jira', 'ExternalId':'jira:NW-2@local', 'ConversationId':'jira:NW-2',
+        'SourceName':'jira.northwind.example/jira', 'Subject':'NW-2 Export', 'BodyText':'Owner work', 'Status':'routed'})
+    other = issue(2)
+    for r in (report, other):
+        r['fields'].update(status={'name':'In Progress', 'statusCategory':{'key':'indeterminate'}}, resolution={'name':'Fixed'})
+    with wire(JiraWire([report, other])): pm.poll_jira(s, c, since, file_only=True)
+    rows = _jira_reference_pile(s)
+    assert any(r.get('rid') == rid and r['lane'] == 'approve' for r in rows)
+    assert any(r.get('tid') == tid for r in rows)
+    assert s.get_task(tid)['Status'] == 'open'
+    assert s.get_review(rid)['DraftText'] == 'Owner draft' and s.get_review(rid)['Status'] == 'pending'
+    s.close()
+
+
+def test_unchanged_jira_status_does_not_make_a_read_reference_unread():
+    from taskuary import funnel
+    s, c = setup()
+    s.set_setting('calendar_enabled', '0', 'test')
+    s.reconcile_processing_membership()
+    s.activate_processing_reads(fixed_now=datetime.now().isoformat(), live_state=[])
+    report, since = issue(1), datetime.now()-timedelta(hours=1)
+    with wire(JiraWire([report])): pm.poll_jira(s, c, since, file_only=True)
+    first = _jira_reference_pile(s)[0]
+    funnel.settle(s, first['key'], 'surfaced', read=True)
+    report['fields']['updated'] = (datetime.now().astimezone()+timedelta(seconds=1)).isoformat()
+    with wire(JiraWire([report])): pm.poll_jira(s, c, since, file_only=True)
+    assert _jira_reference_pile(s) == []
+    report['fields']['status'] = {'name':'验证中', 'statusCategory':{'key':'indeterminate'}}
+    with wire(JiraWire([report])): pm.poll_jira(s, c, since, file_only=True)
+    rows = _jira_reference_pile(s)
+    assert [(r['key'], r['jira']['status'], r['unread']) for r in rows] == [(first['key'], '验证中', True)]
+    s.close()
+
+
+def test_jira_status_update_preserves_author_and_other_site_reference():
+    s, c = setup()
+    s.set_setting('calendar_enabled', '0', 'test')
+    shared = {'Channel':'jira', 'ConversationId':'jira:NW-1', 'Subject':'NW-1 Export', 'BodyText':'Repair export', 'Status':'feed',
+              'MailMetaJson':json.dumps({'author':'jira:user-erin', 'member':True})}
+    first = s.add_message({**shared, 'ExternalId':'site-a', 'SourceName':'jira.northwind.example/jira'})
+    other = s.add_message({**shared, 'ExternalId':'site-b', 'SourceName':'jira.northwind.example/other'})
+    report = issue(1)
+    report['fields'].update(status={'name':'Delivered', 'statusCategory':{'key':'done'}}, resolution={'name':'Fixed'})
+    with wire(JiraWire([report])): pm.poll_jira(s, c, datetime.now()-timedelta(hours=1), file_only=True)
+    assert [r['mid'] for r in _jira_reference_pile(s)] == [other]
+    meta = json.loads(s.get_message(first)['MailMetaJson'])
+    assert meta['author'] == 'jira:user-erin' and meta['member'] is True and meta['jira']['closed']
+    assert json.loads(s.get_message(other)['MailMetaJson']) == {'author':'jira:user-erin', 'member':True}
+    s.close()
+

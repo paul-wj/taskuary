@@ -70,6 +70,7 @@ import { SECTIONS as STEPS } from "./taskLayout.js";   // a task's sections, by 
 import { WorkstreamLabel } from "./Workstream.jsx";   // the idea's workstream, a small label (the owner, 2026-11-01)
 import { channelName } from "./taskSources.js";
 import { repliesOf } from "./connectorCatalog.js";
+import { jiraStatusText, jiraStatusTip, jiraStatusTone, jiraStatusSub } from "./jiraStatus.js";
 
 const errText = (e) => e?.response?.data?.detail || e?.message || { source: "That did not work" };
 const shownErr = (err) => err?.source ? translateDescriptor(err) : err;
@@ -1386,7 +1387,10 @@ export function MessageCard({ card, onDone, onOpenTask, onTimeline, onSurface, o
   return (
     <CardShell card={card} kicker={card.kind === "fyi" ? t("fyi") : reported ? t("agent reported") : suggestedKind === "coding" ? t("coding · nobody on it") : own || mineAlone ? t(kindLabel("task")) : t(WORD.asked)}
       lead={<Story card={card} agent={own || mineAlone ? true : false} words={words} tail={!!verb || reported}
-        fallback={card.channel === "own" ? card.preview : card.title} />} err={err}>
+        fallback={card.channel === "own" ? card.preview : card.title} />}
+      /* a Jira reference says where the issue stands on its own (jiraStatus.js): its raw status word, never the
+          task's or the agent's state - a card with no snapshot says nothing here */
+      sub={jiraStatusText(card) ? <span data-tq-jira={jiraStatusText(card)} data-tq-jira-tone={jiraStatusTone(card) || undefined}>{jiraStatusSub(card)}</span> : undefined} err={err}>
       {reported ? (
         <YourMove title={btn("close")}
           go={<Button size="small" variant="contained" disableElevation disabled={shut.busy || !!busy} onClick={shut.run} sx={moveSx} title={btnHint("close")}>{shut.busy ? t("Closing…") : btn("close")}</Button>}>
@@ -1608,6 +1612,11 @@ export function FyiMessage({ item, onHead = null, open: held = null, moved = nul
       <button type="button" className="tq-item-msg-h press" onClick={onHead || (() => setMine((o) => !o))} aria-expanded={open} title={open ? t("Fold it") : t("Read it here")}>
         <SourceMark item={item} size={13} /><b>{whoName(item.who)}</b>
         <span className="ch">{channelWord(item.channel || "email")}</span>
+        {/* the issue's own Jira state, beside the sender: its raw status word, uncoloured when the category is unknown
+            (jiraStatus.js) - a message with no snapshot keeps its line exactly as it was */}
+        {jiraStatusText(item) && <span className={`tq-jira-state${jiraStatusTone(item) ? ` tone-${jiraStatusTone(item)}` : ""}`}
+          data-tq-jira={jiraStatusText(item)} data-tq-jira-tone={jiraStatusTone(item) || undefined}
+          title={jiraStatusTip(item)}>{jiraStatusText(item)}</span>}
         {!open && item.title && <span className="t" title={shownSubject(item) ? t("Subject: {subject}", { subject: shownSubject(item) }) : undefined}>{item.title}</span>}
         {(item.since || item.when) && <span className="at">{fmtDateTime(item.since || item.when)}</span>}
         <span className="chev" aria-hidden="true">{open ? "▾" : "▸"}</span>

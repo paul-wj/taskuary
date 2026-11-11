@@ -144,7 +144,7 @@ def row_lane(row: dict) -> str:
     return {1: 'time', 3: 'report', 4: 'fyi'}[band]
 
 
-MEMBERSHIP_RULES = 'idea-joins-the-task-its-mail-became-3'   # bump when reconcile_membership groups entities differently -
+MEMBERSHIP_RULES = 'jira-references-by-site-and-issue-4'   # bump when reconcile_membership groups entities differently -
 # reconcile returns already_current while nothing is dirty, so a RULE change leaves a graph nothing marks stale until this moves
 PRESENTATION_VERSION = 1
 HIDDEN_MESSAGES = {'context', 'history', 'skipped', 'autoreply'}
@@ -321,6 +321,8 @@ def message_row(message, item, threads, now, *, full=False):
         row['GeneralNotStarted'] = general_not_started(task, _has_conversation(view, tid), view.get('routes', []))
     # who sent it is the row's stored SenderClass (the verdict's, else the headers') - never a reading of the body
     row['Category'] = category_of({**row, 'SenderClass': message.get('SenderClass')}, team_domains_of(view.get('settings', {})))
+    from .jiraapi import message_state
+    if state := message_state(message): row['Jira'] = state
     if row.get('Channel') == 'report':
         from .funnel import _FAILED
         row['ReportFailed'] = view.get('report_outcomes', {}).get(row.get('MessageId'),

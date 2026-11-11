@@ -93,7 +93,7 @@ def _grouped_messages_sql(cur):
 # A column the census starts reading must be added here - test_census_skips_what_cannot_move_it pins it.
 CENSUS_INPUTS = {
     'task': ('TaskId', 'SourceRef', 'CreatedAt'),
-    'message': ('MessageId', 'TaskId', 'Status', 'Channel', 'Brief'),
+    'message': ('MessageId', 'TaskId', 'Status', 'Channel', 'Brief', 'SourceName', 'ConversationId'),
     'review': ('ReviewId', 'MessageId', 'TaskId'),
     'idea': ('IdeaId', 'ActionJson', 'MessageId', 'FirstSeen'),
     'attachment': ('AttachmentId', 'MessageId'),
@@ -194,6 +194,13 @@ def dry_census(inputs, *, stamp):
     except _WouldWrite: return None
 
 
+def reference_key(row):
+    """Taskless Jira revisions and comments name one item within their exact site, including its context path."""
+    if row.get('Channel') == 'jira' and row.get('SourceName') and row.get('ConversationId'):
+        return ('jira', row['SourceName'], row['ConversationId'])
+    return None
+
+
 def reconcile_membership(cur, *, stamp, new_item_id, follow_item, inputs=None):
     """Apply one uncapped raw-identity census inside ``cur``'s transaction. `inputs`: census_inputs() as read at the
     generation this transaction still finds (the caller checks that) - the very rows this would read, so not read twice."""
@@ -237,7 +244,7 @@ def reconcile_membership(cur, *, stamp, new_item_id, follow_item, inputs=None):
     for tid in sorted(tasks, key=_id_key):
         add_group(('task', tid), 'task', ('task', tid))
 
-    message_group = {}
+    message_group, references = {}, {}
     for mid, row in sorted(messages.items(), key=lambda pair: _id_key(pair[0])):
         task_id = None if row.get('TaskId') is None else str(row['TaskId'])
         if task_id in tasks:
@@ -246,8 +253,12 @@ def reconcile_membership(cur, *, stamp, new_item_id, follow_item, inputs=None):
             if task_id is not None:
                 diagnostics.append(_problem('dangling_message_task', 'message', mid,
                                             task_id=task_id))
-            key = ('message', mid)
-            add_group(key, 'message', ('message', mid))
+            reference = reference_key(row)
+            key = references.get(reference) if reference else None
+            if key is None:
+                key = ('message', mid)
+                add_group(key, 'message', ('message', mid))
+                if reference: references[reference] = key
         groups[key]['entities'].add(('message', mid))
         message_group[mid] = key
 

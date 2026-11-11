@@ -59,6 +59,27 @@ def request(c, method, path, body=None, *, params=None, api_version=2):
     return result
 
 
+def issue_state(fields):
+    """Workflow category and resolution are independent; names never decide whether an issue is over."""
+    status, resolution = fields.get('status') or {}, fields.get('resolution')
+    category = (status.get('statusCategory') or {}).get('key') or ''
+    return {'status': status.get('name') or '', 'category': category,
+            'resolution': (resolution.get('name') or resolution.get('id')) if resolution else None,
+            'closed': category == 'done' or bool(resolution), 'changed_at': fields.get('updated') or ''}
+
+
+def message_state(row):
+    if row.get('Channel') != 'jira': return None
+    try: meta = json.loads(row.get('MailMetaJson') or '{}')
+    except (ValueError, TypeError): return None
+    state = meta.get('jira') if isinstance(meta, dict) else None
+    return state if isinstance(state, dict) else None
+
+
+def reference_closed(row):
+    return bool(not row.get('TaskId') and row.get('ReviewStatus') != 'pending' and (row.get('Jira') or {}).get('closed'))
+
+
 def same_user(author, owner, deployment):
     if deployment == 'cloud': return bool(owner.get('accountId')) and author.get('accountId') == owner['accountId']
     if author.get('key') and owner.get('key'): return author['key'] == owner['key']

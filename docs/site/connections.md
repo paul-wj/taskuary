@@ -245,6 +245,27 @@ Recent updates are also read so resolution changes still arrive. This mode creat
 tasks and runs no AI triage; existing Jira work is displayed in the Timeline/FYI. Trigger mode
 retains its incremental task-creation behavior.
 
+Taskless Jira updates and comments from the same site and issue share one FYI item instead
+of appearing as repeated references. The site includes its context path, so matching issue
+keys on different sites remain separate. Opening the item retains its full message history;
+a new revision or comment makes it unread again. Explicitly assigned local tasks keep their
+own identity. Existing references are regrouped automatically without deleting messages.
+
+**Jira status versus resolution.** Jira's [Open work items filter](https://support.atlassian.com/jira-cloud-administration/docs/what-is-a-resolution-in-jira/)
+uses `resolution IS EMPTY`, not a status name. Every workflow status also belongs to one of
+three [status categories](https://support.atlassian.com/jira-cloud-administration/docs/what-is-a-workflow-status/):
+To do, In progress or Done. A custom workflow can reach Done without setting a resolution,
+so an issue can look closed while still matching Jira's Open filter.
+
+Taskuary's current FYI list is stricter: a Jira reference remains active only while its
+resolution is empty **and** its status category is not Done. The rail and opened reference
+show the actual workflow status from Jira, without translating custom status names.
+Resolved/Done references leave the current FYI list but remain in searchable history.
+Sync also checks previously imported active references outside the recent-update window,
+so old closed references are refreshed rather than left behind. Reopened issues return
+unread even if their title and description are unchanged. This FYI filtering does not
+hide an explicit local task or a pending approval; existing task completion rules still apply.
+
 Reporter and comment identities use Cloud's `accountId`, or Data Center's `key`/`name`, consistently.
 Trusting a person applies only to that Jira site (host and context path), not to a matching user ID
 on another site. An old person-trust entry is migrated when its messages identify exactly one site;

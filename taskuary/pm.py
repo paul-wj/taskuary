@@ -112,7 +112,7 @@ def _jira_ended(store, issue, base: str) -> bool:
     return True
 
 
-def _jira_comments(store, c, issue, base: str, llm, file_only: bool) -> int:
+def _jira_comments(store, c, issue, base: str, llm, file_only: bool, state: dict) -> int:
     """The conversation ON a Jira issue, as messages on the issue's own conversation - which is
     what makes identity_route attach them to its task, re-judge them and rewrite a draft that is
     now behind. They ride inside the search the poll already made, so they cost no extra call.
@@ -132,7 +132,8 @@ def _jira_comments(store, c, issue, base: str, llm, file_only: bool) -> int:
                'body': str(cm.get('body') or '')[:20000], 'from_name': who,
                'from_email': a.get('emailAddress'), 'sent_at': _stamp(cm.get('created')),
                'source_link': f"{jiraapi.base_url(c)}/browse/{base.split(':', 1)[-1]}",
-               'source_name': jiraapi.base_url(c).split('//', 1)[-1], **author_meta('jira', _jira_author_id(a), jira_member(a))}
+               'source_name': jiraapi.base_url(c).split('//', 1)[-1],
+               'mail_meta': {**author_meta('jira', _jira_author_id(a), jira_member(a)).get('mail_meta', {}), 'jira': state}}
         if jiraapi.same_user(a, me, jiraapi.deployment(c)) or (a.get('accountType') or '') == 'app':
             n += ingest_own_message(store, msg, f'comment on {base} by {who} - history, not work')
             continue
@@ -146,18 +147,23 @@ def poll_jira(store, c, since, llm=None, file_only=False) -> int:
     # `comment` rides along: the conversation is where "what changed" usually lives, and asking
     # for it here costs nothing over the call the poll already makes. Jira inlines only the most
     # recent page of a long thread; what it leaves behind is older than anything a poll is for.
-    window = f'updated >= "-{mins}m"'
-    if file_only: window = f'(resolution is EMPTY OR {window})'
-    issues = _jira_pages(c, f'assignee = currentUser() AND {window} ORDER BY updated ASC',
-                        'summary,description,status,priority,reporter,updated,comment')
     base, n = jiraapi.base_url(c), 0
+    source = base.split('//', 1)[-1]
+    window = f'updated >= "-{mins}m"'
+    known = set(store.jira_reference_keys(source)) if file_only else set()
+    if file_only: window = f'((resolution is EMPTY AND statusCategory != Done) OR {window})'
+    issues = _jira_pages(c, f'assignee = currentUser() AND {window} ORDER BY updated ASC',
+                        'summary,description,status,resolution,priority,reporter,updated,comment')
     for i in issues:
+        known.discard(i['key'])
         f = i.get('fields') or {}
+        state = store.update_jira_state(source, f"jira:{i['key']}", jiraapi.issue_state(f))
         rep = (f.get('reporter') or {})
         head = (f"[Jira {i['key']} - status {((f.get('status') or {}).get('name') or '?')}"
                 f" · priority {((f.get('priority') or {}).get('name') or '?')} · assigned to you]")
-        if _jira_ended(store, i, f"jira:{i['key']}"): continue
-        n += _jira_comments(store, c, i, f"jira:{i['key']}", llm, file_only)
+        ended = _jira_ended(store, i, f"jira:{i['key']}")
+        if ended or state['closed']: continue
+        n += _jira_comments(store, c, i, f"jira:{i['key']}", llm, file_only, state)
         # the head line rides INSIDE the hashed words on purpose: a status or priority flip is
         # a revision worth triaging, while a label or rank move never reaches the text at all
         n += ingest_tracker(store, file_only=file_only, msg={
@@ -166,8 +172,14 @@ def poll_jira(store, c, since, llm=None, file_only=False) -> int:
             'body': f"{head}\n{str(f.get('description') or '(no description)')[:20000]}",
             'from_name': rep.get('displayName') or 'Jira', 'from_email': rep.get('emailAddress'),
             'conversation_id': f"jira:{i['key']}", 'sent_at': _stamp(f.get('updated')),
-            'source_link': f"{base}/browse/{i['key']}", 'source_name': base.split('//', 1)[-1],
-            **author_meta('jira', _jira_author_id(rep), jira_member(rep))}, llm=llm)
+            'source_link': f"{base}/browse/{i['key']}", 'source_name': source,
+            'mail_meta': {**author_meta('jira', _jira_author_id(rep), jira_member(rep)).get('mail_meta', {}), 'jira': state}}, llm=llm)
+    if known:
+        # A tracked issue may have closed before this window, or been reassigned. Read its state by identity,
+        # never infer completion from its absence in assigned-to-me results, and never import its text as new work.
+        keys = ','.join(json.dumps(key) for key in sorted(known))
+        for i in _jira_pages(c, f'key IN ({keys})', 'status,resolution,updated'):
+            store.update_jira_state(source, f"jira:{i['key']}", jiraapi.issue_state(i.get('fields') or {}))
     return n
 
 

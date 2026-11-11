@@ -2862,6 +2862,24 @@ class SQLiteStore:
     def get_message(self, mid): return self._one('SELECT * FROM message WHERE MessageId=?', (mid,))
     def message_by_external(self, external_id):
         return self._one('SELECT * FROM message WHERE ExternalId=? ORDER BY MessageId DESC LIMIT 1', (external_id,))
+    def jira_reference_keys(self, source):
+        return [r['ConversationId'][5:] for r in self._rows(f'''SELECT DISTINCT ConversationId FROM message
+            WHERE Channel='jira' AND SourceName=? AND TaskId IS NULL AND ConversationId LIKE 'jira:%'
+            AND {meta_expr('jira.closed')} IS NOT 1''', (source,))]
+    def update_jira_state(self, source, conversation, state):
+        """A current provider snapshot, shared by every retained revision/comment; no read receipt or lifecycle status is changed."""
+        from .jiraapi import message_state
+        with self.lock:
+            row = self._one("SELECT Channel,MailMetaJson FROM message WHERE Channel='jira' AND SourceName=? AND ConversationId=? "
+                            'ORDER BY MessageId DESC LIMIT 1', (source, conversation))
+            before = message_state(row) if row else None
+            if before and all(before.get(k) == v for k, v in state.items() if k != 'changed_at'): return before
+            if not row: return state
+            self._exec("""UPDATE message SET MailMetaJson=json_set(CASE WHEN json_valid(MailMetaJson) THEN MailMetaJson ELSE '{}' END,
+                '$.jira',json(?)) WHERE Channel='jira' AND SourceName=? AND ConversationId=?""",
+                (json.dumps(state, separators=(',', ':')), source, conversation))
+        self._poke('feed-changed')
+        return state
     # ── what the hub knows about a sender / a topic (counsel.dossier, responder) ─────────────
     def messages_from(self, email, since, limit=8):
         return self._rows("SELECT * FROM message WHERE lower(FromEmail)=? AND Status NOT IN ('context','history','skipped') AND SentAt>=? "
@@ -4443,7 +4461,7 @@ class SQLiteStore:
                 # processing_member; a message in one set and not the other is a collision waiting to
                 # happen, and it happened (see processing_membership.ungrouped_message_sql). Columns
                 # stay SELECT *: what the two must agree about is which ROWS exist.
-                from .processing_membership import ungrouped_message_sql
+                from .processing_membership import reference_key, ungrouped_message_sql
                 ungrouped, ungrouped_params = ungrouped_message_sql()
                 messages = [dict(r) for r in cur.execute(
                     f'SELECT * FROM message WHERE NOT {ungrouped} ORDER BY MessageId', ungrouped_params).fetchall()]
@@ -4465,9 +4483,12 @@ class SQLiteStore:
                     member(iid, 'task', tid, 'primary'); item_by_task[tid] = iid
                     for key in (f'task:{tid}', f'agent:{tid}', f'wrap:{tid}'):
                         alias('legacy_funnel', 'local', key, 'task', tid); legacy_values.add(key)
+                references = {}
                 for message_row in messages:
                     mid, tid = message_row['MessageId'], message_row.get('TaskId')
-                    iid = item_by_task.get(tid) or existing_item('message', mid) or new_item('message')
+                    reference = reference_key(message_row) if tid not in item_by_task else None
+                    iid = item_by_task.get(tid) or existing_item('message', mid) or references.get(reference) or new_item('message')
+                    if reference: references[reference] = iid
                     member(iid, 'message', mid, 'member' if tid else 'primary'); item_by_message[mid] = iid
                     alias('legacy_funnel', 'local', f'msg:{mid}', 'message', mid)
                     if message_row.get('Channel') == 'report':
@@ -6553,6 +6574,7 @@ class SQLiteStore:
         # full history, all under store.lock. tests/test_feed_plan.py pins both the plan and the rows.
         q = f'''SELECT m.MessageId, m.Channel, m.SourceName, m.Subject, m.FromName, m.FromEmail, m.SentAt, m.CreatedAt IngestedAt,
                        m.ConversationId,
+                       CASE WHEN m.Channel='jira' AND json_valid(m.MailMetaJson) THEN m.MailMetaJson END AS _JiraMeta,
                        substr(m.BodyText, 1, 4000) Preview, m.Status MsgStatus, m.SourceLink, m.TaskId, m.Direction, m.Brief, m.TriageTitle, m.SenderClass,
                        CASE WHEN json_valid(m.MailMetaJson) AND json_extract(m.MailMetaJson, '$.unsub.done') IS NULL
                             THEN json_extract(m.MailMetaJson, '$.unsub.via') END Unsub,
@@ -6599,6 +6621,10 @@ class SQLiteStore:
         from .categories import category_of, team_domains_of
         team = team_domains_of(self.get_settings())
         for r in rows: r['Category'] = category_of(r, team)
+        from .jiraapi import message_state
+        for r in rows:
+            state = message_state({'Channel': r.get('Channel'), 'MailMetaJson': r.pop('_JiraMeta')})
+            if state: r['Jira'] = state
         # NEEDS_YOU (SQL) only sees `run` rows; an agent in a LIVE pty session is working the task
         # just as much, and the row said "needs you - no agent is working it" over a running
         # console. Working carries the agent's name so the chip can say who.

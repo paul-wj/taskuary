@@ -107,6 +107,7 @@ import { MORE_PX, backAt, dueWord, levelOf, placed, pressOnto, pulledRow, withWa
 import { STAYS, dropHeld, ghostsOf, keepHeld, movedEntry } from "./movedFyi.js";
 import { isImportant, level as priorityOf } from "./priority.js";
 import { age, ago, band, bandUntil, plural } from "./timeWords.js";
+import { jiraStatusText, jiraStatusTip, jiraStatusTone } from "./jiraStatus.js";
 const GeneralWorkspace = lazyView(loadGeneral);
 import CanvasItem, { CANVAS_ITEM_HEIGHT, showsTask, wordsCap } from "./CanvasItem.jsx";
 import ActionRow, { AdvisorNext } from "./ActionRow.jsx";
@@ -841,6 +842,13 @@ function Pile({ pile, current, onPull, error, onRetry, onSection, onCurrent, onM
                             and on the card (B3, 2026-10-29) - a warning in the row's own height, never a gate */}
                         {!!i.danger && <span className="tq-pile-danger" data-tq-danger="" style={{ color: ALERT }} aria-label={dangerLine(i.danger, i.danger_aim)}>⚠</span>}
                         <b className={goal ? "goal-t" : undefined}>{i.title}</b>
+                        {/* A JIRA ISSUE SAYS WHERE IT STANDS IN ITS OWN WORKFLOW (2026-11-10: distinguish Jira statuses):
+                            the provider's status word in a compact badge beside the subject - "Open" beside an "In
+                            Progress" row read as the row's own state, so it is the Jira's words, in Jira's words, and a
+                            row with no snapshot reads exactly as it did before (jiraStatus.js) */}
+                        {!goal && jiraStatusText(i) && <span className={`tq-pile-jira${jiraStatusTone(i) ? ` tone-${jiraStatusTone(i)}` : ""}`}
+                          data-tq-jira={jiraStatusText(i)} data-tq-jira-tone={jiraStatusTone(i) || undefined}
+                          title={jiraStatusTip(i)}>{jiraStatusText(i)}</span>}
                         {/* NO WORKSTREAM CHIP ON THE RAIL (the owner, 2026-11-08: "little card taskuary AI .... on rail. hate that") - the task's own page still says it */}
                         {/* ONE FYI ROW PER EMAIL THREAD (trust audit P2, 2026-10-28): the newest mail speaks, the rest are its "+N" */}
                         {i.thread_n > 0 && <span className="tq-pile-ref" data-tq-thread-n={i.thread_n} title={t("{count} more on this thread - it opens on all of them", { count: i.thread_n })}>+{i.thread_n}</span>}

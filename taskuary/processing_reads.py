@@ -84,7 +84,10 @@ def units(view):
             continue
         old = _pick(row, _OLD_MESSAGE)
         old['attachments'] = [_pick(a, _OLD_ATTACHMENT) for a in files_of.get(row['MessageId'], ())]
-        add('message', row, 'MessageId', _pick(row, MESSAGE_SUBSTANCE), old,
+        substance = _pick(row, MESSAGE_SUBSTANCE)
+        from .jiraapi import message_state
+        if state := message_state(row): substance['jira'] = state
+        add('message', row, 'MessageId', substance, old,
             {**old, 'attachments': []} if old['attachments'] else None,            # read before its files were filed
             {**old, 'SourceName': GROUP_CHAT} if row.get('Channel') == 'whatsapp' and row.get('SourceName') != GROUP_CHAT else None)
     for row in view.get('tasks', ()):

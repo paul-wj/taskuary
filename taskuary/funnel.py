@@ -197,6 +197,8 @@ def _feed_skip(r: dict) -> bool:
     anything on a task that is over (unless a draft on it still waits for a yes)."""
     if r.get('Direction') == 'out' or r.get('MsgStatus') in ('withdrawn', 'ignored'): return True
     if r.get('TaskStatus') in ('done', 'dropped') and r.get('ReviewStatus') != 'pending': return True
+    from .jiraapi import reference_closed
+    if reference_closed(r): return True
     return is_auto(r)                 # the mail system's mark (autoreply.py), never the subject
 
 
@@ -300,6 +302,7 @@ def from_feed(store, rows: list, *, canonical=False) -> list:
                     subject=_short(r.get('Subject') or '', 140), danger=_short(r.get('Danger') or '', 200) or None,
                     # ...and whom it is aimed at, the owner or the agent: a scam on the owner is said as one (the owner, 2026-10-30)
                     danger_aim=(r.get('DangerAim') or 'agent') if r.get('Danger') else None)
+        if r.get('Jira'): base['jira'] = r['Jira']
         subj = says(r)
         if r.get('MsgStatus') == 'triaging':
             # A RANKED ARRIVAL WAITING ITS TURN IS NOT BEING TRIAGED (the owner, 2026-09-28: "they should be ranked
