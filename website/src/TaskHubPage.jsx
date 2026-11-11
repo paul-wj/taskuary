@@ -37,7 +37,8 @@ import { buildMove, isBusy, loadedAsset, markReloaded, reloadedFor, staleWhat } 
 import { useHandRaise, playSound, desktopNotify } from "./handraise.js";
 import { dismissHandRaise, enqueueHandRaise, handRaiseWhat, isWatchingTask, pruneHandRaises } from "./handraiseState.js";
 import { askAssistant } from "./askAssistant.js";
-import { TaskuaryMark, asUtc, timeAgo, useAgents } from "./ui.jsx";
+import { TaskuaryMark, asUtc, timeAgo } from "./ui.jsx";
+import { useCapabilities } from "./capabilities.js";
 import AssistantView from "./AssistantView.jsx";
 import { SEARCH_PICKED, SearchBar, openSearch } from "./SearchEverything.jsx";
 import ProfileButton from "./ProfileButton.jsx";
@@ -365,9 +366,9 @@ export default function TaskHubPage() {
   // On a busy live session that left the requested page looking completely blank for many seconds.
   // ...and the BOARD is a place of its own (#board): it wrote no address, so Back from a task opened on it never brought it back (2026-10-26)
   const [tab, setTab] = useState(() => (window.location.hash === BOARD ? "Board" : "Assistant"));
-  // ...and a #board link with Developer mode off lands on the chat, once the setting is read (not before: off is only the unread default)
-  const { devMode, agentsRead } = useAgents();
-  useEffect(() => { if (agentsRead && !devMode && tab === "Board") { setTab("Assistant"); tabRef.current = "Assistant"; recordPlace("", "replace"); } }, [agentsRead, devMode, tab]);
+  // Navigation needs only the setting, never /api/agents' synchronous CLI model discovery.
+  const { developer_mode: devMode, known: capabilitiesRead } = useCapabilities();
+  useEffect(() => { if (capabilitiesRead && !devMode && tab === "Board") { setTab("Assistant"); tabRef.current = "Assistant"; recordPlace("", "replace"); } }, [capabilitiesRead, devMode, tab]);
   // what the canvas is asked to open - a task, or a browse card - numbered so the same one asked twice opens twice
   const [canvasReq, setCanvasReq] = useState(() => { const r = canvasRequestFromHash(window.location.hash || "", 1); readAhead(r); return r && { ...r, fromUrl: true }; });
   const ask = useCallback((req) => setCanvasReq((cur) => ({ ...req, n: (cur?.n || 0) + 1 })), []);

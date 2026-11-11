@@ -5,6 +5,11 @@ One state per task, decided on the server (`taskuary/taskstate.py`) with the wor
 decided with the owner on 2026-09-25 (T1-T19): "everything should be the task list and the board just follows
 whatever is going on there".
 
+Board navigation reads `developer_mode` from the shared `/api/capabilities` response. It remains hidden
+until that setting is known, and a `#board` link falls back to the chat when Developer mode is off.
+Neither the entry nor the task columns wait for `/api/agents` to finish CLI model discovery; model
+choices load separately for agent controls.
+
 Pane action toolbars use compact 28px buttons inside their fixed 44px headers, including on
 touch-capable desktops. The global 44px coarse-pointer minimum still applies outside these toolbars.
 

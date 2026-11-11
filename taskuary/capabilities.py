@@ -78,6 +78,8 @@ def channels() -> tuple:
 
 
 def capabilities(store) -> dict:
-    """{"coding", "ai", "mail", "send": {channel: bool}} - the one answer, for the server and the page alike."""
-    return {'coding': can_code(store), 'ai': has_ai(store), 'mail': has_mail(store),
+    """The install's UI capabilities, without loading CLI model catalogs."""
+    from . import agents
+    return {'coding': can_code(store), 'developer_mode': agents.developer_mode(store),
+            'ai': has_ai(store), 'mail': has_mail(store),
             'send': {ch: can_send(store, ch) for ch in channels()}}

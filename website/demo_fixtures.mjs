@@ -32,7 +32,7 @@ const fetch = (input, init = {}) => nativeFetch(input, {
 // the path the UI asks for, so the adapter can match on the same string.
 const PATHS = [
   "/api/version", "/api/build", "/api/demo", "/api/owner", "/api/whoami", "/api/settings",
-  "/api/setup", "/api/funnel", "/api/funnel/pile", "/api/concierge", "/api/concierge/chats",
+  "/api/setup", "/api/capabilities", "/api/funnel", "/api/funnel/pile", "/api/concierge", "/api/concierge/chats",
   "/api/ingest/status", "/api/problems", "/api/runs/live",
   "/api/feed?limit=200", "/api/tasks?active=1", "/api/tasks",
   "/api/reviews", "/api/terminals", "/api/agents", "/api/brains", "/api/cli/detect", "/api/cli/connections",

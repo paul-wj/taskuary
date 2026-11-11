@@ -1,15 +1,15 @@
 // WHAT THIS INSTALL CAN DO (GET /api/capabilities, computed by ONE function on the server - taskuary/capabilities.py):
-//   {coding, ai, mail, send: {<channel>: bool}}
+//   {coding, developer_mode, ai, mail, send: {<channel>: bool}}
 // coding exists only where a coding tool is connected (the owner, 2026-10-16: "if no cli tool like cloud api tools no coding"), the
 // Advisor and the connect line ask `ai`, a reply's Send asks send[channel]. Every screen reads it here, never its own guess.
 // Asked once; asked again when setup moves or the live feed says something changed (a connection made there brings its buttons
-// back). Until the answer is in, everything shows - a coder never loses the button to a slow read.
+// back). Action capabilities stay optimistic until read; Developer mode stays off until confirmed.
 import { useEffect, useState } from "react";
 import api from "./api";
 import { onLive } from "./live.js";
 import { covers, seqOf } from "./liveSeq.js";
 
-export const ASSUMED = { coding: true, ai: true, mail: true, send: {}, known: false };
+export const ASSUMED = { coding: true, developer_mode: false, ai: true, mail: true, send: {}, known: false };
 let asked = null, last = ASSUMED, seen = null;      // seen: the write stamp the answer in hand was read at (liveSeq.js)
 const subs = new Set();
 const read = (data) => ({ ...ASSUMED, ...(data || {}), send: { ...(data?.send || {}) }, known: !!data });

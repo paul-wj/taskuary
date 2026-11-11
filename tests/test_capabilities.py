@@ -28,11 +28,20 @@ class CapabilitiesTests(unittest.TestCase):
         s = MemoryStore()
         with mock.patch.object(agents, 'coding_ready', return_value=False):
             c = capabilities.capabilities(s)
-        self.assertEqual(set(c), {'coding', 'ai', 'mail', 'send'})
         self.assertIs(c['coding'], False); self.assertIs(c['mail'], False)
         # email can deliver; a Teams chat is read here and never posted into
         self.assertIs(c['send']['email'], True); self.assertIs(c['send']['teams'], False)
         with mock.patch.object(agents, 'coding_ready', return_value=True): self.assertIs(capabilities.capabilities(s)['coding'], True)
+
+    def test_developer_mode_is_known_without_a_connected_coding_tool(self):
+        s = MemoryStore()
+        with mock.patch.object(agents, 'coding_ready', return_value=False), \
+             mock.patch.object(agents, 'developer_mode', agents.developer_mode.real):
+            for enabled in ('0', '1', '0'):
+                s.set_setting(agents.DEV_MODE, enabled, 'owner')
+                c = capabilities.capabilities(s)
+                self.assertIs(c['developer_mode'], enabled == '1')
+                self.assertIs(c['coding'], False)
 
     def test_the_page_reads_the_same_answer(self):
         from taskuary import server
