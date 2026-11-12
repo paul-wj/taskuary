@@ -172,7 +172,7 @@ def row_lane(row: dict) -> str:
     return {1: 'time', 3: 'report', 4: 'fyi'}[band]
 
 
-MEMBERSHIP_RULES = 'jira-references-by-site-and-issue-4'   # bump when reconcile_membership groups entities differently -
+MEMBERSHIP_RULES = 'jira-references-follow-explicit-task-5'   # bump when reconcile_membership groups entities differently -
 # reconcile returns already_current while nothing is dirty, so a RULE change leaves a graph nothing marks stale until this moves
 PRESENTATION_VERSION = 1
 HIDDEN_MESSAGES = {'context', 'history', 'skipped', 'autoreply'}
@@ -284,6 +284,10 @@ def message_row(message, item, threads, now, *, full=False, leads=frozenset()):
     view = item['view']
     mid, tid = message['MessageId'], message.get('TaskId')
     task = next((t for t in view.get('tasks', []) if t['TaskId'] == tid), {})
+    # Membership attaches taskless Jira revisions to their issue's task without rewriting source evidence.
+    if tid is None and message.get('Channel') == 'jira' and len(view.get('tasks', [])) == 1:
+        task = view['tasks'][0]
+        tid = task['TaskId']
     reviews = [r for r in view.get('reviews', []) if r.get('MessageId') == mid]
     review = max(reviews, key=lambda r: r['ReviewId']) if reviews else {}
     routes = [r for r in view.get('routes', []) if r.get('MessageId') == mid]
@@ -322,6 +326,7 @@ def message_row(message, item, threads, now, *, full=False, leads=frozenset()):
         'TriageTitle', 'Danger', 'DangerAim',
         # ...and who sent it, as stored (categories.automated): whether a reply is read on it is asked of this row (funnel's `replies`)
         'SenderClass')}
+    row['TaskId'] = tid
     row.update(IngestedAt=message.get('CreatedAt'), Preview=_preview(message.get('BodyText'), 4000 if full else 400, _wrapper(routes),
                                                                  message.get('OwnText'), leads),
                MsgStatus=message.get('Status'), Title=task.get('Title'), TaskStatus=task.get('Status'), Assignee=task.get('Assignee'),

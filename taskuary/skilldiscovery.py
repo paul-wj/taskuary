@@ -31,8 +31,26 @@ def _hash(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'), default=str).encode()).hexdigest()
 
 
+def _excerpt(text, limit, tail=False):
+    from .redact import scrub
+    text = scrub(str(text or ''))
+    if len(text) <= limit: return text
+    return ('[truncated] ' + text[-limit:]) if tail else (text[:limit] + ' [truncated]')
+
+
+def _process(facts):
+    # Bound sections independently: a long terminal log must not erase the result, corrections or artifacts.
+    return {'report': {k: _excerpt(v, 300) for k, v in facts['report'].items()},
+            'runs': [{**r, 'Result': _excerpt(r.get('Result'), 200), 'LastError': _excerpt(r.get('LastError'), 100)} for r in facts['runs']],
+            'transcript': _excerpt(facts['transcript'], 1000, tail=True),
+            'corrections': [{**c, 'Body': _excerpt(c['Body'], 150)} for c in facts['corrections'][:4]],
+            'artifacts': [{k: _excerpt(a.get(k), 80) for k in ('Name', 'Kind')} for a in facts['artifacts'][:5]]}
+
+
 def gather(store):
     from . import origin, redact
+    from .wrapup import REPORTS
+    from .sessionrecord import parse_report
     excluded = {g.get('task_id') for g in state.rows(store, 'generation')}
     evidence = []
     # The model receives at most 50 eligible tasks. Extra selection room avoids generation/stranger rows starving the window.
@@ -47,13 +65,16 @@ def gather(store):
         transcript = store._one('SELECT substr(Text, -6000) Text FROM transcript WHERE TaskId=? ORDER BY TranscriptId DESC LIMIT 1', (tid,))
         comments = store._rows("SELECT ActorType, substr(Body,1,2000) Body FROM comment WHERE TaskId=? AND ActorType IN ('human','assistant_user') ORDER BY CommentId DESC LIMIT 8", (tid,))
         artifacts = store._rows('SELECT Name, Kind FROM task_artifact WHERE TaskId=? ORDER BY ArtifactId DESC LIMIT 10', (tid,))
-        if not (any(r.get('Result') for r in runs) or transcript or artifacts): continue
+        report_row = store._one('SELECT substr(Body,1,6000) Body FROM comment WHERE TaskId=? AND (' +
+                               ' OR '.join('Body LIKE ?' for _ in REPORTS) + ') ORDER BY CommentId DESC LIMIT 1',
+                               (tid, *(r + '%' for r in REPORTS)))
+        report = parse_report(report_row['Body']) if report_row else {}
+        if not (any(r.get('Result') for r in runs) or transcript or artifacts or report): continue
         facts = {'task_id': tid, 'title': task.get('Title') or '', 'summary': task.get('Summary') or '',
                  'runs': runs, 'transcript': (transcript or {}).get('Text') or '', 'corrections': comments, 'artifacts': artifacts,
-                 'closed_at': task.get('ClosedAt'), 'updated_at': task.get('UpdatedAt')}
-        process = redact.scrub(json.dumps({k: facts[k] for k in ('runs', 'transcript', 'corrections', 'artifacts')}, ensure_ascii=False))
+                 'report': report, 'closed_at': task.get('ClosedAt'), 'updated_at': task.get('UpdatedAt')}
         evidence.append({'task_id': tid, 'ref': f'TQ-{tid:04d}', 'title': redact.scrub(facts['title']),
-                         'summary': redact.scrub(facts['summary'])[:600], 'process': process[:1800] + (' [evidence truncated]' if len(process) > 1800 else ''),
+                         'summary': redact.scrub(facts['summary'])[:600], 'process': _process(facts),
                          'fingerprint': _hash(facts)})
         if len(evidence) == MAX_TASKS: break
     catalogue = [{k: p.get(k) for k in ('slug', 'name', 'description', 'digest')} for p in state.rows(store, 'package')
@@ -125,15 +146,18 @@ def _candidates(snapshot, decoded):
 
 
 def _perform(store, claim, llm, manual):
+    metrics = {}
     try:
         snapshot = gather(store)
+        metrics = {'evidence_count': len(snapshot['evidence'])}
         if not manual and claim.get('fingerprint') == snapshot['fingerprint']:
-            return _finish(store, claim, 'ready' if any(c.get('state') == 'suggested' for c in state.rows(store, 'candidate')) else 'empty')
-        if not snapshot['evidence']: return _finish(store, claim, 'empty', fingerprint=snapshot['fingerprint'])
+            status = 'ready' if any(c.get('state') == 'suggested' for c in state.rows(store, 'candidate')) else 'empty' if snapshot['evidence'] else 'no_evidence'
+            return _finish(store, claim, status, **metrics)
+        if not snapshot['evidence']: return _finish(store, claim, 'no_evidence', fingerprint=snapshot['fingerprint'], **metrics)
         if llm is None:
             from .llm import build_llm
             llm = build_llm(store, job='memory')
-        if llm is None: return _finish(store, claim, 'no_provider', 'Connect an AI to analyze completed work')
+        if llm is None: return _finish(store, claim, 'no_provider', 'Connect an AI to analyze completed work', **metrics)
         from .llm import ask_json
         answer = ask_json(llm, SYSTEM, json.dumps(snapshot, ensure_ascii=False), want=WANT, max_tokens=3000)
         if answer.data is None: raise ValueError(answer.error)
@@ -142,11 +166,12 @@ def _perform(store, claim, llm, manual):
             state.create(store, 'candidate', candidate, key=candidate['identity'] + ':' + candidate['fingerprint'])
         count = sum(c.get('state') == 'suggested' for c in state.rows(store, 'candidate'))
         store.audit('skill_analysis', claim['id'], 'analyzed', 'ai', detail={'evidence_count': len(snapshot['evidence']), 'suggestion_count': count})
-        return _finish(store, claim, 'ready' if count else 'empty', fingerprint=snapshot['fingerprint'])
+        return _finish(store, claim, 'ready' if count else 'empty', fingerprint=snapshot['fingerprint'],
+                       analyzed_at=datetime.now().isoformat(timespec='seconds'), **metrics)
     except Exception as e:
         from .redact import scrub
         message = scrub(str(e)) if isinstance(e, (ValueError, json.JSONDecodeError)) else f'Skill analysis failed ({type(e).__name__})'
-        return _finish(store, claim, 'failed', message[:1000])
+        return _finish(store, claim, 'failed', message[:1000], **metrics)
 
 
 def analyze(store, llm=None):

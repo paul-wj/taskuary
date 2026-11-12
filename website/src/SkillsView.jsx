@@ -95,7 +95,7 @@ export default function SkillsView({ browse, browseState = {}, onBrowseState, on
     sections: [{ key: 'suggestions', label: t('AI suggestions'), n: suggestions.length }, { key: 'library', label: t('Published Skills'), n: skills.length },
       { key: 'generations', label: t('Generation records'), n: generations.length }], section,
     onSection: key => go(key), cards, detail, onBack: () => go(section), openLabel: detail ? `${t('Skills')} · ${open}` : '',
-    empty: !data ? t('Loading Skills…') : t(section === 'suggestions' ? 'No reusable method suggested yet' : section === 'library' ? 'No Skill has been published yet.' : 'No Skill generation task yet.'),
+    empty: !data ? t('Loading Skills…') : section === 'suggestions' ? skillState(data.analysis?.state || 'idle') : t(section === 'library' ? 'No Skill has been published yet.' : 'No Skill generation task yet.'),
     tools: <Box sx={{ mt: 1.25 }}>
       {data?.demo && <Alert severity="info" sx={{ mb: 1 }}>{t('This demo uses fictional Skill suggestions and packages. No live AI ran and no native skill directory is changed.')}</Alert>}
       <Typography sx={lineSx}>{t('AI summarizes completed work and suggests reusable methods. You decide whether an Agent should generate or improve a Skill.')}</Typography>
@@ -103,6 +103,8 @@ export default function SkillsView({ browse, browseState = {}, onBrowseState, on
       <Button size="small" disabled={!!busy || data?.analysis?.state === 'running'} onClick={() => action('/api/skill-library/analyze', 'analysis')} sx={{ mt: 1 }}>{t(data?.analysis?.auto_enabled ? 'Analyze completed work with AI' : 'Start AI discovery')}</Button>
       {data?.analysis?.auto_enabled && <Button size="small" disabled={!!busy} onClick={() => action('/api/skill-library/pause', 'pause')} sx={{ mt: 1 }}>{t('Pause automatic analysis')}</Button>}
       <Typography sx={{ fontSize: 11.5, color: FAINT, mt: 0.5 }}>{t('Starting discovery enables background checks for newly completed work. Pause stops future checks; an active read-only analysis may finish.')}</Typography>
+      {data?.analysis?.evidence_count != null && <Typography data-tq-skill-analysis-count="" sx={{ fontSize: 11.5, color: DIM, mt: 0.5 }}>{t('Eligible completed tasks: {count}', { count: data.analysis.evidence_count })}</Typography>}
+      {data?.analysis?.analyzed_at && <Typography sx={{ fontSize: 11.5, color: FAINT, mt: 0.5 }}>{t('Last AI analysis: {time}', { time: data.analysis.analyzed_at })}</Typography>}
       {error && <Alert severity="error" sx={{ mt: 1 }}>{error}<Button size="small" onClick={load}>{t('Reload')}</Button><Button size="small" onClick={() => openAppLink('connections')}>{t('Connections')}</Button></Alert>}
       {!!data?.analysis?.error && <Alert severity="warning" sx={{ mt: 1 }}>{skillError(data.analysis.error)}<Button size="small" onClick={() => openAppLink('connections')}>{t('Connections')}</Button></Alert>}
     </Box> };

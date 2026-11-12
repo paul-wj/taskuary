@@ -23,6 +23,18 @@ flowchart LR
   B -->|fyi, triage failed| B4["FYI"]
 ```
 
+### Jira references after promotion
+
+Jira revisions and comments share an item by exact `SourceName` (including the site's context path) and
+`ConversationId`. Once any revision belongs to a task, taskless references join that task's canonical item,
+including references retained before the upgrade and later feed syncs. Original message rows remain unchanged.
+If the issue has several explicitly linked tasks, those tasks stay separate; taskless references follow the
+newest task ID. A stale promotion of another revision reuses that task rather than creating duplicate work.
+
+A feed-only observation does not bring a closed task back onto the rail. Pending approvals still appear;
+genuine new inbound work keeps the existing post-close handling. An issue with no local task remains FYI.
+
+
 ## What takes it off, and what brings it back
 
 ```mermaid

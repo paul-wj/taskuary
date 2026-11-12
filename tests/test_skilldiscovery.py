@@ -200,3 +200,67 @@ def test_changed_published_base_allows_a_fresh_update_recommendation():
         d.analyze(s, llm=lambda *a, **k: answer([tid], action='update', target_digest='second'))
         assert any(c['state'] == 'suggested' and c['target_digest'] == 'second' for c in state.rows(s, 'candidate'))
     finally: s.close()
+
+
+def test_long_transcript_keeps_results_corrections_and_artifacts_in_model_input():
+    from taskuary import skilldiscovery as d
+    s = MemoryStore()
+    try:
+        tid = finished(s)
+        s.add_transcript(tid, 'fixture-session', 'Checking files\n' * 1000 + 'Verified duplicate-key validation with synthetic rows.')
+        s.add_comment(tid, 'owner', 'human', 'Reject duplicate keys before calculating differences.')
+        s.add_comment(tid, 'coder', 'agent', 'AGENT REPORT\nSummary: Validated the exported differences with synthetic inputs.')
+        s.add_task_artifact({'TaskId':tid, 'Name':'duplicate-key-check.py', 'Kind':'script'})
+        def provider(system, user, **kwargs):
+            evidence = json.loads(user)['evidence'][0]
+            process = evidence['process']
+            assert isinstance(process, dict)
+            assert 'synthetic rows' in process['transcript']
+            assert 'Reject duplicate keys' in process['corrections'][0]['Body']
+            assert process['artifacts'][0]['Name'] == 'duplicate-key-check.py'
+            assert 'synthetic inputs' in process['report']['summary']
+            assert 'verified the differences' in process['runs'][0]['Result']
+            assert len(json.dumps(process)) < 6000
+            return answer([tid])
+        result = d.analyze(s, llm=provider)
+        assert result['state'] == 'ready', result
+        assert result['evidence_count'] == 1
+        assert result['analyzed_at']
+        assert state.rows(s, 'candidate')[0]['evidence'][0]['task_id'] == tid
+    finally: s.close()
+
+
+def test_saved_agent_report_is_work_evidence_without_a_transcript_or_run():
+    from taskuary import skilldiscovery as d
+    s = MemoryStore()
+    try:
+        tid = s.create_task({'Title':'Validate export keys', 'Source':'manual', 'Status':'done'}, 'owner')
+        s.add_comment(tid, 'coder', 'agent', 'AGENT REPORT\nSummary: Checked duplicate identifiers with synthetic exports.')
+        def provider(system, user, **kwargs):
+            evidence = json.loads(user)['evidence']
+            assert [e['task_id'] for e in evidence] == [tid]
+            assert 'synthetic exports' in evidence[0]['process']['report']['summary']
+            return answer([tid])
+        assert d.analyze(s, llm=provider)['state'] == 'ready'
+        assert state.rows(s, 'candidate')[0]['evidence'][0]['task_id'] == tid
+    finally: s.close()
+
+
+def test_no_work_evidence_is_distinct_from_an_actual_empty_ai_analysis():
+    from taskuary import skilldiscovery as d
+    s = MemoryStore()
+    try:
+        s.create_task({'Title':'Filed work with no saved result', 'Source':'manual', 'Status':'done'}, 'owner')
+        provider = mock.Mock(side_effect=AssertionError('no model call without work evidence'))
+        result = d.analyze(s, llm=provider)
+        assert (result['state'], result['evidence_count']) == ('no_evidence', 0)
+        provider.assert_not_called()
+        assert not result.get('analyzed_at')
+        finished(s)
+        result = d.analyze(s, llm=lambda *a, **k: '{"candidates":[]}')
+        assert (result['state'], result['evidence_count']) == ('empty', 1)
+        assert result['analyzed_at']
+        with mock.patch('taskuary.llm.build_llm', side_effect=AssertionError('unchanged evidence is not analyzed again')):
+            reused = d._perform(s, d._claim(s)[0], None, manual=False)
+        assert (reused['state'], reused['evidence_count'], reused['analyzed_at']) == ('empty', 1, result['analyzed_at'])
+    finally: s.close()

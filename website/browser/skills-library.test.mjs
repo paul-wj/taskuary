@@ -39,3 +39,24 @@ for (const locale of ['en', 'zh-CN']) test(`Skills: AI suggestions and complete 
   assert.deepEqual(errors, []);
   assert.deepEqual(page.fixtureEscapes, []);
 });
+
+for (const locale of ['en', 'zh-CN']) test(`Skills: empty analysis states and evidence count (${locale})`, { timeout: 120000 }, async (t) => {
+  const h = await startHarness({ fresh: true }); t.after(() => h.close());
+  const page = await h.newPage(), errors = [];
+  page.on('pageerror', e => errors.push(e.message));
+  await page.evaluateOnNewDocument(value => localStorage.setItem('taskuary.language', value), locale);
+  const states = locale === 'zh-CN'
+    ? { no_evidence: '暂无包含已保存执行结果的已完成工作可供分析', empty: '暂未发现值得提炼的通用方法', running: 'AI 正在分析已完成工作', failed: '失败' }
+    : { no_evidence: 'No completed work with saved results to analyze', empty: 'No reusable method suggested yet', running: 'AI is analyzing completed work', failed: 'Failed' };
+  for (const [status, message] of Object.entries(states)) {
+    const response = await fetch(`${h.fixtureApi}/api/fixture/skill-analysis/${status}`, { method: 'POST', headers: { 'X-Taskuary-Token': h.token } });
+    assert.equal(response.status, 200);
+    await page.goto(`${h.ui}#skills=suggestions`, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(text => document.querySelector('[data-tq-browse="skills"]')?.innerText.includes(text), {}, message);
+    const count = status === 'no_evidence' ? 0 : 3;
+    assert.match(await page.$eval('[data-tq-skill-analysis-count]', e => e.innerText), new RegExp(`: ${count}$|：${count}$`));
+    if (status !== 'empty') assert.ok(!(await page.$eval('[data-tq-browse="skills"]', e => e.innerText)).includes(states.empty));
+  }
+  assert.deepEqual(errors, []);
+  assert.deepEqual(page.fixtureEscapes, []);
+});

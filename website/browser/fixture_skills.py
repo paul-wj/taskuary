@@ -36,3 +36,18 @@ def install(app, store):
         else: state.create(store, 'analysis', {'state': 'ready', 'error': None}, key='current')
         return {'candidate_id': candidate['id'], 'generation_id': generation['id'], 'task_id': task,
                 'review_id': collected['review_id'], 'draft_digest': collected['draft_digest']}
+
+    @app.post('/api/fixture/skill-analysis/{status}')
+    def analysis_status(status: str):
+        from fastapi import HTTPException
+        from taskuary import firstrun, skillstate as state, skilldiscovery
+        if status not in ('no_evidence', 'empty', 'running', 'failed'): raise HTTPException(400, 'Unknown fixture analysis state')
+        firstrun.set_dismissed(store, True, 'fixture')
+        skilldiscovery.BACKGROUND = False
+        values = {'state':status, 'error':None, 'auto_enabled':True, 'evidence_count':0 if status == 'no_evidence' else 3,
+                  'analyzed_at':None if status == 'no_evidence' else '2026-11-12T10:00:00'}
+        current = state.by_key(store, 'analysis', 'current')
+        if current: state.update(store, 'analysis', current['id'], values)
+        else: state.create(store, 'analysis', values, key='current')
+        state.notify(store)
+        return values

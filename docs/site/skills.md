@@ -10,6 +10,16 @@ Open **Skills → AI suggestions**. Each recommendation explains the method, wha
 
 The analysis uses Taskuary's existing configured memory brain. It considers at most 50 eligible completed tasks from a bounded recent-work window, including execution results, saved records, artifacts and human corrections. Stranger-origin and Skill-authoring tasks are excluded. Unchanged evidence is not repeatedly sent to the model automatically; dismissing a suggestion suppresses the same evidence even if the AI later rephrases it. Changed evidence can justify a new recommendation.
 
+Each task supplies separately bounded result-report fields, execution results, the end of its saved transcript,
+recent human corrections and artifact metadata. A long terminal log cannot consume the whole evidence budget
+and erase the result or corrections. A saved Agent report is eligible evidence even without a transcript or run row.
+
+The page distinguishes **no completed work with saved results to analyze** from an actual AI analysis that
+found no reusable method. It shows the eligible task count and the last completed AI analysis time; an automatic
+check that reuses unchanged evidence does not pretend a new model analysis ran. An empty recommendation remains
+a valid outcome: Taskuary does not force the model to invent a Skill.
+
+
 Discovery is off until you choose **Start AI discovery** in Skills, so an upgrade does not automatically add model calls over your existing history. Starting it requests an analysis and enables background checks on the existing clock, no more frequently than once every ten minutes. **Analyze completed work with AI** requests another analysis; **Pause automatic analysis** prevents future automatic passes (an active read-only pass may finish). No provider, provider failure, malformed output, analysis in progress and a valid empty result are different states. Taskuary never substitutes keyword guesses or sample suggestions when AI is unavailable. Analysis failure does not stop ordinary tasks, messages or reports.
 
 Analysis uses the shared structured-AI response handling: providers that support it receive a JSON schema, and explanatory text around a JSON object or Markdown code fence does not by itself cause failure. Unreadable replies follow the existing bounded AI retry/routing policy. A missing candidate list, invalid task evidence or an invalid update target still fails validation; none is silently treated as an empty result.

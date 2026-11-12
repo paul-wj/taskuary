@@ -45,9 +45,10 @@ def _arrived_after_close(task, view) -> bool:
     # ...nor is a line triage FILED with nothing to do: a "thank you!" after the close brought TQ-0942 back under FYI
     # (the owner, 2026-10-05: "it should never be there, i closed it") - the same materiality the stale-draft check reads
     # (store.last_material_inbound_on_task, PW-240). A line still being triaged counts until triage files it.
+    # Feed observations carry no new request, including Jira status/description revisions after a local close.
     return any((processing_all._stamp(m.get('SentAt')) or at) > at
                for m in view.get('messages') or []
-               if not is_ours(m) and not is_auto(m) and m.get('Status') not in ('filed', 'skipped', 'ignored'))
+               if not is_ours(m) and not is_auto(m) and m.get('Status') not in ('filed', 'skipped', 'ignored', 'feed'))
 
 
 # the lanes that are the OWNER's move - every lane whose section is Tasks (lanes.json), a task an agent is working included: an open

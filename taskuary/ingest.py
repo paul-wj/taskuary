@@ -3053,6 +3053,14 @@ def task_from_message(store, mid: int, actor: str = 'owner', kind: str = 'coding
     (go into some web app and click the thing). Already-routed messages keep the task they are on."""
     m = store.get_message(mid)
     if not m: raise ValueError(f'no message {mid}')
+    if not m.get('TaskId') and m.get('Channel') == 'jira' and m.get('SourceName') and m.get('ConversationId'):
+        # A stale FYI press on another revision of this exact issue reuses its task, not a second job.
+        linked = store._one("SELECT t.TaskId FROM message m JOIN task t ON t.TaskId=m.TaskId "
+                            "WHERE m.Channel='jira' AND m.SourceName=? AND m.ConversationId=? ORDER BY t.TaskId DESC LIMIT 1",
+                            (m['SourceName'], m['ConversationId']))
+        if linked:
+            store.attach_message(mid, linked['TaskId'])
+            m = {**m, 'TaskId': linked['TaskId']}
     if m.get('TaskId'):
         # "Already-routed messages keep the task they are on" - but the assistant's "put it on my
         # list" arrives here too, and on a task that already exists that made it a no-op: the kind

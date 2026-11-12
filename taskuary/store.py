@@ -4536,7 +4536,7 @@ class SQLiteStore:
                 # processing_member; a message in one set and not the other is a collision waiting to
                 # happen, and it happened (see processing_membership.ungrouped_message_sql). Columns
                 # stay SELECT *: what the two must agree about is which ROWS exist.
-                from .processing_membership import reference_key, ungrouped_message_sql
+                from .processing_membership import reference_key, reference_tasks, ungrouped_message_sql
                 ungrouped, ungrouped_params = ungrouped_message_sql()
                 messages = [dict(r) for r in cur.execute(
                     f'SELECT * FROM message WHERE NOT {ungrouped} ORDER BY MessageId', ungrouped_params).fetchall()]
@@ -4559,10 +4559,13 @@ class SQLiteStore:
                     for key in (f'task:{tid}', f'agent:{tid}', f'wrap:{tid}'):
                         alias('legacy_funnel', 'local', key, 'task', tid); legacy_values.add(key)
                 references = {}
+                task_by_reference = reference_tasks(tasks, messages)
                 for message_row in messages:
                     mid, tid = message_row['MessageId'], message_row.get('TaskId')
                     reference = reference_key(message_row) if tid not in item_by_task else None
-                    iid = item_by_task.get(tid) or existing_item('message', mid) or references.get(reference) or new_item('message')
+                    inherited = task_by_reference.get(reference) if tid is None else None
+                    iid = (item_by_task.get(tid) or existing_item('message', mid) or item_by_task.get(inherited)
+                           or references.get(reference) or new_item('message'))
                     if reference: references[reference] = iid
                     member(iid, 'message', mid, 'member' if tid else 'primary'); item_by_message[mid] = iid
                     alias('legacy_funnel', 'local', f'msg:{mid}', 'message', mid)

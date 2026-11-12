@@ -302,12 +302,14 @@ def test_open_reference_with_the_owner_own_comment_stays_on_the_rail():
 def test_reference_grouping_preserves_site_and_explicit_task_boundaries(bootstrap):
     s, _ = setup()
     tid = s.create_task({'Title':'Owner work', 'Kind':'task'}, 'test')
+    newer = s.create_task({'Title':'Separate explicit work', 'Kind':'task'}, 'test')
     messages = [
         ('site-a-1', 'jira.northwind.example/jira', 'jira:NW-1', None),
         ('site-a-2', 'jira.northwind.example/jira', 'jira:NW-1', None),
         ('site-b-1', 'jira.northwind.example/other', 'jira:NW-1', None),
         ('other-issue', 'jira.northwind.example/jira', 'jira:NW-2', None),
         ('task-message', 'jira.northwind.example/jira', 'jira:NW-1', tid),
+        ('newer-task-message', 'jira.northwind.example/jira', 'jira:NW-1', newer),
     ]
     mids = [s.add_message({'ExternalId':ext, 'SourceName':site, 'ConversationId':conv,
         'TaskId':task, 'Channel':'jira', 'Status':'feed', 'Subject':'Export', 'BodyText':ext})
@@ -315,9 +317,10 @@ def test_reference_grouping_preserves_site_and_explicit_task_boundaries(bootstra
     if bootstrap == 'backfill': s.backfill_processing('jira-reference-fixture', fixed_now=datetime.now().isoformat(), live_state=[])
     s.reconcile_processing_membership()
     roots = [s.resolve_processing_target('legacy_funnel', f'msg:{mid}')['item_id'] for mid in mids]
-    assert roots[0] == roots[1]
-    assert len({roots[0], *roots[2:]}) == 4
-    assert roots[-1] == s.resolve_processing_target('legacy_funnel', f'task:{tid}')['item_id']
+    assert roots[0] == roots[1] == roots[-1]
+    assert len({roots[0], roots[2], roots[3], roots[-2]}) == 4
+    assert roots[-2] == s.resolve_processing_target('legacy_funnel', f'task:{tid}')['item_id']
+    assert roots[-1] == s.resolve_processing_target('legacy_funnel', f'task:{newer}')['item_id']
     if bootstrap == 'reconcile':
         s.backfill_processing('jira-reference-fixture', fixed_now=datetime.now().isoformat(), live_state=[])
         assert [s.resolve_processing_target('legacy_funnel', f'msg:{mid}')['item_id'] for mid in mids] == roots
@@ -485,4 +488,93 @@ def test_jira_status_update_preserves_author_and_other_site_reference():
     assert meta['author'] == 'jira:user-erin' and meta['member'] is True and meta['jira']['closed']
     assert json.loads(s.get_message(other)['MailMetaJson']) == {'author':'jira:user-erin', 'member':True}
     s.close()
+
+
+def test_promoted_issue_and_later_feed_updates_remain_one_task():
+    from taskuary import ingest, processing_unread
+    s, c = setup()
+    try:
+        s.set_setting('calendar_enabled', '0', 'test')
+        s.reconcile_processing_membership()
+        s.activate_processing_reads(fixed_now=datetime.now().isoformat(), live_state=[])
+        report, since = issue(1), datetime.now()-timedelta(hours=1)
+        with wire(JiraWire([report])): pm.poll_jira(s, c, since, file_only=True)
+        original = _jira_reference_pile(s)[0]
+        report['fields']['description'] = 'Repair large-file exports too'
+        report['fields']['comment'] = {'comments': [{'id':'94', 'author':{'key':'user-erin'},
+            'body':'The large-file export fails', 'created':datetime.now().astimezone().isoformat()}]}
+        with wire(JiraWire([report])): pm.poll_jira(s, c, since, file_only=True)
+        with mock.patch.object(ingest, 'ask_later'):
+            tid = ingest.task_from_message(s, original['mid'], kind='task', assignee='owner')
+        rows = _jira_reference_pile(s)
+        assert [(r.get('tid'), r['lane'] in processing_unread.OWNER_LANES) for r in rows] == [(tid, True)]
+        report['fields']['description'] = 'Repair empty-file exports too'
+        with wire(JiraWire([report])):
+            pm.poll_jira(s, c, since, file_only=True)
+            pm.poll_jira(s, c, since, file_only=True)
+        rows = _jira_reference_pile(s)
+        assert [(r.get('tid'), r['lane'] in processing_unread.OWNER_LANES) for r in rows] == [(tid, True)]
+        latest = s._one('SELECT MessageId FROM message ORDER BY MessageId DESC LIMIT 1')['MessageId']
+        with mock.patch.object(ingest, 'ask_later'):
+            assert ingest.task_from_message(s, latest, kind='task', assignee='owner') == tid
+        assert s._rows('SELECT TaskId FROM task') == [{'TaskId':tid}]
+    finally: s.close()
+
+
+@pytest.mark.parametrize('bootstrap', ['reconcile', 'backfill'])
+def test_existing_task_absorbs_only_its_exact_jira_reference(bootstrap, tmp_path):
+    from taskuary.store import SQLiteStore
+    path = tmp_path / 'promoted-jira.db'
+    s = SQLiteStore(str(path))
+    try:
+        s.set_setting('calendar_enabled', '0', 'test')
+        tid = s.create_task({'Title':'Repair export', 'Kind':'task'}, 'owner')
+        shared = {'Channel':'jira', 'SourceName':'jira.northwind.example/jira', 'ConversationId':'jira:NW-1',
+                  'Subject':'NW-1 Export', 'BodyText':'Repair export', 'Status':'feed'}
+        reference = s.add_message({**shared, 'ExternalId':'old-reference'})
+        other_site = s.add_message({**shared, 'ExternalId':'other-site', 'SourceName':'jira.northwind.example/other'})
+        other_issue = s.add_message({**shared, 'ExternalId':'other-issue', 'ConversationId':'jira:NW-2'})
+        s.reconcile_processing_membership()
+        old_root = s.resolve_processing_target('legacy_funnel', f'msg:{reference}')['item_id']
+        linked = s.add_message({**shared, 'TaskId':tid, 'ExternalId':'promoted-version', 'Status':'routed'})
+        before = s._rows('SELECT * FROM message ORDER BY MessageId')
+        if bootstrap == 'backfill': s.backfill_processing('jira-promoted-fixture', fixed_now=datetime.now().isoformat(), live_state=[])
+        s.reconcile_processing_membership()
+        root = s.resolve_processing_target('legacy_funnel', f'task:{tid}')['item_id']
+        assert s.resolve_processing_target('legacy_funnel', f'msg:{reference}')['item_id'] == root
+        assert s.resolve_processing_target('legacy_funnel', f'msg:{linked}')['item_id'] == root
+        assert s.processing_snapshot(old_root)['item']['ItemId'] == root
+        assert all(s.resolve_processing_target('legacy_funnel', f'msg:{m}')['item_id'] != root for m in (other_site, other_issue))
+        assert s._rows('SELECT * FROM message ORDER BY MessageId') == before
+    finally: s.close()
+    s = SQLiteStore(str(path))
+    try:
+        s.reconcile_processing_membership()
+        assert s.resolve_processing_target('legacy_funnel', f'msg:{reference}')['item_id'] == root
+        assert {m['MessageId'] for m in s.processing_snapshot(root)['view']['messages']} == {reference, linked}
+    finally: s.close()
+
+
+def test_closed_local_task_does_not_return_as_feed_but_pending_review_survives():
+    s, _ = setup()
+    try:
+        s.set_setting('calendar_enabled', '0', 'test')
+        s.reconcile_processing_membership()
+        s.activate_processing_reads(fixed_now=datetime.now().isoformat(), live_state=[])
+        now = datetime.now()
+        tid = s.create_task({'Title':'Repair export', 'Kind':'task', 'Status':'done',
+                             'ClosedAt':(now-timedelta(hours=1)).isoformat()}, 'owner')
+        shared = {'Channel':'jira', 'SourceName':'jira.northwind.example/jira', 'ConversationId':'jira:NW-1',
+                  'Subject':'NW-1 Export', 'BodyText':'Export in QA',
+                  'MailMetaJson':json.dumps({'jira':{'status':'In QA', 'category':'indeterminate', 'closed':False}})}
+        s.add_message({**shared, 'TaskId':tid, 'ExternalId':'task-version', 'Status':'routed',
+                       'SentAt':(now-timedelta(hours=2)).isoformat()})
+        mid = s.add_message({**shared, 'ExternalId':'later-feed', 'Status':'feed', 'SentAt':now.isoformat()})
+        assert _jira_reference_pile(s) == []
+        rid = s.add_review({'MessageId':mid, 'Kind':'reply', 'Status':'pending', 'DraftText':'Owner draft'})
+        rows = _jira_reference_pile(s)
+        assert [(r.get('tid'), r.get('rid'), r['lane']) for r in rows] == [(tid, rid, 'approve')]
+        assert s.get_task(tid)['Status'] == 'done'
+        assert s.get_review(rid)['DraftText'] == 'Owner draft'
+    finally: s.close()
 

@@ -201,6 +201,17 @@ def reference_key(row):
     return None
 
 
+def reference_tasks(tasks, messages):
+    """Unassigned Jira references follow the newest explicit task; explicit task links never move."""
+    known = {str(t['TaskId']): t['TaskId'] for t in tasks}
+    out = {}
+    for row in messages:
+        tid, reference = known.get(str(row.get('TaskId'))), reference_key(row)
+        if tid is not None and reference:
+            out[reference] = max(tid, out.get(reference, tid))
+    return out
+
+
 def reconcile_membership(cur, *, stamp, new_item_id, follow_item, inputs=None):
     """Apply one uncapped raw-identity census inside ``cur``'s transaction. `inputs`: census_inputs() as read at the
     generation this transaction still finds (the caller checks that) - the very rows this would read, so not read twice."""
@@ -245,6 +256,7 @@ def reconcile_membership(cur, *, stamp, new_item_id, follow_item, inputs=None):
         add_group(('task', tid), 'task', ('task', tid))
 
     message_group, references = {}, {}
+    task_by_reference = reference_tasks(tasks.values(), messages.values())
     for mid, row in sorted(messages.items(), key=lambda pair: _id_key(pair[0])):
         task_id = None if row.get('TaskId') is None else str(row['TaskId'])
         if task_id in tasks:
@@ -254,7 +266,8 @@ def reconcile_membership(cur, *, stamp, new_item_id, follow_item, inputs=None):
                 diagnostics.append(_problem('dangling_message_task', 'message', mid,
                                             task_id=task_id))
             reference = reference_key(row)
-            key = references.get(reference) if reference else None
+            inherited = task_by_reference.get(reference) if task_id is None else None
+            key = ('task', str(inherited)) if inherited is not None else references.get(reference)
             if key is None:
                 key = ('message', mid)
                 add_group(key, 'message', ('message', mid))
