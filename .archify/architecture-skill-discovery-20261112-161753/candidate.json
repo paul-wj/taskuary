@@ -1,0 +1,315 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "技能提炼：从完成证据到审核发布",
+    "locale": "zh-CN",
+    "output": ".archify/architecture-skill-discovery-20261112-161753/skill-discovery.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/paul-wj/taskuary.git",
+      "revision": "cc823642f9a61d363645b2b4cf09e0df4b181bf9",
+      "link_mode": "local-only"
+    }
+  },
+  "components": [
+    {
+      "id": "ui",
+      "type": "frontend",
+      "label": "技能库界面",
+      "sublabel": "分析、接受候选、查看生成",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        220,
+        76
+      ],
+      "sources": [
+        {
+          "path": "website/src/SkillsView.jsx",
+          "line": 46,
+          "end_line": 79
+        },
+        {
+          "path": "taskuary/skillroutes.py",
+          "line": 42,
+          "end_line": 58
+        }
+      ]
+    },
+    {
+      "id": "analysis",
+      "type": "backend",
+      "label": "只读 AI 候选分析",
+      "sublabel": "memory 模型；不写技能文件",
+      "pos": [
+        400,
+        40
+      ],
+      "size": [
+        220,
+        76
+      ],
+      "sources": [
+        {
+          "path": "taskuary/skilldiscovery.py",
+          "line": 148,
+          "end_line": 174
+        },
+        {
+          "path": "taskuary/skilldiscovery.py",
+          "line": 182,
+          "end_line": 211
+        }
+      ]
+    },
+    {
+      "id": "author",
+      "type": "backend",
+      "label": "接受候选并启动 Agent",
+      "sublabel": "创建生成任务与独立草稿",
+      "pos": [
+        760,
+        40
+      ],
+      "size": [
+        220,
+        76
+      ],
+      "sources": [
+        {
+          "path": "taskuary/skillauthoring.py",
+          "line": 104,
+          "end_line": 149
+        }
+      ]
+    },
+    {
+      "id": "evidence",
+      "type": "database",
+      "label": "已完成任务与技能目录",
+      "sublabel": "报告、过程、纠正、成果元数据",
+      "pos": [
+        400,
+        260
+      ],
+      "size": [
+        220,
+        76
+      ],
+      "sources": [
+        {
+          "path": "taskuary/skilldiscovery.py",
+          "line": 50,
+          "end_line": 82
+        }
+      ]
+    },
+    {
+      "id": "review",
+      "type": "security",
+      "label": "技能包快照与人工审核",
+      "sublabel": "可退回修改；不自动发布",
+      "pos": [
+        760,
+        260
+      ],
+      "size": [
+        220,
+        76
+      ],
+      "sources": [
+        {
+          "path": "taskuary/skillauthoring.py",
+          "line": 220,
+          "end_line": 275
+        },
+        {
+          "path": "taskuary/proposals.py",
+          "line": 716,
+          "end_line": 738
+        }
+      ]
+    },
+    {
+      "id": "publish",
+      "type": "backend",
+      "label": "批准后的发布控制",
+      "sublabel": "身份、摘要、基线与验证检查",
+      "pos": [
+        400,
+        480
+      ],
+      "size": [
+        220,
+        76
+      ],
+      "sources": [
+        {
+          "path": "taskuary/skillpackages.py",
+          "line": 334,
+          "end_line": 375
+        }
+      ]
+    },
+    {
+      "id": "formal",
+      "type": "database",
+      "label": "磁盘正式技能包",
+      "sublabel": "skills/<slug> 与版本快照",
+      "pos": [
+        40,
+        480
+      ],
+      "size": [
+        220,
+        76
+      ],
+      "sources": [
+        {
+          "path": "taskuary/skillpackages.py",
+          "line": 351,
+          "end_line": 370
+        }
+      ]
+    },
+    {
+      "id": "state",
+      "type": "database",
+      "label": "SQLite 技能状态",
+      "sublabel": "候选、生成、包、绑定、发布日志",
+      "pos": [
+        760,
+        480
+      ],
+      "size": [
+        220,
+        76
+      ],
+      "sources": [
+        {
+          "path": "taskuary/skillstate.py",
+          "line": 5,
+          "end_line": 10
+        },
+        {
+          "path": "taskuary/skillstate.py",
+          "line": 34,
+          "end_line": 64
+        },
+        {
+          "path": "taskuary/skillpackages.py",
+          "line": 323,
+          "end_line": 330
+        }
+      ]
+    },
+    {
+      "id": "native",
+      "type": "backend",
+      "label": "原生 CLI 技能绑定",
+      "sublabel": "仅链接库拥有的正式包",
+      "pos": [
+        40,
+        680
+      ],
+      "size": [
+        220,
+        76
+      ],
+      "sources": [
+        {
+          "path": "taskuary/skillpackages.py",
+          "line": 273,
+          "end_line": 301
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "ui-analysis",
+      "from": "ui",
+      "to": "analysis",
+      "label": "请求分析",
+      "variant": "default"
+    },
+    {
+      "id": "evidence-analysis",
+      "from": "evidence",
+      "to": "analysis",
+      "label": "读取证据",
+      "variant": "default"
+    },
+    {
+      "id": "analysis-author",
+      "from": "analysis",
+      "to": "author",
+      "label": "用户接受候选",
+      "variant": "default"
+    },
+    {
+      "id": "author-review",
+      "from": "author",
+      "to": "review",
+      "label": "收集草稿",
+      "variant": "default"
+    },
+    {
+      "id": "review-publish",
+      "from": "review",
+      "to": "publish",
+      "label": "用户批准",
+      "variant": "security"
+    },
+    {
+      "id": "publish-formal",
+      "from": "publish",
+      "to": "formal",
+      "label": "替换正式包",
+      "variant": "default"
+    },
+    {
+      "id": "publish-state",
+      "from": "publish",
+      "to": "state",
+      "label": "记录发布",
+      "variant": "default"
+    },
+    {
+      "id": "publish-native",
+      "from": "publish",
+      "to": "native",
+      "label": "协调绑定",
+      "variant": "default"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "候选不等于技能",
+      "items": [
+        "分析最多读取 50 个合格完成任务，排除技能生成任务和陌生来源。",
+        "首次手动分析启用自动分析；后续按十分钟间隔调度，可暂停。相同证据自动跳过。"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "审核边界",
+      "items": [
+        "接受候选只启动编写任务；生成完成后仍需用户批准 publish_skill。",
+        "退回会使旧审核失效；发布时重新检查草稿摘要、正式基线和必需验证，拒绝陈旧内容。"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "持久化与复用",
+      "items": [
+        "分析及生成过程也通过 skillstate 写入 SQLite；图中状态箭头突出最终发布，不逐条展开内部状态写入。",
+        "发布日志支持启动恢复；CLI 链接冲突或失败保留可见状态，不覆盖其他目录。技能提炼不代表自动获得业务验证。"
+      ]
+    }
+  ]
+}

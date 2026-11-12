@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "7d09e304-dda0-40f4-9cbf-cf7f616525b5",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "C:\\project\\taskuary\\.archify\\architecture-knowledge-center-20261112-161753\\candidate.json",
+  "output": "C:\\project\\taskuary\\.archify\\architecture-knowledge-center-20261112-161753\\knowledge-center.html",
+  "specification": {
+    "sha256": "b37aeda995e7b70efa2c55f831c8fd34d7ab65536ffe33b18b35d6340ac7b716",
+    "bytes": 6751
+  },
+  "artifact": {
+    "sha256": "e6e36c7dd1e1ae95534074429c5ce4bf6365c3bdcc5140a69453e46e5e43c421",
+    "bytes": 823234
+  }
+}

@@ -1,0 +1,292 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "知识中心：会话提炼、提交与后续复用",
+    "locale": "zh-CN",
+    "output": ".archify/architecture-knowledge-center-20261112-161753/knowledge-center.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/paul-wj/taskuary.git",
+      "revision": "cc823642f9a61d363645b2b4cf09e0df4b181bf9",
+      "link_mode": "local-only"
+    }
+  },
+  "components": [
+    {
+      "id": "close",
+      "type": "backend",
+      "label": "会话收尾",
+      "sublabel": "知识中心启用后尝试提炼",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        220,
+        76
+      ],
+      "sources": [
+        {
+          "path": "taskuary/wrapup.py",
+          "line": 1139,
+          "end_line": 1145
+        }
+      ]
+    },
+    {
+      "id": "learn",
+      "type": "backend",
+      "label": "AI 发现长期知识",
+      "sublabel": "会话尾部与已有主题、条目",
+      "pos": [
+        400,
+        40
+      ],
+      "size": [
+        220,
+        76
+      ],
+      "sources": [
+        {
+          "path": "taskuary/handbook.py",
+          "line": 265,
+          "end_line": 294
+        }
+      ]
+    },
+    {
+      "id": "post",
+      "type": "security",
+      "label": "统一提交与去重",
+      "sublabel": "handbook.post；拒绝陌生来源",
+      "pos": [
+        760,
+        40
+      ],
+      "size": [
+        220,
+        76
+      ],
+      "sources": [
+        {
+          "path": "taskuary/handbook.py",
+          "line": 114,
+          "end_line": 164
+        },
+        {
+          "path": "taskuary/server.py",
+          "line": 5334,
+          "end_line": 5352
+        }
+      ]
+    },
+    {
+      "id": "manual",
+      "type": "frontend",
+      "label": "人工或 Agent 主动提交",
+      "sublabel": "Hub 页面、工具、助手知识信封",
+      "pos": [
+        1120,
+        40
+      ],
+      "size": [
+        220,
+        76
+      ],
+      "sources": [
+        {
+          "path": "website/src/HubView.jsx",
+          "line": 281,
+          "end_line": 284
+        },
+        {
+          "path": "taskuary/handbook.py",
+          "line": 328,
+          "end_line": 335
+        },
+        {
+          "path": "taskuary/handbook.py",
+          "line": 386,
+          "end_line": 398
+        }
+      ]
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "SQLite 知识条目",
+      "sublabel": "lore / lore_comment / lore_vote",
+      "pos": [
+        760,
+        260
+      ],
+      "size": [
+        220,
+        76
+      ],
+      "sources": [
+        {
+          "path": "taskuary/store.py",
+          "line": 718,
+          "end_line": 725
+        },
+        {
+          "path": "taskuary/handbook.py",
+          "line": 145,
+          "end_line": 163
+        }
+      ]
+    },
+    {
+      "id": "read",
+      "type": "backend",
+      "label": "知识检索与上下文",
+      "sublabel": "有嵌入用语义检索，否则降级",
+      "pos": [
+        400,
+        260
+      ],
+      "size": [
+        220,
+        76
+      ],
+      "sources": [
+        {
+          "path": "taskuary/handbook.py",
+          "line": 183,
+          "end_line": 210
+        },
+        {
+          "path": "taskuary/handbook.py",
+          "line": 213,
+          "end_line": 225
+        }
+      ]
+    },
+    {
+      "id": "future",
+      "type": "external",
+      "label": "后续 Agent",
+      "sublabel": "有 Shell 自查；API 读取知识块",
+      "pos": [
+        40,
+        260
+      ],
+      "size": [
+        220,
+        76
+      ],
+      "sources": [
+        {
+          "path": "taskuary/handbook.py",
+          "line": 191,
+          "end_line": 225
+        }
+      ]
+    },
+    {
+      "id": "moderate",
+      "type": "frontend",
+      "label": "讨论、投票与纠正",
+      "sublabel": "低于零下架；保留记录可恢复",
+      "pos": [
+        760,
+        480
+      ],
+      "size": [
+        220,
+        76
+      ],
+      "sources": [
+        {
+          "path": "website/src/HubView.jsx",
+          "line": 78,
+          "end_line": 97
+        },
+        {
+          "path": "taskuary/handbook.py",
+          "line": 167,
+          "end_line": 179
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "close-learn",
+      "from": "close",
+      "to": "learn",
+      "label": "收尾分析",
+      "variant": "default"
+    },
+    {
+      "id": "learn-post",
+      "from": "learn",
+      "to": "post",
+      "label": "合格发现",
+      "variant": "default"
+    },
+    {
+      "id": "manual-post",
+      "from": "manual",
+      "to": "post",
+      "label": "提交内容",
+      "variant": "default"
+    },
+    {
+      "id": "post-db",
+      "from": "post",
+      "to": "db",
+      "label": "新增或赞同",
+      "variant": "default"
+    },
+    {
+      "id": "db-read",
+      "from": "db",
+      "to": "read",
+      "label": "查询条目",
+      "variant": "default"
+    },
+    {
+      "id": "read-future",
+      "from": "read",
+      "to": "future",
+      "label": "提供知识",
+      "variant": "default"
+    },
+    {
+      "id": "moderate-db",
+      "from": "moderate",
+      "to": "db",
+      "label": "评论与投票",
+      "variant": "default"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "分析与提交条件",
+      "items": [
+        "会话分析读取最多末尾 12000 字符；最多提取两条，必须 earned=true 且 why_earned 达到长度要求。",
+        "没有发现、没有模型或分析异常时可不写入，不阻断原任务收尾；不是每次完成都生成知识。"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "不是技能发布审批流",
+      "items": [
+        "知识通过准入和去重后直接入库，没有技能包那样的逐条人工发布审批。",
+        "Agent HTTP 提交受连接写权限和 why_earned 校验；主动工具也要求理由。同主题同标题或模型 same_as 命中时改为投票，新增内容进入评论。"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "知识的边界",
+      "items": [
+        "知识是可质疑的同事发现，不是用户指令；评论和投票让后续证据能纠正旧知识。",
+        "本图聚焦 Hub 长期发现；JOB.md / LEARNED.md 只读展示不复制入库，外部文档 knowledge 索引不是此 lore 存储。"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "C:\\project\\taskuary\\.archify\\architecture-skill-discovery-20261112-161753\\candidate.json",
+    "sha256": "5bccdc6571d92ec21a6581cfb086487241c450236d2590294b1960cee486996e",
+    "bytes": 7255
+  },
+  "artifact": {
+    "path": "C:\\project\\taskuary\\.archify\\architecture-skill-discovery-20261112-161753\\skill-discovery.html",
+    "sha256": "f7ad98d762cd11f4a567c6f8d09b4774baa4a5146582bf9b419395da3ff3a2cf",
+    "bytes": 825462
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "C:\\project\\taskuary\\.archify\\architecture-skill-discovery-20261112-161753\\skill-discovery.finalize.json",
+    "summaryReceipt": "C:\\project\\taskuary\\.archify\\architecture-skill-discovery-20261112-161753\\skill-discovery.finalize-summary.json",
+    "browserCheckReceipt": "C:\\project\\taskuary\\.archify\\architecture-skill-discovery-20261112-161753\\skill-discovery.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-11-11T06:36:28.412Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 5218,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  }
+}

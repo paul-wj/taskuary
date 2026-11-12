@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "be39b1e8-56fd-4598-b330-7e95af226a61",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "C:\\project\\taskuary\\.archify\\architecture-skill-discovery-20261112-161753\\candidate.json",
+  "output": "C:\\project\\taskuary\\.archify\\architecture-skill-discovery-20261112-161753\\skill-discovery.html",
+  "specification": {
+    "sha256": "5bccdc6571d92ec21a6581cfb086487241c450236d2590294b1960cee486996e",
+    "bytes": 7255
+  },
+  "artifact": {
+    "sha256": "f7ad98d762cd11f4a567c6f8d09b4774baa4a5146582bf9b419395da3ff3a2cf",
+    "bytes": 825462
+  }
+}

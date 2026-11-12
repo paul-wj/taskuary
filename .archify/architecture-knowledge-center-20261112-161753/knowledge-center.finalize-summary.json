@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "C:\\project\\taskuary\\.archify\\architecture-knowledge-center-20261112-161753\\candidate.json",
+    "sha256": "b37aeda995e7b70efa2c55f831c8fd34d7ab65536ffe33b18b35d6340ac7b716",
+    "bytes": 6751
+  },
+  "artifact": {
+    "path": "C:\\project\\taskuary\\.archify\\architecture-knowledge-center-20261112-161753\\knowledge-center.html",
+    "sha256": "e6e36c7dd1e1ae95534074429c5ce4bf6365c3bdcc5140a69453e46e5e43c421",
+    "bytes": 823234
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "C:\\project\\taskuary\\.archify\\architecture-knowledge-center-20261112-161753\\knowledge-center.finalize.json",
+    "summaryReceipt": "C:\\project\\taskuary\\.archify\\architecture-knowledge-center-20261112-161753\\knowledge-center.finalize-summary.json",
+    "browserCheckReceipt": "C:\\project\\taskuary\\.archify\\architecture-knowledge-center-20261112-161753\\knowledge-center.browser-check.json"
+  },
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-11-11T06:36:28.412Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  },
+  "visualReview": "not-requested",
+  "durationMs": 4361,
+  "browserCheck": {
+    "requested": true,
+    "ran": true
+  }
+}
