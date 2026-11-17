@@ -23,7 +23,7 @@ test("the demo has a current assistant conversation and distinct earlier threads
 test("the opening line counts what the scripted rail holds for you, never a written number", () => {
   const demo = createDemoAssistantState();
   const n = demo.pile.items.filter((i) => onYou(i)).length;   // the header's and the opener's own count
-  assert.match(demo.messages[0].text, new RegExp(`\\b${n}\\b`));
+  assert.match(demo.messages[0].text, new RegExp(`\\b${n} things still deserve a look`));
   assert.ok(demo.messages.every((m) => !String(m.text || "").includes("{n}")));
 });
 
@@ -64,10 +64,11 @@ test("every scripted card is bound to the row it names in the shipped recording"
     if (item.rid) assert.equal(reviews.get(item.rid).Subject, item.title);
   }
   const cutover = demo.pile.items.find((i) => i.kind === "review");
-  assert.ok(tasks.has(cutover.tid));
+  assert.equal(tasks.get(cutover.tid), "Can you confirm the AP cutover date?");
   const census = demo.pile.items.find((i) => i.lane === "blocked");
-  assert.ok(tasks.has(census.tid));
+  assert.match(tasks.get(census.tid), /census sync fails/);
   assert.equal(demo.pile.alerts[0].item, census.key);
-  // ...and the tour the server demo opens on leads the rail, on the task /api/demo names
-  assert.equal(demo.pile.items[0].tid, fx["/api/demo"].opens.tid);
+  // ...the tour leads the rail, and the demo opens on an agent's finished work - the LinkedIn post - never the greeting
+  assert.equal(demo.pile.items[0].title, "Start here - what Taskuary can do");
+  assert.equal(tasks.get(fx["/api/demo"].opens.tid), "Fairhaven safety milestone - LinkedIn post?");
 });

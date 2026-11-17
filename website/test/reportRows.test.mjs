@@ -45,4 +45,8 @@ test("a report's rows say their chart, their columns' decimals and one line of w
   assert.ok(!average.includes("11"), "averages are not summed");
   assert.equal(reportShape([{ site: "Lakeview", lead: "Erin Blake" }, { site: "Riverside", lead: "Gail Moreno" }]).chart, null);
   assert.equal(reportShape([{ site: "Lakeview", headcount: "1,112" }, { site: "Riverside", headcount: "98" }]).val, "headcount");
+  // ...and a row's id is no measure (the visual audit, 2026-11-13: a report of open tasks charted "task_id by ref", TQ-0002 at 2, TQ-0001 at 1)
+  const tasks = [{ task_id: 2, ref: "TQ-0002", title: "Reminder" }, { task_id: 1, ref: "TQ-0001", title: "Compare" }];
+  assert.deepEqual([reportShape(tasks).val, reportShape(tasks).chart], [null, null]);
+  assert.equal(reportShape([{ task_id: 2, ref: "TQ-0002", days_open: 9 }, { task_id: 1, ref: "TQ-0001", days_open: 3 }]).val, "days_open");
 });

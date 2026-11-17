@@ -188,7 +188,7 @@ def _holds(store, tid, pad='    ') -> str:
     return ''.join(f"{NL}{pad}· {x['line']}" + (f" [rv{x['rid']}]" if x.get('rid') else '') for x in owed_items(store, int(tid))[:6]) if tid else ''
 
 def approvals_list(store, p: dict) -> str:
-    rows = store.list_reviews(status='pending')
+    rows = store.waiting_reviews()
     if not rows: return 'Nothing is waiting for your approval.'
     # ...each task's by what it holds - "a slot to them" was an agent's email to Gail, said as nothing the owner could act on
     tids = list(dict.fromkeys(r['TaskId'] for r in rows if r.get('TaskId')))[:30]
@@ -287,9 +287,9 @@ def calendar_read(store, p: dict) -> str:
     # calendar" told it the opposite of
     blind = cal.unread_mail(store)
     unread = (f"NOT read - no calendar comes with these cards: {'; '.join(blind)} (a Gmail card reads its calendar only once "
-              f"Sign in with Google for the calendar is done on it; IMAP carries none). An event there is not in this answer either way." if blind else '')
+              f"Sign in with Google is done on it; IMAP carries none). An event there is not in this answer either way." if blind else '')
     if not ag['sources']: return NL.join(['No calendar is connected - an Outlook card brings its calendar with it, a Gmail card once '
-                                          'Sign in with Google for the calendar is done on it.'] + ([unread] if unread else []))
+                                          'Sign in with Google is done on it.'] + ([unread] if unread else []))
     ev = [f"{e['start']}{'-' + e['end'][11:] if e.get('end') and not e['all_day'] else ''} {'(all day) ' if e['all_day'] else ''}"
           f"{e['subject']}{' @ ' + e['where'] if e.get('where') else ''}{' with ' + ', '.join(e['who'][:5]) if e.get('who') else ''}"
           for e in ag['events']]

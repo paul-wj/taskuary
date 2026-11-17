@@ -127,6 +127,7 @@ def _programs_copy(base: str) -> str:
     return ''
 
 
+_FOUND, GONE_TRIES, GONE_WAIT = set(), 5, 1.0        # the CLIs this process has found; how long one of them may be gone before it is said so
 def _resolve_cmd(name: str) -> list:
     """Windows can't CreateProcess a bare 'claude': npm installs it as claude.cmd, which only
     PATH-resolves via which(). Reaching THROUGH the shim beats running it under cmd /c - see
@@ -140,11 +141,22 @@ def _resolve_cmd(name: str) -> list:
         base = re.split(r'[\\/]', str(name))[-1]
         path = pathcache.which(base) or pathcache.which(base, path=_fresh_path())
         if path: logger.info(f'{name} has moved; using {path} instead')
+    # A CLI THAT WAS HERE A MOMENT AGO IS UPDATING ITSELF (recorded on the real CLI, 2026-11-13: claude swapped its own binary between two
+    # turns, and the line that waited by the box began its turn in that second - "'claude' not found on PATH - is the CLI installed?" in
+    # the chat, on a machine that had just answered with it): one found earlier in this process is looked for again for a few seconds
+    # before it is said to be gone. One never found fails at once, as before - a check for what is installed never waits
+    # ...(while shutil.which is a test's double its answer is the answer, as pathcache holds: nothing is waited for)
+    if not path and name in _FOUND and shutil.which is pathcache._ORIG:
+        for _ in range(GONE_TRIES):
+            time.sleep(GONE_WAIT); pathcache.forget()
+            if (path := pathcache.which(name)): break
+        if not path: _FOUND.discard(name)
     if not path:
         from .clis import omp_install
         path = omp_install(name)
     if not path:
         raise FileNotFoundError(f"'{name}' not found on PATH - is the CLI installed?")
+    _FOUND.add(name)
     if os.name == 'nt' and path.lower().endswith(('.cmd', '.bat')):
         return _shim_target(path) or ['cmd', '/c', path]
     if os.name == 'nt' and '\\windowsapps\\' in path.lower():
@@ -181,6 +193,11 @@ def child_env(base: dict = None, home: str = None, windows: bool = None) -> dict
     """
     import ntpath                    # a Windows path, split as one wherever this runs
     env = dict(os.environ if base is None else base)
+    # ...and NO CLI KEEPS A MEMORY OF ITS OWN (the recorded walk, 2026-11-11: an agent saved a "playbook" into Claude Code's memory folder,
+    # where no card held it and no other agent reads it). It was switched off for chat agents only; a coding agent in a pane, over ACP, or a
+    # one-shot with tools still wrote there. Every CLI Taskuary starts takes its environment from here, so here it is off for all of them
+    from .clis import NO_MEMORY
+    env.update(NO_MEMORY)
     if home is None:
         try: home = str(Path.home())
         except (RuntimeError, OSError): return env      # nothing better to say than nothing
@@ -545,9 +562,16 @@ def cli_tests(store) -> dict:
 def record_cli_test(store, key: str, ok: bool):
     if key: store.set_setting(CLI_TESTS, json.dumps({**cli_tests(store), str(key): bool(ok)}), 'system')
 
+def answered(store, pick: str):
+    """A FAILED TEST IS OVER THE MOMENT THE CLI ANSWERS WORK (the owner, 2026-11-11: "it says codex not claude why?"): the mark was
+    cleared only by pressing Test again, so a CLI whose one test failed - pressed while it rested on its usage limit, say - stayed
+    out of every list of what can take work while it ran reports and sessions all day."""
+    k = str(pick or '')[4:] if str(pick or '').startswith('cli:') else ''
+    if k and cli_tests(store).get(k) is False: record_cli_test(store, k, True)
+
 # THE BRAIN SETTINGS A START READS, and who wrote each: 'owner' is the person's own pick (setup, Settings, the Assistant tab);
 # anything else - 'migration' from adopt_brain_setting and migrate_brain_settings, blank - was saved FOR them.
-HEALED = ('default_brain', 'triage_ai', 'concierge_ai', 'assistant_ai', 'judge_ai', 'draft_ai')
+HEALED = ('default_brain', 'triage_ai', 'concierge_ai', 'assistant_ai', 'judge_ai')
 
 def picked(store, name: str) -> bool: return store.setting_writer(name) == 'owner'
 
@@ -727,10 +751,8 @@ def coding_options(store) -> list[dict]:
     """EVERY AI THAT CAN RUN A CODING TASK, as the pickers offer it (the owner, 2026-11-09: "fix the picker ... it should choose the
     correct one"): each connected CLI, then each active AI card - a card runs coding through general.on_card, in the checkout a CLI
     would open. `value` is the pick resolve_brain answers in (`cli:<key>` / `connector:<id>`), so the current one is found by equality."""
-    from . import words
     from .llm import AI_TYPES
-    labels = {k['cmd']: k['label'] for k in clis_mod.KNOWN}
-    out = [{'value': f'cli:{k}', 'key': k, 'kind': 'cli', 'ready': runs_here(c), 'label': words.local(labels.get(cli_of(c, k)) or k)}
+    out = [{'value': f'cli:{k}', 'key': k, 'kind': 'cli', 'ready': runs_here(c), 'label': clis_mod.name_of(cli_of(c, k) or k)}
            for k, c in connection_brains(store)]
     for c in store.list_connectors():
         if c['Type'] not in AI_TYPES or not c['Active'] or not (c['HasSecret'] or c['Type'] == 'ollama'): continue
@@ -996,7 +1018,36 @@ def adopt_brain_setting(store) -> bool:
     return True
 
 
-BRAIN_SETTINGS = ('triage_ai', 'triage_backup_ai', 'concierge_ai', 'assistant_ai', 'judge_ai', 'draft_ai')
+def default_ask(store) -> dict:
+    """THE DEFAULT AI IS NEVER CHOSEN SILENTLY (the owner, 2026-11-11: "never change from what's in settings"). A start names the
+    brain an install runs on (above) - with one CLI that is no choice at all; with several it took the first that was ready, and
+    a day of work ran on a tool nobody picked. So while more than one CLI runs here and the default is nobody's own - blank, or
+    written by a start - the one question is owed: {'runs': what work is on meanwhile, 'options': the CLIs}. {} once the owner
+    chose (the setting's writer is theirs), and with a single CLI. It asks; it never writes."""
+    ready = ready_brains(store)
+    v = str(store.get_setting('default_brain') or '').strip()
+    if len(ready) < 2 or (v and store.setting_writer('default_brain') != 'migration'): return {}
+    from .brainroute import _and, _said, cooldowns
+    name = lambda k: _said(store, f'cli:{k}')
+    # every CLI that can take work, one resting on its limit with the time it is back - and one left out says why, with its way back
+    cold, tests = cooldowns(store), cli_tests(store)
+    names = [name(k) + (f" (resting until {cold[f'cli:{k}'].strftime('%H:%M')})" if f'cli:{k}' in cold else '') for k in ready]
+    out = [name(k) for k, c in connection_brains(store) if tests.get(k) is False and runs_here(c)]
+    one, runs = len(out) == 1, default_brain(store)
+    # ...and where the one it took is itself resting, the work is on it only once it is back: the card's RUNS line names what has it now
+    facts = (f"{_and(names)} are {'both' if len(names) == 2 else 'all'} connected and you have not chosen between them, so work runs on "
+             f"{name(runs)}, the first one ready{', once it is back' if f'cli:{runs}' in cold else ''}."
+             + (f" {_and(out)} {'is' if one else 'are'} left out: {'its' if one else 'their'} last test failed - press Test on "
+                f"{'it' if one else 'them'} under Connections." if out else ''))
+    # one set of facts for the bell and the Settings card; each ends with the move where it is read (`detail` the bell's, `note` the card's)
+    return {'runs': runs, 'options': ready, 'title': 'Choose your default AI', 'detail': f'{facts} Choose one in Settings, on the {ASK_CARD} card.',
+            'note': f'{facts} Choose one in the list above - choosing {name(runs)} again counts.'}
+
+
+ASK_CARD = 'Coding agent'      # the card that holds default_brain (aidefaults.SLOTS)
+
+
+BRAIN_SETTINGS = ('triage_ai', 'triage_backup_ai', 'concierge_ai', 'assistant_ai', 'judge_ai')
 
 
 def migrate_brain_settings(store, cfg: dict = None) -> int:
@@ -1215,7 +1266,16 @@ class ACPSteps:
 
     def __init__(self, trace, name: str, held: dict = None):
         self.trace, self.name, self.held = trace, name, held if held is not None else {}
-        self.calls, self.said, self.thought, self.plans = {}, [], [], 0
+        self.calls, self.said, self.thought, self.plans, self.live_at = {}, [], [], 0, -1e9
+
+    # ...AND WHAT IT IS THINKING OR WRITING IS SAID AS IT GROWS (the owner, 2026-11-16: "Thinking..." for three minutes with nothing else - "it
+    # is a chat: the owner must see what the agent is doing at all times"): about once a second the newest words of the thought or the answer
+    # it is writing go out as a `live` snapshot - a thought kept as the one open thought they update (sessionrecord.trace_steps), the words
+    # as the turn's line of what it is doing (conversation: `doing`) - and the whole paragraph still goes once it is done (_words)
+    LIVE_EVERY, LIVE_N = 1.0, 600
+    def _live(self, name: str, parts: list):
+        if (now := time.monotonic()) - self.live_at < self.LIVE_EVERY: return
+        if (t := ''.join(parts).strip()): self.live_at = now; self.trace('live', name, t[-self.LIVE_N:])
 
     # ── words ───────────────────────────────────────────────────────────────────────────────
     def _words(self):
@@ -1295,10 +1355,10 @@ class ACPSteps:
         kind = u.get('sessionUpdate')
         if kind == 'agent_message_chunk':
             if self.thought: self._words()
-            self._settle_others(); self.said.append(acp_mod._text_of(u.get('content'))); return
+            self._settle_others(); self.said.append(acp_mod._text_of(u.get('content'))); self._live('writing', self.said); return
         if kind == 'agent_thought_chunk':
             if self.said: self._words()
-            self._settle_others(); self.thought.append(acp_mod._text_of(u.get('content'))); return
+            self._settle_others(); self.thought.append(acp_mod._text_of(u.get('content'))); self._live('thinking', self.thought); return
         if kind in ('tool_call', 'tool_call_update'):
             self._words()
             c = self._merge(u)
@@ -1373,8 +1433,10 @@ def _read(path) -> str:
 
 def claude_acp_options(args: list) -> dict:
     """claude's -p argv -> the SDK options the claude-agent-acp adapter spreads into its query (_meta.claudeCode.options)."""
-    opt, extra, it = {}, {}, iter(list(args or []))
-    for a in it:
+    opt, extra, it, back = {}, {}, iter(list(args or [])), []
+    # ...`back`: an argument read ahead and handed back. A flag with no value read the next one to see - and then rebound `it`, which the
+    # loop no longer read: every option after `--strict-mcp-config` was dropped, a chat agent's --settings (its hooks) among them
+    while (a := back.pop() if back else next(it, None)) is not None:
         a = str(a)
         if a in _CLAUDE_DROP: continue
         if a in _CLAUDE_DROP_VALUED: next(it, None); continue
@@ -1393,7 +1455,7 @@ def claude_acp_options(args: list) -> dict:
             if nxt is not None and not str(nxt).startswith('-'): extra[a.lstrip('-')] = str(nxt)
             else:
                 extra[a.lstrip('-')] = None
-                if nxt is not None: it = iter([nxt, *it])
+                if nxt is not None: back.append(nxt)
     if extra: opt['extraArgs'] = extra
     return opt
 
@@ -1464,7 +1526,27 @@ def _acp_sig(launch: dict, cwd, env: dict) -> tuple:
     return (tuple(launch['cmd']), str(cwd or ''), hash(tuple(sorted(env))), json.dumps(launch['meta'], sort_keys=True, default=str), launch['mode'])
 
 
-def _acp_open(name: str, launch: dict, cwd, env: dict, resume, timeout, trace):
+# ...A CONVERSATION THE CLI NO LONGER HAS IS STARTED AFRESH (the owner's coding task, 2026-11-16: after a restart cut its turn, his next line drew
+# only the CLI's own "No conversation found with session ID: ..." and the turn never ran): where the caller can carry the task over to a fresh
+# one (`fresh_if_gone`), a resume the agent refuses opens a new conversation, said in one plain line, and the client says so (`fresh_from`)
+GONE_LINE = 'Started a fresh session - the old one was gone.'
+# ...ON EVERY ROAD (the general chat's ACP and command-line turns, a coding pane's terminal): the CLI's own words for a conversation it no longer
+# has - a message format, read as structure (claude 2.1.326's; codex's, out of its binary) - never shown, said instead as GONE_LINE (said_afresh)
+_GONE = re.compile(r'No conversation found with session ID|No saved session found with ID|no rollout found for (?:thread|conversation) id|thread not found:', re.I)
+def gone(text) -> bool: return bool(_GONE.search(str(text or '')))
+
+class Gone(RuntimeError):
+    "The CLI no longer has the conversation the turn resumed: nothing ran, and the caller carries the task over to a fresh one (general.Session)."
+    def __init__(self, resume=''): super().__init__(GONE_LINE); self.resume = resume or ''
+
+def said_afresh(store, task_id) -> None:
+    "The one plain line every road says when its conversation was gone and a fresh one carries the task on - Taskuary's note, never the CLI's error."
+    if not (store and task_id): return
+    from . import general, sessionrecord
+    try: store.add_comment(task_id, sessionrecord.NOTE_ACTOR, general.ASSISTANT_TYPE, GONE_LINE)
+    except Exception as e: logger.debug(f'task {task_id}: the fresh start was not said - {e}')
+
+def _acp_open(name: str, launch: dict, cwd, env: dict, resume, timeout, trace, fresh_if_gone: bool = False):
     """A connected session, ready for a prompt: started, initialized, the conversation opened (resumed where there is one),
     its mode, model and effort set. ACPStartError for anything before the session exists - nothing has run, so run_cli takes
     the argv road instead."""
@@ -1475,7 +1557,12 @@ def _acp_open(name: str, launch: dict, cwd, env: dict, resume, timeout, trace):
     try:
         caps = client.connect()
         try:
-            if resume and (caps.get('loadSession') or client.can_resume()): client.load_session(resume, cwd, meta=launch['meta'])
+            if resume and (caps.get('loadSession') or client.can_resume()):
+                try: client.load_session(resume, cwd, meta=launch['meta'])
+                except acp_mod.ACPAgentError as e:
+                    if not fresh_if_gone or _SIGNED_OUT.search(str(e)): raise
+                    logger.info(f'acp: {name} could not reopen {resume} ({str(e)[:160]}) - a fresh conversation instead')
+                    client.new_session(cwd, meta=launch['meta']); client.fresh_from = resume      # the caller says it once (said_afresh)
             else:
                 if resume: trace('progress', 'acp', f'{name} cannot reload a session; starting a fresh one')
                 client.new_session(cwd, meta=launch['meta'])
@@ -1540,6 +1627,7 @@ def _acp_gears(client, profile: dict, name: str, trace):
         if cat == 'model': trace('progress', 'acp', f"{want} is not available on this {_cli_name(name)} sign-in, so this ran on {now}")
 
 
+STOP_GRACE = 2.0                 # seconds a stopped turn has to honour session/cancel before its process is closed
 def run_acp(profile: dict, prompt: str, trace, resume: str = None, cancel=None, extra_env: dict = None, store=None):
     """One headless turn over ACP. Returns (result, session_id, diff) - run_cli's own contract, so
     nothing upstream can tell which road a run took.
@@ -1558,9 +1646,15 @@ def run_acp(profile: dict, prompt: str, trace, resume: str = None, cancel=None, 
     env = {**spawn_env(profile, extra_env), **launch['env']}
     from . import acpgate, clipool
     sig = _acp_sig(launch, cwd, env)
-    opener = lambda: acp_mod.Conversation(_acp_open(name, launch, cwd, env, resume, profile.get('timeout'), trace), sig)
-    conv = clipool.take(keep, sig, opener, resume) if keep else opener()
+    opener = lambda: acp_mod.Conversation(_acp_open(name, launch, cwd, env, resume, profile.get('timeout'), trace, fresh_if_gone=True), sig)
+    conv = clipool.take(keep, sig, opener, resume, opening=lambda: trace('opening', name, '')) if keep else opener()
     client = conv.client
+    # ...ITS CONVERSATION WAS GONE: nothing is asked of the fresh one here - this turn's words assume what it no longer has. The caller says the
+    # whole of it again (Gone), and a kept one finds this fresh conversation open and unused (clipool._stale), so no second start is paid
+    if isinstance(getattr(client, 'fresh_from', None), str) and not conv.turns:
+        client.fresh_from = None
+        if not keep: client.close()
+        raise Gone(resume)
     trace('prompt', 'prompt_sent_to_agent', prompt)
     trace('tool', 'cli', f"{name} over acp{' via ' + launch['adapter'] if launch['adapter'] else ''} cwd={cwd or os.getcwd()}"
                          + (f' resume={resume}' if resume else '') + (f' live={keep}' if keep else ''))
@@ -1572,11 +1666,20 @@ def run_acp(profile: dict, prompt: str, trace, resume: str = None, cancel=None, 
                              'sid': client.session_id}, trace, held)
     client.on_update, client.permit = steps, lambda params: (steps.asked(params.get('toolCall')), gate(params))[1]
     with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.add(client.p)
+    over = threading.Event()             # this turn has ended, however it ended
     if cancel is not None:
+        # A browser Cancel asks the agent to stop first; killing the process is the backstop for
+        # an agent that does not honour session/cancel.
+        # ...AND ONLY FOR THE TURN THAT WAS STOPPED (the recorded stop, 2026-11-11): the kill came two seconds after the ask whatever had
+        # happened since - the stopped turn had ended at once, the lines that waited behind it had begun their turn on this same
+        # conversation, and it was closed under them: "died mid-turn", nothing drawn, his lines unanswered. A turn that honoured the stop is
+        # over; what runs next is never the one being stopped
         def _cancel():
             cancel.wait()
-            if cancel.is_set() and conv.lock.locked(): client.cancel(); time.sleep(2); clipool.drop(keep, conv) if keep else client.close()
-        threading.Thread(target=_cancel, daemon=True).start()
+            if over.is_set() or not conv.lock.locked(): return
+            client.cancel()
+            if not over.wait(STOP_GRACE): clipool.drop(keep, conv) if keep else client.close()
+        threading.Thread(target=_cancel, daemon=True, name='acp-stop-backstop').start()
     stop, ok = None, False
     try:
         with conv.lock:
@@ -1599,6 +1702,7 @@ def run_acp(profile: dict, prompt: str, trace, resume: str = None, cancel=None, 
         if _SIGNED_OUT.search(str(e)): raise RuntimeError(signed_out_msg(name, str(e), launch['cmd'][0])) from e
         raise
     finally:
+        over.set()
         steps.flush(stop if ok else 'error')
         client.on_update, client.permit = None, None
         with _CLI_CHILDREN_LOCK: _CLI_CHILDREN.discard(client.p)
@@ -1739,6 +1843,10 @@ def _run_acp_omp(profile: dict, prompt: str, trace, resume: str = None, cancel=N
                 except OSError: pass
 
 
+HELD_ONLY = ("{cli} did not start on the road where it asks before it reads or acts ({why}), so nothing ran - its command line would read "
+             "and act without asking. Send the line again in a moment, or pick another AI for this task")
+
+
 def _fell_back(name: str, why, trace):
     "An ACP start that failed: said once in the log per CLI, and on this run's launch line; the run goes on over argv."
     if name not in _FELL_BACK:
@@ -1793,7 +1901,12 @@ def _run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None,
     # nothing ran), said once in the log. See docs/acp-transport.md.
     if _acp_road(profile, store):
         try: return run_acp(profile, prompt, trace, resume=resume, cancel=cancel, extra_env=extra_env, store=store)
-        except acp_mod.ACPStartError as e: _fell_back(str(profile.get('cmd') or ''), e, trace)
+        except acp_mod.ACPStartError as e:
+            if profile.get('held_only'): raise RuntimeError(HELD_ONLY.format(cli=_cli_name(str(profile.get('cmd') or '')).capitalize(), why=str(e)[:200])) from e
+            _fell_back(str(profile.get('cmd') or ''), e, trace)
+    # ...a run that may only go held (llm.make_cli_llm `held_only`) never takes the command line: there it would read and act unasked
+    elif profile.get('held_only'):
+        raise RuntimeError(HELD_ONLY.format(cli=_cli_name(str(profile.get('cmd') or '')).capitalize(), why="'Run CLI agents over ACP' is off in Settings, Agents"))
     profile = with_cmd(profile, store); name = profile['cmd']
     family = _cli_name(name)
     args = list(profile.get('args') or preset_args(name) or ['-p'])
@@ -2078,6 +2191,7 @@ def _run_cli(profile: dict, prompt: str, trace, resume: str = None, cancel=None,
         limit = rate_limited(raw) or rate_limited(hay)
         if limit: raise RateLimited(rate_limit_msg(name, limit), limit)
         if _SIGNED_OUT.search(hay): raise RuntimeError(signed_out_msg(name, said, cmd[0] if cmd else ''))
+        if resume and gone(hay + '\n'.join(raw)): raise Gone(resume)
         # a refusal to START, not a failed run: the CLI produced no output of its own and the
         # only thing on stderr is the refusal
         if _DENIED.search(hay) and not raw: raise RuntimeError(denied_msg(name, cmd[0] if cmd else '', said))
@@ -2186,7 +2300,7 @@ def _warm_acp(profile: dict, resume, extra_env, store, swap: bool) -> bool:
         env = {**spawn_env(profile, extra_env), **launch['env']}
         sig = _acp_sig(launch, cwd, env)
         return clipool.warm_with(profile['keep_alive'], sig, lambda: acp_mod.Conversation(
-            _acp_open(name, launch, cwd, env, resume, profile.get('timeout'), lambda *a: None), sig), resume, swap=swap)
+            _acp_open(name, launch, cwd, env, resume, profile.get('timeout'), lambda *a: None, fresh_if_gone=True), sig), resume, swap=swap)
     except acp_mod.ACPStartError as e:
         logger.info(f"acp: {profile['cmd']} not warmed over ACP - {e}"); return None
 
@@ -2243,13 +2357,18 @@ def _run_live(profile: dict, name: str, cmd: list, prompt: str, trace, keep: str
         limit = rate_limited(said)
         if limit: raise RateLimited(rate_limit_msg(name, limit), limit)
         if _SIGNED_OUT.search(said): raise RuntimeError(signed_out_msg(name, said, cmd[0] if cmd else ''))
+        if resume and gone(said): raise Gone(resume)
+        # ...a turn its CLI died in says so in the one sentence an ACP agent's death says too (acp.py), no process name before it and no
+        # "(the CLI exited (3))" after it (the overnight walk, 2026-11-11) - that is the log's
+        if said.startswith(clipool.MID_TURN): logger.warning(f'{name}: {said[:500]}'); raise RuntimeError(clipool.MID_TURN)
         raise RuntimeError(f'{name}: {said[:500]}')
-    aiusage.claude_result(final)                       # a turn that failed still used what it used
+    aiusage.claude_result(final)                      # a turn that failed still used what it used
     if final.get('is_error'):
         said = str(final.get('result') or final.get('subtype') or 'the CLI reported an error')
         limit = rate_limited(raw) or rate_limited(said)
         if limit: raise RateLimited(rate_limit_msg(name, limit), limit)
         if _SIGNED_OUT.search(said): raise RuntimeError(signed_out_msg(name, said, cmd[0] if cmd else ''))
+        if resume and gone('\n'.join(raw)): raise Gone(resume)          # its `errors`, beside a result that says only error_during_execution
         raise RuntimeError(f'{name}: {said[:500]}')
     out = str(final.get('result') or '').strip()
     trace('output', name, out[-1000:])

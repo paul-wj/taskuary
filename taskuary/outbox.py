@@ -70,7 +70,8 @@ def draft_message(store, channel: str, to, about: str, resolution: str = None, l
     llm = llm or build_llm(store, job='draft')
     if not llm: raise RuntimeError('no AI connector is set up to write messages')
     ident, soul, sty, lrn, brevity, chat, _ = _voice(store)
-    is_chat = str(channel or '').lower() in ('teams', 'slack', 'telegram', 'whatsapp', 'imessage', 'discord')
+    from .routing import CHAT_CHANNELS
+    is_chat = str(channel or '').lower() in CHAT_CHANNELS
     system = (ident + brevity + (chat if is_chat else email_rule(store, mailbox)) + '\n' + COMPOSE_SYSTEM
               + (f'\n\nYOUR OWN document - your voice, your rules, your responsibilities:\n{soul[:4000]}' if soul else '')
               + (f'\n\nYour own style, distilled from mail you have actually sent - write like this:\n{sty[:2500]}' if sty else '')
@@ -101,7 +102,7 @@ def subject_for(store, about: str, llm=None) -> str:
     fallback = ' '.join(str(about or 'No subject').split())[:78]
     try:
         from .llm import build_llm
-        llm = llm or build_llm(store, job='draft')
+        llm = llm or build_llm(store, job='summary')          # a line off a brief: the quick model's, like every other summary (it was a 'draft')
         if not llm: return fallback
         line = ' '.join(str(llm(SUBJECT_SYSTEM, about, max_tokens=40) or '').split()).strip('"\'. ')
         return line[:120] or fallback

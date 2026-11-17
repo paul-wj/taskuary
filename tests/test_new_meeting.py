@@ -60,7 +60,7 @@ class FindTimes(unittest.TestCase):
             {'address': ME, 'google_client_id': 'id', 'google_client_secret': 'sec', 'google_refresh_token': 'rt'})}, 't')
         fb = {'calendars': {ERIN: {'busy': [{'start': f'{D}T15:00:00Z', 'end': f'{D}T17:00:00Z'}]}, GAIL: {'errors': [{'reason': 'notFound'}]}}}
         g = Fake({'oauth2.googleapis.com/token': R(200, {'access_token': 'g', 'scope': calwrite.G_WRITE[0]}), 'freeBusy': R(200, fb)})
-        with mock.patch('taskuary.googlecal.access_token', return_value='g'):
+        with mock.patch('taskuary.googlecal.token', return_value=('g', calwrite.G_WRITE[0])):     # the one road to a Google token
             out = slots(s, g)
         self.assertEqual((out['provider'], out['read'], out['unread']), ('google', [ERIN], [GAIL]))
         self.assertTrue(all(x['end'][11:] <= '15:00' for x in out['slots']))
@@ -72,6 +72,18 @@ class FindTimes(unittest.TestCase):
              mock.patch('taskuary.channels.graph_token', return_value='tok'):
             out = calwrite.suggest(s, [ERIN], 30, '', D, D)
         self.assertTrue(out['later'] and out['slots'] and all(x['start'][:10] > D for x in out['slots']))
+
+    def test_a_calendar_that_could_not_be_read_offers_no_free_time(self):
+        """The owner's own read failed (offline, a lapsed token): an empty agenda is not an empty day - it says so, with the card."""
+        s = outlook_store(); calwrite._BUSY.update(at=0.0, data=None, days=0)
+        down = {'events': [], 'errors': ['The calendar service could not be reached - this computer may be offline.'], 'sources': [f'outlook: {ME}']}
+        with mock.patch.object(calwrite.cal, 'agenda', return_value=down), mock.patch.object(calwrite, 'requests', Fake({'getSchedule': R(200, {'value': []})})), \
+             mock.patch('taskuary.channels.graph_token', return_value='tok'):
+            with self.assertRaises(calwrite.NoAccess) as e: calwrite.suggest(s, [ERIN], 30, '', D, D)
+            self.assertIn('could not be read', str(e.exception))
+            self.assertEqual(e.exception.fix['href'], '#connector=outlook')
+            with self.assertRaises(calwrite.NoAccess): calwrite.free_slots(s, 30)   # a thread's Find a time reads the same road
+        self.assertIsNone(calwrite._BUSY['data'], 'a failed read is not cached as an empty week')
 
     def test_a_card_that_may_not_write_says_so_before_any_pick(self):
         s = outlook_store('offline_access Calendars.Read')

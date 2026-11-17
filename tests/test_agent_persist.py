@@ -33,7 +33,7 @@ def test_the_brief_carries_the_ladder_the_work_line_and_the_override():
     s.save_doc('agent', (s.doc('agent') or '') + '\n- When the work is over, run `taskuary --done "<one sentence>"`.', 'owner')
     system = general._prompt(s, task(s))[0]
     for want in (general.WORK_LINE, general.GENERAL_OVER, 'more than twice', 'three genuinely different ways', 'one line per way you tried',
-                 'WHILE A QUESTION WAITS, KEEP WORKING', 'CHECK EACH STEP BEFORE THE NEXT', 'DONE MEANS THE GOAL IS MET AND CHECKED'):
+                 'A TURN THAT ASKS STILL DOES THE WORK', 'CHECK EACH STEP', 'DONE MEANS THE GOAL IS MET AND CHECKED'):
         assert want in system, want
     assert '"answer_is_result"' in selfclose.SUMMARY_LINE and 'true only when the goal is met and you checked it' in selfclose.SUMMARY_LINE
 
@@ -152,8 +152,8 @@ def test_a_one_line_turn_files_its_line_alone_and_the_agent_is_told_it_may():
     assert rest == 'Ray thanked you.' and out['did'] == 'Ray thanked you.' and out['about'] == '' and out['on_you'] == []
     # ...the model judges it: the instructions say ONE line and no draft, and never hand it a list of words to match
     from taskuary import ingest
-    for words in (selfclose.SUMMARY_LINE, ingest.REPLAN):
-        assert 'ONE' in words and 'no draft' in words
+    assert 'ONE' in selfclose.SUMMARY_LINE and 'no draft' in selfclose.SUMMARY_LINE
+    assert 'one line of your own' in ingest.REPLAN                 # ...said once: the re-plan note no longer repeats the summary's rule
 
 
 # ── a refusal says why, and what to do next ─────────────────────────────────────────────────

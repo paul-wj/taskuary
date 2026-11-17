@@ -6,7 +6,7 @@ more - every task is Came from and its one chat, and the chat holds Mark done (t
 import re
 from datetime import datetime, timedelta
 from unittest import mock
-from taskuary import advisor, rulebook
+from taskuary import rulebook
 from taskuary.channels import ingest_own_message
 from taskuary.store import MemoryStore
 
@@ -32,31 +32,32 @@ def teams_task(s, answered=True, again=False):
 
 def read(s, tid):
     def no_model(*a, **kw): raise AssertionError('no model reads a task')
-    with mock.patch.object(advisor, 'build_llm', no_model): return advisor.decide(s, f'task:{tid}')
+    return rulebook.decide(s, f'task:{tid}')
 
 
-def test_mark_done_is_lit_where_the_owner_answered_in_teams():
+def test_where_the_owner_answered_in_teams_nothing_is_lit_and_the_reply_is_said():
     s = MemoryStore(); tid = teams_task(s)
     d = read(s, tid)
-    assert (d['verb'], d['label'], d['by'], d.get('section')) == ('close', 'Mark done', 'agent', None), d
+    # ...nothing is filled over it: no agent said nothing is left (the owner, 2026-11-15: "the agent should suggest what to do")
+    assert (d['verb'], d['state'], d['by'], d.get('section')) == (None, 'answered', 'agent', None), d
     r = rulebook.recommended_task(s, tid)
-    assert r['verb'] == 'close' and re.search(r'^Your reply went .*nothing since', r['why']), 'the reply that went is its reason'
+    assert r['verb'] is None and re.search(r'^Your reply went .*nothing since', r['why']), 'the reply that went is said'
 
 
 def test_nothing_answered_or_asked_again_is_not_over_and_names_no_section():
     s = MemoryStore(); tid = teams_task(s, answered=False)
     d = read(s, tid)
-    assert d.get('section') is None and d['verb'] == 'regular_agent', d          # an ask no agent took: Send to agent (2026-11-10)
+    assert d.get('section') is None and d['verb'] is None, d          # an ask no agent took: nothing filled (2026-11-15)
     s = MemoryStore(); tid = teams_task(s, again=True)
     d = read(s, tid)
-    assert d.get('section') is None and d['verb'] == 'regular_agent', 'she wrote again after the answer: it is not over'
+    assert d.get('section') is None and d['state'] != 'answered', 'she wrote again after the answer: it is not over'
 
 
 def test_the_facts_say_the_answer_and_name_no_section():
     """The answered state's facts are its line alone - no page section rides with them, lit move or not."""
     s = MemoryStore(); tid = teams_task(s)
-    item = advisor._item(s, 'task', tid, key=f'task:{tid}')
-    r = rulebook.facts(s, item, advisor.offered(s, item))
+    item = rulebook._item(s, 'task', tid, key=f'task:{tid}')
+    r = rulebook.facts(s, item, rulebook.offered(s, item))
     assert r['state'] in ('answered', 'agent_done') and 'section' not in r and '{' not in r['line'] and 'verb' not in r
     assert not hasattr(rulebook, 'SEC')
     assert read(s, tid).get('section') is None
@@ -68,5 +69,5 @@ def test_the_api_hands_the_page_no_section(monkeypatch):
     s = MemoryStore(); tid = teams_task(s)
     monkeypatch.setattr(server, 'store', s)
     got = TestClient(server.app).get('/api/advice', params={'key': f'task:{tid}'}).json()
-    assert (got.get('verb'), got.get('section')) == ('close', None), got
-    assert TestClient(server.app).get(f'/api/tasks/{tid}').json()['recommended']['verb'] == 'close', 'the task page reads it off its own payload'
+    assert (got.get('verb'), got.get('section'), got.get('state')) == (None, None, 'answered'), got
+    assert TestClient(server.app).get(f'/api/tasks/{tid}').json()['recommended']['verb'] is None, 'the task page reads it off its own payload'

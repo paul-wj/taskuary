@@ -29,11 +29,16 @@ def test_a_draft_is_said_in_a_line_and_its_words_are_the_cards():
     s.add_message({'TaskId': t, 'Channel': 'email', 'Subject': 'March invoice batch', 'FromName': 'Gail Moreno',
                    'FromEmail': 'gail@northwind.example', 'BodyText': 'Can you check the March batch?', 'Status': 'routed'})
     line = selfclose.owner_closes_line()
-    assert 'say in one line what you set up and for whom' in line and "never repeat the draft's words" in line and 'assum' in line
+    # ...and ONE duty about a card (the owner's rule, 2026-11-11: no repeating what the card says): told to say what it set up and for whom,
+    # it said that over the card that says it. It adds only what the card cannot say
+    assert 'Say none of that' in line and 'Add only what the card cannot say' in line and 'assum' in line and 'what you set up and for whom' not in line
     # ...nor its id (agent walk 2, 2026-11-10: "send it after rv3"): the prompt names drafts by Taskuary's handle, which the owner never sees
     assert selfclose.HANDLES_LINE in line and 'the owner never sees it' in line
+    # ...and the task is never "ready for Mark done" while a card it set up waits (the real Codex walk, 2026-11-16: said over an email card
+    # still waiting for Send) - one sentence, every brain
+    assert 'no card you set up still waits for their press, say it is ready for Mark done' in line
     marked = general._prompt(s, t)[0]; tooled = general.by_tool(marked)
-    for system in (marked, tooled): assert system.count("never repeat the draft's words") == 1
+    for system in (marked, tooled): assert system.count('Add only what the card cannot say') == 1
     # ...a session that drafts by marked block writes the words once, in the block: there the block IS the draft
     assert 'the block IS the draft' in selfclose.REPLY_LINE and 'the block IS the draft' in selfclose.DRAFT_LINE
     assert 'the block IS the draft' not in tooled and 'never as text in the conversation' not in marked
@@ -43,6 +48,23 @@ def test_the_draft_tools_answer_says_the_same_one_sentence():
     # the owner, 2026-11-10: on a turn that REPLACED a waiting reply the agent quoted the new one whole, and its scratch folder's path under it -
     # the tool's own answer said nothing of the card. One sentence (selfclose.CARD_SAID): in the guide every general turn carries, and in the answer
     from taskuary import agenttools
-    assert selfclose.CARD_SAID in selfclose.owner_closes_line() and 'nor the path of a file it carries' in selfclose.CARD_SAID
+    assert selfclose.CARD_SAID in selfclose.owner_closes_line() and 'the file it carries' in selfclose.CARD_SAID
     assert agenttools.said_once({'ok': True, 'review_id': 7})['shown'] == selfclose.CARD_SAID
     assert 'shown' not in agenttools.said_once({'ok': False, 'why': 'nothing was saved'})
+    # ...and a coding agent, which saves its reply by the `taskuary` command, hears that same sentence there (the recorded coding walk,
+    # 2026-11-12: told "waiting on the owner to approve and send it", it said so over the card - and again the turn after)
+    import inspect
+    from taskuary import cli
+    src = inspect.getsource(cli)
+    assert 'saved on the task. {CARD_SAID}' in src and 'saved on the task, waiting on the owner' not in src
+
+
+def test_a_draft_is_never_retold_in_other_words():
+    """The real CLI, 2026-11-15: told to say none of the card's words, the agent wrote two venues, each one's room size and price note, its
+    pick and its caveat in the chat - every one of them the draft's own content, paraphrased - over the card that showed them. Paraphrase is
+    named: the card is the result, and its content is never retold in other words - in the guide, in the tools' answer, and to every worker."""
+    from pathlib import Path
+    from taskuary import agenttools
+    agent = ' '.join((Path(selfclose.__file__).parent / 'templates' / 'agent.md').read_text(encoding='utf-8').split())
+    for said in (selfclose.CARD_SAID, agent): assert 'never retell its content in other words' in said
+    assert agenttools.said_once({'ok': True, 'review_id': 7})['shown'] == selfclose.CARD_SAID

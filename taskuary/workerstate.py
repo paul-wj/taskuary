@@ -16,10 +16,10 @@ from loguru import logger
 from .kinds import SHOWN, shown as shown_agent   # who the owner sees at work: Taskuary, never the profile (kinds.json `shown_`)
 
 KINDS = ('working', 'turn_end', 'background', 'input_needed', 'approval_needed', 'stalled', 'answered', 'finished', 'failed', 'disconnected', 'stopped',
-         'floor_denied')
+         'floor_denied', 'idled')
 # A NOTE on the run, not a state of it: the floor refused one call of a stranger's session (floor.py) and the agent carries on,
-# so the run's state is still read off the event before it
-NOTES = ('floor_denied',)
+# so the run's state is still read off the event before it - and `idled`: its process closed quietly while it rested (idled, below)
+NOTES = ('floor_denied', 'idled')
 # A `stalled` request is a turn that DIED on a wall - a rate limit, a token ceiling, an API error - with the
 # CLI alive at its prompt. On the screen that looks exactly like a question. It is not terminal (Claude can
 # auto-resume; the owner can retry), so it is a request: open until the run speaks again (hooks.py).
@@ -79,7 +79,8 @@ def live_work(store, tid: int, but=None, skip: tuple = ()) -> list:
     """Everything still working or live on this task, each in its words - [] when nothing is. THE ONE CHECK every AUTOMATIC close asks
     (the owner, 2026-11-01: "If anything still working never close the task automatically" - a Send closed a task whose agent sat at
     its prompt waiting on him). An agent waiting on the owner is live: its session is open. `but` is the session asking (an agent's own
-    --done), never counted against itself; `skip` names work the caller IS ('routine', 'quick'). The owner's own Mark done never asks this."""
+    --done), never counted against itself; `skip` names work the caller IS ('routine', 'quick'). The owner's own closes - Mark done, Send
+    and close - never ask this."""
     from . import quickwork, terminal as term, workflows, writeup
     tid, out = int(tid), []
     if but is None: live = _live(tid)
@@ -102,6 +103,14 @@ def current_sid(store, tid: int):
     if s: return str(s.sid)
     evs = store.worker_events(tid)
     return str(evs[-1]['Sid']) if evs else None
+
+
+def idled(store, tid: int, sid: str):
+    """A session closed QUIETLY while it rested (general.idle_out, acpcoding.ACPCoding.idle_out): said on its record, so every reader - after a
+    restart too - tells it from a walk-out (taskstate.left: the transcript it filed is no "left without finishing"). Nothing in the chat."""
+    store.audit('task', tid, 'agent_idled_out', 'assistant', 'agent', {'sid': sid})
+    try: record(store, tid, sid, 'idled', source='taskuary')
+    except Exception as e: logger.debug(f'task {tid}: its quiet close was not recorded - {e}')
 
 
 def record(store, tid: int, sid: str, kind: str, request_id: str = None, text: str = '', choices: list = None,
@@ -166,10 +175,13 @@ def open_requests(evs: list) -> list:
     does not pick up its coding again"). A request raised DURING the current turn still stands -
     it comes after that turn's own prompt.
     """
-    answered = {e['RequestId'] for e in evs if e['Kind'] == 'answered'}
+    # AN ANSWER ANSWERS WHAT WAS ASKED BEFORE IT: a request named by what it asks for (`signin:<site>`) is asked again when the site signs the
+    # session out or wants a code - and the first sign-in's answer closed every later one before it was drawn (the recorded walk, 2026-11-11:
+    # "I'm still waiting on the sign-in, which you're doing on the browser page", with no page shown and nothing lit)
+    answered = {e['RequestId']: i for i, e in enumerate(evs) if e['Kind'] == 'answered'}
     spoke = max((i for i, e in enumerate(evs) if e['Kind'] == 'working' and e.get('Text') != WAKE), default=-1)
     return [e for i, e in enumerate(evs)
-            if i > spoke and e['Kind'] in REQUESTS and e['RequestId'] not in answered and e.get('Source') != READ_OFF_PROSE]
+            if i > spoke and e['Kind'] in REQUESTS and answered.get(e['RequestId'], -1) < i and e.get('Source') != READ_OFF_PROSE]
 
 
 def _public_request(e: dict) -> dict:
@@ -245,7 +257,6 @@ def status(store, tid: int) -> dict:
     return out
 
 
-ENDINGS = ('finished', *TERMINAL)
 
 
 # A QUESTION THE AGENT ITSELF ASKED, as its run recorded it: its question tool's (q:<group>:<n>), a chooser read off its screen or an API
@@ -266,6 +277,12 @@ def left_asking(store, tid) -> list:
     if not tid or _live(int(tid)): return []
     st = status(store, int(tid))
     return [r for r in st['requests'] if own_question(r)] if st['state'] in ('disconnected', 'stopped') else []
+
+
+# A RUN AT REST, BY ITS OWN LAST WORD: a turn that ended, or the request it ended on - nothing under way, nothing that ended it. What a
+# restart may take as "not interrupted" (terminal.release_task) and the rail as "reads as it did live" (funnel.paused_conversation)
+RESTS = ('turn_end', *REQUESTS)
+def at_rest(store, tid, evs=None) -> bool: return ((newest(store, tid, evs, skip=NOTES) or {}).get('Kind')) in RESTS
 
 
 def newest(store, tid, evs=None, kinds=None, skip=()):
@@ -351,6 +368,8 @@ STOP = threading.Event()
 # ...and the server itself, so Quit in the browser (POST /api/quit) can tell it to exit. Here and not on desktop.Server: the exe runs
 # desktop.py as __main__, a second copy of that module, and this one is shared by both (2026-10-25)
 SERVER = [None]
+# ...and the desktop window's "come to the front", so Taskuary started again shows this one instead of opening a second (POST /api/window)
+SHOW = [None]
 
 
 def wait_held(group: str, seconds: float, step: float = 1.0) -> dict | None:
@@ -473,6 +492,10 @@ def answer_group(store, tid: int, answers: dict, actor: str = 'owner') -> dict:
     return {'delivered': True, 'state': 'delivered', 'sid': sess.sid}
 
 
+LINE = {'delivered': False, 'state': 'line', 'why': 'those words are your next line to the agent, not an answer to its buttons'}
+PUT_DOWN = .6            # a TUI's chooser closing on Esc, before a line is typed into the box under it
+
+
 _NUMBERED = re.compile(r'(?:^|[\n,;])\s*(\d{1,2})\s*[:.)\-]?\s+([^\n,;]+)')
 
 
@@ -504,7 +527,12 @@ def answer(store, tid: int, request_id: str, text: str, actor: str = 'owner', ow
     if not asked or request_id in answered: return {'delivered': False, 'state': 'resolved', 'why': 'that request is no longer outstanding'}
     req = asked
     h = HELD.get(group_of(request_id) or '')
-    if h and h['tid'] == tid: return _answer_held(store, tid, h, {request_id: text}, actor)
+    # WORDS THAT NAME NONE OF A HELD REQUEST'S BUTTONS ARE NO ANSWER TO IT (the owner, 2026-11-11): typed under an Allow / Deny they were
+    # handed to the hold, which read anything but Allow as a refusal. They are his next line to the agent (LINE: the caller's line road
+    # takes them) and the request stays lit with its buttons
+    if h and h['tid'] == tid:
+        if req['kind'] == 'approval_needed' and req.get('choices') and not pick_of(req['choices'], text): return dict(LINE)
+        return _answer_held(store, tid, h, {request_id: text}, actor)
     sess = _live(tid)
     # THE VIEW'S DONE closes the hand-over and Taskuary tells the agent - the one that asked, or none running (it is started on it). A
     # different run on the task is never handed it: stale, below
@@ -535,16 +563,17 @@ def answer(store, tid: int, request_id: str, text: str, actor: str = 'owner', ow
     words = req['kind'] == 'input_needed' and req.get('source') != 'screen' and (not req.get('choices') or _cli(sess) == 'codex')
     # ...and so is a HOOK's chooser once its hold ran out and Claude drew the form (B12, the owner, 2026-10-11): its label
     # typed + Enter submitted whichever option was highlighted, and the log said "delivered". An approval reports no
-    # options, so they are read off the pane; where none can be read the words go as they always did.
-    opts = None if hasattr(sess, 'send_prompt') or words else (req.get('choices') or (_on_screen(sess) if req['kind'] == 'approval_needed' else None))
-    if opts:
-        pick = pick_of(opts, text)
-        if not pick:
-            return {'delivered': False, 'state': 'not_a_choice', 'choices': opts,
-                    'why': f'{who} is waiting on a pick - say one of: ' + '; '.join(f'{i}. {c}' for i, c in enumerate(opts, 1))
-                           + ' - or answer it in the terminal'}
-        send = str(pick)
+    # options, so they are read off the pane; where none can be read the words go as they always did. Only a terminal stands on a
+    # chooser: a chat and a session over ACP take words as their next prompt, whatever was asked
+    opts = None if hasattr(sess, 'send_prompt') or term.is_acp(sess) or words else (
+        req.get('choices') or (_on_screen(sess) if req['kind'] == 'approval_needed' else None))
+    # WORDS THAT NAME NONE OF ITS OPTIONS ARE HIS NEXT LINE (the owner, 2026-11-11: "just ask"): they were refused with "not_a_choice: coding is
+    # waiting on a pick - say one of ...", kept, and every line after them piled up behind a chooser nothing would ever answer. The chooser
+    # is put down with its own Esc - never Enter, which submits whatever is highlighted (B12) - and the words are typed as any line is
+    pick = pick_of(opts, text) if opts else None
+    if pick: send = str(pick)
     try:
+        if opts and not pick: sess.write(''); time.sleep(PUT_DOWN)
         # ...a chat is handed the owner's own words, with what the Assistant added to them folded as Taskuary's (general.say_relayed)
         if hasattr(sess, 'send_prompt'):
             from . import general

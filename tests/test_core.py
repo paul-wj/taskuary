@@ -742,7 +742,7 @@ class CoreTests(unittest.TestCase):
             # the two TUI flags come from _codex_browser_tui: inline mode and no decorative
             # animations, so the composer stays responsive over ConPTY -> websocket -> xterm
             self.assertEqual(agent_argv({'cmd': 'codex', 'model_arg': '-m', 'model': 'gpt-5-codex'}),
-                             ['codex', '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust',
+                             ['codex', '--dangerously-bypass-hook-trust',
                               '-m', 'gpt-5-codex', '--no-alt-screen', '-c', 'tui.animations=false'])
             self.assertEqual(agent_argv({'cmd': 'gemini', 'interactive_args': ['chat']}), ['gemini', 'chat'])
             self.assertEqual(agent_argv({'cmd': 'copilot'}, 'gpt-5.4')[-2:], ['--model', 'gpt-5.4'])
@@ -1064,6 +1064,10 @@ class CoreTests(unittest.TestCase):
         # a table of names and ids is not a chart just because we can draw axes
         self.assertEqual(artifacts.chart_columns([{'a': 'x', 'b': 'y'}]), ('a', None))
         self.assertEqual(artifacts.to_svg_chart([{'a': 'x'}], p), '')
+        # ...nor is a row's id a measure (the visual audit, 2026-11-13: open tasks charted as "task_id by ref")
+        self.assertEqual(artifacts.chart_columns([{'task_id': 2, 'ref': 'TQ-0002'}, {'task_id': 1, 'ref': 'TQ-0001'}]), ('ref', None))
+        self.assertEqual(artifacts.chart_columns([{'id': 7, 'site': 'Lakeview', 'headcount': 112}, {'id': 8, 'site': 'Riverside', 'headcount': 98}]),
+                         ('site', 'headcount'))
 
     def test_a_series_over_dates_draws_a_line_not_a_stack_of_bars(self):
         rows = [{'day': f'2026-08-{d:02d}', 'tickets': n} for d, n in zip(range(18, 32), range(38, 52))]

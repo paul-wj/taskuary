@@ -102,8 +102,9 @@ def test_a_teammate_cannot_answer_a_permission_whatever_they_type(w):
     # the ask waits long past anything this test does: at 5 s a slow machine let it time out between a teammate's lines, and the
     # test read the timeout as the teammate having answered it (CI's macOS, 2026-11-10)
     t = threading.Thread(target=lambda: box.append(perm.ask(w.s, w.tid, req, wait=120)), daemon=True); t.start()
-    for _ in range(200):
-        if perm.pending(w.tid, w.s): break
+    # ...and waits for what it reads next - the ask SAID in the channel, which lands after the ask is pending (CI's macOS, 2026-11-11)
+    for _ in range(1500):
+        if perm.pending(w.tid, w.s) and 'asks permission' in w.said(): break
         time.sleep(0.02)
     assert 'asks permission' in w.said() and '1. Allow once' in w.said() and 'only Alex Doyle can answer' in w.said()
     for words in ('1', 'Allow once', 'allow_once', 'Always allow', '2'):
@@ -186,7 +187,7 @@ def test_whatsapp_owner_needs_no_id_and_the_assistant_chat_is_not_bindable(w):
     assert w.typed[-1].endswith('owner here') or 'owner here' in w.typed[-1]
     wa = w.s.connectors_by_type('whatsapp')[0]
     w.s.merge_connector_config(wa['ConnectorId'], {'assistant_chat': '15550001111@s.whatsapp.net'})
-    with pytest.raises(ValueError, match='Assistant chat'): ac.bind(w.s, 'whatsapp', '15550001111@s.whatsapp.net', w.tid, members=[])
+    with pytest.raises(ValueError, match='your Taskuary chat'): ac.bind(w.s, 'whatsapp', '15550001111@s.whatsapp.net', w.tid, members=[])
 
 
 # ── what reaches the chat ──────────────────────────────────────────────────────────────────────────────────────────────

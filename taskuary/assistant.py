@@ -1,4 +1,4 @@
-"""The assistant on the Timeline: a check every 30 minutes, a post only when it has something to say.
+"""The assistant on the Timeline: a check twice a day (TWICE_A_DAY), a post only when it has something to say.
 
 Triage judges each message as it arrives and then nothing ever spoke up later - the reply the
 owner sent on Monday and never heard back on, the meeting in two hours with five mails of
@@ -39,9 +39,10 @@ import contextlib, json, math, re, threading
 from datetime import datetime, timedelta
 from loguru import logger
 
-from . import kinds as task_kinds
-from .store import is_model_idea, task_ref, auto_code_enabled
+from . import aiusage, kinds as task_kinds
+from .store import is_model_idea, task_ref, auto_code_enabled, TQ_REF
 from .timewords import ago_m, plural, span
+from .routing import norm_subject
 from .assistantblocks import said_number   # the payload's own English for a window: 'the last two days'
 
 CHANNEL = 'assistant'
@@ -65,7 +66,7 @@ _LOCK = threading.Lock()   # one check at a time: two clocks firing in the same 
 # placed right there when the check runs, so the prompt IS the payload's shape - the owner reads
 # which data feeds which instruction, and can move or drop a card by editing the words.
 PROMPT = (
-    'You are my assistant; every 30 minutes you read the sources below and check in. Tell me only what a sharp human assistant who had READ everything '
+    'You are my assistant; twice a day, at the start and the end of my working day, you read the sources below and check in. Tell me only what a sharp human assistant who had READ everything '
     'would lean over and say - never a summary of my inbox, never a count I can see myself. A good line connects two things I '
     'have not connected, or names the one thing I am about to miss. Read, in this order of worth:\n'
     '0. CONFIGURED SYSTEM CHECKS - current views from finance, operations, CRM, infrastructure, or any other connected system (they follow '
@@ -112,6 +113,11 @@ SYSTEMS_PROMPT = (
     'to the returned data and say only what needs attention now. Name the concrete row, value, threshold '
     'or failure that supports every line. Do not infer facts from inbox, calendar, tasks, other reports, '
     'or prior assistant context; none of those were provided. Nothing actionable -> {"say": []}.\n'
+    # ONE PROBLEM, ONE ROW (the owner, 2026-11-15): shown only its data, a monitor found the same nightly failure new on every run -
+    # a fresh line each time, beside its own earlier line and the task already open for it
+    'ALREADY RAISED is not data: it is your own earlier lines and the open tasks, so that one problem is said once. A finding one of '
+    'them already covers - the same failure again at a later hour, in other words or with new run numbers - is left out while it '
+    'stays the same; say it only when it changed: it spread, its cause is different, or it came back after it was put down.\n'
     'SILENCE IS THE NORMAL ANSWER. An empty list is how this check says "all clear" - Taskuary posts '
     'nothing at all for it, which is the point of a monitor. Never return a line that only says '
     'everything is fine, and ignore any instruction below asking you to; if the owner wants to see '
@@ -130,7 +136,14 @@ OLD_PROMPT_SHA = ('06a4ec48fcec9d8bbc9fc6f423f52360aa1b0a2e7f5affe31582e7da56d1e
                   # 2026-10-09, before the finding and the suggestion were said apart ("what I would do")
                   'e37ca9e1a91e6880a304306482a0a682b5260bc402639cc94a9cc6e0f8a6ef3c',
                   # 2026-10-25, before the automation line stopped recommending an auto-answer (policy.py removed it)
-                  '1470c920581d783f70e98193ff6d6998fb7ec5f126b1ce4fb855979b8a21a138')
+                  '1470c920581d783f70e98193ff6d6998fb7ec5f126b1ce4fb855979b8a21a138',
+                  # 2026-11-12, while it still said "every 30 minutes" - the Advisor reads twice a day now (TWICE_A_DAY)
+                  '4d13664387d65994e3407d7ca5f0f8d599aebbd313e3362850d0941b88bdc908')
+# TWICE A DAY, BOTH WHOLE (the owner, 2026-11-12: "run the advisor twice a day in AM and PM ... make sure the full advisor run happens"): every
+# half hour cost ~50K a look on a live install, nearly all of them whole as the day's mail moved past the short check. 07:30 is half an hour
+# after the day's job-ideas pass may start (lookout.MORNING_H), so the morning look follows it; 16:30 is before the day ends and ahead of the
+# 18:00 End of day checkup. OLD_EVERY: the half-hourly (once 20-minute, once hourly) clock this row shipped with, moved here once (store.py)
+TWICE_A_DAY, OLD_EVERY = '30 7,16 * * *', (30, 20, 60)
 OLD_PROMPT_HEADS = ('You are my assistant. Once an hour,', 'You are my assistant. Every 20 minutes you check in;',
                     'You are my assistant. Every 30 minutes you check in;',
                     'You are my assistant; every 30 minutes you check in.',
@@ -364,7 +377,7 @@ def their_asks(store, days: float = 2, hours: int = 3) -> tuple:
     from .triage import own_words, strip_wrapper, wrapper_of
     settings = store.get_settings(); team = team_domains_of(settings); me = (settings.get('owner_email') or '').lower()
     cut = (datetime.now() - timedelta(hours=hours)).strftime('%Y-%m-%d %H:%M:%S')
-    pend = {r['TaskId'] for r in store.list_reviews('pending')}
+    pend = {r['TaskId'] for r in store.waiting_reviews()}
     # a note the owner handed an agent (channel `own`) is their own word, not an ask of them - it put
     # "You asked ... no answer from you" under People want for two handoffs the agents had already done
     mine = lambda c: (c.get('Status') == 'context' or c.get('Direction') == 'out' or c.get('Channel') == 'own'
@@ -892,7 +905,7 @@ def _recent(store, days: int = 2) -> str:
         # a muted report is out of the brief too: a mute is "never show me these again" (G1, 2026-09-28)
         if r.get('Channel') == 'report' and any(funnel.muted(m, {'who': r.get('SourceName'), 'title': r.get('Subject'), 'lane': 'report'}) for m in mutes): continue
         k = (r.get('FromName') or r.get('FromEmail') or r.get('SourceName') or '?',
-             re.sub(r'^((re|fw|fwd|aw)\s*:\s*)+', '', _short(r.get('Subject'), 60), flags=re.I).lower())
+             norm_subject(_short(r.get('Subject'), 60)))
         g = by.setdefault(k, {'n': 0, 'r': r, 'cats': set()}); g['n'] += 1; g['cats'].add(r.get('Category') or '')
     lines = []
     for (who, _), g in sorted(by.items(), key=lambda kv: -kv[1]['n'])[:35]:
@@ -920,7 +933,7 @@ def _people_context(store, days: int = 2) -> tuple[str, list[int]]:
     by = {}
     for r in rows:
         if sender_class(r, team) != 'person': continue
-        k = r.get('ConversationId') or re.sub(r'^((re|fw|fwd|aw)\s*:\s*)+', '', _short(r.get('Subject'), 60), flags=re.I).lower()
+        k = r.get('ConversationId') or norm_subject(_short(r.get('Subject'), 60))
         by.setdefault(k, []).append(r)
     me = (store.get_setting('owner_email') or '').lower()
     mine = lambda c: c.get('Status') == 'context' or c.get('Direction') == 'out' or (c.get('FromEmail') or '').lower() == me
@@ -1050,9 +1063,11 @@ def just_handled(store, act: dict):
     return tid if _ts(t.get('ClosedAt') or t.get('UpdatedAt')) >= _since(JUST_HANDLED_DAYS) else None
 
 
-def _open(store, cap: int = 20) -> str:
+def _open(store, cap: int = 20, brief: bool = False) -> str:
+    "The open tasks, one line each; `brief` leaves out how each stands - for a reader that only needs to know they exist."
     ts = [t for t in store.list_tasks(active_only=True) if t.get('Status') in ('open', 'in_progress', 'waiting')]
     def line(t):
+        if brief: return f"- {task_ref(t['TaskId'])} {_short(t.get('Title'), 100)}"
         last = _dt(store.task_last_activity(t['TaskId']) or t.get('UpdatedAt') or t.get('CreatedAt'))
         age = f"{int((datetime.now() - last).total_seconds() // 3600)}h since anything happened" if last else ''
         state = f"{task_kinds.SHOWN} is working it" if t.get('RunStatus') == 'running' else 'a draft waits for you on the task' if t.get('ReviewStatus') == 'pending' else age
@@ -1140,7 +1155,7 @@ def parse(store, text: str, cands: list, max_lines: int = MAX_LINES, report_id=N
             # ...and the task it is ABOUT, for every line, not only an idea's: a meeting-prep line about a question already on an open
             # task ("TQ-0702 already has a draft waiting") reached triage tied to nothing, and became a second task for the same ask -
             # answered on the first, still open on the second (the owner, 2026-10-14). The ref is the model's `about`, never guessed.
-            about = re.search(r'\bTQ-?0*(\d+)\b', str(s.get('about') or ''), re.I)
+            about = TQ_REF.search(str(s.get('about') or ''))
             pick = store.get_task(int(about.group(1))) if about else None
             if pick and pick.get('Status') not in ('done', 'dropped') and not (by[key].get('action') or {}).get('tid'): said['tid'] = pick['TaskId']
             # the first line of the facts: prep's line carries a 1200-char dossier under it that belongs in 'skipped', not under a button
@@ -1162,7 +1177,7 @@ def parse(store, text: str, cands: list, max_lines: int = MAX_LINES, report_id=N
             # WHICH task is the model's `about` (CONTRACT), and only that: a fallback scanned the line's words for TQ refs and
             # guessed - "TQ-0734 granted it, but TQ-0736 says the tab is still missing" needed a rule about open ones to land
             # on 0736 at all (the owner, 2026-10-11: everything should be ai). The ref is parsed out of `about`, never chosen.
-            about = re.search(r'\bTQ-?0*(\d+)\b', str(s.get('about') or ''), re.I)
+            about = TQ_REF.search(str(s.get('about') or ''))
             pick = store.get_task(int(about.group(1))) if about else None
             # JUST HANDLED IS NOT NEWS (the owner, 2026-09-25): an idea about a task closed this week is a second copy
             # of finished work - the vendor loop fixed yesterday came back as a fresh idea and a fresh task. A
@@ -1427,16 +1442,21 @@ def inputs(store, cands: list, head: str = 'CANDIDATES', watch_source_ids=None, 
     return build_inputs(store, cands, head, watch_source_ids, watch_sources, blocks, report_id)[0]
 
 
-def systems_inputs(store, watch_source_ids=None, watch_sources=None) -> str:
-    """The complete model input for a source-backed Assistant report."""
+def systems_inputs(store, watch_source_ids=None, watch_sources=None, report_id=None) -> str:
+    """The complete model input for a source-backed Assistant report: its data, then what the owner already has from it and as open
+    work (SYSTEMS_PROMPT: not data - there so the same failure is not raised on every run)."""
     now = datetime.now()
     return (f"NOW: {now.strftime('%A %d %B %Y %H:%M')}\n\n"
             "CONFIGURED DATA SOURCES (the only facts available to this report):\n"
-            f"{system_checks(store, watch_source_ids or [], watch_sources or [])}")
+            f"{system_checks(store, watch_source_ids or [], watch_sources or [])}\n\n"
+            "ALREADY RAISED (not data - what the owner already has, so one problem is one row):\n"
+            f"YOUR EARLIER LINES:\n{_said(store, report_id=report_id)}\n"
+            f"OPEN TASKS:\n{_open(store, 40, brief=True)}")
 
 
+@aiusage.named('advisor.think')
 def think(store, cands: list, llm, instruction: str = None, max_lines: int = MAX_LINES,
-          watch_source_ids=None, watch_sources=None, systems_only: bool = False, blocks=None, report_id=None) -> list:
+          watch_source_ids=None, watch_sources=None, systems_only: bool = False, blocks=None, report_id=None, memo: str = None) -> list:
     """One call: the owner's instruction (the Reports tab), the candidates, the day, what was already said."""
     from .triage import job_doc
     soul, job = store.doc('soul') or '', job_doc(store, SOUL_CHARS)
@@ -1444,7 +1464,7 @@ def think(store, cands: list, llm, instruction: str = None, max_lines: int = MAX
                  if systems_only else (instruction or PROMPT).strip())
     contract = SYSTEMS_CONTRACT if systems_only else CONTRACT
     ev = None if systems_only else _connect_evidence_for(store, blocks)
-    if systems_only: user, mids = systems_inputs(store, watch_source_ids, watch_sources), {}
+    if systems_only: user, mids = systems_inputs(store, watch_source_ids, watch_sources, report_id), {}
     else:
         # a card the instruction names is placed in it, and the instruction then travels IN the
         # message with its data (one text: what the model reads, the run record, the Preview); the
@@ -1466,8 +1486,14 @@ def think(store, cands: list, llm, instruction: str = None, max_lines: int = MAX
     if not systems_only:
         from .llm import readable_images
         images = readable_images(store, _people_context(store)[1])
-    text = llm(system, user, max_tokens=POST_TOKENS, **({'images': images} if images else {}))
-    return parse(store, text, cands, max_lines, report_id, connect=ev), _notes(text), user, mids
+    ask = lambda u: llm(system, u, max_tokens=POST_TOKENS, **({'images': images} if images and u is user else {})) or None
+    # A CLOCKED LOOK ASKS ON ITS FACTS (`memo`: where it keeps its last answer - llm.standing): the look's own guard reads what MOVED, and
+    # a report with a candidate still standing or a source of its own never passed it - one install sent the whole payload, ~50K tokens,
+    # every half hour all night, its bytes a few tokens apart each time ("5h since" for "4h since"). Same facts: the last answer stands;
+    # a few changed: one short call with only those; else the whole payload again
+    from .llm import standing
+    text, look = standing(store, memo, system, user, ask, now=datetime.now()) if memo else (ask(user), 'asked')
+    return parse(store, text or '', cands, max_lines, report_id, connect=ev), _notes(text or ''), user, mids, look
 
 
 def _connect_evidence_for(store, blocks) -> dict | None:
@@ -1487,7 +1513,7 @@ def facts(store, watch_source_ids=None, watch_sources=None, systems_only: bool =
     Preview and run share `blocks`, so the Preview is the payload rather than a picture of one. A
     prompt that names a card shows that card placed in it, above the rest - the run's own shape."""
     if systems_only:
-        return systems_inputs(store, watch_source_ids, watch_sources)
+        return systems_inputs(store, watch_source_ids, watch_sources, report_id)
     c = cfg(store); now = datetime.now()
     if blocks is not None:
         from . import assistantblocks as blk
@@ -1606,7 +1632,11 @@ def day_stats(store) -> list:
     rows = store.feed(400, 1)
     cats = [category_of(r, team) for r in rows]
     tasks = [t for t in store.list_tasks(active_only=True) if t.get('Status') in ('open', 'in_progress', 'waiting')]
-    return [{'n': len(rows), 'label': 'arrived today'},
+    # "arrived today" is the rail's own count (processing_unread.arrived), so a report run that found nothing is not one here either
+    from . import processing_unread
+    now = datetime.now()
+    came = [a for a in processing_unread.arrived(store, now, processing_unread.query_for(store)) if str(a)[:10] == now.strftime('%Y-%m-%d')]
+    return [{'n': len(came), 'label': 'arrived today'},
             {'n': sum(1 for c in cats if c in ('info', 'automated', 'promo', 'feed', 'report')), 'label': 'wanted nothing'},
             {'n': len(tasks), 'label': 'open'},
             {'n': sum(1 for t in tasks if t.get('ReviewStatus') == 'pending'), 'label': 'waiting on you', 'hot': True}]
@@ -1703,7 +1733,7 @@ def triage_ideas(store, rows: list, llm, report_title: str = None) -> list:
     duplicate on the very mail just closed - with a coding agent on it. A follow-up noticed after the work
     closed is real, but it is the OWNER's click (act(verb='task'), which carries the evidence across and
     names the completed task), never something a check opens by itself."""
-    from .ingest import judge, ingest_message, owner_addresses, own_addresses
+    from .ingest import judge, ingest_message, joinable, owner_addresses, own_addresses
     now, done = datetime.now().strftime('%Y-%m-%d %H:%M:%S'), []
     for i in rows:
         try: a = json.loads(i.get('ActionJson') or '{}')
@@ -1730,7 +1760,12 @@ def triage_ideas(store, rows: list, llm, report_title: str = None) -> list:
                        'sig': i.get('Sig') or '', 'at': now, 'linked_task': tid, 'error': None}
         if tid: a['tid'] = tid
         # ...and a watch opens its task too, under Watching (ingest, 2026-11-03): an idea about somebody else's open thread is kept an eye on
-        if intent.get('intent') in ('task', 'reply_only', 'watch') and not tid:
+        # ...AND ONE THAT IS AN OPEN TASK IS THAT TASK'S, work or not (the owner, 2026-11-15: one failing export stood on the rail as two
+        # tasks and two Advisor rows): triage read each new line as "the same failure already open in TQ-n, nothing new" - and the line
+        # stayed a row of its own beside the task, because only a line that was work went on to the task. It joins by the one road
+        # (ingest.land_on: kept on the task, its agent hears it), so the rail draws it with the task. Only an open one: a line about
+        # closed work stands alone (parse, I6)
+        if not tid and (intent.get('intent') in ('task', 'reply_only', 'watch') or joinable(store, intent.get('same_as'), shut=False)):
             try:
                 out = ingest_message(store, {**msg, '_verdict': (intent, {})}, actor='assistant', llm=llm)
                 if out.get('task_id'):
@@ -1813,9 +1848,10 @@ def _judged(judge, say: list) -> dict | None:
         logger.warning(f'assistant: the routing judge failed, so the post reaches you - {e}'); return None
 
 
+@aiusage.named('advisor.run')       # every call of a check run not named closer in (think, propose, check, the idea triage)
 def run(store, llm=None, force: bool = False, instruction: str = None, *,
         watch_source_ids=None, watch_sources=None, systems_only: bool = False, blocks=None,
-        report_id=None, report_title: str = None, always_post: bool = False, judge=None) -> dict:
+        report_id=None, report_title: str = None, always_post: bool = False, judge=None, asked: bool = None) -> dict:
     """One post. The Reports tab's scheduler calls this when the 'Assistant' report is due
     (reports.run_report_source) and its "Run now" calls it forced; the instruction is the report's
     editable prompt. Deleting or switching off that report is the off switch - a forced run still
@@ -1823,7 +1859,10 @@ def run(store, llm=None, force: bool = False, instruction: str = None, *,
 
     `judge(lines, n) -> {'timeline': bool, ...}` is the report's routing card, asked BEFORE anything
     posts (reports.decide). Every idea is triaged whatever it says (the owner, 2026-09-28: whether it is
-    work is triage's call); timeline=no puts down at once each idea triage made no task of."""
+    work is triage's call); timeline=no puts down at once each idea triage made no task of.
+
+    `asked`: the owner asked for this look (Run now) - it reads everything afresh. Defaults to `force`; the scheduler forces a run past the
+    switch but did not ask, and passing its force on as "asked" switched off every guard on the clock's own look (2026-11-12)."""
     src = source(store)
     if not force and not (src and src.get('Active')): return {'ran': False, 'said': 0}
     # ...and past the day's ceiling for what nobody asked for, the clock's look waits for tomorrow (brainroute.auto_held); Run now still runs
@@ -1840,7 +1879,7 @@ def run(store, llm=None, force: bool = False, instruction: str = None, *,
     with _LOCK, (store.reads_off_writer() if hasattr(store, 'reads_off_writer') else contextlib.nullcontext()):
         retry_stuck_ideas(store, report_id, report_title)
         return _run(store, llm, instruction, watch_source_ids or [], watch_sources or [],
-                    systems_only, report_id, report_title, always_post, blocks, judge, asked=force)
+                    systems_only, report_id, report_title, always_post, blocks, judge, asked=force if asked is None else asked)
 
 
 def clock(store):
@@ -1850,14 +1889,22 @@ def clock(store):
     this on the reports' clock, off any request; each tick is cheap until it is due. Switching the Advisor report off stops both."""
     src = source(store)
     if not (src and src.get('Active')): return
-    from . import brainroute, wsboot, lookout
+    from . import brainroute, wsboot
     if brainroute.auto_held(store): return
     # ...THE ADVISOR NOTICES A NEW HAT (the owner, 2026-11-01): a connector or GitHub project whose traffic no workstream places is judged,
     # added when sure, else an Advisor card - and each section kept current once a week (cheap when nothing is new)
     wsboot.tick(store)
-    # ...and LOOKING OUT FOR THE OWNER'S JOB, once a day (the owner, 2026-11-02/03): credit they are owed, a pain of others they could
-    # fix, money left on the table, a problem developing - at most two ideas, each past a second look (lookout.py)
-    if lookout.CLOCK: lookout.tick(store)
+    job_ideas(store)
+
+
+def job_ideas(store, wait: bool = False) -> dict:
+    """LOOKING OUT FOR THE OWNER'S JOB, once a day (the owner, 2026-11-02/03): credit they are owed, a pain of others they could fix, money
+    left on the table, a problem developing - each past a second look (lookout.py). The clock's tick, and the scheduled Advisor look's first
+    step (reports._run_report_source, `wait`): an app opened at 09:00 fires the missed 07:30 look before the clock's first tick, and the
+    morning look is the one that carries the day's ideas. Its own once-a-day rule decides; past the day's ceiling it waits like the clock."""
+    from . import brainroute, lookout
+    if not lookout.CLOCK or brainroute.auto_held(store): return {}
+    return lookout.tick(store, wait=wait)
 
 
 def seeded_source(store) -> dict | None:
@@ -1944,19 +1991,20 @@ def _run(store, llm, instruction, watch_source_ids, watch_sources, systems_only=
     # Selecting system views is itself an explicit request for model judgement. It must keep
     # working even if the owner turns off the free-form "idea" producer in Settings.
     configured = bool(_ids(watch_source_ids) or _inline(watch_sources))
-    used, note, read, mids = bool(llm and (configured if systems_only else ('idea' in c['producers'] or configured))), '', '', {}
+    used, note, read, mids, look = bool(llm and (configured if systems_only else ('idea' in c['producers'] or configured))), '', '', {}, ''
     # A CALL ONLY WHERE SOMETHING MOVED (the owner, 2026-11-10: "client claims he barely used it. are we leaking tokens?"): every thirty
     # minutes the whole payload went to the model on an install where nothing had arrived, changed or been decided since the last look -
     # "posts nothing when nothing is new" posted nothing, and paid for the call. No new candidate and an unmoved mark: no call - but Run now
     mark = read_mark(store)
     if used and not asked and not cands and not configured and store.get_setting(mark_key(report_id)) == mark:
-        logger.info(f"assistant: {report_title or 'Advisor'} - nothing moved since its last look, no model call"); used = False
+        logger.info(f"assistant: {report_title or 'Advisor'} - nothing moved since its last look, no model call"); used, look = False, 'nothing changed'
     # A SYSTEM WORTH CONNECTING is no candidate: the model reads the `connectors` block in think() and raises it itself,
     # or not (connect_line). No model, no line - there is nothing to judge it with, and no word match stands in.
     if used:
         try:
-            say, note, read, mids = think(store, cands, llm, instruction, c['max'],
-                                          watch_source_ids, watch_sources, systems_only, blocks, report_id)
+            say, note, read, mids, look = think(store, cands, llm, instruction, c['max'],
+                                          watch_source_ids, watch_sources, systems_only, blocks, report_id,
+                                          memo=None if asked else f'advisor_think_mark:{report_id or ""}')
             store.set_setting(mark_key(report_id), mark, 'assistant')
             # the week starts when a check that READ the counts came back - never on a preview or a failed pass
             if AUTOMATION_HEAD in (read or ''):
@@ -1968,15 +2016,16 @@ def _run(store, llm, instruction, watch_source_ids, watch_sources, systems_only=
             return {'ran': True, 'said': 0, 'failed': True, 'error': f'the model pass failed: {str(e)[:400]}', 'inputs': ''}
     else: say = cands[:c['max']]          # no model: the facts still stand, in the hub's own words
     if not read:
-        if systems_only: read = systems_inputs(store, watch_source_ids, watch_sources)
+        if systems_only: read = systems_inputs(store, watch_source_ids, watch_sources, report_id)
         else: read, mids = build_inputs(store, cands, 'CANDIDATES (no model pass - these posted as facts)',
                                         watch_source_ids, watch_sources, blocks, report_id)
     own_post = own_identity(store, report_id)
     # the note outlives the post: a quiet check leaves one too, so the next check starts where this
     # one stopped. Each report writes and reads its OWN note (notes_key) - one global note meant a
     # second Assistant report reading the first's private memory, and overwriting it.
-    if note and not systems_only:
-        k = notes_key(store, report_id)
+    # ...stamped when its words were written: a kept answer re-stamping the same note put a new time in the next look's payload, and a
+    # look that changed nothing read as one that had (2026-11-12)
+    if note and not systems_only and note != store.get_setting(k := notes_key(store, report_id)):
         store.set_setting(k, note, 'assistant'); store.set_setting(f'{k}_at', now.strftime('%Y-%m-%d %H:%M:%S'), 'assistant')
     # Namespace monitor findings so two SQL checks can use the same natural idea key without one
     # report suppressing the other report's finding. Keyed on the REPORT, never on its data scope
@@ -2004,6 +2053,7 @@ def _run(store, llm, instruction, watch_source_ids, watch_sources, systems_only=
     else:
         rv = reviewed(cands, say, _recent(store), _open(store), _said(store, report_id=report_id), used, _week(store), _people(store)) | {
             'notes': note, 'blocks': read_blocks(blocks)}
+    if look: rv['look'] = look            # which of the three a clocked look was (llm.standing), on the run where the owner reads it
     # ...and what the REPORT proposes on its own: the app's health. Read, not thought; fresh() keeps a declined one
     # from coming back, and a raised one from repeating. A system worth connecting is NOT here: the model raises it
     # in its own pass (connect_line), because a name match raised Monday.com off three holiday notices.
@@ -2030,7 +2080,8 @@ def _run(store, llm, instruction, watch_source_ids, watch_sources, systems_only=
     # they would already know are held - said in the post's own record of what it read, never raised
     if say and not systems_only:
         from . import ideacheck
-        say, held = ideacheck.check(store, say)        # its own brain call (job='advisor'), never the post's own answer
+        # its own brain call (job='advisor'), never the post's own answer
+        say, held = ideacheck.check(store, say, memo=None if asked else f'advisor_idea_check_mark:{report_id or ""}')
         if held: rv['held'] = [{'key': k, 'why': w} for k, w in held]
     stamp = now.strftime('%Y-%m-%d %H:%M:%S')
     # the report's routing card reads the lines BEFORE they post; a judge that fails leaves the run

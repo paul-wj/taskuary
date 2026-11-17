@@ -67,6 +67,8 @@ export const sessionWord = (s) => (s ? JSON.stringify([!!s.alive, !!s.waiting, s
 // session has no `busy`, so a coding agent is never read this way.
 // ...and not while the server says it is not waiting (general.waiting): a session opened for a turn that has not taken yet is idle, not answered
 export const generalAnswered = (isGeneral, session) => !!(isGeneral && session?.alive && session.busy === false && session.waiting !== false);
+// ...so a line that says "its agent is still working" is said of a live session that has NOT answered - never of one at rest waiting on him
+export const stillWorking = (live, answered) => !!live && !answered;
 
 // Action proposals (write a playbook, push a branch, close an issue) share the review table
 // with outbound replies, but they are not communication. A proposal is normally queued after
@@ -94,20 +96,6 @@ export const completionLine = (manual, owesEmails, noSender = false) => closesIt
 export const completionFact = (manual, owesEmails, noSender = false) => closesItself(manual, owesEmails, noSender)
   ? t("closes itself when its agent is done") : t("stays open until you Mark done");
 export const slotReviews = (reviews = []) => (reviews || []).filter((review) => review.Kind === "slot");
-// what one Approve all may send: drafted, addressed, and asked for - never an address the agent added on its own
-export const bulkSendable = (items = [], reviews = []) => {
-  const byRid = Object.fromEntries(slotReviews(reviews).map((r) => [r.ReviewId, r]));
-  return items.filter((i) => i.out?.by !== "agent" && String(i.out?.to || "").includes("@")).map((i) => byRid[i.rid])
-    .filter((r) => r?.Status === "pending" && String(r.DraftText || "").trim());
-};
-export const slotState = (item, rv) => item.done ? (rv && ["approved", "edited", "sent"].includes(rv.Status) ? "sent" : "dropped")
-  : rv?.Status === "pending" ? "waits for your yes" : "to draft";
-// ...and the block's count is of the emails still OWED - a dropped one read as sent ("2 of 3": one sent, one dropped, the agent walk 2026-11-09)
-export const slotTally = (items = [], reviews = []) => {
-  const byRid = Object.fromEntries(slotReviews(reviews).map((r) => [r.ReviewId, r])), states = items.map((i) => slotState(i, byRid[i.rid]));
-  const n = (s) => states.filter((x) => x === s).length, dropped = n("dropped"), owed = items.length - dropped;
-  return [owed && `${n("sent")} of ${owed}`, dropped && `${dropped} dropped`].filter(Boolean).join(" · ");
-};
 
 // ...and the one closed WITHOUT sending: the draft stays on the task whatever became of it, a done task
 // included (the owner, 2026-09-24: "draft should always stay on task even on done task"). Newest wins.

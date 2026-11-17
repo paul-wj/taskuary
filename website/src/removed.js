@@ -7,7 +7,7 @@ import { t, translateDescriptor } from "./i18n.js";
 const subs = new Set();
 let last = null, timer = null;
 
-// `kind`: which lists draw it ("report", "workflow", "rule", "profile", "source", "connection", "signout"); `did`: the server's id
+// `kind`: which lists draw it ("report", "workflow", "rule", "profile", "source", "connection", "signout", "signin"); `did`: the server's id
 export const removedLine = (title, verb = "Removed") => {
   const item = title ? translateDescriptor(title) : t("it");
   if (verb === "Removed") return t("Removed {title}", { title: item });

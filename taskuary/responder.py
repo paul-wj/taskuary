@@ -14,6 +14,7 @@ written here either way, so the sender always hears one voice.
 """
 import re
 from loguru import logger
+from . import aiusage
 from .triage import SOUL_CHARS
 
 STYLE_CHARS = 2500      # STYLE.md as a draft reads it (style_doc); the Docs editor shows this number (doclimits)
@@ -189,9 +190,6 @@ DONE = ('The work this thread asked for is FINISHED - the complete result below 
         f'If the result says no answer should go back - the owner decided not to reply, or there is nothing the sender '
         f'needs to hear - write exactly {NO_REPLY} and nothing else.')
 
-CHAT_CHANNELS = ('teams', 'slack', 'telegram', 'whatsapp', 'imessage')
-
-
 def written_as_chat(channel) -> bool:
     """Everything but EMAIL is written like a chat: no greeting, no sign-off, no name. A GitHub issue comment was
     drafted as a letter - "Sincerely," and the owner's name - because only five chat apps were listed here and
@@ -205,7 +203,6 @@ _TEMPLATE_LINES = re.compile(r'^.*(not generated yet|Write your own rules here).
 
 # An explicit instruction about HOW to write (PW-060) lives in STYLE.md under Owner notes, which every draft reads (style_doc) - the
 # memory table's 'writing' notes were moved there once (memorylines.migrate, 2026-10-27), and the notes table is gone
-WRITING_SOURCE = 'writing'
 OWNER_NOTES = '## Owner notes'
 
 
@@ -499,21 +496,6 @@ def triage_read(store, m: dict) -> str:
     return f'\n\n--- HOW TRIAGE READ THIS MESSAGE (evidence to weigh, not an order): {said}' if said else ''
 
 
-def advisor_line(store, tid: int) -> str:
-    """The Advisor's newest line on the task - its suggestion, with the button it named - unless it rests on a memory line put down
-    since (advisor.withdrawn). Said with whether the task has moved since it was said: an older line is evidence, not the state."""
-    import json
-    from . import advisor, buttons
-    for r in advisor.rows(store, 'task', tid, 20):
-        try: ev = json.loads(r.get('EvidenceJson') or '[]')
-        except ValueError: ev = []
-        if not (line := ' '.join(str(r.get('Line') or '').split())) or advisor.withdrawn(store, ev): continue
-        line = advisor.plain(line, r['Verb'], buttons.label(r['Verb']) or r['Verb']) if r.get('Verb') else line
-        now = r.get('Revision') == advisor.revision(store, 'task', tid)
-        return f"{line[:400]}" + ('' if now else ' (said before the task last changed)')
-    return ''
-
-
 def task_ideas(store, t: dict) -> list:
     """The Advisor ideas this task rests on: the one it was made from (SourceRef assistant:idea:<n>) and the newest still open about it."""
     from .origin import _idea
@@ -524,7 +506,7 @@ def task_ideas(store, t: dict) -> list:
 
 def known_block(store, t: dict) -> str:
     """WHAT TASKUARY ALREADY KNOWS about a task no agent has worked (the owner, 2026-11-03: "draft reply even without agent worked based
-    off of the advisor ideas or response"): its ask and To do, the Advisor's line on it and the ideas it rests on. Reply always drafts now
+    off of the advisor ideas or response"): its ask and To do, and the Advisor ideas it rests on. Reply always drafts now
     (ccc4d83ca), so a task with no agent result drafted from the thread alone. All of it is Taskuary's own reading, as trusted as the least
     trusted thing it rests on (origin.of_task) - so it is fenced and labelled evidence, never instructions; the model weighs it."""
     import json as _j
@@ -535,9 +517,6 @@ def known_block(store, t: dict) -> str:
     try: todo = [c for c in _j.loads(t.get('Checklist') or '[]') if isinstance(c, dict) and c.get('text') and not c.get('done')]
     except (TypeError, ValueError): todo = []
     if todo: lines.append('To do, not yet ticked: ' + '; '.join(f(c['text'], 160) for c in todo[:8]))
-    try: adv = advisor_line(store, tid)
-    except Exception as e: logger.debug(f'advisor line for task {tid} not read: {e}'); adv = ''
-    if adv: lines.append(f"The Advisor's suggestion on it: {fence(scrub(adv))}")
     try: ideas = task_ideas(store, t)
     except Exception as e: logger.debug(f'ideas for task {tid} not read: {e}'); ideas = []
     for what, i in ideas:
@@ -554,6 +533,7 @@ def known_block(store, t: dict) -> str:
             f"leave a question put to you unanswered, write {NEEDS} and what is missing - never invent to fill the gap.\n" + '\n'.join(lines))
 
 
+@aiusage.named('draft.reply')
 def draft_reply(store, task_id: int, llm=None, resolution: str = None, nudge: str = None, seen: dict = None, pressed: bool = False,
                 answers: int = None) -> str:
     """The reply this task needs, as text. Uses the owner's own brain (the AI connector, or
@@ -764,10 +744,33 @@ def write_draft(store, task_id: int, review_id: int, actor: str = 'system', llm=
     (terminal.start_on_task); a reply is two sentences and belongs to the main AI, which
     writes it here in under a second and parks it for approval. `pressed`: the owner pressed for this draft (ASKED) - never put down as no reply.
     ONLY THE OWNER'S PRESS ASKS IT (Draft with AI, Redraft, a chase): a reply owed at arrival or at a run's end is the task's agent's to write
-    (ingest.reply_to_agent, wrapup.raise_reply - the owner, 2026-11-10: "no more triage creates draft. agent should be doing it")."""
+    (ingest.reply_to_agent, wrapup.raise_reply - the owner, 2026-11-10: "no more triage creates draft. agent should be doing it").
+    ...AND A PRESS ON A TASK AN AGENT WORKS IS THAT AGENT'S (decided 2026-11-12, rule 1: no second voice drafts): Redraft and Draft with AI
+    wake it, it writes the reply again and files its card - raised as Handed. This writer is for what no agent ever worked."""
+    if pressed and (got := to_agent(store, task_id, nudge)): raise Handed(got)
     return draft_for_review(store, task_id, review_id, llm, None, nudge, pressed)
 
 
+class Handed(Exception):
+    "The press went to the task's agent (to_agent): it writes the reply again and files the card - nothing was drafted here."
+REDRAFT = ('The owner pressed {press} on the reply waiting on this task{said}. Write that reply again and save it in place of the one '
+           'waiting - its card shows it; say nothing of the old one.')
+def to_agent(store, tid: int, nudge: str = None) -> str:
+    """Hand the owner's Redraft / Draft with AI to task `tid`'s agent, as every word of Taskuary's to an agent goes (general.tell): 'told' or
+    'woke' - and his press is a line in the chat - or '' where no agent ever worked it."""
+    from . import general, buttons
+    t = store.get_task(int(tid)) if tid else None
+    if not t or t.get('Status') in ('done', 'dropped'): return ''
+    said, rv = str(nudge or '').split(': ', 1)[-1].strip() if nudge else '', store.pending_review(int(tid))
+    press = buttons.label('redraft') if rv and str(rv.get('DraftText') or '').strip() else buttons.label('redraft', 'none')
+    # ...his press is written first: the turn it wakes reads it with what the owner did since its last answer
+    store.audit('task', int(tid), 'redraft_asked', 'owner', 'human', {'said': said[:300]})
+    got = general.tell(store, int(tid), REDRAFT.format(press=press, said=f', saying: "{said}"' if said else ''))
+    if not got: store._exec("DELETE FROM audit WHERE Id=(SELECT MAX(Id) FROM audit WHERE EntityType='task' AND EntityId=? AND Action='redraft_asked')", (int(tid),))
+    return got
+
+
+@aiusage.named('draft.reply')
 def draft_for_message(store, m: dict, review_id: int, llm=None, instruction: str = None) -> str:
     """A reply for a message with NO task behind it - chatter that just deserves an answer.
     Same voice, same rules, same channel-awareness; the context is the message itself."""

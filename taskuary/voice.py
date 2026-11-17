@@ -15,7 +15,7 @@ in-process: no key, no server, audio never leaves the box (pip install taskuary[
 The same function transcribes a clip from the browser's microphone: "put voice into prompts" is
 the prompt box plus a mic, and the text goes wherever the box goes.
 """
-import base64, io, json, os, re, subprocess, sys, tempfile, threading, time, uuid, wave
+import base64, io, json, os, re, sys, tempfile, time, uuid, wave
 import requests
 from loguru import logger
 from . import words
@@ -93,8 +93,7 @@ def save_vocabulary(store, terms, actor: str = 'owner') -> list:
 def pick(store):
     """The first active voice connector that can actually run - a key where one is needed - else a HIPAA AI card with its access code."""
     cs = [c for c in store.list_connectors() if c['Active']]
-    c = next((c for c in cs if c['Type'] in VOICE_TYPES and (c['HasSecret'] or c['Type'] not in NEEDS_KEY)), None) \
-        or next((c for c in cs if c['Type'] in GATEWAY_TYPES and c['HasSecret']), None)
+    c = next((c for c in cs if c['Type'] in VOICE_TYPES and (c['HasSecret'] or c['Type'] not in NEEDS_KEY)), None)         or next((c for c in cs if c['Type'] in GATEWAY_TYPES and c['HasSecret']), None)
     return store.get_connector(c['ConnectorId'], with_secret=True) if c else None
 
 
@@ -107,7 +106,7 @@ def ready(store) -> dict:
 def transcribe(store, data: bytes, mime: str = 'audio/ogg', name: str = 'audio.ogg', c: dict = None, mic: bool = False,
                level: float = None, seconds: float = None, gate: bool = True) -> dict:
     """Bytes in, {text, provider, model} out. Raises RuntimeError with something the owner can act on.
-    `mic`: a clip from the prompt box's mic, which may fall to the computer's own recogniser when no card is set up.
+    `mic`: a clip from the prompt box's mic.
     `level`/`seconds`: what the browser measured while it recorded (its webm cannot be read here); a silent clip is never sent."""
     c = c or pick(store)
     if not c: raise RuntimeError(NO_CONNECTOR)
@@ -339,7 +338,9 @@ _LOCAL = {}
 def _local(cfg, data, name, terms=()):
     """faster-whisper in-process, model cached after the first call (the first call downloads it)."""
     try: from faster_whisper import WhisperModel
-    except ImportError: raise RuntimeError('Local Whisper needs faster-whisper on the server: pip install taskuary[voice]')
+    except ImportError:     # ...as the card's Install button, not a pip command an exe has nowhere to run (deps.Missing)
+        from .deps import Missing
+        raise Missing('faster_whisper', 'Local Whisper needs faster-whisper - install it from the card') from None
     size = cfg.get('model') or 'small'
     m = _LOCAL.get(size)
     if m is None: m = _LOCAL[size] = WhisperModel(size, device=cfg.get('device') or 'cpu', compute_type=cfg.get('compute') or 'int8')
@@ -355,162 +356,34 @@ def _local(cfg, data, name, terms=()):
         except OSError: pass
 
 
-"""WINDOWS VOICE TYPING FIRST (the owner, 2026-11-02, after System.Speech wrote a dictation as "a predetermined trading land on my left
-arm": "do the changes to use desktop if the machine has it"). Windows 10 and 11 ship two recognisers. System.Speech (removed, TQ-1283) is the 2006
-one, untrained and offline. Windows.Media.SpeechRecognition is the one behind Win+H and Edge's tabs: Microsoft's online service, on when
-Online speech recognition is on in Windows' speech privacy settings. It hears the MICROPHONE, never a file, so it is a session the
-server holds: started by the mic's press, each phrase read as it settles, stopped by the next press. PowerShell 5.1 reaches it as a WinRT
-type - no Python package, nothing added to the exe. A phrase still being said at the stop gets up to 3.5s to settle (an operation it has
-started cannot be cancelled from PowerShell); a silence ends each listen after 3s and the next starts at once, so nothing falls between.
-It hears this computer's own microphone, so it serves only a page on this computer (server: loopback). macOS has no such door for an
-unbundled process - Apple's Speech framework kills a caller whose app carries no usage description - so a Mac uses its Dictation key."""
-LIVE = {'engine': 'windows_voice_typing', 'label': 'Windows voice typing (on this computer)', 'live': True}
-SPEECH_ASK = ("Taskuary needs Windows' online speech recognition for dictation, and it is off on this computer. Turn it on? "
-              "(Windows sends what you say to Microsoft to turn it into text.)")
+# WINDOWS VOICE TYPING, AS EVERY OTHER APP GETS IT (the owner, 2026-11-16: "I don't want Local Whisper. Use the Windows voice rec" - Win+H
+# works on these PCs in every other app). Taskuary drove Windows' recogniser itself, through a PowerShell child reaching a WinRT type: a
+# road of its own that a managed PC, a language pack or a timeout broke while Win+H worked. Now the mic's press does what the owner would:
+# the prompt box takes the focus and Windows voice typing is toggled with its own key chord, so Windows' own bar types into the box and a
+# second press (or the bar's own stop) ends it. Nothing listens, records or transcribes here; Windows asks for what it needs itself.
+# It acts on THIS computer's desktop, so it serves only a page on this computer (server: loopback).
+WINDOWS = {'engine': 'windows_voice_typing', 'label': 'Windows voice typing', 'keys': True}
+CHORD_FAILED = ("Windows voice typing did not start - Windows refused the Win+H key press. Click in the box and press Win+H yourself, "
+                "or set up a voice AI")
 
-# NOTHING THAT DOES NOT WORK (TQ-1283, the owner, 2026-11-03: "You can't use something that doesn't work ... ask them, trigger the
-# question if you want to turn that on"). The fallback under voice typing was System.Speech, the 2006 offline dictation - it wrote the
-# owner's dictation as "a predetermined trading land on my left arm" and a user's as "Ojai idea or a bottle of Iraq Shore", text that
-# looks real and is not. It is gone. Voice typing with its setting off is no longer a reason to fall back: the mic ASKS to turn it on.
-_HAS = {}
+def builtin():
+    "Windows voice typing where Windows is (WINDOWS), else None - a Mac's own Dictation key is pointed at by the mic itself."
+    return WINDOWS if sys.platform == 'win32' else None
 
-def builtin(refresh: bool = False):
-    """The computer's own recogniser: Windows voice typing (LIVE) when it is here and Online speech recognition is on; here with the
-    setting off, LIVE with `ask` - the mic asks the owner to turn it on (turn_on_speech) before it listens; else None, and the mic asks
-    for a voice AI. The setting is read each time, so it takes effect at the next press, no restart."""
-    # Privacy can prevent compilation. Keep the enable prompt reachable and retry
-    # transient failures after a cooldown rather than requiring an app restart.
-    if refresh or 'live' not in _HAS or (not _HAS['live'] and time.monotonic() - _HAS.get('checked', 0) >= 30):
-        _HAS['live'] = sys.platform == 'win32' and (not speech_on() or _live_ok())
-        _HAS['checked'] = time.monotonic()
-    if not _HAS['live']: return None
-    return LIVE if speech_on() else {**LIVE, 'ask': SPEECH_ASK}
-
-_SPEECH_KEY = r'Software\Microsoft\Speech_OneCore\Settings\OnlineSpeechPrivacy'
-
-def speech_on() -> bool:
-    """Is Online speech recognition on (Windows' speech privacy setting, which voice typing needs)? Off when never set - Windows' default."""
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _SPEECH_KEY) as k: return int(winreg.QueryValueEx(k, 'HasAccepted')[0]) == 1
-    except (OSError, ValueError, ImportError): return False
-
-def turn_on_speech() -> bool:
-    """The owner said yes at the mic: Online speech recognition on for this Windows user - the value Windows' own speech privacy
-    toggle writes (HKCU, no admin). True when it reads back on."""
-    try:
-        import winreg
-        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, _SPEECH_KEY, 0, winreg.KEY_SET_VALUE) as k: winreg.SetValueEx(k, 'HasAccepted', 0, winreg.REG_DWORD, 1)
-    except (OSError, ImportError) as e: logger.warning(f'voice: could not turn on Online speech recognition - {e}'); return False
-    return speech_on()
-
-# what the child's stop means to the owner, by the WinRT status it names
-_LIVE_WHY = {'MicrophoneUnavailable': 'no microphone Windows will lend - turn on "Let desktop apps access your microphone" in the microphone privacy settings of Windows',
-             'NetworkFailure': 'it needs the internet, and could not reach it',
-             'privacy': "it needs Online speech recognition - turn it on in Windows' speech privacy settings, then press the mic again",
-             'TopicLanguageNotSupported': "it does not take dictation in this computer's language"}
-_WINRT = r'''$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; [Console]::OutputEncoding = [Text.Encoding]::UTF8
-try {
-Add-Type -AssemblyName System.Runtime.WindowsRuntime
-$asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
-[Windows.Media.SpeechRecognition.SpeechRecognizer,Windows.Media.SpeechRecognition,ContentType=WindowsRuntime] | Out-Null
-$r = New-Object Windows.Media.SpeechRecognition.SpeechRecognizer
-$c = $asTask.MakeGenericMethod([Windows.Media.SpeechRecognition.SpeechRecognitionCompilationResult]).Invoke($null, @($r.CompileConstraintsAsync()))
-$c.Wait(-1) | Out-Null; if ("$($c.Result.Status)" -ne 'Success') { throw "$($c.Result.Status)" }
-if ($env:TQ_PROBE) { [Console]::Out.Write('ok'); exit 0 }
-$r.Timeouts.InitialSilenceTimeout = [TimeSpan]::FromSeconds(3); $r.Timeouts.EndSilenceTimeout = [TimeSpan]::FromMilliseconds(600)
-[Console]::Out.WriteLine('.'); [Console]::Out.Flush()
-$res = [Windows.Media.SpeechRecognition.SpeechRecognitionResult]
-while (-not (Test-Path $env:TQ_STOP)) {
-  $t = $asTask.MakeGenericMethod($res).Invoke($null, @($r.RecognizeAsync()))
-  while (-not $t.Wait(200)) { if (Test-Path $env:TQ_STOP) { break } }
-  if (-not $t.IsCompleted -and -not $t.Wait(3500)) { break }
-  $x = $t.Result; $s = "$($x.Status)"
-  if ($x.Text) { [Console]::Out.WriteLine('+' + $x.Text); [Console]::Out.Flush() }
-  elseif ($s -in @('MicrophoneUnavailable', 'NetworkFailure', 'TopicLanguageNotSupported', 'GrammarCompilationFailure')) { throw $s }
-  else { [Console]::Out.WriteLine('?' + $s); [Console]::Out.Flush() }
-}
-} catch { [Console]::Error.WriteLine($_.Exception.Message); exit 2 }'''
-
-def _ps(script: str) -> list:
-    return ['powershell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', base64.b64encode(script.encode('utf-16-le')).decode()]
-
-def _live_ok() -> bool:
-    """Will Windows voice typing take dictation here? A child compiles it and exits - a second or two, once per run."""
-    from . import spawn
-    try: r = spawn.run(_ps(_WINRT), capture_output=True, timeout=30, env={**os.environ, 'TQ_PROBE': '1'})
-    except Exception as e: logger.debug(f'voice: no Windows voice typing - {e}'); return False      # a probe never breaks the status
-    if r.returncode: logger.debug(f"voice: no Windows voice typing - {r.stderr.decode('utf-8', 'replace').strip()[:200]}")
-    return r.returncode == 0 and r.stdout.decode('utf-8', 'replace').strip() == 'ok'
-
-def _why(err: str) -> str:
-    k = next((k for k in _LIVE_WHY if k.lower() in err.lower()), None)
-    return f"Voice typing stopped: {_LIVE_WHY[k] if k else err[:200]}"
-
-_LISTEN, _LISTEN_LOCK = {}, threading.Lock()
-
-def _read(s):
-    p = s['proc']
-    for line in iter(p.stdout.readline, b''):
-        t = line.decode('utf-8', 'replace').rstrip('\r\n')
-        if t == '.': s['ready'] = True
-        elif t.startswith('+') and t[1:].strip(): s['said'].append(t[1:].strip())
-        elif t.startswith('?'): s['last'] = t[1:].strip()
-    if p.wait(): s['error'] = _why(p.stderr.read().decode('utf-8', 'replace').strip() or str(p.returncode))
-    s['done'] = True
-
-# A SESSION THAT HEARD NOTHING SAYS SO (the owner, 2026-11-09: "you start it and end it and no words show up???"). Windows answers every
-# listen, and with Online speech recognition off or blocked it answers 'Unknown' with no text - the loop took that as a pause, so the
-# stop came back empty and the mic said nothing at all. Now a session that ends with no words names why, by the last answer Windows gave.
-_HEARD_NOTHING = {'Unknown': "Windows voice typing heard no words - Windows' speech service did not answer. Check that Online speech "
-                             "recognition is on in Windows' speech privacy settings (your organisation may block it), or set up a voice AI",
-                  'TimeoutExceeded': "Windows voice typing heard no speech - check the microphone Windows is using (Sound settings) "
-                                     "and that it is not muted, then press the mic and talk"}
-
-def heard_nothing(last: str = '') -> str:
-    "The line a session that ended with no words shows, by Windows' last answer (`last`: a SpeechRecognitionResultStatus name, or '')."
-    return _HEARD_NOTHING.get(last) or (f"Windows voice typing heard no words (Windows answered: {last})" if last else _HEARD_NOTHING['TimeoutExceeded'])
-
-def listen_start() -> str:
-    """Start the one live session (an earlier one stops first) and return its id."""
-    b = builtin() or {}
-    if b.get('engine') != LIVE['engine']: raise RuntimeError(f"{LIVE['label']} is not on this computer")
-    if b.get('ask'): raise RuntimeError(_LIVE_WHY['privacy'])
-    from . import spawn
-    with _LISTEN_LOCK:
-        _stop(_LISTEN.pop('cur', None))
-        sid = uuid.uuid4().hex[:12]
-        stop = os.path.join(tempfile.gettempdir(), f'taskuary-listen-{sid}.stop')
-        p = spawn.popen(_ps(_WINRT), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, 'TQ_STOP': stop})
-        s = _LISTEN['cur'] = {'id': sid, 'proc': p, 'stop': stop, 'said': [], 'error': '', 'last': '', 'ready': False, 'done': False}
-        s['reader'] = threading.Thread(target=_read, args=(s,), daemon=True, name='voice-listen'); s['reader'].start()
-    return sid
-
-def _view(s, since=0) -> dict: return {'said': s['said'][max(0, since):], 'ready': s['ready'], 'done': s['done'], 'error': s['error']}
-
-def listen_poll(sid: str, since: int = 0):
-    """The phrases settled since `since`; None when `sid` is not the live session."""
-    s = _LISTEN.get('cur')
-    return _view(s, since) if s and s['id'] == sid else None
-
-def _stop(s):
-    if not s: return
-    try: open(s['stop'], 'w').close()
-    except OSError: pass
-    try: s['proc'].wait(timeout=6)
-    except subprocess.TimeoutExpired: s['proc'].kill()
-    s['reader'].join(timeout=3)
-    try: os.unlink(s['stop'])
-    except OSError: pass
-
-def listen_stop(sid: str, since: int = 0):
-    """Stop the session - a phrase still being said settles first - and return what came after `since`; None for an unknown id."""
-    with _LISTEN_LOCK:
-        s = _LISTEN.get('cur')
-        if not s or s['id'] != sid: return None
-        _stop(_LISTEN.pop('cur'))
-    if not s['said'] and not s['error']: s['error'] = heard_nothing(s.get('last', ''))
-    return {**_view(s, since), 'done': True}
+def toggle_voice_typing(user32=None) -> None:
+    """Win+H, as the keyboard would send it: Windows' voice typing opens on the focused box - or closes, when it is open. Raises
+    RuntimeError with the owner's one line when Windows takes fewer than the four key events (an elevated window in front, a locked desk)."""
+    import ctypes
+    if sys.platform != 'win32' and user32 is None: raise RuntimeError('Windows voice typing is only on Windows')
+    W, D, L = ctypes.c_uint16, ctypes.c_uint32, ctypes.c_int32     # WORD, DWORD, LONG at Windows' own widths
+    class KI(ctypes.Structure): _fields_ = [('wVk', W), ('wScan', W), ('dwFlags', D), ('time', D), ('dwExtraInfo', ctypes.c_size_t)]
+    class MI(ctypes.Structure): _fields_ = [('dx', L), ('dy', L), ('mouseData', D), ('dwFlags', D), ('time', D), ('dwExtraInfo', ctypes.c_size_t)]
+    class U(ctypes.Union): _fields_ = [('ki', KI), ('mi', MI)]      # MI sizes the union as Windows reads it
+    class INPUT(ctypes.Structure): _fields_ = [('type', D), ('u', U)]
+    LWIN, H, UP = 0x5B, 0x48, 0x0002
+    keys = (INPUT * 4)(*[INPUT(1, U(ki=KI(vk, 0, f, 0, 0))) for vk, f in ((LWIN, 0), (H, 0), (H, UP), (LWIN, UP))])
+    sent = (user32 or ctypes.windll.user32).SendInput(4, keys, ctypes.sizeof(INPUT))
+    if sent != 4: raise RuntimeError(CHORD_FAILED)
 
 
 def _gemini(cfg, key, data, mime, name, terms=()):

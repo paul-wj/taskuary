@@ -5,17 +5,10 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Box, Button, CircularProgress, Typography } from "@mui/material";
 import SystemUpdateAltIcon from "@mui/icons-material/SystemUpdateAlt";
 import api from "./api";
-import { updateWaiting } from "./appQuit.js";
+import { howLine, updateWaiting } from "./appQuit.js";
 import { BORDER, DIM, FAINT, INK, mono } from "./theme.jsx";
 import { t, translateDescriptor } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
-
-const HOW = {
-  setup: "the installed desktop app — the new installer is downloaded and runs quietly after this window closes; it reopens by itself. Windows asks for your OK only if Taskuary was installed for all users",
-  exe: "the one-file desktop app (Taskuary.exe) — the installer is downloaded and runs quietly after this window closes; Taskuary moves into its installed home with a Start menu entry, the one file is removed, and it reopens by itself",
-  pip: "a pip install — `pip install -U taskuary` runs, then the same command line is relaunched",
-  source: "a source checkout — update it with `git pull` in the repository, then restart; nothing here can do that for you",
-};
 
 const waitingText = (data) => {
   const match = /^Update waits for (?:(\d+) running agents?)?(?: and )?(?:(\d+) routine runs?)?(?: \(([^)]*)\))?$/.exec(data.waits || "");
@@ -117,9 +110,7 @@ export default function UpdateCard({ asked = false, at = 0 }) {
                 </Box>
               )}
             </Typography>
-            <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.25 }}>
-              {t("This is {installation}.", { installation: t(HOW[how] || HOW.exe) })}
-            </Typography>
+            {!!howLine(how) && <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: 0.25 }}>{t(howLine(how))}</Typography>}
           </Box>
           <Button size="small" variant="outlined" disabled={!!busy} onClick={() => check(true)}
             startIcon={busy === "check" ? <CircularProgress size={12} /> : null}>{t("Check now")}</Button>
@@ -142,6 +133,7 @@ export default function UpdateCard({ asked = false, at = 0 }) {
             <Box component="a" href={info.notes} target="_blank" rel="noopener" sx={{ color: "var(--tq-link, #55697a)" }}>{t("release notes")}</Box>
           </Typography>
         )}
+        {info?.failed && info.newer && !busy && <Alert severity="warning" sx={{ mt: 1.25, fontSize: 12.5 }}>{info.failed}</Alert>}
         {note && <Alert severity="info" sx={{ mt: 1.25, fontSize: 12.5 }}>{note.waiting ? waitingText(note.waiting) : translateDescriptor(note)}</Alert>}
         {(err || info?.error) && <Alert severity={err ? "error" : "warning"} sx={{ mt: 1.25, fontSize: 12.5 }}>{err ? translateDescriptor(err) : info.error}</Alert>}
       </Box>

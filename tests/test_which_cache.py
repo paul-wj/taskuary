@@ -109,3 +109,35 @@ class SharedSignatureTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_a_folder_on_many_paths_is_read_once_a_second_for_all_of_them():
+    """The owner's restart, 2026-11-16: the CLIs are looked up on a dozen PATHs (each connection's, npm's, the session's), and each read all
+    of its folders again every second - ~10 s of the page's first minute. A folder's signature now serves every PATH that holds it."""
+    a, b, c = tempfile.mkdtemp(), tempfile.mkdtemp(), tempfile.mkdtemp()
+    read, real = [], pathcache._mtime
+    pathcache.forget()
+    with mock.patch.object(pathcache, '_mtime', side_effect=lambda d: (read.append(d), real(d))[1]), mock.patch.object(pathcache, 'SIG_TTL', 60):
+        for path in (os.pathsep.join([a, b]), os.pathsep.join([b, c]), os.pathsep.join([a, c]), os.pathsep.join([c, b, a])):
+            pathcache.which('nwtool', path=path)
+    assert sorted(x for x in read if x in (a, b, c)) == sorted([a, b, c]), read
+    pathcache.forget()
+
+
+def test_the_start_makes_the_pages_first_reads_so_the_page_finds_them_made(monkeypatch):
+    """The owner's restart, 2026-11-16: the setup, first-run and agents reads each looked for every AI CLI on every PATH folder inside the
+    page's first requests, 2-6 s each beside the start's own work. The start makes those reads first (server._warm_reads): the page's own
+    then scans nothing."""
+    from taskuary import server, setup as setup_mod
+    from taskuary.store import MemoryStore
+    monkeypatch.setattr(server, 'store', MemoryStore())
+    pathcache.forget()
+    n, real = [0], pathcache._scan
+    monkeypatch.setattr(pathcache, '_scan', lambda *a, **k: (n.__setitem__(0, n[0] + 1), real(*a, **k))[1])
+    monkeypatch.setattr(pathcache, 'SIG_TTL', 60); monkeypatch.setattr(pathcache, 'MAX_AGE', 600)
+    server._warm_reads()
+    assert n[0] > 0, 'the start looked'
+    n[0] = 0
+    setup_mod.page(server.store); server.first_run_state(); server.agents()
+    assert n[0] == 0, f'the page scanned PATH {n[0]} times after the start had'
+    pathcache.forget()

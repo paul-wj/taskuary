@@ -176,21 +176,6 @@ class LiveSocketTests(unittest.TestCase):
         finally:
             live.detach(dummy)
 
-    def test_advice_for_several_items_in_one_window_names_each(self):
-        """The item on the table and the two read ahead of it answered in one window: the last key alone lost the table's own read."""
-        dummy = object()
-        live.attach(dummy)
-        try:
-            live.emit(live.ADVICE, key='processing:pi_1', target_kind='task', target_id=9)
-            live.emit(live.ADVICE, key='processing:pi_2', target_kind='message', target_id=9)
-            got = live._pending[live.ADVICE]
-            self.assertEqual(got['key'], 'processing:pi_2')
-            self.assertEqual(got['items'], [{'key': 'processing:pi_1', 'target_kind': 'task', 'target_id': 9},
-                                            {'key': 'processing:pi_2', 'target_kind': 'message', 'target_id': 9}])
-            live.flush()
-        finally:
-            live.detach(dummy)
-
     def test_no_listeners_means_no_timer(self):
         """A poll writing forty rows must not spawn forty Timers when nobody has the UI open."""
         live.emit('feed-changed', message_id=1)
@@ -374,6 +359,10 @@ class LiveSocketTests(unittest.TestCase):
             stamped = live._pending['feed-changed']['seq']
             self.assertGreater(stamped, before)
             self.assertGreaterEqual(live.seq(), stamped, 'a read begun now has seen it')
+            # ...AND A STAMP NEVER GOES BACK ACROSS A RESTART (2026-11-15): the count began again at 1, so a page open through one held a
+            # rail "newer" than every wake-up of the new process and did not read again - the count begins at the clock
+            import time
+            self.assertGreater(before, (time.time() - 7 * 86400) * 1000, 'a stamp of this process is newer than any an earlier one handed out')
             live.emit('feed-changed', message_id=2, seq=None)                # unstampable (store._poke inside a transaction)
             self.assertNotIn('seq', live._pending['feed-changed'], 'one unstamped write leaves the window uncovered')
             live.flush()

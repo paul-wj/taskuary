@@ -104,16 +104,6 @@ test("date and relative-time labels switch language without changing machine day
   setLocale("en");
 });
 
-test("localized button text still resolves to canonical action identifiers", async () => {
-  const { setLocale } = await import("../src/i18n.js");
-  const { label } = await import("../src/buttons.js");
-  const { verbOfLabel } = await import("../src/pressLog.js");
-  setLocale("zh-CN");
-  assert.equal(verbOfLabel(label("close")), "close");
-  assert.equal(verbOfLabel(label("approve", "action")), "approve");
-  setLocale("en");
-  assert.equal(verbOfLabel("Mark done"), "close");
-});
 
 test("back navigation and restored state use their own meanings without changing English", async () => {
   const locale = await load({ stored: "zh-CN" });

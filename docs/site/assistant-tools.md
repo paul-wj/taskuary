@@ -86,7 +86,7 @@ The "Not for me" button: file it, just this once - its card asks whether from no
 
 ### `not_ours_sender`
 
-The "Ignore this sender" button: file everything from this sender from now on - their mail still arrives and stays readable.
+The "Ignore this sender" button: file mail like this from this sender from now on - their mail still arrives and stays readable, and another kind from them is still judged.
 
 <p class="runs">Brings up its button for you to press.</p>
 
@@ -240,7 +240,7 @@ Change a task's priority, title, owner or due day. Any other value is refused wi
 
 ### `task.set_kind`
 
-Say what kind of work a task is.
+Say who does a task - an agent kind starts that agent on it.
 
 - `kind` - task (the owner does it) | general (a non-coding agent) | coding
 - `ref` (optional) - the task (TQ-0123), when it is not the one on the table
@@ -608,7 +608,7 @@ Archive it: off the pipe and closed, nothing deleted.
 
 ### `preference.exclude_sender`
 
-Teach triage to file this sender or subject from now on - their mail still arrives (`scope`: sender | subject)
+Teach triage to file this kind of mail from this sender, or this subject, from now on - their mail still arrives (`scope`: sender | subject)
 
 - `scope` - sender | subject
 
@@ -788,7 +788,7 @@ Start a script by its name: walk me through my tasks | set up a report.
 
 ### `memory.remember`
 
-Keep a fact or rule the owner tells you, at once - those five are LEARNED.md, the memory every reader uses | style: a rule about HOW they write - greetings and salutations ("write Mrs <surname> to women, never her first name"), sign-off, tone, length, formatting, words to use or avoid - saved to their writing style, STYLE.md's Owner notes, which every draft reads; with `about` (one person: "write to Gail informally") it is kept for that person alone, read only by the drafts to them | soul: who the owner IS, lasting - their title, company, the systems and repositories they use ("I'm now the AP lead", "our ERP is Intacct") - SOUL.md, which triage, drafts, agents and you read | counsel: how YOU should behave and speak to the owner ("be shorter with me", "don't walk me through the FYI") - COUNSEL.md, your own instructions. SOUL and COUNSEL are added to, never rewritten; a fact about their job or about what becomes a task is care or work, never these. Who reports to whom and who owns what is people.relate.
+Keep a fact or rule the owner tells you, at once, and above the CALL answer them in a few natural words ("Got it - Omar for badge faults.") - never that it was saved, where, or who reads it - those five are LEARNED.md, the memory every reader uses | style: a rule about HOW they write - greetings and salutations ("write Mrs <surname> to women, never her first name"), sign-off, tone, length, formatting, words to use or avoid - saved to their writing style, STYLE.md's Owner notes, which every draft reads; with `about` (one person: "write to Gail informally") it is kept for that person alone, read only by the drafts to them | soul: who the owner IS, lasting - their title, company, the systems and repositories they use ("I'm now the AP lead", "our ERP is Intacct") - SOUL.md, which triage, drafts, agents and you read | counsel: how YOU should behave and speak to the owner ("be shorter with me", "don't walk me through the FYI") - COUNSEL.md, your own instructions. SOUL and COUNSEL are added to, never rewritten; a fact about their job or about what becomes a task is care or work, never these. Who reports to whom and who owns what is people.relate.
 
 - `note` - it, in the owner's words ("Gail moved to Ops", "Ray handles payroll for me", "I put renewals off to Friday", "I don't care about the legacy export job any more")
 - `about` (optional) - the person's address or name, for a people or style line

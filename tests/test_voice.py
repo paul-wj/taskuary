@@ -106,162 +106,59 @@ class ProviderTests(unittest.TestCase):
 
 
 class BuiltinVoiceTests(unittest.TestCase):
-    """The computer's own voice: Windows voice typing, found with no card. TQ-1283 (the owner, 2026-11-03: "You can't use something that
-    doesn't work ... trigger the question if you want to turn that on"): the 2006 System.Speech fallback is gone; voice typing with its
-    speech setting off ASKS to be turned on."""
+    """The computer's own voice: Windows voice typing, as every other app gets it (the owner, 2026-11-16: "I don't want Local Whisper. Use
+    the Windows voice rec"). The mic's press toggles it with Win+H on the box the page focused; nothing here listens, records or transcribes."""
     def test_no_mic_clip_is_heard_by_anything_but_a_card(self):
         s = MemoryStore()
-        with mock.patch.object(voice, 'builtin', return_value=voice.LIVE):
-            self.assertEqual(voice.ready(s)['builtin'], voice.LIVE); self.assertFalse(voice.ready(s)['ready'])
+        with mock.patch.object(voice, 'builtin', return_value=voice.WINDOWS):
+            self.assertEqual(voice.ready(s)['builtin'], voice.WINDOWS); self.assertFalse(voice.ready(s)['ready'])
             with self.assertRaises(RuntimeError) as e: voice.transcribe(s, b'RIFF', 'audio/wav', 'clip.wav', mic=True)
             self.assertIn(VOICE, str(e.exception))
-        self.assertFalse(hasattr(voice, '_windows') or hasattr(voice, 'BUILTIN'), 'System.Speech is gone')
+        for gone in ('_windows', 'BUILTIN', 'LIVE', 'listen_start', '_WINRT', 'speech_on', 'set_up_local', '_HEARS'):
+            self.assertFalse(hasattr(voice, gone), f'{gone} is gone: no recogniser of our own, no Local Whisper push')
 
     def test_a_card_still_wins(self):
         s = _voice_store('groq_stt')
-        with mock.patch.object(voice, 'builtin', return_value=voice.LIVE),              mock.patch.object(voice.requests, 'post', return_value=R(200, {'text': 'from groq'})):
+        with mock.patch.object(voice, 'builtin', return_value=voice.WINDOWS), mock.patch.object(voice.requests, 'post', return_value=R(200, {'text': 'from groq'})):
             self.assertEqual(voice.ready(s)['builtin'], None)
             self.assertEqual(voice.transcribe(s, b'RIFF', 'audio/wav', mic=True)['provider'], 'groq_stt')
 
-    def test_off_windows_nothing_is_found(self):
-        with mock.patch.dict(voice._HAS, clear=True), mock.patch.object(voice.sys, 'platform', 'linux'):
-            self.assertIsNone(voice.builtin())
+    def test_windows_voice_typing_is_found_on_windows_only(self):
+        with mock.patch.object(voice.sys, 'platform', 'win32'): self.assertEqual(voice.builtin(), voice.WINDOWS)
+        with mock.patch.object(voice.sys, 'platform', 'linux'): self.assertIsNone(voice.builtin())
+        with mock.patch.object(voice.sys, 'platform', 'darwin'): self.assertIsNone(voice.builtin())
 
-    def test_voice_typing_with_its_setting_off_asks_and_never_falls_back(self):
-        win = lambda live: (mock.patch.dict(voice._HAS, clear=True), mock.patch.object(voice.sys, 'platform', 'win32'),
-                            mock.patch.object(voice, '_live_ok', return_value=live))
-        a, b, c = win(True)
-        with a, b, c, mock.patch.object(voice, 'speech_on', return_value=True): self.assertEqual(voice.builtin(), voice.LIVE)
-        a, b, c = win(True)
-        with a, b, c, mock.patch.object(voice, 'speech_on', return_value=False):
-            self.assertEqual(voice.builtin(), {**voice.LIVE, 'ask': voice.SPEECH_ASK})
-            with mock.patch.object(voice, 'speech_on', return_value=True): self.assertEqual(voice.builtin(), voice.LIVE, 'on at the next press, no restart')
-        a, b, c = win(False)
-        with a, b, c, mock.patch.object(voice, 'speech_on', return_value=True):
-            self.assertIsNone(voice.builtin(), 'no voice typing: nothing worse stands in')
-        self.assertIn('Microsoft', voice.SPEECH_ASK)
-        self.assertEqual(voice._why('the speech privacy policy was not accepted'), "Voice typing stopped: " + voice._LIVE_WHY['privacy'])
+    def test_the_press_sends_win_h_as_the_keyboard_would(self):
+        sent = []
+        class User32:
+            def SendInput(self, n, keys, size):
+                sent.extend((k.type, k.u.ki.wVk, k.u.ki.dwFlags) for k in keys[:n]); self.size = size; return n
+        u = User32(); voice.toggle_voice_typing(user32=u)
+        self.assertEqual(sent, [(1, 0x5B, 0), (1, 0x48, 0), (1, 0x48, 2), (1, 0x5B, 2)], 'Win down, H down, H up, Win up')
+        import ctypes
+        self.assertEqual(u.size, 40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28, "INPUT as Windows sizes it - a wrong size and SendInput takes nothing")
 
-    def test_privacy_does_not_hide_the_enable_prompt_when_compilation_would_fail(self):
-        with mock.patch.dict(voice._HAS, clear=True), mock.patch.object(voice.sys, 'platform', 'win32'), \
-             mock.patch.object(voice, 'speech_on', return_value=False), mock.patch.object(voice, '_live_ok', return_value=False) as probe:
-            self.assertEqual(voice.builtin()['ask'], voice.SPEECH_ASK)
-            probe.assert_not_called()
+    def test_a_chord_windows_refuses_says_so_in_one_line(self):
+        refused = types.SimpleNamespace(SendInput=lambda n, keys, size: 0)
+        with self.assertRaises(RuntimeError) as e: voice.toggle_voice_typing(user32=refused)
+        self.assertEqual(str(e.exception), voice.CHORD_FAILED); self.assertIn('Win+H yourself', voice.CHORD_FAILED)
+        with mock.patch.object(voice.sys, 'platform', 'linux'), self.assertRaises(RuntimeError): voice.toggle_voice_typing()
 
-    def test_a_failed_probe_recovers_without_restarting_after_the_cooldown(self):
-        with mock.patch.dict(voice._HAS, clear=True), mock.patch.object(voice.sys, 'platform', 'win32'), \
-             mock.patch.object(voice, 'speech_on', return_value=True), mock.patch.object(voice, '_live_ok', side_effect=[False, True]) as probe, \
-             mock.patch.object(voice.time, 'monotonic', side_effect=[100, 110, 131, 131]):
-            self.assertIsNone(voice.builtin())
-            self.assertIsNone(voice.builtin())
-            self.assertEqual(voice.builtin(), voice.LIVE)
-            self.assertEqual(probe.call_count, 2)
-
-    def test_explicit_builtin_status_is_available_even_with_a_connected_voice_card(self):
-        here = TestClient(server.app, client=('127.0.0.1', 5000))
-        there = TestClient(server.app, client=('192.168.1.20', 5000))
-        with mock.patch.object(server, 'store', _voice_store()), mock.patch.object(voice, 'builtin', return_value=voice.LIVE):
-            self.assertIsNone(here.get('/api/voice/status').json()['builtin'])
-            self.assertEqual(here.get('/api/voice/status?builtin=true').json()['builtin'], voice.LIVE)
-            self.assertIsNone(there.get('/api/voice/status?builtin=true').json()['builtin'])
-
-    def test_a_manual_refresh_retries_a_recent_failed_probe(self):
-        with mock.patch.dict(voice._HAS, {'live': False, 'checked': voice.time.monotonic()}, clear=True), \
-             mock.patch.object(voice.sys, 'platform', 'win32'), mock.patch.object(voice, 'speech_on', return_value=True), \
-             mock.patch.object(voice, '_live_ok', return_value=True) as probe:
-            self.assertEqual(voice.builtin(refresh=True), voice.LIVE)
-            probe.assert_called_once()
-
-    def test_a_yes_writes_the_setting_windows_own_toggle_writes(self):
-        vals = {}
-        class K:
-            def __enter__(s): return s
-            def __exit__(s, *a): pass
-        reg = types.SimpleNamespace(HKEY_CURRENT_USER='HKCU', KEY_SET_VALUE=2, REG_DWORD=4, CreateKeyEx=lambda *a: K(), OpenKey=lambda *a: K(),
-                                    SetValueEx=lambda k, n, _, t, v: vals.__setitem__(n, (t, v)), QueryValueEx=lambda k, n: (vals[n][1], 4) if n in vals else (_ for _ in ()).throw(OSError()))
-        with mock.patch.dict(sys.modules, {'winreg': reg}):
-            self.assertFalse(voice.speech_on(), "Windows' default: never set is off")
-            self.assertTrue(voice.turn_on_speech()); self.assertEqual(vals['HasAccepted'], (4, 1)); self.assertTrue(voice.speech_on())
-
-    def test_the_yes_is_served_only_on_this_computer_and_audited(self):
+    def test_the_keys_are_pressed_only_for_a_page_on_this_computer(self):
         here, there = TestClient(server.app, client=('127.0.0.1', 5000)), TestClient(server.app, client=('192.168.1.20', 5000))
-        st = MemoryStore()
-        with mock.patch.object(server, 'store', st), mock.patch.object(voice, 'turn_on_speech', return_value=True) as on,              mock.patch.object(voice, 'builtin', return_value=voice.LIVE):
-            self.assertEqual(there.post('/api/voice/speech-on').status_code, 409); on.assert_not_called()
-            r = here.post('/api/voice/speech-on'); self.assertEqual(r.status_code, 200); self.assertEqual(r.json()['builtin'], voice.LIVE)
-        with mock.patch.object(server, 'store', st), mock.patch.object(voice, 'turn_on_speech', return_value=False):
-            r = here.post('/api/voice/speech-on'); self.assertEqual(r.status_code, 409); self.assertIn('speech privacy', r.json()['detail'])
-        from taskuary import guard
-        self.assertEqual(guard.classify('POST', '/api/voice/speech-on')[0], 'owner')
-
-    def test_the_probe_asks_a_powershell_child_for_winrt_dictation(self):
-        from taskuary import spawn
-        seen = {}
-        def run(argv, **kw): seen.update(argv=argv, env=kw['env']); return types.SimpleNamespace(returncode=0, stdout=b'ok', stderr=b'')
-        with mock.patch.object(spawn, 'run', run): self.assertTrue(voice._live_ok())
-        script = base64.b64decode(seen['argv'][-1]).decode('utf-16-le')
-        self.assertIn('Windows.Media.SpeechRecognition.SpeechRecognizer', script); self.assertEqual(seen['env']['TQ_PROBE'], '1')
-        no = lambda argv, **kw: types.SimpleNamespace(returncode=2, stdout=b'', stderr=b'speech privacy policy was not accepted')
-        with mock.patch.object(spawn, 'run', no): self.assertFalse(voice._live_ok())
-        with mock.patch.object(spawn, 'run', side_effect=FileNotFoundError('powershell')): self.assertFalse(voice._live_ok())
-
-    def test_a_listening_session_lands_each_phrase_and_stops_on_the_press(self):
-        """The real child is checked by hand on Windows (the suite allows no child process): a stand-in prints what it prints."""
-        from taskuary import spawn
-        import io as _io, threading as _th
-        class Child:
-            def __init__(self, out, code=0, err=b''): self.stdout, self.stderr, self.returncode, self._go = _io.BytesIO(out), _io.BytesIO(err), code, _th.Event()
-            def wait(self, timeout=None): return self.returncode
-            def kill(self): pass
-        made = []
-        def popen(argv, **kw): made.append(kw['env']['TQ_STOP']); return Child(b'.\r\n+call Erin back\r\n+about the payroll report\r\n')
-        with mock.patch.object(voice, 'builtin', return_value=voice.LIVE), mock.patch.object(spawn, 'popen', popen):
-            sid = voice.listen_start()
-            voice._LISTEN['cur']['reader'].join(2)
-            self.assertEqual(voice.listen_poll(sid), {'said': ['call Erin back', 'about the payroll report'], 'ready': True, 'done': True, 'error': ''})
-            self.assertEqual(voice.listen_poll(sid, 1)['said'], ['about the payroll report'])
-            self.assertIsNone(voice.listen_poll('nope'))
-            self.assertEqual(voice.listen_stop(sid, 2)['said'], [])
-            self.assertIsNone(voice.listen_stop(sid), 'a stopped session is gone')
-            self.assertFalse(os.path.exists(made[0]), 'the stop file does not outlive the session')
-        bad = lambda argv, **kw: Child(b'', 2, b'MicrophoneUnavailable')
-        with mock.patch.object(voice, 'builtin', return_value=voice.LIVE), mock.patch.object(spawn, 'popen', bad):
-            sid = voice.listen_start(); voice._LISTEN['cur']['reader'].join(2)
-            self.assertIn('Let desktop apps access your microphone', voice.listen_stop(sid)['error'])
-        with mock.patch.object(voice, 'builtin', return_value=None), self.assertRaises(RuntimeError): voice.listen_start()
-        with mock.patch.object(voice, 'builtin', return_value={**voice.LIVE, 'ask': voice.SPEECH_ASK}), self.assertRaises(RuntimeError): voice.listen_start()
-
-    def test_a_session_that_heard_nothing_says_why(self):
-        """"you start it and end it and no words show up" (the owner, 2026-11-09): Windows answered each listen 'Unknown' with no text
-        (Online speech recognition off or blocked) and the stop came back empty with no error - a silent mic. Now it names why."""
-        from taskuary import spawn
-        import io as _io
-        class Child:
-            def __init__(self, out): self.stdout, self.stderr, self.returncode = _io.BytesIO(out), _io.BytesIO(b''), 0
-            def wait(self, timeout=None): return 0
-            def kill(self): pass
-        for out, want in ((b'.\r\n?Unknown\r\n?Unknown\r\n', 'speech service did not answer'), (b'.\r\n?TimeoutExceeded\r\n', 'heard no speech'),
-                          (b'.\r\n', 'heard no speech')):
-            with mock.patch.object(voice, 'builtin', return_value=voice.LIVE), mock.patch.object(spawn, 'popen', lambda argv, **kw: Child(out)):
-                sid = voice.listen_start(); voice._LISTEN['cur']['reader'].join(2)
-                got = voice.listen_stop(sid)
-                self.assertEqual(got['said'], []); self.assertIn(want, got['error'])
-        said = lambda argv, **kw: Child(b'.\r\n?Unknown\r\n+call Erin back\r\n')
-        with mock.patch.object(voice, 'builtin', return_value=voice.LIVE), mock.patch.object(spawn, 'popen', said):
-            sid = voice.listen_start(); voice._LISTEN['cur']['reader'].join(2)
-            self.assertEqual(voice.listen_stop(sid), {'said': ['call Erin back'], 'ready': True, 'done': True, 'error': ''}, 'words heard: no complaint')
-        self.assertIn("Write('?' + $s)".replace('Write', 'WriteLine'), voice._WINRT, 'the child names each empty answer')
-
-    def test_voice_typing_serves_only_a_page_on_this_computer(self):
-        here, there = TestClient(server.app, client=('127.0.0.1', 5000)), TestClient(server.app, client=('192.168.1.20', 5000))
-        with mock.patch.object(voice, 'builtin', return_value=voice.LIVE), mock.patch.object(server, 'store', MemoryStore()):
-            self.assertEqual(here.get('/api/voice/status').json()['builtin'], voice.LIVE)
+        with mock.patch.object(voice, 'builtin', return_value=voice.WINDOWS), mock.patch.object(server, 'store', MemoryStore()),              mock.patch.object(voice, 'toggle_voice_typing') as press:
+            self.assertEqual(here.get('/api/voice/status').json()['builtin'], voice.WINDOWS)
             self.assertIsNone(there.get('/api/voice/status').json()['builtin'])
-            with mock.patch.object(voice, 'listen_start') as start:
-                self.assertEqual(there.post('/api/voice/listen').status_code, 409); start.assert_not_called()
-            self.assertEqual(here.get('/api/voice/listen/abc123').status_code, 404)
+            self.assertEqual(there.post('/api/voice/keys').status_code, 409); press.assert_not_called()
+            self.assertEqual(here.post('/api/voice/keys').json(), {'toggled': True}); press.assert_called_once_with()
+            press.side_effect = RuntimeError(voice.CHORD_FAILED)
+            r = here.post('/api/voice/keys'); self.assertEqual((r.status_code, r.json()['detail']), (409, voice.CHORD_FAILED))
+        with mock.patch.object(voice, 'builtin', return_value=None), mock.patch.object(server, 'store', MemoryStore()):
+            self.assertEqual(here.post('/api/voice/keys').status_code, 409, 'off Windows: no chord to send')
         from taskuary import guard
-        for path in ('/api/voice/listen', '/api/voice/listen/abc123/stop'): self.assertEqual(guard.classify('POST', path)[0], 'owner', path)
+        self.assertEqual(guard.classify('POST', '/api/voice/keys')[0], 'owner')
+        for gone in ('/api/voice/listen', '/api/voice/speech-on', '/api/deps/local-whisper'):
+            self.assertEqual(here.post(gone).status_code in (404, 405), True, gone)
 
     def test_groq_and_openai_ride_the_openai_shape_with_their_own_defaults(self):
         for t, host, model in (('groq_stt', 'api.groq.com/openai/v1', 'whisper-large-v3-turbo'),
@@ -643,3 +540,11 @@ class FixIsAButton(unittest.TestCase):
         with mock.patch.object(server.sys, 'platform', 'win32'), mock.patch('taskuary.spawn.bare') as sf, \
              mock.patch.object(server, '_is_loopback', return_value=False):
             self.assertEqual(c_api.post('/api/voice/open-settings', params={'which': 'microphone'}).status_code, 409); sf.assert_not_called()
+
+
+class LocalWhisperCard(unittest.TestCase):
+    def test_local_whisper_without_faster_whisper_offers_the_cards_install_button(self):
+        from taskuary.deps import Missing
+        with mock.patch.dict(sys.modules, {'faster_whisper': None}), self.assertRaises(Missing) as e:
+            voice._local({}, b'x', 'a.webm')
+        self.assertEqual(e.exception.package, 'faster_whisper')

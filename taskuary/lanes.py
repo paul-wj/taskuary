@@ -16,7 +16,6 @@ SECTION = {s['key']: s for s in SECTIONS}
 LEVEL_ORDER = tuple(s['key'] for s in SECTIONS)
 SECTION_WORDS = {s['key']: s['word'] for s in SECTIONS}
 LEVEL_OF_BAND = {s['band']: s['key'] for s in SECTIONS if s['band']}
-BAND_OF = {k: b for b, k in LEVEL_OF_BAND.items()}
 # URGENT IS A SHADE, NOT A SECTION (the owner, 2026-10-22): its band is drawn in Tasks, at its arrival place
 URGENT = VOCAB['urgent']
 LEVEL_OF_BAND[URGENT['band']] = URGENT['section']
@@ -35,13 +34,16 @@ IDEA = VOCAB['idea_kinds']
 # to send" is read here, never retyped where a sentence needs it (the cleanup round, 2026-10-18)
 WORD = {r['key']: r['word'] for g in ('lanes', 'kinds', 'states') for r in VOCAB[g]}
 def word(key: str) -> str: return WORD.get(key, '')
+# ...and its sentence, which the page's header chip shows as its hover: a row's line that says the same state reads it here (funnel)
+HINT = {r['key']: r.get('hint') or '' for g in ('lanes', 'kinds', 'states') for r in VOCAB[g]}
+def hint(key: str) -> str: return HINT.get(key, '')
 
 
 def lane_section(lane) -> str: return (LANE.get(lane) or {}).get('section') or 'task'   # a lane this build does not know is work, never buried
 
 
 def not_yet(item: dict) -> bool:
-    """A meeting on the timeline with nothing to say about it YET: it enters two hours out, and is urgent only inside ALERT_MIN."""
+    """A meeting on the timeline with nothing to say about it YET: it enters at ALERT_MIN, with its notification (2026-11-09)."""
     if item.get('kind') != 'meeting': return False
     if 'calendar_ready' in item: return not item['calendar_ready']
     return item.get('mins') is not None and item['mins'] > ALERT_MIN

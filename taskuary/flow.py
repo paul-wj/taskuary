@@ -292,7 +292,8 @@ def _value(ctx, path: str):
     if rec is None: return None
     if not rest: return rec.get('body', '')
     k = rest[0]
-    if k == 'answer': return None if rec.get('answer') is None else 'yes' if rec['answer'] else 'no'
+    # ...a text step's answer IS its text (the visual audit, 2026-11-13: a draft "from {{s2.answer}}" off a text step named nothing)
+    if k == 'answer': return ('yes' if rec['answer'] else 'no') if rec.get('answer') is not None else rec.get('body') if rec.get('kind') == 'ai' else None
     if k == 'fields' and len(rest) > 1: return (rec.get('fields') or {}).get(rest[1])
     if k in ('head', 'rows', 'why', 'body', 'task', 'status', 'error'): return rec.get('ref' if k == 'task' else k)
     return None
@@ -367,7 +368,16 @@ def _ai(store, step, ctx, llm, tid, dry, warns, title):
              'fields': 'Answer with JSON only, an object with exactly these keys: ' + ', '.join(fields),
              'text': 'Answer in plain text.'}[out]
     prompt = render(str(step.get('prompt') or ''), ctx, warns, AI_CHARS, fence=True)
-    raw = str(use(FLOW_AI_SYSTEM, f'{prompt[:AI_CHARS * 2]}\n\n{shape}', max_tokens=SUMMARY_TOKENS) or '').strip()
+    # A SCHEDULED RUN THAT READS WHAT ITS LAST RUN READ ASKS NOTHING (the owner, 2026-11-11: "if nothing changed in raw stuff ... just
+    # run it on changes"): the step keeps its last answer under the routine and the step (llm.standing) - a few changed facts are one short
+    # call - and the steps after it act on that. Run now, a dry run and a changed input ask as before
+    from .llm import standing
+    run, text = ctx.get('run') or {}, f'{prompt[:AI_CHARS * 2]}\n\n{shape}'
+    def ask(u): return str(use(FLOW_AI_SYSTEM, u, max_tokens=SUMMARY_TOKENS) or '').strip() or None
+    memo = run.get('trigger') == 'schedule' and run.get('source_id') and not dry and f"flow_ai_mark:{run['source_id']}:{step.get('id') or step.get('label') or ''}"
+    raw, look = standing(store, memo, FLOW_AI_SYSTEM, text, ask) if memo else (ask(text), 'asked')
+    raw = raw or ''
+    if look != 'asked': logger.info(f'{title}: the AI step - {look}')
     # an answer that did not happen is a failed step, never an empty one the next step reads as "no" (reports.render_report)
     if not raw: raise RuntimeError('the model returned an empty answer - it may have spent its budget thinking')
     if out == 'text': return {'head': next((l.strip() for l in raw.splitlines() if l.strip()), '')[:160], 'body': raw}
@@ -398,8 +408,12 @@ def _task(store, step, ctx, llm, tid, dry, warns, title):
 def _draft(store, step, ctx, llm, tid, dry, warns, title):
     from . import outbox
     if _refs(step.get('to')) or _refs(step.get('cc')): warns.append('who it goes to comes from an earlier step - check the address before you send it')
+    n = len(warns)
     to, about = render(str(step.get('to') or ''), ctx, warns).strip(), render(str(step.get('about') or ''), ctx, warns)
     subject, cc = render(str(step.get('subject') or ''), ctx, warns).strip(), render(step.get('cc') or [], ctx, warns)
+    # ...and a token that named nothing is a hole the email would be written around: the step fails there, never drafts an apology to a person
+    if holes := [w for w in warns[n:] if 'names nothing' in w]:
+        raise RuntimeError(f"{holes[0].split(' names nothing')[0]} names nothing, so there is nothing to write this from - fix the step that should fill it")
     if dry: return {'status': 'dry', 'head': f'would draft for {to}' + (f": {subject[:80]}" if subject else ''), 'body': about}
     out = outbox.compose(store, step.get('channel') or 'email', to, about, mode='draft', subject=subject or None, actor='workflow', llm=llm,
                          cc=cc if isinstance(cc, list) else [cc])

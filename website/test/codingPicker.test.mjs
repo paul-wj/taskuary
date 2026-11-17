@@ -38,16 +38,12 @@ test("the hook carries what each worker is for", () => {
 });
 
 test("the new-task dialog asks the question it means, and passes the kinds", () => {
-  // the Board's new task IS New's "Give an agent a job" (2026-10-15) - one form, so it is checked once, below
+  // the Board's New is New's one box (TQ-1397): nothing to pick there; the task page keeps its picker for a run started from a task
   const board = read("BoardView.jsx");
-  assert.match(board, /<NewSheet open=\{newOpen\} onClose=\{\(\) => setNewOpen\(false\)\} initialKind="agent"/);
+  assert.match(board, /<NewSheet open=\{newOpen\} onClose=\{\(\) => setNewOpen\(false\)\}\s/);
   assert.doesNotMatch(board, /Which CLI works it — and which model that CLI runs/);
-  for (const name of ["NewSheet.jsx", "TaskPage.jsx"]) {   // the task view is TaskPage.jsx since the canvas redesign
-    const src = read(name);
-    assert.match(src, /<AgentPicker agents=\{agents\} models=\{models\} kinds=\{kinds\} coding/);
-  }
-  const sheet = read("NewSheet.jsx");
-  assert.match(sheet, /onAgent=\{\(a\) => \{ setAgent\(a\); setModel\(""\); \}\}/);
+  assert.match(read("TaskPage.jsx"), /<AgentPicker agents=\{agents\} models=\{models\} kinds=\{kinds\} coding/);
+  assert.doesNotMatch(read("NewSheet.jsx"), /<AgentPicker/);
 });
 
 test("a general worker is chosen by name alone - the brain is its own picker", () => {
@@ -59,6 +55,17 @@ test("a general worker is chosen by name alone - the brain is its own picker", (
   // ...and a hand-off names no profile at all: the agent is Taskuary, the profile rides behind it (the owner, 2026-10-29)
   assert.match(picker, /\{!coding && !handOff && <Select size="small" value=\{selected/);
   assert.doesNotMatch(picker, /its profile · /);
+});
+
+test("Settings defaults and backups offer coding CLIs rather than profile names", () => {
+  const settings = read("SettingsView.jsx");
+  const defaults = read("AiDefaults.jsx");
+  assert.match(settings, /\["coding", "cli"\]\.includes\(String\(a\.Kind \|\| ""\)\.toLowerCase\(\)\)/);
+  assert.match(settings, /label: models\[a\.Name\]\?\.cli \|\| models\[a\.Name\]\?\.cmd \|\| a\.Name/);
+  assert.match(settings, /automatic — any other coding CLI/);
+  // the judge picks a thing that decides rather than a thing that speaks, so it gets its own word
+  assert.ok(defaults.includes('{isJudge ? "what decides" : "which AI"}'));      // one word for it on every card (2026-11-11)
+  assert.match(defaults, /state\.agent_options \|\| agents/);
 });
 
 test("the model box is a dropdown that LOOKS like one: an arrow, and the list opens on click (2026-10-01)", () => {

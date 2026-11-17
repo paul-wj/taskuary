@@ -38,10 +38,14 @@ export default function HeldSteps({ reviews, onChanged, toRow = false }) {
       {n > 1 && <Box component="ol" data-tq-held-list="" sx={{ m: 0, mt: 0.5, pl: 2.5, fontSize: 12.5, color: INK, lineHeight: 1.5 }}>
         {c.steps.map((s) => <li key={s.id} data-tq-held-step={s.state}><span style={{ color: s.state === "dismissed" ? FAINT : INK }}>{s.text}</span>
           {MARK[s.state] && <span style={{ color: s.state === "ran" ? "var(--tq-success, #47654a)" : s.state === "failed" ? ALERT_INK : FAINT, marginLeft: 6 }}>{MARK[s.state]}</span>}</li>)}</Box>}
-      <Typography {...pressable(() => setOpen((o) => !o))} data-tq-show-command="" aria-expanded={open}
+      {/* ...a read outside the task's folders has no command to show (readgate.py) */}
+      {c.steps.some((s) => s.command) && <Typography {...pressable(() => setOpen((o) => !o))} data-tq-show-command="" aria-expanded={open}
         sx={{ ...FOCUS_RING, display: "inline-block", mt: 0.4, fontSize: 11.5, color: "var(--tq-link, #55697a)", cursor: "pointer", fontWeight: 600, "&:hover": { textDecoration: "underline" } }}>
-        {open ? `Hide the command${n > 1 ? "s" : ""}` : `Show the command${n > 1 ? "s" : ""}`}</Typography>
-      {open && <Box component="pre" data-tq-held-commands="" sx={{ m: 0, mt: 0.4, p: 0.75, bgcolor: "var(--tq-inset, #f6f4f1)", borderRadius: 1, fontSize: 11.5, color: DIM, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+        {open ? `Hide the command${n > 1 ? "s" : ""}` : `Show the command${n > 1 ? "s" : ""}`}</Typography>}
+      {/* ...A LONG COMMAND SCROLLS IN ITS OWN BOX (the card round, 2026-11-12: a 60-line query opened to 1047 px - the card's title and why went
+          off the top of the chat, and its Approve stood a screen under them) */}
+      {open && <Box component="pre" data-tq-held-commands="" tabIndex={0} sx={{ m: 0, mt: 0.4, p: 0.75, bgcolor: "var(--tq-inset, #f6f4f1)", borderRadius: 1, fontSize: 11.5, color: DIM, whiteSpace: "pre-wrap", overflowWrap: "anywhere",
+        maxHeight: 220, overflowY: "auto" }}>
         {c.steps.map((s, i) => `${n > 1 ? `${i + 1}. ` : ""}${s.command}`).join("\n")}</Box>}
       <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, mt: 0.6, flexWrap: "wrap" }}>
         {live ? <>
@@ -58,7 +62,9 @@ export default function HeldSteps({ reviews, onChanged, toRow = false }) {
         </>}
       </Box>
       {/* ...the step that failed on an earlier press says so after a reload too (heldCard's error, read off the review) */}
-      {(err || (!busy && (live || c.pressed === "failed") && c.error)) && <Typography role="alert" sx={{ mt: 0.5, fontSize: 12, color: ALERT_INK }}>{err || c.error}</Typography>}
+      {/* ...IN THE CARD'S OWN SENTENCE, the same at the press as after a reload (the card round, 2026-11-12: the press's own line read "Step 1
+          failed: The held step failed: ..." over a single step, and "It failed: ..." once the page was read again) */}
+      {(err || (!busy && (live || c.pressed === "failed") && c.error)) && <Typography role="alert" sx={{ mt: 0.5, fontSize: 12, color: ALERT_INK }}>{(!busy && c.error) || err}</Typography>}
     </Box>
   );
 }

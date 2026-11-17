@@ -76,7 +76,7 @@ ACTIONS = {
                        ('slug', 'text'), 'playbooks_enabled'),
     # what the outcome ledger counted about a kind of work, as a block on its playbook (playbook_facts.py): reflection proposes it,
     # the owner's yes writes it - a derived line never edits a playbook on its own (spec 2026-10-12, build step 5)
-    # ...and what an agent's turn found the hard way, as a lesson on the playbook it belongs to (playbooks.take_lesson, the owner 2026-11-05)
+    # ...and lessons onto a playbook page (playbooks.with_lessons, the owner 2026-11-05)
     'amend_playbook': ('add what was learned to a playbook', ('slug', 'text'), 'playbooks_enabled'),
     'publish_skill': ('publish this reviewed Skill package and expose it to compatible local Agents',
                       ('generation_id', 'digest'), None),
@@ -92,7 +92,8 @@ ACTIONS = {
     'browser_act': ("do this in the agent's browser", ('sid', 'args'), None),
     # ...and a shell step that leaves the machine - a push, a merge, a public post, a publish, a mail - HELD the same way (shellgate.py,
     # the owner's ruling 2026-10-28): raised only by the shell hook; approving it runs that exact command in the folder it was held in
-    'shell_act': ("run this step of the agent's", ('sid', 'command'), None),
+    # ...or, a read outside the task's folders with no command (readgate.py), lets the task read those folders
+    'shell_act': ("run this step of the agent's", ('sid',), None),
     # ...and a desktop act that can't be undone, HELD the same way (agentdesktop.py, 2026-10-31): approving it runs that exact command
     'desktop_act': ("do this in an app on the owner's desktop", ('sid', 'args'), None),
     # A PART OF THE TASK THAT IS ANOTHER JOB (the owner, 2026-11-10: "random things that triage puts in one task that doesn't belong really,
@@ -104,6 +105,7 @@ ACTIONS = {
     # saved or run before it, and it is the one door by which an agent's script ever reaches a schedule
     'save_routine': ('save this script as a routine', ('title', 'script'), None),
 }
+FAILED_NOTE = 'failed'      # a pressed act that failed: settled, its error kept (ActError) - its agent sets up what goes next
 HELD_ACTS = ('browser_act', 'shell_act', 'desktop_act')     # raised by a hook before the act ran - never an agent's marker
 # ...each by its own gate, which runs it on the owner's yes (perform) and tells its agent their no (declined) - and where it was held, as its
 # card says it. One table: the card's reason (queue), the yes (execute) and the no (settle) each spelled the three out
@@ -255,6 +257,12 @@ def validate(store, p: dict) -> tuple:
             return False, 'this Skill draft is no longer waiting for publication'
         if generation.get('draft_digest') != p['digest'] or generation.get('base_digest') != p.get('base_digest'):
             return False, 'the Skill draft changed - review its new revision'
+    # NOTHING EMPTY IS PUT IN FRONT OF THE OWNER: a playbook that could not be filed, or says nothing of how the job is done, is refused at
+    # this one gate - the tool, a marker in the agent's words, the on-close question - and its writer is told what it lacks
+    if a == PLAYBOOK:
+        from . import playbooks
+        try: playbooks.check(str(p.get('text') or ''))
+        except ValueError as e: return False, str(e)
     from . import trackers
     if (a == 'close_item' or p.get('type') in trackers.TYPES) and (why := trackers.check(p)): return False, why
     # A CLOSE-OUT IS THE OWNER'S OWN ACT (the owner, 2026-09-27: "ask me before merge then do it"): the switches gate what
@@ -448,7 +456,7 @@ def closeout_pending(store, tid: int):
 # playbook proposal its agent left (approved or dismissed) are each said on the task, and only the owner's Mark done closes it
 # (2026-10-18: "sending and closing are two steps, never automatic"). A sent reply used to dismiss the undecided playbook.
 PLAYBOOK = 'write_playbook'
-# ...and a lesson an agent's turn left for a playbook (playbooks.take_lesson) is the same kind of ask: the owner's yes or no on how a kind of
+# ...and lessons proposed for a playbook (amend_playbook) are the same kind of ask: the owner's yes or no on how a kind of
 # job is done, never a close-out owed on the task - so it holds, settles and counts as the playbook does (the owner, 2026-11-05)
 PLAYBOOKS = (PLAYBOOK, 'amend_playbook')
 
@@ -512,34 +520,117 @@ SET_ASIDE = 'set aside when you moved on'
 LAND = 'land'                  # move_on's mark for the landing question (landing.pass_over) among the review ids
 LAND_LINE = '- the push/landing question you raised'
 PASSED_SAID = 'This was set aside when you moved on - ask the agent to bring it back.'
-# ...never the one being run on the owner's press right now: Approve tells the agent, and its told turn can begin before the yes is kept
-_PRESSED, PRESS_HOLD = {}, 300
+
+
+NOT_NEEDED = 'not needed - the agent finished without it'
 
 
 def passed(rv: dict | None) -> bool:
     "Whether review `rv` is a card the conversation moved past (move_on) - not pressable, and its press route says so (PASSED_SAID)."
-    return bool(rv) and rv.get('Status') == 'superseded' and rv.get('DecideNote') == SET_ASIDE
+    return bool(rv) and rv.get('Status') == 'superseded' and rv.get('DecideNote') in (SET_ASIDE, NOT_NEEDED)
+
+
+def finished_without(store, tid: int) -> list:
+    """A STEP HELD IN A TURN THAT THEN FINISHED THE JOB IS NOT LEFT LIT UNDER ITS ANSWER (the owner, 2026-11-16: a research turn's PDF read-back
+    was held, it finished the report another way, and the Approve stood live under the complete answer). The turn's own word that its goal is
+    met and checked (its summary's nothing_left - no reading of it) greys the steps held in that same turn in place, with the true line. ->
+    the review ids."""
+    from .shellgate import turn_of
+    turn, out = turn_of(store, int(tid)), []
+    for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action' AND Status='pending' AND DeliveryClaim IS NULL", (int(tid),)):
+        try: p = json.loads(r.get('DraftText') or '{}') or {}
+        except (TypeError, ValueError): p = {}
+        if isinstance(p, dict) and p.get('action') in HELD_ACTS and p.get('turn') == turn and store.decide_review(r['ReviewId'], 'superseded', None, 'taskuary', note=NOT_NEEDED):
+            out.append(r['ReviewId'])
+    if out: store.audit('task', tid, 'cards_passed', 'taskuary', 'system', {'rids': out, 'why': NOT_NEEDED})
+    return out
 
 
 def move_on(store, tid, before: str = None) -> list:
-    """THE CONVERSATION ON TASK `tid` MOVED ON: every action card still waiting, raised before `before` (now), is passed - and so is a
-    permission the agent waits on (permissions.set_aside). The ids passed."""
+    """THE CONVERSATION ON TASK `tid` MOVED ON: a permission the agent waits on is passed (permissions.set_aside), and the landing question.
+    AN ACTION CARD IS NOT (the owner, 2026-11-11, of a held step with a long query he asked a question about: "the question has 2 approve
+    buttons? i thought we got rid of those??" - his line set the card aside, greyed, and the agent raised the step again beside it): a card
+    that waits for his press stays lit until he presses it, a newer one takes its place or its agent withdraws it - as a reply does. A row an
+    earlier build set aside keeps its record (passed). The marks passed."""
     if not tid: return []
-    from .store import _now
-    before, out = before or _now(), []
-    for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action' AND Status='pending' AND CreatedAt<=?", (int(tid), before)):
-        if _action(r) in (*PLAYBOOKS, *CLOSEOUT) or time.time() - _PRESSED.get(r['ReviewId'], 0) < PRESS_HOLD: continue
-        if store.decide_review(r['ReviewId'], 'superseded', None, 'taskuary', SET_ASIDE): out.append(r['ReviewId'])
+    out = []
     try:
         from . import permissions
         permissions.set_aside(store, int(tid))
     except Exception as e: logger.debug(f'task {tid}: a permission waiting was not set aside - {e}')
-    try:                                          # ...and the landing question it raised (a Push card)
-        from . import landing
-        if landing.pass_over(store, int(tid)): out.append(LAND)
-    except Exception as e: logger.debug(f'task {tid}: the landing question was not passed - {e}')
     if out: store.audit('task', tid, 'cards_passed', 'taskuary', 'system', {'rids': out})
     return out
+
+
+def set_aside_drafts(store, tid: int, before: float, actions: float = 0) -> list:
+    """A CARD THE CHAT MOVED PAST IS SET ASIDE FOR GOOD AS ITS AGENT HEARS THE INPUT (the owner, 2026-11-16, said ~20 times: "The second a new
+    prompt comes in, from manual or email, it should gray out the action card but never move"): every card older than the input at `before`
+    (`_older` - one rule, every kind), and the landing question, stays where it stood, greyed, and its agent is told it was set aside because
+    the chat moved on (passed_since / passed_note - never that he declined), to raise it again under the newest line if it is still wanted.
+    From the moment the input came in until then every surface already reads it greyed (written_past). Every road hears an input through
+    conversation.hear, which calls this. `actions`: the old split by kind, read as the same input. -> the review ids (and LAND)."""
+    from . import landing
+    at = max(before or 0., actions or 0.)
+    out = [r for r in _older(store, tid, at) if store.decide_review(r, 'superseded', None, 'taskuary', note=SET_ASIDE)]
+    if landing.pass_over(store, int(tid), at): out.append(LAND)
+    if out: store.audit('task', tid, 'cards_passed', 'taskuary', 'system', {'rids': out})
+    return out
+
+
+def _older(store, tid: int, before: float, actions: float = 0) -> list:
+    """The pending cards an input at `before` stands after - set_aside_drafts' and written_past's ONE rule, read only. Every kind: a reply, an
+    email, a calendar answer, the agent's act or held step, and Taskuary's own close-out, playbook or routine step alike (the owner, 2026-11-16:
+    a close-out's Push stood lit above his newer line, and he scrolled up to press it). Only an email he wrote himself is his, never set aside,
+    and a reply owed that nobody wrote is no card yet."""
+    from .conversation import ep
+    at = max(before or 0., actions or 0.)
+    if not at: return []
+    rows = store._rows("SELECT * FROM review WHERE TaskId=? AND Status='pending' AND DeliveryClaim IS NULL", (int(tid),))
+    from . import bulkcard
+    words = lambda r: bool(str(r.get('DraftText') or '').strip())
+    # ...A REPLY'S WORDS BY WHEN THEY WERE WRITTEN (DraftAt), not when its card was raised: one owed is raised empty as its mail lands and the
+    # agent writes it later - a line between the two is one it saw (CI, 2026-11-15). Older only: a stamp is no finer than its second, and an
+    # input in the card's own second leaves it standing until its agent hears it
+    def card(r):
+        # ...but a bulk card at work runs on to its end, and shows it (bulkcard: the owner, 2026-11-16)
+        if r.get('Batch') and bulkcard.running(store, r['Batch']): return False
+        if r['Kind'] == 'slot': return words(r) and not str(r.get('Reason') or '').startswith('your email')
+        return r['Kind'] == 'action' or words(r) or r['Kind'] not in ('draft_reply', 'draft')
+    return [r['ReviewId'] for r in rows if card(r) and ep(r.get('DraftAt') or r['CreatedAt']) < at]
+
+
+def moved_on(store, tid: int, after: float = 0.) -> float:
+    """WHEN THE CHAT LAST MOVED ON, by an input no agent has heard yet: a line he typed (waiting, or kept for a turn not begun), a message that
+    joined the thread - never his own Send come back from his Sent folder, nor a stranger's words held behind trust (origin.hold), which moved
+    nothing on (recorded on the real CLI, 2026-11-15). Epoch seconds; 0. with none - or none newer than `after`, all that is asked."""
+    from . import conversation, general, origin
+    led = {(r['Kind'], r['Ref']) for r in store._rows("SELECT Kind, Ref FROM heard WHERE TaskId=?", (int(tid),))}
+    lines = [conversation.ep(x['CreatedAt']) for x in store.list_comments(int(tid), internal=True)
+             if x.get('ActorType') in (general.USER_TYPE, general.WAITING_TYPE) and not general.is_brief(x) and x.get('Actor') == 'owner'
+             and (x.get('ActorType') == general.WAITING_TYPE or x.get('LineId') and ('line', str(x['LineId'])) not in led)]
+    top = max([after, *lines])
+    # ...newest first, and only as far as one counts: who sent it and whether it is held are asked of the few newer than his newest line
+    mail = sorted((x for x in conversation._mail(store, int(tid)) if x['T'] > top and ('mail', str(x['MessageId'])) not in led), key=lambda x: -x['T'])
+    if not mail: return top if top > after else 0.
+    got = {}                                        # ...each asked once, and only of a message it is about
+    mine = lambda x: (got['mine'] if 'mine' in got else got.setdefault('mine', general.went_from_here(store, int(tid))))(x)
+    held = lambda x: str(x['MessageId']) in (got['held'] if 'held' in got else got.setdefault('held', {str(m) for m in (origin.hold(store, int(tid)) or {}).get('mids') or ()}))
+    return next((x['T'] for x in mail if not (mine(x) if x.get('Own') else held(x))), top if top > after else 0.)
+
+
+def written_past(store, tid: int) -> set:
+    """THE CARDS THE CHAT HAS MOVED PAST - ONE FUNCTION FOR EVERY SURFACE (the owner, 2026-11-16: "it should be one code that action cards are no
+    longer useful once the chat moves on. It should gray out immediately, but don't go away"): every pending card older than an input no agent
+    has heard yet (moved_on, _older). From the moment the line is sent or the message joins, the chat draws it greyed where it stood
+    (conversation.items) and what waits on his press leaves it out (store.waiting_reviews / waiting_on_owner: the pill, the rail, the board,
+    the phone); `hear` settles it for good as its agent takes the input (set_aside_drafts, by this same rule). -> the review ids."""
+    from .cardqueue import fresh
+    return fresh(store, ('past', int(tid)), lambda: _written_past(store, tid))
+def _written_past(store, tid: int) -> set:
+    from .conversation import ep
+    first = store._one("SELECT MIN(CreatedAt) AS a FROM review WHERE TaskId=? AND Status='pending'", (int(tid),))
+    if not (first and first['a']): return set()
+    return set(_older(store, tid, moved_on(store, tid, ep(first['a']))))      # ...an input in a card's own second moves nothing (_older)
 
 
 # what its agent is told of a card it raised that the conversation moved past - ONE sentence for every kind and both agent kinds
@@ -548,16 +639,40 @@ AGAIN = ('If a step is still needed, raise it again as a new card (a step held f
 PASSED_TOLD = ('THE OWNER MOVED ON PAST THESE CARDS OF YOURS WITHOUT PRESSING THEM - they are old news and nothing waits on the owner for '
                f'them now. {AGAIN}')
 def _passed_line(r: dict) -> str:
+    if r.get('Kind') in ('draft_reply', 'draft'): return f"- rv{r['ReviewId']}: your reply draft, which began: " + ' '.join(str(r.get('DraftText') or '').split())[:160]
+    if r.get('Kind') == 'slot': return f"- rv{r['ReviewId']}: the email you wrote, which began: " + ' '.join(str(r.get('DraftText') or '').split())[:160]
     try: p = json.loads(r.get('DraftText') or '{}') or {}
     except (TypeError, ValueError): p = {}
     return f"- rv{r['ReviewId']}: " + ' '.join(str(p.get('what') or p.get('command') or r.get('Reason') or p.get('action') or 'a card').split())[:200]
+
+
+def passed_why(store, r: dict) -> str:
+    """WHY A CARD STANDS GREYED, IN WHAT HAPPENED (the owner's live task, 2026-11-16: "there was no earlier draft. This is broken?" - he typed a
+    line while the agent worked, the turn that never read it finished its draft after it, and the draft stood greyed reading "set aside when
+    you moved on", as if he had done something to it). ONE sentence for every kind, from the input that moved the chat past it: the newest of
+    his lines and the messages that came in, up to when it was set aside - written after it, or before the agent read it."""
+    from . import general
+    from .conversation import _mail, ep
+    if r.get('DecideNote') == NOT_NEEDED: return 'Not needed - the agent finished without it'
+    card, end = ep(r.get('DraftAt') or r.get('CreatedAt')), ep(r.get('DecidedAt')) or time.time()
+    tid = int(r['TaskId'])
+    his = [x for x in store.list_comments(tid, internal=True) if x.get('ActorType') in (general.USER_TYPE, general.WAITING_TYPE)
+           and not general.is_brief(x) and x.get('Actor') == 'owner']
+    lines = [(ep(x['CreatedAt']), f'your line "{w}"', f'you wrote "{w}"') for x in his for w in [_cut(general._line_of(x.get('Body'))['text'])]]
+    mails = [(x['T'], 'your own message' if x.get('Own') else f"{x.get('FromName') or x.get('FromEmail') or 'a'}'s new message",
+              'you wrote again' if x.get('Own') else f"{x.get('FromName') or x.get('FromEmail') or 'someone'} wrote again") for x in _mail(store, tid)]
+    got = max((x for x in lines + mails if x[0] <= end + 1), key=lambda x: x[0], default=None)
+    if not got: return 'Not sent - set aside when the chat moved on'
+    return f'Not sent - {got[2]} after it' if got[0] >= card else f'Not sent - written before the agent read {got[1]}'
+def _cut(w: str, n: int = 60) -> str: return (w := ' '.join(str(w or '').split()))[:n] + ('…' if len(w) > n else '')
 
 
 def passed_since(store, tid: int, since: str) -> list:
     "The cards of task `tid` passed since `since` (its agent's last answer), as lines for its prompt: '- rv<n>: <what>'."
     from . import landing
     p = (landing.record(store, int(tid)).get('proposal') or {})
-    return [_passed_line(r) for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Status='superseded' AND DecideNote=? AND DecidedAt>? "
+    # ...from the answer's own second on: a stamp is no finer, and a draft he wrote past in the second of that answer was never told
+    return [_passed_line(r) for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Status='superseded' AND DecideNote=? AND DecidedAt>=? "
                                                  "ORDER BY ReviewId", (int(tid), SET_ASIDE, since or ''))] + ([LAND_LINE] if str(p.get('passed') or '') > (since or '') else [])
 
 
@@ -732,10 +847,12 @@ def execute(store, rv: dict, actor='owner', final_text: str = None, skip_checks:
     ok, why = validate(store, p)
     if not ok: raise RuntimeError(f'refused at execution: {why}')
     tid, a = rv.get('TaskId'), p['action']
-
-    if rv.get('ReviewId'): _PRESSED[rv['ReviewId']] = time.time()     # move_on leaves it to this press
     before = (store._one('SELECT MAX(Id) AS n FROM audit') or {}).get('n') or 0
-    out = _run(store, rv, p, tid, a, actor, edited, skip_checks)
+    try: out = _run(store, rv, p, tid, a, actor, edited, skip_checks)
+    except Exception as e:                  # ...the act itself ran and failed (verdicts settles its card), never a refusal before it ran
+        try: e.ran = True
+        except AttributeError: pass
+        raise
     # ONE PRESS, SAID ONCE (the stress round, 2026-11-10): the code an act runs writes its own rows on the task in the presser's name - a split,
     # a pull request opened - and each was a second line beside the pressed card, and a second "the owner did" for its agent. They are the
     # card's: marked with it, and said by it (general.presses)
@@ -821,7 +938,7 @@ def _run(store, rv: dict, p: dict, tid, a: str, actor: str, edited, skip_checks:
         if a == 'amend_playbook' and p.get('block') and not edited:      # the ledger's block onto the page as it is NOW (playbook_facts)
             from .people_pages import splice
             p['text'] = splice(playbooks.read(p['slug']) or p['text'], p['block'])
-        elif a == 'amend_playbook' and p.get('lessons') and not edited:   # ...and an agent's lessons, onto the page as it is NOW (take_lesson)
+        elif a == 'amend_playbook' and p.get('lessons') and not edited:   # ...and its lessons, onto the page as it is NOW (with_lessons)
             p['text'] = playbooks.with_lessons(playbooks.read(p['slug']) or p['text'], p['lessons'])
         slug = playbooks.write(p['slug'], p['text'])
         out = {'playbook': slug, 'path': str(playbooks.folder() / f'{slug}.md')}

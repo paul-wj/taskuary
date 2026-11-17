@@ -9,8 +9,9 @@ import api from "./api";
 import { BORDER, DIM, FAINT, INK, card, mono } from "./theme.jsx";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
+import { levelDefault, levelLines, levelModel, nowRows, sharedWhy } from "./aiCards.js";
 
-const JOB = { triage: "triage", draft: "drafts", summary: "summaries", advisor: "the Advisor", memory: "memory", rank: "ranking",
+const JOB = { triage: "triage", draft: "redrafts", summary: "summaries", advisor: "the Advisor", memory: "memory", rank: "ranking",
   general: "general work", coding: "coding", judge: "judgements" };
 const ruleWords = (r, locale) => {
   if (locale !== "zh-CN") return r.sentence;
@@ -37,18 +38,23 @@ export const SAYS = "Triage judges each task quick, normal or hard and picks the
 const sel = { fontSize: 12.5, bgcolor: "var(--tq-panel, #fff)", minWidth: 150 };
 const err = (e, d) => e?.response?.data?.detail || e?.message || { key: d };
 // AN AI PER LEVEL (the owner, 2026-11-06: "not by default but you can adjust in settings"): for the agents' work only - general work,
-// quick work, and coding on a CLI. Blank is the card's AI; set, that level runs on the AI named here when it can take the call.
+// quick work, and coding on a CLI. Blank is Default - the General agent card's AI, by name (aiCards.levelDefault); set, that level runs
+// on the AI named here when it can take the call.
 const LEVELS = [["quick", "Quick"], ["normal", "Normal"], ["hard", "Hard"]];
-export const CARDS = "the card's AI";
+const defaultLabel = (d) => {
+  const label = levelDefault(d);
+  const match = /^Default - (.+?)( \(coding: (.+)\))?, set on its card below$/.exec(label);
+  return match ? t("Default - {brain}{coding}, set on its card below", { brain: match[1], coding: match[3] ? t(" (coding: {name})", { name: match[3] }) : "" }) : t(label);
+};
 
-function LevelModel({ value, models, disabled, onSave }) {
+function LevelModel({ value, models, disabled, onSave, runs }) {
   const [v, setV] = useState(value || "");
   useEffect(() => setV(value || ""), [value]);
   const commit = (next) => (next || "") !== (value || "") && onSave(next || "");
   return (
     <Autocomplete freeSolo forcePopupIcon openOnFocus size="small" options={models || []} value={v} disabled={disabled}
       onInputChange={(_e, next) => setV(next)} onChange={(_e, next) => { setV(next || ""); commit(next); }} onBlur={() => commit(v)}
-      sx={{ minWidth: 170 }} renderInput={(p) => <TextField {...p} placeholder={t("its own model")} sx={{ bgcolor: "var(--tq-panel, #fff)" }}
+      sx={{ minWidth: 170 }} renderInput={(p) => <TextField {...p} placeholder={t(runs)} sx={{ bgcolor: "var(--tq-panel, #fff)" }}
         inputProps={{ ...p.inputProps, style: { fontSize: 12.5 } }} />} />
   );
 }
@@ -63,7 +69,7 @@ function ByLevel({ p, save }) {
     <Box sx={{ mt: 1.25, pt: 1, borderTop: `1px solid ${BORDER}` }} data-tq-knob="ai_route_brain_by_level" data-tq-route-by-level="">
       <Typography sx={{ fontSize: 12.5, color: INK, fontWeight: 600 }}>{t("Which AI for each level")}</Typography>
       <Typography variant="caption" sx={{ color: FAINT, display: "block", mb: 0.75 }}>
-        {t("For agents' work: general work, quick work, and coding on a CLI. Triage, drafting and the Assistant keep their cards. An AI that can't take the work (not connected, resting on its limit, not marked for sensitive data) leaves it on the card.")}
+        {t("For agents' work only. An AI that can't take the work right now leaves it on Default, and the line above says why.")}
       </Typography>
       {LEVELS.map(([lvl, word]) => {
         const cur = by[lvl] || {}, b = brains.find((x) => x.pick === cur.pick);
@@ -71,14 +77,14 @@ function ByLevel({ p, save }) {
           <Box key={lvl} sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap", mb: 0.75 }} data-tq-route-by-level-row={lvl}>
             <Typography sx={{ fontSize: 12.5, color: DIM, width: 56 }}>{t(word)}</Typography>
             <Select size="small" displayEmpty value={cur.pick || ""} onChange={(e) => put(lvl, { pick: e.target.value, model: "" })}
-              sx={{ ...sel, minWidth: 220 }} inputProps={{ "aria-label": t("{word} work runs on", { word }) }}>
-              <MenuItem value="" sx={{ fontSize: 12.5 }}>{t(CARDS)}</MenuItem>
+              sx={{ ...sel, minWidth: 300 }} inputProps={{ "aria-label": t("{word} work runs on", { word: t(word) }) }}>
+              <MenuItem value="" sx={{ fontSize: 12.5 }}>{defaultLabel(p.default)}</MenuItem>
               {brains.map((x) => (
                 <MenuItem key={x.pick} value={x.pick} sx={{ fontSize: 12.5 }}>{x.label}{x.cli ? "" : t(" - not for coding")}</MenuItem>
               ))}
               {cur.pick && !b && <MenuItem value={cur.pick} sx={{ fontSize: 12.5 }}>{cur.pick} {t("(not connected)")}</MenuItem>}
             </Select>
-            <LevelModel value={cur.model} models={b?.models} disabled={!cur.pick} onSave={(model) => put(lvl, { model })} />
+            <LevelModel value={cur.model} models={b?.models} disabled={!cur.pick} onSave={(model) => put(lvl, { model })} runs={levelModel(p.default, b, lvl)} />
           </Box>
         );
       })}
@@ -124,14 +130,34 @@ export function RouteRules() {
         {auto ? `${t(SAYS)} ${t("An AI you pick for something always wins.")}`
           : t("Every job runs exactly as its card says. Auto lets triage judge each task quick, normal or hard and pick the model for it.")}
       </Typography>
-      {auto && !!(p.levels || []).length && (
+      {auto && !!levelLines(p).length && (
         <Box sx={{ mt: 1 }} data-tq-route-levels="">
-          {p.levels.map((l) => (
+          {levelLines(p).map((l) => (
             <Typography key={l.pick} sx={{ fontSize: 12.5, color: DIM }} data-tq-route-level={l.pick}>
               <Box component="span" sx={{ color: INK, fontWeight: 600 }}>{l.brain}</Box>
               {` · ${t("quick")}: ${l.quick} · ${t("normal")}: ${l.normal} · ${t("hard")}: ${l.hard}`}
             </Typography>
           ))}
+        </Box>
+      )}
+      {/* WHAT RUNS RIGHT NOW (the owner, 2026-11-11: "it should show light goes to this model etc etc"): the router's own answer for
+          agent work of each level this minute (brainroute.now), with its reason where that is not the card's AI - the sentence a
+          task's AI line says for the same route */}
+      {!!(p.now || []).length && (
+        <Box sx={{ mt: 1.25, pt: 1, borderTop: `1px solid ${BORDER}` }} data-tq-route-now="">
+          <Typography variant="caption" sx={{ color: FAINT, fontWeight: 600, display: "block", mb: 0.25 }}>RIGHT NOW, AGENT WORK RUNS ON</Typography>
+          {/* three levels on one AI and model for one reason are one line, not the same line three times */}
+          {nowRows(p.now).map((n) => (
+            <Box key={n.level} data-tq-route-now-level={n.level} sx={{ mb: 0.25 }}>
+              <Typography sx={{ fontSize: 12.5, color: DIM }}>
+                {`${n.level}: `}
+                <Box component="span" sx={{ color: INK, fontWeight: 600 }}>{n.pick ? n.brain : "nothing"}</Box>
+                {n.pick && n.model ? ` · ${n.model}` : ""}
+              </Typography>
+              {n.why && <Typography variant="caption" sx={{ color: FAINT, display: "block", ml: 1.5 }} data-tq-route-now-why="">{n.why}</Typography>}
+            </Box>
+          ))}
+          {!!sharedWhy(p.now) && <Typography variant="caption" sx={{ color: FAINT, display: "block" }} data-tq-route-now-why="all">{sharedWhy(p.now)}</Typography>}
         </Box>
       )}
       {auto && <ByLevel p={p} save={save} />}
@@ -186,6 +212,40 @@ export function RouteRules() {
           </Box>
         </Box>
       )}
+    </Box>
+  );
+}
+
+// WHAT THE AI DID TODAY, AND THE DAY'S LIMIT (the readiness review, 2026-11-14): the ceiling's own message said "the limit is in
+// Settings" while no Settings row set it, and /api/ai/today was drawn nowhere. One line of totals, one by job, and the limit beside them.
+const k = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}K` : String(n || 0));
+export const todayLine = (jobs) => {
+  const t = Object.values(jobs || {}).reduce((a, j) => ({ calls: a.calls + (j.calls || 0), in: a.in + (j.in || 0), cached: a.cached + (j.cached || 0), out: a.out + (j.out || 0) }),
+    { calls: 0, in: 0, cached: 0, out: 0 });
+  return `${t.calls.toLocaleString()} AI calls · ${k(t.in)} tokens in, ${k(t.cached)} of them cached · ${k(t.out)} out`;
+};
+export function TodayUsage() {
+  const [d, setD] = useState(null), [lim, setLim] = useState(""), [say, setSay] = useState("");
+  const load = useCallback(() => api.get("/api/ai/today").then((r) => { setD(r.data); setLim(String(r.data.ceiling ?? "")); }).catch(() => setD(false)), []);
+  useEffect(() => { load(); }, [load]);
+  if (!d) return null;
+  const save = () => lim !== String(d.ceiling ?? "") && api.patch("/api/settings", { name: "auto_ai_daily_calls", value: lim.trim() })
+    .then(() => { setSay(""); load(); }).catch((e) => setSay(err(e, "could not save the limit")));
+  const jobs = Object.entries(d.jobs || {}).sort((a, b) => (b[1].calls || 0) - (a[1].calls || 0));
+  return (
+    <Box data-tq-knob="auto_ai_daily_calls" data-tq-ai-today="" sx={{ ...card, p: 2, mb: 1.5, bgcolor: "var(--tq-panel, #fff)" }}>
+      <Typography variant="caption" sx={{ color: FAINT, fontWeight: 600, display: "block", mb: 0.5 }}>TODAY</Typography>
+      <Typography sx={{ fontSize: 12.5, color: INK }} data-tq-ai-today-total="">{todayLine(d.jobs)}</Typography>
+      {!!jobs.length && <Typography variant="caption" sx={{ color: FAINT, display: "block" }}>
+        {jobs.map(([j, v]) => `${JOB[j] || j} ${v.calls}`).join(" · ")}</Typography>}
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap", mt: 1.25 }}>
+        <Typography sx={{ fontSize: 12.5, color: DIM }}>Past</Typography>
+        <TextField size="small" value={lim} onChange={(e) => setLim(e.target.value)} onBlur={save}
+          inputProps={{ "aria-label": "AI calls a day before automatic work waits", "data-tq-ai-limit": "" }} sx={{ width: 90, bgcolor: "var(--tq-panel, #fff)" }} />
+        <Typography sx={{ fontSize: 12.5, color: DIM }}>AI calls a day, agents stop starting and waking by themselves until tomorrow. What you ask for still runs. 0 = no limit.</Typography>
+      </Box>
+      {d.held && <Alert severity="warning" sx={{ mt: 1, fontSize: 12.5 }} data-tq-ai-held="">{d.held}</Alert>}
+      {say && <Alert severity="warning" sx={{ mt: 1, fontSize: 12.5 }}>{say}</Alert>}
     </Box>
   );
 }

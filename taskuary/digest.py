@@ -16,7 +16,7 @@ reviews, the verdicts given - and it SPEAKS in the assistant's voice (system(): 
 same document the Timeline assistant speaks from). It also knows what the assistant already
 raised in the window, so the brief consolidates instead of rediscovering.
 """
-import logging, math, re
+import logging, math
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
@@ -305,12 +305,12 @@ def task_link(tid: int) -> str:
     return f"http://{host}:{srv.get('port') or 7787}/#task={int(tid)}"
 
 
-_REF = re.compile(r'\bTQ-0*(\d+)\b')            # any width: TQ-10000 is five digits
 def _linked(text: str) -> str:
     """Every line naming a task ends with the door into it (the assistant's blocks carry refs
     without links; the brief promises one after every ref)."""
     def one(line):
-        m = _REF.search(line)
+        from .store import TQ_REF
+        m = TQ_REF.search(line)
         return f"{line} {task_link(int(m.group(1)))}" if m and 'http' not in line else line
     return '\n'.join(one(l) for l in text.split('\n'))
 
@@ -438,7 +438,7 @@ def gather(store, days: int = DAYS) -> str:
     # brief that renames a task is a lie in the one place the owner trusts by default
     _block(out, 'WAITING ON THE OWNER (pending reviews):',
            (f"  TQ-{r['TaskId']:04d} ({(r.get('Title') or '?')[:60]}) {r.get('Kind')} "
-            f"on: {(r.get('Subject') or '(no subject)')[:90]} {task_link(r['TaskId'])}" for r in store.list_reviews('pending')[:15]))
+            f"on: {(r.get('Subject') or '(no subject)')[:90]} {task_link(r['TaskId'])}" for r in store.waiting_reviews()[:15]))
     _block(out, 'WHAT PEOPLE SAID (the window, by thread, newest first; the last lines of each, oldest first; "you" = the owner):',
            people)
     away = A.ooo(store)

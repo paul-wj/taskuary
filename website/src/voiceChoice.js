@@ -10,5 +10,7 @@ export function chooseVoice(value) {
 export function micRoute(voice, browser, choice) {
   if (choice === "windows") return voice?.builtin ? "windows" : "off";
   if (choice === "browser") return browser ? "browser" : "off";
-  return voice?.ready ? "connector" : browser ? "browser" : voice?.builtin ? "windows" : "off";
+  // Automatic: a voice card, else Windows voice typing on this computer (its own Win+H - the owner, 2026-11-16: "Use the Windows voice rec"),
+  // else the tab's own recogniser (a Mac, Linux), else none
+  return voice?.ready ? "connector" : voice?.builtin ? "windows" : browser ? "browser" : "off";
 }

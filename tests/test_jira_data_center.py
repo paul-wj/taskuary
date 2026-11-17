@@ -101,7 +101,7 @@ def test_dc_later_page_failure_keeps_source_window():
     s, c = setup(); source = s.save_source({'Channel':'jira', 'Address':'jira.northwind.example/jira', 'ConnectorId':c['ConnectorId'], 'Active':1}, 'test')
     before = s._one('SELECT LastPolledAt FROM source WHERE SourceId=?', (source,))
     fake = JiraWire([issue(n) for n in range(1, 28)], fail_page=True)
-    with wire(fake): channels._poll_one(s, c, True, 24, None, False)
+    with wire(fake): channels._poll_one(s, c, True, 24, None)
     assert s._one('SELECT LastPolledAt FROM source WHERE SourceId=?', (source,)) == before
     assert s.get_connector(c['ConnectorId'])['LastError']
 

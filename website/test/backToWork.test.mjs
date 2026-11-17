@@ -1,7 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { backToWork, overChat, tableOf, workWords, workedOn } from "../src/tableState.js";
 
+const view = readFileSync(fileURLToPath(new URL("../src/AssistantView.jsx", import.meta.url)), "utf8");
 const item = { key: "task:12", tid: 12, ref: "TQ-0012", title: "Renew the vendor.example contract before the quarter ends" };
 
 // the owner, 2026-11-09: "there should always be a button on top corner when you are in settings or reports to go back to the main task
@@ -27,4 +30,37 @@ test("a browse page over a remembered task shows Back + the pencil; the task its
   assert.equal(overChat(settings), true);                                             // ...where the pencil goes to the head
   assert.equal(workWords(w), "Back to TQ-0012 Renew the vendor.example co…");
   assert.equal(workWords({ ref: "TQ-0007", title: "" }), "Back to TQ-0007");
+});
+
+// THE RAIL WALK (2026-11-12): Next from TQ-0012 to TQ-0040 drew "Back to TQ-0012" in the corner for the frames before the effect that keeps the
+// worked task caught up, then took it away - a flash on every Next and row click. The corner reads the task in view now, in the same render.
+test("a task coming into view is the one worked on in the frame it is drawn - no Back to the task just left", () => {
+  const was = workedOn(tableOf({ current: "task:12" }), item), next = tableOf({ current: "task:40" }), nextItem = { key: "task:40", tid: 40, ref: "TQ-0040" };
+  assert.equal(backToWork(next, workedOn(next, nextItem) || was, 40), false);
+  assert.equal(backToWork(tableOf({ browsing: "reports" }), workedOn(tableOf({ browsing: "reports" }), {}) || was, 0), true);   // a page in front keeps it
+  assert.match(view, /backToWork\(table, \(inView && workedOn\(table, \{ \.\.\.currentItem, tid: litTable\.tid \}\)\) \|\| worked, litTable\.tid\)/);
+});
+
+// the owner, 2026-11-09: "drop pencil if it's a duplicate" - one pencil on screen: the head's corner or the pill's, never both
+test("the head draws Back and New chat in its corner, the pill drops its own pencil then, and no way of opening a task is singled out", () => {
+  assert.match(view, /\{backWork && <Tooltip[^]*?data-tq-back-work=\{worked\.tid\} onClick=\{toWork\}/);
+  assert.match(view, /const headPencil = iconsInPill && !firstRun && !old;/);
+  assert.match(view, /\{headPencil && newChatIcon\("data-tq-new-chat-head"\)\}\s*\{!iconsInPill && ownIcons\}/);
+  assert.match(view, /\{!headPencil && newChatIcon\("data-tq-new-chat"\)\}<\/>;/);
+  assert.equal(view.match(/newChatIcon\("/g).length, 2);
+  assert.match(view, /const newChatIcon = \(attr\) => <Tooltip title="New chat — archives this one"><IconButton size="small" \{\.\.\.\{ \[attr\]: "" \}\} onClick=\{newChat\}/);
+  assert.match(view, /if \(table\.place && table\.key === worked\.key\) unfoldTable\(\); else pull\(`task:\$\{worked\.tid\}`, null\);/);
+  assert.doesNotMatch(view, /byNameTid/);
+  assert.match(view, /openTaskRef\.current = openTaskCard;/);
+});
+
+// the phone audit (2026-11-13): at 390px the Back chip and the head's icons left "Taskuary" less room than its word, and with the name's box
+// free to shrink and nothing clipping it, the word ran on under the Your work icon. The chip gives way first; the name clips, never overlaps
+test("on a phone the chat head's name is not overrun by the Back chip", () => {
+  const css = readFileSync(fileURLToPath(new URL("../src/assistantView.css", import.meta.url)), "utf8");
+  const rule = (sel) => css.split("\n").find((l) => l.startsWith(`${sel} {`)) || "";
+  assert.match(rule(".tq-chat-head .who"), /overflow: hidden/);
+  assert.match(rule(".tq-chat-head .who"), /text-overflow: ellipsis/);
+  assert.match(rule(".tq-chat-head .who"), /flex-shrink: 0; max-width: 60%/, "the name keeps its word; the chip gives way");
+  assert.match(rule(".tq-chat-head .tq-back-work"), /min-width: 0; flex-shrink: 1/);
 });

@@ -40,23 +40,22 @@ test("every read of a task keeps its recommended move, and the view on the table
   assert.equal(recRead(7), null);
 });
 
-test("a task's row asks the Advisor nothing: the page reads the field, and only an idea row reads /api/advice", () => {
+test("no row asks the Advisor anything: the page reads the field, and an idea row fills nothing (the owner, 2026-11-15)", () => {
   const view = src("AssistantView.jsx");
-  assert.equal((view.match(/api\.get\("\/api\/advice"/g) || []).length, 2, "the idea row's read and its notes in the past-chats menu");
-  const at = view.indexOf("if (!ideaOn(key)) {"), end = view.indexOf('adviceSent.current = { key, at: ++readClock.current };', at);
+  assert.equal((view.match(/api\.get\("\/api\/advice"/g) || []).length, 0, "nothing reads /api/advice");
+  assert.match(view, /setAdvice\(adviceRead\(\{ none: "nothing" \}, key\)\.advice\); setReadFor\(\{ key, round: r \}\);/, "an idea's row: nothing lit, nothing asked");
+  const at = view.indexOf("if (!ideaOn(key)) {"), end = view.indexOf("// AN ADVISOR IDEA'S ROW FILLS NO BUTTON", at);
   assert.ok(at > 0 && end > at);
   const own = view.slice(at, end);
   assert.doesNotMatch(own, /api\/advice/);
   assert.match(own, /if \(it && "recommended" in it\) noteOwn\(key, it\.recommended, seenAt\(it\)\);/, "the rail's item on the table carries it");
   assert.match(own, /const h = tid && heldTask\(tid\) \? recRead\(tid\) : null;\s+if \(h\) noteOwn\(key, h\.rec, h\.at\);/, "and a read of its task");
-  assert.match(own, /return;\s+\}\s+let got = null;\s*$/, "nothing below is reached");
+  assert.match(own, /return;\s+\}\s*$/, "nothing below is reached");
   assert.match(view, /useEffect\(\(\) => watchRecs\(\(tid, r\) => \{/, "the task view's own read is the newest word");
-  // ...nothing of the Advisor's is mounted over a task's row - only the mark of what is filled; its own row keeps AdvisorNext and its notes
+  // ...nothing of the Advisor's is mounted over any row - only the mark of what is filled
   assert.match(view, /&& <div hidden data-tq-recommended=\{shownAdvice\?\.verb \|\| ""\} \/>\}/);
   assert.match(view, /const ideaOn = \(key\) => isIdea\(currentRef\.current\?\.key === key \? currentRef\.current : key\);/, "the item on the table says its kind");
-  assert.match(view, /const ideaRow = isIdea\(currentItem\?\.key === table\.key \? currentItem : table\.key\);/);
-  assert.match(view, /ideaRow && <>\s*<AdvisorNext advice=\{shownAdvice\} onPropose=\{pressAdvice\} onErr=\{setErr\} \/>/);
-  assert.match(view, /\{current && ideaRow && <AdvisorNotes keyOnTable=\{current\} \/>\}/);
+  assert.doesNotMatch(view, /AdvisorNext|AdvisorNotes|data-tq-advice/);
   // ...and neither task view reads it for itself
   for (const f of ["TaskPage.jsx", "CanvasItem.jsx"]) assert.doesNotMatch(src(f), /api\.get\("\/api\/advice"|useItemAdvice|readTaskAdvice/, f);
 });
@@ -98,9 +97,10 @@ test("a lit Chase is drawn on the task's row, only while it is the recommended m
   assert.match(page, /runOperation\(api, "task\.chase", t\.TaskId, \{ key: `task:\$\{t\.TaskId\}` \}\)/, "the slipped card's own road, keyed by the task");
 });
 
-// A ROW WITH NOTHING LIT SAYS WHY ON THE DESK TOO (the owner, 2026-11-10: "if it's consistent do it"): the server's sentence for it, as the
-// phone says it, on the row's own line - the dock's and the narrow window's - and nothing filled
-test("a row with nothing lit draws the server's line on its own line, and fills nothing", async () => {
+// A ROW WITH NOTHING LIT SAYS WHY ON THE ITEM'S OWN ROW - a phone's, the narrow window's: the server's sentence for it, and nothing filled.
+// NEVER ON THE BAR UNDER THE PAGE (the owner, 2026-11-11: "never asked to have any text under the back next button"): the desk's bar is
+// nav only, and for a day it carried that sentence under Back and Next - a sender's "asked 2 hours ago" read as the buttons' own caption
+test("a row with nothing lit says why on the item's own row, and the bar under the page draws only its buttons", async () => {
   const { rowWhy, unlitWhy } = await import("../src/railStatus.js");
   const { adviceShown } = await import("../src/advice.js");
   const rec = { verb: null, label: "", why: "Stopped mid-work: the test database was not reachable.", state: "stopped" };
@@ -109,7 +109,9 @@ test("a row with nothing lit draws the server's line on its own line, and fills 
   assert.equal(adviceShown(pick, { key: "task:4", lane: "stopped" }, false), null, "nothing is lit by it");
   assert.equal(rowWhy({ recommended: pick }), rec.why); assert.equal(unlitWhy({ verb: "close", why: "Finished." }), "", "a lit move says its own");
   assert.equal(rowWhy({ why: "An agent is working on this" }), "An agent is working on this", "the rail's own line where nothing is said");
-  assert.match(src("ActionRow.jsx"), /why = row\.why \|\| says/);
-  assert.match(src("AssistantView.jsx"), /says=\{!litNow && !setupLit \? rowWhy\(\{ recommended: tableAdvice \}\) : ""\}/);
+  assert.match(src("ActionRow.jsx"), /why = inline \? row\.why \|\| says : ""/, "no line on a row that is not the item's own");
+  const bar = src("AssistantView.jsx").match(/<div className="tq-dock-line">[\s\S]*?<\/div>/)[0];
+  assert.match(bar, /<ActionRow advised=\{stripPick \|\| setupLit\} hold=\{rowHold\} early=\{rowEarly\} \/>/, "the bar is handed no sentence");
+  assert.doesNotMatch(bar, /says=|rowWhy/);
   assert.match(src("CanvasItem.jsx"), /says=\{lit \? "" : rowWhy\(\{ recommended: read \}\)\}/);
 });

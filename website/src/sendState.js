@@ -76,7 +76,7 @@ export function reviewDeliveryState(review) {
   return { state, active, frozen, canCheck: state === "unknown" && !active,
     body: frozen ? saved?.body ?? review?.FinalText ?? review?.DraftText ?? "" : null,
     envelope: frozen ? saved?.envelope || envelope || {} : null,
-    label: active ? state === "unknown" ? t("Checking delivery…") : t("Sending…") : label("approve", "check"),
+    label: active ? state === "unknown" ? t("Checking delivery…") : label("approve", "busy") : label("approve", "check"),
     line: active ? t("Delivery is in progress. The attempted text, recipients and attachments are kept unchanged while the provider responds.")
       : state === "unknown" ? t("The provider has not confirmed this attempt. Check delivery to look for the original reply. A missing receipt will not send it again. The attempted text, recipients and attachments stay unchanged.") : "" };
 }
@@ -104,3 +104,7 @@ export function draftState(rv) {
   if (rv?.DraftError) return { state: "failed", line: t("Draft failed: {error}. Press {action} again or write the answer yourself.", { error: rv.DraftError, action: label("redraft", "none") }), retry: true };
   return { state: "undrafted", line: t("No draft yet — draft it with AI or write the answer."), retry: true };
 }
+// A CHAT DRAWS A REPLY CARD ONCE THERE IS SOMETHING IN IT OR SOMETHING SAID ABOUT IT (the owner, 2026-11-13: "why would you have empty write a
+// reply box, unless the agent said i'm not sure what to respond"): a draft, or its record of why there is none - never a reply nobody wrote
+// or spoke of, an empty box at the chat's foot. The server's list keeps the same one out (conversation.unwritten)
+export const replyCardShown = (rv) => !!rv && draftState(rv).state !== "undrafted";

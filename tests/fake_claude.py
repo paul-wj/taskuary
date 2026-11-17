@@ -12,7 +12,7 @@ Timing (seconds, env, defaults measured against claude 2.1 on the owner's machin
   FAKE_CLAUDE_THINK  time to first token on a warm process, before any input is counted   0.7
   FAKE_CLAUDE_PREFILL per 10K characters of input the provider has not seen in this session 0.25
   FAKE_CLAUDE_TPS    output tokens a second (a token ~4 characters)                        70
-What it SAYS comes from FAKE_CLAUDE_SCRIPT, a JSON list of {"when": regex, "first": text, "then": text}: the owner's words are
+What it SAYS comes from FAKE_CLAUDE_SCRIPT, a JSON list of {"when": regex, "first": text, "then": text, "wait": seconds}: the owner's words are
 found where the Assistant puts them ("The owner says: " on a first round, "The owner asked: " on a look-up's second round,
 "FROM THE OWNER: " in a Continue's turn - server.continue_work), the
 first rule whose regex matches answers - `first` on a first round, `then` once it has looked something up, or `exit` with that code
@@ -59,6 +59,7 @@ def answer(prompt: str) -> str:
         if not re.search(r['when'], prompt if r.get('anywhere') else said, re.I): continue
         if r.get('exit') is not None: log('exit', code=r['exit']); sys.exit(r['exit'])   # a CLI that dies mid-turn (website/browser/agent-journey)
         for p in r.get('post') or []: act(p)
+        time.sleep(r.get('wait') or 0)                   # a long turn, for a stop pressed while it works
         return r.get('then' if then else 'first') or r.get('first') or 'Ok.'
     return 'Ok.'
 
@@ -148,6 +149,14 @@ def interactive():
 
 
 if os.environ.get('FAKE_CLAUDE_BROKEN'): sys.exit(1)          # a CLI half-way through updating itself: it starts and dies
+# FAKE_CLAUDE_GONE=1: it no longer has the conversation `--resume` names, as claude 2.1.326 says it - the line on the tty (stderr with -p), and
+# with -p its stream-json result, error_during_execution with the line in `errors`, then exit 1 (measured on the real CLI, 2026-11-16)
+if os.environ.get('FAKE_CLAUDE_GONE') and arg('--resume'):
+    said = f"No conversation found with session ID: {arg('--resume')}"
+    if '-p' not in args and '--print' not in args: sys.stdout.write(f'\x1b[38;2;171;43;63m{said}\x1b[39m\r\n'); sys.stdout.flush(); time.sleep(0.3); sys.exit(1)
+    sys.stderr.write(said + '\n'); sys.stderr.flush()
+    out({'type': 'result', 'subtype': 'error_during_execution', 'is_error': True, 'num_turns': 0, 'session_id': arg('--resume'), 'errors': [said]})
+    sys.exit(1)
 time.sleep(SPAWN)
 log('ready', spawn=round(time.time() - T0, 3), live=LIVE, args=args)
 if '-p' not in args and '--print' not in args:

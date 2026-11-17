@@ -95,6 +95,12 @@ def _open_private(url):
     try: spawn.bare(_with_target(cmd, str(launchkey.via_file(url, config.home() / 'launch'))))
     except OSError: webbrowser.open(url)          # a stale registration - the browser uninstalled: still a window, as before
 
+# STARTED WITH NO BROWSER (a container, a server): the address alone opens a page that is not signed in - it said only "Open Taskuary from
+# its app, or run `taskuary --link`", and a Docker user had no app and no shell to run it in (the readiness review, 2026-11-14)
+HEADLESS = ('No browser was opened, and the page signs in only from a link Taskuary hands out. For one, run `taskuary --link` (it works once, '
+            'within two minutes) - in Docker: `docker compose exec taskuary taskuary --link`.')
+
+
 def _open_keyed(url):
     "The browser this process's own server opens, with a one-time key so the page carries the owner token (launchkey, R29)."
     _open_private(launchkey.link(url))
@@ -110,7 +116,9 @@ AGENT_ACTS = ('reply', 'reply_file', 'draft', 'draft_file', 'attach', 'item', 't
               'search', 'message', 'memory',        # ...and the owner's mail history and memory, which a stranger's task never reads
               'sign_form',                          # ...and the owner's signature, which never goes on a stranger's form
               'check_back',                         # ...and a wake of its own later, which a stranger's words never schedule
-              'use_repo')                           # ...and which of the owner's checkouts it works in (repochoice)
+              'use_repo',                           # ...and which of the owner's checkouts it works in (repochoice)
+              'browser',                            # ...and its browser opened on a page, which a link in a stranger's mail never is
+              'remember')                           # ...and a fact kept in the owner's memory, which a stranger's words never write
 STRANGER_ACTS = AGENT_ACTS[:13]                     # ...the Hub, and the wall's other sessions' words, are not a stranger's to read or write
 OWNER_ACTS = ('prompts', 'backfill_asks', 'evalset', 'demo', 'link')
 NO_TOKEN = ("not sent: this session has no token of its own (TASKUARY_TOKEN) - Taskuary's own is the owner's, and a "
@@ -373,6 +381,8 @@ def main():
     # ...and its own follow-up on the task (checkback.py, the owner 2026-11-05): woken then with the note as its next turn
     ap.add_argument('--check-back', nargs=2, metavar=('WHEN', 'WHAT'), help='wake this task\'s agent at WHEN ("tomorrow 9am", "in 2 days", '
                     '"2026-11-12") to verify WHAT - a payment that should clear, a reply due by a date; one per task, a new one replaces it')
+    ap.add_argument('--remember', metavar='FACT', help="keep a fact the owner told you in this chat that holds beyond this task (who handles "
+                    'what now, what they care about), in their words - in their memory at once, for triage, every agent and the Assistant')
     # ...and the checkout it works in, for a CLI without the use_repo tool (repochoice.py, the owner 2026-11-06)
     ap.add_argument('--use-repo', nargs='+', metavar=('NAME_OR_PATH', 'WHY'), help="work this task in that git checkout - a repository from "
                     'your REPOSITORIES list or a folder - and say why in a few words; the task records it')
@@ -393,6 +403,7 @@ def main():
     ap.add_argument('--memory', metavar='SECTION', nargs='?', const='',
                     help="print what Taskuary has learned about the owner (LEARNED.md) - all of it, or one section: people, care, work, promises, bring")
     ap.add_argument('--guide', metavar='TOPIC', help="print one of Taskuary's how-tos for an agent - browser, number (guides.py)")
+    ap.add_argument('--browser', metavar='URL', help="open this task's browser on a page - for an agent whose own shell cannot launch one; then drive it with agent-browser")
     args = ap.parse_args()
     # ...static text, nothing of the owner's in it: any session may read one, before any server or task is asked for
     if args.guide is not None:
@@ -455,8 +466,11 @@ def main():
         r, out = got
         # ...saying to WHOM it was saved: "reply saved" alone let a question meant for one requester sit as an answer to another (2026-11-02)
         to = f" to {out['to']}" if not drafting and out.get('to') else ''
+        # ...and HOW IT IS SPOKEN OF, said where a coding agent hears it - the chat agent's draft tools answer the same sentence (the recorded
+        # coding walk, 2026-11-12: told "waiting on the owner to approve and send it", it said so over the card, and again the turn after)
+        from .selfclose import CARD_SAID
         if text or not out.get('ok'): print(out.get('says') or "saved on the task as its result." if out.get('saved') == 'result'
-                                            else f"{'email' if drafting else 'reply'}{to} saved on the task, waiting on the owner to approve and send it." if out.get('ok')
+                                            else f"{'email' if drafting else 'reply'}{to} saved on the task. {CARD_SAID}" if out.get('ok')
                                             else f"not saved: {out.get('why') or out.get('detail') or r.text[:200]}")
         if out.get('ok') and out.get('people'):
             print(f"this task has more than one person on it ({', '.join(out['people'])}) - if it is meant for someone else, save it again with --to <name or address>")
@@ -502,6 +516,30 @@ def main():
         r, out = got
         print("withdrawn - the draft is kept under Not sent; nothing was sent." if out.get('ok')
               else f"not withdrawn: {out.get('why') or out.get('detail') or r.text[:200]}")
+        return
+    if args.browser:
+        import os, sys
+        try: sys.stdout.reconfigure(encoding='utf-8', errors='replace')      # the browser's own words may not be in the console's code page
+        except (AttributeError, OSError): pass
+        tid = os.environ.get('TASKUARY_TASK')
+        if not str(tid).isdigit(): print('not in a Taskuary session - TASKUARY_TASK is not set, so there is no task to open a browser for'); return
+        sid = os.environ.get('TASKUARY_SID') or (os.environ.get('AGENT_BROWSER_SESSION') or '')[3:]
+        got = _post('/api/agent/browser', {'task_id': int(tid), 'url': args.browser, 'sid': sid}, stranger, timeout=90)
+        if not got: return
+        r, out = got
+        print(f"the browser is open on {out.get('url')} - go on with agent-browser (snapshot -i -c, click, read); do not open it again" if out.get('ok')
+              else f"the browser did not open: {out.get('detail') or r.text[:200]}")
+        return
+    if args.remember:
+        import os, sys
+        try: sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, OSError): pass
+        tid = os.environ.get('TASKUARY_TASK')
+        if not str(tid).isdigit(): print('not in a Taskuary session - TASKUARY_TASK is not set, so there is no task the owner told you this on'); return
+        got = _post('/api/agent/remember', {'task_id': int(tid), 'note': args.remember, 'agent': os.environ.get('TASKUARY_AGENT') or 'agent'}, stranger)
+        if not got: return
+        r, out = got
+        print(out.get('says') if out.get('ok') else out.get('detail') or f'not kept: {r.text[:200]}')
         return
     if args.check_back:
         import os, sys
@@ -553,10 +591,8 @@ def main():
                                         'agent': os.environ.get('TASKUARY_AGENT') or 'agent', 'sid': os.environ.get('TASKUARY_SID') or ''}, stranger, timeout=120)
         if not got: return
         r, out = got
-        if out.get('closed'):
-            print('task closed. Report filed from this session.'
-                  + (' A reply to the sender is drafted and waiting on the owner.' if out.get('drafting')
-                     else ' No reply drafted, as you said.' if args.no_reply else ' No reply was needed.'))
+        # ...what it did, in the server's own words (selfclose.NEVER_CLOSES): the task is the owner's to close - never "task closed"
+        if out.get('says'): print(out['says'])
         elif out.get('held'):
             print('noted, not closed: the owner opened this session to work in, so they end it. Your summary is on '
                   'the task and they have been told; stay at the prompt in case they have more.')
@@ -729,6 +765,7 @@ def main():
         return
     instance.claim(url)
     print(f'Taskuary {__version__} - {url}  (data: {config.db_path()})')
+    if args.no_browser: print(HEADLESS)
     # the port actually bound, for anything in the server that has to name its own address (the
     # QuickBooks redirect URI): server.py reads config, and config reads this
     import os; os.environ['TASKUARY_PORT'] = str(port)

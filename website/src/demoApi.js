@@ -100,6 +100,7 @@ if (!numbersWorkflow) {
   );
 }
 let nextId = 9000;
+const demoBuilds = {};   // the demo's Set up with AI answers (it has no AI to build with)
 
 const journeyListeners = new Set();
 export const demoJourneySnapshot = () => {
@@ -180,6 +181,9 @@ const read = (url) => {
   // the Agent work card's record (sessionrecord.py): the demo keeps no CLI logs, so each filed report is a session
   const m0 = p.match(/^\/api\/tasks\/(\d+)\/record$/);
   if (m0) return demoRecord(state["/api/tasks/detail"]?.[m0[1]]);
+  // the chat's one list (conversation.py), read off the same recorded conversation: the demo keeps turns already written, never a ledger
+  const mc = p.match(/^\/api\/tasks\/(\d+)\/conversation$/);
+  if (mc) return demoConversation(state["/api/tasks/detail"]?.[`${mc[1]}:assistant`], state["/api/tasks/detail"]?.[`${mc[1]}:conversation`]);
   let m = p.match(/^\/api\/tasks\/(\d+)\/assistant$/);
   if (m) return clone(state["/api/tasks/detail"]?.[`${m[1]}:assistant`]) || { messages: [], providers: [], session: null };
   m = p.match(/^\/api\/tasks\/(\d+)$/);
@@ -393,6 +397,25 @@ const scriptedSay = (asked, key) => {
 // another task, React stops listening but this timer still completes and files the reply in the
 // recorded task state. Coming back therefore behaves like the desktop server instead of losing
 // both the progress and the answer at navigation time.
+// THE DEMO'S CHAT IS THE SERVER'S OWN LIST, as recorded (demo_fixtures.mjs: GET /conversation of every task - a coding task's turns and
+// each card in its turn among them), and what the visitor said in the demo since stands under it: his line, the scripted answer, a turn at work
+const demoConversation = (box, kept) => {
+  const items = [...(kept?.items || [])]; let anchor = items.findLast((x) => x.kind !== "turn" && x.kind !== "card")?.id || "0", n = items.length;
+  const said = (m) => (m.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
+  // ...the recorded messages are the list's already: only the ones the demo added since (their ids are the demo's own)
+  if (box && box.kept0 == null) box.kept0 = kept ? (box.messages || []).filter((m) => !/^(u|a|d)\d+$/.test(String(m.id))).length : 0;
+  for (const m of (box?.messages || []).slice(box?.kept0 || 0)) {
+    if (m.role === "assistant") items.push({ id: `t:${anchor}:${n++}`, kind: "turn", state: "done", steps: [], text: said(m), cards: [], at: m.createdAt, answer: m.id, ...(m.summary ? { summary: m.summary } : {}) });
+    else if (m.press) items.push({ id: `p:${m.id}`, kind: "press", text: said(m), at: m.createdAt });
+    else if (m.brief) (m.mail || []).forEach((x, i) => { anchor = `m:${x.mid || `${m.id}-${i}`}`; items.push({ ...x, id: anchor, kind: "arrival" }); });
+    else { anchor = m.line || m.id; items.push({ id: anchor, kind: "line", text: said(m), at: m.createdAt, files: [] }); }
+  }
+  const busy = !!box?.session?.busy;
+  if (busy) items.push({ id: `t:${anchor}:${n}`, kind: "turn", state: "working", steps: [], text: "", cards: [], started: Date.now() / 1000 });
+  return { ...(kept || {}), rev: `${items.length}:${busy}:${items.at(-1)?.id || ""}`, items, pending: [], working: busy, started: null, asking: null, permissions: [], live: null,
+    hold: kept?.hold || null, published: kept?.published || [], ran: items.some((x) => x.kind === "turn") };
+};
+
 export const startDemoAssistant = (taskId, body, emit = () => {}) => {
   const box = assistantBox(taskId);
   const asked = String(body?.text || "").trim();
@@ -472,6 +495,10 @@ const write = (method, url, body) => {
     }
     return { dispatch: "assistant", started: !existing, existing, taskId: NUMBERS_TASK, ref: "TQ-0018", agent: "analyst", demo: true };
   }
+
+  // TRUST <SENDER> (the chat's one action on an untrusted sender's task, server.task_trust): the hold is gone from the task's recorded list
+  const trusted = method === "post" && p.match(/^\/api\/tasks\/(\d+)\/trust$/);
+  if (trusted) { const c = state["/api/tasks/detail"]?.[`${trusted[1]}:conversation`]; if (c) c.hold = null; return { origin: "trusted", why: "", started: "" }; }
 
   if (method === "post" && p === "/api/assistant/dock/new") {
     const previous = scriptedAssistant.chats.find((c) => c.taskId === scriptedAssistant.activeTaskId);
@@ -662,24 +689,15 @@ const write = (method, url, body) => {
     return { action: review ? "review" : "open", taskId: id, reviewId: review?.ReviewId };
   }
 
-  if (method === "post" && p === "/api/playbooks/setup") {
-    const example = feedRows().find((row) => row.MessageId === body?.message_id);
-    const id = ++nextId;
-    const task = { TaskId: id, Title: `Create playbook: ${example?.Subject || body?.text || "Updated item numbers"}`,
-      Summary: body?.text || "Create a reusable workflow from an example email", Kind: "general", Status: "open",
-      Source: "assistant", SourceRef: "assistant:playbook", Priority: "normal", CreatedAt: new Date().toISOString() };
-    taskRows().unshift(task);
-    state["/api/tasks/detail"][id] = { task, ref: `TQ-${id}`, messages: [], attachments: [], comments: [], routes: [], runs: [], audit: [], reviews: [] };
-    const box = assistantBox(id);
-    box.session.provider = "Scripted demo";
-    box.session.pick = "demo:scripted";
-    box.providers = [{ id: "demo:scripted", type: "demo", label: "Scripted demo", model: "" }];
-    box.messages = [
-      { id: `u${++nextId}`, role: "user", content: [{ type: "text", text: `${task.Summary}${example ? `\nExample email: ${example.Subject}` : ""}${body?.connector_type ? `\nConnection: ${body.connector_type}` : ""}` }] },
-      { id: `a${++nextId}`, role: "assistant", content: [{ type: "text", text: "Let's build a playbook for gathering the latest item numbers and preparing a summary for your review. This demo uses scripted answers; your own AI will tailor the steps to your request.\n\nWhich connected system holds the numbers?" }] },
-    ];
-    return clone({ taskId: id, task, ref: `TQ-${id}` });
+  // SET UP WITH AI (taskuary/build.py) is the owner's own AI building on its page: the demo has none, and says so - nothing is pretended
+  if (method === "post" && p === "/api/build") {
+    const v = { id: `demo-${++nextId}`, kind: body?.kind || "report", busy: false, done: false, ask: "", no_ai: false, ref: null, link: "",
+      steps: body?.words ? [{ kind: "you", text: String(body.words) }] : [],
+      error: "The demo has no AI of its own to build this. In Taskuary, your connected AI drafts it, checks it and saves it here." };
+    demoBuilds[v.id] = v;
+    return clone(v);
   }
+  if ((m = p.match(/^\/api\/build\/([\w-]+)(\/answer)?$/))) return clone(demoBuilds[m[1]] || {});
 
   if (method === "post" && p === "/api/tasks") {
     const id = ++nextId;

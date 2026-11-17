@@ -27,6 +27,7 @@ import json, re, threading
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from loguru import logger
+from . import aiusage
 
 FAMILIES = {
     'credit': "work the owner did that leadership likely does not see, with the numbers from the window, and a concrete way to show it",
@@ -104,17 +105,29 @@ def _every(store) -> float:
 def open_ideas(store) -> list: return store._rows("SELECT * FROM idea WHERE Key LIKE ? AND Status IN ('open','snoozed')", (KEY + '%',))
 
 
+def waiting(store) -> list:
+    """The open ones the rail still draws - unread, or put away till a later day. WAITING IS ON THE RAIL: an idea the owner opened and
+    read leaves the rail but stays open, and four such ideas read on one morning stopped every pass after it - six days without an
+    idea for the owner's job (2026-11-12). A rail that cannot be read counts every open one, as before."""
+    ids = open_ideas(store)
+    if not ids: return []
+    try:
+        from . import funnel
+        on = {x.get('idea') for x in funnel.pile(store, quiet=True)['items']}
+    except Exception as e: logger.debug(f'lookout: the rail was not read - {e}'); return ids
+    return [i for i in ids if i['IdeaId'] in on or i.get('Status') == 'snoozed']
+
+
 def due(store) -> bool:
     """A day (lookout_every_days) since the last pass that got an answer, RETRY_H since one that did not, and room on the rail: never more
-    than MAX_OPEN of these waiting at once."""
-    if len(open_ideas(store)) >= MAX_OPEN: return False
+    than MAX_OPEN of these waiting at once - the rail read last, only on a tick whose day is up."""
     last, tried = store.get_setting(LAST_KEY) or '', store.get_setting(TRIED_KEY) or ''
     if tried and tried > _ago(hours=RETRY_H): return False
-    if not last: return True
     every = _every(store)
     # once a calendar day, from the morning: not run today and it is past MORNING_H, or a whole day has gone by whatever the hour
-    if every <= 1: return last[:10] < _ts(_now())[:10] and (_now().hour >= MORNING_H or last <= _ago(days=1))
-    return last <= _ago(days=every)
+    if last and not (last[:10] < _ts(_now())[:10] and (_now().hour >= MORNING_H or last <= _ago(days=1)) if every <= 1
+                     else last <= _ago(days=every)): return False
+    return len(waiting(store)) < MAX_OPEN
 
 
 # ── WHAT IT READS ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -194,9 +207,9 @@ def turned_down(store) -> set:
 
 
 def families(store) -> list:
-    """The families it may raise now: not one the owner turned down, nor one the owner's record holds under the 80% bar (ideagrade)."""
+    """The families it may raise now: not one the owner turned down, nor one under the 80% bar (ideagrade) that raised its one today."""
     from . import ideagrade
-    try: quiet = ideagrade.quiet_kinds(store)
+    try: quiet = ideagrade.spent_today(store, ideagrade.quiet_kinds(store))
     except Exception: quiet = set()
     return [f for f in FAMILIES if f not in turned_down(store) and f not in quiet]
 
@@ -266,6 +279,7 @@ def ref_line(store, ref: str) -> str:
     return f"task {t.get('Status') or ''}: {_one(t.get('Title'), 90)}"
 
 
+@aiusage.named('advisor.propose')
 def propose(store, llm, user: str, shown: set) -> list | None:
     """The first call. None when it gave no answer at all (the pass is tried again in a day), else the ideas the code could check."""
     from .llm import ask_json
@@ -275,6 +289,7 @@ def propose(store, llm, user: str, shown: set) -> list | None:
     return [x for x in (_clean(store, d, shown, fams) for d in (got.data.get('ideas') or [])[:MAX_IDEAS * 2]) if x][:MAX_IDEAS]
 
 
+@aiusage.named('advisor.check')
 def check(store, llm, ideas: list) -> tuple:
     """The second call: (kept, [(idea, why held)]). A check that cannot run holds everything - an unchecked idea is never raised."""
     from .llm import ask_json
@@ -341,10 +356,11 @@ def brain(store):
         logger.info(f'lookout: no brain - {e}'); return None
 
 
-def tick(store, llm=None, force: bool = False) -> dict:
-    """One pass when due (or `force`): {ran, raised: [idea ids], held: [titles], calls}. At most CALLS model calls. Never raises."""
+def tick(store, llm=None, force: bool = False, wait: bool = False) -> dict:
+    """One pass when due (or `force`): {ran, raised: [idea ids], held: [titles], calls}. At most CALLS model calls. Never raises.
+    `wait`: a pass already running is waited for rather than skipped - the morning Advisor look reads what it raised (assistant.job_ideas)."""
     out = {'ran': False, 'raised': [], 'held': [], 'calls': 0}
-    if not _BUSY.acquire(blocking=False): return out
+    if not _BUSY.acquire(blocking=wait): return out
     try:
         if not force and not due(store): return out
         if llm is None: llm = brain(store)
@@ -362,8 +378,13 @@ def tick(store, llm=None, force: bool = False) -> dict:
         if ideas is None: return out | {'calls': n[0]}
         store.set_setting(LAST_KEY, _ts(_now()), 'advisor')
         kept, held_ = check(store, counted, ideas)
+        # ...and a family under the 80% bar raises one a day (ideagrade.spent_today)
+        from . import ideagrade
+        quiet, seen = ideagrade.quiet_kinds(store), set()
+        def once(f): return f not in quiet or (f not in seen and not seen.add(f))
+        kept = [x for x in kept if once(x['family'])]
         _hold(store, held_)
-        rows = [r for r in (land(store, x) for x in kept[:max(0, MAX_OPEN - len(open_ideas(store)))]) if r]
+        rows = [r for r in (land(store, x) for x in kept[:max(0, MAX_OPEN - len(waiting(store)))]) if r]
         if rows:
             from .habits import _woke
             _woke(store)
@@ -382,7 +403,7 @@ def start(store, said) -> tuple:
     from .words import name
     from . import demo
     if demo.enabled(): return False, "Nothing started: the demo world runs no Advisor passes - in your own Taskuary this starts one."
-    n = len(open_ideas(store))
+    n = len(waiting(store))
     if n >= MAX_OPEN:
         return False, (f"Nothing started: {n} ideas for your job already wait under Advisor, and it keeps at most {MAX_OPEN} at once. "
                        "Answer one of them and ask again.")

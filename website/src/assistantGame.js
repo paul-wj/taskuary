@@ -15,7 +15,7 @@ export const ZONES = [
   { key: "meeting", name: "Meeting Room", hotkey: "3", blurb: "people waiting on you - email at the table, chat in the huddle" },
   { key: "coffee", name: "Coffee Room", hotkey: "4", blurb: "fyi's and reports - catch up over a cup" },
   { key: "archive", name: "Memory Archive", hotkey: "5", blurb: "filing cabinets of what the team knows - and the ghosts of threads that slipped" },
-  { key: "hq", name: "Assistant Core", hotkey: "6", blurb: "ask who should take what" },
+  { key: "hq", name: "Taskuary Core", hotkey: "6", blurb: "ask who should take what" },
 ];
 export const zoneMeta = (key) => ZONES.find((z) => z.key === key) || null;
 
@@ -79,7 +79,7 @@ export function matchFor(item, agents = []) {
   if (lane === "broken") return { who: "you", verb: "open", why: "a connection stopped - only you can sign it back in" };
   if (item?.coding || kind === "coding") return { who: coding, verb: "dispatch", kind: "coding", why: "code work - hand it to a coding agent" };
   if (kind === "todo" || kind === "task" || lane === "yours") return { who: general, verb: "dispatch", kind: "general", why: "real work, not a sentence - an agent can start it" };
-  return { who: "you", verb: "draft", why: "a question a reply settles - let the assistant draft it" };
+  return { who: "you", verb: "draft", why: "a question a reply settles - let Taskuary draft it" };
 }
 
 // ── points ────────────────────────────────────────────────────────────────────────────────────
@@ -183,7 +183,7 @@ export function shareCard(s, now = Date.now(), translate = (text, values = {}) =
   const lv = levelOf(s.xp), secs = Math.max(0, Math.round((now - (s.runStart || now)) / 1000));
   const t = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
   const b = (k) => s.by?.[k] || 0;
-  return [translate("🏢 Taskuary · Assistant Game"), translate("Lv {level} {title} · {xp} XP · best combo x{best}", { level: lv.level, title: translate(lv.title), xp: s.xp, best: s.best }),
+  return [translate("🏢 Taskuary · Game"), translate("Lv {level} {title} · {xp} XP · best combo x{best}", { level: lv.level, title: translate(lv.title), xp: s.xp, best: s.best }),
     translate("📨 {sent} sent  🤖 {handed} handed off  🔓 {unblocked} unblocked  👻 {ghosts} ghosts  ☕ {fyi} fyi", { sent: b("approve"), handed: b("dispatch"), unblocked: b("answer"), ghosts: b("followup") + b("rest"), fyi: b("read") }),
     translate("⏱ today's run {time} · 🏆 {got}/{total}", { time: t, got: s.got.length, total: ACHIEVEMENTS.length })].join("\n");
 }

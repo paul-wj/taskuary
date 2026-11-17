@@ -43,7 +43,7 @@ PURPOSE = {
                                  'task.defer on it'),
     'message.file':             "file it - not ours, just this one",
     'message.archive':          'archive it: off the pipe and closed, nothing deleted',
-    'preference.exclude_sender': 'teach triage to file this sender or subject from now on - their mail still arrives (`scope`: sender | subject)',
+    'preference.exclude_sender': 'teach triage to file this kind of mail from this sender, or this subject, from now on - their mail still arrives (`scope`: sender | subject)',
     'preference.sender_rule':   'an exclusion rule in Settings: this sender never reaches triage again and what already arrived leaves the work rail',
     'item.settle':              'put the item down, read and settled - `verb`: done (the item on the table is the target)',
     'task.complete':            (f'{L("close")} - the task is finished; `note` (optional): what came of it, in the owner\'s words when they '
@@ -79,7 +79,8 @@ PURPOSE = {
     # ...and a rule about HOW to write goes where the drafter reads its voice, STYLE.md's Owner notes - the model says which, by what the
     # fact IS (the owner, 2026-10-28: "when I ask the chat to write Mrs X to women from now on it should go to STYLE.md ... It should know
     # where each memory goes")
-    'memory.remember':          ("keep a fact or rule the owner tells you, at once - `note`: it, in the owner's words "
+    'memory.remember':          ("keep a fact or rule the owner tells you, at once, and above the CALL answer them in a few natural words "
+                                 '("Got it - Omar for badge faults.") - never that it was saved, where, or who reads it. `note`: it, in the owner\'s words '
                                  '("Gail moved to Ops", "Ray handles payroll for me", "I put renewals off to Friday", "I don\'t care about the '
                                  'legacy export job any more"); `section`, always: people (who someone is to them, how they deal with them) | '
                                  'care (what they are responsible for and what they do NOT care about - a legacy process, a system no longer '
@@ -127,7 +128,7 @@ PURPOSE = {
                                  "`title`, `assignee`: exactly `owner` (the owner takes it) or `agent:<profile>` (one of the saved profiles), "
                                  "`due`: the day the work is due (2026-10-30, \"friday\", \"2 weeks\", or \"none\" to clear it); `ref` when "
                                  "it is not the one on the table. Any other value is refused with the allowed ones"),
-    'task.set_kind':            'say what kind of work a task is - `kind`: task (the owner does it) | general (a non-coding agent) | coding; `ref`',
+    'task.set_kind':            'say who does a task - `kind`: task (the owner does it) | general (a non-coding agent) | coding - an agent kind starts that agent on it; `ref`',
     'task.set_repo':            'put a coding task in the repository it belongs in - `repo` (its name, as the repositories list says it); `ref`',
     'task.check':               ('tick, untick or note one to-do on a task - `item`: its NUMBER (1 is the first; the facts list them numbered); '
                                  '`done`: false un-ticks; `note`: words kept under it ("Gail has it"; "" removes it) - with only a note it is not ticked; `ref`'),
@@ -256,11 +257,11 @@ PURPOSE = {
 KEPT = frozenset({'people.relate', 'memory.wrong', 'memory.remember', 'problems.dismiss', 'agent.tell', 'advisor.ideas'})
 # ...and a SET named in the owner's words, whose words are the press (pipe.clear's ruling, 2026-10-20; bulk.py 2026-10-28) - a phone asks yes or no
 SETS = frozenset({'pipe.clear', 'pipe.defer', 'pipe.close', 'pipe.remove', 'pipe.block', 'pipe.mine', 'agents.stop'})
-# ...and a tool whose press is not one thing: an agent's job written into New is started by the card's own Send to agent at once (concierge._new
-# `start`), and the model, told only "the owner presses its button", said the job was still waiting in New over an agent already at work (2026-11-02)
-RUNS = {'task.create_from_text': "kind general or coding STARTS at once - New's card presses its own Send to agent, the job runs on a task of "
-                                 "its own, and the conversation's line and YOUR OPEN ASKS name that task and where it stands; any other kind "
-                                 "waits in New for the owner's press"}
+# ...and a tool whose press is not one thing: an agent's job is started at once on a task of its own, opened (concierge._made_now - the owner,
+# 2026-11-12: "open task directly"), and the model, told only "the owner presses its button", said it was still waiting in New (2026-11-02)
+RUNS = {'task.create_from_text': "kind general or coding STARTS at once on a task of its own, which opens; a message to someone it can place "
+                                 "is DRAFTED on a task of its own (never sent - Send is the owner's); the conversation's line and YOUR OPEN "
+                                 "ASKS name that task and where it stands; any other kind waits in New for the owner's press"}
 # ...and the acts whose button is a page's alone: the page comes up at the thing, the owner presses there
 PAGED = frozenset({'rule.change', 'deleted.restore', 'hub.comment', 'hub.vote', 'page.open'})
 INSTANT = frozenset({'report.run', 'report.pause', 'report.resume', 'report.route', 'report.edit', 'setting.set', 'task.defer', 'task.watch',
@@ -365,10 +366,10 @@ def block(store=None) -> str:
         'alone, no words before it: the button is the answer.',
         'Answer in plain words. To look something up or do anything, end with ONE line:',
         '  CALL: {"kind": "<tool>", "params": {...}}',
-        # ...save the one press made for them: New's card presses its own Send to agent (concierge._new `start`), and "where is it?" was
-        # answered "waiting in New, not started" over an agent at work on its own task (2026-11-02)
+        # ...save the one made for them: an agent's job starts on its own task (concierge._made_now), and "where is it?" was answered
+        # "waiting in New, not started" over an agent at work on its own task (2026-11-02)
         'A look-up runs at once and answers you. A change is the owner\'s to press: Taskuary brings up its button, lit, or',
-        "its page - never say it is done. Only an agent's job in New starts at once (YOUR OPEN ASKS). When two different",
+        "its page - never say it is done. Only an agent's job starts at once (YOUR OPEN ASKS). When two different",
         'things fit and you cannot tell which, ask one short question and end with OPTIONS: first | second instead.',
         'Never both, never an unlisted tool. A task the owner names goes in params.ref ("TQ-0123"); otherwise',
         "the item on the table is the target. A decision about a DIFFERENT item than the table's puts the",
@@ -428,7 +429,7 @@ _DECIDE = {
                         'Not sure which repository is no reason to ask - CALL it, and its card offers every repository to pick. '
                         '`new`: true when the job is NOT about the item on the table'),
     'not_ours':        'file it, just this once - its card asks whether from now on, or as a rule',
-    'not_ours_sender': 'file everything from this sender from now on - their mail still arrives and stays readable',
+    'not_ours_sender': 'file mail like this from this sender from now on - their mail still arrives and stays readable, and another kind from them is still judged',
     'block_sender':    'an exclusion rule in Settings: the sender never reaches triage again - only when they ask for a rule',
     'not_ours_kind':   "an Advisor idea only: put it down AND no more ideas like it - the Advisor's next run reads that",
     'close':           'the task behind the item is finished',

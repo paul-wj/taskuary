@@ -4,7 +4,7 @@ FAILS returns the review to the queue wearing the error, so nothing looks finish
 never left the machine. The corrections feed LEARNED.md (an edit shows how the owner
 writes, a reject what should never have been drafted).
 """
-import hashlib, json, re, threading
+import contextvars, hashlib, json, re, threading
 from pathlib import Path
 
 from loguru import logger
@@ -222,8 +222,9 @@ def _more(env, *keys) -> dict:
 
 def _send_snapshot(store, snapshot):
     """Only the durable approved payload crosses the provider boundary."""
-    from . import outbound
+    from . import demo, outbound
     env, body = snapshot['envelope'], snapshot['body']
+    if demo.enabled(): return demo.pretend_sent(snapshot)             # ...and in the demo nothing does: its Send is played
     if env.get('kind') == 'reply':
         return outbound.reply_to_message(store, snapshot['message'], body, to=env.get('to') or None,
                                          cc=env.get('cc'), attachments=env.get('attachments'), **_more(env, 'bcc', 'subject'))
@@ -564,25 +565,49 @@ def _post_with_closeout(store, closeout: dict, reply: dict, text: str, actor: st
                            envelope=envelope, send_fn=post)
 
 
+# ...ONE OF A BULK CARD'S ROWS (bulkcard.run): its agent hears the whole run once, at its end - never once a row
+QUIET = contextvars.ContextVar('verdicts_quiet', default=False)
+
+
 def decide(store, rv: dict, verb_in: str, *a, closes: bool = False, **kw) -> dict:
     """_decide, and a yes that went wakes the task's agent where its last turn said it waits on that Send (general.follow_up).
     `closes`: Send and close - the task's close, through its one gate, as the send went (out['shut'])."""
     out = _decide(store, rv, verb_in, *a, **kw)
+    if QUIET.get(): return out
     if verb_in in ('approve', 'edit', 'merge_anyway') and out.get('ok') and not out.get('send_error') and rv.get('TaskId'):
         from . import general, proposals
         actor = a[2] if len(a) > 2 else kw.get('actor', 'owner')
         # SEND AND CLOSE CLOSES BEFORE ITS AGENT IS TOLD (the agent walk, 2026-11-10): the close came a beat after the send, by the page's
         # own call - and by then the send had woken the agent parked on the task, so the gate found it working and kept the task open:
-        # "Sent. Kept open: The agent session on it is still open", every time an agent had run. The owner said close: an agent at rest
-        # is stopped (concierge.close_after_send), never woken to be; one kept open for a reason of its own hears the send as before
+        # "Sent. Kept open: The agent session on it is still open", every time an agent had run. The owner said close: its agent, at
+        # work or at rest, is stopped (concierge.close_after_send), never woken to be; a task kept open by something else that waits
+        # on his press hears the send as before
         if closes and (out.get('reply') or {'ok': rv.get('Kind') != 'action'}).get('ok'):
             from . import concierge
             try: out['shut'] = concierge.close_after_send(store, rv['TaskId'], actor)
             except Exception as e: logger.warning(f"rv{rv.get('ReviewId')}: the send went, its close did not run - {e}")
         # ...EVERY yes that went, not only one its turn said it waits on (the owner, 2026-11-09) - a held step's own road tells its agent
-        if proposals._action(rv) not in proposals.HELD_ACTS and not (out.get('shut') or {}).get('closed'):
+        # ...where the agents are recordings (the demo) there is none to tell: the line one would say next is written instead - a wake there
+        # ended the played Send on "No AI is connected" under a turn marked failed
+        from . import demo
+        if demo.enabled(): demo.after_send(store, rv['TaskId'])
+        elif proposals._action(rv) not in proposals.HELD_ACTS and not (out.get('shut') or {}).get('closed'):
             try: general.approved(store, rv['TaskId'], *pressed(rv, out), actor, review=rv.get('ReviewId'))
             except Exception as e: logger.warning(f"rv{rv.get('ReviewId')}: the agent was not told it went - {e}")
+    # ...AND EVERY ONE THAT RAN AND FAILED (general.failed): an act's error, a send that did not go or may have - never a refusal before it
+    # ran (stale, a blank, already answered), and never a held turn's steps, whose card tells its agent once for all (shellgate.approve_steps)
+    elif verb_in in ('approve', 'edit', 'merge_anyway', 'close_pr') and rv.get('TaskId') and (out.get('act_failed') or out.get('delivery') in ('failed', 'unknown')):
+        from . import demo, general, shellgate
+        if not demo.enabled() and shellgate._batch.get() is None:
+            try:
+                if general.failed(store, rv['TaskId'], rv['ReviewId'], a[2] if len(a) > 2 else kw.get('actor', 'owner')): out['told'] = True
+            except Exception as e: logger.warning(f"rv{rv.get('ReviewId')}: the agent was not told it failed - {e}")
+    # ...AND A NO TO A CARD WITH OTHERS BEHIND IT (cardqueue.said_no): the line does not go on past it until its agent has decided
+    elif verb_in in ('reject', 'no_reply', 'close_unsent', 'close_pr') and out.get('ok') and rv.get('TaskId'):
+        from . import cardqueue, demo
+        if not demo.enabled():
+            try: cardqueue.said_no(store, rv, verb_in, a[2] if len(a) > 2 else kw.get('actor', 'owner'))
+            except Exception as e: logger.warning(f"rv{rv.get('ReviewId')}: the agent was not told of the no - {e}")
     return out
 
 
@@ -591,12 +616,22 @@ def _reply_waiting(store, tid):
     return store._one("SELECT * FROM review WHERE TaskId=? AND Status='pending' AND Kind NOT IN ('action','slot') ORDER BY ReviewId DESC LIMIT 1", (tid,))
 
 
+def in_words(got, n: int = 300) -> str:
+    """What an act gave back, in words for its agent (the owner, 2026-11-11: the agent was handed the raw JSON, a path under his home in it):
+    each plain value by its name, a file by its name alone, anything nested left out."""
+    from pathlib import PurePosixPath, PureWindowsPath
+    if not isinstance(got, dict): return ' '.join(str(got or '').split())[:n]
+    name = lambda v: next((P(v).name for P in (PureWindowsPath, PurePosixPath) if isinstance(v, str) and P(v).is_absolute()), v)
+    return ', '.join(f"{str(k).replace('_', ' ')}: {' '.join(str(name(v)).split())}" for k, v in got.items()
+                     if isinstance(v, (str, int, float)) and not isinstance(v, bool) and str(v).strip())[:n]
+
+
 def pressed(rv: dict, out: dict) -> tuple:
     "(the press, what it did) of an answered review, in words for its agent."
     if rv.get('Kind') == 'action':
         from . import proposals
         a = proposals._action(rv) or 'action'
-        return 'Approve', f"{a.replace('_', ' ')} - {json.dumps(out.get('result') or {}, default=str)[:300]}"
+        return 'Approve', ' - '.join(x for x in (a.replace('_', ' '), in_words(out.get('result'))) if x)
     # ...a calendar answer is no reply: "the reply was sent" told the agent of an accepted invite (the stress round, 2026-11-10)
     if (env := _envelope(rv)).get('kind') == 'calendar':
         from .calwrite import head_of
@@ -624,7 +659,9 @@ def _decide(store, rv: dict, verb_in: str, final_text: str = None, note: str = N
     if rv.get('DeliveryClaim'): return _delivery_busy(store, rv['ReviewId'])
     # A CARD THE CONVERSATION MOVED PAST presses nothing, from any page or phone however stale (proposals.move_on, the owner 2026-11-10)
     from . import proposals
-    if proposals.passed(rv): return {'ok': False, 'status': rv['Status'], 'sent': None, 'passed': True, 'send_error': proposals.PASSED_SAID}
+    # ...nor one it moved past that no agent has heard yet (written_past): greyed on every surface from the moment the input came
+    if proposals.passed(rv) or rv.get('Status') == 'pending' and rv.get('TaskId') and rv['ReviewId'] in proposals.written_past(store, rv['TaskId']):
+        return {'ok': False, 'status': rv['Status'], 'sent': None, 'passed': True, 'send_error': proposals.PASSED_SAID}
     if rv.get('Status') == 'pending' and verb_in in ('approve', 'edit'):
         def content_envelope(row):
             return {k: v for k, v in _envelope(row).items() if k not in ('delivery', 'attempted_at', 'attempts')}
@@ -737,7 +774,7 @@ def _decide(store, rv: dict, verb_in: str, final_text: str = None, note: str = N
                 except Exception as e:
                     store.add_comment(rv['TaskId'], actor, 'human', f'CLOSING THE PULL REQUEST FAILED: {str(e)[:300]}')
                     store.review_act_failed(rid, str(e), actor)
-                    return {'ok': False, 'status': 'pending', 'sent': None, 'send_error': str(e)[:300]}
+                    return {'ok': False, 'status': 'pending', 'sent': None, 'send_error': str(e)[:300], 'act_failed': True}
                 if not store.decide_review(rid, 'rejected', None, actor, 'closed the pull request without merging'): return _delivery_busy(store, rid)
                 proposals.settle(store, rv, 'approve', actor)       # answered, like a merge - the task stays open for Mark done
                 return {'ok': True, 'status': 'rejected', 'sent': None, 'send_error': None, 'result': out}
@@ -746,8 +783,13 @@ def _decide(store, rv: dict, verb_in: str, final_text: str = None, note: str = N
                     out = proposals.execute(store, rv, actor, final, skip_checks=verb == 'merge_anyway', fields=fields)
                 except Exception as e:
                     store.add_comment(rv['TaskId'], actor, 'human', f'PROPOSAL FAILED: {str(e)[:300]}')
-                    store.review_act_failed(rid, str(e), actor)     # the card says it after a reload, and its agent hears it (general.owner_did)
-                    return {'ok': False, 'status': 'pending', 'sent': None, 'send_error': str(e)[:300],
+                    store.review_act_failed(rid, str(e), actor)     # the card says it after a reload, and its agent hears it (general.failed)
+                    # ...AND IS OVER (the owner, 2026-11-16: no Try again): what the agent set up failed and is its again - the card keeps
+                    # the error, the agent is woken with it (decide) and sets up what goes next. A close-out is Taskuary's own, and a
+                    # refusal before it ran (the owner's own edit, a switch off, ChecksRed) has its own way on: those still wait
+                    if getattr(e, 'ran', False) and not isinstance(e, proposals.ChecksRed) and proposals._action(rv) not in proposals.CLOSEOUT:
+                        store.decide_review(rid, 'superseded', None, actor, proposals.FAILED_NOTE)
+                    return {'ok': False, 'status': (store.get_review(rid) or {}).get('Status') or 'pending', 'sent': None, 'send_error': str(e)[:300], 'act_failed': True,
                             **({'offers': e.offers, 'refused': True} if isinstance(e, proposals.ChecksRed) else {}),
                             # a grant the token lacks (github.Refused.needs): the owner's to add - a retry only repeats it
                             **({'needs': e.needs} if getattr(e, 'needs', '') else {})}
@@ -790,7 +832,7 @@ def _decide(store, rv: dict, verb_in: str, final_text: str = None, note: str = N
     if result is None and verb in ('approve', 'edit') and rv.get('TaskId') and not send_err:
         _settle_task_after_sent_reply(store, rv, actor, False)
     store.audit('review', rid, verb, actor, detail={'kind': rv.get('Kind'), 'sent': bool(sent)})
-    from .presses import personal as _personal
+    from .episodes import personal as _personal
     m0 = (store.get_message(rv['MessageId']) if rv.get('MessageId') else None) or {}
     # ...a draft to someone in a PERSONAL workstream teaches neither voice nor memory (the owner, 2026-11-01)
     if verb in ('edit', 'reject', 'no_reply') and not cal and not _personal(store, {'tid': rv.get('TaskId')}, m0):   # a calendar note's one line teaches no voice

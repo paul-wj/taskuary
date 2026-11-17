@@ -240,11 +240,112 @@ class Asking(unittest.TestCase):
             raised.append(('open while typing', signin.pending(self.s, self.tid))); typed.append(a)
         with on_page('https://login.bank.example/'), mock.patch.dict('taskuary.terminal.SESSIONS', {'sess1': sess}),              mock.patch.object(ws, 'record', spy):
             self.assertTrue(signin.needs(self.s, self.tid, 'sess1', 'bank.example', fill=fill)['auto'])
+            # ...the answer that handed the sign-in over is filed a moment after the ask (general._file), as the saved one goes in
+            from taskuary import conversation, general
+            self.s.add_comment(self.tid, 'assistant', general.ASSISTANT_TYPE, 'The sign-in page is open. Once you have signed in I will read the balance.')
             self.wait_for(lambda: sess.said)
+        # ...and is a step of the work, never an answer telling him to sign in where nobody was asked to (the recorded walk, 2026-11-11)
+        # ...read once its taking back is written down (take_back follows the prompt it sent - on a slow runner a read between the two found
+        # the answer not yet taken back, macOS 2026-11-12): waited on as state, never a sleep
+        last = lambda: next((x for x in reversed(conversation.items(self.s, self.tid)['items']) if x['kind'] == 'turn'), None)
+        self.wait_for(lambda: (last() or {}).get('steps'), secs=15)
+        turn = last()
+        self.assertEqual((turn['text'], [st['text'] for st in turn['steps']][-1]), ('', 'Signed in to bank.example with the saved sign-in.'))
         self.assertEqual(typed, [('sess1', 'bank.example', USER, PW)])
         self.assertEqual(raised, [('open while typing', None)])
         self.assertIsNone(signin.pending(self.s, self.tid))
-        self.assertEqual(sess.said, ['Signed in to bank.example - continue.'])
+        self.assertEqual(sess.said, ["Signed in to bank.example - continue. Taskuary signed in with the owner's saved sign-in; the owner did nothing on the page."])
+
+    def test_while_the_saved_sign_in_is_typed_the_chat_reads_at_work_over_the_answer_that_handed_it_over(self):
+        """Recorded on the real CLI (the browser audit, 2026-11-15): the agent's turn ended asking for the sign-in, its answer was filed, and
+        for the ~3 s Taskuary typed the saved one the chat's payload said nothing was at work - the header read "agent waiting on you" with
+        nothing on him. A turn whose answer is filed after the newest hand-over is finished, but the typing is a hand-over on its way to the
+        next turn (general.starting): the chat reads at work from the start of the typing until the agent is told."""
+        import threading
+        from taskuary import conversation, general
+        signin.save(self.s, 'bank.example', USER, PW)
+        class Chat:
+            sid, alive, task_id = 'sess1', True, self.tid
+            def __init__(self): self.said = []
+            def send_prompt(self, text, as_owner=True): self.said.append(text)
+        sess, typing, go = Chat(), threading.Event(), threading.Event()
+        def fill(*a, **k): typing.set(); go.wait(10)
+        def working():     # ...read as the chat reads it, the turn at work its last
+            with mock.patch.dict('taskuary.terminal.SESSIONS', clear=True):
+                c = conversation.items(self.s, self.tid); turn = next(x for x in reversed(c['items']) if x['kind'] == 'turn')
+                return c['working'] and turn['state'] == 'working'
+        with on_page('https://login.bank.example/'), mock.patch.dict('taskuary.terminal.SESSIONS', {'sess1': sess}):
+            self.assertTrue(signin.needs(self.s, self.tid, 'sess1', 'bank.example', fill=fill)['auto'])
+            self.s.add_comment(self.tid, 'assistant', general.ASSISTANT_TYPE, 'I need the site signed in to go on.')
+            self.assertTrue(typing.wait(10))
+            self.assertTrue(working(), 'at work while the saved sign-in is typed, over the answer that handed it over')
+            # ...and the chat's session says so of itself, where the header and the rail read it: not parked waiting on him
+            parked = general.GeneralSession.__new__(general.GeneralSession)
+            parked.alive, parked.busy, parked.spoke, parked.task_id = True, False, True, self.tid
+            self.assertFalse(parked.waiting(), 'the session is not waiting on him while the saved sign-in is typed')
+            go.set(); self.wait_for(lambda: sess.said)
+            self.wait_for(lambda: not general.starting(self.tid), secs=15)
+        self.assertTrue(parked.waiting(), 'and waits on him again once it has handed on')
+
+    def test_while_the_saved_sign_in_is_typed_the_answer_that_handed_it_over_is_already_a_step(self):
+        """Recorded (the browser round, 2026-11-14): the agent ended its turn "I have no saved sign-in for it ... once the sign-in is done I
+        will read it", and for the seconds Taskuary typed the saved one that stood in the chat as its answer - untrue, and gone a beat
+        later. It is a step of the work from the moment the saved sign-in starts, under a line that says what is happening; the line
+        says how it ended once it has."""
+        import threading
+        from taskuary import conversation, general
+        signin.save(self.s, 'bank.example', USER, PW)
+        class Chat:
+            sid, alive, task_id = 'sess1', True, self.tid
+            def __init__(self): self.said = []
+            def send_prompt(self, text, as_owner=True): self.said.append(text)
+        sess, typing, go = Chat(), threading.Event(), threading.Event()
+        def fill(*a, **k): typing.set(); go.wait(10)
+        def last():        # ...read as the chat reads it; the stand-in session is no session to read steps from
+            with mock.patch.dict('taskuary.terminal.SESSIONS', clear=True):
+                return next((x for x in reversed(conversation.items(self.s, self.tid)['items']) if x['kind'] == 'turn'), None)
+        with on_page('https://login.bank.example/'), mock.patch.dict('taskuary.terminal.SESSIONS', {'sess1': sess}):
+            self.assertTrue(signin.needs(self.s, self.tid, 'sess1', 'bank.example', fill=fill)['auto'])
+            # ...the answer is filed a moment after the ask (general._file), while the saved one is going in
+            self.s.add_comment(self.tid, 'assistant', general.ASSISTANT_TYPE, 'I have no saved sign-in for it. Once the sign-in is done I will read the balance.')
+            self.assertTrue(typing.wait(10))
+            turn = last()
+            self.assertEqual((turn['text'], [st['text'] for st in turn['steps']][-1]), ('', 'Signing in to bank.example with the saved sign-in.'))
+            go.set(); self.wait_for(lambda: sess.said)
+            self.wait_for(lambda: [st['text'] for st in last()['steps']][-1] == 'Signed in to bank.example with the saved sign-in.', secs=15)
+        self.assertEqual(last()['text'], '')
+
+    def test_while_the_saved_sign_in_is_typed_the_task_is_at_work_not_done(self):
+        """Seen in the browser round (2026-11-14): for the seconds a saved sign-in was typed the agent's turn had ended and nothing of its
+        own was at work, so the header read "agent done" with Mark done lit. Something IS doing the next step: the task reads at work from
+        the moment the typing starts until it has handed on - to the agent's next turn, or to the owner where it did not go in."""
+        import threading
+        from taskuary import general
+        signin.save(self.s, 'bank.example', USER, PW)
+        class Chat:
+            sid, alive, task_id = 'sess1', True, self.tid
+            def __init__(self): self.said, self.during = [], None
+            def send_prompt(s, text, as_owner=True): s.said.append(text)
+            def phase(s): return 'parked'                      # told, and its turn not yet at work: the beat this holds through
+        sess, typing, go = Chat(), threading.Event(), threading.Event()
+        def fill(*a, **k): typing.set(); go.wait(10)
+        self.assertFalse(general.starting(self.tid))
+        with on_page('https://login.bank.example/'), mock.patch.dict('taskuary.terminal.SESSIONS', {'sess1': sess}), mock.patch.object(signin, 'HANDED_ON', 1.5):
+            self.assertTrue(signin.needs(self.s, self.tid, 'sess1', 'bank.example', fill=fill)['auto'])
+            self.assertTrue(typing.wait(10))
+            self.assertTrue(general.starting(self.tid), 'at work while the saved sign-in is typed')
+            self.assertTrue(general.working(self.s, self.tid))
+            go.set(); self.wait_for(lambda: sess.said)
+            # ...and through the beat between "signed in" told and the agent's next turn at work (2-3 s of "agent waiting on you" over a turn
+            # with no words, watched on the real CLI 2026-11-15) - then let go, by itself, where no turn begins
+            time.sleep(0.5); self.assertTrue(general.starting(self.tid), 'still at work in the beat after the agent is told')
+            self.wait_for(lambda: not general.starting(self.tid), secs=15)
+        # ...and one that does not go in hands on to the owner: nothing is left reading at work
+        def boom(*a, **k): raise signin.NotAccepted('bank.example kept its sign-in form up')
+        signin._TRIED.clear()
+        with on_page('https://login.bank.example/'): signin.needs(self.s, self.tid, self.sid, fill=boom, watch=None)
+        self.wait_for(lambda: signin.pending(self.s, self.tid), secs=15)
+        self.wait_for(lambda: not general.starting(self.tid), secs=15)
 
     def test_a_saved_sign_in_that_does_not_go_in_asks_the_owner_after_all(self):
         signin.save(self.s, 'bank.example', USER, PW)
@@ -252,7 +353,38 @@ class Asking(unittest.TestCase):
         with on_page('https://login.bank.example/'): self.assertTrue(signin.needs(self.s, self.tid, self.sid, fill=boom, watch=None)['auto'])
         self.wait_for(lambda: signin.pending(self.s, self.tid))
         self.assertEqual(signin.pending(self.s, self.tid)['request_id'], 'signin:bank.example')
+        # ...and the ask says why the page is in front of him, in its one line
+        self.assertEqual(signin.pending(self.s, self.tid)['text'], 'The saved sign-in for bank.example did not work - sign in on the page, and it is saved again when it works')
         self.assertIn('did not work', ' '.join(r['Body'] for r in self.s._rows('SELECT * FROM comment WHERE TaskId=?', (self.tid,))))
+
+    def test_a_code_asked_after_the_saved_sign_in_is_the_owners_step_and_the_agent_is_not_told_it_is_signed_in(self):
+        """The recorded walk, 2026-11-11: the saved password went in, the site asked for an authenticator code nobody keeps, the agent was
+        told "Signed in - continue", read the code page, said so and ended its turn - with nothing asked of anyone."""
+        signin.save(self.s, 'bank.example', USER, PW)
+        class Chat:
+            sid, alive, task_id = 'sess1', True, self.tid
+            said = []
+            def send_prompt(s, text, as_owner=True): s.said.append(text)
+        sess = Chat()
+        with on_page('https://login.bank.example/'), mock.patch.dict('taskuary.terminal.SESSIONS', {'sess1': sess}), \
+             mock.patch.object(signin, 'asks_code', return_value=True):
+            self.assertTrue(signin.needs(self.s, self.tid, 'sess1', 'bank.example', fill=lambda *a, **k: {}, watch=None)['auto'])
+            # ...THE CODE PAGE IS MADE READY FIRST (the owner, 2026-11-15: "why can't you click save for 30 days"): its agent is told to tick
+            # whatever the page offers to remember this browser and to hand the code step back - never that it is signed in
+            self.wait_for(lambda: sess.said)
+            self.assertEqual(sess.said, [signin.READY_CODE.format(site='bank.example')])
+            self.assertIsNone(signin.pending(self.s, self.tid))
+            # ...its turn ends with the marker: the code step is his at once - nothing typed again, no "asked again within minutes"
+            self.assertFalse(signin.needs(self.s, self.tid, 'sess1', 'bank.example', fill=lambda *a, **k: self.fail('typed again'), watch=None)['auto'])
+            # ...and that turn is a step of the work, never an answer standing in the chat
+            from taskuary import conversation, general
+            self.s.add_comment(self.tid, 'assistant', general.ASSISTANT_TYPE, 'I need the site signed in to go on.')
+        with mock.patch.dict('taskuary.terminal.SESSIONS', clear=True):
+            turn = next(x for x in reversed(conversation.items(self.s, self.tid)['items']) if x['kind'] == 'turn')
+        self.assertEqual((turn['text'], [st['text'] for st in turn['steps']][-1]), ('', 'Made the code page of bank.example ready for you.'))
+        self.assertEqual(signin.pending(self.s, self.tid)['text'], 'bank.example took the saved sign-in and asks for a code - type it on the page to continue')
+        self.assertFalse(any('asked to sign in again' in r['Body'] for r in self.s._rows('SELECT Body FROM comment WHERE TaskId=?', (self.tid,))))
+        self.assertEqual(len(sess.said), 1)
 
     def test_a_saved_sign_in_is_never_typed_on_another_site(self):
         signin.save(self.s, 'bank.example', USER, PW)
@@ -275,7 +407,7 @@ class Asking(unittest.TestCase):
             signin.by_owner(self.s, tok, USER, PW, False, fill=lambda *a: None)
             self.wait_for(lambda: sess.said)
             self.wait_for(lambda: not ws.status(self.s, self.tid)['requests'])
-        self.assertEqual(sess.said, [('Signed in to bank.example - continue.', False)])
+        self.assertEqual(sess.said, [('Signed in to bank.example - continue. The owner signed in on the page themselves.', False)])
 
     def test_a_failed_fill_is_audited_without_the_secret(self):
         with on_page('https://login.bank.example/'): signin.needs(self.s, self.tid, self.sid)
@@ -331,7 +463,7 @@ class TheOwnerSignsInOnThePage(Asking):
         class Chat:
             sid, alive = 'sess1', True
             def __init__(s, tid): s.said, s.task_id = [], tid
-            def send_prompt(s, text, as_owner=True): s.said.append(text)
+            def send_prompt(s, text, as_owner=True): s.said.append(text); s.open_then = bool(signin.pending(self.s, self.tid))
         return Chat(self.tid)
 
     def test_a_password_page_still_loading_is_not_taken_for_signed_in(self):
@@ -357,13 +489,25 @@ class TheOwnerSignsInOnThePage(Asking):
         with mock.patch.dict('taskuary.terminal.SESSIONS', {'sess1': sess}):
             self.assertTrue(signin.watch(self.s, self.tid, 'sess1', 'bank.example', p['request_id'], conn=page, every=0))
         self.assertIn('Runtime.addBinding', page.calls)
-        self.assertEqual(sess.said, ['Signed in to bank.example - continue.'])        # the agent hears the words, never what was typed
+        self.assertEqual(sess.said, ['Signed in to bank.example - continue. The owner signed in on the page themselves.'])        # the agent hears the words, never what was typed
         self.assertFalse(ws.status(self.s, self.tid)['requests'])
+        # ...the ask was over BEFORE the agent's turn ran (a chat agent's turn runs inside the telling): nothing read "sign in" over it at work
+        self.assertFalse(sess.open_then)
+        # ...and the site asking AGAIN on this session (it signed the session out, it wants a code) is a new ask: the first one's answer
+        # closed every later ask of the same site, so nothing was shown and nothing lit
+        with on_page('https://login.bank.example/signin'), mock.patch.dict('taskuary.terminal.SESSIONS', {'sess1': sess}):
+            signin._TRIED[(self.tid, 'bank.example')] = signin._now(); signin.needs(self.s, self.tid, 'sess1', watch=None)
+        self.assertEqual((signin.pending(self.s, self.tid) or {}).get('request_id'), 'signin:bank.example')
+        ws.record(self.s, self.tid, 'sess1', 'answered', request_id='signin:bank.example', text='Signed in', source='owner')
+        # ...and his sign-in is one line of the chat in his voice, saying it is kept and where to remove it
+        from taskuary import general
+        self.assertEqual([m['content'][0]['text'] for m in general.press_lines(self.s, self.tid)],
+                         ['You signed in to bank.example - saved for next time (remove it under Settings → Agent permissions → Saved sign-ins).'])
         row = signin.saved(self.s, 'bank.example')
         self.assertEqual((vault.unseal(row['User']), vault.unseal(row['Secret'])), (USER, PW))
         self.assertEqual(signin.extra_of(row), {'Account code': 'NW-0042'})          # ...and the other box it typed, by its label
         said = ' '.join(c['Body'] for c in self.s.list_comments(self.tid))
-        self.assertIn('Saved your bank.example sign-in to the vault - remove it under Settings → Agent permissions, Saved sign-ins.', said)
+        self.assertIn('Saved your bank.example sign-in to the vault - remove it under Settings → Agent permissions → Saved sign-ins.', said)
         # NOWHERE in the clear: not the comments, the events, the audit, the logs - the vault row is sealed
         self.assertNotIn(PW, self.everything_written()); self.assertNotIn(USER, json.dumps(signin.listing(self.s)))
         # ...and the next ask on the site is filled from the vault by itself
@@ -383,6 +527,61 @@ class TheOwnerSignsInOnThePage(Asking):
             self.assertFalse(signin.watch(self.s, self.tid, 'sess1', 'bank.example', p['request_id'], conn=page, every=0, until=.2))
         self.assertIsNone(signin.saved(self.s, 'bank.example')); self.assertEqual(sess.said, [])
         self.assertTrue(signin.pending(self.s, self.tid)); self.assertNotIn(self.tid, signin._TYPED)
+
+    def test_a_sign_in_typed_a_page_at_a_time_with_a_code_after_is_kept_whole(self):
+        """The owner's own sign-ins (2026-11): typed on the page several times, seen through, none kept. User name on one page, password on the
+        next, a code on a third, each sent by a control that fires no submit - so what is typed is handed over as it is typed, a box at a
+        time; and the code typed after the password is not the user name."""
+        sess = self.chat(); p = self.ask(sess)
+        at = 'https://login.bank.example/signin'
+        code = {'top': True, 'href': at, 'password': False, 'user': False, 'otp': True}
+        page = WatchPage([form(at, password=False), form(at, user=False), code, code, form('https://app.bank.example/home', False, False)],
+                         sent=[{'u': USER[:3], 'p': '', 'href': at}, {'u': USER, 'p': '', 'href': at},        # ...each key of it
+                               {'u': '', 'p': PW[:4], 'href': at}, {'u': '', 'p': PW, 'href': at},
+                               {'u': '482913', 'p': '', 'href': at}])                                          # an older page's script: the code as "user"
+        with mock.patch.dict('taskuary.terminal.SESSIONS', {'sess1': sess}):
+            self.assertTrue(signin.watch(self.s, self.tid, 'sess1', 'bank.example', p['request_id'], conn=page, every=0))
+        from taskuary import vault
+        row = signin.saved(self.s, 'bank.example')
+        self.assertEqual((vault.unseal(row['User']), vault.unseal(row['Secret'])), (USER, PW))
+        # ...and the page's own script hears typing, a change and the page going, and takes no code box for the user name
+        for want in ("addEventListener('input'", "addEventListener('change'", "addEventListener('pagehide'", '!coded(e)'): self.assertIn(want, signin.CAPTURE)
+        # ...nor is a code page's one box "a user box" to the look that tells a code prompt from a sign-in form
+        self.assertIn("const alone = ins.filter((e) => texty(e) && !isCode(e));", signin.FIELDS)
+
+    def test_a_sign_in_page_handed_over_as_his_turn_is_a_sign_in_all_the_same(self):
+        """The agent may hand a sign-in it cannot type over as its turn (browserview.TURN_LINE). That road tried no saved sign-in and kept
+        nothing he typed: a page asking for a password or a code is raised as the sign-in it is."""
+        from taskuary import browserview
+        sess = self.chat()
+        with on_page('https://login.bank.example/signin'), mock.patch.dict('taskuary.terminal.SESSIONS', {'sess1': sess}), \
+             mock.patch.object(signin, 'on_signin_page', return_value=True), mock.patch.object(signin, 'watch') as watched:
+            rid = browserview.your_turn(self.s, self.tid, 'sess1', 'sign in and type the code from your phone', watch=None)
+            self.wait_for(lambda: watched.called)
+        self.assertEqual((rid, signin.pending(self.s, self.tid)['site']), ('signin:bank.example', 'bank.example'))
+
+    def test_a_step_giving_way_to_the_next_is_not_through_and_through_is_taken_back(self):
+        """The owner's own sign-in, in its order (2026-11-14): the user name on one page, the password on the next, then a code page on
+        another name of the site, moved by its fragment, the code split over six unnamed numeric boxes - read as "no box at all", so the
+        sign-in was called through as the code page came up, the page was taken from him and handed straight back. Then the page behind
+        the sign-in, with a search box - read as "a user box", so it was never taken back at all."""
+        sess = self.chat(); p = self.ask(sess)
+        step = lambda href, **k: {'top': True, 'href': href, 'password': False, 'user': False, 'otp': False, 'digits': 0, 'named': False, **k}
+        code = step('https://accounts.bank.example/#/mfa/verify', digits=6)
+        home = step('https://www.bank.example/home/home.jsp', user=True)                      # its search box, alone on the page
+        page = WatchPage([step('https://login.bank.example/signin', user=True), step('https://login.bank.example/signin', password=True),
+                          *[code] * 8, home])
+        told = []
+        sess.send_prompt = lambda text, as_owner=True: told.append((text, page.pages[0]['href']))
+        with mock.patch.dict('taskuary.terminal.SESSIONS', {'sess1': sess}):
+            self.assertTrue(signin.watch(self.s, self.tid, 'sess1', 'bank.example', p['request_id'], conn=page, every=0))
+        self.assertEqual(told, [('Signed in to bank.example - continue. The owner signed in on the page themselves.', home['href'])])     # once, and only on the page behind it
+        self.assertFalse(ws.status(self.s, self.tid)['requests'])
+        # ...and each step by itself: a code row is a step, one fragment to another is a move, a lone unnamed box behind it is no step
+        self.assertFalse(signin.past(code, 'bank.example', 'https://login.bank.example/signin'))
+        self.assertTrue(signin.past(step('https://accounts.bank.example/#/home'), 'bank.example', code['href']))
+        self.assertFalse(signin.past(step('https://www.bank.example/reset', user=True, named=True), 'bank.example', code['href']))
+        for want in ('digits,', "named: !!user && (named(user)"): self.assertIn(want, signin.FIELDS)
 
     def test_done_typed_in_the_chat_box_still_says_signed_in(self):
         self.assertTrue(signin.said_done('signin:bank.example', 'done'))
@@ -421,7 +620,7 @@ class Removing(unittest.TestCase):
         (d / 'sessions' / 'taskuary-tq-abc.json').write_text(json.dumps(kept), encoding='utf-8')
         (d / 'sessions' / 'someone-else.json').write_text(json.dumps(kept), encoding='utf-8')
         with mock.patch.dict(os.environ, {'AGENT_BROWSER_HOME': str(d)}):
-            self.assertTrue(signin.remove(s, 'bank.example'))
+            self.assertEqual(signin.remove(s, 'bank.example')['kind'], 'signin')
         self.assertIsNone(signin.saved(s, 'bank.example'))
         self.assertEqual(signin.listing(s), [])
         left = json.loads((d / 'sessions' / 'taskuary-tq-abc.json').read_text(encoding='utf-8'))
@@ -492,5 +691,129 @@ class Routes(unittest.TestCase):
             self.assertEqual(c.delete('/api/signins/bank.example').status_code, 404)
         self.assertEqual(c.get('/api/signins').json()['data'], [])
 
+    # ONE PRESS, AND AN UNDO THAT IS TRUE (the owner, 2026-11-15: Remove asks nothing, and leaves an Undo line as a removed task does).
+    # Undo puts back the whole saved sign-in - the password, the authenticator key and the other boxes it fills - not a row with holes
+    def test_remove_answers_with_an_undo_that_puts_the_whole_sign_in_back(self):
+        from taskuary import recentlydeleted, totp, vault
+        key = 'JBSWY3DPEHPK3PXP'
+        self.addCleanup(lambda: self.s._exec("DELETE FROM signin_vault WHERE Site='bank.example'"))
+        signin.save(self.s, 'bank.example', USER, PW, key=key, extra={'Customer ID': 'NW-7'})
+        was = signin.saved(self.s, 'bank.example')
+        with mock.patch.object(browserview, 'forget_site', return_value=0), mock.patch.object(signin, '_forget_live'), \
+                mock.patch.object(vault, 'forget') as forgot:
+            out = c.delete('/api/signins/bank.example').json()
+            self.assertEqual((out['kind'], out['title']), ('signin', 'bank.example')); did = out['deleted']
+            # ...out of the vault at once: nothing types it from the press on, and nothing lists it
+            self.assertIsNone(signin.saved(self.s, 'bank.example')); self.assertEqual(c.get('/api/signins').json()['data'], [])
+            self.assertEqual([x for x in recentlydeleted.listing(self.s) if x['kind'] == 'signin'], [], "the Undo line's alone - not a shelf of kept passwords")
+            forgot.assert_not_called()                         # its keychain entries wait for the Undo line to pass
+            self.assertEqual(c.post(f'/api/deleted/{did}/restore').status_code, 200)
+            forgot.assert_not_called()
+        back = signin.saved(self.s, 'bank.example')
+        self.assertEqual(vault.unseal(back['Secret']), PW); self.assertEqual(vault.unseal(back['User']), USER)
+        self.assertEqual(totp.loads(vault.unseal(back['Totp'])), totp.loads(vault.unseal(was['Totp'])))
+        self.assertEqual(signin.extra_of(back), {'Customer ID': 'NW-7'})
+        self.assertEqual([(r['site'], r['code']) for r in c.get('/api/signins').json()['data']], [('bank.example', True)])
+        self.assertEqual(c.post(f'/api/deleted/{did}/restore').status_code, 404, 'an Undo is one press')
+
+    def test_an_undo_left_unpressed_forgets_the_keychain_and_never_overwrites_a_newer_sign_in(self):
+        import time
+        from taskuary import recentlydeleted, vault
+        self.addCleanup(lambda: self.s._exec("DELETE FROM signin_vault WHERE Site='bank.example'"))
+        signin.save(self.s, 'bank.example', USER, PW)
+        old = signin.saved(self.s, 'bank.example')['Secret']
+        with mock.patch.object(browserview, 'forget_site', return_value=0), mock.patch.object(signin, '_forget_live'):
+            did = c.delete('/api/signins/bank.example').json()['deleted']
+        # the owner signs in again on the page before pressing Undo: the new one stands
+        signin.save(self.s, 'bank.example', USER, 'a newer password')
+        self.assertEqual(c.post(f'/api/deleted/{did}/restore').status_code, 409)
+        self.assertEqual(vault.unseal(signin.saved(self.s, 'bank.example')['Secret']), 'a newer password')
+        # ...and once the line's minutes pass, the kept row goes and its sealed values are forgotten
+        with mock.patch.object(vault, 'forget') as forgot:
+            self.assertIn(did, recentlydeleted.purge(self.s, time.time() + recentlydeleted.UNDO_SECONDS + 1))
+        self.assertIn(mock.call(old), forgot.call_args_list)
+        self.assertEqual(c.post(f'/api/deleted/{did}/restore').status_code, 404)
+
 
 if __name__ == '__main__': unittest.main()
+
+
+class SigningUp(unittest.TestCase):
+    """THE REAL-CLI WALK, 2026-11-16: asked to sign up on ten sites, the agent filled nine forms and handed every one back for the owner to type
+    a password into - it may not make one up and hold it, and nothing else could. Now it ends its turn with [[TASKUARY-SIGNUP: <domain>]]:
+    Taskuary makes the password and types it on the page's pinned site. Sending the form makes an account - his press, as the browser gate holds
+    every act that can't be undone (it held a wizard's Next on the same walk) - so the page is then his, watched like a sign-in's."""
+    def setUp(self):
+        self.s = MemoryStore(); self.tid = Factory(self.s).task('Market data from ten vendors'); signin._TRIED.clear()
+        class Chat:
+            sid, alive, task_id = 'sess1', True, None
+            def __init__(self): self.said = []
+            def send_prompt(self, text, as_owner=True, **k): self.said.append(text)
+        self.sess = Chat(); self.sess.task_id = self.tid; self.watched = []
+
+    def run_signup(self, fill, until=None):
+        with on_page('https://www.rentscope.example/signup'), mock.patch.dict('taskuary.terminal.SESSIONS', {'sess1': self.sess}):
+            _, claim = selfclose.signin_marker('Everything but the password is filled.\n[[TASKUARY-SIGNUP: rentscope.example]]')
+            out = signin.needs(self.s, self.tid, 'sess1', claim, fill=fill, watch=lambda *a: self.watched.append(a))
+            end = time.time() + 5
+            while time.time() < end and not (until or (lambda: self.sess.said))(): time.sleep(.02)
+        return out
+
+    def test_the_marker_says_sign_up_and_is_never_shown(self):
+        self.assertEqual(selfclose.signin_marker('Filled.\n[[TASKUARY-SIGNUP: rentscope.example]]'), ('Filled.', 'new:rentscope.example'))
+        self.assertEqual(selfclose.signin_marker('x\n[[TASKUARY-SIGNIN: bank.example]]'), ('x', 'bank.example'))
+
+    def test_the_password_is_typed_and_the_page_is_his_to_send_watched_like_a_sign_in(self):
+        typed = []
+        self.run_signup(lambda sid, site, pw: typed.append((sid, site, pw)) or 2, until=lambda: self.watched)
+        (sid, site, pw), = typed
+        self.assertEqual((sid, site), ('sess1', 'rentscope.example'))
+        self.assertTrue(len(pw) >= 16 and any(ch.isdigit() for ch in pw) and any(not ch.isalnum() for ch in pw), 'a password a strict site takes')
+        req = signin.pending(self.s, self.tid)
+        self.assertEqual(req['site'], 'rentscope.example')
+        self.assertTrue(ws.status(self.s, self.tid)['requests'][-1]['text'].startswith('Sign up on rentscope.example: check the form and press its button'))
+        self.assertEqual([a[3] for a in self.watched], ['rentscope.example'], 'what he sends on it is heard and kept as a sign-in is (watch)')
+        self.assertIsNone(signin.saved(self.s, 'rentscope.example'), 'nothing is kept before the site took it')
+        self.assertEqual(self.sess.said, [], 'the agent waits for his press')
+        self.assertNotIn(pw, json.dumps([self.s._rows('SELECT * FROM audit'), self.s._rows('SELECT * FROM comment'), self.s._rows('SELECT * FROM worker_event')], default=str))
+
+    def test_a_page_with_no_password_box_is_said_to_the_agent_and_nothing_is_asked(self):
+        def fill(sid, site, pw): raise signin.SignInError(f'there is no password box on the {site} page')
+        self.run_signup(fill)
+        self.assertIn('there is no password box', self.sess.said[0]); self.assertIsNone(signin.pending(self.s, self.tid))
+
+    def test_a_site_already_kept_is_signed_in_to_never_signed_up_on_twice(self):
+        signin.save(self.s, 'rentscope.example', USER, PW); typed = []
+        self.assertFalse(self.run_signup(lambda *a: typed.append(a))['auto'])
+        self.assertEqual(typed, [])
+        self.assertIn('[[TASKUARY-SIGNIN: rentscope.example]]', self.sess.said[0])
+        self.assertEqual(vault.unseal(signin.saved(self.s, 'rentscope.example')['Secret']), PW, 'the kept password is untouched')
+
+    def test_the_agent_is_told_from_its_own_thread_never_inside_the_turn_that_asked(self):
+        """The real-CLI walk, 2026-11-16: a site already kept was answered inside the ending turn that asked - the agent's send waited on the
+        turn's own lock, the turn never ended, and the chat read "Thinking..." for good. Every answer comes from a thread of its own."""
+        signin.save(self.s, 'rentscope.example', USER, PW); told = []
+        real = signin._continue
+        def spy(*a, **k): told.append(threading.current_thread() is threading.main_thread()); return real(*a, **k)
+        with mock.patch.object(signin, '_continue', spy): self.run_signup(lambda *a: None)
+        self.assertEqual(told, [False])
+
+    def test_every_loopback_address_is_this_computer(self):
+        self.assertEqual(signin.site_of('http://127.0.0.7:18791/s/x/signup'), '127.0.0.7')
+        self.assertEqual(signin.site_of('http://10.0.0.7/login'), '', 'plain http off this computer is no place for a password')
+
+    def test_the_new_password_goes_into_every_password_box_of_the_pinned_site_and_nothing_is_sent(self):
+        class Page:
+            def __init__(self): self.boxes, self.focus, self.typed, self.sent = 2, None, [], False
+            def js(self, expr):
+                if expr.startswith(f'({signin.PASSBOX})'):
+                    i = int(expr.rsplit('(', 1)[1].rstrip(')')); self.focus = i if 0 <= i < self.boxes else None
+                    return {'n': self.boxes, 'top': True, 'href': 'https://www.rentscope.example/signup', 'focused': self.focus is not None}
+            def fields(self, want=''): return {'top': True, 'href': 'https://www.rentscope.example/signup', 'password': True, 'user': True, 'focused': bool(want)}
+            def type(self, t): self.typed.append((self.focus, t))
+            def enter(self): self.sent = True
+            def close(self): pass
+        page = Page()
+        with mock.patch.object(signin, 'connect', return_value=page), mock.patch.object(browserview, 'filling', mock.MagicMock()):
+            self.assertEqual(signin.type_new('sess1', 'rentscope.example', 'Np9!x'), 2)
+        self.assertEqual((page.typed, page.sent), ([(0, 'Np9!x'), (1, 'Np9!x')], False))

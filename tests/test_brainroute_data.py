@@ -42,7 +42,7 @@ def test_triage_judges_it_and_the_most_restricted_reading_wins(s):
     v = triage.classify_intent(MSG, llm=lambda sy, u, **k: json.dumps({'intent': 'task', 'why': 'w', 'title': 't', 'summary': 's',
                                                                          'data_class': 'sensitive'}))
     assert v['data_class'] == 'sensitive' and triage.verdict_schema()['schema']['properties']['data_class']['enum'] == ['ordinary', 'sensitive', None]
-    assert '- **data_class** - for every verdict' in triage.INTENT_SYSTEM
+    assert '- **data_class** - "sensitive" when' in triage.INTENT_SYSTEM
     tid = _task(s)
     s.add_route(None, tid, 'attach', None, 'triage: more', [], 'triage', verdict={'intent': 'task', 'data_class': 'ordinary'})
     assert brainroute.judged(s, tid)['data_class'] == 'sensitive'            # a later ordinary message does not lower it
@@ -68,7 +68,7 @@ def test_with_no_marked_ai_it_waits_and_says_why_and_nothing_is_built(s):
     s.save_connector({'ConnectorId': int(s.o[10:]), 'ConfigJson': json.dumps({'model': 'gpt-5'})}, 'owner')
     r = brainroute.choose(s, 'draft', task=tid)
     assert (r.pick, r.chain, r.tier, r.rule) == ('', [], 'held', 'sensitive')
-    assert r.why == 'No AI here may read sensitive data; mark one on its card in Settings, so a draft waits'
+    assert r.why == 'No AI here may read sensitive data; mark one on its card in Settings, so a redraft waits'
     with mock.patch.object(llm, 'make_llm', side_effect=AssertionError('built a brain the rule keeps out')):
         assert llm.build_llm(s, job='draft', task_id=tid) is None
     assert s.brain_routes(tid, limit=1)[0]['Outcome'] == 'refused:sensitive'

@@ -18,6 +18,7 @@ BLURB_CHARS = 600       # one routing-table entry, whole (triage.REPO_ABOUT is t
 # sentry, pagerduty, aws, azure, and now clickup/todoist) was invisible to the agents: their
 # sources never made it into the SOUL.md 'Connected systems' block.
 from .channels import CH2SRC
+from . import aiusage
 
 
 # The tool blurb used to say "create/update things in it as the work needs" - and an agent
@@ -115,14 +116,17 @@ def agent_systems(store, tooled: bool = True) -> str:
     if not tools: return mail
     lines = [f"- {c['Name'] or c['Type']} (connector_id {c['ConnectorId']}, authority {scopes.scope_of(c)}) - tools: {', '.join(k)}"
              for c, k in tools]
-    return ('YOUR SYSTEMS (the owner\'s connections you may use)\n' + '\n'.join(lines) + '\n' + (mail + '\n' if mail else '') +
+    # ...BY THE ONE ROAD THE SESSION HAS (the recorded walk, 2026-11-12: a session with Taskuary's tools read "Call one: curl ..." too, ran the
+    # curl, and the shell gate held it as data sent to a web address - an Approve card for a read of the owner's own database)
+    call = ('Call one with run_system {"type": "<one of its tools>", "connector_id": <id>, ...its fields}' if tooled else
             'Call one: curl -s -X POST "$TASKUARY_URL/api/tools/run" -H "X-Taskuary-Token: $TASKUARY_TOKEN" '
             '-H "X-Taskuary-Task-Token: $TASKUARY_TASK_TOKEN" -H "Content-Type: application/json" '
-            '-d \'{"type": "<one of its tools>", "connector_id": <id>, "task_id": \'"$TASKUARY_TASK"\', ...}\' - saved credentials are '
-            'filled in for you.\n'
+            '-d \'{"type": "<one of its tools>", "connector_id": <id>, "task_id": \'"$TASKUARY_TASK"\', ...}\'')
+    return ('YOUR SYSTEMS (the owner\'s connections you may use)\n' + '\n'.join(lines) + '\n' + (mail + '\n' if mail else '') +
+            call + ' - saved credentials are filled in for you.\n'
             # the owner, 2026-10-25: never sent without their press - so the agent is told the call waits, not that it failed
             'A call that would SEND, post, pay or place an order - and an MCP tool its server does not mark read-only - never runs '
-            'from here: it answers {"queued": true} and waits on the task for the owner to press Approve. Say so; do not retry it.\n'
+            'from here: it answers {"queued": true} and waits on the task, on its card, for the owner to press Approve. Do not retry it.\n'
             'AUTHORITY is the owner\'s ceiling on each one: at read you may look but not change anything (a SQL batch that '
             'writes is rolled back). To change something on a read-level system, PROPOSE it and the owner approves it on the '
             'task: TASKUARY-PROPOSE {"action": "run_tool", "type": "<one of its tools>", "connector_id": <id>, ...} - say in '
@@ -256,6 +260,7 @@ def _readme_blurb(tok, repo, llm) -> str:
     return lines[0][:160] if lines else ''
 
 
+@aiusage.named('triage.repomap')     # the triage brain writing a repository's one line from its README
 def update_repo_map(store, repos: list, actor='github', tok=None, llm=None):
     """repos: [{full_name, description, archived}] - append unknown repos under the map
     header in SOUL.md so EVERY agent knows which repo owns what. Repos without a GitHub

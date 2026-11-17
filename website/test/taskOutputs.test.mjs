@@ -3,7 +3,7 @@
 // else stays plain text.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { deliverables, family, forTurn, isWorking, outputOf, outputRefs, outputRow, outputUrl, plainCitations, shownOnce, turnFiles, uncited } from "../src/taskOutputs.js";
+import { deliverables, family, forTurn, outputOf, outputRefs, outputRow, outputUrl, placeMade, plainCitations, shownOnce, turnFiles } from "../src/taskOutputs.js";
 
 test("a bare path to a name with spaces is that whole file, not a file called by its first word (stress test 2026-11-02)", () => {
   const listed = [{ path: "Open tasks 2026-11-02.xlsx", name: "Open tasks 2026-11-02.xlsx", kind: "output" }];
@@ -11,7 +11,6 @@ test("a bare path to a name with spaces is that whole file, not a file called by
   const got = outputRefs(text, 77, listed);
   assert.deepEqual(got.files, ["Open tasks 2026-11-02.xlsx"]);
   assert.equal(got.text, "The Excel file is ready: **`Open tasks 2026-11-02.xlsx`**\n\nYou have 4 open tasks.");
-  assert.deepEqual(uncited(listed, [text], 77), []);
   assert.deepEqual(outputRefs(text, 77).files, ["Open"]);   // without the listing the old cut stands - the page always passes it
 });
 
@@ -83,11 +82,30 @@ test("a chip resolves through the real route, and says so when the file is not t
   assert.equal(outputRow(17, "b.pdf", null).missing, false);              // listing not loaded yet: not called missing
 });
 
-test("the foot lists the task's files no answer names, so none is drawn twice", () => {
-  const listed = [{ path: "a.xlsx" }, { path: "b.csv" }];
-  assert.deepEqual(uncited(listed, ["[the book](/outputs/TQ-0017/a.xlsx)", "nothing here"], 17), [{ path: "b.csv" }]);
-  assert.deepEqual(uncited(listed, ["[their book](/outputs/TQ-0018/a.xlsx)"], 17), listed);
-  assert.deepEqual(uncited(undefined, [], 17), []);
+// NOTHING PINNED AT THE CHAT'S FOOT (the owner, 2026-11-13): a file stood in a list under the whole conversation when no answer named it. A
+// file is in the turn that was at work when it was written, as the work card is (landing.landingTurn); one no turn made is in no turn
+test("a file the server placed nowhere goes to the turn at work when it was written; one no turn made is in no turn", () => {
+  const T = (h, m, s = 0) => new Date(2026, 10, 13, h, m, s) / 1000, at = (h, m) => `2026-11-13 ${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00`;
+  const turns = [{ id: "t:a:0", answer: "comment-4", started: T(9, 0), ended: T(9, 5) },
+    { id: "t:b:0", started: T(10, 0), ended: T(10, 4) }, { id: "t:c:0", started: T(11, 0), ended: null }];
+  const listed = [{ path: "kept.xlsx", after: "comment-4", at: at(9, 2) },        // the server's own pick stands
+    { path: "during.csv", after: null, at: at(10, 2) },                            // ...written while the second turn worked
+    { path: "live.md", after: "comment-99", at: at(11, 3) },                       // ...an answer this list has not got: the turn at work now
+    { path: "dropped in.pdf", after: null, at: at(10, 30) },                       // ...between turns: nobody's
+    { path: "before.txt", after: null, at: at(8, 0) }];
+  assert.deepEqual(placeMade(listed, turns).map((r) => [r.path, r.after]),
+    [["kept.xlsx", "comment-4"], ["during.csv", "t:b:0"], ["live.md", "t:c:0"], ["dropped in.pdf", null], ["before.txt", null]]);
+  // ...and turnFiles draws each in that turn and nowhere else
+  const placed = placeMade(listed, turns);
+  assert.deepEqual(turnFiles({ listed: placed, id: "t:b:0", tid: 17 }).map((f) => f.path), ["during.csv"]);
+  assert.deepEqual(placeMade(undefined, turns), []);
+});
+
+test("the chat draws no list of files at its foot - a file is in its turn or in the task's files", async () => {
+  const src = await import("node:fs").then((fs) => fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8"));
+  assert.ok(!/<PublishedPages pages=\{published\}/.test(src), "no PublishedPages under the conversation");
+  assert.ok(!/uncited\(/.test(src), "no list of the files no answer names");
+  assert.match(src, /listed: placeMade\(data\?\.outputs, turnsNow\)/);
 });
 
 test("anywhere else a citation is shown, it reads as the file's name", () => {
@@ -95,28 +113,46 @@ test("anywhere else a citation is shown, it reads as the file's name", () => {
 });
 
 // ONE OF EACH (the owner, 2026-10-28: "it looks like it created a million attachments"): nine versions of one workbook, its helper script,
-// its log and a temp file are one deliverable - the newest - with eight earlier versions behind it and three working files apart
-test("v1..v9 and scratch files list once, with 8 earlier versions", () => {
+// its log and a temp file: the workbook is listed once - the newest - with eight earlier versions behind it
+// ...AND NOTHING IT MADE IS HIDDEN (the owner, 2026-11-15: "anything an agent creates should not be hidden of course"): the script, the log
+// and the file in tmp/ are in the list too, each as itself - no list of extensions or folder names folds a file away
+test("v1..v9 list once with 8 earlier versions, and every other file it made is listed too", () => {
   const at = (i) => `2026-10-27 10:${String(i).padStart(2, "0")}:00`;
   const rows = [...Array(9)].map((_, i) => ({ kind: "output", name: `pricing comparison v${i + 1}.xlsx`, path: `pricing comparison v${i + 1}.xlsx`, at: at(i + 1) }))
     .concat([{ kind: "output", name: "build_sheet.py", path: "build_sheet.py", at: at(20) }, { kind: "output", name: "run.log", path: "run.log", at: at(21) },
       { kind: "output", name: "rates.csv", path: "tmp/rates.csv", at: at(22) }, { kind: "output", name: "summary.pdf", path: "summary.pdf", at: at(5) },
       { kind: "shown", name: "chart.png", created_at: at(3) }]);
-  const { made, working } = deliverables(rows);
-  assert.deepEqual(made.map((r) => r.name), ["pricing comparison v9.xlsx", "summary.pdf", "chart.png"]);
-  assert.equal(made[0].earlier.length, 8);
-  assert.equal(made[0].earlier[0].name, "pricing comparison v8.xlsx");
-  assert.deepEqual(working.map((r) => r.path).sort(), ["build_sheet.py", "run.log", "tmp/rates.csv"]);
+  const got = deliverables(rows), { made } = got;
+  assert.deepEqual(made.map((r) => r.name), ["rates.csv", "run.log", "build_sheet.py", "pricing comparison v9.xlsx", "summary.pdf", "chart.png"]);
+  assert.deepEqual(Object.keys(got), ["made"], "there is no second list for what it made");
+  const v9 = made.find((r) => r.name === "pricing comparison v9.xlsx");
+  assert.equal(v9.earlier.length, 8);
+  assert.equal(v9.earlier[0].name, "pricing comparison v8.xlsx");
   // the same rule as outputs.family
   assert.deepEqual(new Set(["Vendor pricing v9.xlsx", "vendor_pricing_final.xlsx", "vendor pricing (2).xlsx", "vendor-pricing-20261027-1530.xlsx",
     "drafts/vendor pricing draft.xlsx"].map(family)), new Set(["vendor pricing.xlsx"]));
   assert.equal(new Set(["budget 2025.xlsx", "budget 2026.xlsx", "region 1.csv", "region 2.csv"].map(family)).size, 4);
-  assert.ok(!isWorking("summary.pdf") && isWorking("cache/x.json"));
 });
 
-test("an older version of a file an answer names is not one more file at the foot", () => {
-  const listed = [outputRow(17, "plan_v2.md", []), outputRow(17, "plan_v1.md", []), outputRow(17, "raw costs.csv", [])];
-  assert.deepEqual(uncited(listed, [`Done: ${HOME}/TQ-0017/plan_v2.md`], 17).map((r) => r.path), ["raw costs.csv"]);
+// WHAT IT MADE IS IN THE TURN THAT MADE IT, WHATEVER ITS KIND (the owner, 2026-11-15: he asked for a query to review; the agent saved it as a
+// file and said only that it was ready - "The sql is hidden behind the 6 steps"; and of the first fix, which still folded a script away beside
+// a workbook: "this has nothing to do with sql, anything an agent creates should not be hidden of course")
+test("every file a turn made is drawn in the turn: a script, a helper beside its workbook, a log", async () => {
+  const out = (name, at = "2026-11-15 07:40:00") => ({ kind: "output", name, path: name, at, after: "comment-9", preview: "text" });
+  const two = [out("clear_columns_up.sql"), out("clear_columns_down.sql", "2026-11-15 07:40:05")];
+  assert.deepEqual(turnFiles({ listed: two, id: "comment-9", words: "The SQL is ready for you to review. I haven't run it.", tid: 17 }).map((f) => f.name), ["clear_columns_down.sql", "clear_columns_up.sql"]);
+  // ...the helper beside the workbook it built: after it, as it was written before it - never folded away
+  const mixed = [out("rates.xlsx"), out("build_rates.py", "2026-11-15 07:39:00"), out("run.log", "2026-11-15 07:38:00"), out("rows.csv", "2026-11-15 07:37:00")].map((r) => (r.name === "rows.csv" ? { ...r, path: "tmp/rows.csv" } : r));
+  assert.deepEqual(turnFiles({ listed: mixed, id: "comment-9", words: "The workbook is ready.", tid: 17 }).map((f) => f.path), ["rates.xlsx", "build_rates.py", "run.log", "tmp/rows.csv"]);
+  // ...and no list of extensions, folders or names is left to decide it, on the page or the server
+  const fs = await import("node:fs"), read = (p) => fs.readFileSync(new URL(p, import.meta.url), "utf8");
+  for (const src of [read("../src/taskOutputs.js"), read("../src/PublishedPages.jsx"), read("../../taskuary/outputs.py")]) assert.doesNotMatch(src, /WORK_EXT|SCRIPT_EXT|WORK_DIR|WORK_NAME|isWorking|is_working|working file/);
+});
+
+test("an older version of a file a turn made is that file's history, not one more file in the turn", () => {
+  const listed = [{ ...outputRow(17, "plan_v2.md"), after: "comment-3", at: "2026-11-13 10:02:00" }, { ...outputRow(17, "plan_v1.md"), after: "comment-3", at: "2026-11-13 10:01:00" }];
+  const made = turnFiles({ listed, id: "comment-3", words: `Done: ${HOME}/TQ-0017/plan_v2.md`, tid: 17 });
+  assert.deepEqual(made.map((r) => [r.path, r.earlier.map((e) => e.path)]), [["plan_v2.md", ["plan_v1.md"]]]);
 });
 
 // "TQ-0012 % Collected all-in-one v9.xlsx" is a real name an agent gave a workbook. A path on disk is its name as written - decoded, or

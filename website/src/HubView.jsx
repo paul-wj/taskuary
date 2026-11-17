@@ -64,7 +64,8 @@ const Label = ({ children }) => (
 );
 
 /* ── one entry, with its thread ─────────────────────────────────────────────── */
-const byOwner = (author) => /^(owner|you|dana whitfield)$/i.test(String(author || "").trim());
+// ...by the author the server stores for the owner's own hand (hub.post's actor) - never a person's name: the demo owner's stood here
+const byOwner = (author) => /^(owner|you)$/i.test(String(author || "").trim());
 // onOpen (the assistant canvas): its thread opens as the one card on the canvas instead of inline; defaultOpen draws it open
 const Post = ({ p, onChanged, onOpenTask, onRemoved, onOpen = null, defaultOpen = false }) => {
   useLocale();
@@ -115,8 +116,10 @@ const Post = ({ p, onChanged, onOpenTask, onRemoved, onOpen = null, defaultOpen 
             <Typography sx={{ fontSize: 14, fontWeight: 600, color: INK, letterSpacing: "-.15px", flex: 1, minWidth: 140 }}>
               {p.Title}
             </Typography>
+            {/* a role's text-on-tint pair (theme.jsx ROLES): `.soft` is no role's key, so the chip had no ground and its brass solid
+                read as nothing on the night palette (the dark-mode audit, 2026-11-13) */}
             <Chip size="small" label={t(k.label)} sx={{ height: 18, fontSize: 10,
-              bgcolor: ROLES[k.role].soft, color: ROLES[k.role].solid }} />
+              bgcolor: ROLES[k.role].tint, color: ROLES[k.role].ink }} />
             <Chip size="small" label={p.Topic} sx={{ height: 18, fontSize: 10, bgcolor: PANEL2, color: DIM }} />
           </Box>
           {/* a body written as markdown - a table, a list - is drawn as one: industry reference ran together as a single

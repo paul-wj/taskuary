@@ -1,89 +1,14 @@
 // ONE STREAM, ONE MAPPER (the owner, 2026-11-06: "one shared chat object for coding and regular ... combine the code as much as possible").
 // Every task's agent draws in the one chat (GeneralWorkspace.jsx), and every source it reads becomes ONE row shape here:
 // - a general agent's run trace (general.shown_history's messages, the session's live `trace`) - trace events as agents.py writes them;
-// - a coding session (codingchat.py): the CLI's own log read into steps (sessionrecord: {k, text, name, args, file, edit, at}), or, run over
-//   ACP, its session/update notifications (codingchat.record_update) - read into the log's steps (stepsFromAcp), then into trace events (eventsOf).
+// - a turn of the task's one list (conversation.items): its steps in the log's shape ({k, text, name, args, file, edit, at} - a CLI's own log
+//   as sessionrecord reads it, an ACP session's updates as conversation.acp_steps does), read into trace events (eventsOf).
 // Trace events are the one currency: turnParts reads them into a turn's parts - its words, its work (agentSteps.stepsOf, one line a step),
 // each edit its own row with its diff ("Edited budget.py (+12 −3)"), its plan a checklist. Whatever drew them, a turn is those parts.
 import { baseName, describeCall, isWork, stepsOf } from "./agentSteps.js";
 import { editHunks, stat } from "./diffView.js";
 import { liveTerminal } from "./taskLayout.js";
 import { filesOf, viewOf } from "./viewSpec.js";
-import { asUtc } from "./dates.js";
-
-// ── ACP's session/update -> the log's step shape ─────────────────────────────────────────────────
-// an ACP tool call names its KIND (read, edit, execute...), not a tool: the name a log would carry for it, so describeCall reads both alike
-const ACP_TOOL = { read: "Read", edit: "Edit", delete: "Delete", move: "Move", search: "Grep", execute: "Bash", fetch: "WebFetch", think: "Think" };
-const textOf = (c) => (typeof c === "string" ? c : Array.isArray(c) ? c.map(textOf).join("") : c?.type === "text" ? c.text || "" : c?.content ? textOf(c.content) : "");
-const ARGS = ["command", "cmd", "pattern", "query", "url", "file_path", "path", "filePath", "absolute_path", "description", "prompt", "glob", "title", "subagent_type"];
-const small = (o) => Object.fromEntries(Object.entries(o || {}).filter(([k, v]) => ARGS.includes(k) && typeof v === "string" && v.trim()));
-// A COMMAND'S OUTPUT IS ITS OWN STEP'S (the owner, 2026-11-06: "hate this terminal button. it's also not a terminal"): opened under its row, as
-// an edit's diff is - Codex streams it (`terminal_output_delta`), Claude hands it with the result, fenced (acpcoding._unfence)
-const unfence = (s) => String(s || "").replace(/^\s*```[\w-]*\n([^]*?)\n?```\s*$/, "$1");
-const outOf = (u) => (u.content || []).filter((c) => c?.type === "content").map((c) => unfence(textOf(c.content))).join("\n")
-  || (typeof u.rawOutput === "string" ? u.rawOutput : u.rawOutput?.formatted_output || u.rawOutput?.output || u.rawOutput?.stdout || "");
-// ...and the helper call it runs under, when the adapter says (claude-code-acp's _meta.claudeCode.parentToolUseId; agents.parent_of)
-export const parentOf = (u) => String(u?._meta?.claudeCode?.parentToolUseId || u?._meta?.parentToolUseId || u?._meta?.parentToolCallId || "");
-// A COMPACTION IS THE CLI'S OWN EVENT (the owner, 2026-11-10: "automated compaction? it shoudl not show it please just say it was compacted"): the
-// adapter's `compaction_update`, or - to a client that never asked for those - its "Compact conversation" call, the tool it names `compact`
-const compactionOf = (u, seen) => (u?.sessionUpdate === "compaction_update" ? String(u.compactionId ?? "")
-  : (u?.sessionUpdate === "tool_call" || u?.sessionUpdate === "tool_call_update") && (u._meta?.claudeCode?.toolName === "compact" || seen.has(String(u.toolCallId)))
-    ? String(u.toolCallId) : null);
-// ...and a note Taskuary typed into a session BEFORE it marked its notes (2026-11-09/10: an approval's "The owner approved it and Taskuary ran
-// `gh pr comment ...`" drew as the owner's green bubble): no mark in the record, so the fixed opening Taskuary itself wrote is the one left
-// (sessionrecord.TOLD, the same words)
-export const TOLD = /^\s*(?:The owner (?:approved it|pressed .{1,60}? on what you set up)|Taskuary left \d+ notes? for you|While you were working, Taskuary queued \d+ notes?)/;
-export function stepsFromAcp(updates) {
-  const out = [], byId = new Map(), compacts = new Map();
-  let o, cid;
-  // ...the agent's words arrive a token at a time: one step per run of chunks, as a log has one per block. A prompt Taskuary sent marks itself
-  // its brief (`_meta.taskuary`), as mark_briefs marks a log's
-  // ...each step at the moment its first update came in (`_at`, stamped as it was kept): ACP itself carries no time
-  // ...and its place in the updates (`n`), the name the server gives a card's turn by (codingchat.cards)
-  let at = "", n = 0;
-  const here = () => ({ n, ...(at ? { at } : {}) });
-  const chunk = (k, t) => { if (!t) return; const last = out.at(-1); if (last?.k === k && last.open) last.text += t; else out.push({ k, text: t, open: true, ...here() }); };
-  for (const [i, u] of (updates || []).entries()) {
-    const kind = u?.sessionUpdate;
-    at = u?._at || ""; n = i;
-    // ...and a user-role message the adapter sent itself (a slash command's output) is the agent's, never the owner's line (codingchat.owned)
-    if (kind === "user_message_chunk") chunk(u._meta?.taskuary === "agent" ? "said" : u._meta?.taskuary === "brief" || TOLD.test(textOf(u.content)) ? "brief" : "you", textOf(u.content));
-    else if (kind === "agent_message_chunk") chunk("said", textOf(u.content));
-    else if (kind === "agent_thought_chunk") chunk("thought", textOf(u.content));
-    // ...and a turn that failed, kept by Taskuary where it happened (acpcoding._turn): the turn's error, with the way past it
-    else if (kind === "error" && u._meta?.taskuary === "error") out.push({ k: "error", text: textOf(u.content), ...here() });
-    else if ((cid = compactionOf(u, compacts)) != null) {
-      let c = compacts.get(cid);
-      if (!c) { c = { k: "compact", id: cid, ...here() }; compacts.set(cid, c); out.push(c); }
-      if (u.status) c.status = u.status;
-    }
-    else if (kind === "plan") out.push({ k: "plan", items: (u.entries || []).map((e) => ({ text: String(e?.content || ""), status: e?.status || "pending" })), ...here() });
-    else if (kind === "tool_call" || kind === "tool_call_update") {
-      let s = byId.get(u.toolCallId);
-      if (!s) {
-        if (kind === "tool_call_update" && !u.rawInput && !u.title && !u.kind) continue;
-        const tool = u._meta?.claudeCode?.toolName;
-        s = { k: "tool", id: String(u.toolCallId || ""), name: tool || ACP_TOOL[u.kind] || u.title || u.kind || "tool", args: {}, ...here() };
-        byId.set(u.toolCallId, s); out.push(s);
-      }
-      const par = parentOf(u);
-      if (par) s.parent = par;
-      if (u.rawInput && typeof u.rawInput === "object") s.args = { ...s.args, ...small(u.rawInput) };
-      // ...and where it is: running, done or failed, as ACP says - a call still running is drawn running, whatever came after it
-      if (u.status) s.status = u.status;
-      const d = u._meta?.terminal_output_delta?.data;
-      if (d) s.out = (s.out || "") + d;
-      else if (!s.out && (u.status === "completed" || u.status === "failed") && (o = outOf(u))) s.output = o;
-      const loc = (u.locations || []).find((l) => l?.path)?.path;
-      if (loc && !["path", "file_path", "filePath", "absolute_path"].some((k) => s.args[k])) s.args.file_path = loc;      // the key a log names a file by
-      const diffs = (u.content || []).filter((c) => c?.type === "diff");
-      if (diffs.length) { s.edit = { whole: true, parts: diffs.map((d) => ({ old: d.oldText || "", new: d.newText || "" })) }; s.file = diffs[0].path || loc || ""; }
-      else if (loc && ["Edit", "Delete", "Move"].includes(s.name)) s.file = loc;
-    }
-  }
-  return out.map(({ open, out: streamed, ...s }) => (s.text != null && s.k !== "tool" ? { ...s, text: s.text.trim() }
-    : streamed ? { ...s, output: streamed } : s)).filter((s) => s.k === "tool" || s.k === "plan" || s.k === "compact" || s.text);
-}
 
 // ── a coding session's steps -> trace events, the one currency ───────────────────────────────────
 // a step the record kept without its arguments (saved before they were) is read off its one line of text
@@ -139,7 +64,7 @@ export function editOf(e, res) {
 export const editRow = (s) => {
   const hunks = editHunks(s.edit), { plus, minus } = stat(hunks), file = s.file || "";
   const wrote = /^(write|writefile|createfile)$/i.test(String(s.name || "").replace(/[^a-z]/gi, "")) || (hunks.length && hunks.every((h) => h.lines.every((l) => l[0] === "+")));
-  return { type: "edit", file, summary: `${wrote ? "Wrote" : "Edited"} ${baseName(file) || "a file"}${hunks.length ? ` (+${plus} −${minus})` : ""}`, plus, minus, hunks };
+  return { type: "edit", file, wrote: !!wrote, summary: `${wrote ? "Wrote" : "Edited"} ${baseName(file) || "a file"}${hunks.length ? ` (+${plus} −${minus})` : ""}`, plus, minus, hunks };
 };
 // THE PLAN IS A CHECKLIST, the newest one of the turn where it was last updated - never "Updated its plan (3 steps)" six times over
 const PLAN_MARK = { completed: "done", done: "done", in_progress: "now", now: "now" };
@@ -194,102 +119,27 @@ export function turnParts(events, { answer = "", keepStart = false } = {}) {
 }
 // what a turn did, counted for its fold's line: "6 steps" - its edits each one
 export const workCount = (parts) => (parts || []).reduce((n, p) => n + (p.type === "edit" ? 1 : p.type === "work" ? p.steps.filter(isWork).length : 0), 0);
+// WHAT IT WROTE OUT FOR HIM IS NEVER FOLDED WITH ITS STEPS (the owner, 2026-11-15: "if it returns something you need to see it"): a message of the
+// turn that holds a block - a query, a script, a table - is a thing it made, not a note on its way; said before its last step, it stays in the turn
+export const isMade = (text) => /^[ \t]*(?:\x60{3}|~~~)/m.test(String(text || "")) || /^[ \t]*\|.+\|[ \t]*\n[ \t]*\|[ :|-]+\|[ \t]*$/m.test(String(text || ""));
+// A DRAFT WHERE IT STOOD, no longer the one to press (GeneralWorkspace PastCard): the list's card in one of these states, carrying what it said
+export const isPastCard = (c) => ["superseded", "passed", "withdrawn"].includes(c?.status) && !!c.was;
+// ...AND AN EARLIER VERSION NEVER TAKES ITS REVIEW'S OWN CARD (recorded 2026-11-15: a reply the agent rewrote and he then sent - the rewrite
+// is the same review - left no "Sent" card at all: the earlier draft's record, drawn first, had claimed every card of that review): the
+// reviews that still have a card of their own in the list, whatever earlier versions of them stand above it
+export const standing = (items) => new Set((items || []).flatMap((x) => (x.kind === "card" ? [x] : x.kind === "turn" ? x.cards || [] : []))
+  .filter((c) => !isPastCard(c)).map((c) => c.review));
 export const hasParts = (parts) => (parts || []).some((p) => p.type !== "said" || p.text);
 
-// ── a coding session -> the chat's rows: what came in, what the owner said, and each turn - oldest first ──
-const at = (x) => String(x || "").replace("T", " ").slice(0, 19);
-// THE OWNER'S WORDS INSIDE TASKUARY'S BRIEF (the owner, 2026-11-08: "i asked another question and the text was never sent into the prompt"): a line
-// typed to a session at rest picks it back up (server continue-work) as "FROM THE OWNER: <words>" ahead of Resume's instructions - one brief, and
-// the chat draws no brief, so their question stood nowhere. Their words are their line; the rest stays Taskuary's
-export const ownerIn = (text) => (/^FROM THE OWNER:[ \t]*([^\n]+(?:\n(?!\n)[^\n]*)*)/.exec(String(text || "")) || [])[1]?.trim() || "";
-
-// `cuts`: when each card of the task was raised (TaskPage turnCards). A CARD IS A ROW OF THE CHAT where its turn raised it (the owner, 2026-11-10:
-// "approve should be there then once that's done it shoudl continue after it not above it.. it's just a row in the chat"): a turn that goes on past
-// a card - an Approve lets an ACP turn carry on - is two rows, the card between them (agentSummary.turnOf puts it after the first)
-export function chatRows({ sessions = [], mails = [], live = null, permissions = [], cuts = [], turnStarted = null } = {}) {
-  const marks = [...new Set((cuts || []).map(at).filter(Boolean))].sort();
-  // THE TURN THAT ENDED IS NOT WORKING (the owner's live coding task, 2026-11-06: the turn ended on "Should I go ahead?", the chip said "agent
-  // waiting on you", and "Working on this…" still turned under the answer): a live session is one that is alive, not one at work - it works
-  // while the server says so (codingchat.live_of `working`), and a question on screen or a permission card is the owner's turn
-  const working = (live ? live.working !== false : true), waiting = !!live?.asking || !!permissions?.length;
-  const rows = [];
-  sessions.forEach((ses, si) => {
-    const steps = sessionSteps(ses).map((s, i) => ({ ...s, at: at(s.at) || at(ses.at), n: `${ses.sid}#${s.n ?? i}` }));
-    const now = !!ses.live && si === sessions.length - 1 && working;
-    let turn = null;
-    const close = () => { if (turn) rows.push(turn); turn = null; };
-    steps.forEach((s, i) => {
-      if (s.k === "you" || s.k === "brief") {
-        // ...a brief right after his own recorded line is the prompt that line went in (acpcoding._show): its FROM THE OWNER part is the waiting
-        // room's batch round that same line, never a second line of his (the browser walk, 2026-11-10)
-        const w = s.k === "you" ? s.text : steps[i - 1]?.k === "you" ? "" : ownerIn(s.text);
-        // A PRESS LETS THE TURN GO ON (the owner, 2026-11-09: "a button click is not a new prompt, just allowing the agent to continue. If you send
-        // a new message, that's a new turn"): Taskuary's note after an Approve, a Push, a sign-in joins the turn at work - only the owner's line,
-        // or a mail come in since the turn's last step, opens a new one
-        if (!w && turn && !cameIn(mails, turn.steps.at(-1)?.at || turn.at, s.at)) return;
-        close();
-        if (w) rows.push({ kind: "you", at: s.at, text: w });
-        return;
-      }
-      // ...ONE QUIET LINE where it happened, once done (sessionrecord COMPACTED): under way it is the working line's "Compacting…" (compactingNow),
-      // and one that failed or was cut off says nothing
-      if (s.k === "compact") { if (!s.status || s.status === "completed") { close(); rows.push({ kind: "event", at: s.at, text: COMPACTED }); } return; }
-      if (s.k === "gap" || s.k === "screen") return;
-      if (turn && marks.some((c) => c >= at(turn.steps.at(-1)?.at || turn.at) && c < at(s.at))) close();
-      if (!turn) turn = { kind: "turn", at: s.at, sid: ses.sid, steps: [] };
-      turn.steps.push(s);
-    });
-    close();
-    // ...its newest turn is the one at work while its CLI runs
-    const last = rows.at(-1);
-    // ...unless it ended before the turn at work began - from the press (general.line_state `turnStarted`), else the live session's own start: a
-    // session woken for his line drew the turn before "running" again, over that line, while its adapter came up (the recorded coding walk, 2026-11-10)
-    const begun = turnStarted || live?.turnStarted;
-    // ...and none is while the live session has not yet been handed the prompt (`promptPending`): a conversation reopened replays its history
-    // as new rows, stamped as it loads (the recorded walk, 2026-11-10)
-    const before = !!live?.promptPending || (begun && last?.at && +asUtc(last.at) < begun * 1000 - 2000);
-    if (now && last?.kind === "turn" && last.sid === ses.sid && !before) last.running = true;
-  });
-  // ...each mail where it came in: over the first entry at or after it, a run of them one row (the general chat's Arrived)
-  const out = [], pending = [...mails].sort((a, b) => at(a.joined || a.at).localeCompare(at(b.joined || b.at)));
-  const take = (upto) => { const got = []; while (pending.length && (upto == null || at(pending[0].joined || pending[0].at) <= upto)) got.push(pending.shift()); if (got.length) out.push({ kind: "mail", at: at(got.at(-1).at), mail: got }); };
-  for (const r of rows) { if (r.at) take(r.at); out.push(r); }
-  take(null);
-  return out.map((r, i) => (r.kind === "turn"
-    ? { kind: "turn", id: `r${i}`, at: r.at, running: !!r.running, waiting: !!r.running && waiting, parts: turnParts(eventsOf(r.steps, !!r.running)), answer: lastSaid(r.steps),
-      steps: r.steps.map((s) => s.n) }
-    : { ...r, id: `r${i}` }));
-}
-export const COMPACTED = "Conversation compacted";
-// ...and WHILE IT COMPACTS, the working line says so (the owner, 2026-11-10: "while it's going on show compacting like claude code does"): the live
-// session's newest step a compaction ACP says is still under way. A CLI log marks one only once it is done, so a pty session never says it
-const sessionSteps = (ses) => (ses.source === "acp" ? stepsFromAcp(ses.updates) : ses.steps || []);
-export const compactingNow = ({ sessions = [], live = null } = {}) => {
-  const ses = sessions.at(-1), s = ses?.live && (live ? live.working !== false : true) ? sessionSteps(ses).at(-1) : null;
-  return s?.k === "compact" && !!s.status && !OVER.includes(s.status) && s.status !== "cancelled";
-};
-const cameIn = (mails, from, upto) => (mails || []).some((m) => { const t = at(m.joined || m.at); return t > at(from) && (!upto || t <= at(upto)); });
-const lastSaid = (steps) => [...steps].reverse().find((s) => s.k === "said")?.text || "";
-
-// ...and those rows as the one thread's messages (GeneralWorkspace's AssistantThread): a mail is Taskuary's brief carrying it (drawn as what
-// came in, on the right), the owner's line theirs, a turn the agent's - its parts the same data part a general turn carries. A turn at work
-// is the live one (`live-…`), as the general chat's own live turn is
 export const PARTS = "agent_parts";
 export const partsMessage = (parts) => (parts.length ? [{ type: "data", name: PARTS, data: { parts } }] : []);
-export const rowMessages = (rows, sid = "coding") => (rows || []).map((r) => (r.kind === "mail"
-  ? { id: `${sid}-${r.id}`, role: "user", brief: true, mail: r.mail, content: [{ type: "text", text: r.mail.map((m) => m.words).join("\n") || " " }], createdAt: r.at }
-  : r.kind === "you" ? { id: `${sid}-${r.id}`, role: "user", content: [{ type: "text", text: r.text }], createdAt: r.at }
-  // ...a compaction is an event, drawn as a press's quiet line is ("Conversation compacted · 8:21 AM") - never an input, so the turn goes on under it
-  : r.kind === "event" ? { id: `${sid}-${r.id}`, role: "user", press: true, content: [{ type: "text", text: r.text }], createdAt: r.at }
-  : { id: `${r.running ? "live-" : ""}${sid}-${r.id}`, role: "assistant", content: partsMessage(r.parts), createdAt: r.at, steps: r.steps, ...(r.waiting ? { waiting: true } : {}) }));
-// ...and the turns the server names its cards by (codingchat.cards: a step's name) as the messages that draw them, so the general payload's
-// `turns` and `drafts` and the coding one's read through one placement road
-export const turnOfStep = (messages) => { const of = new Map((messages || []).flatMap((m) => (m.steps || []).map((s) => [s, m.id])));
-  return (name) => (name == null ? null : of.get(name) ?? null); };
-
 // WHICH SOURCE a task's chat reads: a coding task, or any task with a coding CLI live on it, is its sessions (codingchat.py); every other is
 // the general agent's conversation (general.py). The one component draws either - this picks, nothing in the page does
 export const chatSource = (task, term) => (task?.Kind === "coding" || liveTerminal(term) ? "coding" : "general");
+// WHAT WAITS BY THE BOX, WHEN MANY DO (decided 2026-11-12): the NEWEST lines and the count - the strip scrolled from the oldest, so the line he
+// had just typed stood out of sight under a dozen older ones. A line that failed to go in is kept where it is wherever it stands
+export const WAIT_SHOWN = 4;
+export const waitingShown = (items, k = WAIT_SHOWN) => (items.length <= k ? items : items.filter((x, i) => i >= items.length - k || x.err));
 
 // ── WHAT MAY DRAW AS AN INPUT (the owner, 2026-11-09: "inputs are messages in the prompt box or from the input channel - either the user
 // themselves or someone else responds on the thread"): a bubble is what the owner TYPED, or what came in on the task's THREAD (a mail, a
@@ -309,3 +159,122 @@ export const checkBackDue = (w) => (/^TASKUARY: the check-back you set on this t
 // ...and in the general chat a turn after a press is the same turn going on: no new head, unless an input came between (isInput)
 export const continues = (messages, i) => { for (let j = i - 1; j >= 0; j--) { const m = messages[j];
   if (m?.role === "assistant") return true; if (isInput(m)) return false; } return false; };
+/* IS THE CHAT STILL HELD AT ITS END, after a scroll event (the owner, 2026-11-11: "task should open on last thing not randomly in middle")?
+   Only HIS OWN scroll up lets go of it (`own`: a wheel, a finger, a key or a press just before; `top` under `was`), and coming back to the end
+   takes it again. A scroll event that finds the end far away is NOT him: the chat grew between the pin and the event - forty "Show all"
+   buttons measured in after the first draw, a picture getting its size - and reading that as "he moved away" left a long chat opened ~900px
+   short of its end, never to follow again. */
+export const AT_END = 56;
+export const heldAtEnd = (held, { top, was, gap, own }) => gap < AT_END || (held && !(own && top < was - 1));
+
+// THE CHAT'S OWN LIST ON THE PAGE (GeneralWorkspace): what is drawn is the server's list (conversation.items), with two things of the page's -
+// THE LIST ASKED LAST: the one this view last read, or one read ahead with its task as he came back to it (taskDetail.prefetchTask) - an older
+// read is never drawn over a newer one (the owner's live task, 2026-11-12: he left a task and came back); `_at` is when each was ASKED
+export const newerList = (a, b) => (!a ? b || null : !b ? a : (b._at || 0) > (a._at || 0) ? b : a);
+// ...WHAT A CHAT MAY PAINT BEFORE ITS OWN READ LANDS (the owner, 2026-11-13: a long task opened on messages from his last visit, the rest
+// coming in after - "if you need time to load full convo then just spin, don't open with weird data"): only a list read a moment ago - the
+// view drawn again as its session starts, one read ahead for Next. An older one is not painted; the chat spins until its read lands
+export const HELD_FOR = 15000;
+export const paintable = (own, ahead, now = Date.now()) => newerList(own && now - (own._at || 0) < HELD_FOR ? own : null, ahead || null);
+/* ...AND HIS OWN LINES: a line it sent is drawn at once - in the conversation when the agent was at rest (it is heard as it is sent, its turn
+   under it), by the box when a turn was at work - and the server's copy takes over by the same name.
+   ...ABOVE THE TURN HIS LINE BEGAN (the owner's live task, 2026-11-12: back on a task, he typed - the dots stood above "try now"): a read that
+   already has that turn starting, with nothing in it, and not yet his line - the line goes over it, never under */
+export const withMine = (list, mine) => {
+  const items = list?.items || [], pending = list?.pending || [], known = new Set([...items, ...pending].map((x) => x.id));
+  const own = mine.filter((l) => !known.has(l.id));
+  // ...A LINE WHOSE SEND FAILED STAYS WHERE IT STANDS, in its own words (the owner's live task, 2026-11-12: it went down by the box, red, the
+  // app's error glued to his words): the failure is one line under it with Try again (ConvLine), and no turn starts under it
+  const rest = own.filter((l) => l.rest), wait = own.filter((l) => !l.rest);
+  // ...and the turn it begins under it while the server's read has none yet - at rest, or at work in the beat before his line is filed there
+  const live = (x) => x?.kind === "turn" && ["starting", "working"].includes(x.state);
+  const tail = rest.some((l) => !l.err) && (!list?.working || !live(items.at(-1))) ? [{ id: `t:${rest.at(-1).id}:0`, kind: "turn", state: "starting", steps: [], text: "", cards: [], started: +rest.at(-1).at / 1000 }] : [];
+  const at = items.length && rest.length && ((x) => x.kind === "turn" && ["starting", "working"].includes(x.state) && !x.text && !(x.steps || []).length)(items.at(-1)) ? items.length - 1 : items.length;
+  // ...AND A REPLY DRAFT ABOVE IT GREYS IN ITS PLACE FROM THE SAME FRAME (the owner, 2026-11-12: "grey out buttons right away"): what the
+  // server does as it hears the line (proposals.set_aside_drafts), drawn before its read comes back - its buttons stood lit ~300 ms
+  // ...a line sent while a turn works too (the owner, 2026-11-16: "The second a new prompt comes in ... it should gray out the action card but never move")
+  const aside = (c) => (own.some((l) => !l.err) && c.status === "pending" && c.was ? { ...c, status: "passed" } : c);
+  const greyed = items.map((x) => (x.kind === "card" ? aside(x) : x.kind === "turn" && (x.cards || []).length ? { ...x, cards: x.cards.map(aside) } : x));
+  return { items: [...greyed.slice(0, at), ...rest, ...greyed.slice(at), ...tail], pending: [...pending, ...wait] };
+};
+// THE BASIC FLOW OF WHAT THE PAGE DRAWS (conversation.flow_breaks, the page's half): his newest line has no turn at work above it, and
+// nothing already drawn changes place or has anything new drawn above it (`was`: the list drawn before). [] when it reads like a chat
+export const flowBreaks = (now, was = null) => {
+  const xs = now?.items || [], out = [], ids = xs.map((x) => x.id), live = (x) => x.kind === "turn" && ["starting", "working"].includes(x.state);
+  const his = xs.map((x) => x.kind === "line").lastIndexOf(true);
+  xs.slice(0, Math.max(his, 0)).forEach((x) => { if (live(x)) out.push(`a: the turn at work ${x.id} stands above his newest line ${ids[his]}`); });
+  if (!was) return out;
+  const old = (was.items || []).map((x) => x.id), set = new Set(old), kept = old.filter((i) => ids.includes(i));
+  if (JSON.stringify(ids.filter((i) => kept.includes(i))) !== JSON.stringify(kept)) out.push("f: items already drawn changed their order");
+  const top = Math.max(-1, ...kept.map((i) => ids.indexOf(i)));
+  ids.slice(0, Math.max(top, 0)).forEach((i) => { if (!set.has(i)) out.push(`f: ${i} is drawn above ${ids[top]}, which was already there`); });
+  old.forEach((i) => { const x = was.items.find((y) => y.id === i); if (!ids.includes(i) && !(live(x) && !x.text && !(x.steps || []).length)) out.push(`c: ${i} was on the canvas and is gone`); });
+  return out;
+};
+// THE WAITING ROOM'S MESSAGES ARE COUNTS ON THEIR SENDER'S CHIP (the owner, 2026-11-12: "From Cat Priem · 2 new"): what came in and the agent
+// has not heard yet, one chip per sender - his own replies on another channel one per channel ("You on WhatsApp · 1") - each naming the
+// items it stands for (`ids`), so one item is in one place. `came`: the label of the chip the box already wears for where the task came
+// from - a sender's count joins it rather than stand beside it
+const CHANNELS = { email: "email", whatsapp: "WhatsApp", teams: "Teams", telegram: "Telegram", slack: "Slack", sms: "SMS" };
+export const waitingChips = (pending, came = "") => {
+  const by = new Map();
+  for (const x of pending || []) {
+    if (x.kind !== "arrival") continue;
+    const base = x.own ? `You on ${CHANNELS[String(x.channel || "").toLowerCase()] || x.channel || "another channel"}` : `From ${x.who || "someone"}`;
+    by.set(base, [...(by.get(base) || []), x.id]);
+  }
+  return [...by].map(([base, ids]) => ({ key: base, came: !!came && base === came, ids,
+    label: `${base} · ${ids.length}${base.startsWith("You on") ? "" : " new"}` }));
+};
+// THE WORKING LINE SAYS WHAT IS HAPPENING, AND WHAT WE ARE WAITING FOR (the owner, 2026-11-12: "in summary it says what its doing while it's
+// working instead of just ... which means nothing"; and on every level, "what it's doing and what are we waiting for"): one line beside a turn's
+// dots, from what the list already holds - what the turn waits on him for (`ask`), else the newest step at work in its own words
+// (agentSteps.stepLabel), else the model writing; a turn not begun yet waits for its agent to start. Plain code, never a model call
+// ...but only the CHAT'S FIRST turn says it waits for its agent (the owner, 2026-11-16, mid-conversation on a session gone idle: "Waiting for the
+// agent to start" is the app's mechanics) - a `later` turn starting is the work going on: its dots and no words, until it has a step to name
+// `doing`: the answer it is writing, while that is the newest thing it did (conversation `doing`)
+export const workingLine = (parts, label, { starting = false, later = false, ask = "", doing = "" } = {}) => {
+  if (ask) return ask;
+  const steps = (parts || []).filter((p) => p.type === "work").flatMap((p) => p.steps || []), last = steps.at(-1);
+  if (last?.status === "running") return String(label(last) || "").split(/\r?\n/)[0].trim() || "Working…";
+  if (doing && thinkingLine(doing)) return `Writing: ${thinkingLine(doing)}`;
+  if (!last) return !starting ? "Thinking…" : later ? "" : "Waiting for the agent to start";
+  // ...and WHAT IT IS THINKING, where its newest step is a thought (the owner, 2026-11-16: "Thinking..." for three minutes with nothing else):
+  // that thought's latest words, as it writes them (agents.ACPSteps._thinking) - never a bare word for minutes
+  return last.kind === "thought" ? thinkingLine(last.detail || last.summary) || "Thinking…" : "Thinking…";
+};
+// a thought as one short line: its last sentence, cut at a word
+export const thinkingLine = (text) => {
+  const t = String(text || "").replace(/\s+/g, " ").trim().replace(/[.…]+$/, "");
+  const s = t.split(/(?<=[.!?])\s+/).filter(Boolean).at(-1) || "";
+  return s.length > 110 ? `…${s.slice(-108).replace(/^\S*\s/, "")}` : s;
+};
+// WHERE THE AGENT'S QUESTION IS DRAWN (the owner, 2026-11-13: "never ever pin items on the bottom of the chat"): in the turn that asked it,
+// which the list names (conversation.items `asking.turn`) - "" only while that turn is not in what is drawn (a read behind, a chat with no
+// turn yet), when it stands under everything as it did
+export const askTurn = (asking, items) => (asking?.turn && (items || []).some((x) => x.kind === "turn" && x.id === asking.turn) ? asking.turn : "");
+// WHERE THE LETTERS THAT WAIT FOR HIS SEND ARE DRAWN (the reply's card and the task's emails, one block of the page): at the end of the turn
+// the list names (conversation.items `letters` - the last turn that left a letter still waiting), under that turn's words. "" while the
+// list names none or holds no such turn yet, or while that turn is at work - it holds the block back, as it does its cards - and the page
+// then hangs the block on the reply's own card, as it did. The owner's live task, 2026-11-13: an email a later turn wrote stood up at the
+// reply's card, that turn's words under both
+// ...nor above a line of his: what stood over the line he just sent is set aside as it is heard (proposals.set_aside_drafts), and the page
+// draws that from the same frame (withMine) - the block's Send stood lit over his new line until the list was read again
+// A CARD THE LIST PLACES NOWHERE STANDS UNDER EVERYTHING - ONCE THERE IS A LIST (the audit, 2026-11-13, recorded on Back and on a rail click): a
+// task's cards arrive with the task, its conversation a beat later, and for that beat (1.5 s on the recording) every card of the task -
+// each letter that went, newest first, and the draft with its Send - stood in one stack at the chat's foot, then jumped up into the turns
+// that wrote them. Until the list is read nothing can be placed, so nothing is; nor under a turn at work, which holds its own cards back.
+export const placesLoose = (list) => !!list && !list.working;
+// ...and A MISSING FACT IS ONE QUESTION (the owner's rule; recorded on the real CLI, 2026-11-15): while the agent waits on his answer, the reply
+// it could not write yet - no words, no email beside it - is not drawn under the question as an empty box over a greyed Send; his answer's
+// turn writes it (the server's list leaves it out of the turn the same way, conversation.items)
+const words = (r) => String(r?.FinalText || r?.DraftText || "").trim();
+export const askedFirst = (asking, reviews = []) => !!asking && !(reviews || []).some((r) => r.Kind === "slot" && r.Status === "pending")
+  && !(reviews || []).some((r) => ["draft_reply", "draft"].includes(r.Kind) && r.Status === "pending" && words(r));
+export const lettersTurn = (list, items) => { const xs = items || [], i = list?.letters ? xs.findIndex((x) => x.kind === "turn" && x.id === list.letters) : -1;
+  return i >= 0 && !["starting", "working"].includes(xs[i].state) && !xs.slice(i + 1).some((x) => x.kind === "line") ? xs[i].id : ""; };
+// ...what a turn at work waits on HIM for, in words: the step its session is stopped at, a sign-in, a question
+// ...(a question the agent asked before is no wait while it works: the recorded walk, 2026-11-12, read "Waiting for your answer" over a turn
+// already at work on his answer - only a step it is stopped at, or a sign-in on the page, holds a turn at work)
+export const waitingOn = (list) => (list?.permissions?.length ? "Waiting for your Allow once"
+  : String(list?.asking?.request_id || "").startsWith("signin:") ? "Waiting for you to sign in" : "");

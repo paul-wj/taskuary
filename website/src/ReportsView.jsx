@@ -45,7 +45,7 @@ import { openAppLink } from "./appLinks.js";
 import { routeOfHash } from "./canvasLinks.js";
 import { NewPlaybook, PB_EMPTY, PB_OPEN, PlaybookDetail, PlaybookRow, RecentlyDeleted as PlaybooksDeleted, pbOpen, usePlaybooks } from "./PlaybookShelf.jsx";
 import { NEW_PB, takePlaybookAsk } from "./playbookOpen.js";
-import SetupWithAi from "./SetupWithAi.jsx";
+import SetupWithAi, { onBuilt } from "./SetupWithAi.jsx";
 import { openHelp, useViewExtras, viewResult } from "./pageView.js";
 
 const AI_FIELD = ["AI summary prompt (optional)", "ai_prompt", "multiline",
@@ -396,6 +396,8 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
     } catch (e) { setErr(e?.response?.data?.detail || uiMessage("The reports could not be loaded.")); }
   }, []);
   useEffect(() => { load(); }, [load]);
+  // ...and a thing the Assistant just built here is read in BEFORE its page opens (SetupWithAi's BUILT): opened first, it was "not here any more"
+  useEffect(() => onBuilt(async (link) => { await load(); openAppLink(link); }), [load]);
 
   // Manual runs belong to the server, not to this mounted page. A synchronous browser request was
   // abandoned when the owner switched tabs, so the report stopped before it filed its result.
@@ -479,26 +481,11 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
         : low ? "It is not confident about this one — preview it in step 2 before you save." : "Check it below and preview it in step 2 before you save.") }) });
   };
   onDraftRef.current = onDraft;
-  // THE DESCRIBE-IT, AS THE ASSISTANT'S (2026-10-30): the box that drafted a report from words is gone from the page - its door opens the
-  // chat - and the composer it ran is a field the Assistant fills when it is helping here. Its draft lands in the builder through the same
-  // onDraft the box used; what the composer asks back, or its miss, is the page's answer the Assistant hears next (viewResult)
-  const composeKind = browseState.section === "dashboards" ? "dashboard" : browseState.section === "workflows" ? "workflow" : "report";
-  const compose = async (ask) => {
-    const kind = composeKind;
-    const endpoint = kind === "workflow" ? "/api/workflows/compose" : kind === "dashboard" ? "/api/dashboards/compose" : "/api/reports/compose";
-    const { data } = await api.post(endpoint, { ask: String(ask || "") });
-    if (data.config && !data.error) {
-      if (kind === "dashboard") { setDashDraft({ config: data.config, meta: data }); if (browse) onBrowseState?.({ section: "dashboards", open: "draft" }); else setBucket("draft-dashboard"); }
-      else if (kind === "workflow" && data.verdict !== "report") { onDraft(data.config, data); if (browse) onBrowseState?.({ section: "workflows", open: "new-agent" }); else setBucket("new-agent"); }
-      else { onDraft(data.config, data); if (browse) onBrowseState?.({ section: "reports", open: "draft" }); else setBucket("draft"); }
-      viewResult({ action: "compose", ok: true, detail: `${data.explain || "Drafted"} - in the builder now, not saved` });
-    } else viewResult({ action: "compose", ok: false, detail: data.questions?.length ? `It needs to know: ${data.questions.join(" ")}` : data.error || "It could not draft that." });
-  };
   // ...and the one open, by its id (the everyday-asks audit, 2026-11-02): "run it" over a report's builder named it by its title alone, so
   // the Assistant's report.run guessed among titles; source_id is what its report tools take
   const openNow = browse ? browseState.open : bucket;
-  useViewExtras("reports", { item: typeof openNow === "number" ? { kind: "report", id: openNow } : null, fields: [{ key: "describe", label: t(composeKind === "workflow" ? "Describe the routine you want" : composeKind === "dashboard" ? DASH.describe : "Describe the report you want"),
-    value: "", set: compose, said: (v) => uiMessage("Asked the builder for: {request}", { request: String(v).length > 70 ? `${String(v).slice(0, 69)}…` : v }) }] });
+  // (no describe field: a report, dashboard or routine set up from words is built on its page by Set up with AI - build.py, 2026-11-13)
+  useViewExtras("reports", { item: typeof openNow === "number" ? { kind: "report", id: openNow } : null });
 
   // a failed load is said, with a way to try again - a spinner here waited for ever
   if (!sources) return err
@@ -555,15 +542,17 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
         // it wears a red border and says so - a workflow is started by hand on purpose and is left alone
         const unscheduled = !sched && !workflowOverview;
         // ...and every row takes that frame's inset, so Run now, Edit and the switch stand in one column down the list
+        // ...ON A PHONE the name takes the first line and the buttons the next (the phone audit, 2026-11-13): in one line at 390px the
+        // name's box got 0px and "Advisor - its notes for you" stood one word to a line, a column of mono down the left edge
         return (
           <Box key={s.SourceId} sx={{ px: 1, border: "1px solid transparent", borderBottom: `1px solid ${BORDER}`,
             ...(unscheduled ? { borderColor: ALERT, borderRadius: 1, my: 0.5 } : {}) }}>
           <Box onClick={() => openOne(s.SourceId)}
-            sx={{ display: "flex", alignItems: "center", gap: 1.5, py: 1.5, cursor: "pointer",
+            sx={{ display: "flex", flexWrap: { xs: "wrap", sm: "nowrap" }, alignItems: "center", gap: 1.5, py: 1.5, cursor: "pointer",
               "&:hover": { bgcolor: "var(--tq-panel, #faf8f4)" } }}>
             <StatusDot ok={!!s.Active} />
             <ChannelIcon channel={isWorkflowConfig(c) ? "workflow" : "report"} />
-            <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Box sx={{ flex: { xs: "1 1 calc(100% - 64px)", sm: 1 }, minWidth: 0 }}>
               <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13.5 }} noWrap>{c.title || s.Address}</Typography>
               <Typography variant="caption" sx={{ ...mono, color: FAINT }}>
                 {asSteps(c) && c.flow.length ? t(c.flow.length === 1 ? "{count} step" : "{count} steps", { count: c.flow.length })
@@ -612,8 +601,8 @@ export default function ReportsView({ browse = null, browseState = {}, onBrowseS
         lastRunRec={openId != null ? lastRuns[openId] : null}
         fixRun={fixRun?.sid === openId ? fixRun.runId : browse && browseState.fix && browseState.open === openId ? browseState.fix : null}
         onFixTaken={() => { setFixRun(null); if (browse && browseState.fix) onBrowseState?.({ ...browseState, fix: null }); }} onReport={asReportDraft}
-        composer={<>
-          <SetupWithAi kind="workflow" sx={{ mb: 2 }} />
+        composer={(c) => <>
+          <SetupWithAi kind="workflow" words={c.prompt || ""} sx={{ mb: 2 }} />
           <Typography variant="caption" sx={{ color: FAINT, display: "block", mt: -1.25, mb: 2 }}>
             {t("Monthly Zoho invoices have a form of their own —")} <Box component="span" onClick={toInvoices}
               sx={{ color: "var(--tq-link, #55697a)", fontWeight: 600, cursor: "pointer", "&:hover": { textDecoration: "underline" } }}>{t("open it", {}, "form")}</Box>.
@@ -1451,6 +1440,8 @@ function ReportWizard({ sourceId, sources, types, connectors, reload, onBack, on
           {t(workflow ? "Remove routine" : "Remove report")}
         </Button>}
       </Box>
+      {/* SET UP WITH AI, ON THE NEW REPORT'S OWN PAGE (taskuary/build.py): the Assistant drafts, checks and saves it here */}
+      {!cur && !draft && <SetupWithAi kind={workflow ? "workflow" : "report"} sx={{ mb: 2 }} />}
       {/* ...and what they answered, here: the shelf's line is off screen while the builder is open */}
       {cur && said?.sid === cur.SourceId && <Typography variant="body2" sx={{ mb: 1.5, fontWeight: 600, color: said.ok ? "var(--tq-success, #47654a)" : "var(--tq-danger, #6b2733)" }}>{said.ok ? "✓" : "✗"} {displayMessage(said.detail)}</Typography>}
       {removeErr && <Alert severity="error" sx={{ mb: 1.5, fontSize: 12.5 }}>{displayMessage(removeErr)}</Alert>}

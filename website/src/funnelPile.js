@@ -2,7 +2,7 @@ import vocab from "../../taskuary/lanes.json" with { type: "json" };
 import { label, VERBS } from "./buttons.js";
 import { getLocale, t, translateDescriptor } from "./i18n.js";
 import { says, subState } from "./laneSays.js";
-import { ago, band, minsSince } from "./timeWords.js";
+import { age, ago, band } from "./timeWords.js";
 import { fmtDateTime } from "./dates.js";
 import { LEVEL_META, LEVEL_ORDER, SECTION_WORDS, attentionBand, isUrgent, levelOf, notYet, onYou } from "./lanes.js";
 import { AGENT_SHOWN } from "./kinds.js";
@@ -88,9 +88,19 @@ export const canAdvance = (pile, ready) => walkOf(pile) ? !!walkOf(pile).below :
 
 // Until durable Current lands, reload restores the latest explicitly surfaced card. Passive
 // watcher cards stay readable in history but cannot silently become the conversation subject.
-export const restorableCurrent = (messages) => [...(messages || [])].reverse().find((message) =>
-  message?.card && !message.card.background_event
-  && !["brief", "setup", "agentdone", "setup_questions", "words"].includes(message.card.kind))?.card || null;   // a set-up's questions, a line's own words: not an item
+// ...a set-up's questions, a line's own words: not an item
+const NOT_ON_TABLE = ["brief", "setup", "agentdone", "setup_questions", "words"];
+const onTable = (message) => !!message?.card && !message.card.background_event && !NOT_ON_TABLE.includes(message.card.kind);
+export const restorableCurrent = (messages) => [...(messages || [])].reverse().find(onTable)?.card || null;
+// THE PAGE OPEN ON THE CANVAS: the newest browse card, unless it was put down or an item came onto the table after it. A line's own words
+// are no item (the 30 s read brings the setup turn's line back as a `words` card, and it folded the builder under it, draft and all)
+export const liveBrowseId = (shown = []) => {
+  for (let i = shown.length - 1; i >= 0; i -= 1) {
+    if (shown[i].role === "browse") return shown[i].down ? null : shown[i].id;
+    if (onTable(shown[i])) return null;
+  }
+  return null;
+};
 // Which line carries the action words. It is the LAST thing Taskuary said, card or no card: an answer
 // to a typed question offers the same verbs as the line that introduced the item, and a receipt is not a
 // place to act. interactiveCardIndex is about the card inside the bubble and stays separate.
@@ -216,6 +226,8 @@ export const currentPresentationChanged = (current, fresh) => {
 };
 export const refreshCurrentPresentation = (current, fresh) =>
   currentPresentationChanged(current, fresh) ? fresh : current;
+// WHAT THE CARD ON THE TABLE FOLLOWS: the walk's item, or the rail's row of a task opened onto it, by the key of the card that stands there
+export const tableItemOf = (current, cardKey, pile) => current || (cardKey ? (pile?.items || []).find((i) => i.key === cardKey) || null : null);
 
 // The card under a line is decided by the item's KIND, never by the model. Every kind maps to
 // exactly one card so a reload draws the same conversation.
@@ -279,8 +291,8 @@ export const cardFor = (item) => (item ? assistantFocus(item).card : null);
 // that it is simply new, and saying so is noise.
 export const waitedText = (item, now = Date.now()) => {
   if (!item || !onYou(item)) return "";
-  const at = item.since || item.when, minutes = minsSince(at, now);
-  return minutes == null || minutes < 60 ? "" : t("waiting {time}", { time: band(at, now) });
+  const a = band(item.since || item.when, now);
+  return !a || a.startsWith("<") || a.startsWith("in ") ? "" : t("waiting {time}", { time: a });
 };
 
 // the header's one line under "Taskuary" - its "on you" is the opener's and the greeting's (lanes.onYou). It counted only an
@@ -349,6 +361,11 @@ export const pressOnto = (walk, rail, { putDown = null, how = "next", fromKey = 
 export const holdsNew = (msgs, browsing, rail, key) => !!key && !!browsing
   && (msgs || []).some((m) => m.id === browsing && m.role === "browse" && m.area === "new")
   && !(rail || []).some((i) => i.key === key && !i.settling);
+// ...AND WHAT NEW MADE IS ITS ROW AT THE PRESS (the owner, 2026-11-16: "on new task it says sent to agent and then the bottom of the screen shows
+// ... it should show ... on the agent starting, not randomly on the bottom of the canvas"): the task New just made, as the row the table draws -
+// put up at the press like a rail row (AssistantView pull), its chat's starting turn under his words from there, and the "…" of the move that
+// fetches its real row waiting under the fold, never at the canvas foot under New's card
+export const madeRow = (tid, title) => ({ key: `task:${tid}`, kind: "task", tid: Number(tid), title: String(title || "").slice(0, 300) });
 // NEXT TURNS BLUE AS SOON AS THE MOVE SAVES (the owner, 2026-11-06): a light walk answer (no rail rides) carries the walk's whole word -
 // below included - and the rail on screen takes it until its own read lands, so a second press draws its row and Back stands at once
 export const withWalk = (pile, walk) => (pile && walk && "below" in walk ? { ...pile, walk } : pile);
@@ -465,6 +482,13 @@ export const ageHover = (i) => [arrivedAt(i) && t("arrived {time}", { time: fmtD
   .filter(Boolean).join(" · ") || undefined;
 // ...and the line under its title is the newest message, who said it and what
 export const latestLine = (i) => (i?.latest?.text ? [i.latest.who, i.latest.text].filter(Boolean).join(": ") : "");
+// THE ROW ON THE TABLE SAYS ITS AGE ONCE (the audit, 2026-11-15: "4h" in the gutter, then "asked 4 hours ago. · 4h ago" under the title):
+// the gutter is its age. The line under the title carries a time only where it is ANOTHER one - a newer message's, a wait that began
+// after it arrived - and a meeting's, which is when it starts
+export const subLine = (i, why = "", now) => {
+  const gutter = band(arrivedAt(i), now), other = (at) => (at && band(at, now) !== gutter ? ago(at, now) : "");
+  return (latestLine(i) ? [latestLine(i), other(i.last_at)] : [why, i?.kind === "meeting" ? age(i.when, now) : other(i?.since || i?.when)]).filter(Boolean).join(" · ");
+};
 // A ROW FROM OUTSIDE THE PILE - the task on the table pulled by name, a batch's members put back - TAKES ITS PLACE in the rail's
 // order: it was drawn first, above every row of its section, so the row on the table jumped to the top (2026-10-22: "on the table
 // should never move them")
@@ -477,6 +501,12 @@ export const inOrder = (rows, extra) => (extra || []).reduce((out, x) => {
 // starts, asks or stops no longer changes band at all: every open task is under Tasks (the owner, 2026-10-21).
 // ...and a pinned row sits in its band WHERE THE WALK'S ORDER PUTS IT: it kept its own lane's place in the server's order, so a row
 // from a later band was drawn under every row of the band it was pinned to - a day-old task at the bottom of its band, below 1h
+// ...UNTIL THE OWNER PRESSES A MOVE ON IT (the owner, 2026-11-11: "i changed task to general agent ... it's still on watching rail"): the pin
+// holds a row against a move that only opening it made, never against his own - Stop watching, or who does it changed, left the row under
+// Watching until he walked off it. `presses` counts the moves made on the table's task: one more than the pin was taken at lets the band go
+export const pinOf = (was, row, levels = {}, presses = 0) => (!row ? null
+  : was?.key !== row.key ? { key: row.key, level: levels[row.key] || null, presses }
+  : was.presses !== presses ? { ...was, level: null, presses } : was);
 export const bandsOf = (items, pin = null) => {
   const held = (i) => !!pin?.level && i.key === pin.key;
   return LEVEL_ORDER

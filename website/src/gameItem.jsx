@@ -179,7 +179,7 @@ function Draft({ item, busy, play }) {
         <Box sx={{ display: "flex", gap: 0.5, mt: 0.8 }}>
           <Box component="input" value={how} onChange={(e) => setHow(e.target.value)} placeholder={t("Rewrite it… (shorter, warmer, say no)")}
             onKeyDown={(e) => { if (e.key === "Enter") redraft(); }} sx={{ ...field, py: 0.6 }} />
-          <Btn disabled={!!busy || drafting} onClick={redraft} title={t("The assistant rewrites the draft - nothing is sent")}>{drafting ? t("Drafting…") : t("✍ Redraft")}</Btn>
+          <Btn disabled={!!busy || drafting} onClick={redraft} title={t("Taskuary rewrites the draft - nothing is sent")}>{drafting ? t("Drafting…") : t("✍ Redraft")}</Btn>
         </Box>
       </>}
       {err && <Typography sx={{ fontSize: 11.5, color: G.red, mt: 0.5 }}>{err.error ? displayError(err.error) : t("The draft could not be written - {error}. Write it here, or redraft.", { error: err.draftError })}</Typography>}

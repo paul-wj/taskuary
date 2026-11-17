@@ -23,9 +23,10 @@ KNOWN = [
      'resume_args': ['--resume']},
     {'name': 'codex', 'cmd': 'codex', 'label': 'OpenAI Codex CLI',
      # ...and the hooks we install at user scope run untrusted: Codex skips a hook silently until
-     # someone approves it inside the TUI, which a pty session never can. The flag adds nothing the
-     # sandbox bypass beside it has not already granted (hooks.py, 2026-09-20).
-     'args': ['exec', '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust']},
+     # someone approves it inside the TUI, which a pty session never can (hooks.py, 2026-09-20).
+     # NO SANDBOX BYPASS (the owner, 2026-11-16): an agent's work on Codex goes over ACP, where it asks (llm `held_only`); what is
+     # left on its command line - a verdict, a report - runs read-only (READONLY), and a pane in Codex's own approvals
+     'args': ['exec', '--dangerously-bypass-hook-trust']},
     # gemini and cursor keep their sessions in files and hand out no id (sessionfiles.SOURCES goes
     # and finds it): ~/.gemini/tmp/<sha256 of the project root>/chats, and ~/.cursor/chats/**/<id>.
     # Read from their documentation, not from a machine that ran them - see sessionfiles.
@@ -88,12 +89,21 @@ KNOWN = [
 #           WebFetch and WebSearch each asked, 2026-11-06). Its other modes answer for us: auto, acceptEdits, bypassPermissions.
 #   codex   `workspace-write`: commands run in Codex's own sandbox without asking, and whatever needs the network or a folder
 #           outside the workspace is blocked and then ASKED for - a push, a fetch, an upload. `agent-full-access` asks nothing.
+#           No mode of codex-acp 2.5.0 asks for every command WITHOUT the sandbox, and it sends the mode's policies with each turn, so
+#           CODEX_CONFIG cannot say so either (docs/acp-transport.md). What the sandbox cannot do - launch a browser - it asks Taskuary
+#           for (`taskuary --browser`, browserview.ask_open).
 # The @zed-industries packages were renamed to these; their claude adapter (0.16.2) failed session/new on Claude Code 2.1.318.
 ADAPTERS = {'claude': {'pkg': '@agentclientprotocol/claude-agent-acp@0.101.0', 'bin': 'claude-agent-acp',
                        'env': {'CLAUDE_CODE_EXECUTABLE': '{cli}'}, 'mode': 'default'},
             'codex': {'pkg': '@agentclientprotocol/codex-acp@2.5.0', 'bin': 'codex-acp',
                       'env': {'CODEX_PATH': '{cli}'}, 'mode': 'workspace-write'}}
 
+
+def name_of(cmd: str) -> str:
+    """ONE NAME PER AI, on every picker and line (decided 2026-11-12): the CLI's own product name - "Claude Code", "OpenAI Codex CLI" - by its
+    command or its key, never "claude (on this computer)" beside "Claude Code" on the next screen. A CLI Taskuary does not know is its command."""
+    b = _base(cmd or '')
+    return next((k['label'] for k in KNOWN if b in (k['cmd'], k['name'])), str(cmd or ''))
 
 def acp_adapter(cmd: str) -> dict:
     "The adapter row for a CLI that speaks ACP only through one ({} for every other CLI)."
@@ -107,7 +117,7 @@ def acp_adapter(cmd: str) -> dict:
 TOOLS = [
     {'name': 'agent-browser', 'cmd': 'agent-browser', 'label': 'agent-browser (Vercel)', 'license': 'Apache-2.0',
      'install': 'npm install -g agent-browser', 'url': 'https://github.com/vercel-labs/agent-browser',
-     'why': 'a local headless Chromium the coding agent drives from the terminal, shown live beside the session (browserview.py)',
+     'why': 'a Chrome Taskuary runs out of sight for the agent to drive from its terminal, shown live beside the session (browserview.py)',
      'status': 'available'},
     # its sibling for the desktop (the owner, 2026-10-31): native apps through the OS accessibility tree, off until its card is on
     {'name': 'agent-desktop', 'cmd': 'agent-desktop', 'label': 'agent-desktop (Vercel)', 'license': 'Apache-2.0',
@@ -224,11 +234,6 @@ REPORT_READ = {
     'devin': READONLY['devin'],
 }
 
-# A quick general call (quickwork.py) answers in one go and may look a fact up on the web - nothing else: no files, no commands, no connectors.
-QUICK_TOOLS = 'WebFetch,WebSearch'
-QUICK_READ = {**REPORT_READ, 'claude': (('--dangerously-skip-permissions',),
-              ('--tools', QUICK_TOOLS, '--allowedTools', QUICK_TOOLS, '--disallowedTools', 'mcp__*'))}
-
 
 def _base(cmd: str) -> str:
     import re
@@ -253,23 +258,43 @@ def readonly_args(cmd: str, args: list) -> list:
     return [a for a in args if a not in drop] + list(add)
 
 
-def report_read_args(cmd: str, args: list) -> list:
-    """CLI arguments for retrieving report data without command, edit, write, or MCP access."""
+def report_read_args(cmd: str, args: list, reads: dict = None) -> list:
+    """CLI arguments for retrieving report data without command, edit, write, or MCP access. `reads` keeps the files it may open to
+    the report's own (CONFINE) - given for a run that can also reach the web."""
     _require_restricted_mode(cmd)
     drop, add = REPORT_READ[_base(cmd)]
-    return [a for a in args if a not in drop] + list(add)
+    return [a for a in args if a not in drop] + (CONFINE[_base(cmd)](reads) if reads and confines(cmd) else list(add))
 
 
-def quick_read_args(cmd: str, args: list) -> list:
-    """CLI arguments for a quick general call: the web and nothing else (claude); every other CLI keeps its read-only set."""
-    _require_restricted_mode(cmd)
-    drop, add = QUICK_READ[_base(cmd)] if _base(cmd) in QUICK_READ else READONLY[_base(cmd)]
-    return [a for a in args if a not in drop] + list(add)
+# THE WEB AND THE DISK IN ONE RUN (the owner, 2026-11-15: "do that but make sure the agents don't lose ability to do their job. ONLY for
+# web agents"): a report's agent could fetch any page AND read any file on the computer, Taskuary's own folder with the mail and the
+# tokens included, with nobody pressing anything - so a page that says "read this file and put it in your next search" had both halves of
+# a leak. A run that can reach the web reads only what its report names (reports.web_reads: `roots`), and never Taskuary's folder or
+# where sign-ins are kept (`never`). Said to a CLI in the words its own permission system has, and only to one the real CLI was seen to
+# hold to (2026-11-15):
+# - claude: Read, Glob and Grep are granted by path rule, no longer by name - its working folder, and one rule a named file or folder.
+#   A read anywhere else finds nobody to ask and comes back refused; a `never` path is refused even inside a named folder.
+# - codex is NOT here: its read-only sandbox reads the whole disk and a permission profile taking paths out of it did not hold on
+#   Windows - one run refused the folder, the next read it - and what it did apply it wrote onto the folder's own access list, for good.
+# The rest read only their working folder already, or have no tool at all (READONLY).
+def _claude_rule(p) -> str:
+    "A path as Claude Code's permission rules spell it: //c/Users/alex/exports/** - from the filesystem root, a folder with all under it."
+    from pathlib import Path
+    q = Path(p); s = q.as_posix().rstrip('/')
+    s = s[0].lower() + s[2:] if s[1:2] == ':' else s.lstrip('/')         # C:/Users -> c/Users, /home -> home
+    return f"Read(//{s}{'/**' if q.is_dir() else ''})"
 
 
-def quick_web(cmd: str) -> bool:
-    "True when this CLI's quick-call flags (QUICK_READ) give it the web - the one lookup a quick call may make."
-    return QUICK_TOOLS in QUICK_READ.get(_base(cmd), ((), ()))[1]
+def _claude_reads(reads: dict) -> list:
+    from pathlib import Path
+    web = [t for t in REPORT_TOOLS.split(',') if t.startswith('Web')]
+    return ['--tools', REPORT_TOOLS, '--allowedTools', *web, *map(_claude_rule, reads.get('roots') or []),
+            '--disallowedTools', 'mcp__*', *map(_claude_rule, reads.get('never') or []),
+            *[x for r in reads.get('roots') or [] if Path(r).is_dir() for x in ('--add-dir', str(r))]]
+
+
+CONFINE = {'claude': _claude_reads}
+def confines(cmd: str) -> bool: return _base(cmd) in CONFINE
 
 
 def _require_restricted_mode(cmd: str):
@@ -285,7 +310,12 @@ def _require_restricted_mode(cmd: str):
 # background - a subagent walking a repository, a shell left running - came back to nobody, and the turn ended "I'm waiting for the
 # walkthrough to finish, then I'll write the brief" (the owner, 2026-10-21). Claude Code's own switch turns background work off
 # (run_in_background on Bash and subagents, auto-backgrounding); Codex and the rest have no background mode to turn off.
-HEADLESS_ENV = {'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS': '1'}
+# ...AND WHAT IT LEARNS IS KEPT BY TASKUARY, FOR ONE PRESS (the recorded walk, 2026-11-11: asked to "save a playbook" the agent wrote a file
+# into Claude Code's own memory folder and told the owner "saved, with a pointer in MEMORY.md" - no card, nothing to approve, and a place
+# no other agent of his reads). The CLI's own memory is off for a chat agent: a playbook or a lesson goes through Taskuary's tools.
+# ...and that one is off for EVERY CLI Taskuary starts, not only a chat agent (agents.child_env, terminal.clean_env - 2026-11-12)
+NO_MEMORY = {'CLAUDE_CODE_DISABLE_AUTO_MEMORY': '1'}
+HEADLESS_ENV = {'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS': '1', **NO_MEMORY}
 
 
 def preset_args(cmd: str) -> list:

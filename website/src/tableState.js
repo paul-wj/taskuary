@@ -3,7 +3,7 @@
 // their own, so a folded task kept its Advisor strip and its dark button acting on what nobody could see (re-audit item 4).
 import { foldsAs } from "./funnelPile.js";
 import { t } from "./i18n.js";
-import { ASK_ASSISTANT } from "./kinds.js";
+import { ASK_ASSISTANT, ASSISTANT_NAME } from "./kinds.js";
 import { unlitWhy } from "./railStatus.js";
 
 // ...SETUP IS QUIET ONLY WHILE IT IS IN VIEW: a task opened over it by its link or by Search (`over`, AssistantView's setupCard) is the
@@ -26,19 +26,15 @@ export const overChat = (t) => !!t?.place || (!!t?.key && !t?.folded);
 // ...and the next ask is about THE PAGE ALONE (the owner, 2026-11-05): it no longer carries the task beneath, so the box names only the page
 export function tableWords(table, ref = "") {
   const has = !!table?.key, under = has && !!table.place;
-  return { tag: t(under ? "under this page" : "on the table"),
-    box: !has ? t("Ask Taskuary anything — a name or a subject pulls it in…")
+  return { box: !has ? t("Ask {name} — a name or a subject pulls it in…", { name: ASSISTANT_NAME })
       : under ? t("Ask about this page…") : t("Ask about this one, tell me what to do with it, or name something else…"),
-    // ...the corner pill is the Assistant (the owner, 2026-11-06): it brings you around; the task's own agent has the task's box
-    phone: !has ? t("Ask Taskuary anything…") : under ? t("Ask about this page…") : t(ASK_ASSISTANT),
-    // The accessible name identifies the item without altering its reference - the one-row bar's pill, whose words
-    // ("Ask…") name no task: its name for a reader and the walk says which one the chat will talk about (the dead-end walk's RING, 2026-10-27)
-    name: !has ? t("Ask Taskuary anything") : under ? t("Ask Taskuary about this page") : t("Tell Taskuary what to do with {item}", { item: ref || t("this one") }) };
+    phone: !has ? t(ASK_ASSISTANT) : under ? t("Ask about this page…") : t(ASK_ASSISTANT),
+    name: !has ? t("Ask {name}", { name: ASSISTANT_NAME }) : under ? t("Ask {name} about this page", { name: ASSISTANT_NAME })
+      : t("Tell {name} what to do with {item}", { name: ASSISTANT_NAME, item: ref || t("this one") }) };
 }
 
-// What an /api/advice answer (advisor.status) means for the strip: the Advisor's ONE decision - a lit verb, its line '' when the move is
-// obvious - or why nothing is lit. There is no "Thinking..." any more (the owner, 2026-10-23): the rule's button is lit at once, and
-// the model's answer, where it reads one, arrives by the `advice` event. A decision that lights nothing (an agent asking) is kept too.
+// What a decision (rulebook.status's shape) means for the strip: ONE decision - a lit verb, its line '' when the move is obvious - or why
+// nothing is lit. There is no "Thinking..." (the owner, 2026-10-23): the button is lit at once. A decision that lights nothing is kept too.
 export function adviceRead(data, key) {
   if (!data || !key) return { advice: null };
   return { advice: data.verb || data.none || data.state ? { ...data, for: key } : null };
@@ -53,15 +49,6 @@ export const ownPick = (rec, key) => (rec?.verb && key
   ? { verb: rec.verb, label: rec.label || "", state: rec.state || "", why: rec.why || "", line: "", by: "agent", for: key, key }
   // ...and with nothing lit, the state's own sentence alone (railStatus.unlitWhy): no verb, so nothing is filled - the row says it
   : unlitWhy(rec) && key ? { verb: "", label: "", state: rec.state || "", why: unlitWhy(rec), line: "", by: "agent", for: key, key } : null);
-
-// THE ADVISOR'S EVENT NAMES ITS ITEM BY THE RAIL'S KEY, and a task opened by name sits on the table as `task:N` - so the line for a
-// Board-opened task landed and was never read (re-audit: "a task opened by name never gets its Advisor line"). The event's own
-// target says which task it is.
-export function sameTarget(ev, cur) {
-  const m = /^task:(\d+)$/.exec(cur?.key || "");
-  const tid = m ? Number(m[1]) : cur?.tid;
-  return ev?.target_kind === "task" && tid != null && Number(ev.target_id) === Number(tid);
-}
 
 // THE TASK YOU WERE WORKING ON (the owner, 2026-11-09: "there should always be a button on top corner when you are in settings or reports to
 // go back to the main task you were working on"): the last task in view, however it came - the walk, the rail, a link, the Board or an

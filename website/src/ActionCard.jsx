@@ -10,7 +10,7 @@ import { Box, Button, CircularProgress, Typography } from "@mui/material";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import api from "./api.js";
 import { openAppLink } from "./appLinks.js";
-import { attUrl } from "./Attachments.jsx";
+import { attUrl } from "./fileSave.js";
 import { FileDialog } from "./PublishedPages.jsx";
 import { actionFor, changed, choiceOf, fieldsOf, stateOf, textKey, valuesOf, wordsOf } from "./actionCard.js";
 import { outputRow } from "./taskOutputs.js";
@@ -36,7 +36,7 @@ export default function ActionCard({ row, tid, live = true, onChanged }) {
   const max = fields.find((f) => f.key === tk)?.max, over = max && text.length > max;
   const go = done?.url ?? st.url, gone = !!done || st.done;
   // ...a press that failed before this card was drawn is still said on it: the review keeps it (store.review_act_failed), not the press
-  const failed = err || (!busy && !gone && row?.Status === "pending" && row?.ActError) || "";
+  const failed = err || (!busy && !gone && ["pending", "superseded"].includes(row?.Status) && row?.ActError) || "";
   const decide = async (verb) => {
     setBusy(verb); setErr("");
     // ...the one press (press.js): it said "nothing was posted. Try again" after two minutes with no answer, over a post still going up;
@@ -76,7 +76,7 @@ export default function ActionCard({ row, tid, live = true, onChanged }) {
             sx={{ display: "block", width: "100%", boxSizing: "border-box", resize: "vertical", border: 0, outline: 0, px: 1.5, py: 0.5, font: "inherit", fontSize: 13.5, lineHeight: 1.5, color: INK, bgcolor: "transparent" }} />
         : <Typography data-tq-act-text="" sx={{ px: 1.5, py: 0.5, fontSize: 13.5, lineHeight: 1.5, color: gone ? INK : DIM, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{p[tk]}</Typography>}
       {pic && <Box component="img" data-tq-act-image={img.value} src={attUrl(pic)} alt={p.alt || pic.name} onClick={() => setViewing(pic)}
-        sx={{ display: "block", width: "100%", maxHeight: IMG_MAX, objectFit: "contain", bgcolor: "var(--tq-canvas, #f6f4f1)", mt: 0.75, cursor: "zoom-in", borderTop: `1px solid ${BORDER}`, borderBottom: `1px solid ${BORDER}` }} />}
+        sx={{ display: "block", width: "100%", height: IMG_MAX, objectFit: "contain",   /* its room from the first frame: a picture landing grew the card 2 -> 180 px (2026-11-12) */ bgcolor: "var(--tq-canvas, #f6f4f1)", mt: 0.75, cursor: "zoom-in", borderTop: `1px solid ${BORDER}`, borderBottom: `1px solid ${BORDER}` }} />}
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, px: 1.5, py: 1, flexWrap: "wrap" }}>
         {gone ? <Typography data-tq-act-done="" sx={{ fontSize: 13, color: "var(--tq-success, #47654a)", fontWeight: 600 }}>✓ {done ? w.done : st.said}
           {go && <> · <a href={go} target="_blank" rel="noopener noreferrer" style={{ color: "var(--tq-link, #55697a)" }}>See it on {row?.network}<OpenInNewIcon sx={{ fontSize: 12, ml: 0.25, verticalAlign: "-1px" }} /></a></>}</Typography>

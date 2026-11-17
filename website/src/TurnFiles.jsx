@@ -3,8 +3,8 @@
 // picture opening it over the chat (FileDialog), Download beside it
 import React, { useState } from "react";
 import { Button } from "@mui/material";
-import { attUrl, useSave } from "./Attachments.jsx";
-import { FileDialog, Preview } from "./PublishedPages.jsx";
+import { attUrl, useSave } from "./fileSave.js";
+import { CopyFile, FileDialog, isText, Preview } from "./PublishedPages.jsx";
 
 const isPic = (f) => /^image\//.test(f?.content_type || "") && !/svg/.test(f?.content_type || "");
 
@@ -18,6 +18,7 @@ export default function TurnFiles({ files }) {
           <div className="tq-published-row">
             <button type="button" className="tq-published-name" onClick={() => setViewing(f)} title="Open it here">
               <b>{f.name}</b><span>{isPic(f) ? "picture" : f.preview || "file"} · open</span></button>
+            {isText(f) && <CopyFile f={f} />}
             <Button size="small" href={attUrl(f, true)} data-tq-download="" onClick={(e) => { e.preventDefault(); save(f); }}>Download</Button>
           </div>
           {isPic(f)

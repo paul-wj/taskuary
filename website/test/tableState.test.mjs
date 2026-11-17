@@ -2,8 +2,10 @@
 // keeps quiet; "Thinking..." only while a judgement is in flight; a Board-opened task hears its Advisor line.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { adviceRead, sameTarget, tableOf } from "../src/tableState.js";
-import { adviceKeyFor } from "../src/advice.js";
+import { readFileSync } from "node:fs";
+import { adviceRead, overChat, tableOf, tableWords } from "../src/tableState.js";
+
+const src = readFileSync(new URL("../src/AssistantView.jsx", import.meta.url), "utf8");
 
 test("folded by its X or under a page, the item stays on the table and the Advisor keeps quiet", () => {
   assert.deepEqual(tableOf({ current: "task:7" }), { key: "task:7", folded: false, place: false, speaks: true });
@@ -14,10 +16,32 @@ test("folded by its X or under a page, the item stays on the table and the Advis
   assert.equal(tableOf({ cardKey: "task:7", setup: true, over: true }).speaks, true);
   assert.equal(tableOf({ cardKey: "task:7", setup: true, over: true, browsing: "b1" }).speaks, false);
   assert.equal(tableOf({ cardKey: "task:7", foldedKey: "task:7", setup: true, over: true }).speaks, false);
+  assert.match(src, /tableOf\(\{ current, cardKey, foldedKey, browsing, setup: setupOn\.current, over: !!setupCard \}\)/, "the page says what is over setup");
   assert.equal(tableOf({}).key, null);
 });
 
-
+// G5 (2026-10-19 UI walk): Connections opened over TQ-0003 and the rail still said "on the table", the box "Ask about this one"
+test("a page over the item: the box says it is under the page, not in view", () => {
+  const under = tableWords(tableOf({ current: "task:3", browsing: "b1" }), "TQ-0003");
+  assert.equal(under.box, "Ask about this page…", "the ask is about the page alone, never the task under it (2026-11-05)");
+  assert.equal(under.phone, "Ask about this page…");
+  const shown = tableWords(tableOf({ current: "task:3" }), "TQ-0003");
+  assert.match(shown.box, /^Ask about this one/);
+  // ...the open box over a task, and a phone's: "Talk to Taskuary…" (the owner, 2026-10-28), the resting pill still "Ask…"
+  assert.equal(shown.phone, "Ask Taskuary…", "the pill is the Assistant (the owner, 2026-11-06) - by its name, Taskuary (2026-11-15)");
+  assert.equal(shown.name, "Tell Taskuary what to do with TQ-0003", "the pill names the task its words do not");
+  assert.equal(under.name, "Ask Taskuary about this page");
+  assert.match(tableWords(tableOf({ cardKey: "task:9" })).box, /^Ask about this one/, "a task opened by name is on the table too");
+  assert.match(tableWords(tableOf({ browsing: "b1" })).box, /^Ask Taskuary/, "a page with nothing under it");
+  assert.doesNotMatch(src, /tableSays\.tag|tq-pile-now/, "no \"on the table\" tag under the ringed row (audit 2026-11-05)");
+  // ...and the box its words - but the one-row bar's pill, at rest and widened, its own short ones (2026-10-26)
+  // ...and the pill at rest with no task on the table the short hint, the long one ran on under its send button (2026-10-26)
+  // ...and the pill at rest the SAME "Ask…" whatever is on the table (the owner, 2026-10-27: "always the same size and words")
+  assert.match(src, /: boxNarrow && !boxWide \? "Ask…" : tableSays\.phone /, "and the chat window its words (2026-10-28)");
+  // ...but a chat put away by its minimize says it can be continued (the owner, 2026-10-28: "getting back is obvious")
+  assert.match(src, /placeholder=\{!boxWide && isMini && winLines\.length \? \(phone \|\| deskChat \? "Continue…" : "Continue chat…"\)/);
+  assert.match(src, /aria-label=\{tableSays\.name\}/, "and its name the task on the table");
+});
 
 // NO "THINKING..." (the owner, 2026-10-23): the server answers at once with the Advisor's one decision - a lit verb, silent or with its
 // fact - and the page keeps every answer it reads for the key it asked about
@@ -30,13 +54,55 @@ test("the Advisor's decision is read whole, silent or not, and nothing is ever a
   assert.deepEqual(adviceRead({}, "task:7"), { advice: null });
 });
 
-test("a task opened by name hears the Advisor's event, which names it by the rail's key", () => {
-  const ev = { key: "processing:abc", target_kind: "task", target_id: 12 };
-  assert.ok(sameTarget(ev, { key: "task:12" }));
-  assert.equal(adviceKeyFor(ev, { key: "task:12" }), "task:12");
-  assert.equal(adviceKeyFor(ev, { key: "task:13" }), null);
-  assert.equal(adviceKeyFor({ key: "msg:4", target_kind: "message", target_id: 4 }, { key: "task:4" }), null, "a message is not task 4");
-  assert.equal(adviceKeyFor(ev, { key: "review:3", tid: 12 }), "review:3", "the walk's item knows its task too");
+test("the page wires the record: the strip, the box's subject, the folded line and the ring", () => {
+  assert.match(src, /const table = tableOf\(/);
+  assert.match(src, /const shownAdvice = table\.speaks && !litNow \?/);
+  assert.match(src, /if \(card\) openCardRef\.current = null;/, "a task put on the table ends the page the chat was answering about");
+  assert.match(src, /live && foldedNow \? \{ role: "button"/, "the folded item on the table is its own door back");
+  assert.match(src, /onCurrent=\{\(\) => backToTable\(\)\}/, "the ringed rail row reopens it");
+  assert.match(src, /const backToTable = [^\n]*\n\s+setRailOpen\(false\);\n\s+if \(table\.folded \|\| table\.place\) unfoldTable\(\);/, "...by unfolding the table");
+  // folded by its X it is put away (UX walk, 2026-10-22): no "on the table" ring, no #task - and its plain row opens it again in place
+  // ...folded by a walk press, the row keeps its mark until the answer lands (rule 7: the band's count does not jump between batches)
+  // ...unless the press read them (rule 4): they left with it, and the fyi batch below takes the bracket at the press
+  assert.match(src, /current=\{old \? null : readGone\?\.keys\.includes\(currentItem\?\.key\) \? [^\n]*\n\s+: \(table\.folded && !flight\?\.from\) \|\|/, "a folded task's row is not marked on the table");
+  assert.match(src, /litTable\.tid && !table\.folded \? `#task=/, "nor does the address name it");
+  assert.match(src, /if \(isCur \|\| \(table\.folded && key === table\.key\)\) \{ backToTable\(key\); return; \}\n\s*pull\(key, null\);/, "its row unfolds it, not a second pull");
+  assert.match(src, /firstRun && \(browsing \|\| setupCard\) && <div data-tq-setup-over=""/, "a sidebar place - or a task - opens during setup, with the way back");
+  assert.doesNotMatch(src, /setTimeout\(\(\) => \{ if \(n === adviceAsk\.current\) setAsking\(null\); \}, 20000\)/, "no 20 s spinner that then shows nothing");
 });
 
+// the owner, 2026-11-06: "there used to be button to clear the chat??" - on the home screen the icons left the head for the pill
+test("the Assistant's own icons: in the head on the home screen, in the pill only while a task or page is open over the chat", () => {
+  assert.equal(overChat(tableOf({})), false, "home: nothing on the table");
+  assert.equal(overChat(tableOf({ current: "task:7", foldedKey: "task:7" })), false, "a task folded by its X: the chat is back");
+  assert.equal(overChat(tableOf({ current: "task:7" })), true, "a task open");
+  assert.equal(overChat(tableOf({ browsing: "b1" })), true, "a page (Settings) open");
+  assert.equal(overChat(tableOf({ cardKey: "task:9", foldedKey: "task:9", browsing: "b1" })), true, "a page over a folded task");
+  assert.match(src, /const iconsInPill = chatApart && overChat\(table\)/);
+  assert.match(src, /\{iconsInPill && <span className="tq-compose-own">\{ownIcons\}<\/span>\}/);
+  assert.match(src, /\{!iconsInPill && ownIcons\}/, "never both at once");
+});
 
+// ONE NAME FOR THE ASSISTANT, AND IT IS TASKUARY (the owner, 2026-11-15): its window was titled "Taskuary" over a box that said "Ask the
+// Assistant…", and the bell said "Ask the assistant". The name is kinds.json's `assistant`, read by the page (kinds.js ASSISTANT_NAME) and
+// the server (kinds.py ASSISTANT); the box, the bell, the window and the phone's own words call it - none types a name of its own
+test("the Assistant is named once, Taskuary, and its box, bell, window and phone words read that name", async () => {
+  const fs = await import("node:fs"), src = (f) => fs.readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8"), py = (f) => fs.readFileSync(new URL(`../../taskuary/${f}`, import.meta.url), "utf8");
+  const { ASSISTANT_NAME, ASK_ASSISTANT } = await import("../src/kinds.js");
+  assert.equal(JSON.parse(py("kinds.json")).assistant, "Taskuary");
+  assert.equal(ASSISTANT_NAME, "Taskuary"); assert.equal(ASK_ASSISTANT, "Ask Taskuary…");
+  const none = tableWords(tableOf({}));
+  assert.equal(none.box, "Ask Taskuary — a name or a subject pulls it in…"); assert.equal(none.phone, "Ask Taskuary…"); assert.equal(none.name, "Ask Taskuary");
+  assert.match(src("TaskHubPage.jsx"), />Ask \{ASSISTANT_NAME\}<\/Button>/, "the bell");
+  assert.match(src("AssistantView.jsx"), /<TaskuaryMark size=\{16\} \/><b>\{ASSISTANT_NAME\}<\/b>/, "the window's title is the same name its box says");
+  assert.match(src("phoneChats.js"), /assistant: `\$\{ASSISTANT_NAME\} from your phone`/);
+  assert.match(py("kinds.py"), /^ASSISTANT = _J\['assistant'\]/m);
+  assert.match(py("remote_assistant.py"), /ASK_SOMETHING = f'Ask \{ASSISTANT\} something'/);
+  // ...and no surface the owner reads still names it the old way: a quoted or drawn "Ask the Assistant" / "your Assistant chat" anywhere on the page
+  for (const f of fs.readdirSync(new URL("../src/", import.meta.url)).filter((x) => /\.jsx?$/.test(x))) {
+    const code = src(f).replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*|\{\/\*)/.test(l)).join("\n").replace(/\s\/\/ .*$/gm, "");
+    assert.doesNotMatch(code, /Ask the [Aa]ssistant|[Yy]our Assistant\b|Assistant chat\b/, `${f} still names the Assistant to the owner`);
+  }
+  // ...nor a setting's own words (its group names are link keys, and stay)
+  for (const [k, m] of Object.entries(JSON.parse(py("settings_schema.json")).knobs)) assert.doesNotMatch(`${m.label} ${m.desc || ""} ${m.help || ""}`, /[Tt]he Assistant\b|Assistant chat/, `setting ${k}`);
+});

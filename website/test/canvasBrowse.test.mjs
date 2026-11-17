@@ -29,10 +29,48 @@ test("Back and a section chip change only the line's own state - no fetch", () =
   }
 });
 
+test("the sidebar posts a browse card; only the newest is live, so one detail is mounted", () => {
+  const view = src("AssistantView.jsx");
+  assert.match(view, /onGo=\{\(tab, key\) => browse\(key\)\}/);
+  assert.match(view, /return \[\.\.\.m, \{ id, role: "browse", area, state \}\];/);
+  // ...and the area already open moves its own card rather than posting a second
+  assert.match(view, /if \(live\?\.role === "browse" && live\.area === area\) return m\.map\(\(x\) => \(x\.id === live\.id \? \{ \.\.\.x, state, down: false \} : x\)\);/);
+  assert.match(view, /const browsing = useMemo\(\(\) => liveBrowseId\(shown\), \[shown\]\);/); assert.match(process.getBuiltinModule("node:fs").readFileSync(new URL("../src/funnelPile.js", import.meta.url), "utf8"), /if \(shown\[i\]\.role === "browse"\) return shown\[i\]\.down \? null : shown\[i\]\.id;/);
+  assert.match(src("CanvasBrowse.jsx"), /if \(!live\) return frame\(\{ title: AREA_TITLES\[area\], area \}\);/);
+  // ...and the item on the table folds to its line while a browse card is open below it
+  assert.match(view, /const foldedNow = !!canvas && live && !!m\.card && \(foldsAs\(canvas\.folded, m\.card\.key\) \|\| !!canvas\.browsing\);/);
+});
+
 test("the card open in the canvas rides the next turn as its subject", () => {
   const view = src("AssistantView.jsx");
   assert.match(view, /open_card: openCardRef\.current/);
   assert.match(src("CanvasBrowse.jsx"), /useEffect\(\(\) => \{ if \(live\) onOpenCard\?\.\(detail \? openLabel : where\); \}/);
+});
+
+// the final review (2026-09-29): the tabs are gone, so what only they offered must be on the browse cards - "with today's
+// controls" (the spec)
+test("each browse card carries the controls its tab had", () => {
+  assert.match(src("CanvasBrowse.jsx"), /\{tools\}/);
+  // ...and a tab whose list is rows keeps them rows (the fix pass: report rows were crushed into a 240px card grid)
+  assert.match(src("ReportsView.jsx"), /title: "Reports", wide: true,/);
+  assert.match(src("HubView.jsx"), /title: "Hub", wide: true,/);
+  const reports = src("ReportsView.jsx"), hub = src("HubView.jsx"), settings = src("SettingsView.jsx");
+  const r = reports.slice(reports.indexOf("return browse({"));
+  for (const want of ["Run due now", "<SetupWithAi", '"new-invoices"', '"new-agent"']) assert.ok(r.slice(0, 5000).includes(want), `Reports: ${want}`);
+  const h = hub.slice(hub.indexOf("return browse({"));
+  for (const want of ["Write one", "setSort", "setKind", "setRemoved", "<NewEntry"]) assert.ok(h.slice(0, 5000).includes(want), `Hub: ${want}`);
+  const st = settings.slice(settings.indexOf("return browse({"));
+  for (const want of ["<AssistantChanges", "Search settings"]) assert.ok(st.slice(0, 5000).includes(want), `Settings: ${want}`);
+});
+
+// the final review: "#report=999" opened an empty editor whose Save aimed at a missing id; "#connector=gone" said nothing
+test("a link to a report or a connection that is gone says so, and opens nothing empty", () => {
+  const reports = src("ReportsView.jsx"), conns = src("ConnectorsView.jsx");
+  assert.match(reports, /const missing = typeof browseState\.open === "number" && !sources\.some\(\(x\) => x\.SourceId === browseState\.open\);/);
+  assert.match(reports, /detail: browseState\.open != null && !missing \?/);
+  assert.match(conns, /if \(!agents && !direct\) \{\s*setErr\(`That connection \(\$\{want\}\) is not here any more.*\s*setOpen\(null\); onBrowseState\?\.\(\{ \.\.\.browseState, open: null \}\); return;/,
+    "...said over the list, not over the card that was open before (verify, 2026-10-19)");
+  assert.match(conns, /note: err \|\| \(q \?/);
 });
 
 // the owner, 2026-09-29: "I don't see the rest of the docs ... we need sub settings to see all the files soul.md/counsel"

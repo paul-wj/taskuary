@@ -13,6 +13,7 @@ import { useLocale } from "./LocaleProvider.jsx";
 
 const errorOf = (e, key) => e?.response?.data?.detail ? { text: e.response.data.detail } : { key };
 const errorText = (error) => error?.key ? t(error.key) : error?.text || "";
+import { UndoLine, removeNow } from "./Removed.jsx";
 
 // A SIGN-IN SAVED AHEAD OF TIME (the owner, 2026-11-03: "we probably should have space on connector to fill out what the system requires"):
 // the site, its user name and password - and its authenticator key if it has one - sealed the way the fill page's Save to vault keeps them.
@@ -72,7 +73,9 @@ export default function SavedSignins() {
   useEffect(() => { load(); }, []);
   const remove = async (site) => {
     setBusy(site); setWhat("remove"); setRowErr({ site: "", text: "" });
-    try { await api.delete(`/api/signins/${encodeURIComponent(site)}`); await load(); }
+    // ...ONE PRESS, AND AN UNDO LINE (the owner, 2026-11-15: no question - commit ad38e36bc took one back - but a way to take it back, as a
+    // removed task has): the server keeps the sealed sign-in for the line's minutes (recentlydeleted.remove_signin), and removeNow says so
+    try { await removeNow(() => api.delete(`/api/signins/${encodeURIComponent(site)}`), "signin", site); await load(); }
     catch (e) { setRowErr({ site, text: errorOf(e, "That sign-in was not removed - try again.") }); }
     finally { setBusy(""); }
   };
@@ -88,7 +91,9 @@ export default function SavedSignins() {
   };
   if (err && !rows) return <Typography variant="body2" role="alert" sx={{ color: "var(--tq-danger, #a33b3b)", py: 1.5 }}>{errorText(err)}</Typography>;
   // ...and with none, one quiet line: an owner checking nothing is kept found no trace of the feature at all (2026-10-25)
+  const undo = <UndoLine kinds={["signin"]} onRestored={load} sx={{ mt: 1, mb: 0.5 }} />;
   if (!rows?.length) return <Box data-tq-saved-signins="" sx={{ py: 1.5 }}>
+    {undo}
     <Typography variant="body2" sx={{ color: FAINT, fontSize: 12.5 }}>
       {t("No saved sign-ins. A sign-in you type in the agent browser is kept here once it goes through - or add one now.")}</Typography>
     <AddSignin onSaved={load} /></Box>;
@@ -96,6 +101,7 @@ export default function SavedSignins() {
     <Box data-tq-saved-signins="" sx={{ py: 1.5 }}>
       <Typography sx={{ color: INK, fontWeight: 600, fontSize: 13.5, mb: 0.5 }}>{t("Saved sign-ins")}</Typography>
       <AddSignin onSaved={load} />
+      {undo}
       {rows.map((r) => (
         <Box key={r.site} sx={{ py: 1, borderBottom: `1px solid ${BORDER}` }}>
           <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
@@ -111,7 +117,7 @@ export default function SavedSignins() {
                 : t("Keep the site's authenticator key, so Taskuary types its code after the password")}>
               {r.code ? t("Remove authenticator key") : t("Add authenticator key")}</Button>
             <Button size="small" variant="outlined" disabled={busy === r.site} onClick={() => remove(r.site)} sx={{ color: DIM, borderColor: BORDER }}
-              title={t("Forgets the saved password and signs the browser out of this site")}>{busy === r.site && what === "remove" ? t("Removing…") : t("Remove")}</Button>
+              title={t("Forgets the saved password and signs the browser out of this site - Undo puts the saved sign-in back")}>{busy === r.site && what === "remove" ? t("Removing…") : t("Remove")}</Button>
           </Box>
           {rowErr.site === r.site && rowErr.text && (
             <Typography variant="body2" role="alert" data-tq-signin-err="" sx={{ color: "var(--tq-danger, #a33b3b)", mt: 0.5, fontSize: 12.5 }}>{errorText(rowErr.text)}</Typography>

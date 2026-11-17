@@ -14,10 +14,10 @@ import base64, json, os, re, time
 from urllib.parse import urlparse
 from loguru import logger
 from . import net as requests     # pooled Session + (connect, read) timeouts, same call shape
+from .kinds import ASSISTANT
 
 TG_API = 'https://api.telegram.org'
 TG_LIMIT = 25                # messages per poll, like the other channels
-WA_URL = 'http://127.0.0.1:8977'   # the bridge's default; override in the connector config
 def wa_url(raw='') -> str:
     "The card's bridge URL - the managed bridge's current port when it names none, or names it where it was (wabridge.bridge_url)."
     from .wabridge import bridge_url
@@ -201,7 +201,7 @@ def poll_telegram(store, c, sources: list, llm=None, file_only=False) -> int:
 TG_BUTTONS = 'tg_buttons'              # tg_buttons:<chat> -> {"msg": id, "labels": [...]} - the one message whose buttons answer
 
 
-def tg_send(store, chat_id: str, body: str, connector_id=None, buttons: list = None) -> dict:
+def tg_send(store, chat_id: str, body: str, connector_id=None, buttons: list = None, quote: dict = None) -> dict:
     """`buttons`: the choices numbered in `body`, as tappable buttons under it - Telegram's own, so no poll is needed (the
     owner, 2026-09-29: "if buttons work in telegram no need for polls"). A tap comes back as a callback_query
     (poll_telegram) carrying the button's index. Only the NEWEST message's buttons answer; the ones before are taken off,
@@ -212,7 +212,9 @@ def tg_send(store, chat_id: str, body: str, connector_id=None, buttons: list = N
     if not (c and c.get('Secret')): raise RuntimeError('the Telegram connection is not set up')
     labels = [str(b) for b in (buttons or []) if str(b).strip()][:12]      # whole: a tap is matched by its words
     markup = {'reply_markup': {'inline_keyboard': [[{'text': t, 'callback_data': f'p{i}'}] for i, t in enumerate(labels)]}} if labels else {}
-    sent = tg(c['Secret'], 'sendMessage', chat_id=int(chat_id), text=body[:4000], **markup)
+    # `quote` ({id} of the line it answers, outbound.chat_quote): a reply to it, sent anyway if that line is gone
+    reply = {'reply_parameters': {'message_id': int(quote['id']), 'allow_sending_without_reply': True}} if quote and str(quote.get('id')).isdigit() else {}
+    sent = tg(c['Secret'], 'sendMessage', chat_id=int(chat_id), text=body[:4000], **markup, **reply)
     # ...and ANY newer message takes the older buttons off, one with none of its own too: a typed answer under a card left the card's
     # buttons drawn and looking live above it, while the list they named had been spent (F2)
     key = f'{TG_BUTTONS}:{chat_id}'
@@ -705,8 +707,8 @@ def poll_whatsapp(store, c, sources: list, llm=None, file_only=False) -> int:
         took.append(m.get('id'))
     # blue ticks on what the funnel took, when the owner asked for it - best effort, and
     # never at the cost of the poll: an unpaired or restarted bridge just does not mark
-    from .channels import wants_read
-    if took and wants_read(store):
+    from . import filing
+    if took and filing.takes_read(c):
         try: _wa(c, '/read', {'ids': [i for i in took if i]})
         except Exception as e: logger.warning(f'marking whatsapp read failed: {e}')
     # only a sequence that moved: an idle check-in rewrote the same number ~2/s, and every write moved the rail (2026-10-12)
@@ -790,7 +792,7 @@ def wa_jid(chat) -> str:
     if '@' in j: return j
     digits = re.sub(r'[\s()+.-]', '', j)
     if digits.isdigit() and len(digits) >= 7: return f'{digits}@s.whatsapp.net'
-    raise RuntimeError(f'{j!r} is not a WhatsApp chat - pick the Assistant chat again on the WhatsApp card')
+    raise RuntimeError(f'{j!r} is not a WhatsApp chat - pick the {ASSISTANT} chat again on the WhatsApp card')
 
 
 def wa_send(store, jid: str, body: str, connector_id=None, poll: list = None, quote: dict = None) -> dict:

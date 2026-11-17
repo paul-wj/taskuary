@@ -146,7 +146,12 @@ class ACPClient:
                 if sent: sent()                           # ...once it is on its way: a cancel then is this request's (prompt)
             m = q.get(timeout=timeout or self.timeout)
             if m is None:
-                raise ACPAgentError(f'the agent stopped during {method}' + (f': {"".join(self._err)[:300]}' if self._err else ''))
+                err = ''.join(self._err).strip()[:300]
+                # ...a turn it died holding is said as a chat CLI's that died mid-turn (clipool.MID_TURN): one sentence for one fact, whatever the agent
+                from .clipool import MID_TURN
+                # ...and nothing of the process after it, which the chat drew as "(the agent exited)" - that detail is the log's
+                if method == 'session/prompt': logger.warning(f"acp: died mid-turn - {err or 'the agent exited'}"); raise ACPAgentError(MID_TURN)
+                raise ACPAgentError(f'the agent stopped during {method}' + (f': {err}' if err else ''))
             if 'error' in m: raise ACPAgentError(f"{method}: {m['error'].get('message', m['error'])}")
             return m.get('result')
         finally: self._waiters.pop(mine, None)            # a reply to a request we gave up on is dropped by the pump
@@ -225,7 +230,7 @@ class ACPClient:
         THE ANSWER IS WHAT IT SAID LAST, after its last tool call - what claude's `result` and codex's last agent_message are on the
         argv road. Its words before are steps in the trace (agents.ACPSteps); joined into the answer they read "I'll list the
         files... There are 3 files" as one reply. All of it when it said nothing after its last call."""
-        said, cut = [], [0]
+        said, cut, of = [], [0], [None]
         self.last_turn = {}
         outer = self.on_update
         def collect(u):
@@ -234,6 +239,9 @@ class ACPClient:
             # "Hello!" / tool_call / "What would you like..." and the result read "Hello!What would you"
             if kind == 'agent_message_chunk':
                 if said and said[-1] is None: said[-1] = chr(10); cut[0] = len(said)
+                # ...and so is a new message said straight after another (the adapter names each chunk's message): they ran together
+                elif said and u.get('messageId') != of[0]: said.append(chr(10) * 2)
+                of[0] = u.get('messageId')
                 said.append(_text_of(u.get('content')))
             elif kind in ('tool_call', 'tool_call_update', 'plan') and said and said[-1] is not None: said.append(None)
             if outer: outer(u)
@@ -263,8 +271,10 @@ class ACPClient:
                 # an explicitly owned tree (Oh My Pi): stop the whole process tree and verify it is gone
                 spawn.stop_tree(self.p)
             else:
-                # an adapter is node under npx under cmd.exe: kill() ends the cmd and leaves node driving the CLI on its own
-                if os.name == 'nt': spawn.run(['taskkill', '/PID', str(self.p.pid), '/T', '/F'], capture_output=True, timeout=15)
+                # A failed tree-kill must still end the process we hold.
+                if os.name == 'nt':
+                    try: spawn.run(['taskkill', '/PID', str(self.p.pid), '/T', '/F'], capture_output=True, timeout=15)
+                    except Exception as e: logger.debug(f'acp: the tree-kill did not run - {e}')
                 if self.p.poll() is None: self.p.kill()
         except Exception as e:
             if tree:
@@ -295,16 +305,3 @@ def _text_of(content) -> str:
     return str(content or '')
 
 
-def trace_line(u: dict) -> str:
-    """One readable line for the Board, or '' for an update with nothing to show. Mirrors what
-    agents._live_line does for claude's stream-json, so the run looks the same on either road."""
-    kind = u.get('sessionUpdate')
-    if kind == 'agent_message_chunk': return ' '.join(_text_of(u.get('content')).split())[:400]
-    if kind in ('tool_call', 'tool_call_update'):
-        title = u.get('title') or u.get('toolCallId') or 'tool'
-        status = u.get('status') or ''
-        return f'{title}{f" ({status})" if status else ""}'[:400]
-    if kind == 'plan':
-        entries = [str((e or {}).get('content') or '') for e in (u.get('entries') or [])]
-        return ('plan: ' + '; '.join(x for x in entries if x))[:400] if entries else ''
-    return ''

@@ -48,6 +48,32 @@ class ParseAndFile(unittest.TestCase):
         self.assertFalse(playbooks.about_code(pb))
         self.assertTrue(playbooks.about_code(playbooks.parse(ONBOARD)))     # github on uses = code rules apply
 
+    def test_a_markdown_list_under_a_label_is_that_labels(self):
+        """The playbook builder, 2026-11-13: the agent wrote its steps and its ask-first cases as markdown lists on the lines under
+        their labels, unindented, one label with a blank before its list - each read empty and the draft was refused for wanting
+        all six fields. A label takes the list below it; what follows a blank line under a value is still the body."""
+        pb = playbooks.parse("""# Vendor W-9 request
+when: a vendor asks for the W-9
+uses: mail (read, draft)
+steps:
+
+1. Check it is a W-9 request.
+2. Find the current W-9.
+3. Draft the reply with it attached.
+alone: find the W-9 and draft the reply
+ask first: sending the reply. Also:
+- an unknown sender
+- a different tax form
+done when: the reply went out on the owner's Send
+
+House rule: the newest signed copy only.
+""")
+        self.assertTrue(all(pb[f] for f in playbooks.FIELDS), pb)
+        self.assertEqual(pb['steps'], '1. Check it is a W-9 request. 2. Find the current W-9. 3. Draft the reply with it attached.')
+        self.assertEqual(pb['ask first'], 'sending the reply. Also: - an unknown sender - a different tax form')
+        self.assertEqual(pb['body'], 'House rule: the newest signed copy only.')
+        self.assertEqual(playbooks.parse(BILL)['body'], 'House rule: the memo is card last-4 + transaction id. ZZMARKPLAYBOOKZZ')
+
     def test_the_words_of_its_steps_never_make_a_playbook_about_code(self):
         """Only `uses:` decides (2026-10-11, "everything should be ai"): a bookkeeping job that visits the branch office and
         commits a journal entry is not a code change, and its agent must not be told the repository rules outrank it."""
@@ -407,3 +433,26 @@ class DeletedIsRecoverable(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_a_playbook_that_says_nothing_of_how_the_job_is_done_is_refused_at_every_door():
+    """The owner, 2026-11-11: an agent's playbook card stood for his approval, blank. A title and a "when:" passed the check, so the tool,
+    the proposal gate and the on-close question all queued one with no steps. One rule, at the one gate, said to whoever wrote it."""
+    import json
+    from taskuary import agenttools, playbooks, proposals
+    from taskuary.store import MemoryStore
+    blank, full = '# Month-end close\nwhen: the month ends', '# Month-end close\nwhen: the month ends\nsteps: 1. pull the ledger 2. reconcile'
+    for text in (blank, blank + '\nuses: quickbooks', ''):
+        try: playbooks.check(text); raise AssertionError(f'passed: {text!r}')
+        except ValueError as e: assert 'needs' in str(e)
+    assert playbooks.check(full)['steps'] and playbooks.check(blank + '\n\n1. Pull the ledger.\n2. Reconcile it.')['body']      # the steps written out under it
+    s = MemoryStore(); tid = s.create_task({'Title': 'Close October', 'Kind': 'general', 'Status': 'open'}, 'owner')
+    refused = []
+    assert proposals.queue(s, tid, {'action': 'write_playbook', 'slug': 'month-end', 'text': blank, 'why': 'it recurs'}, refused=refused) is None
+    assert refused and 'how the job is done' in str(refused[0]) and not s._rows('SELECT 1 FROM review WHERE TaskId=?', (tid,))
+    try: agenttools.proposal_of({'action': 'write_playbook', 'slug': 'month-end', 'text': blank}); raise AssertionError('the tool took it')
+    except ValueError as e: assert 'how the job is done' in str(e)
+    s.set_setting('playbooks_enabled', '1', 'owner')
+    said = lambda t: (lambda system, user, **k: json.dumps({'playbook': {'slug': 'month-end', 'text': t, 'why': 'it recurs'}}))
+    assert playbooks.draft(s, tid, 'x' * 5000, llm=said(blank)) is None and not s._rows('SELECT 1 FROM review WHERE TaskId=?', (tid,))
+    assert proposals.queue(s, tid, {'action': 'write_playbook', 'slug': 'month-end', 'text': full, 'why': 'it recurs'})

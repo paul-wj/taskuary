@@ -13,10 +13,14 @@ import re
 from . import kinds as task_kinds
 
 # Common reply/forward prefixes stripped before subject comparison (incl. localized ones).
-_SUBJ_PREFIX = re.compile(r'^\s*((re|fw|fwd|aw|sv|vs)\s*(\[\d+\])?\s*:\s*)+', re.I)
+# ...THE ONE PLACE A "Re:" COMES OFF (the audit, 2026-11-15): the brief, the calendar's title, the phone's row, the workstreams and the
+# vocabulary each stripped it with a regex of their own, and each knew fewer prefixes than this - "AW:" stayed on the phone's row, "WG:"
+# only the vocabulary knew, "Re[2]:" only routing. bare_subject keeps the subject's own case, norm_subject is the key two subjects compare by
+_SUBJ_PREFIX = re.compile(r'^\s*((re|fw|fwd|aw|wg|sv|vs)\s*(\[\d+\])?\s*:\s*)+', re.I)
 _TOKEN = re.compile(r'[a-z0-9]{2,}')
 
-def norm_subject(s): return _SUBJ_PREFIX.sub('', s or '').strip().lower()
+def bare_subject(s): return _SUBJ_PREFIX.sub('', str(s or '')).strip()
+def norm_subject(s): return bare_subject(s).lower()
 # the words a typed SEARCH is matched by, literally - no stopword list, and never how alike two texts are (that is textsim's)
 def tokens(s): return _TOKEN.findall((s or '').lower())
 
@@ -34,9 +38,11 @@ def subject_topic(s, min_words=2):
         if len(tokens(cand)) >= min_words: return cand[:200]
     return ''
 
-# the channels where a conversation id names a ROOM and not a topic (store.CHAT_CHANNELS is the
-# same set; this module stays pure, so it keeps its own copy rather than importing the store)
-CHAT_CHANNELS = {'teams', 'slack', 'telegram', 'whatsapp', 'discord', 'imessage'}
+# THE CHAT CHANNELS, SAID ONCE: where a conversation id names a ROOM and not a topic. This module stays pure, so the list lives here and
+# the store, ingest, categories, search and the composer read it. Each kept a copy of its own and they had drifted (the audit,
+# 2026-11-15): ten channels to three of them, six here and to search and the composer - so a Mattermost or Matrix line was titled with
+# its room's name, wore no chat pill in search and was written as an email, signature and all - and five in a list nothing read.
+CHAT_CHANNELS = frozenset({'teams', 'slack', 'telegram', 'whatsapp', 'discord', 'imessage', 'mattermost', 'rocketchat', 'matrix', 'google_chat'})
 def first_line(body: str) -> str:
     """The first line with words on it - no rule about which words a line may open with. GREETING skipped
     "hi/hello/dear" lines and so skipped "Hi-res scans of the Q3 file are missing" too; triage's own title

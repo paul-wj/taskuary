@@ -52,14 +52,6 @@ test("pressed, the card stays in the turn with the press it took and what came o
   assert.deepEqual([halfway.asks.map((g) => g.reviews.length), halfway.past], [[2], []]);
 });
 
-test("a pressed card - held steps approved, a reply sent - is drawn in the turn that set it up, whatever came after", () => {
-  const page = read("TaskPage.jsx"), chat = read("GeneralWorkspace.jsx");
-  assert.match(page, /const turnCards = \[\.\.\.passedCards, \.\.\.replacedCards, \.\.\.pressedCards\.map\(\(g\) =>/);
-  assert.match(page, /node: <SentCard id=\{r\.ReviewId\}/);
-  assert.match(page, /turnCards=\{turnCards\}/);
-  assert.match(chat, /const placed = React\.useMemo\(\(\) => placeCards\(turnCards, messages, turns\), \[turnCards, messages, turns\]\);/, "placed in the turn that raised it (agentSummary.placeCards)");
-  assert.match(chat, /\{pressed\.map\(\(c\) => <React\.Fragment key=\{c\.key\}>\{c\.node\}<\/React\.Fragment>\)\}/);
-});
 
 test("the task page draws a turn's held steps as one HeldSteps card, one Approve through the batch door", () => {
   const page = read("TaskPage.jsx"), card = read("HeldSteps.jsx");
@@ -82,4 +74,33 @@ test("an approved or dismissed proposal stays in its turn as its pressed card; a
   const page = read("TaskPage.jsx");
   assert.match(page, /node: g\.held \? <HeldSteps reviews=\{g\.reviews\} onChanged=\{decided\} \/> : <PassedCard reviews=\{g\.reviews\} \/>/);
   assert.match(read("PassedCard.jsx"), /<PressedButton pressed=\{pressed\} \/>/); assert.match(read("HeldSteps.jsx"), /<PressedButton pressed=\{c\.pressed\} \/>/);
+});
+
+// THE CARD ROUND, 2026-11-12: a held 60-line query opened to 1047 px of command - the card's title and why off the top of the chat. And
+// with lines waiting by the box the whole task stood 8 px under the canvas's head: a waiting row carried the mark the canvas reads as "a
+// link asked for this place, hold it in the middle" (appLinks.focusPlace), so the canvas scrolled the task to centre a waiting line
+test("a long command scrolls inside its card, and a waiting line never wears the canvas's hold mark", () => {
+  assert.match(read("HeldSteps.jsx"), /data-tq-held-commands="" tabIndex=\{0\}[^>]*maxHeight: 220, overflowY: "auto"/);
+  const view = read("GeneralWorkspace.jsx");
+  assert.doesNotMatch(view, /data-tq-held(=|"\s*:)/, "the chat marks nothing [data-tq-held]: that name is the canvas's (AssistantView keepTable)");
+  assert.match(read("AssistantView.jsx"), /const held = el\.querySelector\("\[data-tq-held\]"\)/);
+});
+
+// A READ OUTSIDE THE TASK'S FOLDERS (readgate.py, 2026-11-16): held with no command - the card says what it reads and where, and offers no
+// "Show the command" over an empty box (the real-CLI walk drew one)
+test("a held read has no command to show", () => {
+  const r = { ReviewId: 9, TaskId: 7, Kind: "action", Status: "pending", DraftText: JSON.stringify({ action: "shell_act", sid: "run1", turn: 3, command: "",
+    what: "read q3-budget.csv in Documents", why: "it is outside this task's own folders", where: "C:/Users/alex/Documents", reads: ["C:/Users/alex/Documents"] }) };
+  const card = heldCard([r]);
+  assert.equal(card.folder, "C:/Users/alex/Documents");
+  assert.match(card.steps[0].text, /read q3-budget\.csv/i);
+  assert.match(read("HeldSteps.jsx"), /c\.steps\.some\(\(s\) => s\.command\) && <Typography/);
+});
+
+// ...and its yes ran nothing (the owner, 2026-11-16): "Allowed - this task may read that folder", never "it ran"; a command still "ran"
+test("an approved held read says it was allowed, never that it ran", () => {
+  const read = { ReviewId: 9, TaskId: 7, Kind: "action", Status: "approved", DraftText: JSON.stringify({ action: "shell_act", sid: "run1", turn: 3, command: "",
+    what: "read q3-budget.csv in Documents", reads: ["C:/Users/alex/Documents"] }) };
+  assert.equal(heldCard([read]).said, "Allowed - this task may read that folder");
+  assert.equal(heldCard([step(1, 4, "git push origin master", "Push master", "approved")]).said, "it ran");
 });

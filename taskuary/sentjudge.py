@@ -14,6 +14,7 @@ No brain is not a verdict: nothing is guessed, and the summaries say promises an
 import threading
 from datetime import datetime, timedelta
 from loguru import logger
+from . import aiusage
 from .timewords import plural
 from .store import task_ref
 
@@ -106,7 +107,7 @@ def keep_on(store, tid: int, m: dict, what: str, due, why: str):
     beside the ask it answered, with the same thing owed on both). Its day is the task's due day (the owner, 2026-10-26: "if date
     promised then due date otherwise just a note"), never pushing an earlier one out, which the owner or the sender set for a reason.
     With a day and an agent on the task, that agent looks that morning whether it went (checkback.py - one line, said by set_check);
-    never over a check-back the agent set itself, and never on a stranger's task (general.take_lesson_and_check's rule)."""
+    never over a check-back the agent set itself, and never on a stranger's task (general.take_check's rule)."""
     from . import checkback, general, origin, remind
     t = store.get_task(tid) or {}
     cur = str(t.get('DueAt') or '')[:10]
@@ -135,6 +136,7 @@ def _ask(llm, items: list) -> list:
     return [v for v in got if isinstance(v, dict)]
 
 
+@aiusage.named('sent.judge')
 def judge(store, llm=None, days: int = DAYS) -> int:
     """Read the owner's sent messages in the window that have no verdict yet - ONE call, at most BATCH of them, newest
     first - and keep each answer. Nothing unjudged costs nothing (no model is even built). Returns how many were judged."""
@@ -185,6 +187,7 @@ def judge(store, llm=None, days: int = DAYS) -> int:
         return n
 
 
+@aiusage.named('sent.judge')
 def judge_text(store, body: str, subject: str = '', to: str = '', llm=None) -> dict | None:
     """One message about to leave or just sent (asks.watch_reply), judged on its words alone: {'asks_them', 'promise',
     'what', 'due'} or None when there is no brain or it did not answer. Never on a button's thread - callers background it."""

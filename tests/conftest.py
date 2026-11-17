@@ -456,6 +456,7 @@ def isolated_runtime_boundaries():
                  mock.patch.object(server, 'reports_forever', stopped('report scheduler')), \
                  mock.patch.object(server, 'quick_forever', stopped('chat poll scheduler')), \
                  mock.patch.object(server, 'doorway_forever', stopped('assistant doorway')), \
+                 mock.patch.object(server, '_warm_reads', stopped("the page's first reads made ahead")), \
                  mock.patch.object(server, 'share_start', stopped('share port')), \
                  mock.patch.object(server, 'resume_asking', stopped('asking agents resumed')),                  mock.patch.object(server, 'close_orphan_browsers', stopped('orphan browsers closed')), \
                  mock.patch.object(blackboard, 'schedule_due', stopped('dispatch retry scheduler')), \
@@ -508,6 +509,7 @@ def pytest_configure(config):
     # later run then waits on a director that is not there (an hour of false reproductions, 2026-11-11) - a session starts without it
     Path(__file__).with_name('.fake-director').unlink(missing_ok=True)
     config.addinivalue_line('markers', 'acp: the test drives the ACP road itself, so it keeps clis.ADAPTERS (no_real_acp_adapters)')
+    config.addinivalue_line('markers', 'real_chrome: the test drives browserview.real_chrome itself, its spawn stood in for (no_real_chrome)')
 
 
 @pytest.fixture(autouse=True)
@@ -566,16 +568,25 @@ def no_connection_brains():
 
 
 @pytest.fixture(autouse=True)
-def no_advisor_in_the_background():
-    """The Advisor's event path judges a changed item on a daemon thread (advisor.notice): a close in one test spawned a pile
-    build whose agenda thread outlived the test and tripped the teardown join above. A test that wants a judgement asks for
-    it inline (`notice(..., wait=True)`); nobody gets one by accident."""
-    from taskuary import advisor
+def no_goal_reads_in_the_background():
+    """A goal's read runs on a daemon thread (goals.BACKGROUND): a close in one test spawned a pile build whose agenda thread outlived the
+    test and tripped the teardown join above. A test that wants one asks for it inline; nobody gets one by accident."""
     from taskuary import goals
-    from taskuary import calibrate
-    calibrate.clear()
-    advisor.BACKGROUND = goals.BACKGROUND = False; yield; advisor.BACKGROUND = goals.BACKGROUND = True
-    calibrate.clear()
+    goals.BACKGROUND = False; yield; goals.BACKGROUND = True
+
+
+@pytest.fixture(autouse=True)
+def no_waiting_room_clock_left_behind(monkeypatch):
+    """A session's end looks at the waiting room a beat later, on a Timer (waitroom.later). Left running it fired in the NEXT test with the
+    old store: it found no session for that store's task 1 yet and opened one of its own - registered first, it took the next test's line,
+    and that test's own session never heard it (test_acp_coding on Windows CI, 2026-11-13..15). Each test's clock stops with the test."""
+    from taskuary import waitroom
+    real, timers = waitroom.later, []
+    def later(store, delay=3.0): tm = real(store, delay); timers.append(tm); return tm
+    monkeypatch.setattr(waitroom, 'later', later)
+    yield
+    for tm in timers: tm.cancel()
+    for tm in timers: tm.join(10)                # ...one already looking finishes before the next test begins
 
 
 @pytest.fixture(autouse=True)
@@ -585,6 +596,16 @@ def no_sessions_left_behind():
     from taskuary import terminal
     was = dict(terminal.SESSIONS); yield
     terminal.SESSIONS.clear(); terminal.SESSIONS.update(was)
+
+
+@pytest.fixture(autouse=True, scope='module')
+def no_task_files_left_behind():
+    """A task's files live under the home by its number (outputs.folder: scratch/outputs/TQ-n), and every module's store numbers from 1:
+    the parity suite's invoices in TQ-0001's folder became "📎 Send the 3 files" on another module's finished task, four red phone tests a
+    shard later (CI, 2026-11-15). Each module starts with no task's files. Per module, not per test: a module may build its files once."""
+    import shutil
+    from taskuary import config
+    shutil.rmtree(config.home() / 'scratch' / 'outputs', ignore_errors=True); yield
 
 
 @pytest.fixture(autouse=True, scope='module')
@@ -609,10 +630,10 @@ def no_store_left_behind():
 
 @pytest.fixture(autouse=True, scope='session')
 def agents_can_start():
-    """A bare store connects no brain, so every agent button would be greyed and the Advisor's check refuse them all (advisor.checked) -
-    agents are not what most tests are about. A test of that check turns it on (`advisor.AGENT_CHECK = True`)."""
-    from taskuary import advisor
-    advisor.AGENT_CHECK = False; yield; advisor.AGENT_CHECK = True
+    """A bare store connects no brain, so every agent button would be greyed (rulebook._agent_ready) - agents are not what
+    most tests are about. A test of that check turns it on (`rulebook.AGENT_CHECK = True`)."""
+    from taskuary import rulebook
+    rulebook.AGENT_CHECK = False; yield; rulebook.AGENT_CHECK = True
 
 
 @pytest.fixture(autouse=True, scope='session')
@@ -769,3 +790,45 @@ def fx():
     running, filed_fyi, ...) are the regression fixtures for Timeline/Board chips."""
     from taskuary.testing import Factory
     return Factory()
+
+
+@pytest.fixture(autouse=True)
+def the_basic_flow(request):
+    """EVERY LIST A TEST BUILDS KEEPS THE BASIC FLOW (the owner, 2026-11-12: "nothing ever goes backwards" - the shape of dots over his line came
+    back after weeks because each placement fix changed the list's rules and nothing checked the flow as a whole): each conversation.items a
+    test reads is held to conversation.flow_breaks, against the one it read before of the same task. A break fails the test that made it."""
+    import weakref
+    from taskuary import conversation
+    real, prev, bad = conversation.items, weakref.WeakKeyDictionary(), []
+    def items(store, tid, *a, **k):
+        got = real(store, tid, *a, **k)
+        prev.setdefault(store, {})
+        key = int(tid)
+        bad.extend(f'task {tid}: {b}' for b in conversation.flow_breaks(got, prev[store].get(key)) if f'task {tid}: {b}' not in bad)
+        if os.environ.get('FLOW_DUMP'): print('LIST', tid, [(x['id'], x.get('state', ''), [(c['id'], c['status']) for c in x.get('cards') or []]) for x in got['items']], got.get('working'))
+        prev[store][key] = got
+        return got
+    conversation.items = items
+    yield
+    conversation.items = real
+    # ...FLOW_REPORT=<file>: every break of a run written down, none failing - the survey of what the rule finds
+    if bad and (rep := os.environ.get('FLOW_REPORT')):
+        with open(rep, 'a', encoding='utf-8') as f: f.write(''.join(f'{request.node.nodeid}\t{b}\n' for b in bad))
+        return
+    # ...and what it found and is not fixed yet, by test and class, each with its reason (FLOW_OPEN): any other break fails the test
+    left = [b for b in bad if not any(request.node.nodeid.split('::')[-1].startswith(t) and c in b for t, c in FLOW_OPEN)]
+    if left: pytest.fail('the basic flow broke:\n' + '\n'.join(left[:20]), pytrace=False)
+
+
+# WHAT THE BASIC FLOW FOUND AND IS NOT FIXED YET (2026-11-12): (test name prefix, the break's words) - each an open finding, named in the report
+FLOW_OPEN = []
+
+
+@pytest.fixture(autouse=True)
+def no_real_chrome(request, monkeypatch):
+    """A session's Chrome is started by Taskuary itself (browserview.real_chrome) - a test never starts one: it reads as already up, and
+    whatever stands in for agent-browser answers as before. The tests of the launch itself mark `real_chrome` and stand in for the spawn."""
+    if request.node.get_closest_marker('real_chrome'): return
+    from taskuary import browserview
+    monkeypatch.setattr(browserview, 'real_chrome', lambda sid: 0)
+    monkeypatch.setattr(browserview, 'chrome_up', lambda sid: True)

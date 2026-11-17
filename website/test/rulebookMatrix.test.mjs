@@ -1,12 +1,12 @@
 // THE ONE RULEBOOK, ON THE PAGE (the Advisor design, phase A; the owner's rulings, 2026-10-23): every state the design's table names, as
 // the server decides it (advisor.decide - tests/test_rulebook.py holds the server side), drawn on the desk canvas and at phone width:
-// exactly ONE lit button, the decision's own, found among the buttons the row actually draws - and a line on the strip only where the
+// at most ONE lit button - a send waiting for his yes, Mark done where the agent said it is over, or Next (the owner, 2026-11-15) - found among the buttons the row actually draws - and a line on the strip only where the
 // decision carries a fact, never a sentence explaining the obvious move. Invented Northwind people only.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { adviceShown, stripWord } from "../src/advice.js";
 import { phoneRow, rowOf } from "../src/actionRow.js";
-import { adviceNone } from "../src/words.js";
+import { ADVICE_RULE } from "../src/words.js";
 
 const v = (id, group, extra = {}) => ({ id, group, tone: "s", label: id, title: "", disabled: false, why: "", promote: true, lead: false, ...extra });
 const NEXT = v("next", "next", { label: "Next" });
@@ -16,29 +16,13 @@ const TASK = [v("reply", "decide", { label: "Reply" }), v("done", "more", { labe
 
 // (state, the decision the server answers, the row drawn, the id lit on the bar or the card)
 const MATRIX = [
-  ["asked", { verb: "reply", label: "Reply", line: "Erin Blake asked 3 days ago." }, TASK, "reply"],
   ["draft_ready", { verb: "approve", label: "Send", line: "" }, [...TASK, v("12:approve", "decide", { label: "Send", card: true, tone: "p" })], "card:12:approve"],
-  ["draft_promise", { verb: "redraft", label: "Redraft", line: "Draft promises Friday - nothing here shows it." },
-    [...TASK, v("12:approve", "decide", { label: "Send", card: true, tone: "p" }), v("12:redraft", "decide", { label: "Redraft", card: true })], "card:12:redraft"],
-  ["unsendable", { verb: "copy", label: "Copy", line: "" }, [...TASK, v("12:copy", "decide", { label: "Copy", card: true })], "card:12:copy"],
-  ["duplicate", { verb: "remove", label: "Not a task", line: "Same ask as TQ-0006." }, TASK, "nat"],
   ["working", { verb: "next", label: "Next", line: "" }, [v("save-end", "agent", { label: "Stop and save", fill: true }), NEXT], "next"],
-  ["unpushed", { verb: "review_changes", label: "Review changes", line: "Changes ready - not pushed." }, [...TASK, v("diff", "agent", { label: "Review changes" })], "diff"],
-  ["stopped", { verb: "continue", label: "Continue", line: "Stopped 40 min ago." }, [...TASK, v("continue", "agent", { label: "Continue" })], "continue"],
-  ["failed", { verb: "fix", label: "Connect an AI", line: "Failed: no AI connected for coding." }, [...TASK, v("fix", "decide", { label: "Connect an AI" })], "fix"],
   ["agent_done", { verb: "close", label: "Mark done", line: "" }, TASK, "done"],
   ["report_ok", { verb: "next", label: "Next", line: "" }, [v("w:mine", "decide", { label: "Put it on my list" }), NEXT], "next"],
   ["fyi_batch", { verb: "next", label: "All read, next", line: "" }, [v("v:All read, next", "next", { label: "All read, next" })], "v:All read, next"],
-  ["invite_free", { verb: "accept_invite", label: "Accept", line: "Free then." }, [...TASK, v("accept_invite", "decide", { label: "Accept" })], "accept_invite"],
-  ["invite_clash", { verb: "propose_time", label: "Propose a new time", line: "Clashes with 1:1 with Omar 10:00-10:30 AM." },
-    [...TASK, v("accept_invite", "decide", { label: "Accept" }), v("propose_time", "decide", { label: "Propose a new time" })], "propose_time"],
   ["invite_no_cal", { verb: "next", label: "Next", line: "" }, [...TASK, v("accept_invite", "decide", { label: "Accept" })], "next"],
-  ["waiting", { verb: "defer", label: "Remind me", line: "" }, TASK, "remind"],
-  ["waiting_late", { verb: "chase", label: "Chase them", line: "Ray Colton: 4 days, no answer." }, [...TASK, v("advice:chase", "more", { label: "Chase them", tone: "p" })], "advice:chase"],
-  ["goal_late", { verb: "chase", label: "Chase them", line: "Ray Colton's schema sign-off: 2 days late." }, [...TASK, v("advice:chase", "more", { label: "Chase them", tone: "p" })], "advice:chase"],
   ["goal", { verb: "next", label: "Next", line: "" }, TASK, "next"],
-  ["idea", { verb: "mine", label: "Put it on my list", line: "" }, [v("w:mine", "decide", { label: "Put it on my list" }), NEXT], "w:mine"],
-  ["unsorted", { verb: "retriage", label: "Sort it again", line: "" }, [v("retriage", "more", { label: "Sort it again" }), NEXT], "retriage"],
 ];
 const KEY = "processing:pi_1";
 const litOf = (row) => [...[...row.decide, ...row.agent, ...row.more].filter((x) => x.tone === "p" && !x.own).map((x) => x.id),
@@ -48,8 +32,7 @@ for (const [state, said, list, want] of MATRIX) {
   test(`${state}: one lit button - the decision's own - on the desk and at phone width, and a line only for a fact`, () => {
     const decision = { ...said, for: KEY, key: KEY, state };
     const shown = adviceShown(decision, { key: KEY, lane: state === "working" ? "working" : "asked" }, false);
-    const { noAi, pick } = stripWord({ speaks: true, shown, advice: decision, key: KEY, lane: state === "working" ? "working" : "asked" });
-    assert.equal(noAi, false);
+    const { pick } = stripWord({ speaks: true, shown, advice: decision, key: KEY, lane: state === "working" ? "working" : "asked" });
     // THE DESK: the bar (or the card, for a draft's own move) lights exactly the decision's button, nothing else
     const row = rowOf({ list, ref: "TQ-0004" }, pick);
     assert.deepEqual(litOf(row), [want], state);
@@ -59,17 +42,10 @@ for (const [state, said, list, want] of MATRIX) {
     assert.ok(others.length <= 1, state);
     if (!want.startsWith("card:") && want !== row.next?.id) assert.ok(ph.shown.some((x) => x.id === want), `${state}: the lit move rides beside Next on a phone`);
     // THE STRIP: the decision's fact, or nothing - never a sentence explaining the obvious button
-    assert.equal(pick?.line || "", said.line, state);
+    assert.equal(!!pick?.line, !!said.line, state);
+    assert.ok((said.line || "").length <= 64, `${state}: a line is read whole on a phone`);
   });
 }
-
-test("no AI where the move needs one: the strip says so once, and the row lights its own Connect an AI or nothing", () => {
-  const decision = { none: "no_ai", for: KEY, key: KEY };
-  const { noAi, pick } = stripWord({ speaks: true, aiOff: true, advice: decision, key: KEY, lane: "asked" });
-  assert.equal(noAi, true); assert.equal(pick.none, "no_ai");
-  assert.ok(adviceNone("no_ai").line);
-  assert.equal(adviceNone("no_ai").move, "ai");
-});
 
 // ...the server may light something on an asking agent now (the model's call); where it lights nothing, the row lights nothing either
 test("a decision with no verb lights nothing on the row: an asking agent's pane holds the answers", () => {
@@ -80,3 +56,24 @@ test("a decision with no verb lights nothing on the row: an asking agent's pane 
   assert.deepEqual(litOf(rowOf({ list: [v("save-end", "agent", { label: "Stop and save" }), NEXT], ref: "" }, pick)), []);
 });
 
+// ONE LINE, READ WHOLE, ON A PHONE TOO (2026-10-26, superseding the two-line wrap of 2026-10-22): the phone gives the line the room
+// ...and since 2026-10-26 there is no Advisor line over a row on any width (the owner: "remove the advisor"); setup's line keeps the one line
+test("no Advisor strip at any width; the one .tq-next line left (setup's) stays one line", async () => {
+  const fs = await import("node:fs");
+  const css = fs.readFileSync(new URL("../src/assistantView.css", import.meta.url), "utf8");
+  assert.doesNotMatch(css, /\.tq-next-txt \{[^}]*white-space: normal/, "never a second line");
+  assert.doesNotMatch(css, /\.tq-strip/);
+  assert.match(css, /\.tq-next-txt \{[^}]*white-space: nowrap; overflow: hidden; text-overflow: ellipsis; \}/);
+});
+
+// THE STATES ARE FACTS NOW (the owner, 2026-11-02: "never ever use hard coded rules, let the ai see everything"): each says what it means
+// and the fact said for it - no state lights a button by itself; the model decides every light (advisor.decide)
+test("every state's words: what it means and a fact or silence - never a lit list, never the filler the owner struck out", () => {
+  assert.ok(Object.keys(ADVICE_RULE).length >= 25);
+  for (const [st, w] of Object.entries(ADVICE_RULE)) {
+    assert.deepEqual(Object.keys(w).sort(), ["is", "line"], st);
+    assert.ok(w.is.length > 0, st);
+    for (const gone of ["No suggestion", "Nothing to decide", "Thinking", "the choice is yours", "Suggested"]) assert.ok(!w.line.includes(gone), `${st}: ${w.line}`);
+    assert.ok(w.line.length <= 64, st);
+  }
+});

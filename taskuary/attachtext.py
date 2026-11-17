@@ -30,7 +30,7 @@ import base64, hashlib, io, json, sqlite3, threading, zipfile
 from pathlib import Path
 from loguru import logger
 
-VERSION = 1
+VERSION = 3                                      # 2: a Word table reads as its rows (knowledge._docx); 3: a formula with no value, as itself
 FILE_CHARS, MESSAGE_CHARS = 3000, 6000          # per file, per message - what a prompt is handed
 KEEP_CHARS = 20000                               # what the cache keeps of one file, so a roomier caller can ask for more
 READ_BYTES, UNZIP_BYTES = 10 * 1024 * 1024, 40 * 1024 * 1024
@@ -108,10 +108,13 @@ def read(name: str, data: bytes) -> dict:
     """{'name', 'text', 'chars'} or {'name', 'note'} for one attachment's bytes, from the cache when this exact file was read."""
     name = str(name or 'file')
     if len(data) > READ_BYTES: return {'name': name, 'note': f'{_mb(len(data))}, over the {_mb(READ_BYTES)} read limit'}
-    key = f'{hashlib.sha256(data).hexdigest()}-v{VERSION}-{_ext(name)}'
-    got = _cached(key)
-    if got is None: got = _extract(name, data); _remember(key, got)
-    return {'name': name, **got}
+    return {'name': name, **cached(f'{hashlib.sha256(data).hexdigest()}-v{VERSION}-{_ext(name)}', lambda: _extract(name, data))}
+
+
+def cached(key: str, make):
+    "What `make()` gives, kept under `key` - a content hash - so a file is read once whoever asks (a prompt here, a preview: outputs.previewed)."
+    if (got := _cached(key)) is None: got = make(); _remember(key, got)
+    return got
 
 
 def of_items(items) -> list:

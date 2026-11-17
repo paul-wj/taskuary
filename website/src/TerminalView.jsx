@@ -4,6 +4,7 @@
 // on the Board). No terminal tab, no dock at the bottom of the screen. The pty lives
 // server-side, so leaving the page (or reloading) never kills it - coming back re-attaches.
 import React, { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { Box, CircularProgress, IconButton, Tooltip, Typography } from "@mui/material";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -747,11 +748,17 @@ export const SessionPane = ({ sid, height = "70vh", onExit, children, autoFocus 
   const [folded, setFolded] = useState(() => !!sid && savedFold(sid));
   // the browser has been seen OPEN on this session: from then on a closed one folds the pane (showsBrowser)
   const [seen, setSeen] = useState(false);
+  // ...and, quiet, it has been shown him for a step of his on this session (`lent`): once it goes, a line says why (closedLine)
+  const [lent, setLent] = useState(false);
   const [ratio, setRatio] = useState(savedRatio);
   const [peek, setPeek] = useState(false);
   const [localOk, setLocalOk] = useState(false);          // the owner unfolded a local page: it stays shown (isLocalPage)
   const lastPage = useRef("");                            // where the browser last was, for the line that says it closed
   const slow = useRef(false), kick = useRef(null);
+  // ...each step handed to him counts (`handed`), and the read that answered which one (`readFor`): the page is his once a read made after the
+  // hand-over has answered (the browser audit, 2026-11-15: for up to 300 ms the view drew the read from before it - the last address, Take over)
+  const handed = useRef(0);
+  const [readFor, setReadFor] = useState(-1);
   // A Wall tile is one of four across and a drawer pane is 480px tall: enough to notice an agent
   // working, not enough to watch one - and far too little once a browser is beside the terminal.
   // The chat workspace runs this itself, from its own strip, so it asks for no button here.
@@ -760,21 +767,23 @@ export const SessionPane = ({ sid, height = "70vh", onExit, children, autoFocus 
   // session, so the conversation sits inside the same tree it will sit in once one exists - swapping the
   // wrapper in mid-turn would remount the thread that is streaming the answer (GeneralWorkspace.started).
   useEffect(() => {
-    setBrowser({ open: false, url: "" }); setSeen(false); setLocalOk(false); setFolded(!!sid && savedFold(sid)); lastPage.current = "";
+    setBrowser({ open: false, url: "" }); setSeen(false); setLent(false); setLocalOk(false); setFolded(!!sid && savedFold(sid)); lastPage.current = "";
     if (!sid) return undefined;
     let stop = false, timer = 0, asking = false;
     const tick = async () => {
       if (asking) return;                    // a kick while one read is out: that read is the fresh one, and one chain of timers
       asking = true; clearTimeout(timer);
+      const ep = handed.current;
       try {
         const r = await api.get(`/api/terminals/${sid}/browser`);
         if (stop) return;
-        setBrowser(r.data || { open: false });
+        setBrowser(r.data || { open: false }); setReadFor(ep);
         if (r.data?.open && !isBlankPage(r.data.url)) setSeen(true);      // a page it opened - an empty tab was never one (isBlankPage)
         if (r.data?.open && r.data?.url && !/^about:/.test(r.data.url)) lastPage.current = r.data.url;
       } catch { /* server away for a moment: keep showing what we had */ }
       asking = false;
-      if (!stop) timer = setTimeout(tick, slow.current ? 15000 : 3000);
+      // ...a step handed over while this read was out is answered by the next one, at once
+      if (!stop) timer = setTimeout(tick, ep !== handed.current ? 0 : slow.current ? 15000 : 3000);
     };
     kick.current = tick;
     tick();
@@ -785,22 +794,35 @@ export const SessionPane = ({ sid, height = "70vh", onExit, children, autoFocus 
   slow.current = idle && !browser.open;
   const wasIdle = useRef(idle);
   useEffect(() => { if (wasIdle.current && !idle) kick.current?.(); wasIdle.current = idle; }, [idle]);
+  // ...AND THE PAGE HANDED TO HIM IS READ AFRESH as it is handed (the browser audit, 2026-11-15): a saved sign-in that went in and met a code
+  // step drew the page his with the read taken while it was typed - "Taskuary is signing in ... the picture resumes in a moment" over the code
+  // box that was his to fill, for up to a poll. A step of his is raised only once any typing of Taskuary's has ended (signin._auto), so that
+  // read's `filling` is over; set before the paint, then asked again at once
+  React.useLayoutEffect(() => { if (!(need || yourTurn)) return; handed.current += 1; setBrowser((b) => (b.filling ? { ...b, filling: false } : b)); kick.current?.(); }, [need, yourTurn]);
   useEffect(() => {
-    const ro = new ResizeObserver(([e]) => setWidth(e.contentRect.width));
+    // ...drawn for the new width in the frame that has it (flushSync: the observer runs before that frame's paint) - set a beat later, the
+    // pane that had just been given the task list's room drew one frame with the chat at its old share of it (479px, then 655)
+    const ro = new ResizeObserver(([e]) => flushSync(() => setWidth(e.contentRect.width)));
     ro.observe(slot.current);
     return () => ro.disconnect();
   }, []);
   // ...and the agent's canvas keeps the view once seen, on its last frame, while the session lives (`ended`)
   // ...and an empty tab is no view and no chip: only a page the agent opened is shown (showsBrowser)
-  const showingBrowser = !!sid && (quiet ? need && showsBrowser(browser.open, browser.url) : showsBrowser(browser.open, browser.url) || (stack && seen));
+  const showingBrowser = !!sid && (quiet ? need && readFor === handed.current && showsBrowser(browser.open, browser.url) : showsBrowser(browser.open, browser.url) || (stack && seen));
   const ended = !quiet && stack && seen && !browser.open;
+  useEffect(() => { if (quiet && showingBrowser) setLent(true); }, [quiet, showingBrowser]);
   const layout = quiet ? quietLayout(width, showingBrowser, folded) : layoutFor(width, showingBrowser, folded || (isLocalPage(browser.url) && !localOk), stack);
   const share = quiet ? quietRatio(ratio) : splitRatio(ratio, width);
   const onScreen = showingBrowser && viewOnScreen(layout);
-  useEffect(() => { onView?.(onScreen); }, [onScreen]);  // eslint-disable-line react-hooks/exhaustive-deps
+  // ...told BEFORE the paint (a layout effect): told after it, the frame that first drew the view still drew his step in the chat too -
+  // its words and its I'm done twice on one screen for a beat (recorded, the browser round 2026-11-14)
+  React.useLayoutEffect(() => { onView?.(onScreen); }, [onScreen]);  // eslint-disable-line react-hooks/exhaustive-deps
   // ...and while it shows the page the owner has a part on, the task list folds away to give it the room (browserSplit.wantRoom)
-  const roomFor = quiet && showingBrowser;
-  useEffect(() => { if (!roomFor) return undefined; const who = {}; wantRoom(who, true); return () => wantRoom(who, false); }, [roomFor]);
+  // ...ONLY WHILE THE PAGE IS ON SCREEN: folded away to its chip it needs no room, and the chat ran the window's whole width (1465px,
+  // recorded 2026-11-11) with the task list still gone. ASKED BEFORE THE PAINT (a layout effect): asked after it, the pane first drew
+  // squeezed into the chat's own column, then the list folded and everything moved left, then the widths settled - three layouts in 300 ms
+  const roomFor = quiet && onScreen;
+  React.useLayoutEffect(() => { if (!roomFor) return undefined; const who = {}; wantRoom(who, true); return () => wantRoom(who, false); }, [roomFor]);
   const fold = (f) => { setFolded(f); rememberFold(f, sid); if (!f) setLocalOk(true); };
   // the handle: the pointer's place across the slot IS the split, remembered on release
   const startDrag = (e) => {
@@ -835,9 +857,12 @@ export const SessionPane = ({ sid, height = "70vh", onExit, children, autoFocus 
   );
   /* A BROWSER THAT WAS OPEN AND CLOSED says so, where its chip or half sat: the pane just vanished, so a crash, a close and a glitch
      looked the same (2026-10-25). Words only - it comes back by itself when the agent opens a page again. */
-  const closedLine = !quiet && !!sid && seen && !browser.open && !ended && (
+  // ...and a chat's page, shown him for his step, goes once nothing waits on him there - his I'm done, the page moving on, an answer in
+  // words - and it went with nothing said (the overnight walk, 2026-11-11)
+  const closedLine = !!sid && (quiet ? lent && !showingBrowser : seen && !browser.open && !ended) && (
     <Typography data-tq-browser-closed="" sx={{ ...mono, flex: "0 0 auto", fontSize: 10.5, color: "#a8a196", m: "5px 0 0 10px" }}>
-      {lastPage.current ? t("The browser closed (last on {url}). It reopens when the agent next needs it.", { url: shortUrl(lastPage.current, 36) }) : t("The browser closed. It reopens when the agent next needs it.")}
+      {quiet ? t("The browser is put away - nothing waits on you there now. It shows here again when the agent needs you.")
+        : lastPage.current ? t("The browser closed (last on {url}). It reopens when the agent next needs it.", { url: shortUrl(lastPage.current, 36) }) : t("The browser closed. It reopens when the agent next needs it.")}
     </Typography>
   );
   return (

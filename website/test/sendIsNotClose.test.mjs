@@ -4,6 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { hint, label } from "../src/buttons.js";
 import { sentChips } from "../src/funnelPile.js";
 
 const read = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
@@ -15,9 +16,18 @@ const caps = (() => {
   return new Function(`${src}\nreturn { canSend, channelCanSend, draftCanSend };`)();
 })();
 
+test("Send only sends and Approve only runs - each says the task stays open until Mark done", () => {
+  assert.equal(label("approve"), "Send");
+  assert.match(hint("approve"), /stays open until you Mark done/);
+  assert.equal(label("approve", "action"), "Approve");
+  assert.match(hint("approve", "action"), /^Runs only what the agent proposes/);
+  assert.equal(label("close"), "Mark done");
+  const all = JSON.stringify(JSON.parse(readFileSync(new URL("../../taskuary/buttons.json", import.meta.url), "utf8")).verbs);
+  assert.doesNotMatch(all, /Send & close|no_close/);
+});
 
 test("a send offers Mark done only where there is a task, and Next always", () => {
-  assert.deepEqual(sentChips(12, "TQ-12").chips.map((c) => [c.verb, c.tid ?? null]), [["close", 12], ["next", null]]);
+  assert.deepEqual(sentChips(12, "TQ-12").chips.map((c) => [c.verb, c.label, c.tid ?? null]), [["close", "Mark done", 12], ["next", "Next", null]]);
   assert.deepEqual(sentChips(null).chips.map((c) => c.verb), ["next"], "no task, no Mark done");
 });
 
@@ -25,7 +35,9 @@ test("the canvas keeps a sent item on the table: the card folds wearing its butt
   const cards = read("assistantCards.jsx"), view = read("AssistantView.jsx");
   // the press is the button's own label - a send and what is not a send alike - never a sentence (the owner, 2026-10-22)
   assert.match(cards, /if \(ran && onSent\) onSent\(pressed, card\.tid, card\.ref\);\n\s+else onDone\?\.\(pressed\);/);
+  assert.match(cards, /const pressed = verb === co\?\.alt\?\.verb \? co\.alt\.label : verb === "merge_anyway" \? OFFER_LABEL\.anyway : btn\("approve", action \? "action" : undefined\);/);
   assert.doesNotMatch(cards, /and closes the task/);
+  assert.match(cards, /the task stays open until you \$\{btn\("close"\)\}/);
   const sent = view.slice(view.indexOf("const sent = (pressed"), view.indexOf("\n  };", view.indexOf("const sent = (pressed")));
   assert.match(sent, /done: true, sent: true, \.\.\.\(pressed \? \{ pressed \} : \{\}\), \.\.\.sentChips\(tid, ref\)/);
   assert.doesNotMatch(sent, /role: "receipt"/, "no line under the card");
@@ -46,15 +58,31 @@ test("no 'Sent to <who>.' line on the desk: a send is said by its badge alone, a
   assert.match(cards, /sure\(o, "sent"\);/);          // the one press throws the server's reason to the card's reader (press.js)
 });
 
-test("whether a draft can leave is asked of capabilities.js, with the row's own CanSend kept for what it knows more", () => {
-  const live = { known: true, send: { teams: false, email: true } };
-  assert.equal(caps.draftCanSend(live, { Channel: "email", CanSend: true }), true);
-  assert.equal(caps.draftCanSend(live, { Channel: "teams", CanSend: true }), false, "the channel's live answer");
-  assert.equal(caps.draftCanSend(live, { Channel: "email", CanSend: false }), false, "the row knows the draft has nobody to go to");
-  assert.equal(caps.draftCanSend(live, { Channel: "teams", Deliver: JSON.stringify({ kind: "zoho_invoice" }) }), true, "an invoice asks no channel");
-  assert.equal(caps.draftCanSend(live, null), false);
-  assert.equal(caps.channelCanSend({ known: false, send: {} }, "teams", false), false, "the row's word until the answer is in");
-  assert.equal(caps.channelCanSend(live, "teams", true), false, "the live answer once it is");
-  assert.equal(caps.channelCanSend(live, "email", false), true);
+test("no screen says a send closes the task", () => {
+  for (const f of ["ReviewDecision.jsx", "assistantCards.jsx", "TaskPage.jsx", "NewSheet.jsx"]) {
+    const s = read(f);
+    assert.doesNotMatch(s, /Send & close|Copy & close|Sending it closes the task|approving (it|them) closes the task|send and close out/, f);
+  }
+  assert.match(read("ReviewDecision.jsx"), /`\$\{sendWord\} sends this to \$\{replyContext\(r\)\} - \$\{stays\}\.`/);
 });
 
+
+test("the dead-end walk takes a failed send's fix by its own words: an id ending ':fix' is a named button", () => {
+  const d = readFileSync(new URL("../deadend_check.mjs", import.meta.url), "utf8");
+  const line = d.split("\n").find((l) => l.startsWith("const named = "));
+  const further = d.split("\n").filter((l) => /^const (CHOICE_WORDS|isFurther) = /.test(l)).join("\n");
+  const named = new Function("NAMED", "CHOICES", `${further}\n${line.replace("const named = ", "return ")}`)(new Set(["Send", "Next"]),
+    { _: "answers", not_ours: [["not_ours", "Just this once"], ["not_ours_sender", "From now on - their mail is filed for you"]] });
+  // ...a receipt's further button lent to the next row is named by its own verb's answer (4cb3e165), and only by that
+  assert.equal(named("From now on - their mail is filed for you", "chat:5d:not_ours_sender"), true);
+  assert.equal(named("From now on - their mail is filed for you", "chat:5d:not_ours"), false);
+  assert.equal(named("From now on - their mail is filed for you", "12:not_ours_sender"), false);
+  assert.equal(named("Something new", "chat:5d:not_ours_sender"), false);
+  assert.equal(named("Connect a mailbox", "12:fix"), true);
+  assert.equal(named("Connect a mailbox", "12:approve"), false);
+  assert.equal(named("Connect a coding tool", "chat:go"), true);
+  assert.equal(named("Connect a coding tool", "chat:3:go"), true);
+  assert.equal(named("Send", ""), true);
+  assert.match(d, /id: b\.getAttribute\("data-tq-verb"\) \|\| ""/);
+  assert.match(d, /s\.verbs\.filter\(\(v\) => !named\(v\.word, v\.id\)\)/);
+});

@@ -1,6 +1,7 @@
 """The agent's browser beside its terminal: agent-browser's state files say a browser is open,
 the relay pipes its screencast to the page (and the owner's input back), Snapshot files the
 frame on the task. A fake screencast server stands in for agent-browser - no Chrome in CI."""
+import pytest
 import asyncio, base64, json, os, socket, sys, threading, time, unittest
 from pathlib import Path
 from unittest import mock
@@ -19,8 +20,8 @@ def _free_port():
 class FakeScreencast:
     """agent-browser's stream socket, minus the browser: greets a client with a frame and a url,
     remembers everything the client sends, and notes the query string it was asked with."""
-    def __init__(self):
-        self.port, self.got, self.paths, self.origins = _free_port(), [], [], []
+    def __init__(self, greet=None):
+        self.port, self.got, self.paths, self.origins, self.greet = _free_port(), [], [], [], greet
         self.loop = asyncio.new_event_loop(); self.ready = threading.Event()
         threading.Thread(target=self._run, daemon=True).start(); self.ready.wait(5)
     def _run(self):
@@ -28,6 +29,10 @@ class FakeScreencast:
         async def handle(ws):
             self.paths.append(ws.request.path); self.origins.append(ws.request.headers.get('Origin'))
             await ws.send(json.dumps({'type': 'status', 'connected': True}))
+            if self.greet is not None:
+                for m in self.greet: await ws.send(json.dumps(m))
+                async for m in ws: self.got.append(json.loads(m))
+                return
             # data FIRST, type last: the order agent-browser 0.38.2 actually sends (2026-10-02)
             await ws.send(json.dumps({'data': JPEG, 'metadata': {'deviceWidth': 1280, 'deviceHeight': 720}, 'seq': 7, 'type': 'frame'}))
             await ws.send(json.dumps({'type': 'url', 'url': 'https://example.test/login'}))
@@ -81,19 +86,67 @@ class StateTests(unittest.TestCase):
                 self.assertTrue(bv.start('slow'))
         self.assertGreater(sum(slept), 10, 'it waited past the warm budget rather than giving up on it')
 
-    def test_the_browser_does_not_announce_itself_as_headless(self):
-        """Akamai sites (fidelity.com) reset the HTTP/2 stream on a `HeadlessChrome` UA - ERR_HTTP2_PROTOCOL_ERROR (TQ-1359).
-        Every command's env carries the ordinary Chrome UA at the installed build's major version; none installed, or the
-        owner's own AGENT_BROWSER_USER_AGENT, leaves it alone."""
+    @pytest.mark.real_chrome
+    def test_the_session_s_chrome_is_a_real_one_taskuary_starts_and_agent_browser_attaches_to(self):
+        """Cloudflare looped on agent-browser's own headless launch, whose navigator.webdriver is TRUE (the owner, 2026-11-16): the
+        session's Chrome is an ordinary headed one Taskuary starts on the session's own port and profile, with no automation flag and
+        never headless, and every agent-browser command of the session attaches to it (AGENT_BROWSER_CDP) - no `--args`, no UA of ours."""
         import tempfile
         with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {'AGENT_BROWSER_HOME': d}):
-            os.environ.pop('AGENT_BROWSER_USER_AGENT', None)
-            self.assertNotIn('AGENT_BROWSER_USER_AGENT', bv.env('x'), 'no Chrome build: agent-browser keeps its own')
-            for v in ('chrome-99.0.1.2', 'chrome-152.0.7977.64', 'chrome-not-a-version'): (Path(d)/'browsers'/v).mkdir(parents=True)
-            ua = bv.env('x')['AGENT_BROWSER_USER_AGENT']
-            self.assertIn('Chrome/152.0.0.0', ua); self.assertNotIn('Headless', ua)
-            with mock.patch.dict(os.environ, {'AGENT_BROWSER_USER_AGENT': 'mine'}):
-                self.assertNotIn('AGENT_BROWSER_USER_AGENT', bv.env('x'), "the owner's setting is inherited, not overridden")
+            (Path(d) / 'browsers' / 'chrome-152.0.7977.64').mkdir(parents=True); exe = Path(d) / 'browsers' / 'chrome-152.0.7977.64' / 'chrome.exe'
+            exe.write_text('')
+            self.assertEqual(bv.chrome_exe(), str(exe))
+            e = bv.env('rc1'); port = bv.cdp_port('rc1')
+            self.assertEqual(e['AGENT_BROWSER_CDP'], str(port)); self.assertNotIn('AGENT_BROWSER_USER_AGENT', e)
+            self.assertEqual(bv.env('rc1')['AGENT_BROWSER_CDP'], str(port), 'one port per session, whoever asks')
+            started, up = [], iter([False, False, True])
+            with mock.patch.object(bv, '_spawn_chrome', side_effect=lambda argv, hidden=True: started.append(argv) or 4242),                  mock.patch.object(bv, '_listening', side_effect=lambda p, timeout=.25: next(up, True)), mock.patch.object(bv.time, 'sleep'):
+                self.assertEqual(bv.real_chrome('rc1'), 4242)
+            argv = started[0]
+            self.assertEqual(argv[0], str(exe)); self.assertIn(f'--remote-debugging-port={port}', argv)
+            self.assertIn('--disable-blink-features=AutomationControlled', argv)
+            self.assertFalse([a for a in argv if 'headless' in a or 'enable-automation' in a])
+            self.assertTrue(any(a.startswith('--user-data-dir=') and a.endswith('tq-rc1') for a in argv))
+
+    @pytest.mark.real_chrome
+    def test_a_helper_left_by_a_command_before_the_launch_is_no_open_browser_and_start_launches_the_chrome(self):
+        """0.4.0.15: any agent-browser command of a session before Taskuary started its Chrome left a helper pointed at a port nobody
+        listened on. Its stream answered, so the browser read "open", start() launched nothing, and every command timed out with no Chrome
+        running. Open means the Chrome answers too; start closes that helper and launches the Chrome, and the page is opened after."""
+        stream = socket.socket(); stream.bind(('127.0.0.1', 0)); stream.listen(64)
+        try:
+            (self.tmp / 'tq-early.stream').write_text(str(stream.getsockname()[1])); (self.tmp / 'tq-early.pid').write_text('5150')
+            self.assertFalse(bv.state('early', fresh=True)['open'], 'a helper with no Chrome under it is no open browser')
+            done, chrome = [], {'up': False}
+            def run(argv, **kw): done.append(('run', argv[-1])); return mock.Mock(returncode=0)
+            def launched(sid): chrome['up'] = True; done.append(('chrome', sid)); return 4242
+            with mock.patch.object(bv, 'program', return_value='ab'), mock.patch.object(bv.spawn, 'run', side_effect=run),                  mock.patch.object(bv, '_end_daemon', side_effect=lambda sid, pids=None: done.append(('end', pids))),                  mock.patch.object(bv, 'real_chrome', side_effect=launched), mock.patch.object(bv, 'chrome_up', side_effect=lambda sid: chrome['up']),                  mock.patch.object(bv.spawn, 'popen', side_effect=lambda cmd, **kw: done.append(('open', cmd[-1]))), mock.patch.object(bv, 'clock'):
+                self.assertTrue(bv.start('early', 'https://portal.example'))
+            self.assertEqual([d[0] for d in done], ['run', 'end', 'chrome', 'open'])      # the helper closed, then the Chrome, then the page
+            self.assertEqual(done[1][1], [5150])
+        finally: stream.close()
+
+    def test_with_no_chrome_of_agent_browser_s_own_an_installed_one_is_run(self):
+        """A computer whose agent-browser never fetched a Chrome (Taskuary's own runtime, a fresh install): the session's Chrome is the one
+        installed on the computer - agent-browser's own launch fell back to it, and with none found here nothing would start at all."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {'AGENT_BROWSER_HOME': d, 'LOCALAPPDATA': d}):
+            os.environ.pop('AGENT_BROWSER_EXECUTABLE_PATH', None)
+            mine = Path(d) / 'Google' / 'Chrome' / 'Application' / 'chrome.exe'; mine.parent.mkdir(parents=True); mine.write_text('')
+            with mock.patch.dict(os.environ, {'PROGRAMFILES': d + 'x', 'PROGRAMFILES(X86)': d + 'y'}), mock.patch.object(bv.shutil, 'which', return_value=None):
+                self.assertEqual(bv.chrome_exe(), str(mine))
+
+    @pytest.mark.real_chrome
+    def test_a_chrome_that_cannot_start_on_its_own_desktop_starts_off_the_screen(self):
+        if os.name != 'nt': self.skipTest('its own desktop is a Windows road')
+        tried = []
+        def spawn_chrome(argv, hidden=True):
+            tried.append(hidden)
+            if hidden: raise OSError('no desktop')
+            return 77
+        with mock.patch.object(bv, 'chrome_exe', return_value='chrome.exe'), mock.patch.object(bv, '_spawn_chrome', side_effect=spawn_chrome),              mock.patch.object(bv, '_listening', side_effect=lambda p, timeout=.25: bool(tried) and tried[-1] is False), mock.patch.object(bv.time, 'sleep'):
+            self.assertEqual(bv.real_chrome('fallback'), 77)
+        self.assertEqual(tried, [True, False])
 
     def test_the_session_name_rides_in_the_pty_environment(self):
         """Every pty gets AGENT_BROWSER_SESSION=tq-<sid>: whatever agent-browser command the agent
@@ -159,6 +212,67 @@ class RelayTests(unittest.TestCase):
         # the newest frame and the page it showed are kept for Snapshot and the listing
         self.assertEqual((bv._frame(bv.LAST['r1']['frame']), bv.LAST['r1']['url']), (JPEG, 'https://example.test/login'))
         self.assertEqual(bv.state('r1', fresh=True)['url'], 'https://example.test/login')
+
+    def test_a_press_on_a_tab_switches_the_browser_to_it_and_is_never_sent_to_the_page(self):
+        """The owner, 2026-11-15: several sites in one task are tabs of its one browser, and the view lists them. A press on one reaches
+        agent-browser as `tab <id>` - an argv list, its own id form only - and never the stream, which has no such message; while a sign-in
+        is typed it does nothing. The agent is told, in the one place it is told how its browser works, to work each site in a tab."""
+        with mock.patch.object(bv, 'switch_tab', return_value=True) as sw, c.websocket_connect('/api/terminals/r1/browser/ws') as ws:
+            for _ in range(3): ws.receive_json()
+            ws.send_json({'type': 'tab', 'tab': 't2'}); ws.send_json({'type': 'tab', 'tab': 't2 & del x'}); ws.send_json({'type': 'ack', 'seq': 7})
+            end = time.time() + 5
+            while time.time() < end and not self.fake.got: time.sleep(.05)
+        self.assertEqual([x.args for x in sw.call_args_list], [('r1', 't2')])
+        self.assertEqual(self.fake.got, [{'type': 'ack', 'seq': 7}])
+        with mock.patch.object(bv, 'program', return_value='agent-browser'), mock.patch.object(bv.spawn, 'popen') as po:
+            po.return_value.wait.return_value = 0
+            self.assertTrue(bv.switch_tab('r1', 't3'))
+            self.assertEqual(po.call_args.args[0], ['agent-browser', '--session', 'tq-r1', 'tab', 't3'])
+            self.assertFalse(bv.switch_tab('r1', 't3; rm'))
+        self.assertIn('agent-browser tab new <url>', bv.brief()); self.assertIn('agent-browser tab new <url>', bv.guide())
+
+    def test_a_page_the_agent_went_to_after_the_view_closed_is_the_page_named(self):
+        """The view was shown for a sign-in and closed; the agent then went to ANOTHER site, with no relay to hear it. The address the view
+        last heard outlived it: handed a human check there, the owner read "Your turn in the browser on <the first site>" over the second
+        site's page, its address bar naming the first (the browser round, 2026-11-14). agent-browser's own word, written since, is the page."""
+        with c.websocket_connect('/api/terminals/r1/browser/ws') as ws:
+            for _ in range(3): ws.receive_json()
+        self.assertEqual(bv.state('r1', fresh=True)['url'], 'https://example.test/login')      # the owner's own click moved it: the view's word stands
+        t = self.tmp / 'tq-r1.target'
+        t.write_text(json.dumps({'url': 'https://other.example/check'})); os.utime(t, (time.time() + 5, time.time() + 5))
+        self.assertEqual(bv.state('r1', fresh=True)['url'], 'https://other.example/check')
+        # ...the same page with its query cut off is no other page: the view's fuller word for it is kept (page_url)
+        bv.remember('r1', json.dumps({'type': 'url', 'url': 'https://other.example/check?app=1'}))
+        os.utime(t, (time.time() + 9, time.time() + 9))
+        self.assertEqual(bv.state('r1', fresh=True)['url'], 'https://other.example/check?app=1')
+
+    def test_the_view_opens_on_the_page_as_it_is_now_not_on_the_last_picture_it_showed(self):
+        """agent-browser greets a new viewer with the frame it last sent anyone - a minute old, of the page before - and only then the page
+        as it is. Handed a human check, the owner saw the account page of the site before under "Your turn ... on <this site>" for a beat
+        (recorded, the browser round 2026-11-14). The old picture is dropped, and acked so the stream goes on; and the tabs it greets with
+        say where the page is, query and all, before anything moves."""
+        self.fake.stop()
+        old, new = int((time.time() - 60) * 1000), int(time.time() * 1000)
+        self.fake = FakeScreencast(greet=[
+            {'type': 'status', 'connected': True, 'screencasting': False},
+            {'type': 'tabs', 'tabs': [{'active': False, 'url': 'https://example.test/other'}, {'active': True, 'url': 'https://example.test/check?app=1'}]},
+            {'data': 'T0xE', 'metadata': {'deviceWidth': 980, 'timestamp': old}, 'seq': 39, 'type': 'frame'},
+            {'data': JPEG, 'metadata': {'deviceWidth': 980, 'timestamp': new}, 'seq': 40, 'type': 'frame'}])
+        (self.tmp / 'tq-r1.stream').write_text(str(self.fake.port)); bv._CACHE.clear()
+        with c.websocket_connect('/api/terminals/r1/browser/ws') as ws:
+            got = [ws.receive_json() for _ in range(3)]
+            end = time.time() + 5
+            while time.time() < end and not self.fake.got: time.sleep(.05)
+            got = got + [ws.receive_json()]
+        self.assertEqual([(m['type'], m.get('seq')) for m in got], [('status', None), ('status', None), ('tabs', None), ('frame', 40)])
+        self.assertEqual(self.fake.got[0], {'type': 'ack', 'seq': 39})
+        self.assertEqual((bv._frame(bv.LAST['r1']['frame']), bv.state('r1', fresh=True)['url']), (JPEG, 'https://example.test/check?app=1'))
+        # ...a still page someone else is already watching sends no newer picture: the one it greets with is the page, and is shown
+        self.fake.stop(); self.fake = FakeScreencast(greet=[{'type': 'status', 'connected': True, 'screencasting': True},
+                                                            {'data': JPEG, 'metadata': {'timestamp': old}, 'seq': 39, 'type': 'frame'}])
+        (self.tmp / 'tq-r1.stream').write_text(str(self.fake.port)); bv._CACHE.clear()
+        with c.websocket_connect('/api/terminals/r1/browser/ws') as ws:
+            self.assertEqual([ws.receive_json().get('seq') for _ in range(3)][-1], 39)
 
     def test_a_frame_held_back_for_a_sign_in_is_acked_by_the_relay_so_the_view_comes_back(self):
         """While Taskuary types a sign-in no frame reaches the page - and under ack pacing a frame nobody acks is the last one sent: the

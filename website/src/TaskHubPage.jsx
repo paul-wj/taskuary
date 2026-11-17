@@ -18,7 +18,9 @@ import SportsEsportsIcon from "@mui/icons-material/SportsEsportsOutlined";
 import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import PowerSettingsNewIcon from "@mui/icons-material/PowerSettingsNew";
 import api from "./api";
-import { quitTitle, stoppedLines } from "./appQuit.js";
+import { useCapabilities } from "./capabilities.js";
+import { markDemo } from "./demoWorld.js";
+import { inDesktop, quitTitle, stoppedLines } from "./appQuit.js";
 import { track } from "./demoTrack";
 import { fmtStamp } from "./dates.js";
 import { ACCENT, ALERT, BG, BORDER, DIM, FAINT, INK, PANEL, GRADIENT, BRAND } from "./theme.jsx";
@@ -28,23 +30,30 @@ import { BOARD, canvasRequestFromHash } from "./canvasLinks.js";
 import { readLists } from "./connectorLists.js";
 // a link to Connections asks for its lists the moment the address is read - not once the canvas, its chunk and Connections' own
 // chunk have all come in (connectorLists.js: a cold #connector=whatsapp sent its first read ~1.4 s after the page was asked for)
-const readAhead = (req) => { if (req?.kind === "browse" && req.area === "connections") readLists(api); };
+// ...and a task opened by its number is read at the press, its chat with it (taskDetail.prefetchTask): a job New or the Assistant had just
+// made opened on its title alone, then its head over an empty chat, then the chat (the bug hunt, 2026-11-12)
+const readAhead = (req) => { if (req?.kind === "browse" && req.area === "connections") readLists(api); if (req?.kind === "task" && req.tid) prefetchTask(api, req.tid); };
 import { onPlace, openAppLink, recordPlace } from "./appLinks.js";
 import { restartBridge } from "./waBridge.js";
 import { SetupChip, useSetup } from "./SetupWizard.jsx";
 import { DEMO } from "./demoApi.js";
 import { buildMove, isBusy, loadedAsset, markReloaded, reloadedFor, staleWhat } from "./staleBuild.js";
-import { useHandRaise, playSound, desktopNotify } from "./handraise.js";
+import { useHandRaise, useMeetingAlerts, playSound, desktopNotify } from "./handraise.js";
+import { prepBody } from "./meetingAlert.js";
+import { fmtTime12, tsMs } from "./dates.js";
 import { dismissHandRaise, enqueueHandRaise, handRaiseWhat, isWatchingTask, pruneHandRaises } from "./handraiseState.js";
-import { askAssistant } from "./askAssistant.js";
-import { TaskuaryMark, asUtc, timeAgo } from "./ui.jsx";
-import { useCapabilities } from "./capabilities.js";
+import { askAssistant, failureAsk } from "./askAssistant.js";
+import { prefetchTask } from "./taskDetail.js";
+import { TaskuaryMark, asUtc, timeAgo, useAgents } from "./ui.jsx";
 import AssistantView from "./AssistantView.jsx";
 import { SEARCH_PICKED, SearchBar, openSearch } from "./SearchEverything.jsx";
 import ProfileButton from "./ProfileButton.jsx";
 import BugReportDialog from "./BugReportDialog.jsx";
 import { label as btnLabel } from "./buttons.js";
+import CloseIcon from "@mui/icons-material/Close";
 import { REPORT_EVENT, bellError, openBugReport } from "./bugReportOpen.js";
+import { plural } from "./timeWords.js";
+import { ASSISTANT_NAME } from "./kinds.js";
 const AssistantGame = React.lazy(() => import("./AssistantGame.jsx"));
 
 // The strip reads left to right as the day does: what arrived (Timeline), what is being worked
@@ -146,8 +155,8 @@ function Bell({ onGo, onAsk }) {
                 sx={{ fontSize: 11, whiteSpace: "nowrap" }} onClick={() => restart(p)}>
                 {busy === `restart:${p.key}` ? t("Restarting…") : t("Restart bridge")}</Button>}
               {/* the chat looks into it: reads the app's own health, does the simple repair or says why (troubleshoot.py) */}
-              <Button size="small" variant="outlined" sx={{ fontSize: 11, whiteSpace: "nowrap" }} aria-label={t("Ask the assistant: {title}", { title: p.title })}
-                onClick={() => { setEl(null); onAsk(p); }}>{t("Ask the assistant")}</Button>
+              <Button size="small" variant="outlined" sx={{ fontSize: 11, whiteSpace: "nowrap" }} aria-label={t("Ask {name}: {title}", { name: ASSISTANT_NAME, title: p.title })}
+                onClick={() => { setEl(null); onAsk(p); }}>{t("Ask {name}", { name: ASSISTANT_NAME })}</Button>
               {/* Reading it, not fixing it. It holds until this failure ends, and comes back if it fails again after
                   working (problems.signature), so this quiets something you have decided to live with. */}
               <Button size="small" disabled={busy === p.key} sx={{ fontSize: 10.5, color: FAINT, textTransform: "none" }} aria-label={t("Dismiss: {title}", { title: p.title })}
@@ -190,7 +199,7 @@ function Bell({ onGo, onAsk }) {
    for a second whether it went anywhere. It never does: demo.py refuses at the API layer. */
 function useDemo() {
   const [demo, setDemo] = useState(null);
-  useEffect(() => { api.get("/api/demo").then(({ data }) => setDemo(data)).catch(() => {}); }, []);
+  useEffect(() => { api.get("/api/demo").then(({ data }) => { markDemo(data?.demo); setDemo(data); }).catch(() => {}); }, []);
   return demo?.demo ? demo : null;
 }
 
@@ -261,7 +270,7 @@ function StaleBuild() {
 
 const SWITCH_VIEWS = [
   { k: "chat", label: "Chat", icon: (on) => <TaskuaryMark size={17} sx={{ borderRadius: 1, ...(on ? { boxShadow: "0 0 0 1.5px #fff" } : {}) }} />,
-    title: "The Assistant - it walks you through what is waiting, one item at a time" },
+    title: `${ASSISTANT_NAME} - it walks you through what is waiting, one item at a time` },
   { k: "board", label: "Board", icon: () => <GridViewIcon sx={{ fontSize: 18 }} />, title: "Every agent and its session, full screen" },
   { k: "game", label: "Game", icon: () => <SportsEsportsIcon sx={{ fontSize: 19 }} />,
     title: "The same items as an office you walk around - people in the lobby, fyi's in the coffee room" },
@@ -345,13 +354,23 @@ function HelpMenu({ onReload, onStopped }) {
 }
 
 // ...and what the tab shows once it has: plain, and nothing left on it that would call a server that is gone
+// ...polled until the server stops answering - a closed port is the only "stopped". The desktop window keeps "Shutting down…" until it
+// closes itself, which it does once the server has finished stopping what it started (desktop.gone_with)
 export function Stopped({ stopped }) {
   useLocale();
-  const [title, line] = stoppedLines(stopped);
+  const [down, setDown] = useState(false);
+  useEffect(() => {
+    let live = true;
+    const poll = () => fetch("/api/health", { cache: "no-store" }).then(() => live && setTimeout(poll, 500))
+      .catch(() => live && !inDesktop() && setDown(true));
+    poll(); return () => { live = false; };
+  }, []);
+  const [title, line] = stoppedLines(stopped, down);
   return (
     <Box data-tq-stopped="" sx={{ minHeight: "100vh", display: "grid", placeItems: "center", bgcolor: BG, px: 2, textAlign: "center" }}>
       <Box sx={{ maxWidth: 440 }}>
-        <TaskuaryMark size={30} sx={{ borderRadius: 1.5, mb: 1.5 }} />
+        <TaskuaryMark size={30} sx={{ borderRadius: 1.5, mb: 1.5, display: "block", mx: "auto" }} />
+        {!down && <CircularProgress size={16} sx={{ mb: 1, color: DIM }} data-tq-shutting="" />}
         <Typography sx={{ fontWeight: 600, fontSize: 15, color: INK }}>{title}</Typography>
         <Typography sx={{ mt: 0.75, fontSize: 13.5, color: DIM, lineHeight: 1.6 }}>{line}</Typography>
       </Box>
@@ -435,6 +454,35 @@ export default function TaskHubPage() {
   }, []);
   const liveRows = useCallback((rows) => setRaisedQueue((q) => pruneHandRaises(q, rows)), []);
   useHandRaise(onRaise, 8000, liveRows);
+  // A MEETING FIFTEEN MINUTES OUT (meetingAlert.js, the owner 2026-11-09): the hand raise's sound and desktop popup, and a notice with
+  // Prepare that stands until it is pressed, closed or the meeting begins
+  const [meeting, setMeeting] = useState(null), [prepping, setPrepping] = useState(false);
+  const onMeeting = useCallback((e) => {
+    setMeeting(e);
+    (async () => {
+      let sound = "chime", desktop = true;
+      try {
+        const { data } = await api.get("/api/settings", { timeout: 2000 });
+        const v = (k, d) => { const row = (data.data || data || []).find?.((x) => x.Name === k); return row ? row.Value : d; };
+        sound = v("hand_sound", "chime"); desktop = v("hand_desktop", "1") === "1";
+      } catch { /* defaults */ }
+      playSound(sound);
+      if (desktop) desktopNotify(`${e.subject || "A meeting"} at ${fmtTime12(e.start)}`, `Starts in ${Math.max(1, Math.round((tsMs(e.start) - Date.now()) / 60000))} min - Prepare is in Taskuary`, () => {});
+    })();
+  }, []);
+  useMeetingAlerts(onMeeting);
+  useEffect(() => {
+    if (!meeting) return undefined;
+    const t = setTimeout(() => setMeeting((m) => (m === meeting ? null : m)), Math.max(0, tsMs(meeting.start) - Date.now()));
+    return () => clearTimeout(t);
+  }, [meeting]);
+  const prepare = async () => {
+    if (!meeting || prepping) return;
+    setPrepping(true);
+    try { const { data } = await api.post("/api/calendar/prepare", prepBody(meeting)); setMeeting(null); if (data?.taskId) openTask(data.taskId); }
+    catch { /* the notice stays: Prepare can be pressed again */ }
+    finally { setPrepping(false); }
+  };
   // SETUP IS THE ASSISTANT CANVAS (the owner, 2026-10-14: "Remove the popup things just use the assistant canvas"): the
   // chip takes you there, where FirstRun asks its three questions. No dialog opens itself over the app any more.
   const openSetup = () => { go("Assistant"); setTimeout(() => window.dispatchEvent(new Event("tq-first-run")), 60); };
@@ -547,8 +595,9 @@ export default function TaskHubPage() {
   // A terminal belongs to the task it is working. Opening a task with start=true means "and put your CLI on it now";
   // `act` opens it with one of its dialogs up (a card's "Not a task…")
   const openTask = (taskId, opts) => {
+    readAhead({ kind: "task", tid: taskId });
     selectTask(taskId);
-    ask({ kind: "task", tid: taskId, start: opts?.start ? { agent: opts.agent, model: opts.model } : null, act: opts?.act || null });
+    ask({ kind: "task", tid: taskId, start: opts?.start ? { agent: opts.agent, model: opts.model } : null, act: opts?.act || null, row: opts?.row || null });
     if (tab !== "Assistant") { setTab("Assistant"); tabRef.current = "Assistant"; }
   };
 
@@ -566,6 +615,13 @@ export default function TaskHubPage() {
           sx={{ mb: 8 }}
           message={raised ? `${raised.ref} · ${raiseText(raised)}${raised.title ? ` — ${raised.title}` : ""}` : ""}
           action={raised && <Button size="small" sx={{ color: "var(--tq-link, #55697a)", fontWeight: 600 }} onClick={() => { openTask(raised.tid); setRaisedQueue(dismissHandRaise); }}>{t("Open")}</Button>} />
+        <Snackbar key={meeting ? `meeting-${meeting.start}-${meeting.subject}` : "no-meeting"} open={!!meeting} data-tq-meeting-alert=""
+          anchorOrigin={{ vertical: "bottom", horizontal: "right" }} sx={{ mb: raised && tab !== "Assistant" && !onBoard ? 16 : 8 }}
+          message={meeting ? `${meeting.subject || "A meeting"} at ${fmtTime12(meeting.start)} - starts in ${Math.max(1, Math.round((tsMs(meeting.start) - Date.now()) / 60000))} min` : ""}
+          action={meeting && <>
+            <Button size="small" sx={{ color: "var(--tq-link, #55697a)", fontWeight: 600 }} disabled={prepping} onClick={prepare} data-tq-meeting-prepare="">
+              {btnLabel("prepare")}</Button>
+            <IconButton size="small" sx={{ color: "inherit" }} aria-label={t("Dismiss")} onClick={() => setMeeting(null)}><CloseIcon fontSize="small" /></IconButton></>} />
         {/* ── slim top bar ───────────────────────────────────────────── */}
         {/* Full width, deliberately. Constraining this to the page column squeezed the tab strip
             until its overflowX put a horizontal SCROLLBAR under the nav - a slider you have to
@@ -626,7 +682,7 @@ export default function TaskHubPage() {
             if (p.connector) { openAppLink(`connector=${p.connector}`); return; }   // the link opens its card in the canvas
             if (p.report) { openAppLink(`report=${p.report}`); return; }
             go(p.where || "Connections");
-          }} onAsk={(p) => { go("Assistant"); askAssistant(`${p.title}: ${p.detail}${p.error ? ` (${p.error})` : ""}. Can you look into it and fix it?`); }} />
+          }} onAsk={(p) => { go("Assistant"); askAssistant(failureAsk(p)); }} />
           {!phone && <Tooltip title={t("Refresh")}>
             <IconButton size="small" aria-label={t("Refresh")} onClick={() => setTick(tick + 1)}><RefreshIcon sx={{ fontSize: 17, color: DIM }} /></IconButton>
           </Tooltip>}

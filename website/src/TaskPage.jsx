@@ -10,11 +10,11 @@ import { usePromptImages, withImages } from "./promptImages.jsx";
 import { ASK_WHAT, RunForm } from "./RunForm.jsx";
 import CheckBackChip from "./CheckBackChip.jsx";
 import QueuedStart from "./QueuedStart.jsx";
-import HeldStart from "./HeldStart.jsx";
 import { dangerAimOf, dangerLine, dangerOf, strangerLine, trustInBox } from "./strangerLine.js";
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getLocale, t as tr, translateDescriptor } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
+import { flushSync } from "react-dom";
 import { canSend, cannotStart, draftCanSend, useCapabilities } from "./capabilities.js";
 import {
   Alert, Autocomplete, Box, Button, Checkbox, Chip, CircularProgress,
@@ -28,7 +28,6 @@ import { useFoldBar } from "./foldBar.js";
 import { SlotPicker } from "./CalendarPick.jsx";
 import { ROW_LOOK } from "./ButtonBar.jsx";
 import { foldRow, heldOff, onPressing, press, sectionsOf, taskButtons, useSpineAll, useSpineVerbs, useVerbs } from "./actionRow.js";
-import { notePress, pagePress } from "./pressLog.js";
 import { VERBS, choice, hint as btnHint, hintOfRow, label as btn, labelOfRow, liveVerb } from "./buttons.js";   // theme.jsx owns `label`
 import { PRIORITIES, level } from "./priority.js";
 import BlockIcon from "@mui/icons-material/Block";
@@ -44,15 +43,18 @@ import { opError, runOperation } from "./taskOps.js";
 import { ClosingCard, WriteupBlock, WriteupLine, closeAfterSend, completeTask, writeUpThenClose } from "./closeAgent.jsx";
 import { writeupView } from "./writeupState.js";
 import { agentName } from "./agentWork.js";
-import { lazyGeneral } from "./lazyGeneral.js";
+import { loadGeneral } from "./lazyGeneral.js";
+import { lazyView } from "./lazyView.jsx";
+import { onRoom } from "./browserSplit.js";
 import { outcomeOf } from "./dispatchOutcome.js";
 import { FailWays, failOf } from "./failure.jsx";
 import { noteKey, noteOf, onYouLine, progressLine, saveNote, settleTick, withTicks } from "./checklist.js";
 import { fmtDate, fmtTime } from "./dates.js";
-import { deliveryCc, deliveryFiles, deliveryMeta, deliverySubject, replyContext } from "./replyDelivery.js";
+import { deliveryCc, deliveryFiles, deliveryMeta, deliverySubject, pressWords, replyContext } from "./replyDelivery.js";
 import { sizeText } from "./replyFiles.js";
 import { completionTransition, cutAway, filterForSelectedState, remindWaiting, remindDay } from "./taskFilter.js";
 import ReviewDecision from "./ReviewDecision.jsx";
+import BulkCard from "./BulkCard.jsx";
 import HeldSteps from "./HeldSteps.jsx";
 import SlotList from "./SlotList.jsx";
 import BatchItems from "./BatchItems.jsx";
@@ -62,7 +64,7 @@ import { onLive, touches } from "./live.js";
 import { pollCalming } from "./visible.js";
 import { PANEL, PANEL2, BORDER, DIM, FAINT, INK, card, frame, frameInner, label, step, PALETTE, hoverable, mono, ACCENT, ACCENT2, PILL_COLORS, ALERT, ALERT_BD, ALERT_INK, ALERT_TINT, BRAND } from "./theme.jsx";
 import RunSteps from "./RunSteps.jsx";
-import { askLine, byLine, cameFromLabel, cameFromWhere, channelName, filesByMessage, fromExpands, fromRows, groupConversations, groupMeta, headerFacts, isIdeaLine, isChat, madeLine, rowText, sortedLine, todoSources, toLine, triageLine, triageSays, workflowOrigin } from "./taskSources.js";
+import { askLine, byLine, cameFromLabel, cameFromWhere, channelName, filesByMessage, fromExpands, fromRows, groupConversations, groupMeta, headerFacts, isIdeaLine, isChat, madeLine, madeOf, rowText, sortedLine, todoSources, toLine, triageLine, triageSays, workflowOrigin } from "./taskSources.js";
 import { latestTriageVerdict, legacyTriageVerdict, parseTriageVerdict, routeIntent } from "./triageVerdict.js";
 import { Handoff } from "./Handoff.jsx";
 import { Reshape } from "./Reshape.jsx";
@@ -86,8 +88,8 @@ import SendIcon from "@mui/icons-material/Send";
 import { Divider, ListItemText } from "@mui/material";
 import { NoAgentChat } from "./AgentSummary.jsx";
 import { chatReplyShown } from "./agentSummary.js";
+import { replyCardShown } from "./sendState.js";
 import ThreadReading from "./ThreadReading.jsx";
-import { latestDrafts } from "./agentDraftAsk.js";
 import { LastView } from "./BrowserPane.jsx";
 import OpenInFullIcon from "@mui/icons-material/OpenInFull";
 import CloseFullscreenIcon from "@mui/icons-material/CloseFullscreen";
@@ -98,19 +100,21 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 // Recover once automatically; a real module error still reaches the view boundary on retry.
 import { autostartPlan, isGeneralKind, opensOnRegular } from "./autostart.js";
 import { agentWorkspaceMode, barContinues } from "./taskWorkspace.js";
-import { SECTIONS, cameFrom, homeSection, liveTerminal, soloTodo, replyHolds, agentStatus, agentWord, answeredOutside, reportLine, askInBody, askIsTitle, writeupAt, focusOf, fromLine as fromLineOf, fromStatus, layoutOf, sameWords, waitingOn, workPane } from "./taskLayout.js";
+import { SECTIONS, cameFrom, chatLatch, homeSection, liveTerminal, soloTodo, replyHolds, agentStatus, agentWord, answeredOutside, reportLine, askInBody, askIsTitle, writeupAt, focusOf, fromLine as fromLineOf, fromStatus, layoutOf, sameWords, sectionFade, waitingOn, workPane } from "./taskLayout.js";
 import { mainView, stageOf } from "./stages.js";
-import { taskStatus } from "./railStatus.js";
+import { chatOf, taskStatus } from "./railStatus.js";
 import { StatusPill } from "./StatusMark.jsx";
 import { ASK_TAG, BROWSER_TAG } from "./newTask.js";
 import { repoLabel } from "./repoNames.js";
 import { completionFact, completionLine, waitingEmails, wentOut,
-  AGENT, agentPhase, focusStage, generalAnswered, hasCorrespondent, ownerControlsCompletion, pageState, pendingProposals, pendingReplyReview, reopenedDetail, replyPhase, replySource, sentElsewhere, sentReplyReview, sessionWord, taskPhase, unsentReplyReview,
+  AGENT, agentPhase, focusStage, generalAnswered, stillWorking, hasCorrespondent, ownerControlsCompletion, pageState, pendingProposals, pendingReplyReview, reopenedDetail, replyPhase, replySource, sentElsewhere, sentReplyReview, sessionWord, taskPhase, unsentReplyReview,
 } from "./taskLifecycle.js";
 import { askNote, closeoutOf, decidedAsk, heldGroups, splitHeld } from "./reviewProposal.js";
 import PassedCard, { isPassed, isReplaced } from "./PassedCard.jsx";
 import ReplacedDraft from "./ReplacedDraft.jsx";
 import SentCard from "./SentCard.jsx";
+import { sentStands, WENT } from "./sentLine.js";
+import { FullText } from "./assistantCards.jsx";
 import { isCardReview } from "./actionCard.js";
 import { AgentRecord, ResultSummary } from "./AgentRecord.jsx";
 import LandingCard, { LANDING_DIFF } from "./LandingCard.jsx";
@@ -124,25 +128,27 @@ import DifferenceOutlinedIcon from "@mui/icons-material/DifferenceOutlined";
 import AgentChannels from "./AgentChannels.jsx";
 import TokenOutlinedIcon from "@mui/icons-material/TokenOutlined";
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
-import MoreDrafts from "./MoreDrafts.jsx";
-import { draftAnswers, otherPendingReplies } from "./pendingDrafts.js";
+import { draftAnswers } from "./pendingDrafts.js";
 import { replyRounds, roundReviews } from "./replyRounds.js";
 import { diffStat } from "./agentRecord.js";
 import AgentStory, { TrustButtons } from "./AgentStory.jsx";
-import { heldStartOf, startLabel, storyPlace, storyShown } from "./agentStory.js";
+import { startLabel, storyPlace, storyShown } from "./agentStory.js";
 import { isPublished } from "./PublishedPages.jsx";
 import EmailSomeone from "./EmailSomeone.jsx";
 import { useShareParts } from "./Share.jsx";
-import { ago, filesLine } from "./timeWords.js";
-import { KIND_OPTIONS, KINDS, kindLabel, shortKind, shownAgent, instructionsHint } from "./kinds.js";
+import { ago, filesLine, plural } from "./timeWords.js";
+import { AGENT_KINDS, KIND_OPTIONS, KINDS, kindLabel, shortKind, shownAgent, instructionsHint } from "./kinds.js";
 import { PICK_REPO, openAppLink, takeRepoPick } from "./appLinks.js";
 import { FOCUS_RING, pressable } from "./pressable.js";
 import { place } from "./words.js";
 import { announceRemoved, fromAnswer } from "./removed.js";
-import { aheadTask, heldSteps, heldTask, heldTerm, keepTask, keepTerms, pageRead } from "./taskDetail.js";
+import { aheadChat, aheadTask, heldSteps, heldTask, heldTerm, keepTask, keepTerms, pageRead } from "./taskDetail.js";
+const CHAT_WAIT = 1200;
 import { coalesce } from "./coalesce.js";
 
-const GeneralWorkspace = React.lazy(lazyGeneral("GeneralWorkspace"));   // the guard lives in lazyGeneral.js
+// ...through lazyView, fetched at the first idle moment and drawn synchronously once in (recorded 2026-11-12 on the built app: React.lazy
+// suspends on its first draw even with the chunk long loaded, so the first task ever opened stood its head over a spinner where the chat goes)
+const GeneralWorkspace = lazyView(loadGeneral, (m) => m.GeneralWorkspace);   // the guard lives in lazyGeneral.js
 
 const repoOf = (t) => (String(t?.Tags || "").match(/repo:([^\s,]+)/) || [])[1] || null;
 // the repository question in plain words - "pick a repo" read as code-speak on the card (the walk's WORDS, 2026-10-17); it is only
@@ -308,13 +314,14 @@ export const SLOT = (open, w) => ({ position: "relative", overflow: "hidden", mi
   transition: `flex-grow ${SLOT_MS}ms ease, flex-basis ${SLOT_MS}ms ease`, "@media (prefers-reduced-motion: reduce)": { transition: "none" } });
 // ...a closed body is not drawn (display none: nothing in it can be found or pressed) - but a LIVE agent's is kept laid out and only made
 // invisible, so its terminal is never measured at nothing and refitted (`keep`)
-export const SECTION = (open, w, live = false, keep = false) => ({ position: "absolute", top: 0, left: 0, bottom: 0, width: w,
+// ...and its words fade in only on a SWITCH (`fade`, taskLayout.sectionFade): the section a task is first drawn on draws at once
+export const SECTION = (open, w, live = false, keep = false, fade = true) => ({ position: "absolute", top: 0, left: 0, bottom: 0, width: w,
   display: open || keep ? "flex" : "none", flexDirection: "column", bgcolor: live ? "var(--tq-panel, #fff)" : SHADE,   // the warm ground, its cards white
   overflowY: "auto", scrollbarWidth: "thin", overscrollBehaviorY: "contain", overflowAnchor: "none", containerType: "inline-size",
   px: live ? 1 : { xs: 1.5, md: 2.5 }, py: live ? 0.65 : 1.5, boxSizing: "border-box",
   visibility: open ? "visible" : "hidden", opacity: open ? 1 : 0, pointerEvents: open ? "auto" : "none",
-  transition: open ? `opacity 160ms ease ${SLOT_MS}ms, visibility 0s` : "none",
-  ...(open ? { "@starting-style": { opacity: 0 } } : {}),
+  transition: open && fade ? `opacity 160ms ease ${SLOT_MS}ms, visibility 0s` : "none",
+  ...(open && fade ? { "@starting-style": { opacity: 0 } } : {}),
   "@media (prefers-reduced-motion: reduce)": { transition: "none" } });
 // ...a closed tab's width: 156px, and beside a LIVE agent Came from folds to a slim 44px one (the owner, 2026-10-27: "keep Came
 // from and Close out as very MINIMAL tabs ... so the live agent keeps nearly all the space")
@@ -791,7 +798,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   const caps = useCapabilities(), canCode = caps.coding;     // no coding tool connected: coding is not offered (capabilities.js)
   const manual = caps.ai === false;                          // no AI: the owner replies and hands off from the bar's ▾ themselves
   // ...drawn from the task's read held ahead of it (taskDetail.js) - a view on the table opens whole, not as an empty shell (G8)
-  const [detail, setDetail] = useState(() => heldTask(selected));
+  const [detail, setDetail] = useState(() => (aheadChat(selected) ? null : heldTask(selected)));     // ...with its chat (loadDetail)
   // Which task is on screen RIGHT NOW, readable from inside any await. Every fetch here is
   // keyed to a task, and a response that lands after you clicked another one must be dropped:
   // a wrap-up finishing 8 seconds later used to paint ITS task's header and report over the
@@ -894,7 +901,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   const detailReads = useRef(null);
   // ...and whether a read brought anything new, for the poll below to calm on (pollCalming): the screen's own lines and idle clock
   // are left out of it - the terminal pane draws those live over its own socket, and they move on every read while an agent prints
-  const detailLast = useRef(""), detailMoves = useRef(0);
+  const detailLast = useRef(""), detailMoves = useRef(0), loadFailed = useRef(false);
   detailReads.current ||= coalesce(async (id, signal) => {
     try {
       const asked = Date.now();             // the read's age, against the rail's (taskDetail.noteRead)
@@ -903,6 +910,9 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
       const seen = detailSeen(data);
       if (seen !== detailLast.current) { detailLast.current = seen; detailMoves.current += 1; }
       setDetail(data); keepTask(id, data, undefined, asked);
+      // ...A READ THAT WORKS TAKES BACK THE ONE THAT DID NOT (the recorded restart, 2026-11-11): the app restarted under an open task, one poll
+      // failed, and its red "Failed to load task" stood over a task that had loaded every three seconds since
+      if (loadFailed.current) { loadFailed.current = false; setErr(""); }
       // ...and no waiting room after it: read on every 3 s poll, in series behind the task, into state nothing drew any more - half of
       // what a running agent's page asked for (the agents walk, 2026-10-26). The notes box reads its own (ui.jsx)
     } catch (e) {
@@ -916,16 +926,24 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
         setErr(uiMessage("That task is gone - it was deleted."));
         return;
       }
-      setErr(e?.response?.data?.detail || uiMessage("Failed to load task"));
+      loadFailed.current = true; setErr(e?.response?.data?.detail || uiMessage("Failed to load task"));
     }
   });
+  // ...its chat waited for by ANY read while that is out: a just-started job's write re-read the task and drew its head over an empty chat
+  // (the bug hunt, 2026-11-12)
   const loadDetail = useCallback(async (id, first = false) => {
     if (!id) { setDetail(null); return; }
     const ahead = heldTask(id), coming = !ahead && first && aheadTask(id);
-    if (ahead) setDetail((d) => (d?.task?.TaskId === id ? d : ahead));
+    // ...AND ITS CHAT WITH IT (recorded 2026-11-12 on the built app: a task opened for the first time stood its head over a spinner where the
+    // chat goes, its chat's read asked at the press still out): the task's first frame waits - its title and spinner standing - for the chat's
+    // read asked ahead with it too, never longer than CHAT_WAIT, so the task and its chat are drawn as one move
+    const chat = aheadChat(id), both = (p) => (chat ? Promise.all([p, Promise.race([chat, new Promise((r) => setTimeout(r, CHAT_WAIT))])]).then(([d]) => d) : p);
+    if (ahead && !chat) setDetail((d) => (d?.task?.TaskId === id ? d : ahead));
+    else if (ahead) { await both(Promise.resolve(ahead)); if (stale(id)) return; setDetail((d) => (d?.task?.TaskId === id ? d : ahead)); }
     // ...and the read a rail press asked ahead, still on its way, IS the mount's read: a second one beside it doubled a big task's wait
     // under the spinner (the owner, 2026-11-01: "this still happens")
-    if (coming) { const data = await coming; if (stale(id)) return; if (data?.task?.TaskId === id) { setDetail(data); return; } }
+    if (coming) { const data = await both(coming); if (stale(id)) return; if (data?.task?.TaskId === id) { setDetail(data); return; } }
+    if (chat && (await both(0), stale(id))) return;
     return detailReads.current.run(id, id);
   }, []);
   // ...and the read of the task just left is let go of: its answer would be thrown away (stale) after the server spent on it
@@ -1016,8 +1034,10 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
     finally { setStrongGoing(false); }
   };
   const change = async (kind, params) => {
-    try { await runOperation(api, kind, selected, params); } catch (e) { setErr(opError(e, uiMessage("That change didn't go through - pick it again."))); }
-    loadDetail(selected); loadTasks(); onChanged?.();
+    // ...and who does it, changed to an agent, starts that agent: where it could not start, the answer says why (server._start_chosen)
+    try { const out = await runOperation(api, kind, selected, params); if (out?.why) setErr(out.why); }
+    catch (e) { setErr(opError(e, uiMessage("That change didn't go through - pick it again."))); }
+    loadDetail(selected); loadTasks(); onListChanged?.(); onChanged?.();
   };
   // Reopen changes the task's status and nothing else: no worker starts until the owner chooses one (PW-217)
   // ...BUSY AT THE PRESS, OPEN AT THE ANSWER (the owner, 2026-10-23: "when you hit reopen task nothing happens for a few seconds"): the
@@ -1134,11 +1154,22 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   useEffect(() => { setHistOpen(false); setCameInFull(false); setDoneOpen(false); }, [selected]);
   // the task's body measured: under STACK_BELOW it is a phone's stacked page, not a main view and drawers
   const [bodyW, setBodyW] = useState(() => (typeof window === "undefined" ? 1440 : window.innerWidth));
-  const bodyRO = useRef(null);
+  const bodyRO = useRef(null), bodyEl = useRef(null);
+  // ...AND IN THE SAME COMMIT AS THE TASK LIST FOLDING OR COMING BACK (browserSplit.wantRoom, recorded 2026-11-12): the observer's word came a
+  // frame or two after the list was back, and for those frames the chat stood at the list-less width - 1145 px, its box 197 px past the
+  // window - as a browser pane closed. The list's fold is heard here as it is asked, so this view draws again in the commit that moves the
+  // list, and measures its body before that commit is painted
+  const [roomTick, setRoomTick] = useState(0);
+  useEffect(() => onRoom(() => setRoomTick((n) => n + 1)), []);
+  React.useLayoutEffect(() => { const el = bodyEl.current; if (!roomTick || !el) return;
+    const s = getComputedStyle(el), w = Math.round(el.clientWidth - parseFloat(s.paddingLeft || 0) - parseFloat(s.paddingRight || 0));
+    if (w > 0) setBodyW((b) => (b === w ? b : w)); }, [roomTick]);
   const bodyBox = useCallback((el) => {
-    bodyRO.current?.disconnect(); bodyRO.current = null;
+    bodyRO.current?.disconnect(); bodyRO.current = null; bodyEl.current = el;
     if (!el || typeof ResizeObserver === "undefined") return;
-    bodyRO.current = new ResizeObserver(([e]) => setBodyW(Math.round(e.contentRect.width)));
+    // ...and laid out for it in the frame that has it (flushSync: the observer runs before that frame's paint): its sections are sized in
+    // pixels off this width, and set a beat later they drew one frame at the old one - the chat 479px wide, then 655, as the task list folded
+    bodyRO.current = new ResizeObserver(([e]) => flushSync(() => setBodyW(Math.round(e.contentRect.width))));
     bodyRO.current.observe(el);
   }, []);
   useEffect(() => { setFromOpen(false); }, [selected]);
@@ -1268,6 +1299,11 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   useEffect(() => {
     if (detail?.session?.alive || detail?.task?.TaskId !== selected) return;
     if (term?.alive && term.mode === "assistant" && term.taskId === selected && term.busy === false && !pressedHere) setTerm(null);
+    // ...AND ANY OTHER SESSION HELD HERE AS LIVE IS ASKED FOR AGAIN (the recorded restart, 2026-11-11: Taskuary restarted under a coding
+    // agent's turn - the chat said "Cut short when Taskuary restarted", the rail and the box were at rest, and the header read "agent
+    // working" for as long as the page stayed open: the session it held was the one from before the restart, and nothing ever said it
+    // had gone). The server's own word for the session, never this read's - which may predate a session just started
+    else if (term?.alive && term.mode !== "assistant" && term.taskId === selected && !pressedHere) findTerm(selected);
   }, [detail, selected]);   // eslint-disable-line react-hooks/exhaustive-deps
   const openTerm = useCallback(async (body) => {
     try {
@@ -1338,13 +1374,13 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // SENT (Send / Approve): the send already went through. THE REPLY THAT WENT CLOSES THE TASK (the owner, 2026-10-29: "wait until the
   // send actually succeeds, then close the task"): `closes` is ReviewDecision's word, said only after the server's receipt - the close
   // goes through the server's one gate (concierge.close_after_send): kept open, said on the task, while anything on it still waits on
-  // you - a held agent step, a proposal, an email it owes, a session still open (a held `git push` was closed under, 2026-10-29).
+  // your own press - a held agent step, a proposal, an email it owes (a held `git push` was closed under, 2026-10-29).
   // Anything else (an Approve, one of its emails) reads the task again and stays on it; closed by something else meanwhile means walk on
   // ...and only the draft's Send and close says `closes` (the owner, 2026-11-03: "send and close and send without closing"): its plain Send
   // reads the task again and stays on it, as Send does everywhere else
-  // ...and NOTHING STILL WORKING IS PUT DOWN (the owner, 2026-11-01: "if agent screen is still open and you hit send message it should
-  // not close the tasks"): with work live the press puts nothing down, and a close the server kept open picks the row back up - put
-  // down at the press, it stayed off the rail with its agent still drawn on the canvas
+  // ...and SEND AND CLOSE IS HIS CLOSE, WHATEVER THE AGENT IS DOING (the owner, 2026-11-11: "Why is agent still going .... there is nothing
+  // left to do"): put down at the press as Mark done is, the agent stopped by the server; a close the server kept open - something
+  // still waits on his own press - picks the row back up
   const sent = async ({ closes = false, said = null } = {}) => {
     if (said) setSentHere({ ...said, closing: closes });
     // ...a beat for that line to be read before the view moves on: the close itself goes at once
@@ -1352,11 +1388,9 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
     // ...on the walk's table that gate is the walk's close (railwalk.leave "sent"): kept open, the same row comes back
     if (closes && walkLeave) {
       if (beat) await beat;            // ...the walk's close draws its "…" under the card at once: the line goes first
-      if (!liveWork) onLeave?.();
-      // ...and the walk is told it stays (`stays`), so it draws no row below at the press: the next row stood on the table until the kept
-      // answer brought this one back, a beat on a quick server and seconds on a slow one
+      onLeave?.();
       // ...and kept open, the sent line says why - it went on saying "closing the task" over a task that stayed (the agent walk, 2026-11-10)
-      try { const d = await walkLeave("sent", liveWork ? { stays: true } : {}); if (d?.kept) { if (said) setSentHere((h) => h && { ...h, closing: false, kept: d.kept.join("; ") }); onStay?.(); } } catch (e) { onStay?.(e?.response?.data?.detail || e?.message || uiMessage("Could not close it")); }
+      try { const d = await walkLeave("sent"); if (d?.kept) { if (said) setSentHere((h) => h && { ...h, closing: false, kept: d.kept.join("; ") }); onStay?.(); } } catch (e) { onStay?.(e?.response?.data?.detail || e?.message || uiMessage("Could not close it")); }
       loadDetail(selected); loadTasks(); onChanged?.(); return;
     }
     if (closes) {
@@ -1383,7 +1417,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
     if (!off) onLeave?.();
     try { if (walkLeave && !off) await walkLeave("watch"); else await runOperation(api, "task.watching", selected, off ? { off: true } : {}); }
     catch (e) { const msg = opError(e, uiMessage("Could not watch it - it is still here; press Watch it again.")); setErr(msg); if (!off) onStay?.(msg); return; }
-    loadDetail(selected); loadTasks(); onChanged?.();
+    loadDetail(selected); loadTasks(); onListChanged?.(); onChanged?.();
   };
   const dismiss = () => onClose?.();
   // The report is identified by its durable marker, not the actor label. Named coding agents
@@ -1407,8 +1441,6 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   const liveSession = !!term?.alive || agentOpening;
   // ...and a start held back for a free agent slot says "Waiting its turn" in its place (QueuedStart)
   const queuedRow = (listRow?.State === "queued" ? listRow?.Queued : null) || (detail?.task?.TaskId === selected ? detail?.queued : null) || null;
-  // ...and what a Send leaves open: an agent on it, working or waiting on you, keeps the task open (concierge.close_after_send)
-  const liveWork = liveSession || liveRun ? tr("the agent is working") : "";
   // No "are you sure" box on a live session (the owner, 2026-10-19: "this should be a hover over the buttons"): the press
   // is the decision, and what it does to the agent is said on the button's hover (markDoneHint).
   const askFinish = () => (liveSession ? stopAndFinish() : finish("done"));
@@ -1455,17 +1487,19 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // playbook proposal combined into the reply ready section as it's part of the approval/action").
   // ...and only the task on the table's own: the last task's record, read until the new one lands, put its Send and Redraft on the row
   // for a beat, then the row emptied and refilled (the owner, 2026-10-26: "when you load task the buttons load then go gray then reload")
-  const allReviews = t ? detail?.reviews || [] : [];
+  // ...the rows of a BULK CARD are its own (BulkCard, taskuary/bulkcard.py): one card for many of one act, never a card each
+  const allReviews = (t ? detail?.reviews || [] : []).filter((r) => !r.Batch);
+  const batches = Object.values((t ? detail?.reviews || [] : []).filter((r) => r.Batch).reduce((m, r) => ({ ...m, [r.Batch]: [...(m[r.Batch] || []), r] }), {}))
+    .map((rs) => [...rs].sort((a, b) => a.ReviewId - b.ReviewId));
   // A TASK'S REPLIES IN ROUNDS (replyRounds.js; the owner, 2026-11-01): what was sent, closed without sending and closed with is the CURRENT
   // round's - the reply that answered an earlier message, and its "Sent ... stays open", stood over the message that reopened the task
   const sentOutsideAll = sentElsewhere(detail?.messages || [], detail?.reviews || []);
   const rounds = replyRounds({ messages: (detail?.messages || []).filter((m) => !isIdeaLine(m)), reviews: allReviews, outside: sentOutsideAll,
     closeouts: detail?.closeouts || [], open: !["done", "dropped"].includes(t?.Status), ms: tsMs });
-  // ...and a draft an earlier agent session wrote is not this one's while a newer session is live (agentDraftAsk.latestDrafts, 2026-11-03)
-  const round = rounds.at(-1), reviews = latestDrafts(roundReviews(allReviews, rounds), liveSession ? term?.sid || "" : "");
+  // ...and a reply that waits for his Send is the page's whichever agent session drafted it (the owner, 2026-11-11: "reply cards should
+  // survive untouched" - left out while a newer session was live, the card he was about to send had no Send after a restart)
+  const round = rounds.at(-1), reviews = roundReviews(allReviews, rounds);
   const pendingReview = pendingReplyReview(reviews);
-  // ...and any other reply waiting, to someone else on the task - each drawn under it with its own To and Send (MoreDrafts)
-  const moreDrafts = otherPendingReplies(reviews, pendingReview);
   const allProposals = pendingProposals(reviews);
   // the task's GitHub finish beside its reply is ONE decision on the reply's card; alone, it is its own card below
   const closeoutRv = allProposals.find((p) => closeoutOf(p)) || null;
@@ -1807,13 +1841,16 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // ...nor the task's status under a live agent (the overnight run, 2026-11-03): Approve on a general agent's held delete moved the task from
   // waiting to in progress, the page re-read where it was up to with the step still listed, and jumped away from the agent
   // ...and a to-do whose box started its agent (`solo` no more) opens on the chat that agent now answers in
-  const mainHeld = useRef({ key: null, main: null, sec: null }), mainKey = `${selected}|${detail?.task?.TaskId === selected}|${!!term?.alive}|${sessionView}|${stacked}|${twoUp}|${liveSession ? "live" : t?.Status}|${!!writingUp}|${solo}`;
   // ...an agent, a turn or a draft on it: its chat leads, Came from the thin tab (homeSection's one rule, 2026-11-08)
   // ...and a task given to an agent (a general job, or one assigned to an agent) is the agent's even before it says a word - Came from leads
-  // only where there is no agent at all (the owner, 2026-11-08)
-  const anyChat = !!term?.alive || hasRecord || t?.Kind === "general" || /^agent:/.test(String(t?.Assignee || ""))
+  // only where there is no agent at all (the owner, 2026-11-08) - a coding job's as a general one's: its chat and box from the first second, typing
+  // starts it (the side-by-side walk, 2026-11-11: a coding task no session had touched opened on Came from, no box anywhere)
+  const anyChat = !!term?.alive || hasRecord || ["general", "coding"].includes(t?.Kind) || /^agent:/.test(String(t?.Assignee || ""))
     || (reviews || []).some((r) => r?.Status === "pending");
-  if (mainHeld.current.key !== mainKey) mainHeld.current = { key: mainKey, main: mainNow, sec: solo ? "from" : writingUp ? "agent" : homeSection(t?.Kind, taskStage, anyChat) };
+  const chatSeen = useRef(null);
+  chatSeen.current = chatLatch(chatSeen.current, selected, anyChat && detail?.task?.TaskId === selected);
+  const mainHeld = useRef({ key: null, main: null, sec: null }), mainKey = `${selected}|${detail?.task?.TaskId === selected}|${!!term?.alive}|${sessionView}|${stacked}|${twoUp}|${liveSession ? "live" : t?.Status}|${!!writingUp}|${solo}|${chatSeen.current.on}`;
+  if (mainHeld.current.key !== mainKey) mainHeld.current = { key: mainKey, main: mainNow, sec: solo ? "from" : writingUp ? "agent" : homeSection(t?.Kind, taskStage, chatSeen.current.on) };
   const main = mainHeld.current.main;
   // ...and a section the owner OPENED stays open under them: only another task, an agent starting or stopping, the task closing or
   // reopening or the width folds it - not the detail landing, the Advisor's late pick, the write-up ending, or the status catching up
@@ -1826,6 +1863,8 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // the chat's Draft reply is not the lit move there: Mark done is (the owner, 2026-10-29)
   const outside = answeredOutside({ messages: taskMessages, outside: sentOutside, pending: !!pendingReview });
   const isOpen = (k) => section === k;
+  const fadeMemo = useRef(null); fadeMemo.current = sectionFade(fadeMemo.current, section, selected, hereSec);
+  const fades = fadeMemo.current.moved;
   const openSection = (s) => setSecPick({ key: pickKey, sec: s });
   // ...each section's slot: a closed one its tab's width (slim beside a live agent), the open one the rest - and its body laid at that
   // open width whether it is open or not, so the move never reflows it and a hidden terminal keeps its size
@@ -2076,6 +2115,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   const CARD = { bgcolor: "var(--tq-panel, #fff)", border: `1px solid ${FOCUS_EDGE}`, borderRadius: "12px", px: 2, py: 1.75, minWidth: 0, display: "flex", flexDirection: "column", gap: 0.75 };
   const cardHead = { fontSize: 12, fontWeight: 600, color: DIM };
   const cameSummary = cameIn ? String(triaged.why || "").trim() : "";
+  const cameReport = !!cameIn && t?.Source === "report" && typeof cameIn.MessageId === "number";
   const fromCards = () => (
     <Box data-tq-from-cards="" sx={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 2, "@container (min-width: 620px)": { gridTemplateColumns: "repeat(2, minmax(0, 1fr))" } }}>
       <Box data-tq-came-in="" sx={CARD}>
@@ -2087,23 +2127,26 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
           {/* WHO AND WHAT, HERE; WHAT TRIAGE MADE OF IT, BESIDE (the owner, 2026-11-05: "one should be who and summary, other the triage"):
               the summary of what came in moved here from the triage card, which keeps only its verdict */}
           {cameSummary && <Typography data-tq-came-in-summary="" sx={{ fontSize: 15, lineHeight: 1.5, color: INK, overflowWrap: "anywhere", mt: 0.25 }}>{cameSummary}</Typography>}
-          {flow ? <Typography data-tq-came-in-newest="" sx={{ fontSize: 13, color: FAINT }}>{tr("The newest of {count} messages - the conversation is below", { count: timeline.length })}</Typography>
+          {/* ...A REPORT SENT ON AS A TASK reads as it does on Reports - its chart and its table - never its rows' raw data (the owner,
+              2026-11-13: "What came in" showed {"site": ..., "headcount": ...}) */}
+          {cameReport ? <Box data-tq-came-in-report=""><FullText mid={cameIn.MessageId} report={{ name: cameIn.Subject || t?.Title || "" }} /></Box>
+            : flow ? <Typography data-tq-came-in-newest="" sx={{ fontSize: 13, color: FAINT }}>{tr("The newest of {count} messages - the conversation is below", { count: timeline.length })}</Typography>
             : <Typography data-tq-came-in-words="" title={cameInFull ? undefined : tr("Read it all")} onClick={() => setCameInFull((v) => !v)}
             sx={{ fontSize: 15, lineHeight: 1.5, color: INK, overflowWrap: "anywhere", whiteSpace: "pre-wrap", cursor: "pointer",
               ...(cameInFull ? {} : { display: "-webkit-box", WebkitLineClamp: 6, WebkitBoxOrient: "vertical", overflow: "hidden" }) }}>
             {cameInFull ? cleanText(cameIn.ReadText ?? cameIn.BodyText ?? "") || rowText(cameIn, sourceFiles.get(cameIn.MessageId))
               : rowText(cameIn, sourceFiles.get(cameIn.MessageId)) || cleanText(cameIn.ReadText || cameIn.BodyText || "")}</Typography>}
           {/* ...and the way to the whole of it is a word you can see, not only a click on the text (the owner, 2026-10-28) */}
-          {!flow && <Link component="button" type="button" underline="hover" data-tq-came-in-more="" aria-expanded={cameInFull}
+          {!flow && !cameReport && <Link component="button" type="button" underline="hover" data-tq-came-in-more="" aria-expanded={cameInFull}
             onClick={() => setCameInFull((v) => !v)} sx={{ display: "block", fontSize: 12.5, color: "var(--tq-link, #55697a)", mt: 0.4, textAlign: "left" }}>
             {cameInFull ? tr("Show less") : tr("Show the whole email")}</Link>}
           {!flow && cameInFull && typeof cameIn.MessageId === "number" && <Attachments messageId={cameIn.MessageId} dense original={cameIn.SourceLink} />}
         </> : !sources.length && fromWorkflow ? fromConvs() : <Typography sx={{ fontSize: 13, color: DIM }}>{detail.ref} · {made}</Typography>}
         {fromFacts()}
       </Box>
-      <Box data-tq-sorted="" title={`${detail.ref} · ${made}${triaged.at ? ` · ${tr("sorted {time}", { time: whenShort(triaged.at) })}` : ""}`} sx={CARD}>
+      <Box data-tq-sorted="" title={`${detail.ref} · ${made}${triaged.at ? ` · sorted ${whenShort(triaged.at)}` : ""}`} sx={CARD}>
         <Typography sx={cardHead}>{tr("What triage made of it")}</Typography>
-        <Typography sx={{ fontSize: 15, lineHeight: 1.5, color: INK }}>{sortedLine(facts, t?.Kind || "task", { prefix: false })}</Typography>
+        <Typography sx={{ fontSize: 15, lineHeight: 1.5, color: INK }}>{madeOf(facts, t?.Kind || "task")}</Typography>
         {!cameSummary && triaged.why && <Typography sx={{ fontSize: 13, lineHeight: 1.5, color: DIM, overflowWrap: "anywhere" }}>{triaged.why}</Typography>}
         {triaged.later > 0 && <Typography sx={{ fontSize: 12.5, color: FAINT }}>{tr(triaged.later === 1 ? "{count} later message joined this task" : "{count} later messages joined this task", { count: triaged.later })}</Typography>}
         {workContext && <Typography sx={{ fontSize: 12.5, color: FAINT }}>{tr("Works from: {context}", { context: workContext })}</Typography>}
@@ -2442,11 +2485,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
     });
     return () => cancelAnimationFrame(f);
   }, [agentUp, t?.TaskId]);
-  // EVERY PRESS ON THE TASKS TAB IS KEPT (phase B, 2026-10-23): it was never recorded - only the desk's row was. This view draws its own
-  // buttons, so a press is heard here, before it runs: a button known by its one name (pressLog.pagePress), what was filled on the page
-  // and what else could be pressed. The canvas's copy is the desk's row, recorded there
-  const pageRef = useRef(null), recRef = useRef(null);
-  recRef.current = detail?.task?.TaskId === selected ? detail?.recommended || null : null;
+  const pageRef = useRef(null);
   // WHAT THE ASSISTANT IS TOLD OF THIS TASK when the owner asks about it (pageView.js, 2026-10-30): the task, and its title as a field it may
   // rewrite - the task tool's own update (task.update), the road every owner act on this page takes. Its boxes (the draft) and its row's
   // buttons are read off the page
@@ -2458,17 +2497,6 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
       loadDetail(t.TaskId); onListChanged?.(); onChanged?.();
     } }],
   } : {});
-  useEffect(() => {
-    const el = pageRef.current;
-    if (canvas || !active || !el) return undefined;
-    const heard = (e) => {
-      const b = e.target?.closest?.("button");
-      const got = selRef.current && b && !b.disabled && el.contains(b) ? pagePress(el, b) : null;
-      if (got) notePress(api, { key: `task:${selRef.current}`, surface: "task", ...got, advised: recRef.current?.verb || null });
-    };
-    el.addEventListener("click", heard, true);
-    return () => el.removeEventListener("click", heard, true);
-  }, [canvas, active]);
   const [remindAt, setRemindAt] = useState(null);
   // `saidDay`: the day the owner typed for Remind me (assistantLight's light.day), kept at the press - the light goes out as it is pressed
   // (a ref: the row's registered verbs can hold an older render's closure)
@@ -2525,7 +2553,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // task - the live session's own word first, then the rail's row (on the canvas), then the server's state (railStatus.taskStatus)
   // ...and the rail's agent lane only while no newer read of this task takes it back: a rail built while the agent worked said "agent
   // working" over the Result of the agent that had finished (railStatus.agentGone) - the row beside it takes the same read
-  const status = taskStatus({ chat: isGeneral, queued: queuedRow, live: term?.alive ? { alive: true, waiting: agentState === AGENT.waiting } : null, rail, state: rowState,
+  const status = taskStatus({ chat: chatOf(rail, isGeneral), queued: queuedRow, live: term?.alive ? { alive: true, waiting: agentState === AGENT.waiting } : null, rail, state: rowState,
     closed: ["done", "dropped"].includes(t?.Status), cantSend: !!pendingReview && cantSend, page: rail?.tid ? pageRead(rail.tid) : null,
     owed: pendingReview ? !String(pendingReview.FinalText || pendingReview.DraftText || "").trim() : null });
   const continueHere = !liveSession && notDone && (barContinue || (stage !== "agent" && canContinue));
@@ -2533,10 +2561,6 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   const sendGeneral = isGeneral && !generalStarted && notDone && !liveSession && !home;
   const startHere = !home && !liveSession && notDone && !continueHere && !sendGeneral && (stage !== "agent" || (agentBar && !isGeneral));
   const ranBefore = !!(report || detail?.transcript);
-  // a start held for a new sender, said in the chat with its Run anyway (HeldStart) - only while no agent has ever run here. A line of HIS is
-  // no run: typed on a stranger's task whose AI could not start, the hold went unsaid under it (the recorded walk, 2026-11-10)
-  const agentSpoke = (detail?.comments || []).some((c) => c.ActorType === "assistant_agent");
-  const heldStart = heldStartOf({ story: detail?.agentStory, tags: t?.Tags, ran: ranBefore || agentSpoke || !!term || liveSession || !!queuedRow });
   // held on where the code is: before any run that is a start waiting, after one it is the agent asking to move the work (wrapup.asks_to_move)
   const heldWhy = ranBefore ? tr("The agent found the work is not in this code - choose where it is and it starts there")
     : tr("Not started: it needs to know where the code is - it starts once you choose");
@@ -2786,26 +2810,33 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // ...AND ONCE THE OWNER WRITES AGAIN EACH PRESSED CARD STAYS IN ITS TURN (the owner, 2026-11-09: "leave the card in the turn with the pressed
   // button"): the held steps it approved, and every reply that went - drawn by the chat in the turn that set it up (GeneralWorkspace turnCards)
   const liveAsks = askCards.filter((g) => g.reviews.some((r) => r.Status === "pending")).length;
-  const asksBelow = !!(pendingReview || moreDrafts.length || owesEmails || (handInPane && handoff) || calAsk?.invite);
+  const asksBelow = !!(pendingReview || owesEmails || (handInPane && handoff) || calAsk?.invite);
   // ...AND SO DOES EACH CARD THAT STILL WAITS (the spine audit, 2026-11-09): a held step, a browser act, a drafted playbook rode one block under
   // whichever turn was newest, and the last two stood again at the chat's foot with a second Approve. Each is drawn once, in the turn that
   // raised it (`rid`: the chat's payload names that turn). A to-do no agent has touched has no turns: its cards stay over its box (chatBody)
   const inTurns = !solo && !["done", "dropped"].includes(t?.Status), decided = () => { loadDetail(selected); loadTasks(); onChanged?.(); };
   // ...AND A DRAFT THE AGENT REPLACED stays a dimmed record where it stood (the owner, 2026-11-10: "it should go gray and then it should generate
   // new email action box under it"): by its time, as it stood while it waited (agentSummary.draftHome), the new card in the turn that wrote it
+  const sentBox = sentStands(sentHere, allReviews, inTurns);
   const replacedCards = allReviews.filter(isReplaced).map((r) => ({ key: `replaced:${r.ReviewId}`, at: r.CreatedAt || "", rid: r.ReviewId, byRow: true, record: true,
     node: <ReplacedDraft review={r} /> }));
-  const turnCards = [...passedCards, ...replacedCards, ...pressedCards.map((g) => ({ key: g.key, at: g.at, rid: g.reviews[0].ReviewId,
+  const turnCards = [...passedCards, ...batches.map((rs) => ({ key: `batch:${rs[0].Batch}`, at: rs[0].CreatedAt || "", rid: rs[0].ReviewId, waits: true,
+      node: <BulkCard rows={rs} tid={t?.TaskId} onChanged={decided} /> })), ...replacedCards, ...pressedCards.map((g) => ({ key: g.key, at: g.at, rid: g.reviews[0].ReviewId,
       node: g.held ? <HeldSteps reviews={g.reviews} onChanged={decided} /> : <PassedCard reviews={g.reviews} /> })),
     ...(inTurns ? askCards : []).map((g) => ({ key: g.key, at: g.reviews[0].CreatedAt || "", rid: g.reviews[0].ReviewId, waits: true, also: asksBelow, note: g.held ? "" : askNote(g.reviews[0]),
       node: g.held ? <HeldSteps reviews={g.reviews} toRow={inRow && !pendingReview && liveAsks === 1} onChanged={decided} />
         : <ReviewDecision review={g.reviews[0]} toRow={inRow && !pendingReview && proposals.length === 1} onChanged={decided} /> })),
-    ...allReviews.filter((r) => r.Kind !== "action" && r.Kind !== "slot" && ["approved", "edited", "sent"].includes(r.Status) && r.ReviewId !== sentHere?.id)
-      .map((r) => ({ key: `sent:${r.ReviewId}`, at: r.CreatedAt || "", rid: r.ReviewId, node: <SentCard id={r.ReviewId} text={r.FinalText || r.DraftText} channel={r.Channel || ""}
-        to={replyContext(r)} subject={deliverySubject(r)} at={r.DecidedAt} /> }))];
+    // ...a task's email the same as a reply (the owner, 2026-11-13: "never close action boxes. once sent just say sent")
+    // ...and the one just pressed here says what the press did to the task beside it (`closing`, `kept`), as it did where its draft stood
+    ...allReviews.filter((r) => r.Kind !== "action" && WENT.includes(r.Status) && r.ReviewId !== sentBox?.id)
+      .map((r) => ({ key: `sent:${r.ReviewId}`, at: r.CreatedAt || "", rid: r.ReviewId, node: <SentCard id={r.ReviewId} text={r.FinalText || r.DraftText} channel={r.Channel || ""} done={pressWords(r).sentAs}
+        to={replyContext(r)} subject={deliverySubject(r)} at={r.DecidedAt} {...(sentHere?.id === r.ReviewId ? { closing: sentHere.closing, kept: sentHere.kept } : {})} /> }))];
   // ...the reply that went is that card in its turn, so the chat's cards say it no second time - no "What was sent", no To over it
   const sentCarded = !!sentReview && turnCards.some((c) => c.key === `sent:${sentReview.ReviewId}`);
-  const chatBody = () => <>
+  // ...the reply in it only once it is written or something was said about it (replyCardShown): a reply owed that nobody wrote is the agent's
+  // to draft - never an empty box at the chat's foot. A to-do no agent has touched (no turns) keeps its card over its box: there it is the way in
+  const chatReview = !inTurns || replyCardShown(pendingReview) ? pendingReview : null;
+  const chatBody = (pendingReview = chatReview) => <>
       {/* HAND IT TO A PERSON, IN THE CHAT (the owner, 2026-10-29: "you click the button and the matching UI opens in its pane"): on
           the canvas the hand-off is a compose card here - who, the forward the AI drafts, and Send it - where the drawer stood;
           "sending" keeps it mounted behind, so a send that fails brings back what was typed */}
@@ -2828,7 +2859,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
           {calAsk?.invite && <Typography data-tq-invite="" variant="body2" sx={{ mb: 1, color: INK }}>{calAsk.line}
             {!!calAsk.clash && <Box component="span" sx={{ color: "var(--tq-danger, #7a2f3c)", fontWeight: 600 }}>{tr(" - it {clash}", { clash: calAsk.clash })}</Box>}</Typography>}
           {/* the emails that close it (slots.py), where a task's close is decided - each with its own draft */}
-          <SlotList taskId={t?.TaskId} checklist={detail?.checklist || []} reviews={detail?.reviews || []}
+          <SlotList taskId={t?.TaskId} checklist={detail?.checklist || []} reviews={allReviews}
             onChanged={() => { loadDetail(selected); loadTasks(); onChanged?.(); }} />
           {/* the bar comes FIRST, above the letter it acts on. What it no longer holds is
               that jump to another tab: the draft is right here, and a button whose whole job
@@ -2850,10 +2881,12 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
               <Box sx={{ flex: 1, minWidth: 12 }} />
               <Typography variant="caption" sx={{ color: FAINT, textAlign: "right", maxWidth: 320 }}>
                 {/* no More button: with these on the surface there is nothing left to hide */}
+                {/* ...and "its agent is still working" only while a turn IS at work (the audit, 2026-11-13: a chat agent keeps its session after
+                    it answers, and under two emails waiting for Send the line said it was working while the chip said "agent waiting on you") */}
                 {pendingReview
                   ? (inRow ? "" : tr("Nothing is sent until you approve it."))
                   : sentReview
-                  ? `${sentCarded ? "" : `${tr("Sent")}${sentReview.DecidedAt ? ` · ${fmtDateTime(sentReview.DecidedAt)}` : ""}. `}${String(t?.Status || "") === "done" ? tr("The task closed with it.") : liveSession ? tr("The task stays open while its agent is still working.") : tr("The task stays open until you mark it done.")}`
+                  ? `${sentCarded ? "" : `${tr("Sent")}${sentReview.DecidedAt ? ` · ${fmtDateTime(sentReview.DecidedAt)}` : ""}. `}${String(t?.Status || "") === "done" ? tr("The task closed with it.") : stillWorking(liveSession, answered) ? tr("The task stays open while its agent is still working.") : tr("The task stays open until you mark it done.")}`
                   : inRow ? "" /* the chip already says "not drafted" */ : tr("A reply is optional. Starting or stopping an agent does not send one.")}
               </Typography>
             </Box>
@@ -2862,10 +2895,9 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
               queue mounts, so two surfaces cannot say different things about one draft. */}
           {pendingReview ? (<>
             <Box data-tq-review={pendingReview.ReviewId}>
-            <ReviewDecision review={pendingReview} closeout={closeoutRv} toRow={inRow} onMarkDone={askFinish} onSent={sent} closeOnSend liveWork={liveWork} onRemind={(e, a) => remindHere(steady(a || e?.currentTarget))}
+            <ReviewDecision review={pendingReview} closeout={closeoutRv} toRow={inRow} onMarkDone={askFinish} onSent={sent} closeOnSend onRemind={(e, a) => remindHere(steady(a || e?.currentTarget))}
               onEmailInstead={() => setEmailOpen(true)} why={rec?.state === "draft_ready" ? rec.why || "" : ""}
               onChanged={() => { loadDetail(selected); loadTasks(); onChanged?.(); }} /></Box>   {/* the list's row moves too (T19) */}
-            <MoreDrafts reviews={moreDrafts} messages={storedMessages} onChanged={() => { loadDetail(selected); loadTasks(); onChanged?.(); }} />
           </>) : (
             <>
               {/* WHAT ALREADY WENT OUT, before any envelope: the item ending upstream (the agent's merge) and what was sent
@@ -2927,7 +2959,9 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                   do): the empty reply box under the To line, as a draft with no words wears it (ReviewDecision's "No draft yet - hit Draft
                   with AI"), and the same press - Draft with AI writes it here; a press in the box opens it to write by hand. The row's Reply
                   is the same openReply */}
-              {replyEmpty && (
+              {/* ...only on a to-do no agent has touched (the owner, 2026-11-13): where an agent works the task it drafts, and a box nobody spoke
+                  of is not drawn (chatReview) */}
+              {replyEmpty && !inTurns && (
                 <Box data-tq-reply-empty="" sx={{ mt: 1 }}>
                   <Box sx={{ position: "relative" }} onMouseDown={(e) => { if (!openingReply) { e.preventDefault(); openReply(false); } }}>
                     <DraftField value="" onChange={() => {}} placeholder={openingReply === "generate" ? tr("Drafting…") : tr("No draft yet — hit Draft with AI")}
@@ -3000,11 +3034,11 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // ...only where it holds something (an empty Next steps said nothing), and marked while it waits on the owner: a resting Result keeps the chat
   // that holds it on screen (`data-tq-waits`, the agent room's :has)
   // ...the asks drawn in their turns are not this block's: with nothing else to hold it is not drawn (a "Next steps" over nothing)
-  const waits = !!(pendingReview || moreDrafts.length || proposals.length - (inTurns ? asks.length : 0) || owesEmails || handoff);
+  const waits = !!(chatReview || proposals.length - (inTurns ? asks.length : 0) || owesEmails || handoff);
   // ...ONLY WHAT CAN STILL BE DONE (the owner, 2026-11-05: "it's a chat nothing else"): a draft waiting on Send, an invite to answer, emails owed -
   // never a closed task's "Mark done 11m ago", a reply sent outside or a draft closed without sending; the chat says those
-  const chatCards = sentHere ? <SentCard {...sentHere} /> : !["done", "dropped"].includes(t?.Status) && (waits || (!inTurns && kept.length) || upFailed
-    || chatReplyShown({ replyMessage, pendingReview, sentReview: null, unsentReview: null }) || calAsk?.invite) ? <Box ref={cardsRef} data-tq-chat-cards="" data-tq-waits={waits ? "" : undefined}
+  const chatCards = sentBox ? <SentCard {...sentBox} /> : !["done", "dropped"].includes(t?.Status) && (waits || (!inTurns && kept.length) || upFailed
+    || chatReplyShown({ replyMessage, pendingReview: chatReview, sentReview: null, unsentReview: null }) || calAsk?.invite) ? <Box ref={cardsRef} data-tq-chat-cards="" data-tq-waits={waits ? "" : undefined}
       sx={{ minWidth: 0, "& textarea": { fontSize: "13.5px !important", lineHeight: "1.5 !important", color: INK } }}>{chatBody()}</Box> : null;
   return (
     <>
@@ -3162,7 +3196,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                   <Box data-tq-from="" data-tq-task-section="" data-tq-from-open={fromOpen ? "" : undefined} data-tq-from-side={fromDrawer ? "" : undefined}
                     id={fromDrawer ? "tq-from-side" : undefined} role={fromDrawer ? "complementary" : twoUp ? "region" : undefined}
                     aria-label={fromDrawer || twoUp ? tr("Came from") : undefined} aria-hidden={twoUp && !isOpen("from") ? true : undefined}
-                    onClickCapture={stacked && !solo ? phoneFromTap : undefined} sx={twoUp ? { ...SECTION(isOpen("from"), openW("from")), gap: 1.75 }
+                    onClickCapture={stacked && !solo ? phoneFromTap : undefined} sx={twoUp ? { ...SECTION(isOpen("from"), openW("from"), false, false, fades), gap: 1.75 }
                       : { minWidth: 0, display: "flex", flexDirection: "column", gap: 1.75, ...(fromDrawer ? { ...card, px: 1.5, py: 1.25, ...FROM_SIDE } : PHONE_FROM(fromOpen || solo)) }}>
                     {twoUp && <SectionHead sec={SECTIONS[0]} sub="what came in, and what triage made of it" here={hereSec === "from"}
  />}
@@ -3276,7 +3310,9 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                   sx={sessionView || twoUp ? { display: "contents" } : { minWidth: 0, display: "flex", flexDirection: "column", containerType: "inline-size",
                     ...(main === "work" ? MAIN : settled ? { flex: "0 1 auto", minHeight: 0 } : {}) }}>
                 {!solo && slot("agent", <Box data-tq-work={twoUp ? "" : undefined} data-tq-agent-section="" role={twoUp ? "region" : undefined} aria-label={twoUp ? tr("Agent") : undefined}
-                  sx={twoUp ? { ...SECTION(isOpen("agent"), openW("agent"), sessionView, liveSession), ...(chatPane ? { pb: 0.25 } : {}) } : { display: "contents" }}>
+                  // ...A CHAT IS ONE WIDTH, AT REST AND AT WORK: the section's own room (20px at rest, 8px round a live session) moved the chat 12px
+                  // and widened it 24px the moment its agent started, and back when it stopped (sampled every frame, 2026-11-11) - the live room, always
+                  sx={twoUp ? { ...SECTION(isOpen("agent"), openW("agent"), sessionView, liveSession, fades), ...(chatPane ? { pb: 0.25, px: 1, pt: 0.65 } : {}) } : { display: "contents" }}>
                 {/* THE SESSION IS THE PAGE. Your CLI, in this task's repo, with the task in
                     its lap - you type into it like any other terminal. Everything below is
                     reference material about the same task, folded away. */}
@@ -3579,12 +3615,10 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                           source (chatStream.chatSource) - a coding task's sessions, or the general agent's conversation - and the branch's landing
                           card joins it wherever the task works in a checkout */}
                       <GeneralWorkspace key={`${t.TaskId}-${generalRevision}`} task={t} compact onSession={generalSession} reread={chatRead}
-                        handoff={chatHandoff}
-                        heldStart={chatPane && heldStart ? <HeldStart taskId={t.TaskId} line={heldStart} once={detail?.agentStory?.trust?.once !== false} onChanged={() => { loadTasks(); loadDetail(t.TaskId); findTerm(t.TaskId); onChanged?.(); }} /> : null}
                         queued={chatPane && !liveSession && queuedRow ? <QueuedStart taskId={t.TaskId} queued={queuedRow} line onChanged={() => { loadTasks(); loadDetail(t.TaskId); }} /> : null}
                         liveSid={term?.alive && term.mode === "assistant" ? term.sid : ""}
                         mails={storedMessages} reviews={detail?.reviews || []} checklist={detail?.checklist || null} next={chatCards}
-                        onAnswered={() => { findTerm(selected); onChanged?.(); }}
+                        onAnswered={() => { findTerm(selected); loadTasks(); loadDetail(selected); onChanged?.(); }}
                         toolsAt={canvas ? chatTools : null} noAiSaid={!notDone || (failedRun && runFix?.href === place("ai").href)} noTools={!liveSession} noComposer={isGeneral && continueHere && !chatPane} chat={home}
                         opening={agentOpening} seed={chatPane ? chatSeed : null}
                         came={home ? { label: cameFrom(sourceMessage) ? `From ${cameFrom(sourceMessage)}` : sources.length ? cameFromLabel(sources) : fromWorkflow ? `Routine · ${fromWorkflow.title}` : "Came from",
@@ -3684,6 +3718,8 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
           )}
         </Box>
       </Box>
+      {/* ...an AGENT kind picked again - the one it already has - is still a pick: it starts that agent where none works on it (server._start_chosen;
+          the rail walk, 2026-11-12: "agent · general" drawn chosen over a task nobody worked, and pressing it did nothing) */}
       {/* THE MENUS THE PILLS WERE: the dropdowns' changes, now the task tools (change above), reached from the row (canvas) or Change (Tasks tab) */}
       {t && <Menu open={!!pick} anchorEl={pick?.at || null} onClose={() => setPick(null)}>
         {pick?.what === "menu" && [
@@ -3693,7 +3729,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
         ]}
         {pick?.what === "kind" && (KINDS.includes(t.Kind || "task") ? KIND_OPTIONS : [{ key: t.Kind, label: t.Kind, hint: "legacy task type" }, ...KIND_OPTIONS])
           .filter((o) => o.key !== "coding" || canCode || t.Kind === "coding").map((o) =>
-          <MenuItem key={o.key} selected={o.key === (t.Kind || "task")} sx={{ py: 0.6 }} onClick={() => { setPick(null); if (o.key !== (t.Kind || "task")) change("task.set_kind", { kind: o.key }); }}>
+          <MenuItem key={o.key} selected={o.key === (t.Kind || "task")} sx={{ py: 0.6 }} onClick={() => { setPick(null); if (o.key !== (t.Kind || "task") || AGENT_KINDS.includes(o.key)) change("task.set_kind", { kind: o.key }); }}>
             <ListItemText primary={KINDS.includes(o.key) ? tr(o.label) : o.label} secondary={tr(o.hint)} primaryTypographyProps={{ fontSize: 12 }} secondaryTypographyProps={{ fontSize: 10.5 }} />
           </MenuItem>)}
         {/* no Status here: status is DERIVED - Start, Mark done, Remind me and Reopen set it (T12) */}
@@ -3815,7 +3851,7 @@ const Fold = ({ title, children }) => (
 // `sec`: the section it heads in the desk's three (2026-10-27) - then its line is the sections' one style (SectionHead): "2 · AGENT", one dim
 // descriptor (its own title where that is not the section's name, its description), "up to here" where the task is
 // THE REPLY THAT JUST WENT, where its draft stood (TaskPage sentHere): its card, pressed - SentCard
-const SENT_BEAT = 900;
+const SENT_BEAT = 1600;
 
 const WorkflowHeading = ({ number, title, description, chip, tone, folded, onToggle, action, tools, quiet = false, sec = null, here = false, sub = undefined }) => {
   useLocale();

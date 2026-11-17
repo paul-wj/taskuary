@@ -263,11 +263,12 @@ export default function FirstRun({ onWalk, onFinish, onChanged, revisit = false,
     catch (e) { setErr(errText(e)); }
     await reload(); setDevBusy(false);
   };
+  const shutCard = () => { setOpen(null); reload(); };   // an opened card back to the list it was picked from: its own Back, and the row's
   const fix = st?.fix;
   const fixed = fix && (st.ais.find((a) => a.name === fix.name) || { name: fix.name, title: fix.title, installed: true });
   const nav = navMoves(st, view, reopened);
   const VERB = {
-    back: { label: t("Back"), tone: "s", run: () => go(prevOf(view, st)), title: t("The step before") },
+    back: { label: t("Back"), tone: "s", run: () => (open ? shutCard() : go(prevOf(view, st))), title: t(open ? "Back to the list" : "The step before") },
     // ...past the optional steps, a first run lands on Setup complete before More connections (afterAbout)
     next: { label: t("Next"), tone: "p", run: () => { const n = nextOf(view, st); go(firstPass.current && n === "other" ? "done" : n); }, title: t("The next step") },
     walk: { label: t(btnLabel("walk")), tone: "p", run: finishThen(onWalk), title: t("Everything waiting, most important first") },
@@ -527,7 +528,7 @@ export default function FirstRun({ onWalk, onFinish, onChanged, revisit = false,
   const detail = conn && (
     <Box sx={{ mt: 0.5 }}>
       <ChannelDetail key={conn.ConnectorId} conn={conn} sources={sources} reload={reload} simple={open.simple}
-        onBack={() => { setOpen(null); reload(); }} onConnected={reload}
+        onBack={shutCard} onConnected={reload}
         onCreated={(id) => { setOpen({ id, simple: open.simple }); reload(); }} />
     </Box>
   );
@@ -629,13 +630,13 @@ ${fix.detail || ""}`, screen: "Setup",
     : litCard.state === "failing" ? t("{name} didn't work last time - pick {name} to try again, or pick another", { name: litCard.title })
     : t("Pick its card - {name} if that is the one you pay for", { name: litCard.title });
   const mailChoice = !litCard ? t("pick its card") : oneSignIn
-    ? t("email is the usual one: {name} is one sign-in", { name: litCard.title })
+    ? t("{name} takes a one-time Microsoft set-up, then one sign-in", { name: litCard.title })
     : t("email is the usual one: start with {name} if that is yours", { name: litCard.title });
   lineRef.current = (said ? t(said.key, said.values) : "") || (err && typeof err === "object" ? t(err.key, err.values) : err) || {
     ai: (signing ? t("Finish signing in to ChatGPT in your browser - Taskuary carries on by itself when you're done.") : "") || (!browse && fixLine(fix))
       || (aiErr ? t("{error} Pick another AI - it is checked on a test email first.", { error: aiErr })
         : st.step === "ai" ? t("What AI do you have? {choice}. Taskuary checks it works, then uses it to sort what comes in.", { choice: aiChoice })
-        : t("Your AI is {name} - it sorts what comes in and runs the Assistant. Pick another here to switch, or press {next}.", { name: st.brain?.name || t("set"), next: VERB.next.label })),
+        : t("Your AI is {name} - it sorts what comes in and answers you in the chat. Pick another here to switch, or press {next}.", { name: st.brain?.name || t("set"), next: VERB.next.label })),
     mail: aiProblem || (doneOf(st, "mail") ? t("Your main source is connected.{sorting} Another source can be added the same way - a second one of the same kind is Add another on its card - or press {next}.", { sorting: sortingLine, next: VERB.next.label })
       : st.mail_error ? (litCard ? t("{error} Pick {name} to fix it - or pick a different source.", { error: st.mail_error, name: litCard.title })
         : t("{error} Fix it in the card and press Connect again - or pick a different source.", { error: st.mail_error }))

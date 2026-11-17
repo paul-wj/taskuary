@@ -11,9 +11,11 @@ test("an explicit built-in choice never routes audio to an AI card", () => {
   assert.equal(micRoute(voice, false, "browser"), "off");
 });
 
-test("automatic chooses a browser then Windows without a voice card", () => {
-  assert.equal(micRoute({ builtin: {} }, true, "auto"), "browser");
-  assert.equal(micRoute({ builtin: {} }, false, "auto"), "windows");
+// Automatic (the owner, 2026-11-16: "Use the Windows voice rec"): a voice card, else Windows voice typing on this computer, else the tab's own
+test("automatic chooses a voice card, then Windows voice typing, then the browser's own", () => {
+  assert.equal(micRoute({ ready: true, builtin: {} }, true, "auto"), "connector");
+  assert.equal(micRoute({ builtin: {} }, true, "auto"), "windows", "Windows voice typing before the tab's recogniser");
+  assert.equal(micRoute({}, true, "auto"), "browser", "a Mac or Linux tab");
   assert.equal(micRoute({}, false, "auto"), "off");
 });
 

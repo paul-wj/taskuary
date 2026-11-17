@@ -62,6 +62,24 @@ class DeskTests(unittest.TestCase):
         self.assertNotIn('open', out)
         self.assertIn('Nobody called Zed', concierge.route_to(self.s, 'Zed')[1])
 
+    def test_a_draft_with_no_mailbox_to_send_it_says_so(self):
+        # the visual audit, 2026-11-13: "Drafted it on TQ-0002 - it waits for your Send" over a card whose only button was Connect email
+        tid = self.s.create_task({'Title': 'chat', 'Kind': 'general', 'Status': 'open'}, 'owner')
+        made = {'taskId': tid + 1, 'ref': 'TQ-0099', 'draft': 'Hi Gail'}
+        params = {'channel': 'email', 'to': 'gail@northwind.example', 'about': 'the Q3 numbers'}
+        with mock.patch('taskuary.outbox.compose', return_value=made), mock.patch('taskuary.outbound.send_channels', return_value=[]):
+            said = concierge._made_now(self.s, tid, 'outbox', params)['say']
+        self.assertIn('Connect email', said); self.assertNotIn('waits for your Send', said)
+        with mock.patch('taskuary.outbox.compose', return_value=made), mock.patch('taskuary.outbound.send_channels', return_value=['email']):
+            self.assertIn('waits for your Send', concierge._made_now(self.s, tid, 'outbox', params)['say'])
+
+    def test_a_name_with_its_address_is_that_address(self):
+        # the visual audit, 2026-11-13: "draft a reminder to Gail Moreno <gail@northwind.example>" - the address was in the ask, and the
+        # Assistant said nobody by that name had written here and left To empty
+        self.assertEqual(concierge.route_to(self.s, 'Gail Moreno <Gail@Northwind.example>'), ('gail@northwind.example', ''))
+        self.assertEqual(concierge.send_to(self.s, 'email', '"Moreno, Gail" <gail@northwind.example>'), ('email', 'gail@northwind.example', ''))
+        self.assertIn('Nobody called', concierge.route_to(self.s, 'Gail Moreno <nobody>')[1])
+
     def test_a_setting_opens_its_group_with_the_knob_named(self):
         out = self._turn('setting.set', label='sort new mail with AI', value='off')
         self.assertTrue(out['open'].startswith('#settings=config&group=How%20mail%20is%20sorted&key=intent_classify_enabled'), out['open'])

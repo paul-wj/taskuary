@@ -116,11 +116,41 @@ def test_a_run_whose_draft_waits_on_its_own_task_is_done(db):
     assert s.get_task(tid2)['Status'] != 'done'                      # its own review waits here
 
 
+def test_a_run_the_routine_closed_says_so_and_where_its_draft_waits(db):
+    # the visual audit, 2026-11-13: a routine's run task opened on "✓ Mark done just now" - a press the owner never made - and nothing about
+    # what ran or that its draft waited on another task
+    from taskuary import taskstate
+    s = MemoryStore()
+    src = source(s, [read_dupes(db), {'id': 's2', 'kind': 'draft', 'label': 'Tell Erin', 'to': 'erin@northwind.example', 'about': '{{s1}}'}])
+    tid = run_task(s, src)
+    with mock.patch('taskuary.outbox.compose', return_value={'reviewId': 41, 'taskId': tid + 100, 'ref': 'TQ-0999', 'draft': 'Hi'}):
+        flow.execute(s, src, tid, 'manual', llm=no_model)
+    why = taskstate.closed_why(s, s.get_task(tid))
+    assert why.startswith('Closed by the routine: Ran 2 steps') and 'waiting for your yes on TQ-0999' in why and 'agent' not in why
+
+
 def test_a_token_that_names_nothing_is_left_visible_and_said():
     ctx = flow.context({'inputs': {'site': 'North'}}, 'schedule')
     warns = []
     assert flow.render({'q': ['{{inputs.site}} on {{run.trigger}}', '{{s9.head}}']}, ctx, warns) == {'q': ['North on schedule', '{{s9.head}}']}
     assert warns == ['{{s9.head}} names nothing - left as written']
+
+
+def test_a_text_steps_answer_is_its_text_and_a_draft_from_nothing_is_never_written(db):
+    # the visual audit, 2026-11-13: a Friday status routine drafted "Weekly status ... from {{s2.answer}}" off a text step, the token named
+    # nothing, and the email to Erin Blake held the model's apology for the unfilled placeholder - on the rail as "ready to send"
+    s = MemoryStore()
+    steps = [read_dupes(db), {'id': 's2', 'kind': 'ai', 'label': 'Write it', 'prompt': 'Summarise {{s1}}', 'output': 'text'},
+             {'id': 's3', 'kind': 'draft', 'label': 'Tell Erin', 'to': 'erin@northwind.example', 'about': 'Status: {{s2.answer}}'}]
+    src = source(s, steps)
+    with mock.patch('taskuary.outbox.compose', return_value={'reviewId': 6, 'taskId': 99, 'ref': 'TQ-0099', 'draft': 'Hi'}) as made:
+        flow.execute(s, src, run_task(s, src), llm=answering('One duplicate: Payworth INV-1.'))
+    assert made.call_args.args[3] == 'Status: One duplicate: Payworth INV-1.'
+    # ...and a token that still names nothing stops the draft step, said where it happened - never an email written around the hole
+    ctx = flow.context({'title': 'Weekly'}, 'manual', None)
+    with mock.patch('taskuary.outbox.compose') as made:
+        rec = flow.run_step(s, {'id': 's3', 'kind': 'draft', 'label': 'Tell Erin', 'to': 'erin@northwind.example', 'about': '{{s9.why}}'}, ctx, None, task_id=7)
+    assert not made.called and rec['status'] == 'failed' and '{{s9.why}}' in rec['error']
 
 
 def test_a_step_may_be_named_by_its_label(db):
@@ -142,6 +172,19 @@ def test_only_if_skips_on_the_ai_answer_and_the_ai_step_is_one_call_in_the_shape
     assert '1 with AI' in out['summary']
     out = flow.execute(s, src, run_task(s, src), llm=answering('{"answer": true, "why": "same invoice twice"}'))
     assert out['steps'][2]['status'] == 'ok' and s.get_task(out['steps'][2]['task_id'])['Title'] == 'Duplicates: same invoice twice'
+
+
+def test_a_scheduled_ai_step_that_reads_what_its_last_run_read_asks_nothing():
+    """The owner, 2026-11-11: "if nothing changed in raw stuff ... just run it on changes". The answer is kept per routine and step."""
+    s, calls = MemoryStore(), []
+    def brain(system, user, **k): calls.append(user); return '{"answer": true, "why": "two bills match"}'
+    src = source(s, [{'id': 's1', 'kind': 'ai', 'label': 'Judge', 'prompt': 'Are these duplicates?', 'output': 'yes_no'}])
+    go = lambda trigger='schedule', src=src: flow.execute(s, src, run_task(s, src), trigger=trigger, llm=brain)['steps'][0]
+    first, again = go(), go()
+    assert len(calls) == 1 and again['answer'] is True and again['why'] == first['why']          # the same words: its answer, no call
+    go('manual'); assert len(calls) == 2                                                            # Run now is the owner asking
+    other = source(s, [{'id': 's1', 'kind': 'ai', 'label': 'Judge', 'prompt': 'Are these three duplicates?', 'output': 'yes_no'}], title='Other check')
+    go(src=other); assert len(calls) == 3                                                           # other words are asked
 
 
 def test_an_ai_answer_out_of_shape_or_empty_fails_the_step():

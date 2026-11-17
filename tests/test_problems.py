@@ -39,6 +39,18 @@ class Problems(unittest.TestCase):
         problems.dismiss(s, f'back:{key}')                            # Got it
         self.assertEqual(problems.news(s), [])
 
+    def test_a_failing_card_switched_off_is_not_working_again(self):
+        """Turning a failing card off stops it being read; it did not heal, so the episode closes without a word."""
+        s = MemoryStore()
+        wa = _on(s, 'whatsapp')
+        s.touch_connector(wa['ConnectorId'], 'the WhatsApp bridge is not running')
+        _since(s, wa, minutes=problems.GRACE_MINUTES + 5)
+        key = f"connector:{wa['ConnectorId']}"
+        self.assertIn(key, {p['key'] for p in problems.collect(s)})
+        s._exec('UPDATE connector SET Active=0 WHERE ConnectorId=?', (wa['ConnectorId'],))   # the owner switches it off, error still on it
+        self.assertNotIn(key, {p['key'] for p in problems.collect(s)})
+        self.assertEqual(problems.news(s), [], 'a card switched off is not "working again"')
+
     def test_a_retry_at_work_does_not_ring(self):
         """2026-10-26: "the classic whatsapp timeout should not show up". The poll starts a dropped bridge again
         (wabridge.supervise); one that is back inside the grace never rang, so it says no "working again" either."""
@@ -98,3 +110,24 @@ class Problems(unittest.TestCase):
         s.set_setting('triage_ai', 'connector:azure_openai', 'owner')
         got = {p['key']: p for p in problems.collect(s)}
         self.assertEqual(got['triage']['connector'], 'azure_openai')
+
+
+class AnOutage(unittest.TestCase):
+    """A Microsoft outage, 2026-11-12: mail answered 502/503 and chats 401 for hours while the sign-in still renewed. The bell printed
+    the raw line - its URL, and the mailbox inside it - and the chats card said to paste a key it has none of. Both say the service's
+    trouble now, in the same words on the card and the bell."""
+    def test_a_service_down_and_a_refused_read_on_a_sign_in_card_are_said_as_the_services_trouble(self):
+        import json
+        s = MemoryStore()
+        mail, chats = _on(s, 'outlook'), _on(s, 'teams')
+        for c in (mail, chats): s._exec('UPDATE connector SET ConfigJson=? WHERE ConnectorId=?', (json.dumps({'auth': 'user'}), c['ConnectorId']))
+        s.touch_connector(mail['ConnectorId'], 'inbox: 503 Server Error: Service Unavailable for url: https://graph.example/v1.0/users/alex@northwind.example/mailFolders/inbox/messages')
+        s.touch_connector(chats['ConnectorId'], '401 Client Error: Unauthorized for url: https://graph.example/v1.0/users/alex@northwind.example/chats/getAllMessages/delta')
+        for c in (mail, chats): _since(s, c, minutes=problems.GRACE_MINUTES + 5)
+        got = {p['key']: p['detail'] for p in problems.collect(s)}
+        down, refused = got[f"connector:{mail['ConnectorId']}"], got[f"connector:{chats['ConnectorId']}"]
+        self.assertIn('trouble on its side (it answered 503)', down)
+        self.assertIn('sign-in still works', refused); self.assertNotIn('paste', refused)
+        for d in (down, refused): self.assertNotRegex(d, r'https?://|northwind')
+        from taskuary.channels import card_error
+        self.assertEqual(down, card_error(s.get_connector(mail['ConnectorId'])))       # one road: the card's words are the bell's

@@ -323,3 +323,38 @@ def test_the_funnel_states_are_read_again_only_after_a_write(s, tmp_path):
     assert big.funnel_states()['msg:1']['Status'] == 'done'
     peer = sqlite3.connect(str(tmp_path / 'readers.db')); peer.execute("DELETE FROM funnel_state WHERE Key='msg:2'"); peer.commit(); peer.close()
     assert 'msg:2' not in big.funnel_states(), 'another process\'s write moves it too'
+
+
+def test_the_cards_are_read_again_only_after_a_card_is_written(s, tmp_path):
+    """The owner's restart, 2026-11-16: one page read asked list_connectors a dozen times, ~340 cards each time, and every request of the first
+    minute queued behind the reads. The cards are kept until one is written - here, through any write road, or by another process."""
+    first = s.list_connectors(); n, kept = len(first), s._conn_cache
+    assert s.list_connectors() == first and s._conn_cache is kept, 'read again with nothing written: the kept rows'
+    first[0]['Name'] = 'a caller edited its copy'
+    assert s.list_connectors()[0]['Name'] != 'a caller edited its copy'
+    import sqlite3 as sq
+    cid = s.save_connector({'Type': 'imap', 'Name': 'Northwind mail', 'Active': 1}, 'owner')
+    assert len(s.list_connectors()) == n + 1
+    s.touch_connector(cid, error='refused')
+    assert next(c for c in s.list_connectors() if c['ConnectorId'] == cid)['LastError'] == 'refused'
+    peer = sq.connect(str(tmp_path / 'readers.db')); peer.execute("UPDATE connector SET Name='Payworth inbox' WHERE ConnectorId=?", (cid,)); peer.commit(); peer.close()
+    assert next(c for c in s.list_connectors() if c['ConnectorId'] == cid)['Name'] == 'Payworth inbox', "another process's write moves it too"
+
+
+def test_a_build_reads_each_setting_once_and_its_own_write_fresh(s):
+    """The owner's restart, 2026-11-16: the rail's ~1,300 cards each read the owner's address again, ~1,000 queries a build, rebuilt after
+    every write of the start's sync. While a build holds the settings each name is read once; its own write is read back as written,
+    and outside the hold, or on another thread, every read is the table's."""
+    s.set_setting('owner_email', 'alex@northwind.example', 'owner')
+    n, real = [0], s._one
+    s._one = lambda q, p=(): (n.__setitem__(0, n[0] + ('FROM setting' in q)), real(q, p))[1]
+    with s.held_settings():
+        assert all(s.get_setting('owner_email') == 'alex@northwind.example' for _ in range(50)) and n[0] == 1
+        with s.held_settings(): assert s.get_setting('owner_email') == 'alex@northwind.example' and n[0] == 1
+        s.set_setting('owner_email', 'erin@northwind.example', 'owner')
+        assert s.get_setting('owner_email') == 'erin@northwind.example'
+        seen = []
+        t = threading.Thread(target=lambda: seen.append(s.get_setting('missing', 'x'))); t.start(); t.join()
+        assert seen == ['x'] and s.get_setting('missing') is None
+    n[0] = 0; s.get_setting('owner_email'); s.get_setting('owner_email')
+    assert n[0] == 2, 'outside the hold every read is the table'

@@ -23,13 +23,7 @@
 .tq-aui-agent-body pre, .tq-aui-agent-body code { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
 .tq-aui-agent-body table { width: 100%; table-layout: fixed; }
 .tq-aui-agent-body th, .tq-aui-agent-body td, .tq-aui-agent-body a { overflow-wrap: anywhere; word-break: break-word; }
-/* WHAT THE AGENT ASKED (AgentAsks, the UI audit's W6): the amber of a raised hand; the choices wrap under the question at any width -
-   the answer is typed in the composer below, never a box of the card's own (2026-11-03) */
-.tq-aui-asking { width: 100%; box-sizing: border-box; margin: 2px auto 10px; padding: 10px 12px; border: 1px solid var(--tq-edge-brass, #d8c9a8); border-left: 3px solid var(--tq-edge-brass, #b08b4f);
-  border-radius: 11px; background: var(--tq-panel, #fbf7ee); display: flex; flex-direction: column; gap: 8px; }
-.tq-aui-asking b { color: var(--tq-secondary, #4d514b); font-size: 12px; }
-.tq-aui-asking-q { color: var(--tq-text, #3f423d); font-size: 13px; white-space: pre-wrap; }
-.tq-aui-asking-hint { color: var(--tq-muted, #7a756b); font-size: 11.5px; }
+/* the choices of what the agent asked wrap under its line at any width (AgentAsks) - a line of the chat, never a box (2026-11-11) */
 .tq-aui-asking-choices { display: flex; gap: 6px; flex-wrap: wrap; }
 /* a sign-in ask is a line of the conversation, not a card (2026-11-03): its words, and the fill page's link */
 .tq-aui-signin { margin: 2px 0 10px; color: var(--tq-text, #3f423d); font-size: 13px; line-height: 1.5; }
@@ -94,6 +88,13 @@
 .tq-aui-dock .tq-aui-tool-complete summary em { display: block; }
 .tq-aui-tool-running summary em { color: var(--tq-warning, #8a6d1f); white-space: nowrap; }
 .tq-aui-thinking { display: flex; align-items: center; gap: 5px; margin: 0 0 10px; }
+/* ...and a drop of room over the dots where the turn has said or done something (the owner, 2026-11-11: "the ... are too close to the line
+   above it"): they sat on the last line of its words, 0px under it - the same under words and under steps */
+.tq-aui-agent-body > * + .tq-aui-thinking { margin-top: 10px; }
+/* ...and EACH MESSAGE OF A TURN IS A PARAGRAPH (the owner, 2026-11-11, over three messages of one working turn: stacked as consecutive lines,
+   0px between): a block of its words keeps a paragraph's room under it whatever comes next - more words, its steps, its answer - at work
+   and at rest, in a fold too. The room is a paragraph's own inside one message (md.jsx `& p`) */
+.tq-aui-agent-body > .tq-md:not(:last-child), .tq-aui-working-fold > .tq-md:not(:last-child) { margin-bottom: 6px; }
 .tq-aui-thinking i { width: 6px; height: 6px; border-radius: 50%; background: #a9a294; animation: tqAuiThinking 1.1s ease-in-out infinite; }
 .tq-aui-thinking i:nth-child(2) { animation-delay: .15s; } .tq-aui-thinking i:nth-child(3) { animation-delay: .3s; }
 .tq-aui-thinking span { margin-left: 5px; color: var(--tq-muted, #8b877e); font: 500 11px/1.2 'Cascadia Mono', Consolas, monospace; }
@@ -102,6 +103,10 @@
 .tq-aui-composer { width: 100%; margin: 0 auto; min-height: 40px; display: flex; flex-wrap: nowrap; align-items: center; gap: 5px; padding: 6px 7px; border: 1px solid var(--tq-border, #d5d0c7); background: var(--tq-panel, #fff); border-radius: 13px; box-shadow: 0 2px 8px #39352d0b; }
 .tq-aui-input { flex: 1; min-width: 0; resize: none; border: 0; outline: 0; background: transparent; color: var(--tq-text, #292824); font: inherit; font-size: 13px; line-height: 1.45; padding: 5px 5px; max-height: 150px; overflow-x: hidden; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .tq-aui-input::placeholder { color: var(--tq-muted, #8f8b84); }
+/* ...and a PromptBox (New's box, a task's box before its agent) is as tall as its words and its example (the phone audit, 2026-11-13): one row
+   fixed, New's "build me a website - a report on ..." wrapped at 390px into a row and a half under a scrollbar, and typing ran on unseen.
+   The chat's own composer sizes itself (assistant-ui's autosize sets its height), so this is the PromptBox's alone */
+[data-tq-prompt-box] .tq-aui-input { field-sizing: content; }
 .tq-aui-send, .tq-aui-cancel { width: 34px; height: 34px; flex: 0 0 34px; border: 0; border-radius: 9px; display: grid; place-items: center; cursor: pointer; color: white; background: #738275; }
 .tq-aui-send:disabled { cursor: default; opacity: .4; }
 .tq-aui-cancel { background: #9a6d65; }
@@ -209,3 +214,21 @@
 .tq-aui-press-cmd summary { cursor: pointer; display: inline; margin-left: 6px; }
 .tq-aui-press-cmd code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 4px; font-size: 11.5px; }
 .tq-aui-chat .tq-aui-agent-more { margin-top: -8px; }
+
+/* THE CONVERSATION'S PENDING STRIP (Conversation.PendingStrip): what was accepted and waits for the agent, by the box - never in the chat until heard */
+/* the waiting room over the box (GeneralWorkspace PendingStrip): his queued lines on his side, slim, no box - as a chat app queues a message */
+.tq-conv-pending { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; margin: 0 0 10px; padding: 0 2px; }
+.tq-aui-viewport:has(> .tq-conv) { overflow-anchor: none; }      /* the chat pins its own end (GeneralWorkspace): the browser's anchoring moved it back as a turn's steps folded */
+.tq-conv-past { margin: 8px 0 2px; padding: 6px 10px; border: 1px dashed var(--tq-border, #d9d4cb); border-radius: 8px; color: var(--tq-muted, #8b877e); font-size: 12.5px; }
+.tq-conv-past-head { font-weight: 600; }
+.tq-conv-past-words { margin-top: 4px; white-space: pre-wrap; max-height: 4.5em; overflow: hidden; }
+.tq-conv-pending-more { font-size: 11.5px; color: var(--tq-muted, #8b877e); }
+.tq-conv-pending-row { display: flex; align-items: center; gap: 6px; max-width: min(78%, 560px); padding: 3px 4px 3px 12px; border: 1px solid var(--tq-border, #e4e0d9); border-radius: 14px; background: var(--tq-inset, #f4f1ea); font-size: 13px; line-height: 1.5; color: var(--tq-text, #292824); }
+.tq-conv-pending-act { flex: 0 0 auto; display: inline-flex; align-items: center; padding: 1px 6px; border: 0; border-radius: 10px; background: none; color: var(--tq-muted, #8b877e); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.tq-conv-pending-act:hover { color: var(--tq-text, #292824); background: var(--tq-panel, #fff); }
+.tq-conv-pending-words { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tq-aui-arrived-words.tq-aui-arrived-open { display: block; -webkit-line-clamp: unset; overflow: visible; }
+.tq-aui-arrived-more-btn { align-self: flex-start; margin-top: 2px; padding: 0; border: 0; background: none; color: var(--tq-muted, #8b877e); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.tq-aui-arrived-more-btn:hover { color: var(--tq-text, #292824); text-decoration: underline; }
+/* the working line beside a turn's dots (GeneralWorkspace ConvTurn): the newest step's words, one quiet line, only its words change */
+.tq-aui-working-line { margin-left: 8px; min-width: 0; max-width: 60ch; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12.5px; color: var(--tq-muted, #8b877e); }

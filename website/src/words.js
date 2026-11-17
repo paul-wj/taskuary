@@ -16,19 +16,13 @@ export const DASH = words.dashboard;
 export const NOUNS = Object.fromEntries(Object.entries(words.nouns).filter(([k]) => !k.startsWith("_")));
 export const noun = (id) => NOUNS[id] ? t(NOUNS[id]) : String(id || "");
 export const GONE = words.gone.words;
-// a tool that runs on the owner's own machine - "claude (on this computer)", the server's words.local said the same way
+// "on this computer" - where a folder is (RepoPicker); an AI is named by its one name (clis.name_of), never with it
 export const LOCAL = words.local;
-export const localName = (tool) => t("{tool} (on this computer)", { tool });
 // one pattern per word: an all-caps word (CLI, PR, JSON) is matched as written, the rest in any case; a prefix ("claude-") has no
 // end boundary. Word edges keep "approve" from reading as "PR".
 const esc = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 export const JARGON_RES = [...JARGON.map((w) => new RegExp(`\\b${esc(w)}${/-$/.test(w) ? "" : "\\b"}`, w === w.toUpperCase() ? "" : "i")),
   ...GONE.map((w) => new RegExp(`\\b${esc(w)}\\b`))];   // a removed surface is matched as written: "the project timeline" is a word
 export const jargonIn = (text) => { const s = String(text || ""); for (const re of JARGON_RES) { const m = s.match(re); if (m) return m; } return null; };
-// WHEN THE ADVISOR LIGHTS NOTHING (advisor.status {none: why}): only no AI is said, with its way out (the owner, 2026-10-23: "No
-// suggestion...", "Nothing to decide..." and "Thinking..." went) - any other reason is silent, with Next lit
-const NONE = Object.fromEntries(Object.entries(words.advice_none).filter(([k]) => !k.startsWith("_")));
-export const adviceNone = (why) => NONE[why] ? { ...NONE[why], line: t(NONE[why].line) } : { line: "", move: "next" };
-export const ADVICE_NONE = NONE;
 // THE ONE RULEBOOK's words (rulebook.py): each state's line and the verbs it lights, the server's and the page's alike
 export const ADVICE_RULE = Object.fromEntries(Object.entries(words.advice_rule).filter(([k]) => !k.startsWith("_")));

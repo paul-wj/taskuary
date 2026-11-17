@@ -106,7 +106,7 @@ def test_a_saved_answer_is_the_result_and_the_snapshot_outlives_the_cli_log(home
 
 
 def test_a_quick_answers_raw_json_kept_before_the_fix_is_not_a_said_step(home):
-    "A quick answer filed before quickwork.answer_text kept its raw object as the turn's working, cut at SAID_N: read back, it is dropped."
+    "A quick answer filed while it was one JSON call kept its raw object as the turn's working, cut at SAID_N: read back, it is dropped."
     s = MemoryStore(); tid = Factory(s).task(title='Partner day', kind='general')
     rid = s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'Worth going: Erin presents at 10.')
     sessionrecord.keep_turn(tid, rid, [{'type': 'progress', 'name': 'text', 'detail': '```json\n{\n  "report": "Worth going: Erin presents at 10.",\n  "dra'}])
@@ -233,6 +233,16 @@ def test_a_compaction_is_one_quiet_step_never_the_owners_line(home):
     sessionrecord._saved_path(tid, 'pane-k').write_text(json.dumps({'steps': [{'k': 'you', 'text': SUMMARY[:3000]}, {'k': 'said', 'text': 'Go on.'}]}), encoding='utf-8')
     [ses] = codingchat.sessions(s, tid)
     assert [(x['k'], x['text']) for x in ses['steps']] == [('compact', sessionrecord.COMPACTED), ('said', 'Go on.')]
+    # ...AND A SESSION OVER ACP THAT REOPENS THAT CONVERSATION IS NEVER READ AS ITS CLI'S LOG (the recorded restart, 2026-11-11): before it
+    # has kept its first update it holds nothing yet - read as a pane's it was the whole log again, every earlier turn stamped now, and one
+    # read of the chat drew all his lines first and all the turns after them
+    from types import SimpleNamespace
+    from unittest import mock
+    from taskuary import terminal as term
+    live = SimpleNamespace(sid='acp-new', task_id=tid, alive=True, mode='auto', acp=True, cli='claude', ext_id='k1', started='2026-11-11 23:37:00')
+    with mock.patch.dict(term.SESSIONS, {'acp-new': live}):
+        got = codingchat.sessions(s, tid)
+    assert [(x['sid'], x['source'], x.get('updates')) for x in got if x['live']] == [('acp-new', 'acp', [])], got
 
 
 # NOTHING THE OWNER DID NOT TYPE IS HIS (the owner, 2026-11-10: "this is obvious stuff that your stress test should be catching.."): every
@@ -396,3 +406,115 @@ def test_a_view_the_agent_showed_is_still_drawn_once_its_turn_is_filed(home):
         {'type': 'tool_result', 'name': 'r1', 'detail': {'tool_call_id': 'r1', 'result': 'a,b'}}])
     show, read = [x for x in sessionrecord.general_steps(s, tid) if x['k'] == 'tool']
     assert show['output'] == answer and 'output' not in read
+
+
+def test_a_coding_chat_polled_again_reads_each_cli_log_once_per_version(home, monkeypatch):
+    """The owner's live app, 2026-11-16: a coding task's chat took 15-43 s a poll - every poll parsed each session's whole CLI log again
+    (~1 s per 100 MB) while the page polled every few seconds. The conversation is built from a log read once per (file, mtime, size): polled
+    again it reads nothing, and only a log that grew is read again."""
+    import os
+    from taskuary import conversation
+    monkeypatch.setattr(sessionrecord, '_STEPS', {}, raising=False)
+    s = MemoryStore(); tid = s.create_task({'Title': 'Fix the March import', 'Kind': 'coding', 'Status': 'in_progress'}, 'owner')
+    for i in range(3):
+        claude_log(home, f'big{i}')
+        s._exec("INSERT INTO transcript (TaskId, Sid, Brain, ExtId, CreatedAt) VALUES (?,?,?,?,datetime('now'))", (tid, f's{i}', 'claude', f'big{i}'))
+    reads, real = [], sessionrecord.READERS['claude']
+    monkeypatch.setitem(sessionrecord.READERS, 'claude', (real[0], lambda f: reads.append(f.name) or real[1](f), real[2]))
+    first = conversation.items(s, tid)
+    assert sorted(reads) == ['big0.jsonl', 'big1.jsonl', 'big2.jsonl']
+    for _ in range(5): assert conversation.items(s, tid)['rev'] == first['rev']
+    assert len(reads) == 3, f'a poll read a log again: {reads}'
+    f = home / '.claude' / 'projects' / 'C--work-ledger' / 'big1.jsonl'
+    f.write_text(f.read_text(encoding='utf-8') + '\n' + json.dumps({'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'One more check.'}]}}), encoding='utf-8')
+    os.utime(f, ns=(f.stat().st_atime_ns, f.stat().st_mtime_ns + 10**9))
+    conversation.items(s, tid)
+    assert reads[3:] == ['big1.jsonl'], 'only the log that grew is read again'
+
+
+def test_a_log_that_grows_while_its_agent_works_is_read_once_byte_for_byte(home, monkeypatch):
+    """The owner's live app, 2026-11-16: a WORKING coding agent's Claude Code log grows every few seconds, so the per-version cache missed on
+    every poll and each poll parsed the whole multi-hundred-MB log again - 25-40 s a call. Polled while it grows by small appends - a line cut
+    in half among them - each byte is read once, and the steps are the ones a whole read gives. A log replaced by another is read afresh."""
+    monkeypatch.setattr(sessionrecord, '_STEPS', {})
+    f = home / '.claude' / 'projects' / 'C--work-ledger' / 'grow.jsonl'; f.parent.mkdir(parents=True, exist_ok=True)
+    pad = 'x' * 20000                                     # long lines, as a real log's tool results are
+    line = lambda i: json.dumps({'type': 'assistant', 'message': {'content': [
+        {'type': 'tool_use', 'id': f'u{i}', 'name': 'Read', 'input': {'file_path': f'ledger/f{i}.py'}}, {'type': 'text', 'text': f'step {i} {pad}'}]}}) + '\n'
+    done = lambda i: json.dumps({'type': 'user', 'message': {'content': [{'type': 'tool_result', 'tool_use_id': f'u{i}', 'is_error': True, 'content': 'no such file'}]}}) + '\n'
+    f.write_text(''.join(line(i) for i in range(500)), encoding='utf-8')        # ~10 MB to start
+    read, real = [], sessionrecord._read_from
+    monkeypatch.setattr(sessionrecord, '_read_from', lambda p, pos: (lambda b: read.append(len(b)) or b)(real(p, pos)))
+    first, _ = sessionrecord.cli_steps('claude', 'grow')
+    for k in range(10):
+        add = line(500 + k) + done(500 + k)
+        cut = len(add) // 3 if k == 4 else len(add)
+        with open(f, 'a', encoding='utf-8') as h: h.write(add[:cut])
+        steps, _ = sessionrecord.cli_steps('claude', 'grow')
+        if cut < len(add):
+            with open(f, 'a', encoding='utf-8') as h: h.write(add[cut:])
+    steps, _ = sessionrecord.cli_steps('claude', 'grow')
+    size = f.stat().st_size
+    assert sum(read) - size < len(line(504)), f'read {sum(read)} bytes of a {size}-byte log: a byte read twice is only the half line that waited'
+    assert steps == sessionrecord._claude(f), 'the same steps a whole read gives'
+    assert [s.get('status') for s in steps if s['k'] == 'tool'][-1] == 'failed', 'a call its later line completes is completed'
+    f.write_text(line(0), encoding='utf-8')                                     # replaced, shorter: read from the start
+    assert len(sessionrecord.cli_steps('claude', 'grow')[0]) == 2
+
+
+def test_five_reads_of_one_task_at_once_are_one_build(home, monkeypatch):
+    "The page's polls, the task's read and the rail's at once each built the list again; they wait for one build and share it."
+    import threading, time
+    from taskuary import conversation
+    s = MemoryStore(); tid = s.create_task({'Title': 'Fix the March import', 'Kind': 'coding', 'Status': 'in_progress'}, 'owner')
+    builds, real = [], conversation._items
+    monkeypatch.setattr(conversation, '_items', lambda st, t: (builds.append(t), time.sleep(0.5), real(st, t))[2])
+    got, go = [], threading.Barrier(5)
+    ts = [threading.Thread(target=lambda: (go.wait(), got.append(conversation.items(s, tid)))) for _ in range(5)]
+    for t in ts: t.start()
+    for t in ts: t.join(10)
+    assert len(builds) == 1 and len(got) == 5 and all(g is got[0] for g in got)
+    conversation.items(s, tid); assert len(builds) == 2, 'a read after the build is its own'
+
+
+def test_a_thought_being_written_is_one_open_step_its_snapshots_update(monkeypatch):
+    """The owner, 2026-11-16: "Thinking..." for three minutes with nothing else - the ACP road traced a thought only once it was whole. As it
+    streams its newest words go out about once a second (agents.ACPSteps), read here as ONE open thought the whole paragraph then replaces."""
+    from taskuary import agents
+    said, clock = [], [0.0]
+    monkeypatch.setattr(agents.time, 'monotonic', lambda: clock[0])
+    feed = agents.ACPSteps(lambda *e: said.append(e), 'claude')
+    for i, w in enumerate(['The owner wants ', 'two bakeries. ', 'Tatte opens at 7, ', 'so check Bakey next.']):
+        clock[0] = i * 0.6
+        feed({'sessionUpdate': 'agent_thought_chunk', 'content': {'type': 'text', 'text': w}})
+    live = [d for k, n, d in said if k == 'live' and n == 'thinking']
+    assert live == ['The owner wants', 'The owner wants two bakeries. Tatte opens at 7,'], live      # ...about once a second, not per chunk
+    feed({'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'Tatte opens first.'}})    # ...the thought is whole
+    steps = sessionrecord.trace_steps([{'type': k, 'name': n, 'detail': d} for k, n, d in said])
+    assert [s['k'] for s in steps] == ['thought'] and not steps[0].get('live') and steps[0]['text'].endswith('so check Bakey next.')
+    mid = sessionrecord.trace_steps([{'type': 'live', 'name': 'thinking', 'detail': x} for x in live])
+    assert [(s['k'], s['text'], s.get('live')) for s in mid] == [('thought', live[-1], True)], 'mid-thought: one open step, its newest words'
+    # ...and the answer as it streams: snapshots too, the turn's line of what it is doing (a long answer read "Thinking..." for 85 s)
+    said.clear(); clock[0] = 10.0
+    for w in ['Salem is close. ', 'Providence is cheaper.']: feed({'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': w}})
+    assert [d for k, n, d in said if (k, n) == ('live', 'writing')] == ['Tatte opens first.Salem is close.']    # ...the words as they streamed
+
+
+def test_the_turn_at_work_says_when_its_agent_is_still_opening_and_what_it_is_writing(monkeypatch):
+    """Recorded on the real CLI, 2026-11-16: a cold adapter took most of a minute to open under "Thinking...", then a long answer streamed in
+    under the same word. The turn at work says it is `opening` until its road hands the agent the prompt, and carries the answer being
+    written as `doing` while that is the newest thing it did."""
+    from types import SimpleNamespace
+    from taskuary import conversation
+    s = MemoryStore(); tid = s.create_task({'Title': 'Plan the offsite', 'Kind': 'general', 'Status': 'in_progress'}, 'owner')
+    ses = SimpleNamespace(busy=True, trace=[{'type': 'start', 'name': None, 'detail': {}}], sid='s1', last=0, task_id=tid)
+    monkeypatch.setattr(general, 'session_for', lambda t: ses if t == tid else None)
+    monkeypatch.setattr(general, 'at_work', lambda t: True); monkeypatch.setattr(general, 'working', lambda st, t: True)      # ...its turn is at work
+    turn = lambda: [x for x in conversation.items(s, tid)['items'] if x['kind'] == 'turn'][-1]
+    assert 'opening' not in turn(), 'a turn a beat in, its trace holding only its start, is no start-up (a kept conversation)'
+    ses.trace.append({'type': 'opening', 'name': 'claude', 'detail': ''})            # ...the road really opens one (clipool.take)
+    assert turn().get('opening') is True and 'doing' not in turn()
+    ses.trace += [{'type': 'prompt', 'name': 'prompt_sent_to_agent', 'detail': 'x'}, {'type': 'live', 'name': 'writing', 'detail': 'Option one is Salem.'}]
+    assert 'opening' not in turn() and turn()['doing'] == 'Option one is Salem.'
+    ses.trace.append({'type': 'tool_call', 'name': 'WebSearch', 'detail': {'tool_call_id': 'c1', 'args': {'query': 'Salem hotels'}}})
+    assert 'doing' not in turn(), 'a step after the words leads'

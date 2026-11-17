@@ -92,6 +92,31 @@ class QuestionAndPermissionTests(Base):
         self.fire('Notification', notification_type='idle_prompt')
         self.assertEqual(self.state()['state'], 'input_needed'); self.assertTrue(self.state()['requests'][0]['text'])
 
+    def test_the_idle_notice_never_takes_the_place_of_an_ask_that_stands(self):
+        """The recorded coding walk, 2026-11-12: the agent asked to be signed in, and a minute later "Claude is waiting for your input" took
+        the sign-in's place - no page shown, nothing to press."""
+        self.session()
+        self.fire('Notification', notification_type='agent_needs_input', message='Sign in to payworth.example to continue')
+        self.fire('Notification', notification_type='idle_prompt', message='Claude is waiting for your input')
+        self.assertEqual([r['text'] for r in self.state()['requests']], ['Sign in to payworth.example to continue'])
+
+    def test_a_turn_s_end_lets_go_of_the_start_in_flight(self):
+        """The recorded walk, 2026-11-12: a coding task's first turn in its terminal began before its session existed, nothing took the start's
+        mark off, and the chat read "working 15m" over his sign-in."""
+        from taskuary import general
+        self.session(); general.OPENING.add(self.tid); general._IN_FLIGHT[self.tid] = 1
+        try:
+            self.fire('Stop', last_assistant_message='Payworth is on its sign-in page.')
+            self.assertNotIn(self.tid, general.OPENING)
+        finally: general.OPENING.discard(self.tid); general._IN_FLIGHT.pop(self.tid, None)
+
+    def test_the_idle_notice_after_a_turn_that_ended_is_no_question(self):
+        """The same walk: every coding turn's answer was followed a minute later by "Agent asked you: Claude is waiting for your input"."""
+        self.session()
+        self.fire('Stop', last_assistant_message='The next payroll run is on March 14.')
+        self.fire('Notification', notification_type='idle_prompt', message='Claude is waiting for your input')
+        self.assertEqual(self.state()['requests'], [])
+
     def test_a_permission_request_names_the_tool_and_its_arguments(self):
         self.session()
         self.fire('PermissionRequest', tool_name='Bash', tool_input={'command': 'rm -rf build'}, tool_use_id='tu1')
@@ -101,6 +126,16 @@ class QuestionAndPermissionTests(Base):
         # ...and the tool then RUNNING is the permission having been granted in the pane
         self.fire('PostToolUse', tool_name='Bash', tool_input={'command': 'rm -rf build'}, tool_response={})
         self.assertEqual(self.state()['requests'], [])
+
+    def test_over_acp_a_permission_request_is_no_stop(self):
+        """The live shape (2026-11-11): over ACP the adapter asks for every tool and Taskuary's gate answers in code at once, yet Claude's
+        hook fired for each ask - "the agent needs your approval: Bash cd ...; timeout 300 ..." stood over a test run for as long as it ran,
+        with nothing to press."""
+        self.session().acp = True
+        self.fire('UserPromptSubmit', prompt='run the tests')
+        self.fire('PermissionRequest', tool_name='Bash', tool_input={'command': 'cd ../other; timeout 300 python -m pytest -q 2>&1 | tail -3'})
+        self.fire('Notification', notification_type='permission_prompt', message='Claude needs your permission to use Bash')
+        self.assertEqual((self.state()['state'], self.state()['requests']), ('working', []))
 
     def test_the_typed_permission_notification_still_works(self):
         self.session()

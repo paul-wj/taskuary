@@ -1119,7 +1119,7 @@ export default function GameScene({ seats, selectedId, onSelect, focus = "all", 
         </Box>
       ))}
 
-      {[["floor", "🖥 Agent Floor"], ["gym", "🏋 The Gym"], ["meeting", "🗓 Meeting Room"], ["coffee", "☕ Coffee Room"], ["hq", "✦ Assistant Core"], ["archive", "🗄 Memory Archive"]].map(([zone, name]) => (
+      {[["floor", "🖥 Agent Floor"], ["gym", "🏋 The Gym"], ["meeting", "🗓 Meeting Room"], ["coffee", "☕ Coffee Room"], ["hq", "✦ Taskuary Core"], ["archive", "🗄 Memory Archive"]].map(([zone, name]) => (
         <Box key={zone} ref={tagRef(`zone:${zone}`)} onClick={() => onZone?.(zone)}
           sx={{ ...pinned, px: 1.2, py: 0.45, borderRadius: 99, cursor: "pointer", whiteSpace: "nowrap",
             bgcolor: focus === zone ? "#f0c05a" : "rgba(24,28,34,.82)", color: focus === zone ? "#1c1f24" : "#fff",

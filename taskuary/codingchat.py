@@ -11,13 +11,13 @@ THE ACP SEAM. A coding session run over ACP (step 1: acp.py) has no CLI log to r
 `record_update` keeps each one beside the task as it arrives; `chat` hands a session's kept updates to the page as `updates`, and
 chatStream.stepsFromAcp maps them into the very step shape a log gives, so both roads draw one row shape. A coding session over ACP
 (acpcoding.ACPCoding) calls `record_update(tid, sid, update)` for every update it gets, and for every prompt it sends."""
-import json, re
+import json, re, time
 from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
 
-from . import session_artifacts, sessionrecord
+from . import outputs, session_artifacts, sessionrecord
 
 ACP_KEEP = 20000                  # the newest updates kept per session: message chunks arrive a token at a time
 MAIL_N = 3000
@@ -35,7 +35,10 @@ def record_update(tid: int, sid: str, update: dict) -> None:
     Taskuary's own seed or brief rather than the owner's words (the chat never draws a brief; it draws the mail that caused it)."""
     if not isinstance(update, dict) or not sid: return
     # ...stamped as it arrives (`_at`, the server's own zone): ACP updates carry no time, and a turn read as one stamp under every mail
-    update = {**update, '_at': update.get('_at') or datetime.now().isoformat(sep=' ', timespec='seconds')}
+    # ...and `_t`, the same moment to the clock's full grain: the ledger's hand-overs are time.time(), and a step and a press in one millisecond
+    # must read in the order they happened (conversation.acp_steps)
+    now = time.time()
+    update = {**update, '_at': update.get('_at') or datetime.fromtimestamp(now).isoformat(sep=' ', timespec='milliseconds'), '_t': update.get('_t') or now}
     try:
         with _acp_path(tid, sid).open('a', encoding='utf-8') as f: f.write(json.dumps(update, ensure_ascii=False) + '\n')
     except (OSError, TypeError, ValueError) as e: logger.debug(f'coding chat: ACP update for task {tid} not kept - {e}')
@@ -77,8 +80,10 @@ def live_of(t) -> dict | None:
     # ...and WHEN THE TURN AT WORK BEGAN, its clock (the owner's live coding task, 2026-11-08: "Working on this… 2947m 55s"): the chat counted from
     # the owner's last line it draws, two days back - a resumed session's first turn is Taskuary's brief, drawn as no line. Never before this run
     began = getattr(t, 'turn_at', 0) or getattr(t, 'started_ts', 0) or _epoch(t.started)
+    # ...at work by the one function that says so (general._at_work): a turn that waits on his press or his sign-in is not
+    from .general import _at_work
     return {'sid': t.sid, 'cli': getattr(t, 'cli', '') or term.cli_of(getattr(t, 'argv', None) or []), 'started': t.started,
-            'asking': asking, 'working': phase == 'working', 'promptPending': bool(term.prompt_pending(t)),
+            'asking': asking, 'working': phase == 'working' and _at_work(t), 'promptPending': bool(term.prompt_pending(t)),
             'turnStarted': max(began, _epoch(t.started)) if began else None,
             'transport': 'acp' if acp else 'pty', 'terminal': bool(getattr(t, 'has_output', False)) if acp else True}
 
@@ -135,20 +140,21 @@ def _worded(ups: list) -> list:
     return [{**u, 'content': {'type': 'text', 'text': asked_inline(u['content']['text'])[0]}} if words(u) else u for u in out]
 
 
-def _session(tid: int, sid: str, cli: str, ext: str, at: str, live: bool = False) -> dict:
+def _session(tid: int, sid: str, cli: str, ext: str, at: str, live: bool = False, local: bool = True, acp: bool = False) -> dict:
+    _local = globals()['_local'] if local else (lambda steps: steps)         # `local=False`: each step's own stamp, to the millisecond (conversation.items)
     s = {'sid': sid, 'cli': cli or '', 'at': str(at or '').replace('T', ' ')[:19], 'live': live}
-    if (ups := acp_updates(tid, sid)): return {**s, 'source': 'acp', 'updates': _worded(ups)}
+    if (ups := acp_updates(tid, sid)) or acp: return {**s, 'source': 'acp', 'updates': _worded(ups)}
     saved = sessionrecord._saved_path(tid, sid)
     # a live session's log is read fresh - its saved copy, if any, is from an earlier save of the same pane
     if not live and saved.is_file():
         # ...marked again as it is read: a record saved before 2026-11-09 holds the owner's words inside Taskuary's wrapper (mark_briefs)
         try: return {**s, 'source': 'saved', 'steps': _local(sessionrecord.mark_briefs(tid, (json.loads(saved.read_text(encoding='utf-8')) or {}).get('steps') or []))}
         except (OSError, ValueError): pass
-    steps, src = sessionrecord.cli_steps(cli, ext)
-    return {**s, 'source': src or 'none', 'steps': _local(sessionrecord.mark_briefs(tid, steps)) if steps else []}
+    steps, src = sessionrecord.marked_steps(tid, cli, ext)
+    return {**s, 'source': src or 'none', 'steps': _local(steps) if steps else []}
 
 
-def sessions(store, tid: int) -> list:
+def sessions(store, tid: int, local: bool = True) -> list:
     """Every coding session of the task, oldest first, each with its steps (or its ACP updates). A resumed conversation writes on into
     the same CLI log, so of the sessions sharing one, only the newest is kept - it holds the earlier ones' steps too."""
     tid = int(tid)
@@ -158,9 +164,14 @@ def sessions(store, tid: int) -> list:
     if t: items.append((t.sid, getattr(t, 'cli', '') or '', getattr(t, 'ext_id', '') or '', t.started, True))
     # ...a session run over ACP keeps its OWN updates (record_update, per Taskuary session): a resumed one holds only its new turns, so it
     # never stands in for the ones before it, and they are all kept
-    acp = {sid for sid, *_ in items if _acp_path(tid, sid).is_file()}
+    # ...AND ONE OVER ACP IS SO FROM ITS START, before its first update is kept (the recorded restart, 2026-11-11: his line reopened a session
+    # on its CLI's own conversation, and until that session wrote its first update it was read as a pane's - the CLI's whole log, every
+    # earlier turn a second time and stamped now. One read of the chat drew all his lines first and every turn after them: one frame,
+    # 370 px taller, and back)
+    from . import terminal as term
+    acp = {sid for sid, *_, live in items if _acp_path(tid, sid).is_file() or (live and term.is_acp(t))}
     last = {(cli, ext): i for i, (sid, cli, ext, _, _) in enumerate(items) if ext and sid not in acp}
-    return [_session(tid, sid, cli, ext, at, live) for i, (sid, cli, ext, at, live) in enumerate(items)
+    return [_session(tid, sid, cli, ext, at, live, local, sid in acp) for i, (sid, cli, ext, at, live) in enumerate(items)
             if not ext or sid in acp or last.get((cli, ext)) == i]
 
 
@@ -199,12 +210,14 @@ def owned(store, tid: int, ss: list) -> list:
            if c.get('ActorType') == general.USER_TYPE and c.get('Actor') == 'owner'}
     his |= {' '.join(parts(x.get('Note'))[0].split()) for x in store.waitroom(int(tid), limit=500) if (x.get('CreatedBy') or 'owner') == 'owner'}
     mine = lambda u: ' '.join(str((u.get('content') or {}).get('text') or '').split()) in his
-    mark = lambda u: u if u.get('sessionUpdate') != 'user_message_chunk' or u.get('_meta') else {**u, '_meta': {'taskuary': 'owner' if mine(u) else 'agent'}}
+    sent = lambda u: (u.get('_meta') or {}).get('taskuary') == 'prompt'           # ...a prompt Taskuary sent as typed (ACPCoding._show): his words, or its own
+    mark = lambda u: (u if u.get('sessionUpdate') != 'user_message_chunk' or (u.get('_meta') and not sent(u)) else
+                      {**u, '_meta': {'taskuary': 'owner' if mine(u) else 'brief' if sent(u) else 'agent'}})
     return [{**s, 'updates': [mark(u) for u in s['updates']]} if s.get('updates') else s for s in ss]
 
 
 def cards(store, tid: int, ss: list) -> dict:
-    """WHERE EACH CARD STANDS IN THE CODING CHAT, BY ITS TURN - the general payload's `turns` and `drafts` (general.draft_turns), read off this record:
+    """WHERE EACH CARD STANDS IN THE CODING CHAT, BY ITS TURN - the general payload's `turns`, `drafts` and `published` (general.draft_turns), read off this record:
     the page compared times itself and named its turns by position, so nothing here could name one (2026-11-11). A card is of the turn whose step
     was newest when it was raised, named as the page names that step (`sid#n`, its place in what `chat` hands it - chatStream.chatRows); raised on
     arrival, or after his line before the turn's first step: none. A draft is stale once his line came after it and no step of the agent's since."""
@@ -220,4 +233,7 @@ def cards(store, tid: int, ss: list) -> dict:
     drafts = [{'review': r['ReviewId'], 'turn': turn(r['CreatedAt']), 'at': r['CreatedAt'], 'stale': stale, 'before': later if stale else None}
               for r in rows if r['Status'] == 'pending' and r['Kind'] in ('draft_reply', 'draft') and str(r.get('DraftText') or '').strip()
               for later in [his(r['CreatedAt'])] for stale in [bool(later) and not any(t > later and w == 'agent' for t, _, w in steps)]]
-    return {'turns': {str(r['ReviewId']): turn(r['CreatedAt']) for r in rows}, 'drafts': drafts}
+    # ...and each page it showed or published, in the turn that showed it as the general chat's are (outputs.pages): the coding chat drew only a
+    # page whose trace carried the tool's answer, and a published one never (the overnight walk, 2026-11-11)
+    return {'turns': {str(r['ReviewId']): turn(r['CreatedAt']) for r in rows}, 'drafts': drafts,
+            'published': [{**p, 'after': turn(p['created_at'])} for p in outputs.pages(store, tid)]}

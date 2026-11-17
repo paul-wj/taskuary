@@ -18,10 +18,10 @@ import json, re
 from datetime import datetime
 from urllib.parse import quote
 from . import connectorcatalog, settings_schema, wanames
-from .store import _fold, task_ref
+from .store import _fold, task_ref, TYPED_REF
 from .inboxes import TYPES as INBOXES
 
-CHAT = {'teams', 'slack', 'whatsapp', 'telegram', 'imessage', 'discord'}
+from .routing import CHAT_CHANNELS as CHAT        # the one list of chat channels (routing.py)
 TICKET = {'jira', 'asana', 'monday', 'linear', 'clickup', 'todoist', 'trello', 'notion', 'azdo', 'sentry', 'pagerduty', *INBOXES}
 CLOSED = ('done', 'dropped')
 N_TASKS, N_MSGS, N_SRCS, N_PLACES = 8, 30, 6, 6
@@ -79,7 +79,7 @@ def _in(text, w) -> bool: return _fold(w) in _fold(text)          # the store's 
 
 def _ids(words) -> set:
     """The task ids typed outright - TQ-0004, tq-4, or a bare 4 - which put that task first: "4" listed TQ-0004 fourth."""
-    return {int(m[1] or m[2]) for w in words if (m := re.fullmatch(r'(?i)tq-?0*(\d+)|0*(\d+)', w))}
+    return {int(m[1]) for w in words if (m := TYPED_REF.fullmatch(w))}
 
 
 def _holder(a: str) -> str:
@@ -130,10 +130,18 @@ def _tasks(store, q: str, words, status: str = '', today: bool = False) -> tuple
     for r in store._rows(f"SELECT TaskId, Channel, SourceName, Subject, FromName, FromEmail, ExternalId, SourceLink FROM message WHERE TaskId IN "
                          f"({','.join('?' * len(top))})", [t['TaskId'] for t in top]) if top else []:
         mail.setdefault(r['TaskId'], []).append(r)
+    # THE RAIL'S OWN ROW RIDES ON A TASK STILL ON IT (the audit, 2026-11-15: a hit read "reply · email · 1m ago" beside a rail row that said
+    # "ready to send" and 6h - the task's kind and when its row was last written, which is nobody's question). The page says such a hit
+    # with the rail's own functions (searchHits.meta, hitAge) off this row - the rail as last built, never a build for a search
+    from . import funnel
+    rail = {}
+    for i in (funnel.cached_pile(store) or {}).get('items') or ():
+        if i.get('tid'): rail.setdefault(i['tid'], i)
     return [{'type': 'task', 'id': f"task:{t['TaskId']}", 'tid': t['TaskId'], 'ref': task_ref(t['TaskId']), 'title': t.get('Title') or '',
              'sub': ' · '.join(x for x in (t.get('Kind'), t.get('Source')) if x), 'when': t.get('ClosedAt') or t.get('UpdatedAt') or t.get('CreatedAt'),
              'status': t.get('Status'), 'snippet': snippet(t.get('Summary'), words, 120),
-             'why': _task_why(t, words, mail.get(t['TaskId'], []))} for t in top], len(ts)
+             'why': _task_why(t, words, mail.get(t['TaskId'], [])),
+             **({'row': rail[t['TaskId']]} if t['TaskId'] in rail and t.get('Status') not in CLOSED else {})} for t in top], len(ts)
 
 
 def _who(store, m: dict) -> str:
@@ -297,13 +305,17 @@ PAGES = (('the Hub', '#hub', 'hub company knowledge handbook'), ('Reports', '#re
 def _app_rows(store) -> list:
     from . import words as places
     # ...a page by what it holds too (words.json `does`): "install the new version" named no page, and Updates was found only by "update"
-    rows = [{'type': 'place', 'title': p['name'], 'rest': f"{k} {p.get('does') or ''}", 'href': p['href'], 'key': k} for k, p in places.PLACES.items() if p.get('href')]
+    # ...and a place that IS a settings panel (Saved sign-ins) is that panel's one row, below - found by the words the schema keeps for it
+    panel = lambda k, p: f"#settings=config&group={quote(p['group'], safe='')}&key={quote(k, safe='')}"
+    own = {panel(k, p) for k, p in settings_schema.panels().items()}
+    rows = [{'type': 'place', 'title': p['name'], 'rest': f"{k} {p.get('does') or ''}", 'href': p['href'], 'key': k}
+            for k, p in places.PLACES.items() if p.get('href') and p['href'] not in own]
     rows += [{'type': 'place', 'title': t, 'rest': w, 'href': h, 'key': w.split()[0]} for t, h, w in PAGES]
     rows += [{'type': 'setting', 'title': m['label'], 'where': f"{places.name('settings')} → {m['group']}", 'rest': f"{m['group']} {m.get('desc') or ''} {m.get('help') or ''} {k}",
               'href': f"#settings=config&group={quote(m['group'], safe='')}&key={quote(k, safe='')}"}
              for k, m in settings_schema.knobs().items() if k not in _UNSHOWN]
     rows += [{'type': 'setting', 'panel': k, 'title': p['title'], 'where': f"{places.name('settings')} → {p['group']}", 'rest': f"{p['group']} {p['words']}",
-              'href': f"#settings=config&group={quote(p['group'], safe='')}&key={quote(k, safe='')}"} for k, p in settings_schema.panels().items()]
+              'href': panel(k, p)} for k, p in settings_schema.panels().items()]
     mine =[c for c in store.list_connectors()]
     on = {str(c.get('Type') or '') for c in mine if c.get('Active')}
     rows += [{'type': 'connector', 'title': c.get('title') or c['type'], 'where': 'Connections', 'boost': c['type'] in on, 'key': c['type'],
@@ -379,7 +391,7 @@ CHAT_TAG, DRAFTS = 'in agent chat', ('draft_reply', 'draft', 'clarification', 's
 
 
 def _chat(store, words, skip) -> tuple:
-    from .general import ASSISTANT_TYPE, USER_TYPE
+    from .general import ASSISTANT_TYPE, DOCK_TAG, USER_TYPE
     from .quickwork import report_of
     from .store import is_internal
     TEXT = "COALESCE(rv.FinalText, rv.DraftText, '')"
@@ -398,7 +410,8 @@ def _chat(store, words, skip) -> tuple:
     out = []
     for tid, c in list(best.items())[:N_TASKS]:
         t = store.get_task(tid)
-        if not t: continue
+        # ...never the Assistant's own chat: no task list shows it (store.list_tasks), and its lines carry the card markers it draws by
+        if not t or t.get('SourceRef') == DOCK_TAG: continue
         who = 'you' if c['ActorType'] == USER_TYPE else 'a draft' if c['ActorType'] == 'draft' else 'the agent'
         out.append({'type': 'task', 'id': f"chat:{tid}", 'tid': tid, 'ref': task_ref(tid), 'title': t.get('Title') or '', 'status': t.get('Status'),
                     'sub': t.get('Kind') or '', 'tag': CHAT_TAG, 'who': who, 'line': c.get('line'), 'when': c.get('CreatedAt'),

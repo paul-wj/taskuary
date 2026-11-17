@@ -1,8 +1,14 @@
+// The filled button (2026-10-13; the task's own move since 2026-11-09): the filled button on the row is the one decided, and the prompt
+// box is the owner's own - no ghost text, no pill. rowOf is the real function; the wiring is read
+// from the source, the way the composer's other tests do.
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { advisedIn, rowOf } from "../src/actionRow.js";
-import { suggestion } from "../src/advice.js";
 
+const src = fs.readFileSync(new URL("../src/AssistantView.jsx", import.meta.url), "utf8");
+const row = fs.readFileSync(new URL("../src/ActionRow.jsx", import.meta.url), "utf8");
+const css = fs.readFileSync(new URL("../src/assistantView.css", import.meta.url), "utf8");
 const v = (id, group, extra = {}) => ({ id, group, tone: "s", label: id, title: "", disabled: false, why: "", promote: true, lead: false, ...extra });
 const filled = (r) => [...r.decide, ...r.agent, r.next].filter((x) => x && x.tone === "p").map((x) => x.id);
 
@@ -23,7 +29,7 @@ test("a pick waiting behind More is filled where it stands; nothing advised leav
   const ids = (x) => [...x.decide, ...x.agent, ...x.more].map((y) => y.id);
   assert.deepEqual(ids(r), ids(plain), "the same buttons in the same places");
   assert.deepEqual(filled(rowOf({ ref: "", list }, null)), filled(rowOf({ ref: "", list })));
-  assert.deepEqual(filled(rowOf({ ref: "", list }, { verb: "chase", label: "Chase them" })), []);   // not on the row: nothing dark (AdvisorNext adds it)
+  assert.deepEqual(filled(rowOf({ ref: "", list }, { verb: "chase", label: "Chase them" })), []);   // not on the row: nothing dark
 });
 
 test("the advisor's Reply is the task's Write reply: matched by the verb's id, so no second Reply is drawn", () => {
@@ -37,20 +43,27 @@ test("a greyed verb is never the advised one", () => {
   assert.deepEqual(filled(rowOf({ ref: "", list }, { verb: "close", label: "Mark done" })), []);
 });
 
-
-test("the strip gives the suggestion, not the move's name: a lead-in that is the verb goes, any other sentence stays whole", () => {
-  assert.equal(suggestion("Reply: Gail is directly asking your access decision for this group.", "Reply", "reply"), "Gail is directly asking your access decision for this group.");
-  assert.equal(suggestion("Reply because Erin is directly asking for your okay.", "Reply", "reply"), "Erin is directly asking for your okay.");
-  assert.equal(suggestion("Continue - the coding agent was cut off, not finished.", "Continue", "continue"), "The coding agent was cut off, not finished.");
-  assert.equal(suggestion("Erin: the list is approved, send it.", "Reply", "reply"), "Erin: the list is approved, send it.");   // a name, not the verb
-  assert.equal(suggestion("You usually merge these.", "Mark done", "close"), "You usually merge these.");
+test("the decision lights the row and the box is plain: no ghost text, no pill, no line over the row", () => {
+  assert.match(src, /<ActionRow [^>]*advised=\{stripPick \|\| setupLit\}/);
+  assert.doesNotMatch(src, /ghostText|tq-pill|tq-advised/);
+  assert.doesNotMatch(css, /\.tq-pill|tq-advised/);
+  // ...and NO decision draws a sentence (the owner, 2026-10-23 "the obvious move is silent", then 2026-10-26 "remove the advisor"): a
+  // decided item leaves only an empty mark the walks read, and nothing joins the row for an Advisor (2026-11-15)
+  assert.match(src, /&& <div hidden data-tq-recommended=\{shownAdvice\?\.verb \|\| ""\} \/>\}/);
+  assert.doesNotMatch(row, /AdvisorNext/);
 });
 
-
+test("the task's own Open again line always stands - no strip says what to do in its place (2026-10-26)", () => {
+  const page = fs.readFileSync(new URL("../src/TaskPage.jsx", import.meta.url), "utf8");
+  assert.match(page, /<Typography className="tq-news"[^>]*>Open again: \{news\.line\}/);
+  assert.match(src, /<div className="tq-asst-col" style=/);
+  assert.doesNotMatch(css, /\.advising/);
+});
 
 // ...and a greyed one says why it is off rather than drawing nothing: the strip went blank with nothing lit when the draft was cleared
 // (the advisor matrix, 2026-10-19)
 test("a move the row cannot make lights nothing: a greyed button says why it is off on its own title, and nothing joins the row for it", () => {
+  assert.match(row, /title=\{\(v\.disabled && v\.why\) \|\| v\.title \|\| undefined\}/, "a greyed button: why it is off");
   const list = [v("stop_agent", "agent", { label: "Stop and save", disabled: true }), v("next", "next")];
   assert.equal(advisedIn(list, { verb: "stop_agent", label: "Stop and save" }), null, "greyed: nothing to fill");
 });

@@ -33,9 +33,7 @@ def test_an_episode_carries_who_what_they_are_what_was_done_and_how_soon(w):
 
 def test_navigation_personal_mail_agents_and_auto_replies_are_never_episodes(w):
     s, facts = w
-    from taskuary import advisor
-    t = s.create_task({'Title': 'A press', 'Status': 'open'}, 'owner')
-    s._exec("INSERT INTO advice_press (Key,TargetKind,TargetId,Pressed,CreatedAt) VALUES (?,?,?,?,?)", (f'task:{t}', 'task', t, 'next', C._stamp(datetime.now())))
+    t = s.create_task({'Title': 'An agent hand-off', 'Status': 'open'}, 'owner')
     s.save_source({'Channel': 'email', 'Address': 'alex.home@personal.example', 'Active': 1, 'ConfigJson': json.dumps({'personal': True})}, 'owner')
     m = s.add_message({'ExternalId': 'p1', 'ConversationId': 'email:p1', 'Channel': 'email', 'Subject': 'Dinner', 'FromEmail': 'friend@personal.example',
                        'SourceName': 'alex.home@personal.example', 'SentAt': C._stamp(datetime.now() - timedelta(hours=3)), 'BodyText': 'x', 'Status': 'filed'})
@@ -47,7 +45,7 @@ def test_navigation_personal_mail_agents_and_auto_replies_are_never_episodes(w):
                    'SentAt': C._stamp(datetime.now() - timedelta(hours=1)), 'BodyText': 'x', 'Status': 'sent'})
     s.audit('task', t, 'handoff', 'agent:coding', 'agent', {'to': 'ray@northwind.example'})
     ids = {e[0] for e in episodes.build(s, _since())}
-    assert not any(i.startswith('pr') for i in ids) and f'msg{m}' not in ids and f'msg{a}' not in ids and f'task{t}' not in ids
+    assert f'msg{m}' not in ids and f'msg{a}' not in ids and f'task{t}' not in ids
 
 
 def test_the_block_is_capped_and_says_what_it_left_out(w):
@@ -89,7 +87,7 @@ def test_the_reflection_reads_the_episodes_and_its_lines_are_kept_by_code(w):
     _reflect.seen.clear()
     assert _reflect(s, lambda d: d.replace(learned_cut.PEOPLE + '\n', learned_cut.PEOPLE + '\n' + '\n'.join((good, bogus, inbound, press)) + '\n', 1))
     system, user = _reflect.seen[-1]
-    assert 'EPISODES' in user and 'replied 12 min after it arrived' in user and 'never a count of button presses' in system
+    assert 'EPISODES' in user and 'replied 12 min after it arrived' in user and 'never a line that names a' in system
     doc = s.get_doc('learned')
     people, watching = learned_cut.section(doc, learned_cut.PEOPLE), learn._block(doc, learn.HYP_START, learn.HYP_END)
     assert 'answer her asks within the hour' in people
@@ -158,3 +156,142 @@ def test_a_machine_line_with_no_bullet_is_still_the_machines_and_kept_by_its_boo
     assert 'key partner' not in learned_cut.section(doc, learned_cut.PEOPLE), 'it rests on nothing that resolves: it waits in Watching'
     assert learn._bullets('Erin [s:4 | ev: msg1 | seen: 2026-10-20]\nyours, untagged\n- tagged [s:2 | ev: msg1 | seen: 2026-10-20]') == \
         '- Erin [s:4 | ev: msg1 | seen: 2026-10-20]\nyours, untagged\n- tagged [s:2 | ev: msg1 | seen: 2026-10-20]'
+
+
+# ── WHAT THE MEMORY LEARNS FROM IS THE OWNER (the owner, 2026-11-13: "memory is broken 2 ways: it saves some random how quickly we respond,
+# which is just useless, and it saves information about the user from the agents' takeaway and not what [the user] writes to the hub") ──
+def test_how_soon_the_owner_answers_becomes_who_matters_and_triage_reads_it_and_no_statistic_is_kept():
+    """Erin is answered within minutes, again and again: the reflection reads the lag as evidence and writes what it means - she matters -
+    and triage reads that line on the next mail. No line the code counted ("You answer Erin Blake within the hour") is ever written; what
+    the owner typed to an agent and a task they closed without a reply reach the reflection; an agent's own stop never does."""
+    from taskuary import general, ingest, learnedgraph as lg, outcomes
+    from taskuary.testing import Factory
+    s, facts = C.world()
+    s.set_setting('learn_last_reflect', _since(), 'test')
+    f = Factory(s)
+    report = f.task(title='License usage report', kind='task')
+    f.message(task_id=report, subject='License usage report', body='Your seats this month.', from_name='Vendor alerts', from_email='alerts@vendor.example',
+              conversation_id='email:lic', sent_at=C._stamp(datetime.now() - timedelta(hours=5)))
+    s.update_task(report, {'Status': 'done'}, 'owner')                                      # closed, and nothing sent back
+    chat = f.task(title='Headcount sheet', kind='general')
+    f.message(task_id=chat, subject='Headcount sheet', body='Can you send the sheet?', from_name='Gail Moreno', from_email='gail@northwind.example',
+              conversation_id='email:hc', sent_at=C._stamp(datetime.now() - timedelta(hours=4)))
+    s.add_comment(chat, 'assistant', general.ASSISTANT_TYPE, 'I drafted the sheet for Gail and will send it once you press Send.')
+    s.add_comment(chat, 'owner', general.USER_TYPE, 'Headcount numbers always go past Ray before Gail sees them')
+    outcomes.record(s, 'agent.stopped', 'task', chat, 'agent:general', at=C._stamp(datetime.now() - timedelta(days=3))); outcomes.resolve(s)
+    msgs = ', '.join(f"msg{i}" for i in facts['erin_fast'][:4])
+    matters = f"- Erin Blake (erin@northwind.example) matters most: her mail comes before anything else [s:5 | ev: {msgs} | seen: {learn._today()}]"
+    _reflect.seen.clear()
+    assert _reflect(s, lambda d: d.replace(learned_cut.PEOPLE + '\n', learned_cut.PEOPLE + '\n' + matters + '\n', 1))
+    system, user = _reflect.seen[-1]
+    assert 'replied 12 min after it arrived' in user, 'how soon he answered is read, as evidence'
+    assert 'you wrote: "Headcount numbers always go past Ray before Gail sees them"' in user and 'answering the agent' in user
+    assert 'License usage report' in user and 'closed it without replying' in user
+    assert 'stopped on' not in user and 'WHAT CAME OF ACTIONS' not in user, "an agent's stop is not a fact about the owner"
+    assert 'Keep only lines that change how a future task is handled' in system and 'nothing merely descriptive or statistical' in system
+    doc = s.get_doc('learned')
+    assert 'You answer' not in doc and not any(learn.ANSWER_KEY.match(l['key']) for l in lg.lines(doc)), 'no counted answer time is written'
+    assert 'matters most' in learned_cut.section(doc, learned_cut.PEOPLE)
+    seen = []
+    ingest.judge(s, {'from_email': 'erin@northwind.example', 'from_name': 'Erin Blake', 'channel': 'email', 'subject': 'Board deck',
+                     'body': 'Can you check the deck?', 'conversation_id': 'email:deck', 'external_id': 'deck1'},
+                 llm=lambda system, user, **k: (seen.append(system + user), '{}')[1])
+    assert any('matters most: her mail comes before anything else' in p for p in seen), 'triage reads it on the next arrival'
+
+
+def test_the_answer_time_count_lines_already_stored_are_retired_by_their_key_and_never_come_back():
+    from taskuary import learnedgraph as lg
+    from taskuary.store import MemoryStore
+    s = MemoryStore()
+    count = lg.fmt({'key': 'answer erin@northwind.example', 'text': 'You answer Erin Blake (erin@northwind.example) within the hour',
+                    'ev': ['msg1', 'msg2', 'msg3'], 'score': 4, 'seen': learn._today(), 'status': 'live'})
+    model = lg.fmt({'key': 'erin matters', 'text': 'Erin Blake (erin@northwind.example) matters most', 'ev': ['msg1'], 'score': 4,
+                    'seen': learn._today(), 'status': 'live'})
+    s.save_doc('learned', f"# LEARNED\n\n{learned_cut.PEOPLE}\n{count}\n{model}\n- My own line about Erin stays\n", 'reflect')
+    assert learn.migrate(s)
+    doc = s.get_doc('learned')
+    assert 'within the hour' not in doc and 'matters most' in doc and 'My own line about Erin stays' in doc
+    assert learnedlines.row(s, 'answer erin@northwind.example')['Status'] == 'retired'
+    assert not learn.drop_answer_counts(s), 'once'
+
+
+def test_the_note_a_task_was_closed_with_is_read_in_the_owners_words_answered_or_not():
+    """THE LIVE SHAPE (the audit, 2026-11-13): Close with a note is the one place the owner says WHY a task ends. The note was kept on the
+    task and no episode carried it: unanswered, the memory read a bare "closed it without replying"; answered first, nothing at all."""
+    from taskuary.store import MemoryStore
+    from taskuary.testing import Factory
+    s = MemoryStore(); f = Factory(s)
+    s.set_setting('owner_email', 'alex@northwind.example', 'test')
+    def closed(title, who, note, answered=False):
+        tid = f.task(title=title, kind='general')
+        f.message(task_id=tid, subject=title, body='Can you look at this?', from_name=who.split('@')[0].title(), from_email=who,
+                  conversation_id=f'email:{title}', sent_at=C._stamp(datetime.now() - timedelta(hours=3)))
+        if answered: s.add_message({'TaskId': tid, 'ExternalId': f'out-{tid}', 'ConversationId': f'email:{title}', 'Channel': 'email', 'Direction': 'out',
+                                    'FromName': 'You', 'FromEmail': 'alex@northwind.example', 'Subject': f'Re: {title}', 'BodyText': 'Done.',
+                                    'SentAt': C._stamp(datetime.now() - timedelta(hours=1)), 'Status': 'context'})
+        if note: s.add_comment(tid, 'owner', 'human', f'Closed out: {note}')          # as the one close door writes it (server task.complete)
+        s.update_task(tid, {'Status': 'done'}, 'owner')
+        return f'task{tid}'
+    renewal = closed('Payworth renewal', 'renewals@vendor.example', 'Ray owns vendor renewals, not me')
+    badge = closed('Badge for the new starter', 'gail@northwind.example', 'Told her in the hallway - facilities does these', answered=True)
+    plain = closed('Seat count', 'omar@northwind.example', '')
+    done = closed('Parking pass', 'paula@northwind.example', '', answered=True)
+    eps = {e[0]: e[3] for e in episodes.build(s, _since())}
+    assert 'closed it without replying, and wrote: "Ray owns vendor renewals, not me"' in eps[renewal]
+    assert 'you: closed it, and wrote: "Told her in the hallway - facilities does these"' in eps[badge], 'answered first: the note is still his word'
+    assert eps[plain].endswith('you: closed it without replying') and done not in eps, 'no note: as before'
+    assert all(episodes.is_act(k) for k in (renewal, badge)), 'a line may rest on it'
+
+
+def test_a_draft_somebody_else_put_down_is_no_verdict_of_the_owners_and_a_close_is_one_episode():
+    """THE LIVE SHAPE (the audit, 2026-11-13): an agent says no reply is owed, and the owner marks another task done over its waiting draft.
+    The reflection read the first under DRAFT VERDICTS with "owner's note: the agent said no reply is owed", and the second twice - "sent
+    no reply" and "closed it without replying" - with Taskuary's own "the owner closed the task" as his note."""
+    from taskuary import concierge
+    from taskuary.store import MemoryStore
+    from taskuary.testing import Factory
+    s = MemoryStore(); f = Factory(s)
+    s.set_setting('owner_email', 'alex@northwind.example', 'test')
+    def owed(title, who):
+        tid = f.task(title=title, kind='general')
+        mid = f.message(task_id=tid, subject=title, body='Can you look at this?', from_name='Someone', from_email=who, conversation_id=f'email:{title}',
+                        sent_at=C._stamp(datetime.now() - timedelta(hours=3)))
+        return tid, s.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft_reply', 'Status': 'pending', 'Channel': 'email', 'DraftText': 'Hi, on it. Alex'})
+    _, by_agent = owed('Seat count', 'omar@northwind.example')
+    s.decide_review(by_agent, 'no_reply', None, 'agent', 'the agent said no reply is owed')
+    closed, with_it = owed('Parking pass', 'paula@northwind.example')
+    assert concierge.close_task(s, closed, 'owner')
+    _, his = owed('Badge for the new starter', 'gail@northwind.example')
+    s.decide_review(his, 'rejected', None, 'owner', 'facilities answers these')
+    assert [r['ReviewId'] for r in episodes.own_verdicts(s, _since())] == [his]
+    eps = [e[0] for e in episodes.build(s, _since())]
+    assert f'rv{by_agent}' not in eps and f'rv{with_it}' not in eps and eps.count(f'task{closed}') == 1 and f'rv{his}' in eps
+    said = learn.gather(s, _since())
+    assert 'the agent said no reply is owed' not in said and concierge.CLOSED_TASK not in said
+    assert "owner's note: facilities answers these" in said and 'gail@northwind.example' in said
+
+
+OLD_PEOPLE = ('_(who matters to you, what they are to you, and how you deal with them: how fast you answer, what\n'
+              'you hand them, who you copy - never what they are like)_')
+
+def test_a_document_made_before_the_count_went_explains_itself_as_the_template_does_now_and_a_reworded_note_stays():
+    """THE LIVE SHAPE (the audit, 2026-11-13): a home made last month. Its "Your people" still asked for "how fast you answer" - on the
+    memory page, and in the whole document the reflection is handed - the day the answer-time count was taken out."""
+    from pathlib import Path
+    from taskuary.store import MemoryStore
+    tpl = (Path(learn.__file__).parent / 'templates' / 'learned.md').read_text(encoding='utf-8').replace('\r\n', '\n')
+    notes = [learn._HEAD_NOTE.search(tpl).group(1)] + [learn._intro(h) for h in learned_cut.SECTIONS.values()]
+    assert all(n and learn._shipped(n) for n in notes), 'a reworded template adds its explainers to learn.SHIPPED'
+    assert not any(w in tpl for w in ('how fast you answer', 'how soon', 'when you answer'))
+    s, mine = MemoryStore(), '_(only what I batch)_'
+    old = tpl.replace(learn._intro(learned_cut.PEOPLE), OLD_PEOPLE + '\n- Erin Blake is my manager').replace(learn._intro(learned_cut.WORK), mine)
+    assert OLD_PEOPLE in old and mine in old
+    s.save_doc('learned', old, 'seed')
+    assert learn.migrate(s)
+    doc = s.get_doc('learned')
+    assert 'how fast you answer' not in doc and learn._intro(learned_cut.PEOPLE) in doc, "the shipped note is the template's now"
+    assert mine in doc and '- Erin Blake is my manager' in doc, 'his own note and his own line are left as they are'
+    sent = []
+    learn.reflect(s, llm=lambda system, user, **k: (sent.append(user), '')[1])
+    assert sent and 'how fast you answer' not in sent[0], 'and the reflection is no longer handed the old ask'
+    assert not learn.refresh_explainers(s), 'once'

@@ -129,6 +129,9 @@ def clean_env(extra: dict = None, strict: bool = False) -> dict:
     # per-session additions: the browser session name that ties an agent's agent-browser to
     # its pane (browserview) - set after the strip, so it wins over an inherited one
     env.update(extra or {})
+    # ...and the CLI's own memory off, after the strip that takes every inherited CLAUDE_CODE_* away (agents.child_env says why)
+    from .clis import NO_MEMORY
+    env.update(NO_MEMORY)
     # the pane IS a real terminal (xterm.js): say so. A service started with no TERM, or TERM=dumb,
     # made codex stop at "Codex's interactive TUI may not work in this terminal. Continue? [y/N]"
     # before a single prompt - the owner typed y into a box that was built for exactly this.
@@ -161,7 +164,32 @@ def session_env(agent: str = '', task_id=None, cwd: str = '', sid: str = None, s
     if tok: out[guard.AGENT_ENV] = tok
     # the token is shared by every session; this says which task is THIS one's (guard.owns_task)
     if tok and str(task_id or '').isdigit(): out[guard.TASK_ENV] = guard.task_proof(srv, task_id)
+    if task_id and (d := own_command()): out['PATH'] = d + os.pathsep + os.environ.get('PATH', '')
     return stranger_env(out, task_id, srv) if stranger else out
+
+
+_OWN: dict = {}
+def own_command() -> str:
+    """THE `taskuary` COMMAND IS IN EVERY SESSION'S REACH (the recorded walk, 2026-11-11: a coding agent told the owner "the taskuary command
+    is not installed in this shell, so I could not read the board" - its rules send it to `taskuary --board`, `--note`, `--tick`, and an app
+    started by its interpreter has no script of that name on PATH). '' where PATH finds it already; else the folder to put in front of a
+    session's PATH: the one that holds the script of this interpreter, else one in the app's home with a script that runs this interpreter's."""
+    if 'd' in _OWN: return _OWN['d']
+    import sys
+    from . import config
+    d = ''
+    if not shutil.which('taskuary'):
+        here = os.path.dirname(sys.executable)
+        d = next((x for x in (here, os.path.join(here, 'Scripts'), os.path.join(here, 'bin')) if shutil.which('taskuary', path=x)), '')
+        if not d:
+            try:
+                b = config.home() / 'bin'; b.mkdir(parents=True, exist_ok=True); py = sys.executable.replace('\\', '/')
+                (b / 'taskuary.cmd').write_text(f'@"{sys.executable}" -m taskuary.cli %*\n', encoding='utf-8')
+                (b / 'taskuary').write_text(f'#!/bin/sh\nexec "{py}" -m taskuary.cli "$@"\n', encoding='utf-8', newline='\n'); os.chmod(b / 'taskuary', 0o755)
+                d = str(b)
+            except OSError as e: logger.debug(f'no taskuary command could be put in reach of a session - {e}')
+    _OWN['d'] = d
+    return d
 
 
 def stranger_env(env: dict, task_id, srv: dict = None) -> dict:
@@ -364,6 +392,12 @@ class Term:
         self.keep()                                       # the transcript must outlive the pty
         # SIGNING OUT IS NOT FINISHING: the same CLI opens again, in this pane, BEFORE the sockets hear the end - their onExit
         # looks for the task's live session and finds the new one, so the pane never falls to a Result in between
+        # ...AND A CONVERSATION ITS CLI NO LONGER HAS IS STARTED AFRESH (agents.Gone): `--resume` printed "No conversation found ..." and exited
+        if conversation_gone(self) and start_afresh(self):
+            self._emit(None)
+            from . import handraise
+            handraise.moved(self.task_id)
+            return
         if signed_out(self) and sign_in_again(self):
             self._emit(None)
             from . import browserview as _bv
@@ -816,23 +850,6 @@ def interactive_args(args) -> list:
     return out
 
 
-def _codex_windows_auto(argv: list) -> list:
-    """codex's workspace-write sandbox needs a helper exe most Windows installs lack
-    (codex-windows-sandbox-setup.exe) - without it EVERY command dies before running ('the
-    Windows sandbox helper executable is missing'), so an auto session can read but never act.
-    When the helper is absent, full-auto degrades to codex's own bypass flag: the exact trust
-    the claude preset already ships (--dangerously-skip-permissions) - a watched session, no
-    sandbox. Only the TRANSLATED quad is touched; flags the owner typed are theirs."""
-    AUTO = ['--sandbox', 'workspace-write', '--ask-for-approval', 'never']
-    if os.name != 'nt': return argv
-    exe = next((a for a in argv if 'codex' in os.path.basename(str(a)).lower()), None)
-    if not exe: return argv
-    i = next((j for j in range(len(argv) - 3) if argv[j:j + 4] == AUTO), None)
-    if i is None: return argv
-    if os.path.exists(os.path.join(os.path.dirname(str(exe)), 'codex-windows-sandbox-setup.exe')): return argv
-    return argv[:i] + ['--dangerously-bypass-approvals-and-sandbox'] + argv[i + 4:]
-
-
 def _codex_browser_tui(argv: list) -> list:
     """Keep Codex's composer responsive inside xterm.js.
 
@@ -913,6 +930,15 @@ def resume_seed(instruction: str = '', store=None, tid: int = None) -> str:
     return '\n\n'.join(parts)
 
 
+def afresh_seed(store, tid: int, cwd: str = None, cli: str = '', then: str = '') -> str:
+    """What a FRESH conversation is told where its CLI no longer had the old one (agents.Gone) - a coding pane's on either road: the task's own
+    seed, then where the work stopped (`then`: what the old one was about to be told, else continuity.RESUME_PROMPT)."""
+    from .continuity import RESUME_PROMPT
+    try: first = seed_text(store, tid, cwd=cwd, cli=cli)
+    except Exception as e: logger.debug(f'task {tid}: no seed for the fresh conversation - {e}'); first = ''
+    return '\n\n'.join(x for x in (first, then or RESUME_PROMPT) if x)
+
+
 def with_brain(profile: dict, cmd: dict) -> dict:
     """The profile run by the brain's connection. The connection owns EVERY command field, not only the ones it sets: a profile saved when
     claude was the only brain still carries claude's `model`, codex has none of its own, and overlaying just what codex names left
@@ -955,7 +981,7 @@ def agent_argv(profile: dict, model: str = None) -> list:
     from .climodels import effort_args, split_pick
     m, eff = split_pick(model or profile.get('model'), cli_named(profile))
     argv += ([profile.get('model_arg') or '--model', str(m)] if m else []) + effort_args(cli_named(profile), eff)
-    return _codex_hook_trust(_codex_windows_auto(_codex_browser_tui(argv)))
+    return _codex_hook_trust(_codex_browser_tui(argv))
 
 
 # THE PANE'S PALETTE IS CLAUDE'S THEME. Claude Code paints with its OWN colours, not the terminal's: its dark theme
@@ -1298,7 +1324,7 @@ def open_session(store, agent: str = None, task_id: int = None, repo: str = None
         sessionfiles.SessionWatch(t, 'omp', omp_dir).start()
     # ...and it keeps that id as its own for good: Codex FORKS a resumed thread - a new rollout id, `forked_from_id` the
     # one we asked for - so the rollout renames the pane (witness.RolloutTail) while a hook may still say the old one
-    t.resumed_from = resume or ''
+    t.resumed_from, t.told = resume or '', seed or ''
     # The agents already here are not told a newcomer arrived: THIS session was just handed the
     # whole live picture in its seed (blackboard.briefing), which is where peer awareness belongs.
     # The configured profile name is the worker's identity, not just a launch option. Keep it on
@@ -1333,7 +1359,7 @@ def open_session(store, agent: str = None, task_id: int = None, repo: str = None
         if sessionfiles.watches(cli): sessionfiles.SessionWatch(t, cli).start()
     if acp_road: t.start(seed or '')         # its first session/prompt; none at all for a quiet resume - it is back at its prompt
     elif seed:
-        if extra: t.seeded, t.accepted = seed, True   # the CLI submits it itself; kept so harvest drops the echo
+        if extra: t.seeded, t.accepted, t.launching = seed, True, time.time()   # the CLI submits it itself; kept so harvest drops the echo
         else: t.seed(seed)               # no prompt argument on this CLI: type it in, verified
     # A reply drafted from the mail alone promises what this session has not worked out yet, so
     # it stops waiting on the task and comes back as the agent's to write - see wrapup.raise_reply.
@@ -1342,11 +1368,7 @@ def open_session(store, agent: str = None, task_id: int = None, repo: str = None
         # task is no longer queued - the task page's own terminal door skipped all three and left them stale
         resume_task(store, task_id, actor); store.tag_task(task_id, SAVED, False, actor); store.clear_dispatch(task_id)
         store.tag_task(task_id, 'held:repo', False, actor)    # funnel.HELD_REPO: the repository it waited for is found
-    # ...and a reply an EARLIER session drafted is out of sight while this one works, as a chat's start does (general.start_session): the
-    # arrival draft stays where it stands, greyed once the owner prompts past it - holding it emptied a coding chat of its card (2026-11-11)
-    if task_id and actor not in INTERRUPTING:
-        from . import wrapup
-        wrapup.hold_stale(store, task_id, t.sid)
+    # ...and every reply that waits for his Send stands as it stood, whoever drafted it (wrapup.OWNER_SID's note; the owner, 2026-11-11)
     store.audit('terminal', 0, 'open', actor, detail={'sid': t.sid, 'agent': agent, 'cwd': cwd, 'task': task_id})
     return t
 
@@ -1372,7 +1394,6 @@ def scrub_queries(s: str) -> str:
 _ANSI = re.compile(r'\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-B]|\x1b[=>]'
                    r'|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 _FORWARD = re.compile(r'\x1b\[(\d*)C')          # cursor-forward: a GAP, not nothing
-_ERASE = re.compile(r'\x1b\[0?K')             # erase-to-end: the old paint is GONE
 
 
 def _overlay(line: str) -> str:
@@ -1871,7 +1892,7 @@ def with_fence_rule(rules: str) -> str:
     from .agenttools import SHOW_RULE, TOOLS_LINE, VERIFY_RULE
     if 'Taskuary tools' not in rules: rules = f'{rules} {TOOLS_LINE}'      # the toolbox (2026-10-25): an owner's copy from before it still hears of it
     if 'unless the show tool returned it' not in rules: rules = f'{rules} {SHOW_RULE}'      # ...and how a file reaches them (2026-11-09)
-    if 'effect you did not verify' not in rules: rules = f'{rules} {VERIFY_RULE}'
+    if 'Claim an effect' not in rules and 'effect you did not verify' not in rules: rules = f'{rules} {VERIFY_RULE}'
     if 'one final file' not in rules:                   # one file per thing asked (2026-10-28): an owner's copy from before it hears it too
         from .outputs import ONE_FILE
         rules = f'{rules} Files you make: {ONE_FILE}'
@@ -2009,6 +2030,7 @@ def seed_text(store, tid: int, instruction: str = None, repo: str = None, cwd: s
     b = _brief.build(store, tid, instruction=instruction, repo=repo or cwd, context_budget=BRIEF_CONTEXT)
     if b['objective'] and not m: say(f"ASK: {fence(_cut(strip_boilerplate(b['objective']), ASK_CHARS))}", theirs_too=True)
     elif b['objective']: say(f"OBJECTIVE: {fence(_cut(b['objective'], 600))}", theirs_too=True)
+    if b.get('handoff'): say(f"TASKUARY'S BRIEF - what the Assistant made of the owner's ask and the talk before it: {fence(_cut(b['handoff'], ASK_CHARS))}", theirs_too=True)
     md = b['checklist']
     if md: say('CHECKLIST - what was asked for, as triage read it; the source message follows, and it is the authority'
                + (f' ({TICK_HEAD}: `taskuary --tick <id>`)' if _tickable(md) else '') + ':\n' + fence(md), theirs_too=True)
@@ -2089,7 +2111,7 @@ def seed_text(store, tid: int, instruction: str = None, repo: str = None, cwd: s
     # short on purpose: this line rides on the command line with a full path in it, and a canonical
     # tty caps a line at 1024 bytes (CI's fake TUI; macOS temp paths are long) - a wordy sentence here
     # pushed the seed over and the prompt arrived clipped
-    if cpath: parts.append(f'CONTEXT FILE: {cpath} - read it FIRST: this sender, this topic, past tasks and how they ended.')
+    if cpath: parts.append(f'CONTEXT FILE: {cpath} - read it FIRST: what is already known (repo, Hub, past tasks) before you explore.')
     # a browser the owner can WATCH exists only if the agent is told so - and told who types passwords
     from . import browserview as _bv
     if _bv.hint(): parts.append(_bv.hint())
@@ -2118,7 +2140,7 @@ def seed_text(store, tid: int, instruction: str = None, repo: str = None, cwd: s
     if not stranger and no_correspondent(store, tid):
         # an owner-opened session still hears it is theirs to end (STAY_LINE's mark), just without STAY_LINE's reply road
         parts.append(f"{nobody_line(store, tid)} No `taskuary --reply` or propose_reply here. " + (
-                     'THE OWNER OPENED THIS SESSION: `taskuary --done` is refused. Summarize, then wait.' if selfclose.stays_open(store, tid) else
+                     'THE OWNER OPENED THIS SESSION: `taskuary --done` is refused. Answer what is asked, then wait.' if selfclose.stays_open(store, tid) else
                      'WHEN FINISHED: run `taskuary --done "<one sentence>" --no-reply`.' if selfclose.mode(store) != 'off' else ''))
     elif selfclose.stays_open(store, tid): parts.append(selfclose.STAY_LINE)
     elif selfclose.mode(store) != 'off': parts.append(selfclose.SEED_LINE)
@@ -2135,7 +2157,7 @@ def seed_text(store, tid: int, instruction: str = None, repo: str = None, cwd: s
     if stranger:
         parts[0] = f"TASK {task_ref(tid)} - a stranger's task."
         parts.insert(1, _origin.SEED_LINE.format(path=_origin.stranger_file(store, tid, [f"TASK: {t.get('Title') or ''}\nSUMMARY: {t.get('Summary') or ''}", *theirs])))
-        parts.insert(2, _origin.no_history_line(store, tid))      # ...and why the owner's earlier mail is not its to read, with the press that opens it
+        if (nh := _origin.no_history_line(store, tid)): parts.insert(2, nh)      # ...and why the owner's earlier mail is not its to read, with the press that opens it
     out = paragraphs('\n\n'.join(parts))
     # A command line has a hard limit (32767 on Windows) and the OS does not warn - it refuses
     # or clips. If we are over, the ASK is what gives, never the rules that keep an agent
@@ -2552,6 +2574,7 @@ IDLE_WAITING = 45
 # A state observed in the terminal must survive this long before the rest of Taskuary sees it.
 # This is deliberately shorter than the UI polls: a genuine question is visible on the next
 # poll, while the clear/draw/clear frames of one TUI repaint can never become a hand raise.
+LAUNCH_WAIT = 90                # seconds a pane launched on its prompt may take to show its first turn (stable_phase_of)
 PHASE_DWELL = 3.0
 
 # What the last lines of the screen say. Claude Code shows "esc to interrupt" (and a spinner)
@@ -2584,6 +2607,12 @@ def _observed_phase(t) -> str:
     return phase_of(lines)
 
 
+def typing_into(t) -> bool:
+    "Is a delivery of Taskuary's still going into this pane (type_into)? A count it set itself - never a stand-in's stray attribute."
+    n = getattr(t, 'typing', 0)
+    return isinstance(n, int) and n > 0
+
+
 def stable_phase_of(t, now: float = None) -> str:
     """Return the session's latched `working` or `parked` phase.
 
@@ -2594,8 +2623,20 @@ def stable_phase_of(t, now: float = None) -> str:
     held for PHASE_DWELL seconds. Process exit is separate (`alive=False`) and remains immediate.
     """
     if prompt_pending(t): return 'working'
+    # A PANE TAKING TASKUARY'S OWN WORDS IS NOT AT REST (the recorded flood, 2026-11-11): a paste goes in over seconds - bites, its echo, Enter -
+    # with the bare prompt on screen all the while, and the waiting room typed its next batch into the first: the TUI ran the two together and
+    # the record drew Taskuary's notes as the owner's line. One delivery at a time: the next only once the last was taken (type_into)
+    if typing_into(t): return 'working'
     at = time.time() if now is None else float(now)
     raw = _observed_phase(t)
+    # A PANE LAUNCHED ON ITS PROMPT IS AT WORK UNTIL ITS CLI SHOWS IT WORKING (the recorded flood, 2026-11-11): the prompt rides the command
+    # line, so nothing is typed and nothing waits to be accepted - and while the CLI was still coming up its screen read as the bare prompt.
+    # The waiting room typed thirty of his lines and notes into it half a minute before its first turn; none reached the agent, and the
+    # chat showed them all heard. Until its first hook event (hooks._events) or its screen first reads working - or LAUNCH_WAIT, for a CLI
+    # that shows neither
+    if getattr(t, 'launching', 0):
+        if raw == 'working' or at - t.launching > LAUNCH_WAIT: t.launching = 0
+        else: return 'working'
     stable = getattr(t, '_phase_stable', 'working')
     # Known screen chrome is authoritative. Silence is only a fallback for third-party CLIs whose
     # prompt Taskuary does not recognise. Fresh real output can wake such a parked CLI again.
@@ -2725,6 +2766,9 @@ def screen_question(t, n: int = 40) -> dict | None:
     already the reason we know it is waiting (`screen_asking`), so an ordinary numbered list in an
     agent's prose can never be mistaken for a question.
     """
+    # ...and only a terminal has one: over ACP the "screen" is the agent's own words (screen_lines), and a numbered list in a question it
+    # asked a turn ago was read as the chooser an approval stood on (the owner's live task, 2026-11-11)
+    if is_acp(get(t) if isinstance(t, str) else t): return None
     snap = screen(getattr(t, 'sid', t), n)
     if not snap: return None
     lines = [l.rstrip() for l in snap['lines'] if l.strip() and not _TUI_FURNITURE.search(l) and not _CHROME.search(l)]
@@ -2935,7 +2979,13 @@ def type_into(t, text: str, done=None, brief: bool = False):
             t.write('\x15')
             if _until(lambda: not in_box(t, tail), .5, t): break
         done(False)
-    threading.Thread(target=go, daemon=True).start()
+    # ...in flight from this call, not from its thread's first step: the caller's next look already reads it at work (stable_phase_of). What
+    # Enter took begins a turn, so it leaves the pane latched working - the screen says parked again in its own time, after its dwell
+    t.typing = (t.typing if typing_into(t) else 0) + 1
+    def run():
+        try: go()
+        finally: t.typing, t._phase_stable, t._phase_candidate = (t.typing - 1 if typing_into(t) else 0), 'working', None
+    threading.Thread(target=run, daemon=True).start()
 
 
 FORM_KEY_GAP = 0.8                  # between keys on Claude's question form - a digit re-draws the next tab
@@ -3054,12 +3104,6 @@ def release_held(store, task_id, actor='terminal') -> int:
     held = [r for r in rows if r.get('Status') == 'held']
     if not held: return 0
     n = len(held)
-    # ...but an EARLIER agent session's draft, held while a newer one worked, is not brought back over it: closed as superseded, its words
-    # kept to read and bring back (wrapup.stale_draft, the owner 2026-11-03)
-    from . import wrapup, workerstate as ws
-    if (sid := ws.current_sid(store, task_id)):
-        for h in [h for h in held if wrapup.stale_draft(store, h, sid)]: wrapup.supersede(store, h, actor); held.remove(h)
-    if not held: return n
     newer = [r for r in rows if r.get('Status') == 'pending' and r['ReviewId'] > max(h['ReviewId'] for h in held)]
     for h in held:
         if newer: store.decide_review(h['ReviewId'], 'closed_unsent', None, actor, note="superseded by the agent's newer reply")
@@ -3106,6 +3150,34 @@ def sign_in_again(t):
     return n
 
 
+def conversation_gone(t) -> bool:
+    "Did this resumed pane's CLI end at once because it no longer has the conversation (agents.gone, its own words on the last screen)?"
+    from .agents import gone
+    return bool(getattr(t, 'resumed_from', '') and t.task_id and t.agent and not getattr(t, 'on_purpose', False)
+                and time.time() - t.started_ts < 120 and gone(plain(t.tail_chars(4000))))
+
+
+def start_afresh(t):
+    """The same CLI on the same task and folder in a FRESH conversation, told the task and what the dead one was about to be (afresh_seed), with
+    one plain line in the chat (agents.said_afresh). The dead pane leaves the list, as a sign-out's does (sign_in_again)."""
+    from .agents import said_afresh
+    told = getattr(t, 'told', '')
+    try: n = open_session(t.store, t.agent, t.task_id, None, t.cwd, t.rows, t.cols, 'owner', seed_fn=lambda here: afresh_seed(t.store, t.task_id, here, t.cli, told),
+                          brain=t.cli or None)
+    except Exception as e: logger.warning(f'{t.sid}: its conversation was gone and a fresh one did not open ({e}); its session ends'); return None
+    logger.info(f'{t.sid}: {t.resumed_from} was gone - {n.sid} carries the task on in a fresh conversation')
+    SESSIONS.pop(t.sid, None)
+    said_afresh(t.store, t.task_id)
+    return n
+
+
+def _turn_cut(store, task_id) -> bool:
+    "Was a turn under way on the task, by its run's own last word (`working`), or anything handed to its agent since that word (the ledger's)?"
+    from . import conversation, workerstate as ws
+    last = store.last_worker_event(task_id, skip=ws.NOTES) or {}
+    return last.get('Kind') == 'working' or conversation.handed_since(store, task_id, last.get('CreatedAt'))
+
+
 def release_task(store, task_id, actor='terminal', note=None) -> bool:
     """Release unfinished work when its worker has really gone away.
 
@@ -3114,15 +3186,32 @@ def release_task(store, task_id, actor='terminal', note=None) -> bool:
     """
     task = store.get_task(task_id) or {}
     if task.get('Status') != 'in_progress': return False
+    # A CHAT AGENT AT REST WHEN TASKUARY STOPPED WAS NOT INTERRUPTED (recorded on the real CLI, 2026-11-13: it had answered minutes before,
+    # "agent done"; after the restart its task read "agent stopped ... nobody is working it" and wore the interrupted tag): nothing was cut,
+    # and its next input brings it back as the same run. It went with the process as it goes when it idles out
+    # (general.GeneralSession.idle_out): no ending written, no tag, no line - the task reads as it did live, off its saved record
+    # (taskstate._chat_resting: its open question still waits, a turn that asked nothing is done for now)
+    # ...by its run's own last word: a turn's end, or the question it ended on. A task whose run never said a word (a headless run under
+    # way, a session still coming up) is interrupted, as before
+    try:
+        from . import general, workerstate as ws
+        if (actor in INTERRUPTING and general.handles(task) and ws.at_rest(store, task_id) and not _turn_cut(store, task_id)
+                and not any(r.get('Status') == 'running' for r in store.list_runs(task_id))): return False
+    except Exception as e: logger.debug(f'release_task: whether a turn of {task_id} was cut was not read - {e}')
     for run in store.list_runs(task_id):
         if run.get('Status') == 'running':
             store.update_run(run['RunId'], {'Status': 'stopped'}, finished=True)
     # ...and on the WORKER record too. A pty that died with a question open kept reading as
     # `input_needed` for ever, because nothing ever wrote the run's ending there: only the owner's
     # stop button, a headless failure and a self-close did (audit 2026-09-18, item 2).
+    cut = False
     try:
         from . import workerstate as ws
         sid = ws.current_sid(store, task_id)
+        # ...its last word `working`: a turn was under way when Taskuary went (said in its chat below)
+        # ...or something was handed to it after its last word (the ledger's): a line of his that opened a session still coming up when
+        # Taskuary went stood heard, with nothing under it and nothing saying why (the recorded restart, 2026-11-11)
+        cut = actor in INTERRUPTING and _turn_cut(store, task_id)
         # ...read off the run's own LAST WORD, not its derived status: with no session live after a restart, status() reads any unfinished run
         # as `disconnected` already, so nothing was written - the run's last word stayed `working`, and a general agent cut off by the restart
         # offered no Continue (the overnight run, 2026-11-03)
@@ -3134,6 +3223,12 @@ def release_task(store, task_id, actor='terminal', note=None) -> bool:
     except Exception as e: logger.debug(f'release_task: the held reply on {task_id} stayed held: {e}')
     # not Working, not Done: interrupted, visibly - and nothing restarts by itself (PW-262)
     if actor in INTERRUPTING: store.tag_task(task_id, INTERRUPTED, True, actor)
+    # A CODING TURN THE RESTART CUT SAYS SO WHERE IT WAS CUT, as a chat's does (general.keep_cut_turns; the recorded restart, 2026-11-11: his
+    # lines stood heard with nothing under them and nothing said why). One quiet line of the chat, under what the turn had got to
+    try:
+        from . import general
+        if cut and not general.handles(task): general.say_cut(store, task_id)
+    except Exception as e: logger.debug(f'release_task: the cut turn of {task_id} was not said - {e}')
     store.add_comment(task_id, actor, 'agent', note or
                       'The agent session ended. The task is open again - nobody is working it.')
     return True
@@ -3150,6 +3245,10 @@ def recover_after_restart(store) -> int:
     except Exception as e: logger.warning(f'permission requests left open by the last run not closed: {e}')
     for run in store.running_runs():
         store.update_run(run['RunId'], {'Status': 'stopped'}, finished=True)
+    # ...and a reply an earlier build held out of sight as "an earlier session's" is back with its Send (wrapup.STALE_HOLD)
+    from . import wrapup
+    for r in store._rows("SELECT ReviewId FROM review WHERE Status='held' AND Reason=?", (wrapup.STALE_HOLD,)):
+        store.unhold_review(r['ReviewId'], 'the reply the agent drafted - back for your yes')
     released = 0
     for task in store.list_tasks(status='in_progress'):
         released += int(release_task(store, task['TaskId'], 'startup',

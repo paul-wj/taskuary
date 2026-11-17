@@ -20,8 +20,8 @@ def test_the_agent_is_told_its_reply_is_a_card_under_next_steps():
     the task's home (2026-11-04) there is no Close out on it: the stress run (2026-11-05) had the agent say "The reply is in Close out" and
     list "Review the reply in Close out and press Send" as an On you step, over the draft's own card under Next steps."""
     from taskuary import general, selfclose
-    assert 'its own card under Next steps' in selfclose.REPLY_LINE and 'Close out' not in selfclose.REPLY_LINE
-    assert 'none is ever an on_you step' in selfclose.SUMMARY_LINE      # ...nor its own question again (email-04 of the run: said twice)
+    assert 'its card under your answer' in selfclose.CARD_SAID and 'Close out' not in selfclose.REPLY_LINE + selfclose.CARD_SAID      # said once (CARD_SAID)
+    assert 'are never an on_you step' in selfclose.SUMMARY_LINE      # ...nor its own question again (email-04 of the run: said twice)
     assert 'Close out' not in general.DRAFTED
 
 
@@ -55,7 +55,9 @@ class ContinueFailure(unittest.TestCase):
 def test_the_agent_speaks_to_the_owner_never_of_them():
     # the product audit, 2026-11-08: "Alex has what they need on this one" in the owner's own chat
     from taskuary import selfclose
-    assert 'You are talking TO the owner in their own chat: say "you" and "your", never their name' in selfclose.SUMMARY_LINE
+    assert '"you" to the owner' in selfclose.SUMMARY_LINE      # ...and never their name: AGENT.md, said to every worker
+    from pathlib import Path
+    assert 'never their name' in (Path(selfclose.__file__).parent / 'templates' / 'agent.md').read_text(encoding='utf-8')
 
 
 def test_the_assistant_reports_what_the_agent_needs_never_as_the_agent():

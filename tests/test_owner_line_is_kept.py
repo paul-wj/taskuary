@@ -15,6 +15,7 @@ from taskuary import general, server
 from taskuary.store import MemoryStore
 
 
+
 class Brain:
     "The model: answers after `delay`, fails the turns named in `fail`, keeps what each turn was handed."
     def __init__(self, delay=0.0, fail=()): self.delay, self.fail, self.calls = delay, set(fail), []
@@ -33,14 +34,13 @@ class OwnerLineIsKept(unittest.TestCase):
                   mock.patch.object(general, 'provider_options', return_value=[{'pick': 'cli:claude', 'type': 'cli', 'label': 'Claude Code', 'model': ''}]),
                   mock.patch('taskuary.agents.ready_brains', return_value=['claude']),
                   mock.patch('taskuary.hooks.judge_ended', lambda *a, **k: None),
-                  mock.patch.object(server, 'store', self.s),
-                  mock.patch.object(server, '_refresh_for_turn', return_value=({}, ''))]:
+                  mock.patch.object(server, 'store', self.s)]:
             p.start(); self.addCleanup(p.stop)
         self.addCleanup(self.end)
 
     def end(self):
         if (g := general.session_for(self.tid)): g.close(learn=False, report=False)
-        general.drop_session(self.tid); general.IDLED.pop(self.tid, None)
+        general.drop_session(self.tid); general.IDLED.pop(self.tid, None); general.answered(self.tid, every=True)
 
     def said(self): return [(c['ActorType'], c['Body']) for c in general.chat_rows(self.s, self.tid)]
 
@@ -66,17 +66,27 @@ class OwnerLineIsKept(unittest.TestCase):
         self.assertEqual({w: rows[w] for w in typed}, typed)                                          # ...each at the time it was typed
         self.assertEqual(general.waiting_lines(self.s, self.tid), [])
 
-    def test_a_line_kept_when_the_server_restarted_goes_back_into_the_box_never_to_the_agent(self):
-        general.wait_line(self.s, self.tid, 'And copy Erin Blake.')                    # typed mid-turn; then the process went away
-        self.assertEqual(server.lines_to_box(), [self.tid])
-        time.sleep(0.3)
-        self.assertEqual(self.said(), [])                                               # nothing started an agent for it
-        self.assertEqual(general.waiting_lines(self.s, self.tid), [])
-        self.assertEqual(server._assistant_payload(self.tid)['box'], 'And copy Erin Blake.')   # ...it is back in the owner's box
+    def test_lines_kept_when_the_server_restarted_stay_by_the_box_and_go_in_as_one_turn_when_the_agent_is_ready(self):
+        """The owner, 2026-11-11: "yes pending should go in when agent ready" - they came back as text in his box, his to send again."""
+        from taskuary import conversation, waitroom
+        for w in ('And copy Erin Blake.', 'Before Friday.'): general.wait_line(self.s, self.tid, w)    # typed mid-turn; then the process went away
+        self.assertFalse(hasattr(general, 'to_box') or hasattr(server, 'lines_to_box'))
+        self.assertNotIn('box', server._assistant_payload(self.tid))
+        # ...and the turn the restart cut says so without asking him to type: his lines carry on by themselves
+        with mock.patch('taskuary.sessionrecord.cut_turns', return_value=[(self.tid, [])]), mock.patch('taskuary.sessionrecord.keep_turn'):
+            general.keep_cut_turns(self.s)
+        self.assertEqual(self.said()[-1][1], general.CUT_ON); self.assertNotIn('type to', general.CUT_ON)
+        self.assertEqual([x['text'] for x in conversation.items(self.s, self.tid)['pending']], ['And copy Erin Blake.', 'Before Friday.'])   # ...by the box
         self.brain.delay = 0
-        general.take_line(self.s, self.tid, 'And copy Erin Blake, please.')               # they send it, changed
-        self.assertEqual(general.box_text(self.s, self.tid), '')                          # ...offered once, never twice
-        self.assertEqual([b for t, b in self.said() if t == general.USER_TYPE], ['And copy Erin Blake, please.'])
+        waitroom.tick(self.s)                                                              # the clock: nobody is taking them, so one turn begins
+        self.assertFalse(general.run_kept(self.s, self.tid))                               # ...one, not one a tick
+        end = time.time() + 15
+        while (general.ASSISTANT_TYPE, 'Answer 1.') not in self.said() and time.time() < end: time.sleep(0.05)
+        self.assertEqual(self.said()[-3:], [(general.USER_TYPE, 'And copy Erin Blake.'), (general.USER_TYPE, 'Before Friday.'), (general.ASSISTANT_TYPE, 'Answer 1.')])
+        self.assertEqual(len(self.brain.calls), 1)                                         # both in one turn, each said once
+        self.assertEqual(general.waiting_lines(self.s, self.tid), [])
+        time.sleep(0.2); waitroom.tick(self.s); time.sleep(0.2)
+        self.assertEqual(len(self.brain.calls), 1)                                         # ...and nothing left to start another
 
     def test_a_held_line_behind_a_turn_that_failed_starts_the_agent_again_quietly(self):
         "Bug 10: the held road had no restart - the line came back 'reload the page and ask again'."
@@ -87,7 +97,10 @@ class OwnerLineIsKept(unittest.TestCase):
         r = c.post(f'/api/tasks/{self.tid}/assistant/messages', json={'text': 'Cheapest first, please.'})
         first.join(15)
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual(r.json()['reply'], 'Answer 2.')                                  # answered on a fresh session...
+        self.assertTrue(r.json().get('kept'))                                             # a line sent while a turn works is kept and answered at once...
+        end = time.time() + 15
+        while (general.ASSISTANT_TYPE, 'Answer 2.') not in self.said() and time.time() < end: time.sleep(0.05)
+        self.assertIn((general.ASSISTANT_TYPE, 'Answer 2.'), self.said())                 # ...and answered on a fresh session
         self.assertEqual([b for t, b in self.said() if t == general.USER_TYPE].count('Cheapest first, please.'), 1)    # ...the line said once
         self.assertNotIn('reload the page', general.ENDED)
 
@@ -110,10 +123,31 @@ class OwnerLineIsKept(unittest.TestCase):
         until(lambda: getattr(general.session_for(self.tid), 'busy', False))
         held = [say('ok', 'held-2'), say('ok', None), say('ok', 'held-3')]
         for i, t in enumerate(held): t.start(); until(lambda n=i + 1: len(general.waiting_lines(self.s, self.tid)) >= n)
-        self.assertEqual([(w['text'], w.get('line')) for w in server._assistant_payload(self.tid)['waiting']], [('ok', 'held-2'), ('ok', None), ('ok', 'held-3')])
+        # ...and a line the page gave no name gets one here (general.new_line_id): the ledger says by it that the agent heard it
+        waits = [(w['text'], w.get('line')) for w in server._assistant_payload(self.tid)['waiting']]
+        self.assertEqual([(w, n) for w, n in waits if n in ('held-2', 'held-3')], [('ok', 'held-2'), ('ok', 'held-3')])
+        made = waits[1][1]; self.assertTrue(made and made.startswith('s'))
         for t in [first, *held]: t.join(15)
         mine = [(m['content'][0]['text'], m.get('line')) for m in server._assistant_payload(self.tid)['messages'] if m['role'] == 'user']
-        self.assertEqual(mine, [('Compare three tools.', 'held-1'), ('ok', 'held-2'), ('ok', None), ('ok', 'held-3')])
+        self.assertEqual(mine, [('Compare three tools.', 'held-1'), ('ok', 'held-2'), ('ok', made), ('ok', 'held-3')])
+
+    def test_a_line_typed_while_a_chat_poll_holds_its_lock_is_kept_and_answered_never_refused(self):
+        """The owner's live task, 2026-11-12: his agent at rest with no process left, a chat poll holding its lock - the start waited 45 s on
+        it, was refused, and his line came back red with that glued to it. And 2026-11-16: the turn then went on under "The newest mail could
+        not be read first" - about mail, on a line he typed. His line is kept and heard at once, nothing is fetched or said first."""
+        from taskuary import conversation
+        self.brain.delay = 0
+        refused = mock.patch.object(server, '_refresh_chat_context', side_effect=RuntimeError('messages are still syncing; I did not use stale chat context - try again in a moment'))
+        with refused as read:
+            self.assertIsNone(general.session_for(self.tid))
+            r = TestClient(server.app).post(f'/api/tasks/{self.tid}/assistant/messages', json={'text': 'Compare three tools.', 'line_id': 'l-sync'})
+        self.assertEqual(r.status_code, 200, r.text)
+        got = conversation.items(self.s, self.tid)['items']
+        self.assertEqual([x['id'] for x in got if x['kind'] == 'line'], ['l-sync'])
+        self.assertFalse(read.called)
+        self.assertEqual([x['text'] for x in got if x['kind'] == 'note'], [])
+        self.assertEqual([x['text'] for x in got if x['kind'] == 'turn'], ['Answer 1.'])
+        self.assertNotIn('syncing', json.dumps(got))
 
     def test_the_chats_door_takes_the_name_and_a_long_one_is_cut(self):
         self.brain.delay = 0

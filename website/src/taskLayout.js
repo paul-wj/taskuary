@@ -80,6 +80,20 @@ export const soloTodo = ({ kind, started = false } = {}) => kind === "task" && !
 // from folded to the thin arrow tab, so the message shows once, in the chat; one with nothing but what came in opens on Came from. `chat`: the
 // page's own reading (TaskPage anyChat); left out, a to-do's stage or any other kind's chat answers it
 export const homeSection = (kind, stage, chat = kind !== "task" || sectionOf(stage) === "agent") => (chat ? "agent" : "from");
+// ...AND A CHAT THAT LANDS LATE STILL OPENS IT (New's Draft it, 2026-11-12): a task read before its draft was written homed on Came from, and the
+// draft and its Send sat in the folded chat under "ready to send". Whether the task has a chat is latched per task (`of`): once there it stays,
+// so a Send that takes the draft away never folds the page back
+export const chatLatch = (memo, of, chat) => ({ of, on: (memo?.of === of && memo.on) || !!chat });
+// THE FADE IS A SWITCH'S (the rail walk, 2026-11-12): a section opened by a switch fades its words in once its slot has widened (TaskPage
+// SECTION); the one an item is FIRST drawn on draws at once - the fade ran there too, and every Next and row click drew the next task's
+// header over an empty body for ~0.4s. `memo`: the page's own record, kept per item (`of`); `home`: the section it opens on, where known
+// (else its first one drawn). Returns the next record; its `moved` says whether the open section fades.
+export const sectionFade = (memo, open, of, home = null) => (!memo || memo.of !== of || memo.first == null
+  ? { of, first: home ?? open, moved: false }
+  // ...and the page's OWN move home is no switch (the bug hunt, 2026-11-12: a job just made was laid on Came from before its chat was read,
+  // then homed on the chat and faded it in over ~0.4s of empty body): it becomes the section first drawn
+  : open != null && open === home && open !== memo.first && !memo.moved ? { ...memo, first: open }
+  : { ...memo, moved: memo.moved || (open != null && open !== memo.first) });
 // ...a closed tab says MORE than its name (the owner, 2026-10-27: "maybe a little smaller and have more summary on each one"): three or four
 // short lines, each clamped so a tab never scrolls. Words quoted are somebody's own; each line only where there is something to say.
 // ...and read like a book's SPINE (the owner, 2026-10-27): its `lines` at the top under the name, its `foot` - the one status line - at the

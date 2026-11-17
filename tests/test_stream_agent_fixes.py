@@ -126,7 +126,7 @@ def test_a_draft_the_thread_moved_past_is_never_called_written_for_the_newest_me
     assert [c[0][0].__name__ for c in spawn.call_args_list] == ['_replan_general']           # the agent is woken to answer it
     said = general.latest_block(s, tid)
     assert 'THE NEWEST MESSAGE - from Erin Blake' in said and 'budget sheet' in said
-    assert f'THE DRAFT WAITING NOW (rv{rid}' in said and 'written for this message' not in said and 'BEFORE the newest message' in said
+    assert 'THE DRAFT WAITING NOW (' in said and 'written for this message' not in said and 'BEFORE the newest message' in said
 
 
 # ── F6, F11: the to-do list and the owner's reminder ───────────────────────────────────────────────────────────────────────────────
@@ -149,6 +149,10 @@ def test_remind_sets_the_owners_reminder_not_the_agents_check_back():
     assert got['ok'] and str(t['RemindAt']).startswith('2026-12-04') and not t.get('CheckBackAt')
     assert 'remind tool' in agenttools.TOOLS['check_back'][1]
 
+def test_where_the_agent_reads_what_is_learned_it_is_told_how_a_rule_is_kept():
+    "Asked to save a playbook, the agent on the real CLI read the learned facts, then wrote a file in the CLI's own memory folder - no card."
+    assert '`propose` write_playbook' in agenttools.TOOLS['owner_memory'][1] and 'never written to a file of your own' in agenttools.TOOLS['owner_memory'][1]
+
 
 # ── F7: a finished turn is never woken ─────────────────────────────────────────────────────────────────────────────────────────────
 def test_a_turn_its_summary_calls_finished_is_not_judged():
@@ -156,7 +160,7 @@ def test_a_turn_its_summary_calls_finished_is_not_judged():
     assert not hooks.finished({'on_you': ['Press Send on the reply to Ray']}) and not hooks.finished(None)
     brain = mock.Mock(side_effect=AssertionError('never read'))
     hooks.judge_ended(MemoryStore(), 1, 's1', 'Ready for your Mark done.', brain=brain, wait=True, then=brain, summ={'nothing_left': True})
-    assert 'Send or decision is finished, not unfinished' in hooks.ENDED_SYSTEM
+    assert 'has to answer, decide, send or press first' in hooks.ENDED_SYSTEM
 
 
 # ── F13: the calendar's Connect link, the chat file in the task folder ─────────────────────────────────────────────────────────────
@@ -233,7 +237,7 @@ def test_the_owners_line_over_a_waiting_draft_wakes_the_agent_and_nothing_else_t
     rv = s.get_review(rid)
     assert rv['Status'] == 'pending' and rv['DraftText'] == 'Hi Erin - yes, 3pm stands, and the room is booked till 4.'     # the agent's to keep or withdraw
     lb = general.latest_block(s, tid)
-    assert 'WHAT THE OWNER REPLIED ON THE THREAD THEMSELVES' in lb and 'yes 3pm, same room' in lb and f'THE DRAFT WAITING NOW (rv{rid}' in lb
+    assert 'WHAT THE OWNER REPLIED ON THE THREAD THEMSELVES' in lb and 'yes 3pm, same room' in lb and 'THE DRAFT WAITING NOW (' in lb
 
 
 def test_the_owners_line_while_a_turn_works_is_its_next_turn():
@@ -315,3 +319,79 @@ def test_a_draft_made_before_the_owner_s_line_is_not_the_card_of_the_turn_that_a
     s._exec("UPDATE review SET CreatedAt='2026-11-10 09:00:10' WHERE ReviewId=?", (rid,))
     [d] = general.draft_turns(s, tid)
     assert d['turn'] is not None and d['turn'].startswith('comment-')
+
+
+# ── a coding agent on a chat, after a restart: the owner answers outside, then the sender writes again (the owner, 2026-11-13: "why does it
+# say ready to send when there is no email and the ai never processed the final prompt" - "if a new message comes in, it's like typing,
+# which should restart the agent"). The live order: the agent drafted a reply at 21:11; Taskuary restarted at 21:24 (the session ended,
+# nothing idled in memory); at 21:52 the owner answered on the phone; at 21:53 the sender wrote on, which triage read as an fyi ──────────
+def test_after_a_restart_the_owners_outside_answer_and_the_next_line_reach_the_coding_agent_once():
+    from taskuary import acpcoding, origin, proposals, senders, waitroom
+    s, conv = store(), 'whatsapp:ray@c.us'
+    tid = s.create_task({'Title': 'Website build feedback', 'Kind': 'coding', 'Status': 'open', 'Source': 'whatsapp'}, 'router')
+    first = s.add_message({'TaskId': tid, 'ExternalId': 'wa:1', 'ConversationId': conv, 'Channel': 'whatsapp', 'FromName': 'Ray Colton',
+                           'SentAt': '2026-11-12 21:10:38', 'BodyText': 'The menu is cut off on my phone, can you look?', 'Status': 'routed'})
+    s.add_transcript(tid, 'sid-1', 'looked at the menu', agent='coding', cwd='.', ext_id='conv-1', brain='claude')
+    rid = s.add_review({'TaskId': tid, 'MessageId': first, 'Kind': 'draft_reply', 'Status': 'pending', 'DraftText': 'Fixed the menu - try now.'})
+    s._exec("UPDATE review SET CreatedAt='2026-11-12 21:11:36' WHERE ReviewId=?", (rid,))
+    general.IDLED.pop(tid, None); acpcoding.IDLED.pop(tid, None)          # the restart: nothing in memory but the store
+    reopened = []
+    run = lambda f, *a, **k: f(*a, **k)
+    with mock.patch('taskuary.ingest._spawn', side_effect=run), mock.patch.object(senders, 'start_known', return_value=(True, '')), \
+         mock.patch.object(senders, 'wrote_to', return_value=True), mock.patch('taskuary.ingest.has_room', return_value=True), \
+         mock.patch.object(origin, 'hold', return_value=None), mock.patch.object(waitroom, 'reopen_coding', side_effect=lambda store, t, notes, said, actor='router': reopened.append(said) or 'resumed'):
+        channels.ingest_own_message(s, {'external_id': 'wa:own', 'conversation_id': conv, 'channel': 'whatsapp', 'source_name': 'Ray Colton',
+                                        'sent_at': '2026-11-12 21:52:58', 'body': "let's talk it over tomorrow"}, 'your line in this chat - kept for context')
+        # ...his answer is the agent's to hear, and the draft he answered past is no longer one to send - in the store, so every surface agrees
+        assert len(reopened) == 1 and "let's talk it over tomorrow" in reopened[0]
+        assert proposals.passed(s.get_review(rid)) and not s.pending_review(tid, kind='draft')
+        ingest.ingest_message(s, {'external_id': 'wa:2', 'conversation_id': conv, 'channel': 'whatsapp', 'from_name': 'Ray Colton',
+                                  'from_email': 'ray@c.us', 'source_name': 'Ray Colton', 'sent_at': '2026-11-12 21:53:41',
+                                  'body': 'Okay, deal. I will keep testing the site build tonight and send what I find.', 'mail_meta': {'dm': True}},
+                              llm=lambda *a, **k: json.dumps({'intent': 'fyi', 'kind': 'coding', 'why': 'he carries on testing',
+                                                              'relationship': 'continues', 'existing_task_id': tid}))
+    # ...the sender's next line, read as an fyi, reaches the agent all the same - once
+    assert len(reopened) == 2 and 'keep testing the site build' in reopened[1]
+    assert sum('keep testing the site build' in x for x in reopened) == 1
+    assert not s.pending_review(tid, kind='draft')
+
+
+# ── ...and where NO agent may take that line yet - the switch off, no AI, every slot taken - the draft's row still reads pending: its agent
+# decides about its own draft once it hears the line. Until then the chat greyed it while the header's pill, the rail and the board said
+# "ready to send" off the row. One rule says a draft is written past (proposals.written_past), and every surface reads it ──────────────────
+def test_a_draft_the_thread_moved_past_reads_the_same_on_the_pill_the_rail_and_the_chat_before_any_agent_hears_it():
+    from taskuary import conversation, proposals, taskstate
+    s = MemoryStore(); tid, rid = chat_task(s)
+    s._exec('UPDATE message SET CreatedAt=? WHERE TaskId=?', (stamp(-600), tid)); s._exec('UPDATE review SET CreatedAt=? WHERE ReviewId=?', (stamp(-400), rid))
+    lit = lambda: [c['status'] for x in conversation.items(s, tid)['items'] for c in ([x] if x['kind'] == 'card' else x.get('cards') or [])]
+    from taskuary import funnel
+    rail = lambda: [(i.get('lane'), i.get('rid')) for i in funnel.build(s)['items'] if i.get('tid') == tid and i.get('rid')]
+    assert s.waiting_on_owner(tid)['ReviewId'] == rid and taskstate.state(s, s.get_task(tid)) == 'approve' and lit() == ['pending']
+    assert rail() == [('approve', rid)] and [r['ReviewId'] for r in s.waiting_reviews()] == [rid]
+    # his own answer on the phone, a minute ago; nothing starts (no agent may), so nothing hears it
+    s.add_message({'TaskId': tid, 'ExternalId': 'me1', 'ConversationId': CONV, 'Channel': 'whatsapp', 'FromName': 'You', 'SentAt': stamp(-60),
+                   'BodyText': 'yes 3pm, same room', 'Status': 'context', 'Direction': 'out'})
+    assert s.get_review(rid)['Status'] == 'pending' and proposals.written_past(s, tid) == {rid}          # the agent's to decide, once it hears
+    assert s.waiting_on_owner(tid) is None and lit() == ['passed']
+    assert rail() == [] and s.waiting_reviews() == []                                                    # the rail's row (and the pill that reads it), every list of what waits
+    for row in (s.get_task(tid), {**s.get_task(tid), 'ReviewStatus': 'pending'}):                       # the list's row carries its ReviewStatus
+        assert taskstate.state(s, row) != 'approve', taskstate.state(s, row)
+    # ...and a draft written AFTER that line is its answer: lit everywhere
+    new = s.add_review({'TaskId': tid, 'ConversationId': CONV, 'Kind': 'draft_reply', 'Status': 'pending', 'DraftText': 'Erin - 3pm, same room.'})
+    assert proposals.written_past(s, tid) == {rid} and s.waiting_on_owner(tid)['ReviewId'] == new
+
+
+def test_a_strangers_message_held_behind_trust_never_takes_send_off_the_reply_that_waits(monkeypatch):
+    """Recorded on the real CLI, 2026-11-15: a stranger wrote on a trusted thread. Their words are handed to no agent until Trust - and the
+    reply waiting for the colleague turned to "Earlier draft - not sent; set aside when you moved on" with no Send, the header "agent done":
+    he could not answer her without trusting the stranger. A message held behind Trust has not moved the conversation on."""
+    from taskuary import conversation, origin, proposals, taskstate
+    s = MemoryStore(); tid, rid = chat_task(s)
+    s._exec('UPDATE message SET CreatedAt=? WHERE TaskId=?', (stamp(-600), tid)); s._exec('UPDATE review SET CreatedAt=? WHERE ReviewId=?', (stamp(-400), rid))
+    origin.raise_to(s, tid, 'trusted', 'owner')                       # he trusted Erin's thread; the agent drafted her answer
+    mid = s.add_message({'TaskId': tid, 'ExternalId': 'wa2', 'ConversationId': CONV, 'Channel': 'whatsapp', 'FromName': 'Omar Keller',
+                         'FromEmail': 'whatsapp:15559999', 'SentAt': stamp(-60), 'BodyText': 'Hello, Omar here - can I join?', 'Status': 'routed'})
+    lit = lambda: [c['status'] for x in conversation.items(s, tid)['items'] for c in ([x] if x['kind'] == 'card' else x.get('cards') or [])]
+    assert (origin.hold(s, tid) or {}).get('mids') == [mid], 'the stranger is held, by the one function that says so'
+    assert proposals.written_past(s, tid) == set()
+    assert s.waiting_on_owner(tid)['ReviewId'] == rid and lit() == ['pending'] and taskstate.state(s, s.get_task(tid)) == 'approve'

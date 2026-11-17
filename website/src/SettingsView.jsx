@@ -45,11 +45,12 @@ import { RecentlyDeleted, UndoLine, removeNow } from "./Removed.jsx";
 import { normalizeBrainOptions } from "./brainOptions.js";
 import { WORKING_ROWS } from "./workingNumbers.js";
 import { mailboxChoices, mailboxValue } from "./ruleMailbox.js";
-import { ABOUT_SECTIONS, AUDIT_SECTIONS, secId, pageId, scrollToSection, sectionOffset, SCROLL_TOP } from "./settingsMap.js";
+import { ABOUT_SECTIONS, AUDIT_SECTIONS, onePage, secId, pageId, scrollToSection, sectionOffset, SCROLL_TOP } from "./settingsMap.js";
 import MenuBookIcon from "@mui/icons-material/MenuBook";
 import DocsView, { OPERATOR_DOCS } from "./DocsView.jsx";
 import RoleStart from "./RoleStart.jsx";
 import LinesSetting from "./LinesSetting.jsx";
+import TrustedSenders from "./TrustedSenders.jsx";
 import DetailSlider, { chatDefaultsChanged } from "./DetailSlider.jsx";
 import { asLevel } from "./chatDetail.js";
 import { label as btnLabel } from "./buttons.js";
@@ -436,7 +437,7 @@ const PAGES = {
   docs: { title: "Docs", icon: MenuBookIcon, desc: "The documents the system writes from and writes to — how you sound, what triage is told, and what it has learned." },
   config: { title: "Configuration", icon: TuneIcon, desc: "How mail is sorted, replies, agents and display - how Taskuary behaves." },
   policies: { title: "Mail rules", icon: AltRouteIcon, desc: "Rules the AI always follows — ignore a sender, escalate, auto-answer." },
-  phone: { title: "Phone & chats", icon: SmartphoneIcon, desc: "The chats that reach Taskuary from outside — your Assistant on WhatsApp or Telegram, and in Developer mode the chats that talk to your coding agents." },
+  phone: { title: "Phone & chats", icon: SmartphoneIcon, desc: "The chats that reach Taskuary from outside — your Taskuary chat on WhatsApp or Telegram, and in Developer mode the chats that talk to your coding agents." },
   audit: { title: "Activity log", icon: VerifiedIcon, desc: "Who did what, when — a record of every action, and a check that proves nobody edited it." },
   updates: { title: "Updates", icon: SystemUpdateAltIcon, desc: "Which build is running, which is the latest release, and one button that installs it and reopens — connections and settings untouched." },
 };
@@ -774,7 +775,7 @@ function SettingsPages({ q, setQ, onNavigate, onJump, onSections, docSel, setDoc
   const after = {
     Sharing: panel("panel:sharedlinks", <SharedLinks />),
     Replies: panel("panel:handsig", <HandSignature />),              // the signature forms are signed with sits beside the one under the email
-    "Agent permissions": <>{panel("panel:signins", <SavedSignins />)}{panel("panel:sendfilter", <SendFilter />)}</>,
+    "Agent permissions": <>{panel("panel:trusted", <TrustedSenders />)}{panel("panel:signins", <SavedSignins />)}{panel("panel:sendfilter", <SendFilter />)}</>,
   };
   // no coding tool connected: the Coding agent section has nothing to set (capabilities.js)
   // ...and the phone's knobs are Phone & chats' (the owner, 2026-11-06: "it's not clear where that is"), never a Configuration group too
@@ -1242,7 +1243,7 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
     const what = { ...Object.fromEntries(OPERATOR_DOCS.map((d) => [`d:${d.name}`, d.blurb])),
       ...Object.fromEntries((docCat.profiles || []).map((r) => [`p:${r.name}`, r.purpose])),
       "a:new-profile": t("A new worker with its own rules"), "a:manage-profiles": t("Add, rename or remove workers"),
-      "g:how": t("The assistant and the gates a message passes") };
+      "g:how": t("Taskuary's chat and the gates a message passes") };
     let shelf = "";
     const docCards = docsTree(docCat).flatMap((e) => {
       if (e.head) shelf = e.key;
@@ -1262,12 +1263,12 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
     const label = (k) => (k === "you" ? "You" : k === "profiles" ? "Profiles" : k === "memory" ? "Memory" : PAGES[k].title);
     const where = about ? "About you" : "Settings";
     return browse({
-      title: about ? t("About you") : t("Settings"), wide: about && section === "memory", noBack: section === PHONE_PAGE || section === "you",
+      title: about ? t("About you") : t("Settings"), wide: about && section === "memory", noBack: onePage(section, SHELF),
       summary: about ? t("how you sound, how you do your job, and what Taskuary has learned · pick a section") : t("how Taskuary works for you · pick a section"),
       sections: mine.map((k) => ({ key: k, label: t(label(k)) })),
       section: needle ? "" : section,
-      // You is one page: its chip opens it, with no card to press first - and so is Phone & chats
-      onSection: (key) => { setQ(""); onBrowseState?.({ section: key, open: key === "you" || key === PHONE_PAGE ? key : null }); },
+      // a section that is one page opens from its chip, with no card to press first (settingsMap.onePage)
+      onSection: (key) => { setQ(""); onBrowseState?.({ section: key, open: onePage(key, SHELF) ? key : null }); },
       cards: cards.map((c, i) => ({ ...c, key: needle ? `${c.key}-${i}` : c.key,
         onOpen: c.node ? undefined : () => {
           setQ("");
@@ -1291,10 +1292,10 @@ export default function SettingsView({ onNavigate, browse = null, browseState = 
           <Box key={catN} sx={{ display: "none" }}><DocsView onCatalog={onCatalog} catalogOnly /></Box></> : null}</>,
       detail: open && section !== "memory" ? <SettingsPages only={{ page, group: section === "config" ? open : null, knob: browseState.knob || "", at: browseState.at }} q="" setQ={() => {}} onNavigate={onNavigate}
         onJump={() => {}} onSections={setCfgSecs} docSel={docSel} setDocSel={setDocSel} onCatalog={onCatalog} /> : null,
-      onBack: () => (section === "you" || section === PHONE_PAGE ? onBrowseState?.({ section: null, open: null }) : onBrowseState?.({ ...browseState, open: null })),
+      onBack: () => (onePage(section, SHELF) ? onBrowseState?.({ section: null, open: null }) : onBrowseState?.({ ...browseState, open: null })),
       openLabel: !open ? "" : SHELF[section] ? t('the document "{document}" ({where} - {section})', { document: docCards.find((c) => c.key === open)?.title || (open === "d:learned" ? "LEARNED.md" : t("Docs")), where: t(where), section: t(section === "docs" ? "Docs" : "Profiles") })
         : section === "you" ? t("who you are - your name, your identity on each channel, what the agents are told (About you)")
-        : section === PHONE_PAGE ? t("Phone & chats (Settings) - your Assistant chat on WhatsApp or Telegram{dev}", { dev: devMode ? ", and the chats bound to coding agents" : "" })
+        : section === PHONE_PAGE ? t("Phone & chats (Settings) - your Taskuary chat on WhatsApp or Telegram{dev}", { dev: devMode ? ", and the chats bound to coding agents" : "" })
         : t('the settings group "{group}" (Settings)', { group: t(section === "config" ? open : PAGES[section]?.title) }),
       empty: null,
       note: gone ? t("“{group}” is not a settings group any more - here are the ones there are.", { group: browseState.open }) : "",
@@ -1410,7 +1411,7 @@ const AssistantChanges = () => {
   return (
     <Box sx={{ ...card, mb: 2, px: 1.5, py: 1.1, borderLeft: "4px solid var(--tq-border-strong, #6f8a6e)" }}>
       <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-        <Typography sx={{ ...mono, fontSize: 10, fontWeight: 600, letterSpacing: 1.2, color: ACCENT2, flex: 1, textTransform: "uppercase" }}>{t("What the assistant changed")}</Typography>
+        <Typography sx={{ ...mono, fontSize: 10, fontWeight: 600, letterSpacing: 1.2, color: ACCENT2, flex: 1, textTransform: "uppercase" }}>{t("What Taskuary changed")}</Typography>
       </Box>
       {rows.map((r, i) => (
         <Typography key={i} variant="body2" sx={{ fontSize: 12, color: INK, mt: 0.4 }}>

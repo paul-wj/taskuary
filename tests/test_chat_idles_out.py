@@ -68,7 +68,7 @@ class IdleOut(unittest.TestCase):
 
     def test_an_idle_session_closes_quietly_after_the_period(self):
         s, tid = self.s, self.tid
-        before = (chat(s, tid), len(s.list_comments(tid)), len(s.worker_events(tid)), s.get_task(tid)['Status'],
+        before = (chat(s, tid), len(s.list_comments(tid)), len([e for e in s.worker_events(tid) if e["Kind"] not in ws.NOTES]), s.get_task(tid)['Status'],
                   s._rows('SELECT ReviewId, Status FROM review WHERE TaskId=?', (tid,)), s.get_task(tid)['Tags'])
         self.assertEqual(general.idle_sweep(self.ses.last + 30), [])            # not yet: half the period
         with mock.patch.object(clipool, 'close') as closed, mock.patch('taskuary.general.report_note') as report, \
@@ -79,9 +79,11 @@ class IdleOut(unittest.TestCase):
         self.assertIsNone(general.session_for(tid))                                # no agent running...
         self.assertNotIn(self.sid, terminal.SESSIONS)
         self.assertTrue(general.idled(tid, s))
-        after = (chat(s, tid), len(s.list_comments(tid)), len(s.worker_events(tid)), s.get_task(tid)['Status'],
+        after = (chat(s, tid), len(s.list_comments(tid)), len([e for e in s.worker_events(tid) if e["Kind"] not in ws.NOTES]), s.get_task(tid)['Status'],
                  s._rows('SELECT ReviewId, Status FROM review WHERE TaskId=?', (tid,)), s.get_task(tid)['Tags'])
         self.assertEqual(after, before)                                            # ...and nothing else changed: chat, events, state, drafts
+        # ...but its record says how it rests (workerstate.idled, a note every state reader skips): its transcript is no walk-out (taskstate.left)
+        self.assertEqual([e['Kind'] for e in s.worker_events(tid)][-1], 'idled')
 
     def test_an_idled_task_reads_as_the_task_never_stopped_or_saved(self):
         "The stress run, 2026-11-05: the page said 'agent stopped' and the rail 'the assistant's conversation ... is saved' over an idled agent."
@@ -189,6 +191,32 @@ class IdleOut(unittest.TestCase):
     def test_the_dock_never_idles_out(self):
         with mock.patch.object(general, 'is_dock', return_value=True):
             self.assertEqual(general.idle_sweep(self.later()), [])
+
+
+    def test_a_restart_over_a_chat_agent_at_rest_interrupts_nothing_and_the_task_reads_as_it_did(self):
+        """Recorded on the real CLI, 2026-11-13: a chat agent had answered and was at rest ("agent done"); Taskuary was stopped and started.
+        Its task came back tagged interrupted - "agent stopped ... Taskuary restarted after the agent session ended. The task is open again -
+        nobody is working it" - over an answer that had ended minutes before: nothing was cut. Interrupted is a turn the stop cut short
+        (terminal.release_task `cut`); a session at rest that went with the process is the same agent, not running - it reads as it did live,
+        as when it idles out, and a question it had open still waits."""
+        from taskuary import taskstate, terminal
+        s, tid = self.s, self.tid
+        state = lambda: taskstate.state(s, s.get_task(tid))
+        self.assertEqual(taskstate.state(s, s.get_task(tid), self.ses.info()), 'agentdone')
+        n = len(s.list_comments(tid))
+        with mock.patch.dict(terminal.SESSIONS, dict(terminal.SESSIONS)): terminal.shutdown_sessions()        # Taskuary stops...
+        terminal.recover_after_restart(s)                                                                     # ...and starts again
+        self.assertNotIn(terminal.INTERRUPTED, str(s.get_task(tid).get('Tags') or ''))
+        self.assertEqual(state(), 'agentdone')
+        # ...and on its rail row the same - not "agent stopped: its conversation is saved", which only this process's memory of an idle-out held off
+        from taskuary import funnel
+        row = funnel.paused_conversation(s, {'tid': tid, 'lane': 'yours', 'kind': 'task'})
+        self.assertEqual((row.get('lane'), row.get('chat_done'), row.get('paused')), ('yours', True, None), row)
+        self.assertFalse([c['Body'] for c in s.list_comments(tid)[n:] if 'nobody is working it' in c['Body']])  # nothing to say: nothing was cut
+        # ...and a turn the stop DID cut is interrupted, as before
+        ses = general.start_session(s, tid, actor='owner'); ws.record(s, tid, ses.sid, 'working', source='api')
+        with mock.patch.dict(terminal.SESSIONS, dict(terminal.SESSIONS)): terminal.shutdown_sessions()
+        self.assertIn(terminal.INTERRUPTED, str(s.get_task(tid).get('Tags') or '')); self.assertEqual(state(), 'stopped')
 
 
 if __name__ == '__main__': unittest.main()

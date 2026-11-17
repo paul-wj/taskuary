@@ -61,7 +61,17 @@ test("task references use readable sans-serif digits", () => {
     /IBM Plex Sans/);
 });
 
-test("the brain picked in the New sheet and on the task page travels with the role", () => {
-  assert.match(src("NewSheet.jsx"), /brain: brain \|\| null/);
+test("the New sheet reports what the dispatch answered, not what it hoped", () => {
+  // a coding task with no checkout comes back needs_repo with started:false, and this said
+  // "is on it in a live session" over the top of it (the owner, 2026-09-22)
+  const sheet = src("NewSheet.jsx");
+  assert.match(sheet, /import \{ outcomeOf \}/);
+  // the line leads with the ref, so the outcome is read without it: "TQ-0001 — ... - TQ-0001" said it twice (2026-11-03)
+  assert.match(sheet, /setOk\(`\$\{data\.ref\} — \$\{outcomeOf\(\{ \.\.\.out, ref: "" \}\)\.text\}\.`\)/);
+  assert.doesNotMatch(sheet, /setOk\(`\$\{data\.ref\} — \$\{agent\}/);   // never the hoped-for sentence
+});
+
+test("the brain picked on the task page travels with the role; New picks none - Settings names it (TQ-1397)", () => {
+  assert.doesNotMatch(src("NewSheet.jsx"), /brain: brain/);
   assert.match(taskSource(), /brain: run\.brain \|\| null/);
 });

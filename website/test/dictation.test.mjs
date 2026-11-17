@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { browserRecogniser, dictate, dictationError } from "../src/dictation.js";
 
 /* The browser's own voice keeps listening until the owner stops it (the owner, 2026-10-28: "hit the mic and it just turns right off"). */
@@ -65,15 +67,47 @@ test("a blocked microphone ends dictation with one plain line", () => {
   const { sr, got, d } = run();
   sr().onerror({ error: "not-allowed" }); sr().onend();
   assert.deepEqual(got.ends, [dictationError("not-allowed")]);
-  assert.ok(got.ends[0]);
+  assert.match(got.ends[0], /blocked the microphone.*address bar/);
   assert.equal(d.on, false);
   assert.equal(made.length, 1, "not started again");
 });
 
-test("no network says browser voice needs one", () => {
+// Edge 147+ answers "network" with the internet up (2026-11-16): the line names the browser's service, not the owner's connection
+test("a speech service that will not answer says so, and names no fault of the owner's line", () => {
   const { sr, got } = run();
   sr().onerror({ error: "network" }); sr().onend();
-  assert.equal(got.ends[0], dictationError("network"));
+  assert.match(got.ends[0], /browser's speech service is not answering/);
+  assert.doesNotMatch(got.ends[0], /needs an internet connection/);
+});
+
+// EDGE HEARS AND SENDS BACK NOTHING (the owner, 2026-11-16: "the browser's own speech recognition was not working"; Edge 157 live: speechstart,
+// then one final per phrase, each with an empty transcript). The mic stayed red with nothing landing, and the stop blamed the microphone.
+test("a service that settles phrases with no words ends at once and says the service sent none - not the microphone", () => {
+  const { sr, got, d } = run();
+  const s = sr();
+  s.onresult(res(["", true]));
+  assert.deepEqual(got.ends, [], "one blank phrase is not yet a verdict");
+  s.onresult(res(["", true], ["", true]));
+  assert.deepEqual(got.ends, [dictationError("blank")]);
+  assert.match(got.ends[0], /heard you but sent back no words/);
+  assert.equal(d.on, false);
+  assert.ok(s.aborted, "the session is let go");
+  assert.equal(made.length, 1, "not started again");
+});
+
+test("a stop after only blank phrases says the service sent no words", () => {
+  const { sr, got, d } = run();
+  sr().onresult(res(["", true]));
+  d.stop();
+  assert.deepEqual(got.ends, [dictationError("blank")]);
+});
+
+test("a blank phrase among real words changes nothing", () => {
+  const { sr, got } = run();
+  sr().onresult(res(["send it Friday", true]));
+  sr().onresult(res(["send it Friday", true], ["", true], ["", true]));
+  assert.deepEqual(got.finals, ["send it Friday"]);
+  assert.deepEqual(got.ends, []);
 });
 
 test("a browser that ends every session at once gives up with a line instead of spinning", () => {
@@ -118,6 +152,15 @@ test("every error a browser names has a plain line", () => {
   assert.match(dictationError("weird"), /weird/);
 });
 
+test("the mic shows its error beside it and the chat box shows what is being heard and cancels on a send", () => {
+  const ui = readFileSync(fileURLToPath(new URL("../src/ui.jsx", import.meta.url)), "utf8");
+  const av = readFileSync(fileURLToPath(new URL("../src/AssistantView.jsx", import.meta.url)), "utf8");
+  assert.match(ui, /data-tq-mic-err/);
+  assert.match(ui, /<Popper open=\{!!err && !ask/);
+  assert.match(av, /onInterim=\{setHeard\}/);
+  assert.match(av, /micRef\.current\?\.cancel\(\)/);
+});
+
 test("the Taskuary window has no browser voice: WebView2's recogniser has no service behind it", () => {
   assert.equal(browserRecogniser({ webkitSpeechRecognition: FakeSR, pywebview: {} }), null);
   assert.equal(browserRecogniser({ webkitSpeechRecognition: FakeSR }), FakeSR);
@@ -141,4 +184,16 @@ test("a mic failure names its fix: the Windows page it points at, else the voice
   assert.equal(micFix("Taskuary needs Windows' online speech recognition for dictation, and it is off on this computer.").settings, "speech");
   assert.equal(micFix("This browser cannot dictate here - set up a voice AI instead").voice, true);
   assert.equal(micFix("transcription failed"), null);
+  assert.equal(micFix("Windows voice typing did not start - Windows refused the Win+H key press. Click in the box and press Win+H yourself, or set up a voice AI").voice, true,
+    "a refused chord has the voice shelf as its way past");
+});
+
+test("a browser speech service failure offers the computer's other voice, else the voice shelf", async () => {
+  const { micFix } = await import("../src/dictation.js");
+  for (const c of ["network", "blank", "service-not-allowed", "language-not-supported"]) {
+    assert.deepEqual(micFix(dictationError(c), { label: "Groq", choice: "auto" }), { label: "Use Groq", choose: "auto" }, c);
+    assert.deepEqual(micFix(dictationError(c), { label: "Windows voice typing", choice: "windows" }), { label: "Use Windows voice typing", choose: "windows" }, c);
+    assert.equal(micFix(dictationError(c)).voice, true, c);
+  }
+  assert.equal(micFix(dictationError("network"), { label: "Groq", choice: "auto" }).settings, undefined, "never Windows' speech settings for a browser's service");
 });

@@ -22,6 +22,7 @@ import {
   heldOn,
   isTurn,
   isPress,
+  askPlaceholder,
   needsOwner,
   PRESS_PREFIX,
   TURN_PREFIX,
@@ -87,6 +88,8 @@ test("keystrokes carry text for printable keys and Enter, none for chords and sp
   assert.equal(pasteMessages("P@ss!w0rd#$%^&*()").map((m) => m.text).join(""), "P@ss!w0rd#$%^&*()");
   assert.equal(keyMessage("keydown", { key: "a", code: "KeyA", ctrlKey: true }).text, undefined);
   assert.equal(keyMessage("keydown", { key: "Enter", code: "Enter" }).text, "\r");
+  // ...and as a key that types: Chrome drops a rawKeyDown's text, so Enter in a password box sent no form
+  assert.equal(keyMessage("keydown", { key: "Enter", code: "Enter" }).eventType, "keyDown");
   assert.equal(keyMessage("keydown", { key: "Tab", code: "Tab" }).eventType, "rawKeyDown");
   assert.equal(keyMessage("keyup", { key: "a", code: "KeyA" }).eventType, "keyUp");
   assert.equal(keyMessage("keypress", { key: "a", code: "KeyA" }), null);
@@ -235,4 +238,75 @@ test("a chat task's browser shows only when the owner is needed, side by side", 
   assert.equal(quietLayout(380, true), "chip");                                            // a phone's width: the view as a link
   assert.equal(quietLayout(900, true, true), "folded");                                    // the owner's own Fold
   for (const r of [0.3, 0.58, 0.8, NaN]) assert.ok(1 - quietRatio(r) >= CHAT_SHARE - 1e-9 && quietRatio(r) >= 0.3);
+});
+
+// THE CHAT'S WIDTH, SAMPLED EVERY PAINTED FRAME while a browser opened, folded, came back and closed beside it (2026-11-11, a 1600px window):
+// at rest 1049px, at work 1073 (the section's room changed with the session); the pane opening drew 479px in the chat's own column, then 479
+// at the window's left, then 655 - three layouts in 300 ms; folded to its chip, the chat ran 1465px with the task list still gone.
+test("the chat keeps one width at rest and at work, and the browser pane arrives and leaves in one step", async () => {
+  const { readFileSync } = await import("node:fs");
+  const read = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
+  const term = read("TerminalView.jsx"), page = read("TaskPage.jsx");
+  assert.match(term, /const roomFor = quiet && onScreen;/, "the task list gives its room only while the page is on screen - not to a folded chip");
+  assert.match(term, /React\.useLayoutEffect\(\(\) => \{ if \(!roomFor\) return undefined; const who = \{\}; wantRoom\(who, true\); return \(\) => wantRoom\(who, false\); \}, \[roomFor\]\);/, "asked before the paint");
+  assert.match(term, /new ResizeObserver\(\(\[e\]\) => flushSync\(\(\) => setWidth\(e\.contentRect\.width\)\)\);/, "the pane's own width is the frame's");
+  assert.match(page, /bodyRO\.current = new ResizeObserver\(\(\[e\]\) => flushSync\(\(\) => setBodyW\(Math\.round\(e\.contentRect\.width\)\)\)\);/, "and the task's sections are sized for the width the frame has");
+  assert.match(page, /SECTION\(isOpen\("agent"\), openW\("agent"\), sessionView, liveSession, fades\), \.\.\.\(chatPane \? \{ pb: 0\.25, px: 1, pt: 0\.65 \} : \{\}\)/, "a chat's section keeps the live room at rest too");
+  // ...AND IN THE COMMIT THAT MOVES THE LIST (recorded 2026-11-12 as a pane closed: the list back, the chat still 1145 px and its box 197 px past
+  // the window for frames, until the observer spoke): the view hears the fold as it is asked and measures its body before that commit is painted
+  assert.match(page, /useEffect\(\(\) => onRoom\(\(\) => setRoomTick\(\(n\) => n \+ 1\)\), \[\]\);/);
+  assert.match(page, /React\.useLayoutEffect\(\(\) => \{ const el = bodyEl\.current; if \(!roomTick \|\| !el\) return;/);
+  assert.match(page, /if \(w > 0\) setBodyW\(\(b\) => \(b === w \? b : w\)\); \}, \[roomTick\]\);/);
+  // ...and a CODING agent's page is shown him too, while he is needed on it (the recorded coding walk, 2026-11-12: it asked to be signed in, and
+  // with no chat session to name, no page was ever shown) - its session's own browser
+  const chat = readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
+  assert.match(chat, /<SessionPane sid=\{\(!noTools && session\?\.sid\) \|\| \(coding && needNow && cli\?\.sid\) \|\| null\}/);
+});
+
+// THE VIEW OPENING FOR A STEP OF HIS, WATCHED FRAME BY FRAME (the browser round, 2026-11-14): the page was drawn small between bars, then again
+// at its size 0.6 s later; and its address bar read the sign-in page's address over the code page the saved sign-in had moved it on to.
+test("the first picture of a view waits a moment for the pane's shape, and the greeting's tabs name the page", async () => {
+  const { holdFirst, FIRST_WAIT, activeTab, viewportFor } = await import("../src/browserSplit.js");
+  const box = { width: 623, height: 507 }, want = viewportFor(box.width, box.height);
+  assert.equal(holdFirst(false, { w: 1280, h: 720 }, box, 0), true, "a frame at another shape is held while nothing is drawn");
+  assert.equal(holdFirst(false, { w: want.w, h: want.h }, box, 0), false, "the pane's own shape is drawn at once");
+  assert.equal(holdFirst(true, { w: 1280, h: 720 }, box, 0), false, "a page already on the canvas is never held back by a resize");
+  assert.equal(holdFirst(false, { w: 1280, h: 720 }, box, FIRST_WAIT), false, "and never for long: a browser that will not resize still draws");
+  assert.equal(holdFirst(false, { w: 0, h: 0 }, box, 0), false, "a frame that does not say its size is drawn");
+  assert.equal(activeTab({ type: "tabs", tabs: [{ active: false, url: "https://a.example/" }, { active: true, url: "https://b.example/code?x=1" }] }), "https://b.example/code?x=1");
+  assert.equal(activeTab({ type: "tabs" }), "");
+  const { readFileSync } = await import("node:fs");
+  const pane = readFileSync(new URL("../src/BrowserPane.jsx", import.meta.url), "utf8");
+  assert.match(pane, /late\.current = setTimeout\(\(\) => \{ if \(!img\.current\) show\(\); \}, FIRST_WAIT\)/, "a still page sends no second frame: the held one is drawn when the wait is over");
+  assert.match(pane, /else if \(m\.type === "tabs"\) \{ const u = activeTab\(m\); if \(u\) setUrl\(u\);/);
+});
+
+// THE OWNER, 2026-11-15: "you can open multiple sites on same window with tabs" - the view lists the browser's tabs, each by its page's title
+// (its host where the title is only an address), the one the agent works marked; a tab without agent-browser's id is not one to switch to
+test("the browser's tabs read as a strip: title or host, the active one marked, only real tab ids", async () => {
+  const { tabList } = await import("../src/browserSplit.js");
+  const m = { type: "tabs", tabs: [
+    { tabId: "t1", title: "Payworth - Sign in", url: "http://localhost:8931/login", active: false },
+    { tabId: "t2", title: "127.0.0.1:8932", url: "http://127.0.0.1:8932/", active: true },
+    { tabId: "t3", title: "", url: "https://news.example/today", active: false },
+    { tabId: "x;rm", title: "bad", url: "https://bad.example/", active: false }] };
+  assert.deepEqual(tabList(m), [
+    { id: "t1", name: "Payworth - Sign in", url: "http://localhost:8931/login", active: false },
+    { id: "t2", name: "127.0.0.1:8932", url: "http://127.0.0.1:8932/", active: true },
+    { id: "t3", name: "news.example", url: "https://news.example/today", active: false }]);
+  assert.deepEqual(tabList({ type: "tabs" }), []);
+  const { readFileSync } = await import("node:fs");
+  const pane = readFileSync(new URL("../src/BrowserPane.jsx", import.meta.url), "utf8");
+  assert.match(pane, /tabs\.length > 1 &&/, "one tab draws no strip");
+  assert.match(pane, /useState\(\(\) => TABS\.get\(sid\) \|\| \[\]\)/, "a view drawn again for a resize keeps its strip");
+  assert.match(pane, /send\?\.\(\{ type: "tab", tab: t\.id \}\)/, "a press on a tab switches the browser to it, through the view's own socket");
+});
+
+// THE BROWSER AUDIT, 2026-11-15: a step handed over on the page drew "Answer the agent's question..." in the box - it was no question
+test("the box says what waits on him: a sign-in, a step on the page, a press on the page, or a question", () => {
+  assert.equal(askPlaceholder(null), "");
+  assert.equal(askPlaceholder({ request_id: "signin:bank.example" }), "Message the agent - never your password");
+  assert.equal(askPlaceholder({ request_id: `${TURN_PREFIX}ab12` }), "Your step is on the page - or tell the agent here…");
+  assert.equal(askPlaceholder({ request_id: `${PRESS_PREFIX}ab12` }), "Press it on the page - or tell the agent here…");
+  assert.equal(askPlaceholder({ request_id: "q:1" }), "Answer the agent's question…");
 });

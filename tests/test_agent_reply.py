@@ -284,6 +284,7 @@ class ChatAttachTests(NoHook):
         from taskuary import general
         f = self.home / 'scratch' / 'review.xlsx'; f.write_bytes(b'xlsx')
         s = MemoryStore(); tid, _ = task_with(s)
+        s._exec('UPDATE task SET TrustedThrough=? WHERE TaskId=?', (10 ** 9, tid))      # a thread he trusts: an untrusted sender's task starts no agent (origin.hold)
         answer = f'Here it is.\n{selfclose.REPLY_OPEN}\n{OWN}\n[[TASKUARY-ATTACH: {f}]]\n{selfclose.REPLY_CLOSE}'
         with mock.patch.object(general, '_selected', return_value=('api:test', 'Test', 'm')):
             sess = general.GeneralSession(s, tid)
@@ -347,6 +348,29 @@ class SaidOnceTests(NoHook):
         redraft.assert_not_called()
         self.assertEqual(self.notes(s, tid, 'is being written'), [])
         self.assertEqual(len(self.notes(s, tid, 'Closed out the assistant conversation')), 1)
+
+
+def test_the_agent_is_told_where_the_card_ends_otherwise_than_it_wrote():
+    "Asked to sign a reply with the first name only, it wrote that, the card kept the saved signature - and it told the owner 'it is signed Alex'."
+    s = MemoryStore(); s.set_setting('owner_name', 'Alex Doyle', 't')
+    tid, _ = task_with(s)
+    out = wrapup.agent_reply(s, tid, 'Hi Dana, it is fixed.\n\nAlex', 'assistant')
+    assert s.get_review(out['review_id'])['DraftText'].endswith('Alex Doyle') and 'Alex Doyle' in out['ends_with']
+    assert 'ends_with' not in wrapup.agent_reply(s, tid, 'Hi Dana, it is fixed now.\n\nAlex Doyle', 'assistant')      # ...as it wrote it: nothing to say
+
+
+def test_a_letter_with_a_blank_left_to_fill_is_no_card():
+    "A reply filed for the owner's Send read 'Hi [NAME FROM ACCOUNT PAGE]': refused at the door, with the two ways on - a structure check."
+    s = MemoryStore(); s.set_setting('owner_name', 'Alex Doyle', 't')
+    tid, _ = task_with(s)
+    out = wrapup.agent_reply(s, tid, 'Hi [NAME FROM ACCOUNT PAGE],\n\nYour export is fixed.', 'assistant')
+    assert out['ok'] is False and '[NAME FROM ACCOUNT PAGE]' in out['why'] and 'ask the owner' in out['why']
+    assert not s.pending_review(tid, 'draft_reply', live_only=False)
+    assert wrapup.blanks('Date: [date] and {{venue}}') == ['[date]', '{{venue}}']
+    # ...never what a letter may carry in brackets: a link's text, a numbered note, a ticked box, a ticket's tag
+    for fine in ('See [the notes](https://northwind.example/n).', 'As agreed [1], it is done.', '- [x] exported', 'Re: [TQ-0012] export'):
+        assert wrapup.blanks(fine) == [], fine
+    assert wrapup.agent_reply(s, tid, 'Hi Dana, the August export is fixed [1].', 'assistant')['ok']
 
 
 if __name__ == '__main__':

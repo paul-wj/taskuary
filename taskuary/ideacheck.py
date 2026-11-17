@@ -2,7 +2,7 @@
 19 useful - each joined threads, people or a promise - 11 obvious, a third of them one report row said again, and 2 stale, about work
 the owner was steering that very day. So before the model's own lines post:
 
-  quiet kind   a kind of line the owner's record says is under 80% useful (ideagrade.quiet_kinds) is not raised
+  quiet kind   a kind of line the owner's record says is under 80% useful (ideagrade.quiet_kinds) raises one line a day, past the look
   touched      a line about a task or mail the owner acted on in the last day is not raised: they know
   known        the model reads each line again beside the workstream it is under and what the owner last did on it, and answers
                whether the owner would ALREADY KNOW it - a line they would know is not raised
@@ -12,7 +12,7 @@ no AI, a failed call - holds nothing back: the post is what it was before this c
 import json
 from datetime import datetime, timedelta
 from loguru import logger
-from . import ideagrade
+from . import aiusage, ideagrade
 
 TOUCHED_H = 24
 # ...asked as JOIN OR RESTATE (a live replay over the 32 graded ideas, 2026-11-01): "would the owner already know this?" held half the
@@ -39,17 +39,14 @@ def _model(s) -> bool: return str(s.get('key') or '').startswith('idea:') and (s
 
 
 def touched(store, act: dict, hours: int = TOUCHED_H) -> str:
-    """What the owner did on the line's task or mail in the last `hours` ('' when nothing): a press, a reply, a close, a typed turn."""
+    """What the owner did on the line's task or mail in the last `hours` ('' when nothing): a reply, a close, a typed turn - the outcome ledger's own acts."""
     tid, mid = act.get('tid'), act.get('mid')
     if not tid and mid: tid = (store.get_message(int(mid)) or {}).get('TaskId')
     if not tid: return ''
     since = _ago(hours)
     r = store._one("SELECT Kind FROM outcome WHERE TargetKind='task' AND TargetId=? AND Actor IN ('owner','you') AND At>=? ORDER BY Id DESC LIMIT 1",
                    (int(tid), since))
-    if r: return r['Kind']
-    r = store._one("SELECT Pressed FROM advice_press WHERE TargetKind='task' AND TargetId=? AND CreatedAt>=? AND Pressed NOT IN ('next','back') "
-                   "ORDER BY Id DESC LIMIT 1", (int(tid), since))
-    return f"pressed {r['Pressed']}" if r else ''
+    return r['Kind'] if r else ''
 
 
 def _last_acts(store, act: dict, n: int = 4) -> str:
@@ -67,17 +64,21 @@ def _workstream(store, act: dict) -> str:
     return f"{w['name']}: {(W.section(store, ws) or w['about'])[:600]}" if w else ws
 
 
-def check(store, say: list, llm=None) -> tuple:
-    """(the lines to raise, [(key, why it was held)]). The model's own lines only; everything else passes."""
+@aiusage.named('advisor.idea')
+def check(store, say: list, llm=None, memo: str = None) -> tuple:
+    """(the lines to raise, [(key, why it was held)]). The model's own lines only; everything else passes. `memo`: where a clocked look
+    keeps its last verdict - never on Run now."""
     held, keep, ask = [], [], []
     if not store.get_setting(ideagrade.SINCE_KEY):           # the kinds' record starts with the second look (ideagrade.quiet_kinds)
         store.set_setting(ideagrade.SINCE_KEY, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'advisor')
     try: quiet = ideagrade.quiet_kinds(store)
     except Exception as e: logger.debug(f'idea record not read: {e}'); quiet = set()
+    spent = ideagrade.spent_today(store, quiet)          # ...one line a day still goes on to the look below: the bar narrows, never closes
     for s in say:
         if not _model(s): keep.append(s); continue
-        a = s.get('action') or {}
-        if (s.get('kind') or 'idea') in quiet: held.append((s['key'], f"its kind ({s.get('kind') or 'idea'}) is under 80% useful lately")); continue
+        a, k = s.get('action') or {}, s.get('kind') or 'idea'
+        if k in spent: held.append((s['key'], f"its kind ({k}) is under 80% useful lately - one a day")); continue
+        if k in quiet: spent.add(k)
         if (t := touched(store, a)): held.append((s['key'], f'the owner acted on it in the last day ({t})')); continue
         # ...a line the OWNER'S OWN MEMORY asks for (a What to bring up or a Promises line it rests on) and an unkept promise are
         # raised on that word, never second-guessed (the live rail A/B, 2026-11-01: the second look held "bring up the Q4 budget")
@@ -95,8 +96,12 @@ def check(store, say: list, llm=None) -> tuple:
             bring = [raw for raw, _k in lc.lines(store.doc('learned') or '', lc.BRING)]
             user = ('WHAT THE OWNER ASKED TO BE BROUGHT UP:\n' + '\n'.join(bring) + '\n\n' if bring else '') + '\n\n'.join(f"NOTE {n}: {s['text']}\nwhy: {s.get('why') or '-'}\nworkstream: {_workstream(store, s.get('action') or {})}\n"
                                f"the owner last did on it: {_last_acts(store, s.get('action') or {})}" for n, s in enumerate(ask, 1))
-            got = ask_json(llm, SYSTEM, user, want=WANT, need=('known',))
-            known = {int(x) for x in ((got.data or {}).get('known') or []) if str(x).lstrip('-').isdigit()} if got.data is not None else set()
+            # THE SAME NOTES, THE SAME LOOK (`memo`, a clocked run's - llm.standing): a line held here is never posted, so the clock's next
+            # look raised it again and the second look was asked about it again, every half hour all night (2026-11-12)
+            from .llm import standing
+            def look(u): return ask_json(llm, SYSTEM, u, want=WANT, need=('known',)).data
+            got = standing(store, memo, SYSTEM, user, look, small=False)[0] if memo else look(user)
+            known = {int(x) for x in ((got or {}).get('known') or []) if str(x).lstrip('-').isdigit()} if got is not None else set()
             for n, s in enumerate(ask, 1):
                 if n in known: held.append((s['key'], 'the owner would already know it'))
                 else: keep.append(s)

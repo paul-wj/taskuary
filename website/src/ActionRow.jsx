@@ -1,47 +1,13 @@
 // THE ONE ROW ABOVE THE CHAT LINE (layout B): whatever is on the table, its verbs are here - the decision first, the session's verbs
 // next, the rare ones behind More; Nav - Back and Next - is FIRST (the owner, 2026-09-30; Back beside Next 2026-10-27). The card registers them (actionRow.js); this only draws. Centred over the composer,
-// ONE filled button at most - the Advisor's pick, and none before it answers - and a greyed decision says why it is greyed.
+// ONE filled button at most - the task's own recommended move - and a greyed decision says why it is greyed.
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Menu, MenuItem, useMediaQuery } from "@mui/material";
-import { NAV, ROW_HOLD_MS, ROW_STUCK_MS, TYPES, advisedAny, fitRow, navShort, press, shortParts, putSpineVerbs, rowOf, lightOnCard, sameRow, heldOff, heldRow, splitRow, laidOf, useHosted, useRowVerbs, useVerbs } from "./actionRow.js";
-import { adviceNone } from "./words.js";
+import { NAV, ROW_HOLD_MS, ROW_STUCK_MS, TYPES, fitRow, navShort, press, shortParts, putSpineVerbs, rowOf, lightOnCard, sameRow, heldOff, heldRow, splitRow, laidOf, useHosted, useRowVerbs } from "./actionRow.js";
 import { label } from "./buttons.js";
-const shortNext = (w) => (w === label("next", "batch") ? label("next", "batch_short") : w);   // a squeezed desk bar's word for a batch's Next
-import { CONNECT_AI } from "./ConnectAi.jsx";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
-
-// what a refused proposal says on the line: the item moved under the Advisor (409) is not the owner's mistake - the page reads
-// the advice again, and the line says the suggestion is the new one
-export const proposeFailed = (e) => (e?.response?.status === 409 ? { source: "This changed - here's the updated suggestion." }
-  : e?.response?.data?.detail || { source: "That did not go through - try again." });
-
-// THE ADVISOR'S PICK, ON THE ROW AND NOWHERE ELSE (the owner, 2026-10-26: "maybe keep the box but remove the advisor? not sure the advisor
-// is really useful"): the strip that said its line over the row is gone - the lit button does the talking, and the few lines that warn
-// are drawn in the task beside what they are about (advice.taskNote, AdvisorNote). What stays here is the move the row has no button
-// for, joined to the row so it can be lit, and a hidden mark the walks read to tell a decided item from one still being read.
-export function AdvisorNext({ advice, onPropose, onErr = null }) {
-  useLocale();
-  const verbs = useRowVerbs();
-  const [going, setGoing] = useState(false);
-  // A MOVE THE ROW HAS NO BUTTON FOR (Not ours, Take it myself, Chase, Let it go) was hidden, and then got a button of its own beside
-  // the line (2026-10-15) - a second row of buttons. The row owns every button (the owner, 2026-10-16: "the advisor should just
-  // highlight the button in the button row not add new ones"): the move joins the row in its type, on the proposal road the pill
-  // takes, stamped with the revision it was judged at, and the row fills it like any advised button
-  const theirs = verbs.list.filter((v) => !String(v.id).startsWith("advice:"));
-  const lacks = !!(advice?.verb && advice.verb !== "next" && onPropose) && !advisedAny(theirs, advice);
-  useEffect(() => { setGoing(false); }, [advice?.for || advice?.key]);
-  // ...a refusal is said where the page says what went wrong (onErr: the chat's error line) - there is no strip to say it on
-  const run = async (e, anchor) => {
-    setGoing(true);
-    try { await onPropose(advice, anchor || e?.currentTarget || null); } catch (err) { onErr?.(proposeFailed(err)); } finally { setGoing(false); }
-  };
-  // ...it IS the advice, so it is the dark one (rowOf fills it like any advised verb)
-  // ...at the END of its type (group "more"): in front, it pushed the type's own second button into ▾ when the advice landed (2026-10-19)
-  useVerbs("advice", lacks ? [{ id: `advice:${advice.verb}`, label: advice.label, group: "more", tone: "p", disabled: going,
-    title: t("What the Advisor suggests"), run }] : [], lacks);
-  return advice?.verb ? <div hidden data-tq-advice="" data-tq-silent="" data-tq-advice-verb={advice.verb} /> : null;
-}
+const shortNext = (w) => (w === label("next", "batch") ? label("next", "batch_short") : w);   // a squeezed desk bar's word for a batch's Next
 
 // ONE PILL: the moves the width holds, and its own ▾ for the rest (foldsOf) - the move pill unlabelled, Change with its one quiet word
 const PILL = { move: "What to do", change: "Change the task", more: "More" };
@@ -102,11 +68,8 @@ export default function ActionRow({ inline = false, advised: given = null, hold 
   // ...and a held button whose press would do nothing stands greyed until it would (actionRow.heldRow)
   const { verbs, liveOf } = heldRow(kept, now);
   const act = verbs === now ? press : (id, e, a) => { const v = liveOf(id); return v ? press(v.id, e, a, v.of) : undefined; };
-  // a "none" answer lights its one move: no AI lights the row's own Connect an AI where the row has one (a failure's fix named after
-  // its place) - it lit nothing, a move named "ai" no button carries (the design, phase A) - and any other none lights Next
-  const move = advised?.none ? adviceNone(advised.none).move : "";
-  const conn = move === "ai" ? verbs.list.find((v) => v.label === CONNECT_AI && !v.disabled) : null;
-  const pick = advised?.none ? (conn ? { id: conn.id } : move === "ai" ? null : { verb: move || "next" }) : advised;
+  // a "none" answer - nothing decided on - lights Next
+  const pick = advised?.none ? { verb: "next" } : advised;
   // ...LESS THE STAGE MOVES where the task lays its panes: those ride on their pane (actionRow.splitRow) - and on the desk's bar, every move but
   // Back and Next: the rest ride the item's own row (the owner, 2026-11-10: "on bottom the only buttons should be nav")
   const hosted = useHosted();
@@ -115,8 +78,10 @@ export default function ActionRow({ inline = false, advised: given = null, hold 
   // nothing - its button still named the card that drew it before the task page's card was registered again, and press found no verb there)
   const spineBy = verbs === now ? held : Object.fromEntries(Object.entries(held).map(([k, vs]) => [k, vs.map((v) => ({ ...v, of: liveOf(v.id)?.of ?? v.of }))]));
   useEffect(() => { putSpineVerbs(spineBy); });
-  // ...the row's line: a greyed head's reason, else - nothing lit - the state's own sentence (`says`, railStatus.rowWhy)
-  const { ref, decide, agent, more, next, back } = row, why = row.why || says;
+  // ...the row's line: a greyed head's reason, else - nothing lit - the state's own sentence (`says`, railStatus.rowWhy). ON THE ITEM'S OWN
+  // ROW ONLY (the owner, 2026-11-11: "never ever do put text there"): the bar under the page is its buttons and nothing else - a sentence
+  // under Back and Next read as theirs, and the task above already says it
+  const { ref, decide, agent, more, next, back } = row, why = inline ? row.why || says : "";
   // ...a phone's row is Nav, Mark done, as many moves as fit and one ▾ (foldsOf.phone) - the width the page calls a phone (AssistantView)
   const phone = useMediaQuery("(max-width:600px)");
   // the card's own move, advised, is lit on the card (rowOf's `lit`); only the row that is drawn says which

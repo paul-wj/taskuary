@@ -2,7 +2,7 @@
 in as one batch when the agent parks - held while it is working, delivered as the ANSWER when it is asking, and
 reopening a session when the old one ended. All faked: no pty, no CLI.
 """
-import time, unittest
+import threading, time, unittest
 from unittest import mock
 
 from taskuary import terminal, waitroom
@@ -82,6 +82,54 @@ class PhaseTests(unittest.TestCase):
         t._tail = ['Gallivanting… · thinking with high effort', 'esc to interrupt · for agents']
         self.assertEqual(terminal.stable_phase_of(t, at + terminal.PHASE_DWELL + .1), 'working')
         self.assertIsNone(t._phase_candidate)
+
+    def test_a_pane_launched_on_its_prompt_is_at_work_until_its_cli_shows_its_first_turn(self):
+        """The recorded flood on a terminal agent, 2026-11-11: its prompt rode the command line, the CLI took a minute to come up with the bare
+        prompt on screen, and the waiting room typed thirty lines and notes into it before its first turn - none reached the agent."""
+        t = FakeTerm(1, idle=60, tail=['? for shortcuts'])
+        t.status_tail = lambda n=8: t._tail[-n:]
+        at = 500.0; t.launching = at
+        for dt in (0, terminal.PHASE_DWELL + 1, 60): self.assertEqual(terminal.stable_phase_of(t, at + dt), 'working')       # coming up: never parked
+        t._tail = ['Reading totals.py', 'esc to interrupt · for agents']
+        self.assertEqual(terminal.stable_phase_of(t, at + 61), 'working'); self.assertFalse(t.launching)                     # its first turn: from here the screen says
+        t._tail = ['Done.', '? for shortcuts']
+        terminal.stable_phase_of(t, at + 70); self.assertEqual(terminal.stable_phase_of(t, at + 71 + terminal.PHASE_DWELL), 'parked')
+        # ...its first hook event says the same (a CLI whose screen is not read): its prompt was taken
+        from taskuary import hooks
+        h = FakeTerm(1, idle=60, tail=['? for shortcuts']); h.launching, h.store, h.sid, h.bg = at, MemoryStore(), 'run1', {}
+        hooks._events(h, {'hook_event_name': 'UserPromptSubmit', 'prompt': 'look at the totals'}); self.assertFalse(h.launching)
+        # ...and a CLI whose working screen is never recognised is not held for good
+        u = FakeTerm(1, idle=60, tail=['? for shortcuts']); u.status_tail = lambda n=8: u._tail[-n:]; u.launching = at
+        terminal.stable_phase_of(u, at + terminal.LAUNCH_WAIT + 1)
+        self.assertEqual(terminal.stable_phase_of(u, at + terminal.LAUNCH_WAIT + 2 + terminal.PHASE_DWELL), 'parked')
+
+    def test_one_delivery_at_a_time_the_next_only_once_the_last_was_taken(self):
+        """The recorded flood on a terminal agent, 2026-11-11: the waiting room typed a batch into a pane at rest, and while that paste still sat
+        in its box - the bare prompt on screen - typed the next. The TUI ran the two together and the chat drew Taskuary's notes as his line."""
+        s = MemoryStore(); tid = task(s)
+        t = FakeTerm(tid, idle=60, tail=['Done.', '? for shortcuts']); t.sid = 'fake'
+        t.status_tail = lambda n=8: t._tail[-n:]; t._phase_stable = 'parked'; t.waiting = lambda: terminal.stable_phase_of(t) == 'parked'
+        go, put = threading.Event(), t.write
+        t.write = lambda x: (go.wait(5), put(x))                     # the paste, still going in
+        with mock.patch.dict(terminal.SESSIONS, {'a': t}, clear=True), mock.patch.object(terminal, 'SEED_ENTER', .05):
+            self.assertEqual(waitroom.add(s, tid, 'first: the totals are off by a row')['delivered'], 1)
+            # ...its paste is going in, the screen still the bare prompt: the pane is not at rest, and the second waits its turn
+            self.assertEqual(waitroom.state(s, tid)[0], 'working')
+            out = waitroom.add(s, tid, 'second: and the tax line')
+            self.assertEqual((out['delivered'], out['state']), (0, 'working'))
+            self.assertNotIn('second', t.typed())
+            go.set()
+            for _ in range(100):
+                if not t.typing: break
+                time.sleep(.05)
+            # ...taken: latched at work from its Enter (never a second paste inside the dwell), then parked by its own screen, and the next goes in
+            self.assertEqual(terminal.stable_phase_of(t, 900.0), 'working')
+            terminal.stable_phase_of(t, 901.0); self.assertEqual(terminal.stable_phase_of(t, 902.0 + terminal.PHASE_DWELL), 'parked')
+            self.assertEqual(waitroom.deliver(s, tid)['delivered'], 1)
+            for _ in range(100):
+                if not t.typing: break
+                time.sleep(.05)
+            self.assertIn('second', t.typed())
 
     def test_a_real_prompt_has_to_hold_then_publishes_once(self):
         t = FakeTerm(1, idle=60, tail=['Done. Tests pass.', '? for shortcuts'])
@@ -324,12 +372,42 @@ class DripTests(unittest.TestCase):
             self.assertIn('(1) add the null check', typed); self.assertNotIn('rename the flag', typed)
             self.assertIn('2 more notes wait behind this one', typed)               # told, so it does not go looking
             self.assertEqual([w['Note'] for w in s.waiting_notes(tid)], ['rename the flag', 'write the test for the edge case'])
+            self.assertEqual(waitroom.tick(s), 0)                                   # its paste still going in: nothing typed over it
+            for _ in range(100):
+                if not t.typing: break
+                time.sleep(.05)
             t.writes.clear(); t._idle = 3
             self.assertEqual(waitroom.tick(s), 0)                                   # working again: the rest wait
             t._idle = terminal.IDLE_WAITING + 5
             self.assertEqual(waitroom.tick(s), 1); time.sleep(0.4)                  # next stop: exactly one more
             self.assertIn('(1) rename the flag', t.typed()); self.assertIn('1 more note waits', t.typed())
             self.assertEqual(len(s.waiting_notes(tid)), 1)
+
+    def test_what_taskuary_tells_a_working_agent_goes_in_together_and_its_shared_closing_is_said_once(self):
+        """The recorded flood, 2026-11-11: thirty messages came in on a coding task while its agent worked, each a note of Taskuary's with the
+        same closing instructions - dripped one per stop they were thirty turns, and the agent said the same sentence thirty times."""
+        from taskuary import ingest
+        s = MemoryStore(); tid = task(s)
+        t = FakeTerm(tid, idle=3, tail=['Working...'])
+        said = [ingest.replan_turn({'body': f'flood {i} of 9', 'from_name': 'Gail Moreno', 'from_email': 'gail@northwind.example', 'channel': 'email'}) for i in range(1, 10)]
+        with mock.patch.dict(terminal.SESSIONS, {'a': t}, clear=True):
+            for x in said: waitroom.add(s, tid, x, 'router')
+            waitroom.add(s, tid, 'and rename the flag')                                       # ...his own queued note keeps its drip
+            self.assertEqual(len(s.waiting_notes(tid)), 10); self.assertEqual(t.typed(), '')   # working: all of it waits
+            t._idle = terminal.IDLE_WAITING + 5
+            self.assertEqual(waitroom.tick(s), 9)
+            # ...typed on a thread of its own: waited for by what is typed and the pane's own "typing", never by a clock (0.4 s was short on CI)
+            end = time.time() + 20
+            while time.time() < end and ('flood 9 of 9' not in t.typed() or t.typing or len(s.waiting_notes(tid)) > 1): time.sleep(.05)
+            typed = t.typed()
+            for i in range(1, 10): self.assertEqual(typed.count(f'flood {i} of 9'), 1)
+            self.assertEqual(typed.count(' '.join(ingest.REPLAN.split())[:200]), 1)
+            self.assertEqual([w['Note'] for w in s.waiting_notes(tid)], ['and rename the flag'])
+            # ...and more than one message holds waits whole for the next stop: never cut
+            big = [x for x in ({'WId': i, 'CreatedBy': 'router', 'Note': f'{"word " * 300}{i}\n\n{ingest.REPLAN}'} for i in range(9))]
+            fit = waitroom.together([], big)
+            self.assertEqual(len(waitroom.together([{'Note': 'and the tax line?', 'CreatedBy': 'owner', 'line': 7}], big)), len(fit))      # ...behind a line he typed, too
+            self.assertTrue(0 < len(fit) < 9); self.assertLessEqual(len(waitroom.batch(fit, remaining=9 - len(fit))), waitroom.MAX_BATCH - 1)
 
     def test_split_many_strips_bullets_and_joins_continuations(self):
         self.assertEqual(waitroom.split_many('• one\n* two\n3. three\n  still three\n\nfour'), ['one', 'two', 'three still three', 'four'])

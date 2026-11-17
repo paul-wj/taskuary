@@ -26,7 +26,7 @@ PROMOTE_AT = 4          # mirrors learn.REFLECT_SYSTEM: s:4 with evidence from 3
 DECAY_EVERY = 10        # reflections that read the evidence and left a line alone, per point off it
 DECAYS = ('hypothesis', 'proposed')   # only what is still a guess: a promoted rule earned its s, an adopted one is the owner's
 LOG, LOG_KEEP = 'learn_reflect_log', 200   # the dates reflections ran on; 200 is 20 points of decay, past any live score
-_EV = re.compile(r'^(mem|rv|task|out|pr|msg|fs|sv|idea)(\d+)$')
+_EV = re.compile(r'^(mem|rv|task|out|msg|fs|sv|idea|say)(\d+)$')
 
 
 def _today(): return datetime.now().strftime('%Y-%m-%d')
@@ -150,10 +150,6 @@ def _resolve(store, ev_id: str) -> dict:
         about, what = ' '.join(str(about).split())[:90], r.get('Status') or 'review'
         return {'id': ev_id, 'kind': 'review', 'date': r.get('DecidedAt') or r.get('CreatedAt'),
                 'label': (f'{what}: {about}' if about else what) if r else ev_id}
-    if kind == 'pr':                       # a press: no line is learned from one any more (2026-10-25), but a retired line still cites it
-        r = store._one('SELECT * FROM advice_press WHERE Id=?', (n,)) or {}
-        return {'id': ev_id, 'kind': 'press', 'date': r.get('CreatedAt'),
-                'label': f"pressed {r.get('Pressed')} on an item from {r.get('Scope') or '?'}" if r else ev_id}
     if kind == 'msg':                      # an inbound message the owner answered (episodes.py)
         r = store.get_message(n) or {}
         return {'id': ev_id, 'kind': 'message', 'date': r.get('SentAt'),
@@ -170,6 +166,10 @@ def _resolve(store, ev_id: str) -> dict:
         r = store._one('SELECT * FROM idea WHERE IdeaId=?', (n,)) or {}
         return {'id': ev_id, 'kind': 'idea', 'date': r.get('DecidedAt') or r.get('LastSaid'),
                 'label': f"{r.get('Status') or 'idea'}: {(r.get('Text') or '')[:90]}" if r else ev_id}
+    if kind == 'say':                      # a line the owner typed in a task's chat (episodes._owner_said)
+        r = store._one('SELECT * FROM comment WHERE CommentId=?', (n,)) or {}
+        return {'id': ev_id, 'kind': 'said', 'date': r.get('CreatedAt'),
+                'label': f"you wrote: {' '.join(str(r.get('Body') or '').split())[:90]}" if r else ev_id}
     if kind == 'out':
         r = store._one('SELECT * FROM outcome WHERE Id=?', (n,)) or {}
         return {'id': ev_id, 'kind': 'outcome', 'date': r.get('ResolvedAt') or r.get('At'),
@@ -190,8 +190,9 @@ def resolves(store, ev_id: str) -> bool:
         try: return 0 < n <= int(store.get_setting(APPLIED) or 0)
         except ValueError: return False
     q = {'rv': 'SELECT 1 FROM review WHERE ReviewId=?', 'task': 'SELECT 1 FROM task WHERE TaskId=?',
-         'fs': 'SELECT 1 FROM task WHERE TaskId=?', 'out': 'SELECT 1 FROM outcome WHERE Id=?', 'pr': 'SELECT 1 FROM advice_press WHERE Id=?',
-         'msg': 'SELECT 1 FROM message WHERE MessageId=?', 'sv': 'SELECT 1 FROM sent_verdict WHERE MessageId=?', 'idea': 'SELECT 1 FROM idea WHERE IdeaId=?'}[kind]
+         'fs': 'SELECT 1 FROM task WHERE TaskId=?', 'out': 'SELECT 1 FROM outcome WHERE Id=?',
+         'msg': 'SELECT 1 FROM message WHERE MessageId=?', 'sv': 'SELECT 1 FROM sent_verdict WHERE MessageId=?', 'idea': 'SELECT 1 FROM idea WHERE IdeaId=?',
+         'say': 'SELECT 1 FROM comment WHERE CommentId=?'}[kind]
     try: return bool(store._one(q, (n,)))
     except Exception: return False
 
@@ -250,8 +251,12 @@ def graph(store) -> dict:
              for v in lessons(store) if v['ev'] and v['ev'] not in used][:12]
     # THE OWNER'S OWN LINES, beside what was learned (slice 6, 2026-10-25): what they typed - or a person's page gave - is in use as written
     from .learned_cut import SECTIONS, lines as section_lines, subject_of, reads_label, TITLE
+    # ...and A LINE A VERDICT TAUGHT IS NOT ONE THE OWNER WROTE (the memory round, 2026-11-14): untagged like theirs, it read "you wrote this"
+    # with Forget alone - of words the model wrote from a press, and with no Wrong on the one line that most needs it. `taught`: when
+    taught = {str(r['Text'] or '').strip(): r['At'] for r in store._rows("SELECT Text, At FROM learned_history WHERE Action='said' AND Actor LIKE 'verdict:%' ORDER BY Id")}
     own = [{'key': k, 'text': named(raw.strip()[2:].strip() if raw.strip().startswith(('- ', '* ')) else raw.strip()), 'own': True, 'status': 'live',
-            'section_slug': slug, 'subject': subject_of(raw), 'evidence': [], 'steps': [], 'score': None, 'effective': None, 'seen': ''}
+            'section_slug': slug, 'subject': subject_of(raw), 'evidence': [], 'steps': [], 'score': None, 'effective': None, 'seen': '',
+            **({'taught': taught[raw.strip()]} if raw.strip() in taught else {})}
            for slug, head in SECTIONS.items() for raw, k in section_lines(doc, head) if not TAG.match(raw)]
     for l in out: l['subject'] = subject_of(l.get('text'))
     from .capabilities import has_ai

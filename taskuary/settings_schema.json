@@ -9,10 +9,9 @@
     "assistant_ai",
     "assistant_model",
     "judge_ai",
-    "draft_ai",
-    "draft_model",
     "ai_route_mode",
     "ai_route_strong_cap",
+    "auto_ai_daily_calls",
     "phone_assistant"
   ],
   "_panels": "What a section draws as a PANEL rather than as knobs, by the words a person would type for it - search had only the knobs to read, so the saved sign-ins were found by no word at all (the owner, 2026-11-10: \"don't see the vault settings either for saved passwords. where is it?\"). SettingsView wraps each panel under its id and a search hit scrolls to it; search.py offers the same rows in the top search; Connections' Saved sign-ins card reads its words from here. `title` is the panel's own heading, `group` the Configuration section it sits in.",
@@ -25,6 +24,11 @@
       "words": "shared links share links open links revoke link public link who has the link"},
     "panel:agentperms": {"title": "What agents may do in each connected system", "group": "Agent permissions",
       "words": "agent permissions authority read only read and write what agents may do connection access off for agents"},
+    "panel:trusted": {
+      "title": "People and organisations you trusted",
+      "group": "Agent permissions",
+      "words": "trusted senders trust untrust remove trust stranger vouched trusted people trusted organisation domain take back trust"
+    },
     "panel:signins": {"title": "Saved sign-ins", "group": "Agent permissions",
       "words": "saved sign-ins sign in signin sign-in login log in password passwords vault credentials user name site portal"},
     "panel:sendfilter": {"title": "Your own tools that send", "group": "Agent permissions",
@@ -143,23 +147,23 @@
     },
     "concierge_ai": {
       "group": "How mail is sorted",
-      "label": "AI for the Assistant",
+      "label": "AI for Taskuary",
       "type": "brain",
-      "desc": "Which AI speaks on the Assistant tab and in your phone chat, and walks you through the pipe - the Assistant's own brain. auto = your default coding agent, on its faster, lighter model.",
+      "desc": "Which AI speaks in Taskuary's chat here and in your phone chat - Taskuary's own brain. auto = your default coding agent, on its faster, lighter model.",
       "help": "THREE DEFAULTS, side by side in How mail is sorted: the triage brain, the default coding CLI, and this one.\n\nA CLI agent here can ACT - read a task or message, rerun a report, run a data tool - because it has a shell; it runs in its own scratch folder on a light model (Claude: haiku, Codex: low effort, Gemini: flash, or the agent's own 'light model' from Docs → Profiles) and picks its conversation back up turn to turn, so only the first turn pays the start-up. An API connector answers faster but can only talk. Sending, approving and pushing are your buttons whichever speaks."
     },
     "concierge_model": {
       "group": "How mail is sorted",
-      "label": "Model for the Assistant",
+      "label": "Model for Taskuary",
       "type": "text",
-      "desc": "A different model for the Assistant tab, if you want one (e.g. sonnet, or gpt-5.4-mini). Blank = the faster, lighter default. Add @low, @medium or @high to set how hard it thinks, e.g. claude-sonnet-5@medium; a Claude model with nothing added thinks at low.",
+      "desc": "A different model for Taskuary, if you want one (e.g. sonnet, or gpt-5.4-mini). Blank = the faster, lighter default. Add @low, @medium or @high to set how hard it thinks, e.g. claude-sonnet-5@medium; a Claude model with nothing added thinks at low.",
       "help": "For a CLI this is its --model, and model@effort sets its reasoning effort (Claude --effort, Codex model_reasoning_effort); for an API connector, its model or deployment name. Changing it starts a fresh CLI conversation."
     },
     "assistant_ai": {
       "group": "How mail is sorted",
       "label": "AI for general agents",
       "type": "brain",
-      "desc": "Which AI works every general task - research, planning, writing, a job with no repository - and answers the floating bubble. Your phone talks to the Assistant, not this.",
+      "desc": "Which AI works every general task - research, planning, writing, a job with no repository - and answers the floating bubble. Your phone talks to Taskuary, not this.",
       "help": "Normally set on the General agent card at the top of this tab; this row is the fallback if that panel cannot load. A CLI here can run tools, drive a browser and post to the wall; an API connector has no shell, so it can only read and write - quicker, and enough for chat. Blank = the first active API connector, else the default agent."
     },
     "judge_ai": {
@@ -169,20 +173,6 @@
       "desc": "Which AI decides whether a finished report waits under Reports, reaches you right away, or goes out.",
       "help": "Normally set on the 'Where reports go' card at the top of this section; this row is the fallback if that panel cannot load. Four yes/nos about a result somebody else wrote, judged against the sentences on the report's own card - it never has to write anything, so a decision model belongs here and a chat model is wasted on it. Blank = the brain that writes each report judges its own run."
     },
-    "draft_ai": {
-      "group": "How mail is sorted",
-      "label": "AI that drafts replies",
-      "type": "brain",
-      "desc": "Which AI writes the replies and messages you approve, and their subject lines. Blank = the triage brain, as before.",
-      "help": "Normally set on the Drafting card at the top of this section; this row is the fallback if that panel cannot load. Every reply used to be written by the triage brain, which wants your cheapest, quickest model; a reply in your voice is worth a better one. Nothing is sent without your press, whichever writes it."
-    },
-    "draft_model": {
-      "group": "How mail is sorted",
-      "label": "Drafting model",
-      "type": "text",
-      "desc": "A different model for drafting, if you want one. Blank = the drafting brain's own light model, as before.",
-      "help": "For an API connector this is its model or deployment name; for a CLI, its --model, and model@effort sets how hard it thinks."
-    },
     "ai_route_mode": {
       "group": "How mail is sorted",
       "label": "Which AI does each job",
@@ -191,6 +181,13 @@
       "optionLabels": {"fixed": "Fixed - the cards", "auto": "Auto - by how hard the work is"},
       "desc": "Auto, the default: triage judges each task quick, normal or hard, and quick work runs on a smaller model, hard work on a stronger one. Fixed runs every job exactly as its card says.",
       "help": "Normally set on the line above the AI cards; this row is the fallback if that panel cannot load. In Auto each card is its job's normal model, and the rules under it say when the quick or the strong model runs instead - each shown as a sentence with its own switch. An AI with only one model thinks less for quick work and harder for hard work instead, where it takes an effort setting (Claude Code, Codex, and the Anthropic, OpenAI and Azure OpenAI API cards); any other AI stays on its one model. An explicit pick - yours, a report's, a workflow's - always wins, and nothing is sent without your press either way."
+    },
+    "auto_ai_daily_calls": {
+      "group": "How mail is sorted",
+      "label": "AI calls a day before automatic work waits",
+      "type": "number",
+      "desc": "Past this many AI calls in a day, agents stop starting and waking by themselves until tomorrow. What you ask for still runs. 1500 by default; 0 = no limit.",
+      "help": "Normally set under TODAY, beside the day's calls and tokens; this row is the fallback if that panel cannot load. It stops a leak - a start on every arrival, a wake that wakes again - from running a whole day unseen. An ordinary busy day is a few hundred calls. While it holds, the bell says so."
     },
     "ai_route_strong_cap": {
       "group": "How mail is sorted",
@@ -210,8 +207,8 @@
       "group": "Advisor",
       "label": "Lines per post, at most",
       "type": "number",
-      "desc": "The Advisor checks in every 30 minutes and on startup (the 'Advisor' report on the Reports tab — edit its prompt for what it watches for, change the cadence, delete it to turn it off) and posts only when it has something to say. How it SPEAKS is COUNSEL.md in Settings → Docs: edit that to change its voice, how bold it is, what it takes a position on. This caps how much one post says. 5 by default.",
-      "help": "One AI call per post, and none when there is nothing new. Every line has a key and a state, so it never says the same thing twice. Talk back under a suggestion to correct it or ask a follow-up; the answer and your correction stay with the idea and inform later checks. 'Follow up' drafts the chase in your voice onto the task — nothing is sent by itself; 'Make it a task' starts the agent. Voice: COUNSEL.md (Settings → Docs); what to watch for: the report's prompt. Without an AI connector the facts still post, in the hub's own words. 'Run now' on the Reports tab's Assistant row posts regardless of the schedule."
+      "desc": "The Advisor checks in every 30 minutes and on startup (the 'Advisor' report under Reports — edit its prompt for what it watches for, change the cadence, delete it to turn it off) and posts only when it has something to say. How it SPEAKS is COUNSEL.md in Settings → Docs: edit that to change its voice, how bold it is, what it takes a position on. This caps how much one post says. 5 by default.",
+      "help": "One AI call per post, and none when there is nothing new. Every line has a key and a state, so it never says the same thing twice. Talk back under a suggestion to correct it or ask a follow-up; the answer and your correction stay with the idea and inform later checks. 'Follow up' drafts the chase in your voice onto the task — nothing is sent by itself; 'Make it a task' starts the agent. Voice: COUNSEL.md (Settings → Docs); what to watch for: the report's prompt. Without an AI connector the facts still post, in the hub's own words. 'Run now' on the Advisor's row under Reports posts regardless of the schedule."
     },
     "assistant_followup_hours": {
       "group": "Advisor",
@@ -233,29 +230,6 @@
       "type": "number",
       "desc": "A thread you wrote on, or a step somebody owes, is 'slipped' - first on your rail, with Chase, Let it go, They answered elsewhere and Remind me - once it has been quiet this many days. For a person the outcome ledger has seen answer three times, their own usual day is used instead. 5 by default.",
       "help": "Someone whose auto-reply says they are away never slips. The day is read from the ledger, never from the mail."
-    },
-    "advisor_events": {
-      "group": "Advisor",
-      "label": "Advise on the item that changed",
-      "type": "switch",
-      "desc": "When an agent stops or asks, a reply arrives, a pull request opens, a task closes, a day is missed or a report lands, the Advisor's model reads the item - looking more up when it needs to - and leaves one line and one verb on that item: the ghost text in the prompt box and the pill where the send arrow sits. On by default.",
-      "help": "Never a row and never a change to the rail's order: the line attaches to the item and shows when the walk reaches it. The verb is one the item already carries; the number beside it is read from the outcome ledger. Off, the Advisor still runs on its schedule."
-    },
-    "advisor_model": {
-      "group": "Advisor",
-      "label": "Model the Advisor reads with",
-      "type": "select",
-      "options": ["standard", "light"],
-      "optionLabels": {"standard": "standard - the brain's own model", "light": "light - quicker and cheaper"},
-      "desc": "The Advisor's model decides every button it lights, reading the whole item. Standard by default; light saves money and reads less well.",
-      "help": "In Auto mode the rules under the AI cards pick the tier instead. The finish check, which reads an agent's finished work, runs on the same model."
-    },
-    "advisor_event_cap": {
-      "group": "Advisor",
-      "label": "Event judgements per hour, at most",
-      "type": "number",
-      "desc": "The Advisor's model reads an item once per change and never more than this many times an hour; past it, the change is noted as dropped and the item simply has no pill. 60 by default.",
-      "help": "The Advisor's notes on an item (the clock menu) say when a judgement was dropped for the cap."
     },
     "assistant_producers": {
       "group": "Advisor",
@@ -517,36 +491,36 @@
     },
     "phone_assistant": {
       "group": "Assistant on your phone",
-      "label": "Chat with the assistant in WhatsApp or Telegram",
+      "label": "Chat with Taskuary in WhatsApp or Telegram",
       "type": "switch",
       "desc": "The default for a channel that has never been asked. Each channel above answers for itself once you set it.",
-      "help": "Name the Assistant chat on the WhatsApp or Telegram card under Connections first. Taskuary then listens only to messages you send in that exact private chat. Other people, other chats and groups cannot command it. This is separate from the Notifications role, so the Assistant chat is not subscribed to ordinary Taskuary alerts.\n\nIt is the SAME walk the Assistant tab runs, on the same conversation and the same pipe: the item on the table stays where it was, a reply you ask for is drafted, and a yes sends it. The choices arrive as a poll on WhatsApp and as buttons on Telegram; typing a choice's number works on both.\n\nThis switch is the standing permission. The Assistant tab's own \"in WhatsApp\" button hands the walk over for a session whether or not it is on; the tab keeps working beside it.\n\nThe chat only ever answers you: Taskuary writes to it only while you are talking to it there (your last message within 30 minutes, until you say stop) - never a reminder, a follow-up or a summary on its own, and not an urgent item either unless you turn on \"Text me urgent items even when I haven't written\".\n\nBecause answers can contain private workspace information, use a chat only you can read — WhatsApp's Message yourself, or your own private chat with the Telegram bot. Off (default) leaves your messages ignored as before."
+      "help": "Name the Taskuary chat on the WhatsApp or Telegram card under Connections first. Taskuary then listens only to messages you send in that exact private chat. Other people, other chats and groups cannot command it. This is separate from the Notifications role, so the Taskuary chat is not subscribed to ordinary Taskuary alerts.\n\nIt is the SAME walk the desktop runs, on the same conversation and the same list of work: the item on the table stays where it was, a reply you ask for is drafted, and a yes sends it. The choices arrive as a poll on WhatsApp and as buttons on Telegram; typing a choice's number works on both.\n\nThis switch is the standing permission. Taskuary's own \"in WhatsApp\" button on the desktop hands the walk over for a session whether or not it is on; the desktop keeps working beside it.\n\nThe chat only ever answers you: Taskuary writes to it only while you are talking to it there (your last message within 30 minutes, until you say stop) - never a reminder, a follow-up or a summary on its own, and not an urgent item either unless you turn on \"Text me urgent items even when I haven't written\".\n\nBecause answers can contain private workspace information, use a chat only you can read — WhatsApp's Message yourself, or your own private chat with the Telegram bot. Off (default) leaves your messages ignored as before."
     },
     "phone_urgent_unasked": {
       "group": "Assistant on your phone",
       "label": "Text me urgent items even when I haven't written",
       "type": "switch",
-      "desc": "Off (default): the Assistant chat stays quiet until you write to it, however urgent something is. On: urgent items may reach it anyway.",
+      "desc": "Off (default): the Taskuary chat stays quiet until you write to it, however urgent something is. On: urgent items may reach it anyway.",
       "help": "Taskuary writes to your own WhatsApp or Telegram chat only while you are talking to it there. Off (the default), that holds for urgent items too: they are shaded on the desktop and wait there.\n\nOn: an urgent item may reach the chat even when you have not written - a move on a task marked urgent, an urgent by-the-way while the walk is handed to the chat, and a report's alert aimed at your own chat. Nothing else changes: reminders, follow-ups, the morning line and summaries still wait until you write. Replies to other people are not affected by this switch."
     },
     "phone_walk_channel": {
       "group": "Assistant on your phone",
-      "label": "Which chat the Assistant tab offers",
+      "label": "Which chat Taskuary offers",
       "type": "select",
       "options": [
         "both",
         "whatsapp",
         "telegram"
       ],
-      "desc": "The \"Walk me through them in ...\" button on the Assistant tab: WhatsApp, Telegram, or both.",
-      "help": "both (default) = a button for each chat that is connected and has an Assistant chat named. whatsapp or telegram = only that one. A chat is offered only once its card under Connections names an Assistant chat, so choosing Telegram before setting it up shows no button until you do."
+      "desc": "The \"Walk me through them in ...\" button in Taskuary's chat: WhatsApp, Telegram, or both.",
+      "help": "both (default) = a button for each chat that is connected and has a Taskuary chat named. whatsapp or telegram = only that one. A chat is offered only once its card under Connections names a Taskuary chat, so choosing Telegram before setting it up shows no button until you do."
     },
     "phone_morning_line": {
       "group": "Assistant on your phone",
       "label": "A morning line in the chat",
       "type": "switch",
-      "desc": "Once a day, the assistant's chat says what is waiting and offers the two ways in: walk me through my tasks, set up a report.",
-      "help": "Off by default: the chat says nothing until you write to it or press Walk me through them. On: the first check after 6:00 sends one line to the Assistant chat on every channel that has one - the count in the pipe and how many are on you, then the two scripts as numbered options, so one reply starts the walk there. Quiet on a day the pipe is empty; never twice in a day.\n\nEven on, it goes only into a conversation you started there in the last 30 minutes: the chat never speaks first."
+      "desc": "Once a day, Taskuary's chat says what is waiting and offers the two ways in: walk me through my tasks, set up a report.",
+      "help": "Off by default: the chat says nothing until you write to it or press Walk me through them. On: the first check after 6:00 sends one line to the Taskuary chat on every channel that has one - the count of what is waiting and how many are on you, then the two scripts as numbered options, so one reply starts the walk there. Quiet on a day nothing is waiting; never twice in a day.\n\nEven on, it goes only into a conversation you started there in the last 30 minutes: the chat never speaks first."
     },
     "vision_enabled": {
       "group": "Attachments & images",
@@ -567,7 +541,7 @@
       "label": "Background sync (minutes)",
       "type": "number",
       "desc": "How often the app checks your connections while it is open. 0 turns it off.",
-      "help": "The server keeps this clock, so it runs whichever tab you are on and whether or not you are looking at the app - it is also what makes a SCHEDULED REPORT fire on time, since reports are checked on the same pass.\n\nIt used to live in the Timeline tab instead: the countdown died the moment you opened Board or Tasks, restarted itself every time you changed a filter, and with the window closed nothing polled at all - so a report set for 8am Monday only ran if somebody happened to be sitting on the Timeline at 8am on Monday.\n\n10 is the default. Lower it if you want mail sooner and do not mind the API calls; 0 turns recurring background polling off. Sync now, startup catch-up, and an action that must refresh chat context can still fetch.\n\nChat connectors (Teams, Slack, Telegram, WhatsApp, iMessage, Discord) also have a separate recurring fast clock - every 30 seconds unless their card says otherwise. 0 here disables both recurring clocks; manual Sync now, startup catch-up, and action-time refreshes remain available."
+      "help": "The server keeps this clock, so it runs whichever tab you are on and whether or not you are looking at the app - it is also what makes a SCHEDULED REPORT fire on time, since reports are checked on the same pass.\n\n4 is the default: an AI provider keeps the sorting instructions it has just read for about five minutes, so a check every 4 lets each new mail reuse them instead of paying for them again. A check that finds nothing new asks no AI. Raise it if a mailbox limits how often it may be read; 0 turns recurring background polling off. Sync now, startup catch-up, and an action that must refresh chat context can still fetch.\n\nChat connectors (Teams, Slack, Telegram, WhatsApp, iMessage, Discord) also have a separate recurring fast clock - every 30 seconds unless their card says otherwise. 0 here disables both recurring clocks; manual Sync now, startup catch-up, and action-time refreshes remain available."
     },
     "startup_sync_days": {
       "group": "Sync & startup",
@@ -591,15 +565,6 @@
       "desc": "The port share links are served on, separate from Taskuary's own. Blank = 7797.",
       "help": "Only the shared pages are served on this port; Taskuary's own port stays on this computer. Change it if another program already uses 7797 - links made before the change stop working, because they name the old port."
     },
-    "mark_read_enabled": {
-      "group": "Sync & startup",
-      "label": "Handled mail, at the source",
-      "type": "select",
-      "options": ["0", "1", "archive"],
-      "optionLabels": {"0": "leave it as it is", "1": "mark it read", "archive": "mark it read, and move handled mail to Archive"},
-      "desc": "What Taskuary does to a message in your real mailbox: nothing, mark it read once the funnel took it in, or that and move it to Archive once it is handled here.",
-      "help": "Leave it (default): Taskuary is a pure reader — your inbox still shows every message bold, so nothing about your mailbox changes because you connected it. Mark it read: anything the funnel ingests is marked read at the source, so the bold rows left over are exactly the ones the hub never saw.\n\nMove handled mail to Archive: everything 'mark it read' does, and once a mail is HANDLED here — its task closed, or its row put down with Handled — it leaves your Inbox for Archive, so the Inbox holds only what is still owed. Outlook moves it to its own Archive folder (Mail.ReadWrite), Gmail takes the Inbox label off (All Mail), and another IMAP mailbox uses its Archive folder when it has one; with none, the mail stays where it is. Mail you handled before choosing this is left alone, and mail nobody has handled is never moved.\n\nWHERE IT APPLIES: Outlook mail (needs the Mail.ReadWrite consent), Gmail/IMAP mailboxes (the \\Seen flag), Slack channels (the read cursor moves to the newest line taken), Teams (Graph marks the whole CHAT read — there is no per-message read state there) and WhatsApp (blue ticks, via the bridge).\n\nWHERE IT CANNOT: Telegram and Discord bots have no read state to set, and the trackers — Jira, Linear, GitHub, Sentry and friends — have nothing to mark. This setting is simply a no-op for them.\n\nMarking always runs AFTER the message is safely stored and is best-effort: a refused permission is logged and never costs you the ingest."
-    },
     "timezone": {
       "group": "Display",
       "label": "Timezone",
@@ -607,19 +572,19 @@
       "desc": "The zone the app's clock speaks. Blank = this machine's local time.",
       "help": "Timestamps are stored in the server machine's local time. Name that zone here and every displayed time wears its label (2:44 PM EDT) — and a browser opened from another timezone still reads the stamps correctly instead of silently reinterpreting them in its own zone.\n\nUse an IANA name (America/New_York, Europe/London, Asia/Jerusalem). Takes effect on the next page load."
     },
-    "concierge_fast": {"group": "Assistant", "label": "Fast mode", "type": "select", "options": ["auto", "on", "off"], "optionLabels": {"auto": "on for Codex, off for Claude", "on": "on", "off": "off"}, "desc": "Runs the Assistant's CLI on its provider's fast tier: Codex's fast service tier, Claude Code's fast mode. By default on for Codex and off for Claude.", "help": "Claude bills fast mode as extra usage, outside your subscription, and runs it only when extra usage is turned on in your Claude account; Codex spends your plan's credits faster. Coding and general agents are not changed."},
+    "concierge_fast": {"group": "Assistant", "label": "Fast mode", "type": "select", "options": ["auto", "on", "off"], "optionLabels": {"auto": "on for Codex, off for Claude", "on": "on", "off": "off"}, "desc": "Runs Taskuary's CLI on its provider's fast tier: Codex's fast service tier, Claude Code's fast mode. By default on for Codex and off for Claude.", "help": "Claude bills fast mode as extra usage, outside your subscription, and runs it only when extra usage is turned on in your Claude account; Codex spends your plan's credits faster. Coding and general agents are not changed."},
     "funnel_hours": {
       "group": "Assistant",
       "label": "How far back your list reaches (hours)",
       "type": "number",
-      "desc": "How far back ordinary mail, reports and fyi enter the pipe the assistant walks you through. Drafts waiting for your yes and agents waiting on you always enter.",
+      "desc": "How far back ordinary mail, reports and fyi enter the list Taskuary walks you through. Drafts waiting for your yes and agents waiting on you always enter.",
       "help": "A first launch must not surface a year of never-triaged mail. Twelve hours is a working day; set it to 48 after a long weekend."
     },
     "funnel_max": {
       "group": "Assistant",
       "label": "Most items on your list at once",
       "type": "number",
-      "desc": "How many items the pipe shows at once. The rest wait their turn and slide in as you clear it.",
+      "desc": "How many items that list shows at once. The rest wait their turn and slide in as you clear it.",
       "help": "Order is kept: an agent waiting on you or a draft for your yes is never the one held back."
     },
     "meeting_grace_minutes": {
@@ -638,7 +603,7 @@
       "group": "Assistant",
       "label": "FYI read together",
       "type": "number",
-      "desc": "How many fyi the assistant puts in front of you at once. 1 to 10. Until you set it, it follows the screen: six on a large one, four on a laptop or a phone.",
+      "desc": "How many fyi Taskuary puts in front of you at once. 1 to 10. Until you set it, it follows the screen: six on a large one, four on a laptop or a phone.",
       "help": "An fyi needs no action, so they come in a batch rather than one at a time. Left alone, the batch is sized to the screen that asks - six where they fit without scrolling, four on a screen under 800 pixels tall or a phone. A number you set here is used on every screen. At 1 they arrive singly, which is the slow read-everything walk; at 10 you clear the noise in one card. Anything outside 1-10 is clamped - a 0 would take the fyi lane out of the walk entirely."
     },
     "chat_keep_days": {

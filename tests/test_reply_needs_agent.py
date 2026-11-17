@@ -65,12 +65,12 @@ def lines(s, tid): return [c['Body'] for c in s.list_comments(tid)]
 # ── the guide says what an agent is for (no model call: the words the model reads) ──────────────────────────────────────────
 def test_the_guide_sends_thinking_reviewing_and_opinions_to_the_general_agent():
     g = ' '.join(triage.SHIPPED.split())
-    assert 'here\'s my draft, let me know your thoughts' in g.lower() and 'what do you think of this plan' in g
+    assert 'giving the owner a view on something there is to read' in g
     general_rule = g.split('- **general** -')[1].split('- **task** -')[0]
-    assert 'thinking, reading, reviewing, research, judgement or an opinion' in general_rule
-    assert 'Here\'s my draft update, let me know your thoughts' in general_rule and 'are general' in general_rule
+    assert 'look up, read, review, research' in general_rule
+    assert 'giving the owner a view on something there is to read' in general_rule
     reply_rule = g.split('- **reply_only** -')[1].split('- **fyi** -')[0]
-    assert 'a yes or no, a time, a confirmation, a quick fact' in reply_rule and 'is not this: it is a task' in reply_rule
+    assert 'a yes or no, a time, a quick fact' in reply_rule and 'judgement or an opinion is a task' in reply_rule
     assert 'their own opinion or decision that someone asked them for' not in g         # an opinion is no longer the owner's own list
     assert 'lean general' in g
 
@@ -79,8 +79,8 @@ def test_the_guide_keeps_banter_off_the_title_and_asks_for_an_offer():
     g = ' '.join(triage.SHIPPED.split())
     assert 'banter or small talk about it' in triage.REFINES and 'keeps its title' in triage.REFINES
     assert 'Banter about the ask' in g and 'adds nothing to do' in g
-    assert triage.OFFER.startswith('- **offer**') and 'I can register you for the webinar' in triage.OFFER
-    assert '"offer": null' in triage.SHIPPED and 'offer' in triage.verdict_schema()['schema']['properties']
+    assert triage.OFFER.startswith('- **offer**') and 'never as done' in triage.OFFER
+    assert '"offer": null' in triage.SHIPPED and 'offer' in triage.verdict_schema()['schema']['properties']['more']['properties']
 
 
 # ── a long draft-for-feedback mail, judged general, goes to the assistant told its job ends in the reply ────────────────────
@@ -247,11 +247,11 @@ def test_a_reply_owed_on_the_owners_own_row_goes_to_the_agent():
 
 
 def test_a_reply_nothing_has_written_is_not_called_a_draft_left_behind():
-    "A second question on a reply nobody has written yet: the review moves to the newest line - and is no stale draft, for there is none."
+    "A second question on a reply nobody wrote yet: the review stays on the line it was raised for (the owner, 2026-11-15) - and is no stale draft."
     s = store(general_auto_enabled='0'); tid = reply_task(s)
     out, went = arrived(s, mail(**{**WORK, 'body': 'Sorry - make that Wednesday?'}), says(intent='reply_only', kind='task', refines=False))
     rv = s.pending_review(tid, kind='draft')
-    assert went == ['reply_to_agent'] and rv['MessageId'] == out['message_id'] and not rv.get('Stale')
+    assert went == ['reply_to_agent'] and rv['MessageId'] < out['message_id'] and not rv.get('Stale')
     assert not any('drafted reply is behind' in x for x in lines(s, tid))
     s.update_review_draft(rv['ReviewId'], 'Tuesday works.', None)                  # ...and one that IS written is behind the next line, as before
     arrived(s, mail(**{**WORK, 'external_id': 'm3', 'sent_at': '2026-10-28 11:00', 'body': 'Or Thursday?'}), says(intent='reply_only', kind='task', refines=False))
@@ -346,6 +346,7 @@ def test_accepting_the_offer_starts_the_assistant_with_that_job():
     from taskuary import server
     s = store(); tid = webinar(s)
     ses = mock.Mock(provider='claude', model=None); ses.info.return_value = {}
+    s._exec('UPDATE task SET TrustedThrough=? WHERE TaskId=?', (10 ** 9, tid))      # a thread he trusts: a stranger's is refused (the test below)
     with mock.patch.object(server, 'store', s), mock.patch.object(general, 'start_session', return_value=ses), \
          mock.patch.object(general, 'history', return_value=[]):
         c = TestClient(server.app)
@@ -421,3 +422,23 @@ def test_a_start_that_fails_before_it_opens_lets_the_hold_go(where):
          mock.patch.object(ingest, where, side_effect=RuntimeError('the queue is unreadable')), pytest.raises(RuntimeError):
         ingest._auto_general(s, tid)
     assert tid not in general.OPENING
+
+
+def test_the_offer_on_a_strangers_held_task_starts_no_agent_and_says_why():
+    """The bug hunt, 2026-11-12: an outsider's payroll notice, never trusted, offered "I could open the approval page"; Yes, do it started
+    a session the hold refused at once, and the task read "agent done" with Mark done lit - no agent had worked it. The press is refused
+    with the hold's own line, nothing is said as accepted, and the offer stays for after Trust."""
+    from fastapi.testclient import TestClient
+    from taskuary import origin, server
+    s = store()
+    out, _ = ingested(s, mail(**INVITE), says(intent='reply_only', kind='task', title='Join the ledger automation webinar tomorrow?',
+                                              summary='Omar Keller invites you to a webinar tomorrow at 11.', offer=OFFER), wrote=False)
+    tid = out['task_id']; assert origin.hold(s, tid), 'the shape needs an untrusted sender'
+    ses = mock.Mock(provider='claude', model=None); ses.info.return_value = {}
+    with mock.patch.object(server, 'store', s), mock.patch.object(general, 'start_session', return_value=ses) as started, \
+         mock.patch.object(general, 'history', return_value=[]):
+        r = TestClient(server.app).post(f'/api/tasks/{tid}/offer')
+    assert r.status_code == 422 and 'not trusted Omar Keller' in r.json()['detail'], r.text
+    assert not started.called and not ses.send_prompt.called
+    assert not [m for m in general.press_lines(s, tid) if 'accepted the offer' in m['content'][0]['text']]
+    assert s.get_task(tid)['Kind'] != 'general' and ingest.offer_of(s, tid) == OFFER

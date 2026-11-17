@@ -87,8 +87,10 @@ export const keyCodeOf = (e) => {
 // Ctrl+V (Cmd+V) is not sent as a key: the page's clipboard is the agent's browser's, empty. The paste event brings the owner's own
 // clipboard instead (pasteMessages).
 export const isPaste = (e) => (e.ctrlKey || e.metaKey) && !e.altKey && String(e.key).toLowerCase() === "v";
+// ENTER IS A KEY THAT TYPES: Chrome sends a form on the character a keyDown carries, and a rawKeyDown carries none - so Enter in a sign-in's
+// password box did nothing and the page stayed up (the recorded browser walk, 2026-11-11). It goes as a paste's line break does (pasteMessages).
 export const keyMessage = (type, e) => {
-  const eventType = type === "keydown" ? (e.key.length === 1 ? "keyDown" : "rawKeyDown") : type === "keyup" ? "keyUp" : null;
+  const eventType = type === "keydown" ? (e.key.length === 1 || e.key === "Enter" ? "keyDown" : "rawKeyDown") : type === "keyup" ? "keyUp" : null;
   if (!eventType) return null;
   const m = { type: "input_keyboard", eventType, key: e.key, code: e.code, modifiers: modifiers(e) };
   const vk = keyCodeOf(e);
@@ -132,6 +134,28 @@ export const viewportFor = (w, h) => {
   const vw = Math.round(Math.max(w < NARROW_PANE ? NARROW_VIEWPORT_W : MIN_VIEWPORT_W, w));
   return { w: vw, h: Math.max(MIN_VIEWPORT_H, Math.round(vw * (h / w))) };
 };
+
+// THE FIRST PICTURE OF A VIEW WAITS FOR THE PANE'S SHAPE (BrowserPane.draw): a frame taken at another shape than the pane asks for is held
+// while nothing is drawn yet, for at most FIRST_WAIT ms from the connection's first frame. `drawn`: a picture is already on the canvas;
+// `frame`: {w, h} of the frame; `box`: the pane's own size; `waited`: ms since the first frame.
+export const FIRST_WAIT = 1200;
+export const holdFirst = (drawn, frame, box, waited) => {
+  const want = box && viewportFor(box.width, box.height);
+  if (drawn || !want || !(frame?.w > 0 && frame?.h > 0) || waited >= FIRST_WAIT) return false;
+  return viewportMoved({ w: frame.w, h: frame.h }, want);
+};
+// the address of the tab the browser says is the active one (its `tabs` message), or ""
+export const activeTab = (m) => String((m?.tabs || []).find((t) => t?.active)?.url || "");
+// THE TABS OF THE TASK'S ONE BROWSER (the owner, 2026-11-15: "open multiple sites on same window with tabs"): {id, name, url, active} per tab
+// from the browser's `tabs` message - named by the page's title, or its host where the title is only its address. [] for a tabs message
+// with none, and the strip draws only for two or more: a one-site task looks as it always did
+export const TAB_ID = /^t\d{1,4}$/;
+export const tabList = (m) => (Array.isArray(m?.tabs) ? m.tabs : []).filter((t) => t && TAB_ID.test(String(t.tabId || ""))).map((t) => {
+  const url = String(t.url || ""), title = String(t.title || "").trim();
+  let host = ""; try { host = new URL(url).host; } catch { /* not an address */ }
+  const bare = !title || title === host || url.includes(title);
+  return { id: String(t.tabId), name: (bare ? host || title || url : title) || "new tab", url, active: !!t.active };
+});
 
 // Dragging the splitter fires a resize every frame; Chrome should not be re-laid-out for six pixels.
 export const viewportMoved = (was, now, tol = 32) =>
@@ -193,6 +217,13 @@ export const isTurn = (asking) => String(asking?.request_id || "").startsWith(TU
 // press is the approval, and Taskuary sees it land
 export const PRESS_PREFIX = "yourturn:press:";
 export const isPress = (asking) => String(asking?.request_id || "").startsWith(PRESS_PREFIX);
+// WHAT THE CHAT'S BOX SAYS WHILE THE AGENT WAITS ON HIM - one function for every ask: a sign-in is typed on the page (never a password here), a
+// step handed over is done on the page (the browser audit, 2026-11-15: "Answer the agent's question..." stood under a step that was no question),
+// and only a question is answered in the box
+export const SIGNIN_PREFIX = "signin:";
+export const askPlaceholder = (asking) => (!asking ? "" : String(asking.request_id || "").startsWith(SIGNIN_PREFIX) ? "Message the agent - never your password"
+  : isTurn(asking) ? (isPress(asking) ? "Press it on the page - or tell the agent here…" : "Your step is on the page - or tell the agent here…")
+  : "Answer the agent's question…");
 
 // A HELD BROWSER ACT of THIS session's browser (browsergate.py), as the view draws it - null for anything else (a shell step, another
 // session's act: those stay on their card in the conversation)

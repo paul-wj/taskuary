@@ -46,6 +46,19 @@ class RulesDocumentsTests(unittest.TestCase):
         self.assertIn('nothing sends or ships', (s.doc('agent') or '').lower())            # seeded like the other operator documents
         self.assertNotIn('{{owner}}', s.doc('agent'))                                     # rendered
 
+    def test_a_held_step_is_said_once_for_every_worker_as_a_hold_and_never_as_a_no(self):
+        """The recorded held step, 2026-11-11: over ACP a step Taskuary holds reaches the model only as the adapter's "refused permission",
+        and the agent said "declined at the permission prompt ... or run this yourself: Remove-Item ..." over its own lit Approve. Every
+        worker is told once what that refusal is and what to say - and to take back a step it no longer needs."""
+        agent = ' '.join((TEMPLATES / 'agent.md').read_text(encoding='utf-8').split())
+        # ...and how one is set up (run it), and that its card says it waits - the agent adds only what it will do once it is pressed (2026-11-12)
+        for needle in ('"refused permission"): nobody said no', 'Never retry it or hand them the command', 'To set a step up, run it',
+                       'never say it was saved, that it waits or that nothing has gone', 'what you will do once it is pressed',
+                       'Withdraw a waiting step or draft you no longer need'): self.assertIn(needle, agent, needle)
+        self.assertNotIn('Taskuary held is his Approve already', (TEMPLATES / 'coding.md').read_text(encoding='utf-8'))      # once: not again per kind
+        from taskuary import shellgate
+        self.assertNotIn('what waits for their Approve', shellgate.HOLD_LINE)              # never the card's own words said back
+
     def test_coding_md_is_only_the_coding_additions(self):
         text = (TEMPLATES / 'coding.md').read_text(encoding='utf-8').lower()
         for needle in ('repositor', 'commit', 'test', 'the wall', 'github'): self.assertIn(needle, text, needle)
@@ -121,6 +134,14 @@ class NoBlanketSoulTests(unittest.TestCase):
         s = MemoryStore()
         self.assertTrue((s.doc('soul') or '').strip())
         self.assertIn('soul', inspect.signature(triage.classify_intent).parameters)
+
+    def test_letters_are_signed_and_a_chat_answer_to_the_owner_never_is(self):
+        """The owner, 2026-11-15 ("yes, both"): Codex signed every chat answer with the owner's name, as SOUL.md's "How we respond" told it
+        ("Sign as ..."). The shipped document says to sign letters and emails, and never an answer in chat to the owner himself."""
+        shipped = (TEMPLATES / 'soul.md').read_text(encoding='utf-8')
+        line = next(l for l in shipped.splitlines() if 'warm-professional' in l)
+        self.assertIn('Sign letters and emails as', line); self.assertIn('never signed', line)
+        self.assertNotRegex(shipped, r'Sign as [A-Z]')
 
     def test_the_triage_role_reaches_triage_and_no_worker(self):
         """The agent walk, 2026-11-10: a coding agent's background opened "You are the funnel between everything inbound and the

@@ -67,3 +67,23 @@ test("a stale reply draft offers a refresh in place of the send", () => {
   assert.match(reviews, /r\.Stale \? \([\s\S]{0,800}btn\("redraft"\)/);
   assert.doesNotMatch(reviews, /r\.Stale \|\| !\(edits/);
 });
+
+// A SHARED DASHBOARD IS DRAWN AS LAST READ (recorded 2026-11-12: each open of the task drew its reply card at "Loading…", then the dashboard
+// landed and everything above it moved up by ~370 px): what was read of it is its first frame the next time, and the read that follows
+// never empties it
+test("a reply card's dashboard is drawn from its last read on its first frame", () => {
+  const s = fs.readFileSync(new URL("../src/ReviewDecision.jsx", import.meta.url), "utf8");
+  assert.match(s, /const \[got, setGot\] = useState\(\(\) => DASHBOARDS\.get\(report\) \|\| null\);/);
+  assert.match(s, /\.then\(\(\{ data \}\) => \{ DASHBOARDS\.set\(report, data\); if \(live\) setGot\(data\); \}\)/);
+  assert.match(s, /\.catch\(\(\) => live && setGot\(\(g\) => g \|\| \{\}\)\)/, "a read that fails leaves what was drawn");
+});
+
+// LATE CONTENT HOLDS ITS ROOM FROM ITS FIRST FRAME (decided 2026-11-12; the sweep's tasks 30 and 32): a dashboard while it is read and with its
+// charts, a turn's picture, table or page, a card's picture and a video - each a fixed height, so nothing above them moves as they land
+test("a card's late content holds its room from its first frame", () => {
+  const read = (f) => fs.readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
+  assert.match(read("ReviewDecision.jsx"), /const room = !got \|\| got\.data \? \{ height: 420 \} : \{ maxHeight: 420 \};/);
+  assert.match(read("publishedPages.css"), /\.tq-published\[data-tq-turn-files\] \.tq-published-page > :not\(\.tq-published-row\):not\(\.tq-published-media\) \{ box-sizing: border-box; height: min\(60vh, 360px\);/);
+  assert.match(read("ActionCard.jsx"), /data-tq-act-image=\{img\.value\}[\s\S]{0,200}height: IMG_MAX, objectFit: "contain"/);
+  assert.match(read("PublishedPages.jsx"), /maxHeight: "70vh", aspectRatio: "16 \/ 9"/);
+});

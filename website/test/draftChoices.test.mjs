@@ -3,8 +3,25 @@
 // Dismiss and a close-out its Not yet - neither is a reply draft. The server still takes "reject" from an old caller.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { rowOf } from "../src/actionRow.js";
 
+const read = (f) => readFileSync(fileURLToPath(new URL(`../src/${f}`, import.meta.url)), "utf8");
+
+test("the draft's decision is Close out, Redraft and Mark done - no Reject, in the row or on the card", () => {
+  const src = read("ReviewDecision.jsx");
+  assert.doesNotMatch(src, /"Reject"/, "no button says Reject");
+  // only a proposal is dismissed; a close-out has Remind me instead (2026-10-02)
+  assert.equal((src.match(/decide\("reject"\)/g) || []).length, 2);
+  assert.match(src, /: proposal \? \[\{ id: no\("reject"\)[^\n]*decide\("reject"\)/);
+  assert.match(src, /\{proposal && proposal\.kind !== "closeout" && <Button[^\n]*decide\("reject"\)/);
+  assert.doesNotMatch(src, /decideBoth\("reject"\)/, "no Not yet: Next keeps it open, Remind me keeps it until a day");
+  assert.match(src, /\{ id: no\("redraft"\), group: "decide"/, "Redraft stands beside Close out, not behind More");
+  assert.match(src, /\{ id: no\("done"\), group: "decide", closes: true[^\n]*run: onMarkDone/, "Mark done is the task's own close");
+  // the task view hands it ITS Mark done - put down at the press, a live session asked first (ac051beb)
+  assert.match(read("TaskPage.jsx"), /<ReviewDecision review=\{pendingReview\} closeout=\{closeoutRv\} toRow=\{inRow\} onMarkDone=\{askFinish\} onSent=\{sent\} closeOnSend onRemind=\{\(e, a\) => remindHere\(steady\(a \|\| e\?\.currentTarget\)\)\}/);
+});
 
 test("the row draws Mark done once: the decision's, with the task's own left out of More", () => {
   const v = (id, group, extra = {}) => ({ id, group, tone: "s", label: id, title: "", disabled: false, why: "", promote: true, lead: false, ...extra });
@@ -17,3 +34,21 @@ test("the row draws Mark done once: the decision's, with the task's own left out
 });
 
 
+test("the walk's reply card offers Redraft over a draft it has", () => {
+  const cards = read("assistantCards.jsx");
+  const reply = cards.slice(cards.indexOf("export function ReplyCard"), cards.indexOf("export function MeetingCard"));
+  assert.match(reply, /\{ verb: "redraft", label: busy === "redraft" \? "Drafting…" : btn\("redraft"\)/);
+  assert.doesNotMatch(reply, /"Reject"/);
+});
+
+test("Send stays off and reads Sent until the page's re-read takes the card away (the owner, 2026-10-26)", () => {
+  const src = read("ReviewDecision.jsx");
+  assert.match(src, /const busy = busyNow \|\| sent;/);
+  assert.match(src, /onSent\) \{ setSent\(true\); setBusy\(false\); await onSent\(\{ closes: closesIt && close && !!data\.reply\?\.ok \}\); return; \}/);
+  assert.match(src, /onSent\) \{\n(\s+\/\/[^\n]*\n)*\s+setSent\(verb === "approve"\); setBusy\(false\); await onSent\(\{ closes: [^\n]+\n\s+said: [^\n]+\}\); return;/);
+  assert.match(src, /busy \? spinning\(simulated \? "Simulating…" : pw\.busy\)/);
+  // ...the pressed button spins while it goes, and once a Send and close has gone "Closing…" stands UNDER it until the task has closed
+  assert.match(src, /const spinning = \(w\) => \(sent \? pw\.done : <><CircularProgress size=\{11\} data-tq-sending=""/);
+  assert.match(src, /\{sent && pressed === "send_close" && <Typography data-tq-closing="" role="status"[^\n]*\n\s+<CircularProgress size=\{11\}[^\n]*\/>Closing…<\/Typography>\}/);
+  assert.match(src, /if \(delivery\.frozen\) setSent\(false\);/, "the review's own delivery line takes over");
+});

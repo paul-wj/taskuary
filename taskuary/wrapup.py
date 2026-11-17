@@ -4,6 +4,7 @@ this closes the loop: the transcript becomes the report, the reply the sender ge
 """
 import json, re, threading
 from loguru import logger
+from . import aiusage
 
 FIELDS = ('determination', 'actions', 'summary')
 
@@ -28,6 +29,7 @@ OUTCOME_ASK = ('\nAlso give "outcome": "did_work|elsewhere" and "elsewhere": "..
                'session said the work is likely in, as it wrote it, or "" when it could not tell; for did_work it is "".')
 
 
+@aiusage.named('summary.report')
 def report_from_transcript(store, task_id: int, transcript: str, agent: str = '', final_message: str = '', said: bool = False) -> dict:
     """The report, written from what is already on screen. The agent is never asked for prose:
     by the time you click Done you are done talking to it, and a transcript cannot argue. No AI
@@ -76,6 +78,7 @@ PAUSE_SYSTEM = (
     'yet" in a field rather than inventing.')
 
 
+@aiusage.named('summary.pause')
 def pause_note(store, task_id: int, transcript: str) -> str:
     """What a paused session knew, in the words the next session needs. A pty has no resumable
     id (no --resume for a TUI), so the note IS the continuity - it gets typed into the next
@@ -227,12 +230,15 @@ def agent_drafted(rv) -> bool:
 
 # AN EARLIER SESSION'S DRAFT IS NOT THE REPLY (the owner, 2026-11-03: "when you continue on general agent it shows the prior reply on bottom
 # that the agent generated. Don't show that reply if it was based off another general session not the latest one"). A draft keeps the sid of
-# the session that wrote it (DraftSid); a newer session holds it out of sight while it works (hold_stale), takes its place when it drafts
-# (agent_reply), and closes it as superseded when it ends without one (terminal.release_held, raise_reply) - closed, never written over, so it
-# reads under Close out's "Not sent" and Earlier rounds and comes back with Bring it back. The owner's own hand on it (an edit, a readdress, a
-# file) makes it theirs: OWNER_SID, never held.
+# the session that wrote it (DraftSid); a newer session's own draft takes its place (agent_reply) - closed as superseded, never written over,
+# so it reads under Close out's "Not sent" and Earlier rounds and comes back with Bring it back. The owner's own hand on it (an edit, a
+# readdress, a file) makes it theirs: OWNER_SID.
+# ...AND UNTIL THEN IT STANDS, WITH ITS SEND (the owner, 2026-11-11: "reply cards should survive untouched"): a new session used to hold it out of
+# sight from its start and close it at its end - after a restart, or a line typed to an agent that had idled out, the card he was about to
+# send lost its Send while the agent said it still waited for it. A waiting reply goes only as it goes while the app is up: a newer draft,
+# the agent's withdrawal, his own answer outside.
 OWNER_SID = 'owner'
-STALE_HOLD = "held - an earlier agent session drafted it; the newer session's reply takes its place"
+STALE_HOLD = "held - an earlier agent session drafted it; the newer session's reply takes its place"      # what a build before that wrote: let go at start-up (terminal.recover_after_restart)
 SUPERSEDED = "superseded - an earlier agent session's draft; a newer session took over"
 _OWNER_HANDS = ('edit_draft', 'envelope', 'attached', 'detached', 'release', 'reopen')
 
@@ -245,18 +251,6 @@ def stale_draft(store, rv, sid=None) -> bool:
     if have: return True
     q = f"SELECT 1 FROM audit WHERE EntityType='review' AND EntityId=? AND Actor=? AND Action IN ({','.join('?' * len(_OWNER_HANDS))}) LIMIT 1"
     return not store._one(q, (rv['ReviewId'], OWNER_SID, *_OWNER_HANDS))
-
-def hold_stale(store, task_id: int, sid=None) -> int:
-    "Every pending reply an earlier agent session drafted, held while the session `sid` works - the count held."
-    rows = store._rows("SELECT * FROM review WHERE TaskId=? AND Status='pending' AND DeliveryClaim IS NULL "
-                       "AND IFNULL(DeliveryState,'') NOT IN ('sending','unknown','sent')", (task_id,))
-    n = 0
-    for rv in rows:
-        if not stale_draft(store, rv, sid): continue
-        store._exec("UPDATE review SET Status='held', Reason=? WHERE ReviewId=? AND Status='pending'", (STALE_HOLD, rv['ReviewId']))
-        store._review_changed(rv['ReviewId']); n += 1
-    if n: store._poke('feed-changed', 'task-changed', task_id=task_id)
-    return n
 
 def supersede(store, rv, actor='agent'):
     "An earlier session's draft closed unsent, its words kept - a newer session's reply is the task's now."
@@ -283,9 +277,9 @@ def an_earlier_turns(store, rv) -> bool:
     return bool(s) and s.get('Text') == rv.get('DraftText')
 
 def sent_replies(store, task_id: int, n: int = 6) -> list:
-    "The replies that went out on this task, newest last: [{review, at, to, text}]."
+    "The replies and emails that went out on this task on the owner's Send, newest last: [{review, at, to, text}]."
     from .continuity import sent_to
-    rows = store._rows("SELECT * FROM review WHERE TaskId=? AND Kind NOT IN ('action','slot') AND (DeliveryState='sent' OR "
+    rows = store._rows("SELECT * FROM review WHERE TaskId=? AND Kind<>'action' AND (DeliveryState='sent' OR "
                        "(DeliveryState IS NULL AND Status IN ('approved','edited','sent'))) AND COALESCE(NULLIF(FinalText,''), DraftText, '')<>'' "
                        "ORDER BY DecidedAt, ReviewId", (task_id,))
     return [{'review': r['ReviewId'], 'at': r.get('DecidedAt') or r.get('CreatedAt'), 'to': sent_to(store, r),
@@ -407,6 +401,18 @@ def _addrs(v) -> list | None:
     return out
 
 
+# A LETTER WITH A BLANK LEFT TO FILL IS NO CARD (the recorded walk, 2026-11-11: a reply filed for the owner's Send read "Hi [NAME FROM ACCOUNT
+# PAGE]" - one press from going out so). A structure check, no reading of meaning: words alone in square brackets or doubled braces, as a
+# template leaves them - never a link's text, a numbered note or a ticked box. The agent is told its two ways on.
+_BLANK = re.compile(r"\[[A-Za-z][A-Za-z '/_-]{2,60}\](?!\()|\{\{[^{}\n]{1,60}\}\}")
+def blanks(text) -> list: return list(dict.fromkeys(m.group(0) for m in _BLANK.finditer(str(text or ''))))
+def blank_why(text) -> str:
+    "'' or what to tell the agent whose letter still holds a blank: fill it from what it can read, or ask the owner the one question."
+    b = blanks(text)
+    return (f"the letter still has a blank left to fill ({', '.join(b[:3])}) - nothing was set up. Fill it from what you can read, or ask "
+            "the owner the one thing it needs and write the letter when you have it.") if b else ''
+
+
 def agent_reply(store, task_id: int, text: str, agent: str = 'agent', run_id: int = None, files=None, follow_up: bool = False,
                 to: str = '', sid: str = None, answers: int | None = None, only: bool = False, cc=None, why_to: str = '') -> dict:
     """Put the agent's reply on the task as the pending draft - the same review the responder would
@@ -424,6 +430,7 @@ def agent_reply(store, task_id: int, text: str, agent: str = 'agent', run_id: in
         if not rv: return {'ok': False, 'why': 'there is no pending reply to attach to - save one with --reply first'}
         return {'ok': True, 'review_id': rv['ReviewId'], **_told(store, rv['ReviewId'], attach_files(store, rv['ReviewId'], files, agent))}
     if not text: return {'ok': False, 'why': "no reply text - put the letter's words in the reply and save it again"}
+    if (why := blank_why(text)): return {'ok': False, 'why': why}
     # THE SAME LETTER TWICE IS A MISTAKE, never a new draft: a resumed session saved its first session's reply again after the
     # owner had sent it, and it went back on the table aimed at the sender's "Thanks!" (2026-10-16) - one press from a resend
     if (sent := already_sent(store, task_id, text)):
@@ -521,8 +528,13 @@ def agent_reply(store, task_id: int, text: str, agent: str = 'agent', run_id: in
         if (env := reply_envelope(store, m, 'reply_to' if only else 'reply_all')):
             if ccs is not None: env = {**env, 'cc': [a for a in ccs if a not in env['to']]}
             store.set_review_envelope(rid, env)
-    from .signatures import agent_signed
+    from .signatures import agent_signed, for_review
+    wrote = str(text or '').strip()
     text = agent_signed(store, store.get_review(rid) or rv, text, m) or text
+    # ...and where the card ends otherwise than the agent wrote it, the answer says how (the recorded walk, 2026-11-11: asked to "sign it
+    # Alex" it wrote that, the card kept the saved block, and it told the owner "it's signed Alex")
+    sig = for_review(store, store.get_review(rid) or rv, m).strip()
+    ends = {'ends_with': f'the owner\'s saved signature ("{" / ".join(sig.split(chr(10)))[:200]}"), in place of any sign-off you wrote'} if sig and not wrote.endswith(sig) else {}
     # ...said once per letter: the same reply saved twice - its marker and its `--reply` in one turn - wrote "agent drafted the reply
     # itself" and "assistant drafted the reply itself" one under the other (the email walk, 2026-10-29)
     same = agent_drafted(rv) and ' '.join(str(rv.get('DraftText') or '').split()) == ' '.join(text.split())
@@ -538,7 +550,7 @@ def agent_reply(store, task_id: int, text: str, agent: str = 'agent', run_id: in
     from .general import own_replies, USER_TYPE
     turn = (store._one('SELECT MAX(CreatedAt) AS at FROM comment WHERE TaskId=? AND ActorType=?', (task_id, USER_TYPE)) or {}).get('at')
     meanwhile = [' '.join(str(x.get('OwnText') or x.get('BodyText') or '').split())[:300] for x in own_replies(store, task_id, turn)] if turn else []
-    return {'ok': True, 'review_id': rid, 'message_id': mid, 'answers': ans or mid, 'to': m.get('FromName') or m.get('FromEmail') or '',
+    return {'ok': True, 'review_id': rid, 'message_id': mid, 'answers': ans or mid, 'to': m.get('FromName') or m.get('FromEmail') or '', **ends,
             **({'owner_wrote_on_the_thread_while_you_worked': meanwhile} if meanwhile else {}),
             **({'recipients': {'to': env.get('to') or [], 'cc': env.get('cc') or []}} if env else {}),
             **({'new_on_thread': new} if new else {}),
@@ -860,7 +872,6 @@ def wrap(store, tid: int, close: bool = True, actor: str = 'owner', sid: str = N
     if not task: raise ValueError('this session is not on a task')
     # a setup session kept no transcript on purpose (secrets were typed into it) and has no report to write
     if task.get('Kind') == aisetup.KIND: return aisetup.finish(store, tid, actor)
-    if task.get('SourceRef') == aisetup.WALK_REF: return aisetup.finish_walk(store, tid, actor)      # a card's walk: its Test was the report
     # ...a coding task's branch is read off the shared checkout NOW, while its HEAD is still the agent's: the close-out's landing question
     # asks about that branch even after another agent switches the checkout (landing.py)
     if str(task.get('Kind') or '').lower() == 'coding':
@@ -1181,10 +1192,6 @@ def raise_reply(store, task_id: int, mid: int, run_id: int, fresh: dict = None, 
     why = f"{did} without writing the reply {owed_to(store, mid, store.held_review(task_id))} is owed - it is the agent's to write"
     if fresh.get('state') == 'changed': why += ' (the thread moved on after the work began - it answers the newest message)'
     if fresh.get('state') == 'unresolved': why += f" (the conversation could not be refreshed: {fresh.get('error')})"
-    # an EARLIER SESSION'S draft is not this session's answer: closed as superseded (its words kept)
-    if (sid := _sid_now(store, task_id)):
-        for rv in store._rows("SELECT * FROM review WHERE TaskId=? AND Status IN ('held','pending')", (task_id,)):
-            if stale_draft(store, rv, sid): supersede(store, rv)
     held = store.held_review(task_id, mid) or store.held_review(task_id)
     # one review per answer (PW-236): the held triage draft, else the pending one an earlier completion
     # event already raised - a repeated completion takes it again, never duplicates it
@@ -1218,7 +1225,7 @@ def raise_reply(store, task_id: int, mid: int, run_id: int, fresh: dict = None, 
 # ...AND THE AGENT IS ASKED FOR IT, ONCE. An agent that ended its run itself (`taskuary --done`) without the reply it owes is told so, by the
 # road every Taskuary word to an agent takes (general.tell) - write it, or say none is needed. Once per reply owed, kept on the review's own
 # audit: an agent that ends again without writing it is not told twice (no loop), and the reply waits as owed, its agent's start lit
-# (advisor.reply_unwritten). A run the owner ended - Stop and save, Done - is not reopened for it: the same reply owed waits for their start.
+# (rulebook.reply_unwritten). A run the owner ended - Stop and save, Done - is not reopened for it: the same reply owed waits for their start.
 OWED = ('TASKUARY: your run ended and {who} is owed a reply that nobody has written. Write only that reply now (propose_reply, or '
         '`taskuary --reply "<text>"`), or if none is needed say why (reply_not_needed, or `taskuary --reply-not-needed "<why>"`). The work '
         'itself is done - nothing else.')

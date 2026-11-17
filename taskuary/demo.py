@@ -34,6 +34,26 @@ def enabled() -> bool:
     return str(os.environ.get(FLAG) or '').strip().lower() in ('1', 'true', 'yes', 'on')
 
 
+# THE DEMO REACHES NOTHING OUTSIDE THIS COMPUTER (the overnight audit, 2026-11-12): its cards are props, and opening a Teams or WhatsApp row,
+# or reading the calendar, sent their invented tenant to Microsoft and filled the bell with real sign-in refusals. One guard under every
+# HTTP call any module makes (requests' Session.request), set when the demo starts - not a check per call site
+OFFLINE = 'This is the demo - it reaches nothing outside this computer, so its cards are not read.'
+LOCAL_HOSTS = ('127.0.0.1', 'localhost', '::1')
+
+def seal() -> bool:
+    "Shut every outside HTTP call for this process (idempotent). True once sealed."
+    import requests
+    from urllib.parse import urlparse
+    real = requests.sessions.Session.request
+    if getattr(real, 'demo_sealed', False): return True
+    def request(self, method, url, *a, **k):
+        if (urlparse(str(url)).hostname or '').lower() not in LOCAL_HOSTS: raise requests.ConnectionError(OFFLINE)
+        return request.real(self, method, url, *a, **k)
+    request.demo_sealed, request.real = True, real
+    requests.sessions.Session.request = request
+    return True
+
+
 # ── the deny list ────────────────────────────────────────────────────────────────────────
 # Written as what the demo MAY do, not as what it may not: a new endpoint is refused until
 # somebody decides it is safe, which is the only way a list like this survives a year.
@@ -46,16 +66,19 @@ ALLOWED_METHODS = {'POST', 'PATCH'}
 # POSTs that change nothing outside the demo's own database, and are the demo itself
 ALLOWED_WRITES = (
     r'^/api/tasks$',                                   # make a task
+    r'^/api/launch-key$',                              # `--link`: a signed-in address for this demo's own page, owner token only
     r'^/api/tasks/\d+$',                               # ...and change it
     r'^/api/tasks/\d+/(comments|waitroom|not-a-task|assistant/(session|messages|stream|cancel|seen))$',
     r'^/api/prompt-(image|file)$',                     # a picture or a file for a prompt: saved in the demo's own home
     r'^/api/messages/\d+/(file|promote|read)$',        # the triage verdicts: the whole funnel
     r'^/api/reviews?/\d+/(hold|drop|edit)$',           # ...but never /send
+    # ...and a card's verdict, judged by its VERB in the handler (refuse_verdict): the page puts a card down by the road it sends one
+    # (/decide), and refused whole, Dismiss on a post answered "nothing is sent" and the card could not be put down (the walk, 2026-11-15)
+    r'^/api/reviews/\d+/decide$',
     r'^/api/reviews/\d+/attachment$',                  # a file onto a draft: copied into the demo's own home, sent nowhere
     r'^/api/board/notes',                              # the wall
     r'^/api/(hub|handbook)',                           # durable Hub posts and compatibility route
     r'^/api/settings$',                                # display preferences
-    r'^/api/advice/press$',                            # what was lit and what was pressed: a row in the demo's own database
     r'^/api/dashboards/tile$',                         # a sentence turned into a tile: nothing saved, only Taskuary's own tables read
     # the checklist's "leave me alone", and the scripted walk - a tour of the app that touches
     # nothing real, which is what a visitor is here for. Its writes are two settings in the demo's
@@ -78,6 +101,7 @@ ALLOWED_WRITES = (
     r'^/api/operations(/[^/]+)?$',
     r'^/api/operations/[^/]+/execute$',
     r'^/api/tasks/\d+/remind$',
+    r'^/api/tasks/\d+/checklist/[^/]+/note$',           # a note on a to-do step: a line in the demo's own database
     # ...and the owner's correction of how hard a task is (the router's chip): a row in the demo's own database. Which AI does each
     # job (/api/ai/route_rules) stays refused, as adopt-brain does: a visitor changing what reads the mail is not a tour
     r'^/api/tasks/\d+/judged$',
@@ -107,17 +131,25 @@ LOCAL_OPS = {'task.complete', 'task.reopen', 'task.defer', 'task.watching', 'ite
 SENDS = 'This is the demo - nothing is sent. In your own Taskuary this is where you approve it and it goes.'
 STARTS = 'This is the demo - the agents here are recordings, so nothing new starts.'
 OFF = 'This is the demo - that would reach something real, so it is switched off. Everything here is invented.'
+NO_AI = 'This is the demo - no AI runs here, so nothing is read or planned again. In your own Taskuary your AI does this.'
 
 # What is refused, and the sentence the visitor sees. Order matters: the first match wins.
 REFUSALS = (
     (r'^/api/(cli|deps|update)(/|$)', 'This is the demo - nothing happens. Its AI tools are pretend, and nothing on your computer is touched.'),
     (r'^/api/connectors', 'This is the demo - these connections are invented, and there is nothing real behind them to change.'),
     (r'^/api/(tools/run|agents/[^/]+/test)', 'This is the demo - nothing runs, because there are no real systems here to run against.'),
-    (r'^/api/(reviews?/\d+/(send|decide)|tasks/\d+/(handoff|clarify)|board/send|messages/\d+/send)', SENDS),
-    (r'^/api/(terminals|agents)(/|$)|^/api/tasks/\d+/(dispatch|code|continue|continue-session|continue-work|resume)$'
+    (r'^/api/(reviews?/\d+/send|tasks/\d+/(handoff|clarify)|board/send|messages/\d+/send)', SENDS),
+    # ...and Trust, whose whole effect is that an agent starts on the sender's words: it read "that would reach something real"
+    # ...and a goal's step sent to an agent, which is a start like any other
+    (r'^/api/(terminals|agents)(/|$)|^/api/tasks/\d+/(dispatch|code|continue|continue-session|continue-work|resume|trust|steps/[^/]+/start)$'
      r'|^/api/messages/\d+/dispatch$|^/api/calendar/prepare$', STARTS),
+    # ...what would ask an AI to read or plan again (a goal's Re-plan): none runs here
+    (r'^/api/tasks/\d+/read-ask$', NO_AI),
     (r'^/api/(sync|ingest|poll|msauth|hooks)', 'This is the demo - no mail is fetched; what you see was written in advance.'),
-    (r'^/api/(doc|soul|semantic|reports?/[^/]*/(run|preview)|dashboards/(compose|preview))','This is the demo - editing your documents and running reports are switched off.'),
+    # ...every press on a report - Run now, Run due now, its switch, Pause - answered as what it is: "would reach something real" stood
+    # under each of them (the walk, 2026-11-15)
+    (r'^/api/(doc|soul|semantic|reports?/([^/]*/(run|rerun|preview)|due)$|sources(/|$)|dashboards/(compose|preview))',
+     'This is the demo - its documents and reports are fixed: editing, running, pausing and switching them are off here.'),
 )
 
 
@@ -133,14 +165,17 @@ def refuse_op(op) -> str:
     if not op: return ''                                    # no such proposal: the handler's own 404 says so
     kind, p = op.get('kind'), op.get('params') or {}
     if kind in LOCAL_OPS or (kind == 'task.create_from_message' and str(p.get('kind') or 'task').lower() == 'task'): return ''
+    # ...a letter's Send is played wherever it is pressed (refuse_verdict): the rail's Send is the card's
+    if kind == 'review.approve' and (st := _store()) is not None and (rv := st.get_review(int(op.get('target') or 0))):
+        return refuse_verdict('approve', rv.get('Kind'))
     if kind in ('review.approve', 'task.clarify', 'task.chase', 'task.handoff', 'task.share', 'task.ask_agent'): return SENDS
     if kind in ('dispatch.prepare', 'agent.continue', 'agent.answer', 'agent.tell', 'agent.stop', 'agents.stop', 'task.create_from_message', 'task.create_from_text', 'calendar.prepare'): return STARTS
     return OFF
 
 
-# A REFUSAL IS AN ACT ON THE ITEM (2026-10-19): the demo said "nothing is sent" and left no trace, so the Advisor's revision never moved
-# and its line kept advising the Send just refused, Send lit. It is left as that act's own row - Status 'refused', the sentence its
-# Error - which advisor.revision covers and advisor.failure says to the model; nothing here can make it go, so it carries no fix.
+# A REFUSAL IS AN ACT ON THE ITEM (2026-10-19): the demo said "nothing is sent" and left no trace, so the item's revision never moved
+# and the Send just refused stayed lit. It is left as that act's own row - Status 'refused', the sentence its Error - which
+# rulebook.revision covers and rulebook.failure reads; nothing here can make it go, so it carries no fix.
 _ACTS = ((r'^/api/reviews?/(\d+)/(?:send|decide)$', 'review', 'review.approve', 'the reply was not sent'),
          (r'^/api/messages/(\d+)/send$', 'message', 'review.approve', 'the reply was not sent'),
          (r'^/api/tasks/(\d+)/clarify$', 'task', 'task.clarify', 'the question was not sent'),
@@ -167,6 +202,28 @@ def refused(store, path: str, why: str) -> str:
                              'Error': why, 'OutcomeJson': json.dumps({**({'what': what} if what else {}), 'cause': 'demo', 'retry': False})})
         return oid
     return ''
+
+
+def refuse_verdict(verb: str, kind: str = 'action') -> str:
+    """'' for a verdict that only puts the card down (it writes the demo's own database) and for a letter's Send, which is PLAYED
+    (pretend_sent); else the sentence: an action approved - a post, a payment, a push - would run."""
+    return '' if not enabled() or verb in ('reject', 'no_reply', 'close_unsent') or verb in ('approve', 'edit') and kind != 'action' else SENDS
+
+
+# SEND IS PLAYED, NOT REFUSED (the owner, 2026-11-15, of the tour's "press Send - nothing leaves the demo": the press drew a red error on the
+# card and "Failed:" on the rail): the letter's own road runs to its end - the card settles, the press is a line in the chat, the task moves
+# on - and the one thing that does not happen is the delivery (verdicts._send_snapshot hands the approved letter here instead of to a
+# mailbox). What the card then says is the page's own line (sentLine.DEMO_SENT), and a recorded line of the agent's follows it (after_send): nothing here is a real agent
+AFTER_SEND = ("That is where your part ends. In your own Taskuary the reply is on its way now, I am told it went, and I watch the "
+              "thread for the answer. Here in the demo nothing left this computer.")
+def pretend_sent(snapshot: dict) -> dict:
+    "What a delivery answers, with nothing delivered: the letter's own channel and people, marked `demo`."
+    env, msg = snapshot.get('envelope') or {}, snapshot.get('message') or {}
+    to = env.get('to') or [x for x in [msg.get('FromEmail') or msg.get('FromName')] if x]
+    return {'channel': env.get('channel') or msg.get('Channel') or 'email', 'to': to if isinstance(to, list) else [to], 'cc': env.get('cc') or [], 'demo': True}
+def after_send(store, tid) -> None:
+    "The recorded agent's line under a played Send; a letter with no task has no chat to say it in."
+    if enabled() and tid: store.add_comment_once(int(tid), 'assistant', 'assistant_agent', AFTER_SEND)
 
 
 def refuse(method: str, path: str, store=None) -> str:
@@ -211,130 +268,6 @@ def _list_line(store) -> str:
     return f"{_n(yours, 'thing is', 'things are')} on you - they lead your rail, under {funnel.SECTION_WORDS['task'].upper()}."
 
 
-# THE ADVISOR, SCRIPTED (B17, 2026-10-17): its prompt says JSON, so it got triage's {"intent": "fyi"} and dropped every answer as
-# "nothing to say" - the demo, where newcomers first meet it, never showed a suggestion. It names the first offered verb that
-# someone waiting makes right, with a plain line - and like the real one says nothing on a newsletter: "Make a task" over an
-# fyi is the wrong suggestion that is worse than none.
-# NOTHING HERE READS WHAT A MESSAGE OR A DRAFT MEANS (the owner, 2026-10-28: never decide what words mean with a word list). What an item
-# itself calls for - a draft promising a file nothing attaches, an issue an agent can take, an address that bounced - is its verdict
-# STORED with the fixture (VERDICTS, beside the world below); the rest is the item's state, read off the labelled lines advisor._prompt writes.
-VERBS_OFFERED, THE_ITEM, WHAT_FAILED = 'VERBS OFFERED', 'THE ITEM', 'WHAT FAILED'
-# EACH LINE IS A FACT, NEVER THE BUTTON EXPLAINED (the owner, 2026-10-23: "buttons do the talking"; at most 60 characters) - and where the
-# script's verb is the rule's own, the strip says the rule's fact and drops this one (advisor.decide)
-ADVICE = {'approve': '',
-          'reply': 'Someone is waiting on an answer from you.', 'continue': 'The agent stopped partway.'}
-# ...and like the real one it reads what was already done: a reply that went, with nothing written since, is closed, not answered
-# again - the scripted "Someone is waiting on an answer" stood over a close-out reading Sent (2026-10-19)
-SENT = {'close': 'Your reply went; nothing has come back since.',
-        'defer': 'Your reply went; nothing has come back since.'}
-
-# ...and like the real one, WHEN SOMETHING FAILED (a WHAT FAILED line) it offers the way past it and never the act that just failed: after
-# a refused send the scripted line still said "read it, then send it" over "Not sent", with Send lit (2026-10-19). The fix the failure
-# names leads, then the draft written again, then a task to fix it.
-# ...each line naming WHAT failed: "That did not go through" stood over a card whose error had gone, saying nothing of which act it meant
-# (the advisor matrix, 2026-10-19)
-FAILED = {'fix': '{what}: {why}.', 'redraft': '{what}: {why}.', 'new_task': '{what}: {why}.', 'report_bug': 'That step stopped: {why}.',
-          'close': '{what}: {why}.'}
-# ...a send nobody can confirm is checked first, never sent again blind
-CHECK = {'approve': 'Nobody can say whether it went.', **FAILED}
-# ...and what the demo itself refused goes nowhere here, whatever is pressed: "redraft it" would loop the visitor through a canned brain
-# that writes no drafts - the item is closed or put off instead
-REFUSED = {'close': 'This is the demo - nothing goes out from it.',
-           'defer': 'This is the demo - nothing goes out from it.'}
-# ...and A DRAFT ITS CHANNEL ANSWERS WHERE IT CAME FROM (a chat: no Send offered) is copied there and closed - with no line the strip
-# said "nothing needs a move" over a question nobody had answered (2026-10-19). Read off the item's channel, never the verbs alone: an
-# email whose draft could not be written offers no Send either, and was told to copy it (the advisor matrix, 2026-10-19)
-COPIED = {'close': 'It cannot be sent from here - copy it to the chat.'}
-
-# ...and like the real one it reads what is over: an agent whose run finished, a task with every todo ticked, is closed once nobody
-# waits on a reply (the advisor matrix, 2026-10-19: both stood under "No suggestion")
-DONE = {'approve': ADVICE['approve'], 'reply': ADVICE['reply'], 'close': 'The work on it is done.'}
-
-# ...and like the real one (advisor.SYSTEM's rules, the deep dive 2026-10-20): an agent's failed run is made a task, never continued
-# blind; someone quiet past their day is chased.
-# ...a general agent's run is tried again (advisor.offered's Try again - it is offered no New task); a coding agent's is made a task
-AGENT_RAN = {'fix': "{what}: {why}.", 'new_task': "{what}: {why}.", 'continue': "{what}: {why}."}
-CHASED = {'chase': 'They are quiet past their day.'}
-IDEA = {'mine': '', 'defer': ''}
-# ...and like the real one it reads THE STATE line (advisor.state_line - every state is the model's since 2026-11-02, so the demo's script
-# answers for all of them): where nothing needs reading, the state's plain move, its fact said beside it. A script is the demo's stand-in for
-# a model, so this table is ITS reading, never the app's - [] lights nothing
-PLAY = {'working': ['next'], 'report_ok': ['next'], 'dashboard': ['next'], 'fyi_batch': ['next'], 'meeting': ['next'], 'invite_no_cal': ['next'],
-        'goal': ['next'], 'fyi': ['next'], 'own': ['next'], 'connection': ['test_connection'], 'unsorted': ['retriage'],
-        'invite_free': ['accept_invite'], 'invite_clash': ['propose_time'], 'unpushed': ['review_changes'], 'fyi_danger': ['not_ours'],
-        'action_held': ['approve'], 'needs_agent': ['continue', 'regular_agent'], 'unsendable': ['copy', 'close'], 'duplicate': ['split', 'remove'],
-        'watch_quiet': ['chase', 'let_go'], 'stopped_done': ['close'], 'done_list': ['close'], 'watch_handled': ['close'],
-        'agent_asking': [], 'waiting': [], 'stopped': [], 'closed': []}
-LATE = ('waiting_late', 'waiting_overdue', 'waiting_late_usual', 'goal_late', 'watch_quiet')
-_STATE = re.compile(r"^THE STATE \([^)]*\): (\w+) - .*?(?:; the fact: (.*))?$", re.M)
-DEMO_SAYS = 'This is the demo - '                     # every refusal sentence above starts so (SENDS, STARTS, OFF, REFUSALS)
-
-
-def _field(text: str, label: str) -> str:
-    """One labelled line of a prompt (advisor._prompt's `LABEL: value`), by its label."""
-    return next((l[len(label) + 2:] for l in text.splitlines() if l.startswith(label + ': ')), '')
-
-def _offered(verbs: str) -> dict:
-    """VERBS OFFERED as {verb: label}: advisor._prompt joins them as `verb (Label), verb (Label)`."""
-    return dict(p.removesuffix(')').split(' (', 1) for p in verbs.split('), ') if ' (' in p)
-
-def _on_it(text: str) -> str:
-    """The ref of a possible duplicate an agent is already on (advisor's own `- TQ-n ... - an agent is on it` row), else ''."""
-    if 'POSSIBLE DUPLICATES' not in text: return ''
-    rows = text.split('POSSIBLE DUPLICATES', 1)[1].split('\n\n', 1)[0].splitlines()[1:]
-    return next((l.split()[1] for l in rows if l.startswith('- TQ-') and l.endswith('an agent is on it')), '')
-
-
-def _advice(text: str) -> str:
-    from . import buttons
-    offered = _offered(_field(text, VERBS_OFFERED))
-    failed = _field(text, WHAT_FAILED)
-    try: item = json.loads(_field(text, THE_ITEM) or '{}') or {}
-    except ValueError: item = {}
-    chat = str(item.get('channel') or 'email').lower() != 'email'
-    what = failed.split(' - ')[0].strip() or 'That did not go through'
-    why = failed.split(' - ', 1)[1].rstrip('.') if ' - ' in failed else 'no reason was given'
-    say = lambda said, verb: said[verb].format(label=offered[verb], what=what[:1].upper() + what[1:], why=why) if verb else ''
-    # the fixture's own verdict, at the state it was written for: a failure's (on='failed') only over a failure, the rest only without one
-    v = VERDICTS.get(str(item.get('title') or ''))
-    stored = {k: v['line'] for k in v['verbs']} if v and bool(failed) == (v.get('on') == 'failed') else None
-    st = _STATE.search(text)
-    state, fact = (st.group(1), (st.group(2) or '').strip()) if st else ('', '')
-    said = (None if DEMO_SAYS in failed
-            else AGENT_RAN if failed.startswith("the agent's run failed")
-            else stored if stored
-            else None if failed
-            else CHASED if 'chase' in offered and state in LATE
-            else IDEA if 'THE IDEA' in text
-            else None)
-    if said is None and not failed and state in PLAY:
-        verb = next((v for v in PLAY[state] if v in offered), None)
-        return json.dumps({'verb': verb, 'line': fact if verb else '', 'evidence': []})
-    if said:
-        verb = next((v for v in said if v in offered), None)
-        return json.dumps({'verb': verb, 'line': say(said, verb), 'evidence': []})
-    said = (REFUSED if DEMO_SAYS in failed
-            else CHECK if 'nobody knows whether it went' in failed else FAILED if failed
-            else SENT if 'A REPLY WAS ALREADY SENT' in text and 'NOTHING HAS COME IN SINCE IT WENT' in text
-            else COPIED if chat and 'redraft' in offered and 'approve' not in offered
-            else DONE if "THE AGENT'S RUN ENDED (finished)" in text or 'EVERY TODO ON THE TASK IS TICKED' in text else ADVICE)
-    # Send is offered as Check delivery only on a send nobody can confirm: the scripted line never says "check" over a plain Send
-    # ...and Redraft only gets past a failed REPLY: after Send to agent failed on a chat with a draft, the line said "redraft it, then send
-    # it again" over an agent that had not started (the advisor matrix, 2026-10-19)
-    redo = not failed or failed.startswith('the reply')
-    fits = lambda v: v in offered and (redo or v != 'redraft') and (said is not CHECK or v != 'approve' or offered[v] == buttons.label('approve', 'check'))
-    verb = next((v for v in said if fits(v)), None)
-    # ...and where THE STATE handed it a fact (an age past the owner's usual), that is its line, as the real one is told to say it
-    line = fact if fact and verb and said is ADVICE else say(said, verb)
-    # ...and like the real one it reads the tasks that may already cover the ask: an agent already on one is said, never a second answer blind
-    # ...and the button agrees with the line (advisor.SYSTEM): never Reply over "it may already be covered" - Remind me, to look again once
-    # that agent is done, else nothing (the UI audit's C2, 2026-10-21)
-    if verb == 'reply' and (dup := _on_it(text)):
-        verb = 'defer' if 'defer' in offered else None
-        line = f'{dup} may already cover this - an agent is on it.' if verb else ''
-    return json.dumps({'verb': verb, 'line': line, 'evidence': []})
-
-
 # THE DEMO CHAT ANSWERS ITS OWN SUGGESTIONS, AND ONLY THOSE (the owner, 2026-10-28: never decide what typed words mean with a word
 # list). A script cannot read what a visitor types, and the keyword router that pretended to (a ref, a name, "remind me", "chase") misread
 # as often as it read. So the chat is driven by what the demo SHOWS: the item's own buttons, and these suggestions - each a chip that
@@ -356,11 +289,16 @@ PROMPTS = (
 )
 OUT_OF_SCRIPT = 'In the demo I answer the suggested questions - in your own Taskuary your AI answers anything.'
 
+ASK_ONE = 'Ask one of these: ' + ', '.join(f'“{ask}”' for _, ask, _ in PROMPTS) + '.'
 def prompt_chips() -> list: return [{'ask': ask, 'label': ask, 'prompt': pid} for pid, ask, _ in PROMPTS]
 
 def with_prompts(out):
     """The suggestions under the line that says they are all the demo answers (concierge.say) - and under nothing else."""
-    if isinstance(out, dict) and OUT_OF_SCRIPT in str(out.get('say') or ''): out['chips'] = [*(out.get('chips') or []), *prompt_chips()]
+    if isinstance(out, dict) and OUT_OF_SCRIPT in str(out.get('say') or ''):
+        out['chips'] = [*(out.get('chips') or []), *prompt_chips()]
+        # ...AND IN ITS OWN WORDS (the walk, 2026-11-15): the Assistant's window draws no chips, so "the suggested questions" named
+        # questions nobody could see - a dead end. The line carries them, as the static demo's does (demoApi.js)
+        out['say'] = str(out['say']).replace(OUT_OF_SCRIPT, f'{OUT_OF_SCRIPT} {ASK_ONE}', 1)
     return out
 
 def _task_link(store, title: str) -> str:
@@ -390,6 +328,11 @@ def _answer(asked: str, store) -> str:
     return said
 
 
+def _field(text: str, label: str) -> str:
+    "One labelled line of a prompt (`LABEL: value`), by its label."
+    return next((l[len(label) + 2:] for l in text.splitlines() if l.startswith(label + ': ')), '')
+
+
 # A DRAFT IS A REPLY, never the assistant's chat line (2026-10-19 UI walk): the responder's prompt was answered from CANNED, and TQ-0001's
 # draft read "I looked at your list. 25 things are on it...". A thread the world wrote a draft for gets it; any other gets a holding line
 def _draft(user: str) -> str:
@@ -407,7 +350,6 @@ def brain(seed: int = 0, store=None):
     pick = random.Random(seed)
     def llm(system, user, max_tokens=None, images=None, **kw):
         text = str(user or '')
-        if _field(text, VERBS_OFFERED): return _advice(text)
         if str(system or '').startswith(TILE_SAYS): return _tile(text)
         if str(system or '').startswith('You ARE '): return _draft(text)       # responder.SYSTEM: the owner's own reply
         # ...a report asked for (issue.draft): the tool's own words say where its button is - the canned lines are about the list
@@ -509,7 +451,7 @@ def answer(method: str, path: str):
 OWNER = 'Dana Whitfield'
 # ...and the owner's own mailbox, at the company the colleagues write from: with no address the owner had no domain, so everyone at
 # Northwind was a stranger to the demo (origin.py - a colleague's task read as an outsider's; the UX walk, 2026-10-22)
-OWNER_EMAIL = 'alex@northwind.example'
+OWNER_EMAIL = 'dwhitfield@northwind.example'         # ...her own, written as her colleagues' are: About you read "alex@... · Dana Whitfield"
 PEOPLE = [('Marcus Reed', 'mreed@northwind.example'), ('Priya Shah', 'pshah@northwind.example'),
           ('Tom Alvarez', 'talvarez@vendor.example'), ('Ruth Bennett', 'rbennett@northwind.example')]
 
@@ -567,22 +509,6 @@ DRAFTS = {
     'Invoice 88213 - past due': "Thanks Tom - it is approved and goes out in Friday's payment run.",
 }
 
-# THE ADVISOR'S VERDICT, WRITTEN WITH THE ITEM it is about (the owner, 2026-10-28): the scripted Advisor (_advice) never reads a draft or a
-# mail for what it means - what an item calls for is part of the world, like its sender and its draft. Keyed by the item's title as the
-# rail shows it; `verbs` in order of preference (the first one offered lights), `on: 'failed'` for a verdict on a failure the item carries.
-PROMISED = 'The draft promises what nothing here shows.'
-VERDICTS = {
-    # the draft says the payment run and the pack go out, and nothing on the item shows either: written again, never sent
-    'Invoice 88213 - past due': {'verbs': ('redraft', 'reply'), 'line': PROMISED},
-    'Can you resend the Q3 numbers?': {'verbs': ('redraft', 'reply'), 'line': PROMISED},
-    # an issue with a traceback in it: work an agent can take
-    'northwind/importers#214 - census sync fails when a site has no manager': {'verbs': ('regular_agent',), 'line': 'An issue with a traceback in it.'},
-    # the advisor matrix's world (faults.world): a reply the mail server bounced for its address - fixed at the address, never redrafted
-    'Lease renewal for the Elm Street office': {'verbs': ('fix', 'new_task'), 'line': 'The address was refused: {why}.', 'on': 'failed'},
-    # the tour (TOUR, below): nobody wrote it, so nobody waits on a reply - the scripted "Someone is waiting on an answer" lit Reply over it
-    'Start here - what Taskuary can do': {'verbs': ('next',), 'line': 'A tour of the demo - nobody is waiting on it.'},
-}
-
 # EACH AGENT ITS OWN WORK (B23, 2026-10-17): every agent task replayed the month-end transcript, so the census issue's
 # terminal talked about the GL export. The coding issue replays its own fix; the GL reconciliation is a general agent's
 # task and reads as its conversation (GL_CHAT) - an accountant's task opened as a terminal.
@@ -632,9 +558,12 @@ REPORTS = [
       {'vendor': 'Kesler Medical', 'past_due': 7715.4}, {'vendor': 'BrightPath IT', 'past_due': 4180.0},
       {'vendor': 'Cardinal Food Svc', 'past_due': 2260.75}]),
     ('Helpdesk tickets by day, last 14', 'Ticket volume by day',
-     [{'day': f'2026-08-{d:02d}', 'tickets': n}
-      for d, n in zip(range(18, 32), (38, 41, 35, 52, 49, 22, 17, 44, 58, 61, 55, 47, 63, 71))]),
+     # ...the fourteen days up to yesterday: fixed in August, "last 14" read "peak 71 on Aug 31, the latest day" in November
+     [{'day': str(datetime.now().date() - timedelta(days=14 - i)), 'tickets': n}
+      for i, n in enumerate((38, 41, 35, 52, 49, 22, 17, 44, 58, 61, 55, 47, 63, 71))]),
 ]
+
+REPORT_CRONS = ('0 2 * * *', '0 6 * * 1', '0 6 * * *')          # nightly, weekly on Monday, daily - as their names say
 
 # What the assistant is FOR, in the assistant's own words: it has read the thread, it knows what
 # is on the rail, and it says the one thing that decides the next move. The demo used to open
@@ -810,13 +739,15 @@ def seed_set_ups(store, f):
         rv = f.review(t, mid, kind='outbound', draft=f"I'm in quarter-end planning that morning - would {at} work instead?", Deliver=json.dumps(env),
                       reason=f"Propose {at} for {c['subject']} - press {calwrite.send_word()} and the calendar is told")
         store.update_task(t, {'Kind': 'general', 'Status': 'in_progress', 'Assignee': 'agent:general'}, 'triage')
-        # ...the invite came in, the agent was handed it, and its turn said why this time
-        store._exec('UPDATE message SET CreatedAt=? WHERE MessageId=?', (_at(56), mid)); store._exec('UPDATE route SET CreatedAt=? WHERE MessageId=?', (_at(56), mid))
-        say(t, 55, general.BRIEF_ACTOR, general.USER_TYPE, INVITE_JOB.format(line=f"{who} invited you to {c['subject']}, {iv['at']}"))
+        # ...the invite came in, the agent was handed it, and its turn said why this time - minutes after the invite's own stamp (the morning's
+        # spread moved it, and a turn at a fixed 55 minutes ago read 11:28 PM under an invitation of 11:46 PM)
+        came = (datetime.now() - datetime.strptime(str(store.get_message(mid)['SentAt']), '%Y-%m-%d %H:%M:%S')).total_seconds() / 60
+        store._exec('UPDATE message SET CreatedAt=? WHERE MessageId=?', (_at(came), mid)); store._exec('UPDATE route SET CreatedAt=? WHERE MessageId=?', (_at(came), mid))
+        say(t, came - 1, general.BRIEF_ACTOR, general.USER_TYPE, INVITE_JOB.format(line=f"{who} invited you to {c['subject']}, {iv['at']}"))
         summ = {'about': f"{who} invited you to the {c['subject']}, {iv['at']}.",
                 'did': f"Checked your calendar: it {iv['clash']}. The first free hour after it is **{at}**, so I set up a new time with a short note - "
                        'or accept or decline it instead.', 'drafted': [{'review': rv}]}
-        cid = say(t, 54, 'assistant', general.ASSISTANT_TYPE, summ['did']); say(t, 53.99, 'assistant', general.SUMMARY_TYPE, json.dumps(summ))
+        cid = say(t, came - 2, 'assistant', general.ASSISTANT_TYPE, summ['did']); say(t, came - 2.01, 'assistant', general.SUMMARY_TYPE, json.dumps(summ))
         store.snap_draft(rv, cid)
     if (sh := SET_UPS.pop('share', None)):
         t = sh['task']; gail = store.list_messages(t)[0]
@@ -843,6 +774,9 @@ def seed(store) -> int:
     from . import peoplesearch
     peoplesearch.remember(store, DIRECTORY)
     seed_connections(store)
+    # ...and no sent mail to read a signature from: Settings > Replies asked for one on opening, and the demo refused it (a 403 in the page)
+    from . import signatures
+    store.set_setting(signatures.OFFERED, '1', 'demo')
     made = 0
     refs = {}
     for i, (channel, who, subject, body, verdict, why) in enumerate(SEEDS):
@@ -910,8 +844,12 @@ def seed(store) -> int:
                      DueAt=(datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d'))
     store.link_step(g, store.checklist_id('Ray: schema sign-off'), waiting, 'owner')
     refs['goal'] = g
-    for title, chart_title, rows in REPORTS:
+    for (title, chart_title, rows), cron in zip(REPORTS, REPORT_CRONS):
         pic = f.report_row(title=title)
+        # ...on the clock its name says (a key the scheduler reads): with none, the Reports page framed each in red - "No schedule - it only
+        # runs when you press Run now" - under a name that says nightly (the walk, 2026-11-15). Touched, so nothing is due at this start
+        cfg = {**json.loads(store.get_source(pic.sid)['ConfigJson']), 'cron': cron}
+        store._exec('UPDATE source SET ConfigJson=? WHERE SourceId=?', (json.dumps(cfg), pic.sid)); store.touch_source(pic.sid)
         body = '\n'.join(json.dumps(r) for r in rows)
         store._exec('UPDATE message SET BodyText=?, Subject=? WHERE MessageId=?',
                     (body, f'{title} - {len(rows)} rows', pic.mid))
@@ -1054,6 +992,7 @@ def seed(store) -> int:
     made += seed_tour(store, f)
     seed_set_ups(store, f)
     seed_ai_usage(store)          # ...and the morning's asks, for their "AI used" folds
+    run_dashboards(store)
     logger.info(f'demo: seeded {made} items of invented work')
     return made
 
@@ -1192,11 +1131,15 @@ def seed_agent_day(store, f) -> int:
                        + [(s, ah, h, h - ah, ac, c, c - ac) for s, h, c, ah, ac in SITES_OT]
                        + [('Total', tot(3), tot(1), dh, tot(4), tot(2), dc)])
     second = _made(t, f'Overtime by site - August and September{ext}', book, 139)
-    store._exec('UPDATE review SET DraftText=? WHERE ReviewId=?', (
+    # ...and it answers her SECOND mail: left pinned to the first, the redraft read as one the thread had moved past - "New messages arrived
+    # after this draft", Redraft its only button and no AI to press it for, on the task the tour sends the visitor to press Send on
+    store._exec('UPDATE review SET DraftText=?, MessageId=? WHERE ReviewId=?', (
         f'Hi Erin,\n\nHere are August and September side by side. Overtime rose {dh} hours ({dh / tot(3):.0%}) and ${dc:,} '
         f'({dc / tot(4):.1%}) to {tot(1):,} hours and ${tot(2):,}.\n\nFairhaven is nearly all of the increase (+144 hours, +$5,400) - the two '
-        f'night-shift vacancies. Riverside and Oak Ridge came down a little.\n\nThe workbook is attached, by site, with the change for each.\n\nDana', rv))
+        f'night-shift vacancies. Riverside and Oak Ridge came down a little.\n\nThe workbook is attached, by site, with the change for each.\n\nDana',
+        max(m['MessageId'] for m in store.list_messages(t)), rv))
     verdicts.attach(store, rv, second, (outputs.folder(t) / second).read_bytes(), 'assistant')
+    stamp('review', 'ReviewId', rv, 138.8)          # ...written AFTER her second mail: a draft older than it reads as one the thread moved past
     c2 = said(t, 138.6, 'turn', None,
          {'about': 'Erin wrote again: she wants August next to September to see what changed.',
                'did': f'Put August beside September: overtime is up **{dh} hours ({dh / tot(3):.0%})** and **${dc:,} ({dc / tot(4):.1%})**. '
@@ -1307,11 +1250,11 @@ TOUR_BODY = ('Welcome to the demo. Northwind, its people and their mail are inve
              'The to-do on this task is a short tour - each step is something you can try in the demo. Tick a step as you go; '
              'ticking the last one closes this task.')
 TOUR_STEPS = (                           # in the order they are read: the to-do draws newest first, so they are stored the other way round
-    'Open "Month-end close is short by 4,180": Came from is what arrived, Agent is one chat - its turns and what it set up for you',
+    'Open "Reconcile the August GL export": Came from is what arrived, Agent is one chat - its turns and what it set up for you',
     'See what an agent sets up for one press: open "Fairhaven safety milestone" - a LinkedIn post with its chart, waiting on Post to LinkedIn',
     'Walk your work with Next and Back - Next goes down the rail, Back comes up it',
     'Watch an agent work: open "northwind/importers#214" and read its run in the Agent pane',
-    'Send a reply: open "Invoice 88213 - past due", read the draft under Next steps and press Send - nothing leaves the demo',
+    'Send a reply: open "Invoice 88213 - past due", read the draft in its chat and press Send - nothing leaves the demo',
     'Put one off from Came from: Remind me, or Not for me, on "New starter on Monday"',
     'Open a report under Reports, then ask the chat pill "What\'s on me right now?"',
 )
@@ -1336,10 +1279,16 @@ def seed_tour(store, f) -> int:
 # browser tests boot this world to drive everything else from the greeting, so their harness turns the opening off (OPENS_ENV=0).
 OPENS_ENV = 'TASKUARY_DEMO_OPENS_TOUR'
 
+# ...ON WORK, NOT A CHECKLIST (the owner, 2026-11-15: "it should open on open task or open dashboard"): the tour's to-do was the first
+# thing a visitor saw. The demo opens on what an agent made - the LinkedIn post with its chart, one press from going out - and the tour
+# stays the first row on the rail for whoever wants it. Any open task stands in if that one was closed; never the empty greeting.
+SHOWCASE = 'Fairhaven safety milestone - LinkedIn post?'
+
 def opens(store) -> dict | None:
-    """What a visitor's first view opens on: the tour while it is open, else nothing - the greeting, as an install opens."""
+    """What a visitor's first view opens on: the agent's finished post while it is open, else the first open task."""
     if not enabled() or os.environ.get(OPENS_ENV, '1') == '0' or store is None: return None
-    t = next((t for t in store.list_tasks() if t.get('Title') == TOUR and t.get('Status') not in ('done', 'dropped')), None)
+    live = [t for t in store.list_tasks() if t.get('Status') not in ('done', 'dropped')]
+    t = next((t for t in live if t.get('Title') == SHOWCASE), None) or next(iter(live), None)
     return {'tid': t['TaskId']} if t else None
 
 
@@ -1433,15 +1382,28 @@ DASHBOARD = {'type': 'dashboard', 'title': 'Northwind desk', 'daily_at': '07:00'
 
 
 def seed_dashboard(store) -> int:
-    from . import reports
     sid = store.save_source({'Channel': 'report', 'Address': DASHBOARD['title'], 'Active': 1, 'ConfigJson': json.dumps(DASHBOARD)}, 'demo')
-    reports.run_one(store, store.get_source(sid), None, 'schedule')      # its clock moves, so the server's start does not run it again
-    # ...and the built-in one every install gets (store.SEEDED_REPORTS), filled the same way: the demo's showcase dashboard
+    # ...RUN HERE TOO, though run_dashboards runs them again once the morning is whole: each run files a message, and every message made
+    # after this point keeps the number the tests and the static demo know it by only while these two stand before it (moved to the end
+    # alone, the agents' day shifted by two and the Assistant's walk put another task on the table - CI, 2026-11-15)
+    from . import reports
+    reports.run_one(store, store.get_source(sid), None, 'schedule')
     for src in store.list_sources(active_only=False):
-        if src.get('Owner') == 'template' and json.loads(src.get('ConfigJson') or '{}').get('type') == 'dashboard':
-            # ...in the same second as the showcase one: the rail settles that tie by the first filed (funnel.place_id, 2026-10-25)
-            reports.run_one(store, src, None, 'schedule')
+        if src.get('Owner') == 'template' and json.loads(src.get('ConfigJson') or '{}').get('type') == 'dashboard': reports.run_one(store, src, None, 'schedule')
     return sid
+
+
+def run_dashboards(store):
+    """EVERY DASHBOARD, RUN ONCE THE WHOLE MORNING IS SEEDED (the walk, 2026-11-15): run where they were made - before the agents' day and the
+    tour - the rail read "Open now 12" beside nineteen open tasks. The showcase one, then the built-in one every install gets
+    (store.SEEDED_REPORTS), then what an agent built: the order they stand in on the rail, which settles a same-second tie by the first filed
+    (funnel.place_id, 2026-10-25). Their clocks move, so the server's start does not run them again."""
+    from . import reports
+    dash = [s for s in store.list_sources(active_only=False) if json.loads(s.get('ConfigJson') or '{}').get('type') == 'dashboard']
+    rank = lambda s: (s.get('Address') != DASHBOARD['title'], s.get('Owner') != 'template', s['SourceId'])
+    for src in sorted(dash, key=rank):
+        try: reports.run_one(store, src, None, 'schedule')
+        except Exception as e: logger.warning(f"demo: the dashboard {src.get('Address')} did not run - {e}")
 
 
 # what the week behind today's finished work left: each task closed a few hours after its ask, the replies were answered some

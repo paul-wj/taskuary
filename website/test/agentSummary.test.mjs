@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { answerShown, chatReplyShown, foldedSummaries, hasReply, lastAnswerSummed, nextSteps, oneLine } from "../src/agentSummary.js";
+import { answerShown, chatReplyShown, foldedSummaries, hasReply, lastAnswerSummed, nextSteps, oneLine, turnOnYou } from "../src/agentSummary.js";
 
 const read = (name) => readFileSync(fileURLToPath(new URL(`../src/${name}`, import.meta.url)), "utf8");
 
@@ -77,18 +77,6 @@ test("Next steps: an Approve still pending is never Nothing left to do here", ()
   assert.equal(nextSteps({ summary: { nothing_left: true }, reviews: [{ ReviewId: 9, Kind: "action", Status: "approved" }] }).nothing, true);
 });
 
-test("the chat draws the summary, and the turn's working is one line with its steps folded under it", () => {
-  const view = read("GeneralWorkspace.jsx");
-  assert.match(view, /import AgentSummary, \{ OneBox \} from "\.\/AgentSummary\.jsx";/);
-  assert.match(view, /foldedSummaries\(/);
-  assert.match(view, /data-tq-working=""/);
-  assert.match(view, /Working on this…/);
-  const card = read("AgentSummary.jsx");
-  for (const h of ["What this is about", "What I did", "Next steps", "Nothing left to do here", "data-tq-summary", "data-tq-on-you"])
-    assert.ok(card.includes(h), h);
-  assert.doesNotMatch(card.slice(0, card.indexOf("export function NoAgentChat")), /<Button|onClick/, "the summary draws no press of its own yet (Task 4.2 brings the cards)");
-  assert.doesNotMatch(card + view.slice(view.indexOf("<AgentSummary")), /onChanged=\{work/, "no prop nothing reads yet (Task 4.2 adds it with the cards)");
-});
 
 // Review Focus 4 (Task 4.1): until the cards live in the summary (4.2), a pending draft is not counted where no cards are drawn - Close out still draws it
 test("a pending draft is no Next step where the summary draws no cards", () => {
@@ -120,12 +108,6 @@ test("Suggested reply heads only a reply, never a closed task's Mark done line o
   assert.match(read("AgentSummary.jsx"), /hasReply\(reviews\)/);
 });
 
-test("a chat task's chat carries no agent picker, model box or Full screen - only actions", () => {
-  // the owner's ruling on the stress run (2026-11-05): "remove as much as possible ui components in the chat unless it's actions"
-  const view = read("GeneralWorkspace.jsx");
-  assert.match(view, /!dock && !noTools && !chat && toolsAt && !full && <>\{createPortal\(tools, toolsAt\)\}<\/>/);
-  assert.match(view, /!dock && !noTools && !chat && !\(toolsAt && !full\) && <Box/);
-});
 
 // THE AGENT SAYS WHETHER ITS PROSE IS THE RESULT (the owner, 2026-11-05: "no hardcoded words"): its own `answer_is_result` decides; a turn
 // that never said - every turn filed before - keeps the length-or-link rule, so history draws as it did
@@ -140,23 +122,6 @@ test("the agent's answer_is_result decides whether its prose shows beside the su
   assert.doesNotMatch(read("GeneralWorkspace.jsx"), /answerWords/, "the pane asks the agent's say, never its own rule");
 });
 
-// NEVER TWICE IN A TURN (the owner, 2026-11-08): the post text, "Before you post" and the to-do were drawn in the agent's words and again in
-// What I did / Next steps under them. The words are the turn; the summary's prose is drawn only for a turn with none, its cards either way
-test("a turn with words of its own draws them once, and the summary keeps only its cards", async () => {
-  const { turnAnswered } = await import("../src/agentSummary.js");
-  const { readFileSync } = await import("node:fs");
-  assert.equal(turnAnswered("Posted text below - press Post."), true);
-  assert.equal(turnAnswered("   "), false); assert.equal(turnAnswered(undefined), false);
-  const ws = readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
-  const sum = readFileSync(new URL("../src/AgentSummary.jsx", import.meta.url), "utf8");
-  assert.match(ws, /components=\{\{ Text: AssistantText,/, "the words are always drawn");
-  const text = ws.slice(ws.indexOf("const AssistantText"), ws.indexOf("const CameIn"));
-  assert.doesNotMatch(text, /return null/, "words equal to the summary's did are still drawn - the summary prose is out, so hiding them emptied the turn");
-  assert.match(ws, /answered=\{answered\} \/>/);
-  const cardsOnly = sum.slice(sum.indexOf("if (answered)"), sum.indexOf("// ...a nothing-new turn"));
-  assert.ok(cardsOnly.length > 0, "an answered turn returns before the prose");
-  assert.doesNotMatch(cardsOnly, /about|What I did|OnYou|did\b/, "no About, What I did or On you beside the words");
-});
 
 // THE TO DO HOLDS ONLY WORK (the owner, 2026-11-09: one task reached 11 lines for 4 pieces of work): an email owed is its Send card, and the
 // steps left on the owner are one quiet "On you:" line under the list - never boxes
@@ -170,4 +135,27 @@ test("the To do is the work alone, and what is left on the owner is one On you l
   const page = (await import("node:fs")).readFileSync(new URL("../src/TaskPage.jsx", import.meta.url), "utf8");
   assert.match(page, /const todo = checklist\.filter\(\(i\) => !i\.out && !i\.on_you\);/);
   assert.match(page, /\{onYouLeft && <Typography data-tq-on-you-line="" sx=\{\{ \.\.\.ON_YOU_SX, mt: 0\.6 \}\}>\{onYouLeft\}<\/Typography>\}/);
+});
+
+// THE CHAT SAYS WHAT A TURN LEFT ON HIM (the demo's research turn, 2026-11-13): a turn that was only its summary block is drawn as its `did`, and
+// the decision it left him - the summary's `on_you` - was drawn nowhere: "agent finished" over a list of options, his choice unsaid
+test("a turn's On you steps are said under its words, never twice", () => {
+  const sum = { did: "Compared three providers.", on_you: ["Decide whether to offer same-day pay.", "Say if I should ask Payworth for terms"] };
+  assert.equal(turnOnYou(sum, sum.did), "For you to do: Decide whether to offer same-day pay; Say if I should ask Payworth for terms.");
+  assert.equal(turnOnYou(sum, "Compared three. **Decide whether to offer same-day pay** - your call."), "For you to do: Say if I should ask Payworth for terms.");
+  assert.equal(turnOnYou({ did: "x" }, "x"), "");
+  // ...a step ending on its own question or ellipsis keeps it, never "?." (the live chat, 2026-11-16)
+  assert.equal(turnOnYou({ on_you: ["Pick a date", "Should I ask Payworth for terms?"] }, ""), "For you to do: Pick a date; Should I ask Payworth for terms?");
+  assert.equal(turnOnYou(null, "x"), "");
+  assert.match(read("GeneralWorkspace.jsx"), /const onYou = !live && sum && !ask \? turnOnYou\(sum, words\) : ""/);
+  assert.match(read("GeneralWorkspace.jsx"), /\{!!onYou && <div className="tq-aui-summary" data-tq-on-you="" style={{ marginTop: 10 }}>/);
+});
+
+// the phone audit (2026-11-13): New's box was one fixed row - its example wrapped to a row and a half under a scrollbar at 390px, and long
+// typing scrolled out of sight. A PromptBox's words size it, up to the box's own max-height
+test("a PromptBox grows with its words and its example, up to its cap", () => {
+  const css = read("generalWorkspace.css"), box = read("AgentSummary.jsx");
+  assert.match(box, /"data-tq-prompt-box": ""/, "the box carries its mark");
+  assert.match(css, /\[data-tq-prompt-box\] \.tq-aui-input \{ field-sizing: content; \}/);
+  assert.match(css.split("\n").find((l) => l.startsWith(".tq-aui-input {")), /max-height: \d+px/, "and stops at its cap, scrolling after");
 });

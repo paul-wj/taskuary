@@ -9,6 +9,7 @@ file the agent wrote was on disk and unreachable from the page.
 Now the folder is named: <home>/scratch/outputs/TQ-nnnn/ for task nnnn - the very one the agent picked - it is said in the brief
 (brief), and GET /api/task-outputs/<tid>/<file> serves a file in THAT task's folder and nothing else (resolve)."""
 import json, mimetypes, re, shutil
+from functools import lru_cache
 from datetime import datetime
 from pathlib import Path
 
@@ -105,11 +106,38 @@ def rel(tid: int, p: Path) -> str:
     "`p`'s name in the folder. Both sides resolved: a home given by its 8.3 short form (C:/Users/ABCDEF~1) resolves to the long one."
     return Path(p).resolve().relative_to(folder(tid).resolve()).as_posix()
 
+# WHAT IT MADE IS READ WHERE IT IS (the owner, 2026-11-15: he asked for a query to review, the agent saved it as a file, and the chat held only
+# "it is ready for you to review"): a file of a kind with no viewer of its own - a query, a script, a config - that is plain text reads as text.
+# By its bytes, never its name: no list of extensions decides what can be read
+def reads_as_text(p: Path) -> bool:
+    try: st = p.stat()
+    except OSError: return False
+    return _reads_as_text(str(p), st.st_size, st.st_mtime_ns)
+
+@lru_cache(maxsize=2048)
+def _reads_as_text(p: str, size: int, mtime: int) -> bool:
+    "...once per file as it stands (its size and stamp in the key): a list a page polls never reads the same head twice."
+    try:
+        with open(p, 'rb') as f: head = f.read(4096)
+    except OSError: return False
+    if not head or b'\0' in head: return False
+    try: head.decode('utf-8')
+    except UnicodeDecodeError as e: return e.start >= len(head) - 3          # a character cut by the read, not bytes that are no text
+    return True
+
+
+# ONE ROAD TO A PREVIEW (the owner, 2026-11-16: "it should be the same code both in the agent and on the email"): a file an agent made and a
+# file that came on a mail are told how they preview here, and read for it below - `name` where the file on disk carries a stamp, not its name
+def preview_of(p: Path, name: str = ''):
+    "How the page previews `p` - by its kind, else plain text by its bytes; None is Download only (a workbook too, on an install with no openpyxl)."
+    how = PREVIEW.get(Path(name or p.name).suffix.lower()) or ('text' if reads_as_text(p) else None)
+    return None if how == 'sheet' and not can_sheet() else how
+
+
 def row(tid: int, p: Path, rel: str) -> dict:
-    "One file as the page draws it - the same shape as a shown page (server._artifact_row), so one list draws both."
+    "One file as the page draws it - the same shape as a shown page (page_row), so one list draws both."
     from urllib.parse import quote
-    ext, sheet = p.suffix.lower(), PREVIEW.get(p.suffix.lower())
-    if sheet == 'sheet' and not can_sheet(): sheet = None
+    ext, sheet = p.suffix.lower(), preview_of(p)
     st = p.stat()
     return {'id': f'output:{rel}', 'name': p.name, 'path': rel, 'kind': 'output', 'content_type': content_type(p.name),
             'size': st.st_size, 'at': datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%d %H:%M:%S'), 'preview': sheet, 'url': f'/api/task-outputs/{int(tid)}/{quote(rel)}',
@@ -212,15 +240,13 @@ def listing(tid: int) -> list:
 # ONE OF EACH THING IT MADE (the owner, 2026-10-28: "it looks like it created a million attachments. Agents should not create lists of
 # lists of attachments unless specifically asked"). A workbook saved as v1..v9 listed nine rows, with the helper script and its log
 # between them. A FAMILY is one name with its version marks taken off (v2, _final, (1), a timestamp); only its newest is the deliverable,
-# the rest are its earlier versions, kept and reachable behind it. The agent's own working files - its scripts, logs, temp and cache
-# files, anything under a tmp/ or scratch/ folder - are not things it made for the owner, so they fold under one line.
-# taskOutputs.deliverables is the same rule for the page: keep the two alike.
+# the rest are its earlier versions, kept and reachable behind it.
+# ...AND NOTHING AN AGENT MADE IS HIDDEN (the owner, 2026-11-15, of a query saved as a file and folded away as the agent's own scratch: "this has
+# nothing to do with sql, anything an agent creates should not be hidden of course"): no list of extensions, folder names or file names
+# says what he may see - a helper script stands in the list with the workbook it built. taskOutputs.deliverables is the same rule for
+# the page: keep the two alike.
 _VER = re.compile(r'(?:[ _.-]+(?:v|ver|version|rev)[ _.-]?\d+|[ _.-]+(?:final|draft|copy|old|new|latest|updated|edited|revised)'
                   r'|[ _.-]*\(\d+\)|[ _.-]+\d{8}(?:[ _T-]?\d{4,6})?|[ _.-]+\d{4}-\d\d-\d\d(?:[ _T-]?\d\d[-.]?\d\d(?:[-.]?\d\d)?)?)+$', re.I)
-_WORK_EXT = {'.log', '.tmp', '.temp', '.bak', '.pyc', '.cache', '.lock', '.swp', '.part', '.crdownload',
-             '.py', '.ps1', '.sh', '.bat', '.cmd', '.js', '.mjs', '.ts', '.sql', '.r', '.ipynb'}
-_WORK_DIR = re.compile(r'(?:^|/)(?:tmp|temp|scratch|cache|__pycache__|work|working|intermediate|drafts?)/', re.I)
-_WORK_NAME = re.compile(r'^(?:tmp|temp|scratch|debug)(?:[ _.-]|$)', re.I)
 
 
 def family(name: str) -> str:
@@ -230,22 +256,14 @@ def family(name: str) -> str:
     return re.sub(r'[ _.-]+', ' ', stem) + p.suffix
 
 
-def is_working(rel: str) -> bool:
-    "The agent's own working file - a script, a log, a temp or cache file, anything in a tmp/ or scratch/ folder - not a deliverable."
-    rel = str(rel or '').replace('\\', '/')
-    return Path(rel).suffix.lower() in _WORK_EXT or bool(_WORK_DIR.search(rel)) or bool(_WORK_NAME.match(rel.rsplit('/', 1)[-1]))
-
-
-def deliverables(rows: list) -> tuple:
-    """(made, working): each family once - its newest row, the older ones on it as `earlier`, newest first - and the working files apart.
-    A row that is not a file in the folder (a page the agent showed or published) is never a working file: it chose to show it."""
-    made, by, working = [], {}, []
+def deliverables(rows: list) -> list:
+    "Each family once - its newest row, the older ones on it as `earlier` - newest first. Every file is in it: none is left out for its kind."
+    made, by = [], {}
     for r in sorted(rows or [], key=lambda r: str(r.get('at') or r.get('created_at') or ''), reverse=True):
-        if r.get('kind') == 'output' and is_working(r.get('path') or r.get('name')): working.append(r); continue
         k = family(r.get('name') or r.get('path'))
         if k in by: by[k].setdefault('earlier', []).append(r)
         else: by[k] = dict(r); made.append(by[k])
-    return made, working
+    return made
 
 
 # WHERE IS THE EXCEL THE AGENT MADE (the owner, 2026-10-28: "if I ask the chat assistant to pull up the Excel created by the agent on the
@@ -271,16 +289,24 @@ def _tids() -> list:
     except OSError: return []
 
 
-def _page(a: dict) -> dict:
-    "A page an agent showed or published, in the row shape (server._artifact_row) - here, so a look-up never imports the server."
-    return {'id': a['ArtifactId'], 'name': a.get('Name') or 'page', 'kind': a.get('Kind'), 'content_type': a.get('ContentType') or '',
-            'created_at': a.get('CreatedAt'), 'url': f"/api/task-artifacts/{a['ArtifactId']}" if a.get('Path') else None,
-            **({'external_url': a['Url']} if a.get('Url') else {})}
+def page_row(a: dict) -> dict:
+    "A task's artifact as the page draws it - a page an agent showed or published among them - here, so a look-up never imports the server."
+    return {'id': a['ArtifactId'], 'name': a.get('Name') or 'session artifact.md',
+            'content_type': a.get('ContentType') or 'text/markdown', 'size': a.get('Size') or 0,
+            'kind': a.get('Kind') or 'session', 'created_by': a.get('CreatedBy') or '', 'created_at': a.get('CreatedAt'),
+            'url': f"/api/task-artifacts/{a['ArtifactId']}" if a.get('Path') else None,
+            # a page a Claude session published: its claude.ai link (claude_artifacts); `url` is the local copy
+            **({'external_url': a['Url'], 'version': a.get('Version') or ''} if a.get('Url') else {})}
+
+PAGES = ('shown', 'claude_artifact')
+def pages(store, tid: int) -> list:
+    "The pages task `tid`'s agents showed (agenttools.show_files) or published (claude_artifacts), as rows - each chat places them by its turns."
+    return [page_row(a) for a in store.list_task_artifacts(int(tid)) if a.get('Kind') in PAGES]
 
 
 def find(store, query: str = '', kind: str = '', tid: int = None, limit: int = 8) -> list:
-    """The files agents made, best match first: [{tid, title, name, url, at, earlier, ...}] - each family once (deliverables), working
-    files never. `query` is matched against the task's title and summary and the file's own name by MEANING (embeddings, textsim) -
+    """The files agents made, best match first: [{tid, title, name, url, at, earlier, ...}] - each family once (deliverables), whatever
+    its kind. `query` is matched against the task's title and summary and the file's own name by MEANING (embeddings, textsim) -
     a count of shared word stems decided it once (the owner, 2026-10-28) - or, with no embedder, found there whole; `kind` narrows
     by what it is. Newest first when nothing is asked about."""
     from . import textsim
@@ -289,13 +315,13 @@ def find(store, query: str = '', kind: str = '', tid: int = None, limit: int = 8
     try:
         for a in store._rows("SELECT * FROM task_artifact WHERE Kind IN ('shown','claude_artifact')" + (' AND TaskId=?' if tid else ''),
                              (int(tid),) if tid else ()):
-            pages.setdefault(int(a['TaskId']), []).append(_page(a))
+            pages.setdefault(int(a['TaskId']), []).append(page_row(a))
     except Exception: pass
     hits = []
     for t in dict.fromkeys(ids + ([] if tid else sorted(pages, reverse=True))):
         task = store.get_task(t)
         if not task: continue
-        made, _ = deliverables(listing(t) + pages.get(t, []))
+        made = deliverables(listing(t) + pages.get(t, []))
         about = f"{task.get('Title') or ''} {task.get('Summary') or ''}"
         for r in made:
             if want and Path(str(r.get('name') or '')).suffix.lower() not in want: continue
@@ -360,16 +386,27 @@ def document(p: Path) -> dict:
     return {'blocks': blocks, 'more': more, 'max_blocks': DOC_BLOCKS}
 
 
+PREVIEW_VERSION = 1
+def previewed(p: Path, name: str = '', sheet_name: str = '') -> dict:
+    """A workbook's sheet (sheet) or a document's words (document) as the page draws them - read once per CONTENT, in the attachment-text
+    cache (attachtext.cached), whichever file, route or press asks. Raises ValueError for a file of a kind with no such preview."""
+    import hashlib
+    from . import attachtext
+    how = PREVIEW.get(Path(name or p.name).suffix.lower())
+    if how not in ('sheet', 'document'): raise ValueError(how)
+    key = f'preview-{hashlib.sha256(p.read_bytes()).hexdigest()}-{how}-{sheet_name}-v{PREVIEW_VERSION}'
+    return attachtext.cached(key, lambda: document(p) if how == 'document' else sheet(p, sheet_name))
+
+
 def brief(tid: int) -> str:
     "What a chat with hands is told about the files it makes - so it saves them where the page finds them and never invents an address."
     d = folder(tid)
     try: d.mkdir(parents=True, exist_ok=True)
     except OSError: pass
-    return (f'FILES YOU MAKE FOR THE OWNER (a spreadsheet, a document, a PDF, a chart): save each one in {d} . Every file there shows on '
-            'this task with Preview and Download, so the owner opens it from the chat. To point at one, write its full path in your '
-            'answer. Never write a URL or a link to it - Taskuary serves that folder itself, and an address you make up leads nowhere. '
-            'Asked to send it "here", it already is: name the file. A file you attach to a reply or an email rides on that card - name it '
-            'there by its name, never its path.')     # ...one final file per thing: AGENT.md's Files you make (with_fence_rule)
+    return (f'FILES YOU MAKE FOR THE OWNER: your outputs folder is {d} - each file there shows on this task with Preview and Download. '
+            'Point at one by its full path. Never write a URL or a link to it (Taskuary serves the folder; an address you make up leads nowhere); '
+            'asked to send it "here", it already is - name it. A file on a reply or an email rides on that card: name it there by its '
+            'name, never its path.')     # ...one final file per thing: AGENT.md's Files you make (with_fence_rule)
 
 
 # ...and a TERMINAL session is told the same by its environment (terminal.session_env: TASKUARY_OUTPUTS) and its standing rules

@@ -34,7 +34,12 @@ from .triage import addressed_to_you
 from .categories import route_intent
 
 LABELS = ('task', 'reply_only', 'watch', 'fyi')
-RETRIES = 2                  # a model call that fails or garbles is retried this often before it counts as unusable
+WORK = ('task', 'reply_only')   # work vs nothing: a reply is work too (the owner, 2026-11-12: "things that just get reply are also task")
+# the joining answers a case may be labelled with (`join`), scored beside the intent: same_as a tid or None, new_job whether one was
+# said, relationship and same_problem for a chat line. A case carries the evidence they are chosen from in `given` (open_work,
+# thread_task, room_tasks, combine, agent_on_it ...) and a chat's same-day lines in `same_day_lines`, as judge would hand them over
+JOIN_KEYS = ('same_as', 'new_job', 'relationship', 'same_problem')
+RETRIES = 2                 # a model call that fails or garbles is retried this often before it counts as unusable
 ACCEPT_AFTER_DAYS = 3        # an untouched triage call this old is taken as accepted (weakly)
 
 
@@ -146,6 +151,8 @@ def build(store, include_weak: bool = True) -> list:
             'id': f"m{m['MessageId']}", 'channel': m.get('Channel'), 'conv': m.get('ConversationId'), 'sent_at': m.get('SentAt'),
             'from': m.get('FromEmail'), 'from_name': m.get('FromName'),
             'from_kind': _kind_of(m.get('FromEmail'), m.get('FromName'), mine, domains),
+            # what the mail's own headers said sent it (HeaderClass - never the verdict's word), so machine mail splits out by its headers
+            **({'header_says': m['HeaderClass']} if m.get('HeaderClass') else {}),
             'subject': m.get('Subject') or '', 'body': m.get('BodyText') or '', 'own_text': m.get('OwnText') or '',
             'to': msg['to'], 'cc': msg['cc'],
             'addressed_to_you': addressed_to_you(msg, mine) if rec else None,
@@ -227,7 +234,8 @@ def thread_store(case: dict):
 def as_message(case: dict) -> dict:
     return {'external_id': case['id'], 'channel': case.get('channel') or 'email', 'conversation_id': case.get('conv') or f"conv-{case['id']}",
             'from_email': case.get('from'), 'from_name': case.get('from_name'), 'subject': case.get('subject') or '',
-            'body': case.get('body') or '', 'sent_at': case.get('sent_at'), 'to': case.get('to'), 'cc': case.get('cc')}
+            'body': case.get('body') or '', 'sent_at': case.get('sent_at'), 'to': case.get('to'), 'cc': case.get('cc'),
+            **({'header_says': case['header_says']} if case.get('header_says') else {})}
 
 
 class _AsOf:
@@ -256,14 +264,15 @@ MEMORY_ARMS = {                      # what the classifier is allowed to remembe
 }
 
 
-def evaluate(store, cases: list, llm, verbose=True, notes: str = 'today', learned: bool = True, system: str = None, people: bool = True) -> dict:
+def evaluate(store, cases: list, llm, verbose=True, notes: str = 'today', learned: bool = True, system: str = None, people: bool = True, lean: bool = True) -> dict:
     """The configured classifier over the local (full-text) cases, told what the funnel would
     have told it. `notes` = 'today' (every standing note on file), 'asof' (only those written
     before the message arrived - see _AsOf) or 'none'; `learned` = whether LEARNED.md's
     promoted sections ride along (the doc has no history, so it is all or nothing). `system`
-    replaces the install's TRIAGE.md for the run - how a wording change is scored before it ships."""
-    from .ingest import others_on_thread, owner_addresses, relevant_notes
-    from . import learned_cut
+    replaces the install's TRIAGE.md for the run - how a wording change is scored before it ships; `lean` is the answer's shape
+    (triage.classify_intent's: False asks the shape before 2026-11-11, to score the same cases both ways)."""
+    from .ingest import others_on_thread, owner_addresses, relevant_notes, report_brief
+    from . import aiusage, learned_cut
     from .routing import draft_task_fields
     from .triage import classify_intent, job_doc
     mine = owner_addresses(store)
@@ -272,11 +281,12 @@ def evaluate(store, cases: list, llm, verbose=True, notes: str = 'today', learne
     soul, job, system = store.doc('soul'), job_doc(store), (system if system is not None else store.doc('triage'))
     conf, rows, by_signal = Counter(), [], {'colleague_replied': Counter(), 'alone': Counter()}
     pconf = Counter()                  # (the owner's priority, triage's) where the owner set one by hand
-    by_channel = {}
+    jconf = {k: Counter() for k in JOIN_KEYS}
+    by_channel, by_class, by_header = {}, {}, {}
     for c in cases:
         if not c.get('body'): continue
         msg = as_message(c)
-        thread = others_on_thread(thread_store(c), msg, mine)
+        thread = {**others_on_thread(thread_store(c), msg, mine), **(c.get('given') or {})}
         src = store if notes == 'today' else _AsOf(store, c.get('sent_at')) if notes == 'asof' else None
         ns, left = relevant_notes(src, [msg['from_email'] or ''], f"{msg['subject']} {msg['body']}"[:4000], subject=msg['subject']) if src else ([], 0)
         # the memory as the funnel reads it for THIS mail: what the owner cares about, and the people lines about whoever is on it
@@ -286,38 +296,76 @@ def evaluate(store, cases: list, llm, verbose=True, notes: str = 'today', learne
             if v and not v.get('degraded'): break
             # a throttled or garbled call is not a verdict: try again before scoring it as one
             if attempt: time.sleep(2 * attempt)
-            v = classify_intent(msg, llm=llm, soul=soul, job=job, thread=thread, learned=lrn, notes=ns,
-                                notes_left=left, system=system, mine=me)
+            with aiusage.asking('triage.eval'):       # an evaluation's calls are not the day's triage (the usage row's Caller)
+                v = classify_intent(msg, llm=llm, soul=soul, job=job, thread=thread, learned=lrn, notes=ns,
+                                    notes_left=left, system=system, mine=me, lean=lean, candidates=c.get('same_day_lines'),
+                                    watch=report_brief({**msg, 'watch_for': c.get('watch_for')}))
         # the funnel FILES an answer it cannot read (ingest: 'degraded' -> filed, never assumed
         # work); no model at all is no verdict - scored as such, never as a keyword guess (2026-10-11)
         got = 'fyi' if v.get('degraded') else v.get('intent') or 'unjudged'
         conf[(c['label'], got)] += 1
+        joined = {k: (bool(v.get(k)) if k == 'new_job' else v.get(k)) for k in JOIN_KEYS if k in (c.get('join') or {})}
+        for k, x in joined.items(): jconf[k][x == c['join'][k]] += 1
         if c.get('priority_label'): pconf[(c['priority_label'], v.get('priority') or 'regular')] += 1
         by_signal['colleague_replied' if thread.get('others_replied') else 'alone'][got == c['label']] += 1
         by_channel.setdefault(c.get('channel') or '?', Counter())[got == c['label']] += 1
+        # work vs nothing per class: who wrote it as triage read it (person, automated, bulk) and where the owner stood on it
+        by_class.setdefault(f"{v.get('sender_class') or '?'} / {c.get('addressed_to_you') or c.get('channel') or '?'}",
+                            Counter())[(got in WORK) == (c['label'] in WORK)] += 1
+        hs = str(c.get('header_says') or '')
+        by_header.setdefault('a system, by its headers' if hs.startswith('a system') else 'a list, by its headers' if hs.startswith('a mailing list')
+                             else 'no header mark', Counter())[(got in WORK) == (c['label'] in WORK)] += 1
         rows.append({'id': c['id'], 'label': c['label'], 'got': got, 'ok': got == c['label'], 'source': c['label_source'],
                      'channel': c.get('channel'), 'notes_seen': len(ns), 'why': v.get('why') or '', 'degraded': bool(v.get('degraded')),
                      # what the regex layer would make of a task (coding/general) - the second, unmeasured verdict
                      'regex_kind': draft_task_fields(msg)['kind'], 'model_kind': v.get('kind'),
                      # how hard and how sure the reader said it was (the router's judgements, 2026-10-25) - unlabelled, so shown, not scored
                      'difficulty': v.get('difficulty'), 'sure': v.get('sure'),
-                     'others_replied': thread.get('others_replied') or [], 'subject': c.get('subject')})
+                     'others_replied': thread.get('others_replied') or [], 'subject': c.get('subject'),
+                     'join': joined, 'join_ok': all(x == c['join'][k] for k, x in joined.items())})
     n = sum(conf.values()); ok = sum(v for (a, b), v in conf.items() if a == b)
     out = {'n': n, 'accuracy': (ok / n) if n else None, 'confusion': {f'{a}->{b}': v for (a, b), v in sorted(conf.items())},
+           'work_vs_nothing': sum(v for (a, b), v in conf.items() if (a in WORK) == (b in WORK)),   # a watch is not the owner's work
+           'join': {k: {'right': v[True], 'wrong': v[False]} for k, v in jconf.items() if v},
            'degraded': sum(r['degraded'] for r in rows),
            'by_signal': {k: {'right': v[True], 'wrong': v[False]} for k, v in by_signal.items()},
            'by_channel': {k: {'right': v[True], 'wrong': v[False]} for k, v in sorted(by_channel.items())}, 'rows': rows,
+           'work_by_class': {k: {'right': v[True], 'wrong': v[False]} for k, v in sorted(by_class.items())},
+           'work_by_header': {k: {'right': v[True], 'wrong': v[False]} for k, v in sorted(by_header.items())},
            'priority': {'n': sum(pconf.values()), 'right': sum(v for (a, b), v in pconf.items() if a == b),
                         'confusion': {f'{a}->{b}': v for (a, b), v in sorted(pconf.items())}}}
     if verbose:
         print(f"{n} cases, accuracy {out['accuracy']:.0%}" + (f" ({out['degraded']} model answers unusable - scored as filed)" if out['degraded'] else '')
               if n else 'no cases with a body to classify')
+        if n: print(f"  work vs nothing right {out['work_vs_nothing']} of {n}")
+        for k, v in out['work_by_class'].items(): print(f"    {k:22s} right {v['right']:3d}  wrong {v['wrong']:3d}")
+        for k, v in out['work_by_header'].items(): print(f"    {k:24s} right {v['right']:3d}  wrong {v['wrong']:3d}")
         for k, v in out['confusion'].items(): print(f'  {k:22s} {v}')
+        for k, v in out['join'].items(): print(f"  join {k:13s} right {v['right']:3d}  wrong {v['wrong']:3d}")
         for k, v in out['by_signal'].items(): print(f"  {k:18s} right {v['right']:3d}  wrong {v['wrong']:3d}")
         for k, v in out['by_channel'].items(): print(f"  {k:18s} right {v['right']:3d}  wrong {v['wrong']:3d}")
         if out['priority']['n']: print(f"  priority (where you set one by hand): {out['priority']['right']} of {out['priority']['n']} {out['priority']['confusion']}")
         for r in rows:
             if not r['ok']: print(f"  MISS {r['id']:7s} owner={r['label']:10s} triage={r['got']:10s} [{r['source']}] {r['subject'][:60]}")
+            if not r['join_ok']: print(f"  JOIN MISS {r['id']:7s} got {r['join']}")
+    return out
+
+
+def wrapper_rebuilt(store, words: int = 5, limit: int = 5000) -> dict:
+    """NO MODEL, nothing leaves the machine: every wrapper passage the stored verdicts kept word for word, cut down to its first and
+    last `words` words and found again in its own mail by triage.passage - how often naming a passage by its two ends gives back
+    the very passage. {'passages', 'same', 'other' (found, a different stretch), 'lost' (not found: nothing would be hidden)}."""
+    from .triage import passage, wrapper_of
+    out = {'passages': 0, 'same': 0, 'other': 0, 'lost': 0}
+    for r in store._rows("SELECT r.VerdictJson v, m.BodyText b, m.OwnText o FROM route r JOIN message m ON m.MessageId=r.MessageId "
+                         "WHERE r.VerdictJson LIKE '%\"wrapper\"%' ORDER BY r.RouteId DESC LIMIT ?", (int(limit),)):
+        try: ws = wrapper_of(json.loads(r['v']))
+        except ValueError: continue
+        for w in ws:
+            t = w.split()
+            got = passage({'from': ' '.join(t[:words]), 'to': ' '.join(t[-words:])}, r['b'] or '', r['o'] or '')
+            out['passages'] += 1
+            out['same' if got.split() == t else 'other' if got else 'lost'] += 1
     return out
 
 

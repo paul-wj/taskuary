@@ -227,9 +227,10 @@ def send_email(store, to: list, subject: str, body: str, reply_to_graph_id: str 
     return {'channel': 'email', 'to': to, 'cc': cc, 'bcc': bcc, 'mailbox': box, 'threaded': bool(reply_to_graph_id)}
 
 
-def send_teams(store, chat_id: str, body: str, connector_id=None, want_id: bool = False) -> dict:
+def send_teams(store, chat_id: str, body: str, connector_id=None, want_id: bool = False, quote: str = None) -> dict:
     """Post into a chat. App-only posting needs ChatMessage.Send on the app registration,
-    which reading does NOT include - say so plainly rather than failing with a 403 blob."""
+    which reading does NOT include - say so plainly rather than failing with a 403 blob.
+    `quote`: the Graph id of the line this answers - the post goes as Teams' own quoted reply to it (replyWithQuote)."""
     # a personal account's chat (teams.live.com) has no API: the card's browser types it, on this - the owner's - Send (teamsweb.py)
     from . import teamsweb
     if teamsweb.is_live(chat_id): return teamsweb.send(store, chat_id, body, connector_id)
@@ -240,9 +241,18 @@ def send_teams(store, chat_id: str, body: str, connector_id=None, want_id: bool 
     tok = _graph_token(store, 'teams', c and c['ConnectorId'])
     # a PERSON picked from the people search (an address, not a '19:' chat id) is their 1:1 chat - the one there is, or a new one
     if not str(chat_id).startswith('19:') and '@' in str(chat_id): chat_id = one_on_one(tok, str(chat_id))
-    r = requests.post(f'{GRAPH}/chats/{chat_id}/messages', timeout=30,
-                      headers={'Authorization': f'Bearer {tok}', 'Content-Type': 'application/json'},
-                      data=json.dumps({'body': {'contentType': 'text', 'content': body}}))
+    def post(path, m): return requests.post(f'{GRAPH}/chats/{chat_id}/messages{path}', timeout=30, data=json.dumps(m),
+                                            headers={'Authorization': f'Bearer {tok}', 'Content-Type': 'application/json'})
+    said = {'body': {'contentType': 'text', 'content': body}}
+    # a REPLY to the very line it answers, as WhatsApp's are: two answers in one chat each say which message they are for.
+    # Graph builds the quote itself (https://learn.microsoft.com/graph/api/chatmessage-replywithquote); a quote it will not
+    # make - the line deleted, a cloud without the action - still lets the words go, plain, rather than fail the Send
+    r = post('/replyWithQuote', {'messageIds': [str(quote)], 'replyMessage': said}) if quote else None
+    if r is not None and r.status_code in (400, 404, 405, 501):
+        logger.info(f'teams: the reply goes unquoted - Graph would not quote message {quote} ({r.status_code}): {r.text[:200]}')
+        r = None
+    quoted = r is not None
+    if r is None: r = post('', said)
     if r.status_code in (401, 403):
         # Graph explains itself and we used to throw that away, so a chat that CANNOT be posted to
         # (someone outside the tenant is in it) read as a permission you had forgotten to grant.
@@ -259,10 +269,11 @@ def send_teams(store, chat_id: str, body: str, connector_id=None, want_id: bool 
                            + (f' Graph said: "{said[:200]}"' if said else ''))
     if r.status_code >= 300:
         raise RuntimeError(f'graph chat post failed ({r.status_code}): {r.text[:300]}')
-    if not want_id: return {'channel': 'teams', 'chat': chat_id}
+    out = {'channel': 'teams', 'chat': chat_id, **({'quoted': quoted} if quote else {})}
+    if not want_id: return out
     try: mid = (r.json() or {}).get('id')            # the post's own id: a bound chat reads it back as the owner's line (agentchannels)
     except ValueError: mid = None
-    return {'channel': 'teams', 'chat': chat_id, 'id': mid}
+    return {**out, 'id': mid}
 
 
 def _user_id(tok: str, who: str) -> str:
@@ -455,7 +466,11 @@ def connect_fix(store, kind) -> dict | None:
     cards = store.list_connectors()
     live = {str(c.get('Type') or '').lower() for c in cards if c.get('Active')}
     if k == 'email':
-        if live & {*MAILBOXES, *HOSTS}: return None
+        # ...and a mailbox connected whose card cannot SEND (send_probe: no Mail.Send granted, no SMTP host) says so the same way, with its
+        # fix: the reply card showed Copy alone, the reason only in Copy's hover, and nothing to press to get Send back
+        if live & {*MAILBOXES, *HOSTS}:
+            why, fix = send_probe(store, k), block_fix(store, k)
+            return {'says': f"Email can't be sent from here: {why}", 'waits': 'the draft waits here until it can', **fix} if why and fix else None
         # ...its button opens the mailbox's own card - one set up and switched off, else Email's section, where each mailbox has its card
         had = next((str(c.get('Type')).lower() for c in cards if str(c.get('Type') or '').lower() in (*MAILBOXES, *HOSTS)), '')
         return {'says': 'No mailbox is connected', 'label': 'Connect email', 'href': f'#connector={had}' if had else MAIL[1]}
@@ -493,8 +508,12 @@ def block_fix(store, channel) -> dict | None:
     if ch == 'github': return None if store.github_replies_ok() else {'label': 'Open the GitHub card', 'href': '#connector=github'}
     if _inbox_off(store, ch): return {'label': f'Open the {INBOX_NAMES[ch]} card', 'href': f'#connector={ch}'}
     if ch in SENDABLE and ch not in reply_channels(store): return dict(zip(('label', 'href'), REPLIES))
-    if ch == 'email' and send_probe(store, ch):
-        return {'label': 'Sign in again', 'href': '#connector=outlook'} if 'Mail.Send' in send_probe(store, ch) else dict(zip(('label', 'href'), MAIL))
+    if ch == 'email' and (why := send_probe(store, ch)):
+        if 'Mail.Send' in why: return {'label': 'Sign in again', 'href': '#connector=outlook'}
+        # ...a card with no SMTP host is fixed on that card, not by connecting another mailbox
+        from .imapmail import HOSTS
+        card = next((str(c['Type']).lower() for c in store.list_connectors() if c.get('Active') and str(c.get('Type') or '').lower() in ('imap', *HOSTS)), '')
+        return {'label': 'Open the mail card', 'href': f'#connector={card}'} if card else dict(zip(('label', 'href'), MAIL))
     return None
 
 
@@ -880,7 +899,7 @@ def _reconcile_graph(store, box, body, since=None, conv=None, to=None, cc=None, 
             raw = (m.get('body') or {}).get('content') or ''
             if str((m.get('body') or {}).get('contentType') or '').lower() == 'html':
                 from .channels import _clean
-                raw = _clean(raw)
+                raw = _clean(raw, every=False)        # compared with the words sent, never lengthened by a link's address
             text = ' '.join(str(raw).split())
             # Replies may carry the quoted original, but the WHOLE attempted text
             # must lead the message. A shared greeting is not a delivery receipt.
@@ -929,11 +948,13 @@ def re_subject(s) -> str:
     return s if s.lower().startswith('re:') else f'Re: {s}'.strip()
 
 
-def wa_quote(msg: dict) -> dict | None:
-    "The WhatsApp message a reply answers, as the bridge quotes it: {id, text} off its 'whatsapp:<jid>:<id>' - None for one with no id."
+def chat_quote(msg: dict) -> dict | None:
+    """The chat line a reply answers, {id, text}, off its '<channel>:<chat>:<id>' (WhatsApp, Telegram, Teams) - None for one with
+    no id. A Teams chat id carries colons itself, so a last part with an '@' ('19:...@thread.v2') names the chat, not a line in it."""
     ext = str(msg.get('ExternalId') or '')
-    if not ext.startswith('whatsapp:') or ext.count(':') < 2: return None
-    return {'id': ext.rsplit(':', 1)[-1], 'text': ' '.join(str(msg.get('OwnText') or msg.get('BodyText') or '').split())[:300]}
+    mid = ext.rsplit(':', 1)[-1] if ext.startswith(f"{msg.get('Channel')}:") and ext.count(':') >= 2 else ''
+    if not mid or '@' in mid: return None
+    return {'id': mid, 'text': ' '.join(str(msg.get('OwnText') or msg.get('BodyText') or '').split())[:300]}
 
 
 def reply_to_message(store, msg: dict, body: str, to: list = None, cc: list = None, attachments: list = None, bcc: list = None,
@@ -983,7 +1004,8 @@ def reply_to_message(store, msg: dict, body: str, to: list = None, cc: list = No
     if ch == 'teams':
         chat = (msg.get('ConversationId') or '')[6:]        # 'teams:19:...'
         if not chat: raise RuntimeError('this chat message has no chat id to answer in')
-        return send_teams(store, chat, body, _source_connector_id(store, 'teams', msg.get('SourceName')))
+        q = chat_quote(msg)
+        return send_teams(store, chat, body, _source_connector_id(store, 'teams', msg.get('SourceName')), quote=q and q['id'])
     if ch in ('telegram', 'whatsapp'):
         from . import chatformat, messengers
         chat = str(msg.get('ConversationId') or '').split(':', 1)[-1]   # 'telegram:<id>' / 'whatsapp:<jid>'
@@ -995,9 +1017,9 @@ def reply_to_message(store, msg: dict, body: str, to: list = None, cc: list = No
         # as punctuation and folds a long bubble behind "Read more". Spell it for the channel and
         # send it whole; the first piece is the reply, so its receipt is the one that answers.
         said = [p for p in chatformat.split(chatformat.render(body, ch)) if p.strip()] or [body]
-        # ...and on WhatsApp as a REPLY to the very line it answers (the owner, 2026-11-08: two answers in one chat, neither said which
+        # ...and as a REPLY to the very line it answers (the owner, 2026-11-08: two answers in one chat, neither said which
         # message it was for): the first piece quotes it, so each reply quotes its own
-        q = wa_quote(msg) if ch == 'whatsapp' else None
+        q = chat_quote(msg)
         kw = {'connector_id': connector_id} if connector_id else {}
         return _send_parts(lambda p: send(store, chat, p, **kw, **({'quote': q} if q and p is said[0] else {})), said)
     if ch == 'slack':

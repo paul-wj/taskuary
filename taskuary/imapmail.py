@@ -18,7 +18,6 @@ from . import words
 from .timewords import plural
 
 BATCH = 25                  # messages per batch: the watermark is saved after each, the poll goes on until the gap is drained
-TRANSPORT = (imaplib.IMAP4.abort, OSError)   # the CONNECTION went, not one message: stop, keep the watermark, retry next poll
 HOSTS = {'gmail': ('imap.gmail.com', 'smtp.gmail.com')}
 
 
@@ -139,13 +138,41 @@ def _hosts(c) -> tuple:
     return imap_h, smtp_h, cfg
 
 
+# ── SIGNED IN WITH GOOGLE INSTEAD OF AN APP PASSWORD ────────────────────────────────────
+# The owner, 2026-11-15: "add that option as well not just app password". The same IMAP and SMTP, signed in to with the Gmail card's
+# Google sign-in (googlecal.py, scope https://mail.google.com/) by XOAUTH2 - no second mail road. A saved App Password is what the
+# card uses while it is there: it does not lapse, and removing it is how the owner moves the mail to the sign-in.
+def google_mail(c, cfg) -> bool: return c.get('Type') == 'gmail' and not c.get('Secret') and bool(cfg.get('google_refresh_token'))
+def xoauth2(user: str, token: str) -> str: return f'user={user}\x01auth=Bearer {token}\x01\x01'
+
+
+def _google_token(cfg) -> str:
+    """The access token mail signs in with - or, in one line, why the card's Google sign-in cannot carry mail (a lapse says itself)."""
+    from . import googlecal
+    tok, scope = googlecal.token(cfg)
+    if googlecal.MAIL not in scope.split():
+        raise RuntimeError(f'the Google sign-in on this card was not given the mail - press {googlecal.G_SIGNIN} on the Gmail card again '
+                           'and leave the Gmail box ticked, or save an App Password')
+    return tok
+
+
+def _once(auth, empty):
+    """An XOAUTH2 answer for imaplib / smtplib: the auth string first, then nothing - Google answers a refused one with a
+    challenge that wants an empty line back before it says no."""
+    left = [auth]
+    return lambda *_: left.pop() if left else empty
+
+
 def _login(c):
     imap_h, _smtp, cfg = _hosts(c)
     if not imap_h: raise RuntimeError('no IMAP host set - e.g. imap.yourdomain.com')
     user = (cfg.get('address') or '').strip()
     if not user: raise RuntimeError('no mailbox address set')
-    if not c.get('Secret'): raise RuntimeError('no password saved - for Gmail use an App Password '
-                                               '(myaccount.google.com > Security > App passwords)')
+    google = google_mail(c, cfg)
+    if not (c.get('Secret') or google):
+        raise RuntimeError('no sign-in and no password saved - press Sign in with Google on the card, or use an App Password '
+                           '(myaccount.google.com > Security > App passwords)' if c.get('Type') == 'gmail' else 'no password saved')
+    tok = _google_token(cfg) if google else None        # before the socket: a lapsed sign-in says so, and opens nothing
     if _microsoft(user, imap_h):
         # basic auth is gone from Outlook.com (Sept 2024) and Exchange Online (2023): the
         # password would be refused after the socket opened, so say the useful thing first
@@ -167,12 +194,16 @@ def _login(c):
                                'Taskuary from reaching the mail server; ask IT to allow it (or allow port 993)') from e
         raise
     verify_pin(M.sock, cfg, imap_h)
-    try: M.login(user, c['Secret'])
+    try:
+        if google: M.authenticate('XOAUTH2', _once(xoauth2(user, tok).encode(), b''))
+        else: M.login(user, c['Secret'])
     except imaplib.IMAP4.abort: raise          # the connection dropped mid-login: not a password, and not the owner's to fix
     except imaplib.IMAP4.error as e:
         if not re.search(r'AUTHENTICATIONFAILED|invalid credentials|login failed|authentication failed|incorrect', str(e), re.I): raise
         # the server's own words are b'[AUTHENTICATIONFAILED] Invalid credentials (Failure)' - true, and no help
         with contextlib.suppress(Exception): M.shutdown()
+        if google: raise RuntimeError(f'Gmail refused the Google sign-in for {user} - it has to be the account that signed in. Press Sign in '
+                                      'with Google on the Gmail card again; a Workspace account also needs IMAP allowed by its admin.') from e
         raise RuntimeError('The mail server refused the password. Gmail and some others need an app password '
                            '(myaccount.google.com → Security → App passwords) rather than your normal one.') from e
     return M, user
@@ -370,7 +401,7 @@ def sent_window(c, days: int, cap: int = 300, progress=None) -> list:
             if progress and len(out) % 20 == 0:
                 progress('running', f'reading {user} - {len(out)} of {len(uids)} sent mails')
             try:
-                typ, parts = M.uid('fetch', str(uid), '(RFC822)')
+                typ, parts = M.uid('fetch', str(uid), f'({FETCH_BODY})')
                 if typ != 'OK' or not parts or parts[0] is None: continue
                 msg = email.message_from_bytes(parts[0][1])
                 body, _atts = _body_and_attachments(msg)
@@ -441,11 +472,11 @@ def protocol_marks(msg, me=(), tz=None) -> dict:
     message (its text/calendar part - counsel.mime_invite) and who sent it before a model has read it
     (categories.header_class). Never a subject or a body word (2026-10-11)."""
     from .autoreply import from_headers
-    from .categories import header_class
+    from .categories import header_mark, header_words
     from .counsel import mime_invite
-    out, sc = {}, header_class(msg)
+    out, hm = {}, header_mark(msg) or (None, None)
     if from_headers(msg): out['auto_reply'] = True
-    if sc: out['sender_class'] = sc
+    if hm[0]: out.update(sender_class=hm[0], header_says=header_words(*hm))
     from .unsubscribe import parse as unsub    # a list's own way off it, for the FYI card's Unsubscribe (unsubscribe.py)
     if u := unsub(msg): out['unsub'] = u
     from . import mailauth
@@ -466,11 +497,23 @@ def _gmail(M) -> bool:
     return isinstance(caps, (tuple, list, set, frozenset)) and 'X-GM-EXT-1' in caps
 
 
+# Taskuary's own reads never mark mail read: a plain RFC822 FETCH sets \Seen on a writable mailbox, and the box is writable
+# whenever something here may flag or file it. BODY.PEEK[] is the same bytes with the flags left alone; marking read is only
+# ever mark_seen, on purpose.
+FETCH_BODY = 'BODY.PEEK[]'
+
+
+def mark_seen(M, uid: int):
+    """Set the Seen flag on one message of the selected (writable) mailbox; raises when the server refuses."""
+    typ, _d = M.uid('store', str(uid), '+FLAGS', r'(\Seen)')
+    if typ != 'OK': raise IMAPCommandError(f'STORE +FLAGS returned {typ}')
+
+
 def _fetch_message(M, uid: int):
     """Fetch and decode one message, distinguishing a retryable UID hole from local persistence.
     Returns (msg, body, attachments, Gmail's thread id or None) - the id rides the same FETCH, never a second trip."""
     gm = _gmail(M)
-    typ, parts = M.uid('fetch', str(uid), '(X-GM-THRID RFC822)' if gm else '(RFC822)')
+    typ, parts = M.uid('fetch', str(uid), f'(X-GM-THRID {FETCH_BODY})' if gm else f'({FETCH_BODY})')
     if typ != 'OK' or not parts or parts[0] is None:
         raise _UIDFetchFailure(f'uid {uid} FETCH returned {typ}')
     try:
@@ -733,7 +776,7 @@ def poll_imap(store, c, sources: list, llm=None, file_only=False, backfill_days:
     it oldest-first in batches, saving the watermark plus retry holes as each batch lands
     (PW-007/PW-008); the SINCE window applies to the first import only. The 25-highest-then-jump
     of before skipped the lower pending UIDs for good, and the date window hid a long absence."""
-    from .channels import files_for_triage, images_for_triage, save_attachments, wants_read
+    from .channels import files_for_triage, images_for_triage, save_attachments
     from .ingest import ingest_message
     M, user = _login(c)
     n = 0
@@ -765,10 +808,10 @@ def poll_imap(store, c, sources: list, llm=None, file_only=False, backfill_days:
                                scope=_scope(imap_h, imap_port, user, box),
                                seen_validity=validity, legacy_evidence=legacy)
     try:
-        # readonly is what has always kept the funnel invisible in the mailbox: an ordinary
-        # RFC822 fetch sets \Seen by itself. Only the mark-read switch opens the box for
-        # writing, and then the flag is set explicitly, per message, after it is safely in.
-        read_it = wants_read(store)
+        # readonly keeps the funnel invisible in the mailbox, and every fetch PEEKs as well (FETCH_BODY). Only the
+        # card's mark-read choice opens the box for writing, and then the flag is set explicitly, per message, after it is safely in.
+        from . import filing
+        read_it = filing.takes_read(c)
         typ, _data = M.select('INBOX', readonly=not read_it)
         if typ != 'OK': raise IMAPCommandError(f'SELECT INBOX returned {typ}')
         initial_cursor = _number(cfg.get('imap_uid')) or 0
@@ -830,7 +873,7 @@ def poll_imap(store, c, sources: list, llm=None, file_only=False, backfill_days:
             if atts and message_id:
                 save_attachments(store, message_id, atts, ext_id)
             if read_it:
-                try: M.uid('store', str(uid), '+FLAGS', r'(\Seen)')
+                try: mark_seen(M, uid)
                 except Exception as e: logger.warning(f'marking {user} uid {uid} seen failed: {e}')
             if fresh_thread and out['status'] != 'duplicate':
                 # the thread's history, completed once from INBOX and Sent (chains.py, PW-011); the poll's
@@ -905,7 +948,12 @@ def send_smtp(store, c, to: list, subject: str, body: str, in_reply_to: str = No
         try: S.starttls(context=ssl_ctx(cfg))
         except ssl.SSLCertVerificationError as e: raise tls_error(e, smtp_h, port, True) from e
         verify_pin(S.sock, cfg, smtp_h)
-        S.login(user, c['Secret'])
+        if google_mail(c, cfg):
+            S.ehlo()
+            try: S.auth('XOAUTH2', _once(xoauth2(user, _google_token(cfg)), ''), initial_response_ok=True)
+            except smtplib.SMTPAuthenticationError as e:
+                raise RuntimeError(f'Gmail refused the Google sign-in for {user} - press Sign in with Google on the Gmail card again.') from e
+        else: S.login(user, c['Secret'])
         S.sendmail(user, list(to) + cc + bcc, m.as_string())
     return {'channel': 'email', 'to': to, 'cc': cc, 'bcc': bcc, 'mailbox': user, 'threaded': bool(in_reply_to),
             'attached': [f['name'] for f in (attachments or [])]}

@@ -63,8 +63,23 @@ class TheCliFinishesInItsTurnTests(unittest.TestCase):
         s = MemoryStore(); a_claude(self)
         seen = turn(s, researcher(s), 'Here is the brief: Gail wants a three-year term.')
         self.assertEqual(seen['env'].get('CLAUDE_CODE_DISABLE_BACKGROUND_TASKS'), '1')
-        self.assertEqual(clis.HEADLESS_ENV, {'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS': '1'})
+        # ...and the CLI's own memory folder is off: what a chat agent learns goes through Taskuary's tools, for one press
+        self.assertEqual(seen['env'].get('CLAUDE_CODE_DISABLE_AUTO_MEMORY'), '1')
+        self.assertEqual(clis.HEADLESS_ENV, {'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS': '1', 'CLAUDE_CODE_DISABLE_AUTO_MEMORY': '1'})
         self.assertIn(general.FINISH_LINE, seen['prompt'])
+
+    def test_no_cli_taskuary_starts_keeps_a_memory_of_its_own(self):
+        """It was off for a chat agent only (2026-11-11): a coding agent in a pane - whose start strips every inherited CLAUDE_CODE_* - an
+        ACP coding agent and a one-shot with tools still wrote into Claude Code's own memory folder, where no card holds it (2026-11-12)."""
+        from taskuary import agents, acpcoding
+        off = lambda env: env.get('CLAUDE_CODE_DISABLE_AUTO_MEMORY') == '1'
+        with mock.patch.dict('os.environ', {'CLAUDE_CODE_DISABLE_AUTO_MEMORY': '0', 'CLAUDECODE': '1'}):
+            self.assertTrue(off(agents.child_env()) and off(agents.spawn_env({})) and off(agents.spawn_env({'strict_env': True})))
+            self.assertTrue(off(terminal.clean_env()) and off(terminal.clean_env({'TASKUARY_TASK': '7'}, strict=True)), 'the pane: coding agents')
+            sess = acpcoding.ACPCoding.__new__(acpcoding.ACPCoding)
+            sess.profile, sess.args, sess.model, sess.agent, sess.label, sess.task_id, sess.cwd, sess.sid = {'cmd': 'claude'}, [], None, 'coding', 'coding', 7, '.', 's7'
+            with mock.patch.object(agents, 'acp_launch', return_value={'cmd': ['adapter'], 'env': {'CLAUDE_CODE_EXECUTABLE': 'claude'}}):
+                self.assertTrue(off(sess._launch()[2]), 'the ACP adapter, whose Claude inherits its environment')
 
 
 class AShortTurnWakesTheAgentOnceTests(unittest.TestCase):
@@ -80,6 +95,32 @@ class AShortTurnWakesTheAgentOnceTests(unittest.TestCase):
         bodies = [str(c['Body']) for c in s.list_comments(tid)]
         self.assertTrue(any(SHORT in b for b in bodies)); self.assertTrue(any('three-year term' in b for b in bodies))
         self.assertFalse(any('TASKUARY: your last answer' in b for b in bodies))      # ...never in the chat as anyone's words
+
+    def test_an_answer_that_asks_the_owner_for_a_password_is_taken_back_by_its_agent_on_the_sign_in_road(self):
+        """Five recorded walks, 2026-11-11: asked to sign in to a site with no connection, the agent fetched the form from its shell and asked
+        the owner to paste the password - four times of five, with the browser's offer in its prompt."""
+        from taskuary import browserview
+        s = MemoryStore(); a_claude(self); tid = researcher(s)
+        asked = 'I have no Payworth login. Send me the email and password, or name a file that holds them.'
+        # ...ending on its summary, as every turn does - "Gail asked Alex ..." is the summary of the words taken back, and goes with them
+        summ = ' [[TASKUARY-SUMMARY]]{"about": "Gail asked Alex for the payroll date.", "did": "Nothing read yet."}[[/TASKUARY-SUMMARY]]'
+        seen = turn(s, tid, [asked + summ, 'There is no connection for Payworth, so I am using the browser.'],
+                    judge=lambda *a, **k: json.dumps({'unfinished': False, 'why': '', 'asks_secret': True}))
+        self.assertEqual(len(seen['prompts']), 2)                     # told once, by the one wake
+        for want in ('asked the owner for a password', 'you do not need the password', '[[TASKUARY-SIGNIN:'): self.assertIn(want, seen['prompts'][1])
+        self.assertIn(browserview.SIGNIN_LINE, browserview.offer())  # ...the same words its prompt offers the browser with
+        bodies = [str(c['Body']) for c in s.list_comments(tid)]
+        self.assertTrue(any('using the browser' in b for b in bodies)); self.assertFalse(any('TASKUARY: your last answer' in b for b in bodies))
+        self.assertIn('asks_secret', hooks.ENDED_SYSTEM)
+        # ...and the ask it took back is a step of the work, never an answer standing in the chat above the page it then opened
+        from taskuary import conversation
+        turns = [x for x in conversation.items(s, tid)['items'] if x['kind'] == 'turn']
+        self.assertEqual([x['text'] for x in turns], ['', 'There is no connection for Payworth, so I am using the browser.'])
+        self.assertEqual([st.get('text') for st in turns[0]['steps'] if st.get('k') == 'note'], [conversation.TOOK_BACK])
+        self.assertNotIn(asked, str(turns))
+        self.assertNotIn('summary', turns[0], "the taken-back answer's summary goes with its words (the recorded walk, 2026-11-12)")
+        self.assertNotIn('Gail asked Alex', str(turns))
+        self.assertIn('do not mention it', seen['prompts'][1])
 
     def test_a_woken_turn_that_ends_short_again_is_not_woken_again(self):
         s = MemoryStore(); a_claude(self); tid = researcher(s)
@@ -116,6 +157,50 @@ class AShortTurnWakesTheAgentOnceTests(unittest.TestCase):
             hooks.judge_ended(s, tid, sid, said, brain=verdict(True, 'waiting on Approve'), wait=True, then=woke.append)
             self.assertEqual(woke, [] if sid == 'g3' else ['Approve'])
             self.assertEqual(s.last_worker_event(tid, skip=ws.NOTES)['Kind'], 'turn_end')        # never a failure
+
+    def test_a_turn_that_set_its_own_check_back_is_not_woken_before_it_is_due(self):
+        """Recorded on the real CLI, 2026-11-13 (invented people): two emails went on the owner's Send; the agent said "I'll check back in two
+        days for Ray's quote" and set the check-back; the judge read that as work of its own, and the agent was woken ten seconds later to
+        say that nobody had answered yet. The check-back is the wake: a stored fact, read before any model. One set by an EARLIER turn says
+        nothing of this one, and a turn that says the same with none set is still the judge's to read."""
+        from taskuary import checkback
+        said = "Both emails, to Ray and to Erin, have gone out. I'll check back in two days for Ray's quote and Erin's answer on the budget."
+        short, asked = verdict(True, "its own check-in in two days for Ray's quote"), []
+        def judge(*a, **k): asked.append(1); return short(*a, **k)
+        s = MemoryStore(); tid = researcher(s)
+        ws.record(s, tid, 'g7', 'working', text='', source='api')
+        checkback.set_check(s, tid, 'in 2 days', 'Ray Colton sent the bus quote', 'assistant')
+        ws.record(s, tid, 'g7', 'turn_end', text=said, source='api')
+        woke = []
+        hooks.judge_ended(s, tid, 'g7', said, brain=judge, wait=True, then=woke.append)
+        self.assertEqual((woke, asked), ([], []), 'no wake, and no model was asked')
+        # ...a later turn on the same task, the old check-back still waiting: that turn's own short end is read as before
+        s._exec("UPDATE audit SET CreatedAt='2026-11-01 09:00:00' WHERE Action='check_back'")
+        ws.record(s, tid, 'g7', 'working', text='go on', source='api'); ws.record(s, tid, 'g7', 'turn_end', text=SHORT, source='api')
+        hooks.judge_ended(s, tid, 'g7', SHORT, brain=verdict(True, 'the walkthrough'), wait=True, then=woke.append)
+        self.assertEqual(woke, ['the walkthrough'])
+        # ...and with none set, the same words are the judge's to read
+        s2 = MemoryStore(); t2 = researcher(s2)
+        ws.record(s2, t2, 'g8', 'working', text='', source='api'); ws.record(s2, t2, 'g8', 'turn_end', text=said, source='api')
+        hooks.judge_ended(s2, t2, 'g8', said, brain=judge, wait=True, then=woke.append)
+        self.assertEqual(len(asked), 1)
+
+    def test_a_turn_is_not_woken_while_something_it_set_up_waits_for_the_owners_press(self):
+        """Recorded on the real CLI, 2026-11-13 (invented people): the agent wrote two emails; the owner sent the first; the agent, told so,
+        said the second "hasn't been sent yet" - and the judge read that as work left unfinished, so it was woken to answer "Only you can
+        send the email to Omar. Nothing else is needed from me for it." A card waiting for his press is a stored fact: he moves next."""
+        said = "Your email asking Marcus to book the AV went out. The email to Omar asking for the attendee list hasn't been sent yet."
+        asked, woke = [], []
+        def judge(*a, **k): asked.append(1); return json.dumps({'unfinished': True, 'why': 'email to Omar not yet sent'})
+        s = MemoryStore(); tid = researcher(s)
+        rid = s.add_review({'TaskId': tid, 'Kind': 'slot', 'Status': 'pending', 'DraftText': 'Hi Omar, could you send me the attendee list? Alex',
+                            'Deliver': json.dumps({'channel': 'email', 'to': ['omar@northwind.example'], 'cc': [], 'subject': 'Attendee list', 'slot': 's1'})})
+        ws.record(s, tid, 'g9', 'working', text='', source='api'); ws.record(s, tid, 'g9', 'turn_end', text=said, source='api')
+        hooks.judge_ended(s, tid, 'g9', said, brain=judge, wait=True, then=woke.append)
+        self.assertEqual((woke, asked), ([], []), 'no wake, and no model was asked')
+        s.decide_review(rid, 'approved', None, 'owner')                # ...nothing waits on him any more: the same words are the judge's to read
+        hooks.judge_ended(s, tid, 'g9', said, brain=judge, wait=True, then=woke.append)
+        self.assertEqual((woke, asked), (['email to Omar not yet sent'], [1]))
 
     def test_an_unreadable_verdict_is_no_verdict(self):
         s = MemoryStore(); tid = researcher(s)
@@ -170,6 +255,28 @@ class TheTurnsOwnRecordAnswersFirstTests(unittest.TestCase):
         woke = []
         hooks.judge_ended(s, tid, 'g7', SHORT, brain=verdict(True, 'the walkthrough'), wait=True, then=woke.append, jobs=None)
         self.assertEqual(woke, ['the walkthrough'])
+
+    def test_a_turn_that_left_a_letter_for_the_owners_send_is_never_read_as_short_or_as_asking_for_a_sign_in(self):
+        """The owner's live task, 2026-11-13 (invented people): he corrected the agent; its turn rewrote the reply to Erin and said the
+        login she needs "comes separately, so that one is still yours". The judge read those words as asking him for a sign-in: the answer
+        was taken back, its agent woken with "your last answer asked the owner for a password", and that second turn left a second letter
+        to Erin under the first card, its words under both. The turn's own record says it left a letter for his Send (the summary's
+        `drafted`): a person moves next, so nothing is read and nobody is woken."""
+        s = MemoryStore(); tid = researcher(s)
+        said = 'The reply to Erin is rewritten with the three files. It says the portal login comes separately, so that one is still yours.'
+        ws.record(s, tid, 'g8', 'turn_end', text=said, source='api')
+        woke, asked = [], []
+        brain = lambda *a, **k: asked.append(1) or json.dumps({'unfinished': False, 'why': '', 'asks_secret': True})
+        hooks.judge_ended(s, tid, 'g8', said, brain=brain, wait=True, then=lambda *a: woke.append(a), summ={'did': 'Rewrote the reply.', 'nothing_left': False, 'drafted': [{'review': 7}]})
+        self.assertEqual((woke, asked), ([], []))                                   # no wake, and no model call: the stored fact answers
+        # ...a turn that left the draft as it was (`drafted` empty) is read as before
+        hooks.judge_ended(s, tid, 'g8', said, brain=brain, wait=True, then=lambda *a: woke.append(a), summ={'did': 'Looked again.', 'drafted': []})
+        self.assertEqual(len(woke), 1)
+        # ...and work the turn itself put aside that still runs wakes it, a letter left or not
+        woke.clear()
+        hooks.judge_ended(s, tid, 'g8', said, brain=brain, wait=True, then=lambda *a: woke.append(a), summ={'drafted': [{'review': 7}]},
+                          jobs=[{'kind': 'shell'}])
+        self.assertEqual(len(woke), 1)
 
 
 class AnOwnersAskAnsweredWithNothingTests(unittest.TestCase):

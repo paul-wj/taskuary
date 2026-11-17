@@ -5,7 +5,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { Alert, Box, Button, Chip, CircularProgress, Switch, TextField, Typography } from "@mui/material";
 import api from "./api";
 import { BORDER, DIM, FAINT, INK, PANEL } from "./theme.jsx";
-import { cleanOne, sessionLine, trustOf, withTrust, withoutTrust } from "./reasonNetwork.js";
+import { cleanOne, gateWords, sessionLine, trustOf, withTrust, withoutTrust } from "./reasonNetwork.js";
 import { t, translateDescriptor } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 import { repoLabel } from "./repoNames.js";
@@ -76,10 +76,8 @@ export default function ReasonPanel({ conn, reload }) {
         <Switch checked={!!st.gate?.on} disabled={busy === "gate" || !conn.Active}
           onChange={(e) => act("gate", () => api.post("/api/reason/gate", { on: e.target.checked }))} />
         <Box>
-          <Typography variant="body2" sx={{ color: INK, fontWeight: 600 }}>{t("Only people you trust reach your agents")}</Typography>
-          <Typography variant="caption" sx={{ color: DIM }}>{st.gate && (st.gate.on
-            ? t("On: Reason Network holds every message from anyone you have not trusted below. It reaches no agent on this computer until you deliver it.")
-            : t("Off: Reason Network's own setting decides (it {action} teammates' messages).", { action: t(st.gate.default === "refuse" ? "refuses" : st.gate.default === "hold" ? "holds" : "delivers") }))} {t("Turning it on also keeps the Assistant's own folder off the network.")}</Typography>
+          <Typography variant="body2" sx={{ color: INK, fontWeight: 600 }}>Only people you trust reach your agents</Typography>
+          <Typography variant="caption" sx={{ color: DIM }}>{gateWords(st.gate)} Turning it on also keeps Taskuary's own chat folder off the network.</Typography>
         </Box>
       </Row>
 
@@ -144,7 +142,7 @@ export default function ReasonPanel({ conn, reload }) {
 
       <Section title={t("Off the network")}>
         <Row>
-          <Typography variant="body2" sx={{ color: INK, flex: 1 }}>{t("The Assistant's own folder")}</Typography>
+          <Typography variant="body2" sx={{ color: INK, flex: 1 }}>{t("Taskuary's own chat folder")}</Typography>
           <Typography variant="caption" sx={{ color: DIM }}>{t(st.assistant_off ? "off the network" : "not yet off - turn on the trust gate above")}</Typography>
         </Row>
         {(st.folders || []).length === 0 && <Typography variant="body2" sx={{ color: DIM, mt: 1 }}>{t("No repository checkouts are set up for your agents yet.")}</Typography>}

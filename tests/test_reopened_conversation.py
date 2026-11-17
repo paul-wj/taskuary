@@ -6,7 +6,7 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
-from taskuary import advisor, concierge, continuity, funnel, general, server
+from taskuary import concierge, continuity, funnel, general, server
 from taskuary.store import MemoryStore
 
 
@@ -23,6 +23,7 @@ def reopened():
     _at('comment', 'CommentId', s.add_comment(tid, 'assistant', 'assistant_agent', 'There is no ready-made connector; the reply is drafted.'),
         '2026-10-13 15:04:15', s)
     s.save_session(tid, 'cli:claude', '', 'native-1', 'ctx-1')
+    s._exec('UPDATE task SET TrustedThrough=? WHERE TaskId=?', (10 ** 9, tid))      # a thread he trusts: an untrusted sender's task starts no agent (origin.hold)
     s.cx.execute("UPDATE session_resume SET UpdatedAt='2026-10-13 15:04:16' WHERE TaskId=?", (tid,)); s.cx.commit()
     old = s.add_message({'ExternalId': 'm0', 'Channel': 'email', 'Subject': 'Connector status?', 'FromName': 'Gail Moreno',
                          'FromEmail': 'gail@northwind.example', 'BodyText': 'Any news on the connector?', 'TaskId': tid, 'SentAt': '2026-10-13 14:00:00'})
@@ -108,20 +109,6 @@ class ContinueBringsTheMailTests(unittest.TestCase):
         said = reopen.call_args.kwargs['instruction']
         self.assertIn('scope the build', said); self.assertNotIn('vendor gateway', said)
         general.answered(tid, every=True)
-
-
-class AdvisorReadsTheStoryTests(unittest.TestCase):
-    def test_the_prompt_carries_the_mail_since_and_what_is_still_to_do(self):
-        s, tid = reopened()
-        p = advisor._prompt(s, 'message.attached', {'ref': 'TQ-0001', 'kind': 'agent', 'tid': tid},
-                            [{'verb': 'continue', 'label': 'Keep going'}], 1, 'task', tid)
-        self.assertIn("NEW SINCE THE AGENT'S LAST TURN (2026-10-13 15:04:16) - its saved conversation is from BEFORE these", p)
-        self.assertIn('Paula Vance', p)
-        # the mail from before the agent's turn is the thread's tail (the Assistant's context, 2026-11-02), never news since
-        new, _, before = p.partition('THE THREAD BEFORE THE AGENT')
-        self.assertNotIn('Any news on the connector', new); self.assertIn('Any news on the connector', before)
-        self.assertIn('STILL TO DO ON THE TASK: Scope what building the connector would take', p)
-        self.assertNotIn('Say where the request stands', p)
 
 
 if __name__ == '__main__':

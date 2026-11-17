@@ -9,7 +9,7 @@ These tests are the lock. They check what is REFUSED, not what is hidden: a butt
 nothing is a design, a deny list is a control - and the list is written so that an endpoint
 added next month is refused until somebody decides otherwise.
 """
-import os
+import os, re
 import tempfile, time, unittest
 from pathlib import Path
 from unittest import mock
@@ -39,8 +39,56 @@ class OffByDefaultTests(unittest.TestCase):
 class TheDoorsAreShutTests(unittest.TestCase):
     def test_nothing_sends(self):
         with on():
-            for path in ('/api/reviews/3/send', '/api/review/3/send', '/api/tasks/7/handoff', '/api/reviews/3/decide'):
+            for path in ('/api/reviews/3/send', '/api/review/3/send', '/api/tasks/7/handoff'):
                 self.assertIn('nothing is sent', demo.refuse('POST', path), path)
+            # ...a card's verdict is judged by its verb: approving one sends it, and putting it down sends nothing - Dismiss on a post
+            # answered "nothing is sent" and the card stayed (the walk, 2026-11-15)
+            self.assertEqual(demo.refuse('POST', '/api/reviews/3/decide'), '')
+            for verb in ('approve', 'edit', 'merge_anyway', 'close_pr'): self.assertIn('nothing is sent', demo.refuse_verdict(verb), verb)
+            # ...a LETTER's Send is played, not refused (the owner, 2026-11-15); a push or a merge is never a letter
+            for verb in ('approve', 'edit'): self.assertEqual(demo.refuse_verdict(verb, 'draft_reply'), '', verb)
+            for verb in ('merge_anyway', 'close_pr'): self.assertIn('nothing is sent', demo.refuse_verdict(verb, 'draft_reply'), verb)
+            for verb in ('reject', 'no_reply', 'close_unsent'): self.assertEqual(demo.refuse_verdict(verb), '', verb)
+        self.assertEqual(demo.refuse_verdict('approve'), '', 'outside the demo nothing is refused here')
+
+    def test_dismiss_puts_a_card_down_and_send_is_still_refused_as_the_demo(self):
+        from fastapi.testclient import TestClient
+        from taskuary import server
+        s = MemoryStore(); demo.seed(s)
+        rid = s._one("SELECT ReviewId FROM review WHERE Kind='action' AND Status='pending' ORDER BY ReviewId LIMIT 1")['ReviewId']
+        with on(), mock.patch.object(server, 'store', s):
+            c = TestClient(server.app)
+            r = c.post(f'/api/reviews/{rid}/decide', json={'verb': 'approve'})
+            self.assertEqual((r.status_code, r.json().get('demo')), (403, True)); self.assertIn('nothing is sent', r.json()['detail'])
+            self.assertEqual(s.get_review(rid)['Status'], 'pending')
+            r = c.post(f'/api/reviews/{rid}/decide', json={'verb': 'reject'})
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertEqual(s.get_review(rid)['Status'], 'rejected')
+
+    def test_send_on_a_letter_is_played_the_card_settles_and_a_recorded_line_follows(self):
+        # the owner, 2026-11-15: the tour says "press Send - nothing leaves the demo", and the press drew a red refusal on the card
+        from fastapi.testclient import TestClient
+        from taskuary import outbound, server
+        s = MemoryStore(); demo.seed(s)
+        rv = s._one("SELECT r.* FROM review r JOIN message m ON m.MessageId=r.MessageId WHERE r.Kind='draft' AND r.Status='pending' AND r.TaskId IS NOT NULL "
+                    "AND IFNULL(r.DraftText,'')<>'' AND m.Channel='email' ORDER BY r.ReviewId LIMIT 1")
+        gone = mock.Mock(side_effect=AssertionError('nothing leaves the demo'))
+        with on(), mock.patch.object(server, 'store', s), mock.patch.object(outbound, 'send_out', gone), mock.patch.object(outbound, 'reply_to_message', gone):
+            r = TestClient(server.app).post(f"/api/reviews/{rv['ReviewId']}/decide", json={'verb': 'approve'})
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertEqual((r.json()['ok'], (r.json()['sent'] or {}).get('demo')), (True, True), r.text)
+        self.assertIn(s.get_review(rv['ReviewId'])['Status'], ('approved', 'sent'))
+        said = [c['Body'] for c in s.list_comments(rv['TaskId'])]
+        self.assertEqual(said.count(demo.AFTER_SEND), 1, 'the recorded agent says what would happen next, once')
+        self.assertIsNone(s.last_worker_event(rv['TaskId'], kinds=('failed',)), 'and no agent is woken to fail on "No AI is connected"')
+        gone.assert_not_called()
+
+    def test_the_draft_the_tour_points_at_can_be_sent(self):
+        # ...its redraft stayed pinned to the first mail, so it read as stale: Redraft alone, and no AI in the demo to redraft with
+        from taskuary import verdicts
+        s = MemoryStore(); demo.seed(s)
+        rv = s._one("SELECT r.* FROM review r JOIN task t ON t.TaskId=r.TaskId WHERE t.Title='September overtime by site' AND r.Status='pending'")
+        self.assertFalse(verdicts.context_moved(s, rv)[0], 'the reply answers her newest mail')
 
     def test_no_connector_can_be_made_edited_or_given_a_secret(self):
         with on():
@@ -67,6 +115,11 @@ class TheDoorsAreShutTests(unittest.TestCase):
     def test_the_greeting_when_a_visitor_sits_down_is_the_demo_itself(self):
         # refused, the demo never said good morning: the arrive ping only writes the demo's own chat
         with on(): self.assertFalse(demo.refuse('POST', '/api/concierge/arrive'))
+
+    def test_link_opens_the_running_demo_signed_in(self):
+        # `taskuary --demo --link` asks the running demo for a one-time key: refused, it printed a bare address whose page
+        # said "Open Taskuary from its app" - the demo could only be opened by the process that started it
+        with on(): self.assertFalse(demo.refuse('POST', '/api/launch-key'))
 
     def test_an_endpoint_nobody_thought_about_is_refused_by_default(self):
         """The list says what MAY happen. Anything else - including something added next month -
@@ -167,26 +220,6 @@ class TheScriptedBrainTests(unittest.TestCase):
         out = json.loads(demo.brain()('Answer ONLY with JSON: {"intent": ...}', 'a message'))
         self.assertIn(out['intent'], ('fyi', 'task', 'reply_only'))
 
-    def test_the_advisor_gets_one_offered_verb_and_a_plain_line(self):
-        """B17 (2026-10-17): the Advisor's prompt says JSON, so it got triage's {"intent": "fyi"} and the demo never showed one
-        suggestion. It names an offered verb someone waiting makes right - and on a newsletter, like the real one, nothing."""
-        import json
-        ask = lambda verbs: json.loads(demo.brain()('Answer with JSON only', f'EVENT: item.shown\n\nVERBS OFFERED: {verbs}'))
-        out = ask('close (Mark done), reply (Reply), defer (Remind me)')
-        self.assertEqual(out['verb'], 'reply'); self.assertLessEqual(len(out['line']), 80); self.assertTrue(out['line'])
-        self.assertEqual(ask('mine (Make a task), regular_agent (Send to agent), not_ours (Not ours)')['verb'], None)
-
-    def test_the_advisors_verdict_on_an_item_is_the_one_stored_with_it_never_read_from_its_words(self):
-        """The owner, 2026-10-28: what a draft promises or an issue holds is the fixture's own verdict (demo.VERDICTS) - the same words
-        under another title are judged by state alone, and the stored item is judged the same whatever its draft says."""
-        import json
-        ask = lambda title, extra='': json.loads(demo.brain()('JSON', '\n\n'.join(['EVENT: item.shown', 'THE ITEM: ' + json.dumps({'title': title}),
-                                                                                    'VERBS OFFERED: approve (Send), redraft (Redraft), close (Mark done)', extra])))
-        promise = 'THE DRAFT WAITING FOR THE OWNER\'S YES: "Sending the Q3 pack now."\nATTACHED TO THE DRAFT: nothing'
-        self.assertEqual(ask('Can you resend the Q3 numbers?')['verb'], 'redraft')
-        self.assertEqual(ask('Can you resend the Q3 numbers?')['line'], demo.PROMISED)
-        self.assertEqual(ask('Something else entirely', promise)['verb'], 'approve', 'no stored verdict: the words decide nothing')
-        for title, v in demo.VERDICTS.items(): self.assertTrue(v['verbs'] and v['line'], title)
 
     def test_the_canned_count_is_the_rails_own(self):
         """B23: "Three things are waiting on you" stood beside a rail of nine - and "25 things are on it, and 5 are waiting" beside an
@@ -252,7 +285,10 @@ class TheDemoChatAnswersItsSuggestionsTests(unittest.TestCase):
         from taskuary import concierge
         with mock.patch('taskuary.terminal.live_sessions', lambda tail=0: []):
             out = concierge.say(self.s, 'close all the tasks from Priya', llm=demo.brain(store=self.s))
-            self.assertEqual(out['say'], demo.OUT_OF_SCRIPT)
+            # ...the questions in the line's own words too: the Assistant's window draws no chips, and "the suggested questions" named
+            # questions nobody could see (the walk, 2026-11-15)
+            self.assertEqual(out['say'], f'{demo.OUT_OF_SCRIPT} {demo.ASK_ONE}')
+            for _, ask, _ in demo.PROMPTS: self.assertIn(f'“{ask}”', out['say'])
             self.assertEqual([c for c in out['chips'] if c.get('prompt')], demo.prompt_chips())
             self.assertTrue(all(c['ask'] == c['label'] for c in demo.prompt_chips()), 'a chip sends exactly the words it shows')
             out = concierge.say(self.s, demo.PROMPTS[2][1], llm=demo.brain(store=self.s))
@@ -261,17 +297,15 @@ class TheDemoChatAnswersItsSuggestionsTests(unittest.TestCase):
 
 class TheAdvisorSpeaksInTheDemoTests(unittest.TestCase):
     def test_an_item_on_the_table_gets_a_verb(self):
-        """The demo is where newcomers first meet the Advisor: an item on the table is decided at once, never pending - and NO DEFAULT
-        VERB (the owner, 2026-10-28): a button is lit only beside its fact, so the scripted line that only explains the button lights none."""
-        from taskuary import advisor, funnel, rulebook
+        """An item on the table is decided at once, never pending - and NO DEFAULT VERB (the owner, 2026-10-28): a button is lit only
+        beside its fact or as the move its state names."""
+        from taskuary import funnel, rulebook
         s = MemoryStore(); demo.seed(s)
         with on(), mock.patch('taskuary.terminal.live_sessions', lambda tail=0: []):
             funnel.invalidate()
             keys = [i['key'] for i in funnel.pile(s, force=True)['items'] if i.get('lane') == 'approve' or i.get('kind') in ('asked', 'todo')]
             self.assertTrue(keys)
-            tgt = advisor.target_of(s, keys[0])
-            advisor.judge(s, advisor.SHOWN, *tgt, advisor.revision(s, *tgt), tier=2, key=keys[0])
-            got = advisor.for_key(s, keys[0])
+            got = rulebook.status(s, keys[0])
         funnel.invalidate()
         self.assertTrue(got.get('state'), got); self.assertNotIn('pending', got)
         # ...or the move the state's own fact names (rulebook.MOVES: an ask no agent took lights Send to agent - the owner, 2026-11-10)
@@ -311,6 +345,11 @@ class TheWorldTests(unittest.TestCase):
         s = MemoryStore()
         s.create_task({'Title': 'a real task'}, 'o')
         self.assertEqual(demo.seed(s), 0)
+
+    def test_the_owners_address_is_the_owners(self):
+        # About you read "alex@northwind.example · Dana Whitfield": one person under two names (the walk, 2026-11-15)
+        first, last = demo.OWNER.lower().split()
+        self.assertEqual(demo.OWNER_EMAIL, f'{first[0]}{last}@northwind.example')
 
     def test_nobody_real_is_in_it(self):
         """Every address in the demo world is on a RESERVED domain. This used to name the one real
@@ -518,14 +557,40 @@ class TheDemoOpensOnItsTourTests(unittest.TestCase):
         for b in ('Next', 'Back', 'Send', 'Remind me', 'Not for me'): self.assertIn(b, labels)
         self.assertIn("What's on me right now?", [ask for _, ask, _ in demo.PROMPTS], 'the chat answers the question the tour asks')
 
-    def test_the_first_view_opens_on_it_until_it_is_done(self):
+    def test_a_step_that_shows_an_agents_turns_names_a_task_that_has_them(self):
+        """The first step sent the visitor to "Month-end close is short by 4,180" to see "Agent is one chat - its turns and what it set
+        up": that task has no agent and its chat is the one email. The turns are on the reconciliation's task. And "the draft under Next
+        steps" named a heading the chat no longer draws."""
+        from taskuary import general
         s, _ = self.seeded()
-        tour = next(t for t in s.list_tasks() if t['Title'] == demo.TOUR)
-        with on(): self.assertEqual(demo.opens(s), {'tid': tour['TaskId']})
+        step = next(x for x in demo.TOUR_STEPS if 'its turns' in x)
+        named, = re.findall(r'"([^"]+)"', step)
+        tid = next(t['TaskId'] for t in s.list_tasks() if t['Title'].startswith(named))
+        self.assertTrue([c for c in s.list_comments(tid) if c.get('ActorType') == general.ASSISTANT_TYPE], (named, 'has no agent turn'))
+        self.assertFalse([x for x in demo.TOUR_STEPS if 'Next steps' in x])
+
+    def test_no_agent_answers_before_the_message_it_answers(self):
+        """The invite's agent turn read 11:28 PM under Ruth's invitation stamped 11:46 PM: the seed moved the message's CreatedAt to before
+        its turn, and the chat draws its SentAt. On every task the first turn comes after the first message that came in."""
+        from taskuary import general
+        s, _ = self.seeded()
+        late = []
+        for t in s.list_tasks():
+            got = sorted(str(m.get('SentAt') or '') for m in s.list_messages(t['TaskId']) if m.get('SentAt'))
+            said = sorted(str(c['CreatedAt']) for c in s.list_comments(t['TaskId']) if c.get('ActorType') == general.ASSISTANT_TYPE)
+            if got and said and said[0] < got[0]: late.append((t['Title'], got[0], said[0]))
+        self.assertEqual(late, [])
+
+    def test_the_first_view_opens_on_an_agents_finished_work_never_the_greeting(self):
+        s, _ = self.seeded()
+        post = next(t for t in s.list_tasks() if t['Title'] == demo.SHOWCASE)
+        with on(): self.assertEqual(demo.opens(s), {'tid': post['TaskId']})
         with on(), mock.patch.dict(os.environ, {demo.OPENS_ENV: '0'}): self.assertIsNone(demo.opens(s))
         self.assertIsNone(demo.opens(s), 'never outside the demo')
-        s.update_task(tour['TaskId'], {'Status': 'done'}, 'owner')
-        with on(): self.assertIsNone(demo.opens(s), 'a finished tour opens nothing: the greeting, as an install opens')
+        s.update_task(post['TaskId'], {'Status': 'done'}, 'owner')
+        with on(): got = demo.opens(s)
+        self.assertIsNotNone(got, 'a closed showcase opens another open task, not the empty greeting')
+        self.assertNotIn(s.get_task(got['tid'])['Status'], ('done', 'dropped'))
 
     def test_where_do_i_start_brings_up_the_tour(self):
         from taskuary import concierge
@@ -564,6 +629,8 @@ class TheGeneralAgentsDayTests(unittest.TestCase):
         ot = next(t for n, t in tids.items() if 'overtime' in n)
         self.assertEqual(len([m for m in s.list_messages(ot) if m.get('Direction') != 'out']), 2, 'a second mail joined the thread')
         self.assertEqual(len(s.draft_snapshots(ot)), 2, 'each turn keeps the draft it wrote')
+        # ...and the redraft answers that second mail, so it is the one to press: it read "set aside when you moved on" over "waiting to start"
+        self.assertEqual(proposals.written_past(s, ot), set(), 'the draft written after her second mail is not one the thread moved past')
 
     def test_the_owners_own_answer_ends_in_a_recommendation_never_a_close(self):
         from taskuary import general
@@ -608,6 +675,25 @@ class TheDemoWorldIsConnectedTests(unittest.TestCase):
         os.environ.pop(demo.FLAG, None)
         for path in self.HOST_READS: self.assertIsNone(demo.answer('GET', path), path)
 
+    def test_settings_asks_for_no_signature_out_of_sent_mail_that_does_not_exist(self):
+        from taskuary import signatures
+        s = MemoryStore(); demo.seed(s)
+        self.assertFalse(signatures.overview(s)['offer'])
+
+    def test_a_press_that_reaches_nothing_real_is_never_answered_as_if_it_did(self):
+        # each of these answered "that would reach something real, so it is switched off" (the walk, 2026-11-15)
+        with on():
+            self.assertEqual(demo.refuse('PATCH', '/api/tasks/36/checklist/c1/note'), '', 'a note on a to-do step is the demo own database')
+            self.assertEqual(demo.refuse('POST', '/api/tasks/7/steps/s2/start'), demo.STARTS)
+            self.assertEqual(demo.refuse('POST', '/api/tasks/7/read-ask'), demo.NO_AI)
+            for path in ('/api/reports/7/rerun', '/api/reports/7/run', '/api/reports/due', '/api/sources', '/api/sources/7'):
+                self.assertIn('reports are fixed', demo.refuse('POST', path), path)
+            for path in ('/api/tasks/7/steps/s2/start', '/api/tasks/7/read-ask', '/api/reports/due', '/api/sources'):
+                self.assertNotEqual(demo.refuse('POST', path), demo.OFF, path)
+
+    def test_trust_says_no_agent_starts_here_never_that_it_would_reach_something_real(self):
+        with on(): self.assertEqual(demo.refuse('POST', '/api/tasks/4/trust'), demo.STARTS)
+
     def test_the_tool_cards_buttons_say_it_is_the_demo(self):
         with on():
             for path in ('/api/cli/install', '/api/cli/update', '/api/cli/setup', '/api/cli/connections/claude', '/api/deps/install', '/api/update'):
@@ -618,3 +704,75 @@ class TheDemoWorldIsConnectedTests(unittest.TestCase):
         s = MemoryStore(); demo.seed(s)
         self.assertEqual(connectorcatalog.connected_count(s, demo.cli_connections()), len(demo.CONNECTIONS) + len(demo.CLIS_ON))
         for kind in ('email', 'linkedin', 'teams', 'whatsapp', 'github'): self.assertIsNone(outbound.connect_fix(s, kind), kind)
+
+
+class DemoDashboardTests(unittest.TestCase):
+    def test_a_report_named_nightly_or_weekly_has_that_schedule(self):
+        # with none, the Reports page framed each in red: "No schedule - it only runs when you press Run now" (the walk, 2026-11-15)
+        import json
+        s = MemoryStore(); demo.seed(s)
+        crons = {x['Address']: json.loads(x['ConfigJson']).get('cron') for x in s.list_sources(active_only=False) if x.get('Channel') == 'report'}
+        for title, _, _ in demo.REPORTS: self.assertTrue(crons.get(title), title)
+        self.assertEqual(len(demo.REPORT_CRONS), len(demo.REPORTS))
+
+    def test_a_report_of_the_last_fourteen_days_ends_yesterday(self):
+        from datetime import date, timedelta
+        days = [r['day'] for r in next(rows for title, _, rows in demo.REPORTS if 'last 14' in title)]
+        # ...as of when the demo was read: a run that crosses midnight between the import and this line (CI, 23:55 UTC) is a day on
+        d = [date.fromisoformat(x) for x in days]
+        self.assertEqual((len(d), [b - a for a, b in zip(d, d[1:])]), (14, [timedelta(days=1)] * 13))
+        self.assertIn(date.today() - d[-1], (timedelta(days=1), timedelta(days=2)))
+
+    def test_the_dashboards_count_the_whole_morning_not_the_half_seeded_before_them(self):
+        # they ran before the agents' day and the tour were seeded: the rail read "Open now 12" beside nineteen open tasks (the walk, 2026-11-15)
+        from taskuary import dashboards
+        s = MemoryStore(); demo.seed(s)
+        n = sum(r['state'] == 'open' for r in dashboards._tasks(s, 90))
+        heads = [m['Subject'] for m in s._rows("SELECT Subject FROM message WHERE Channel='report' AND Status NOT IN ('skipped','expired') ORDER BY MessageId")]
+        self.assertTrue(any(h.startswith('Taskuary at a glance') and f'Open now {n}' in h for h in heads), (n, heads))
+        self.assertTrue(any(h.startswith('Northwind desk') and f'Open tasks {n}' in h for h in heads), (n, heads))
+        # ...and nothing made after the dashboards changed its number: the walks and the static demo know the morning's messages by them
+        self.assertEqual(s.get_message(45)['TaskId'], next(t['TaskId'] for t in s.list_tasks() if 'LinkedIn' in (t.get('Title') or '')))
+        # ...and they stand on the rail in the order they always did
+        order = [h.split(' — ')[0] for h in heads if ' — ' in h]
+        self.assertEqual(order[-3:], ['Northwind desk', 'Taskuary at a glance', 'Vendor spend, weekly'])
+
+
+class DemoNeverPollsTests(unittest.TestCase):
+    def test_opening_a_chat_task_reads_no_channel_and_leaves_its_card_connected(self):
+        # opening a Teams or WhatsApp task refreshed its channel: the prop card then read "last test failed", and the WhatsApp read went to
+        # whatever bridge was listening on this computer (the walk, 2026-11-15)
+        from taskuary import channels
+        s = MemoryStore(); demo.seed(s)
+        with on(), mock.patch.object(channels, '_poll_jobs', side_effect=AssertionError('the demo read a channel')):
+            self.assertEqual(channels.poll_channels(s, only=['teams', 'whatsapp']), 0)
+        self.assertFalse([c['Type'] for c in s.list_connectors() if c.get('LastError')])
+
+
+class DemoCalendarTests(unittest.TestCase):
+    def test_the_demo_reads_its_own_week_and_never_reaches_microsoft(self):
+        # the demo's Outlook card is a prop: read, it went to Microsoft and drew a real sign-in refusal on the day card (2026-11-12)
+        from taskuary import calendar
+        s = MemoryStore()
+        cid = s.get_connector_by_type('outlook')['ConnectorId']
+        s.save_connector({'ConnectorId': cid, 'Active': 1, 'Secret': 'x'}, 'o')
+        s.save_source({'Channel': 'email', 'Address': 'alex@northwind.example', 'ConnectorId': cid, 'Name': 'Mail', 'Active': 1}, 'o')
+        with mock.patch.object(demo, 'enabled', return_value=True), mock.patch.object(calendar, 'outlook_events', side_effect=AssertionError('went to Microsoft')):
+            got = calendar.agenda(s)
+        self.assertEqual((got['errors'], got['sources']), ([], ['demo']))
+        self.assertEqual([e['subject'] for e in got['events']], [e['subject'] for e in demo.agenda()])
+
+
+class DemoSealedTests(unittest.TestCase):
+    def test_the_demo_reaches_nothing_outside_this_computer(self):
+        # its prop cards sent an invented tenant to Microsoft and filled the bell with real refusals (the overnight audit, 2026-11-12)
+        import requests
+        before = requests.sessions.Session.request
+        try:
+            self.assertTrue(demo.seal()); demo.seal()                                  # once is enough, twice changes nothing
+            self.assertIs(requests.sessions.Session.request.real, before)
+            with self.assertRaisesRegex(requests.ConnectionError, 'reaches nothing outside'):
+                requests.get('https://login.microsoftonline.example/token')
+            with mock.patch.object(requests.sessions.Session.request, 'real', side_effect=lambda *a, **k: 'local'):
+                self.assertEqual(requests.sessions.Session().request('GET', 'http://127.0.0.1:7803/api/health'), 'local')
+        finally: requests.sessions.Session.request = before

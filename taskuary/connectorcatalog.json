@@ -195,6 +195,44 @@
               "agent": true
             }
           ]
+        },
+        {
+          "kind": "tracker",
+          "road": "run_tool",
+          "tool": "github_close",
+          "press": "Close issue",
+          "busy": "Closing…",
+          "done": "Closed",
+          "undone": "Not closed",
+          "note": "Nothing is closed on GitHub until you press Close issue.",
+          "fields": [
+            {
+              "key": "repo",
+              "label": "In",
+              "type": "line",
+              "agent": true
+            },
+            {
+              "key": "number",
+              "label": "Issue",
+              "type": "line",
+              "agent": true,
+              "heading": true
+            },
+            {
+              "key": "reason",
+              "label": "Why",
+              "type": "line",
+              "agent": true
+            },
+            {
+              "key": "comment",
+              "label": "Comment",
+              "type": "text",
+              "edit": true,
+              "agent": true
+            }
+          ]
         }
       ]
     },
@@ -395,7 +433,7 @@
       "title": "Gmail / Google Workspace",
       "group": "Messaging",
       "planned": false,
-      "desc": "A Gmail or Google Workspace mailbox - IMAP in through triage, replies back over Gmail's own SMTP, in-thread. Optional OAuth fields add the calendar.",
+      "desc": "A Gmail or Google Workspace mailbox - IMAP in through triage, replies back over Gmail's own SMTP, in-thread. Sign in with Google for the mail, calendar and contacts together, or use an App Password for the mail alone.",
       "match": [
         "gmail / google workspace",
         "gmail",

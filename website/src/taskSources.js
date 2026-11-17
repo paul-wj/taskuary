@@ -173,7 +173,7 @@ const WHO = { general: "an agent", coding: "a coding agent" };
 export const repoTag = (tags, name = "repo") => (String(tags || "").match(new RegExp(`(?:^|[\\s,])${name}:([^\\s,]+)`)) || [])[1] || "";
 // A WORKFLOW RUN has no message behind it and nobody triaged it (workflows.run): what started it is on the task as a tag, and the
 // workflow it belongs to rides on the detail (workflows.of_task) - the owner, 2026-10-16: "what does it show triggered it in the task card?"
-const STARTED_BY = { schedule: "its schedule", manual: "you (Run now)", assistant: "the assistant", phone: "you, from your phone" };
+const STARTED_BY = { schedule: "its schedule", manual: "you (Run now)", assistant: "Taskuary", phone: "you, from your phone" };
 // WHERE A TASK CAME FROM, in plain words: "from email · created 1m ago by triage" named the machinery (the walk's WORDS, 2026-10-17).
 // The sorter that made it is "sorted", the owner is "you", anything else just made it.
 const SORTERS = new Set(["triage", "router", "routing", "classifier"]), OWNER = new Set(["owner", "manual", "you", "user"]);
@@ -244,6 +244,9 @@ export const sortedLine = (facts, kind, { prefix = true, short = false } = {}) =
   const priority = facts.pills.find((p) => p.key === "priority")?.value || "regular";
   return [head, repo && t("in {repo}", { repo }), t("{priority} priority", { priority: t(priority) })].filter(Boolean).join(" · ");
 };
+// ...UNDER THE CARD'S OWN HEAD ("What triage made of it"): the same words with no "Sorted as:", one way - a task triage sorted read
+// "a task for you", one made by hand "A task for you" (the walk, 2026-11-15)
+export const madeOf = (facts, kind) => { const s = sortedLine(facts, kind).replace(/^Sorted as: /, ""); return s.charAt(0).toUpperCase() + s.slice(1); };
 // ...AT THE FOOT OF FROM (the redesign, owner-approved 2026-10-21): "Sorted as: <what> · <priority> · <why>" - the why is the one
 // triage recorded (triageLine), never written here
 export const triageSays = (facts, kind, why = "") => [sortedLine(facts, kind), oneLine(why)].filter(Boolean).join(" · ");
@@ -271,6 +274,9 @@ export function triageLine({ route = null, verdict = null, task = {}, messages =
   const facts = headerFacts({ verdict, route, task });
   const head = routeHead(route.Reason, { intent: String(verdict?.intent || ""), kind: task?.Kind || "",
     repo: facts.pills.find((p) => p.key === "repo")?.value || "" });
-  const why = oneLine(verdict?.why || routeWhy(route.Reason).split(" · ")[0]);
+  // ...and HIS OWN PRESS IS SAID TO HIM AS HIS (ingest.task_from_message's own marker): the record's "promoted by the owner - to hand it to
+  // an agent" stood on his task page, about him in the third person (the walk, 2026-11-15)
+  const why = oneLine(verdict?.why || routeWhy(route.Reason).split(" · ")[0])
+    .replace(/^promoted by the owner - (theirs to do|to hand it to an agent)/, (_, w) => (w === "theirs to do" ? "you made it a task - yours to do" : "you made it a task - to hand to an agent"));
   return { later, head, why: /^triage:/i.test(why) ? "" : why, at: route.CreatedAt || "" };   // a head with no reason after it says no why
 }

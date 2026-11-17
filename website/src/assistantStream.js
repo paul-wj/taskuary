@@ -72,8 +72,8 @@ export async function* streamAssistant(taskId, body, signal) {
     signal,
   });
   if (!response.ok) {
-    let message = `Assistant request failed (${response.status})`;
-    let presentation = { source: "Assistant request failed ({status})", values: { status: response.status } };
+    let message = `Taskuary could not take that (${response.status})`;
+    let presentation = { source: "Taskuary could not take that ({status})", values: { status: response.status } };
     try {
       const data = await response.json();
       message = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail || data);

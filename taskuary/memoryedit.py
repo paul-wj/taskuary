@@ -17,6 +17,7 @@ import re
 from datetime import datetime
 from . import learned_cut as lc
 from .learnedgraph import TAG, fmt, lines as tagged, walk
+from .kinds import ASSISTANT
 
 DOC, HOW = 'learned', ('keep', 'wrong', 'forget')
 YOURS = "That line is yours - you wrote it, so it is not something Taskuary learned wrong. Forget takes it out."
@@ -77,7 +78,12 @@ def mark(store, key: str, how: str) -> dict:
     raw, l, own = find(doc, key)
     r = _row(store, key)
     if not raw and not r: raise LookupError(GONE)
-    if own and how == 'wrong': raise ValueError(YOURS)
+    # ...a line a VERDICT taught is the model's words, not the owner's: "That line is yours - you wrote it" was untrue of it, and Wrong was
+    # refused on the one kind of line he most needs it for (2026-11-12). Marked Wrong it goes, a tombstone of its words that teach never
+    # writes back (memorylines.wronged), and what it fed is withdrawn as for Forget
+    from .memorylines import taught
+    by_verdict = own and bool(raw) and taught(store, raw)
+    if own and how == 'wrong' and not by_verdict: raise ValueError(YOURS)
     if own and how == 'keep': raise ValueError(KEPT)
     text = (l or {}).get('text') or r.get('OwnerText') or r.get('Text') or ''
     if how == 'keep':
@@ -93,7 +99,11 @@ def mark(store, key: str, how: str) -> dict:
         if how == 'wrong' and r: store._exec("UPDATE learned_line SET Status='wrong', UpdatedAt=? WHERE Key=?", (_now(), key))
         if raw: _save(store, doc, _without(doc, raw))
         if own:
-            store.add_learned_event(key, text, 'live', 0, '', 'forgotten', 'owner')
+            if by_verdict and how == 'wrong':
+                store._exec("INSERT INTO learned_line (Key,Reader,Text,Status,InDoc,Source,UpdatedAt) VALUES (?,?,?,'wrong',0,'owner',?) ON CONFLICT(Key) "
+                            "DO UPDATE SET Text=excluded.Text, Status='wrong', InDoc=0, UpdatedAt=excluded.UpdatedAt",
+                            (key, lc.slug_of(l.get('section')) or 'care', raw.strip(), _now()))
+            store.add_learned_event(key, text, 'live', 0, '', 'wrong' if how == 'wrong' else 'forgotten', 'owner')
             # ...and a verdict's line Forgotten no longer counts as the owner having said it (memorylines.lessons reads the document), and
             # what it fed is withdrawn: the id of what the verdict was given on leaves every learned line's evidence (learn.withdraw)
             from .learn import withdraw
@@ -105,10 +115,6 @@ def mark(store, key: str, how: str) -> dict:
             st, ev = ('wrong', None) if how == 'wrong' else ('forgotten', len([e for e in str(r.get('Ev') or '').split(',') if e]))
             store._exec('UPDATE learned_line SET Status=?, InDoc=0, ForgotEv=IFNULL(?, ForgotEv), UpdatedAt=? WHERE Key=?', (st, ev, _now(), key))
             store.add_learned_event(key, text, (l or {}).get('status') or 'live', 0, '', 'wrong' if how == 'wrong' else 'forgotten', 'owner')
-        # ...and every task whose Advisor line rested on it says so no more (the Advisor audit's judge, 2026-10-26: Wrong on "You answer
-        # Erin the same day" left her task saying her usual): their decisions are re-read now, without the line
-        from . import advisor
-        advisor.forgot(store, lc.cite_of(key), (l or {}).get('ev') or [e for e in str(r.get('Ev') or '').split(',') if e])
     return {'ok': True, 'key': key, 'how': how, 'text': text}
 
 
@@ -117,7 +123,7 @@ TOLD_DOCS = ('soul', 'counsel')  # ...and the two documents the chat appends to,
 TOLD = '## Told to the Assistant'
 TOLD_INTRO = '<!-- what you told the Assistant to keep here, in your words; yours to edit or delete -->'
 # who reads each document the chat may write, said with every save (the design's routing table, 2026-10-28)
-DOC_READS = {'soul': 'read by triage · drafts · the Assistant · agents · the digest', 'counsel': 'read by the Assistant · the morning brief',
+DOC_READS = {'soul': f'read by triage · drafts · {ASSISTANT} · agents · the digest', 'counsel': f'read by {ASSISTANT} · the morning brief',
              'style': 'read by every draft', 'style_for': 'read by the drafts to them'}
 
 
@@ -152,6 +158,12 @@ def told(store, doc: str, text: str, actor: str = 'owner') -> dict:
     return {'ok': True, 'text': text, 'section': doc, 'doc': doc, 'title': f'{doc.upper()}.md'}
 
 
+def said(doc: str, text: str) -> bool:
+    "Whether the owner's own lines already say `text` - the same words, whatever the case, the spacing or a closing full stop."
+    t = ' '.join(str(text or '').split()).lstrip('-* ').strip()
+    return any(_same(_bare(l), t) for l in str(doc or '').splitlines() if l.strip().startswith(('- ', '* ')) and not TAG.match(l))
+
+
 def remember(store, text: str, about: str = '', section: str = '', replaces: str = '') -> dict:
     """A fact in the owner's own words, under the section it belongs in - `section` a slug (people, care, work, promises, bring), else
     Your people when it names someone (`about`, or an address in it) and What you care about otherwise. `replaces`: the key of a line it
@@ -182,7 +194,9 @@ def remember(store, text: str, about: str = '', section: str = '', replaces: str
     closed = close(store, replaces) if replaces else None
     doc = store.get_doc(DOC) or ''
     raw = f'- {t}'
-    if raw in doc.splitlines(): return {'ok': True, 'text': t, 'section': slug, 'already': True, 'closed': closed}
+    # ...SAID AGAIN IS NOT SAID TWICE (the owner, 2026-11-14: "be careful not to make the memory file too big"): the same words in other
+    # case, spacing or with a full stop were a second line each time an agent or the Assistant was told a thing it had been told
+    if said(doc, t): return {'ok': True, 'text': t, 'section': slug, 'already': True, 'closed': closed}
     _save(store, doc, _under(doc, lc.SECTIONS[slug], raw))
     store.add_learned_event(_key(t), t, 'live', 0, '', 'said', 'owner')
     return {'ok': True, 'text': t, 'section': slug, 'title': lc.TITLE[slug], 'closed': closed}

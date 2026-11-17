@@ -13,6 +13,10 @@ export const cronText = (expr) => {
   const hhmm = /^\d+$/.test(mi) && /^\d+$/.test(h) ? `${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}` : null;
   const every = (x, unit) => { const m = /^\*\/(\d+)$/.exec(x); return m ? t(unit === "m" ? "every {count}m" : "every {count}h", { count: m[1] }) : null; };
   if (h === "*" && dom === "*" && mon === "*" && dow === "*") return every(mi, "m") || (mi === "*" ? t("every minute") : t("cron {expr}", { expr }));
+  if (/^\d+$/.test(mi) && /^\d+(,\d+)+$/.test(h) && dom === "*" && mon === "*" && dow === "*") {
+    const at = [...new Set(h.split(",").map(Number))].sort((a, b) => a - b).map((x) => `${x}:${String(mi).padStart(2, "0")}`);
+    if (at.length > 1) return t(at.length === 2 ? "twice a day: {times} and {last}" : "{count} times a day: {times} and {last}", { count: at.length, times: at.slice(0, -1).join(", "), last: at.at(-1) });
+  }
   if (mi !== "*" && dom === "*" && mon === "*" && dow === "*") return every(h, "h") ? t("{interval} at :{minute}", { interval: every(h, "h"), minute: String(mi).padStart(2, "0") }) : hhmm ? t("daily {time}", { time: hhmm }) : t("cron {expr}", { expr });
   if (hhmm && dom === "*" && mon === "*") {
     if (dow === "1-5") return t("weekdays {time}", { time: hhmm });

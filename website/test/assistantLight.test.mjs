@@ -40,12 +40,12 @@ test("a typed turn draws no proposal card and runs nothing: it lights, opens a p
   const at = view.indexOf("const send = async"), body = view.slice(at, view.indexOf("const sendEmoji", at));
   assert.doesNotMatch(body, /proposalOf|runProposal|prop\?\.auto|kind: "proposal"/);
   assert.match(body, /const l = lightOf\(data\.light\);/);
-  assert.match(body, /if \(data\.new\) browseRef\.current\?\.\("new", \{ \.\.\.data\.new, aid \}\);/);
+  assert.match(body, /if \(data\.new && !goStraight\(data\.new\)\) browseRef\.current\?\.\("new", data\.new\);/);
   assert.match(body, /const page = "open" in data \? data\.open : firstAppLink\(data\.say\);/);
   // the lit act outranks the Advisor's line, which would name another button; any press puts it out
   assert.match(view, /<ActionRow advised=\{stripPick \|\| setupLit\}( hold=\{[^}]*\})?( early=\{[^}]*\})?( says=\{.*?\})? \/>/);
   assert.match(view, /const shownAdvice = table\.speaks && !litNow \?/);
-  assert.match(src("advice.js"), /pick: lit \|\| \(noAi \? \{ none: "no_ai", for: key \} : shown \|\| quiet\)/, "the light first, then no AI's way out, then the Advisor's decision, then Next (advice.stripWord)");
+  assert.match(src("advice.js"), /return \{ pick: lit \|\| shown \|\| quiet \};/, "the light first, then the decision, then Next (advice.stripWord)");
   assert.match(view, /useEffect\(\(\) => onPressed\(\(\) => setLit\(null\)\), \[\]\);/);
 });
 

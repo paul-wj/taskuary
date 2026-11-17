@@ -5,6 +5,7 @@ turned on"). So the golden matrix below holds `choose` against the resolvers eve
 the homes those resolvers were each written for. Fake CLIs only: nothing here starts a real one.
 """
 import ast, json
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -75,7 +76,7 @@ def _today(s, job, task=None):
     "What each job ran on before the router - the resolver its caller asked, read straight."
     if job in brainroute.ONE_SHOT: return llm.effective_pick(s), ''
     if job == 'coding': return agents.resolve_brain(s, 'coding', cli_only=True), ''
-    if job == 'assistant': return concierge.pick(s), str(s.get_setting('concierge_model') or '')
+    if job == 'assistant': return concierge.pick(s), concierge.model_of(s)      # its saved model, on the brain it was saved for
     pick = general.default_pick(s, task)
     base = general._selected(s)
     return pick, (base[2] if pick == base[0] else general._selected(s, pick=pick)[2] if pick else '')
@@ -129,6 +130,148 @@ def test_an_explicit_pick_wins_with_exactly_its_own_model(real):
         assert (r.pick, r.model) == ('cli:claude', '')
         # ...and an empty pick is what blank means - the reading build_llm always made of it, now said on the route
         assert brainroute.choose(s, 'general', want_pick='').pick == llm.effective_pick(s, '')
+
+
+def test_a_saved_model_follows_the_brain_it_was_saved_for(real):
+    """The live shape: the general card's model was picked while its brain was Claude, the default brain became Codex, and
+    Codex was started with a Claude model name - it answered nothing. A model applies to the brain it was saved for."""
+    from taskuary import aidefaults, climodels
+    real.update({'claude', 'codex'})
+    lists = {'claude': ['claude-sonnet-5-5'], 'codex': ['gpt-5.5']}
+    for stamped in (True, False):                               # saved with its brain beside it; and a row from before that
+        s, cfg, _ = _home(('claude', 'codex'), {'claude': True, 'codex': True}, {'default_brain': 'claude'})
+        with mock.patch.object(config, 'load', lambda: cfg), \
+             mock.patch.object(climodels, 'catalog', lambda cli: {'choices': lists.get(cli, [])}):
+            clic.sync(cfg, s)
+            if stamped: aidefaults.keep_model(s, 'assistant_model', 'claude-sonnet-5-5', 'owner')
+            else: s.set_setting('assistant_model', 'claude-sonnet-5-5', 'owner')
+            r = brainroute.choose(s, 'general')
+            assert (r.pick, r.model) == ('cli:claude', 'claude-sonnet-5-5'), stamped
+            s.set_setting('default_brain', 'codex', 'owner')
+            r = brainroute.choose(s, 'general')
+            assert r.pick == 'cli:codex' and r.model != 'claude-sonnet-5-5', (stamped, r.model)
+            assert s.get_setting('assistant_model') == 'claude-sonnet-5-5', 'the setting itself is never rewritten'
+            s.set_setting('default_brain', 'claude', 'owner')
+            assert brainroute.choose(s, 'general').model == 'claude-sonnet-5-5', 'and it is back with its brain'
+
+
+def test_a_cli_is_never_handed_a_model_it_does_not_run(real):
+    """The live shape, 2026-11-13: "Quick general work -> standard on codex (CLI), claude-sonnet-5-5 (rule work)" - Codex exited 1, "not
+    supported when using Codex with a ChatGPT account", on every quick call. The general card's model came along whatever it was saved for,
+    and Claude's own list (its built-in aliases, no catalogue cached) did not name it, so nothing called it Claude's. Whatever road a model
+    comes by, the router hands a CLI only a model that CLI runs - else its own, at the tier's effort."""
+    from taskuary import aidefaults, climodels
+    real.update({'claude', 'codex'})
+    lists = {'codex': {'choices': ['gpt-5.5'], 'source': 'codex models_cache.json'}, 'claude': {'choices': ['opus', 'sonnet', 'haiku'], 'source': 'built-in'}}
+    for conns in (('codex',), ('claude', 'codex')):
+        s, cfg, _ = _home(conns, {k: True for k in conns}, {'default_brain': 'codex'})
+        with mock.patch.object(config, 'load', lambda: cfg), mock.patch.object(climodels, 'catalog', lambda cli: lists.get(cli, {'choices': []})):
+            clic.sync(cfg, s)
+            aidefaults.keep_model(s, 'assistant_model', 'claude-sonnet-5-5', 'owner', 'cli:codex')     # stamped for the wrong brain
+            for job in ('quick_work', 'general'):
+                r = brainroute.choose(s, job)
+                assert r.pick == 'cli:codex' and 'claude-sonnet-5-5' not in r.model and r.model in ('', '@low', '@high'), (conns, job, r.model, r.why)
+            assert brainroute.choose(s, 'general', want_pick='cli:codex', want_model='gpt-5.5').model == 'gpt-5.5'     # its own model is kept
+            assert aidefaults.fits(s, 'sonnet', 'cli:claude') if 'claude' in conns else True                    # ...and an alias of its own
+
+
+def test_the_default_ai_is_asked_once_and_a_choice_is_never_written_over(real):
+    """The live shape: two CLIs connected, a start named the first one ready as the default, and a day of work ran on a tool
+    nobody picked. With several, the one question is owed - on the bell and on the Settings card - until answered or put down."""
+    from taskuary import aidefaults, problems
+    real.update({'claude', 'codex'})
+    s, cfg, _ = _home(('claude', 'codex'), {'claude': True, 'codex': True})
+    with mock.patch.object(config, 'load', lambda: cfg):
+        clic.sync(cfg, s)
+        assert agents.adopt_brain_setting(s) and s.setting_writer('default_brain') == 'migration'
+        ask, bell = agents.default_ask(s), lambda: [p for p in problems.collect(s) if p['key'] == 'default_ai']
+        assert sorted(ask['options']) == ['claude', 'codex'] and ask['runs'] == s.get_setting('default_brain')
+        assert len(bell()) == 1 and bell()[0]['where'] == 'Settings'
+        card = aidefaults.resolve(s, cfg, 'default_brain')
+        assert card.get('ask') and card['note'] == ask['note'] and ask['detail'] == bell()[0]['detail'], 'one set of facts, each ending with its own move'
+        problems.dismiss(s, 'default_ai')                              # put down: it was asked, once
+        assert not bell() and not aidefaults.resolve(s, cfg, 'default_brain').get('ask')
+        assert s.setting_writer('default_brain') == 'migration', 'putting it down chose nothing for them'
+        s.set_setting(problems.DISMISSED, '{}', 't')
+        s.set_setting('default_brain', 'claude', 'owner')              # answered: theirs from here on
+        assert agents.default_ask(s) == {} and not bell() and not agents.adopt_brain_setting(s)
+        assert s.get_setting('default_brain') == 'claude' and not problems.news(s), 'no "working again" for an answered question'
+    real.clear(); real.add('codex')
+
+
+def test_the_default_question_lists_every_cli_that_can_take_work_and_ends_with_the_move(real):
+    """The owner, 2026-11-11: "it says codex not claude why?" - five names read "are both connected", a CLI that worked all day was
+    not among them because one test of it had failed (nothing but another Test cleared the mark), and the sentence ended on a place
+    instead of the pick. The list is what can take work now: one resting says until when, one left out says why and its way back,
+    and choosing the one already running counts as choosing."""
+    from taskuary import aidefaults, llm
+    real.update({'claude', 'codex', 'gemini'})
+    s, cfg, _ = _home(('codex', 'claude', 'gemini'), {'codex': True, 'gemini': True, 'claude': False})
+    with mock.patch.object(config, 'load', lambda: cfg):
+        clic.sync(cfg, s)
+        assert agents.adopt_brain_setting(s) and s.get_setting('default_brain') == 'codex'
+        ask = agents.default_ask(s)
+        assert ask['note'].startswith('OpenAI Codex CLI and Gemini CLI are both connected and you have not chosen between them, so work runs on OpenAI Codex CLI')
+        assert 'Claude Code is left out: its last test failed - press Test on it under Connections.' in ask['note']
+        assert ask['note'].endswith('Choose one in the list above - choosing OpenAI Codex CLI again counts.')
+        assert ask['detail'].endswith('Choose one in Settings, on the Coding agent card.')
+        # ...IT ANSWERS WORK: the failed mark is over, by the call itself - and three names are "all", never "both"
+        with mock.patch.object(llm, 'make_cli_llm', lambda *a, **k: (lambda *a, **k: 'ok')):
+            assert llm.build_llm(s, 'cli:claude', job='summary')('s', 'u') == 'ok'
+        assert agents.cli_tests(s)['claude'] is True and 'claude' in agents.ready_brains(s)
+        brainroute.cool(s, 'cli:claude', datetime.now() + timedelta(hours=2))
+        note = agents.default_ask(s)['note']
+        assert ' are all connected ' in note and 'left out' not in note
+        assert f"Claude Code (resting until {brainroute.cooldowns(s)['cli:claude'].strftime('%H:%M')})" in note
+        # ...THE ONE IT TOOK, RESTING (rendered 2026-11-11): the card's RUNS line named the CLI that had the work meanwhile and the question
+        # under it still said "work runs on" the resting one - it does once it is back; and a card whose AI rests with nothing to
+        # take its work says until when, as the "right now" rows do
+        assert 'once it is back' not in note
+        brainroute.cool(s, 'cli:codex', datetime.now() + timedelta(hours=2))
+        till = brainroute.cooldowns(s)['cli:codex'].strftime('%H:%M')
+        assert f'so work runs on OpenAI Codex CLI, the first one ready, once it is back.' in agents.default_ask(s)['note']
+        s.set_setting('triage_backup_ai', '', 'owner')
+        gen, rows = aidefaults.resolve(s, cfg, 'assistant_ai'), brainroute.now(s, cfg)
+        assert gen['runs']['brain'] == 'OpenAI Codex CLI' and gen['runs']['why'] == f'OpenAI Codex CLI is limited until {till}'
+        assert {r['why'] for r in rows} == {f'OpenAI Codex CLI is limited until {till}'} and brainroute.resting(s, 'cli:gemini') == ''
+        s.set_setting(brainroute.COOL_KEY, json.dumps({'cli:claude': brainroute.cooldowns(s)['cli:claude'].isoformat(sep=' ', timespec='minutes')}), 'router')
+        # ...and THE CURRENT ONE, CHOSEN, IS A CHOICE: the same value, now the owner's - the question is over and nothing else moved
+        card = aidefaults.apply(s, cfg, 'default_brain', value=aidefaults.resolve(s, cfg, 'default_brain')['value'])
+        assert s.get_setting('default_brain') == 'codex' and s.setting_writer('default_brain') == 'owner'
+        assert agents.default_ask(s) == {} and not card.get('ask') and card['chosen'] and not card['set_by']
+    real.clear(); real.add('codex')
+
+
+def test_a_card_says_what_runs_and_whose_choice_it_was(real):
+    """The owner, 2026-11-11: "where is general agent??" and "never change from what's in settings" - each card's RUNS line is the
+    router's own answer for its job (the "right now" rows' function), and a value nobody chose says so beside the pick."""
+    from taskuary import aidefaults
+    real.update({'claude', 'codex'})
+    s, cfg, _ = _home(('codex', 'claude'), {'codex': True, 'claude': True})
+    cfg['cli_connections']['claude']['model'] = 'opus'
+    with mock.patch.object(config, 'load', lambda: cfg):
+        clic.sync(cfg, s)
+        s.set_setting('default_brain', 'claude', 'migration')
+        gen, code = aidefaults.resolve(s, cfg, 'assistant_ai'), aidefaults.resolve(s, cfg, 'default_brain')
+        assert (code['chosen'], code['set_by']) == (False, aidefaults.SAVED_FOR) and gen['set_by'] == aidefaults.FOLLOWS
+        s.set_setting('ai_route_mode', 'fixed', 'owner')
+        gen, row = aidefaults.resolve(s, cfg, 'assistant_ai'), brainroute.now(s, cfg)[1]
+        assert (gen['runs']['brain'], gen['runs']['model']) == (row['brain'], row['model']) == ('Claude Code', 'opus')
+        # the general agent's model box is the general agent's (assistant_model, for this AI) - never the light gear triage rides
+        with mock.patch.object(config, 'save'), mock.patch.object(clic, 'sync'):
+            aidefaults.apply(s, cfg, 'assistant_ai', model='sonnet')
+        assert 'light_model' not in cfg['cli_connections']['claude'] and s.get_setting('assistant_model') == 'sonnet'
+        gen, row = aidefaults.resolve(s, cfg, 'assistant_ai'), brainroute.now(s, cfg)[1]
+        assert gen['model'] == 'sonnet' and gen['runs']['model'] == row['model'] == 'sonnet'
+        aidefaults.apply(s, cfg, 'assistant_ai', value='cli:codex')
+        gen = aidefaults.resolve(s, cfg, 'assistant_ai')
+        assert gen['chosen'] and not gen['set_by'] and gen['runs']['brain'] == brainroute.now(s, cfg)[1]['brain'] == 'OpenAI Codex CLI'
+    real.clear(); real.add('codex')
+    s, cfg, _ = _home(('codex',), {'codex': True})
+    with mock.patch.object(config, 'load', lambda: cfg):
+        clic.sync(cfg, s)
+        assert agents.adopt_brain_setting(s) and agents.default_ask(s) == {}, 'one CLI is no choice: it is used, and shown'
+        assert aidefaults.resolve(s, cfg, 'default_brain')['value'] == 'cli:codex'
 
 
 def test_a_browser_task_still_takes_the_brain_with_hands(real):
@@ -208,3 +351,16 @@ def test_a_coding_pane_walks_backup_brains(monkeypatch):
     monkeypatch.setattr(config, 'load', lambda: {'cli_connections': {'claude': {'cmd': 'claude'}, 'codex': {'cmd': 'codex'}}})
     assert brainroute.session_chain(s, 'claude') == agents.brain_chain(s, 'claude') == ['claude', 'codex']
     assert brainroute.choose(s, 'coding', want_pick='cli:claude').chain == ['cli:codex']
+
+
+def test_a_blank_anthropic_card_reads_mail_on_its_light_model_and_keeps_its_own_for_the_rest(real):
+    """A blank model box on an Anthropic card read every mail on Opus, thinking less (the readiness review, 2026-11-14). Its quick jobs
+    run on the provider's light model as a CLI's do; a model the owner typed is his, and agent work stays on the card's own."""
+    s, cfg, cid = _home((), connector='anthropic', settings={'ai_route_mode': 'auto'})
+    with mock.patch.object(config, 'load', lambda: cfg):
+        r = brainroute.choose(s, 'triage')
+        assert (r.pick, r.tier, r.model) == (f'connector:{cid}', 'light', llm.PROVIDER_LIGHT['anthropic'])
+        assert brainroute.choose(s, 'general').model != llm.PROVIDER_LIGHT['anthropic']
+        assert brainroute._words(s, f'connector:{cid}', cfg)['quick'] == llm.PROVIDER_LIGHT['anthropic']
+        c = s.get_connector(cid); s.save_connector({'ConnectorId': cid, 'ConfigJson': json.dumps({**json.loads(c.get('ConfigJson') or '{}'), 'model': 'claude-sonnet-5'})}, 'owner')
+        assert llm.PROVIDER_LIGHT['anthropic'] not in brainroute.choose(s, 'triage').model, 'a model he typed is his'

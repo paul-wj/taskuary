@@ -196,20 +196,35 @@ def _status(e):
     code = getattr(r, 'status_code', None) or getattr(e, 'code', None) or getattr(e, 'status_code', None)
     if isinstance(code, int): return code
     # requests/httpx spell it "401 Client Error: Unauthorized for url" when only the text survives a re-raise
-    m = re.search(r'\b(401|403)\b[^\n]{0,20}(?:Client Error|Unauthori[sz]ed|Forbidden)', str(e), re.I)
+    m = re.search(r'\b(401|403|5\d\d)\b[^\n]{0,20}(?:Client Error|Server Error|Unauthori[sz]ed|Forbidden)', str(e), re.I)
     if m: return int(m.group(1))
     # ...and an API that answers 200 with its own word for it: Slack's "invalid_auth" was printed to the owner as it came
     return 401 if _AUTH_WORDS.search(str(e)) else None
 
-def plain_error_text(raw) -> str:
+def plain_error_text(raw, signin: bool = False) -> str:
     """A stored LastError (kept raw for problems.lapsed) in the words a fresh Test failure gets - '' for none."""
-    return plain_failure(RuntimeError(raw)) if raw else ''
+    return plain_failure(RuntimeError(raw), signin) if raw else ''
 
-def plain_failure(e: Exception) -> str:
+def card_error(c: dict) -> str:
+    """A card's last error in words - the one road the card, the bell and the evening report read it by."""
+    from .msauth import is_user
+    try: signin = c.get('Type') in ('outlook', 'teams') and is_user(_cfg(c))
+    except ValueError: signin = False
+    return plain_error_text(c.get('LastError'), signin)
+
+def plain_failure(e: Exception, signin: bool = False) -> str:
     raw = str(e)
-    from .msauth import LAPSED
-    if LAPSED in raw: return raw[:500]      # already says what to do: sign in again
+    from . import googlecal, msauth
+    if msauth.LAPSED in raw or googlecal.lapsed(raw): return raw[:500]      # already says what to do: sign in again
     code = _status(e)
+    # ...the service's own trouble (a Microsoft outage, 2026-11-12): the raw line put its URL, the mailbox in it, on the card and the
+    # bell - and there is nothing on the card to change
+    if isinstance(code, int) and 500 <= code < 600:
+        return (f"The service is having trouble on its side (it answered {code}). Nothing here needs changing - "
+                "it is tried again on every poll, and what came in meanwhile is read once it is back.")
+    # ...a sign-in card has no key to paste: its sign-in still renews (a lapsed one says LAPSED above), so the service refused the read
+    if code == 401 and signin: return ("Microsoft refused the read though the sign-in still works - usually trouble on its side, and it "
+                                       "is tried again on every poll. If it lasts, sign in again on the card.")
     if code == 401: return ("The service turned the key or password down. Check it is the current one - "
                             "paste it again if it was changed or has expired - then Save and Test again.")
     if code == 403: return ("The service knows this account but would not let it in. The key may not have permission "
@@ -578,22 +593,30 @@ _DROP = re.compile(r'(?is)<(script|style|head)[^>]*>.*?</\1>')
 _BLOCK = re.compile(r'(?i)<br\s*/?>|</(p|div|tr|li|h[1-6]|blockquote|table)>')
 
 # A shared document arrives as a BUTTON: "Open" whose href is the sheet. Stripping the tag kept the word and lost the sheet,
-# so a link to a document (linkdocs.is_doc_link - a known host or a file, never a plain page or a tracker) keeps its address
-# beside its words: "Outstanding bills (https://docs.google.com/...)" - in brackets the tag strip below leaves alone.
+# so a link keeps its address beside its words: "Outstanding bills (https://docs.google.com/...)" - in brackets the tag strip below
+# leaves alone. EVERY LINK, not only a known document's (the owner, 2026-11-09, TQ-1370: "every link in every email of course" - a
+# reply asked the sender to resend a link to a Google page that was in her mail all along, because only its words reached the drafter).
+# A Safe Links or google.com/url wrapper is unwrapped to the real address. A web page is still read only on request (linkdocs), so an
+# address in the text is never a click. `every=False`: a document's address only - a fetched web page's own text, a sent copy compared.
 _A = re.compile(r'''(?is)<a\b[^>]*?\bhref\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a>''')
+_HREF = re.compile(r'(?i)(https?://|mailto:)')
 
-def _keep_doc_link(m):
+def _keep_link(m, every=True, pics=False):
     from html import unescape
-    from .linkdocs import is_doc_link
+    from .linkdocs import is_doc_link, _unwrap
     href, inner = unescape(m.group(1)).strip(), m.group(2)
-    return f' {inner} ({href}) ' if href not in unescape(inner) and is_doc_link(href) else f' {inner} '   # spaced, as the tag strip spaced it
+    words, real = unescape(inner), _unwrap(href)
+    # ...a link around nothing but a picture names nothing - until the pictures are read as stand-ins ("[image: ...] (address)")
+    said = bool(re.sub(r'<[^>]+>', '', words).strip()) or (pics and bool(_IMG.search(inner)))
+    keep = href not in words and real not in words and len(href) <= 2048 and (is_doc_link(href) or (every and said and bool(_HREF.match(real))))
+    return f' {inner} ({real if every else href}) ' if keep else f' {inner} '   # spaced, as the tag strip spaced it
 
 
 def mail_links(html, cap: int = 40) -> list:
     """[[words, address]] for the links a mail's HTML puts behind words ("View report"), kept in MailMetaJson `links` for the screens to
-    make those words a link again (the owner, 2026-11-03: "hyper links in fyi email like view report are not coming thru"). Never in the
-    body's text: what the text names, linkdocs reads for triage, and a GET on a tracker or an unsubscribe address is a click on it
-    (test_an_html_mail_keeps_the_address_of_its_open_button). Web and mail addresses only; a document's is already in the text."""
+    make those words a link again (the owner, 2026-11-03: "hyper links in fyi email like view report are not coming thru"). Since TQ-1370
+    the address is in the body's text as well (_keep_link) - linkdocs lists a plain page and reads it only on request, so naming one is
+    never a GET on a tracker. Web and mail addresses only; a document's is in the text and not repeated here."""
     from .linkdocs import is_doc_link
     out = []
     for m in _A.finditer(_DROP.sub(' ', html or '')):
@@ -636,32 +659,34 @@ def _picture(m) -> str:
     return f' [{kind}: {name}] ' if name else f' [{kind}] '
 
 
-def _clean(html, pics=False):
+def _clean(html, pics=False, every=True):
     """HTML mail -> readable text. Block ends become NEWLINES: collapsing every whitespace
     run (the old behaviour) mashed the reply and the quoted 'From:/Sent:/To:' history into
     one wall of text, which no reader - human or model - could take apart.
-    `pics`: its pictures as stand-ins (_picture) - taken only when the words alone come to nothing."""
+    `pics`: its pictures as stand-ins (_picture) - taken only when the words alone come to nothing.
+    `every`: every link's address beside its words (_keep_link) - False keeps only a document's."""
     from html import unescape
     src = _DROP.sub(' ', html or '')
-    txt = _A.sub(_keep_doc_link, src)
+    txt = _A.sub(lambda m: _keep_link(m, every, pics), src)
     if pics: txt = _IMG.sub(_picture, txt)
     txt = _BLOCK.sub('\n', txt)
     txt = unescape(re.sub(r'<[^>]+>', ' ', txt))
     txt = re.sub(r'[^\S\n]+', ' ', txt.replace('\xa0', ' '))
     txt = re.sub(r'\n{3,}', '\n\n', re.sub(r' ?\n ?', '\n', txt)).strip()
-    return txt if txt or pics or not _IMG.search(src) else _clean(html, True)
+    return txt if txt or pics or not _IMG.search(src) else _clean(html, True, every)
 
 def _header_marks(m: dict) -> dict:
     """What a Graph message's own headers say: an auto-reply (never triaged) and who sent it before a model has read it."""
     from .autoreply import from_headers, headers
-    from .categories import header_class
+    from .categories import header_mark, header_words
     from . import mailauth
     h = headers(m)
+    hm = header_mark(h) or (None, None)
     # a header the parser chokes on is no verdict, never a stalled poll
     try: v = mailauth.verdict((m or {}).get('internetMessageHeaders'), internal=True)
     except Exception as e: v = 'none'; logger.warning(f'mail auth unreadable on {(m or {}).get("id")}: {e}')
     from .unsubscribe import parse as unsub    # a list's own way off it, for the FYI card's Unsubscribe (unsubscribe.py)
-    return {**({'auto_reply': True} if from_headers(h) else {}), **({'sender_class': header_class(h)} if header_class(h) else {}),
+    return {**({'auto_reply': True} if from_headers(h) else {}), **({'sender_class': hm[0], 'header_says': header_words(*hm)} if hm[0] else {}),
             **({'auth': v} if v != 'none' else {}), **({'unsub': u} if (u := unsub(h)) else {})}
 
 
@@ -901,13 +926,6 @@ def _envelope(m: dict) -> dict:
 
 
 _MAIL_MSGS_IMPLEMENTATION = _mail_msgs
-
-
-def _mail_cursor(s: dict) -> dict:
-    """Where each folder's last read stopped short: {folder: receivedDateTime} in the source's ConfigJson."""
-    try: cur = json.loads(s.get('ConfigJson') or '{}').get('mail_cursor') or {}
-    except ValueError: cur = {}
-    return dict(cur) if isinstance(cur, dict) else {}
 
 
 def _mail_config(s: dict) -> dict:
@@ -1252,12 +1270,24 @@ def _utc(dt) -> str:
     return dt.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
 
 
-def _teams_delta(tok, upn, since_iso, cap=200):
-    """Every chat message this user can see since a timestamp, newest first."""
-    url = f'{GRAPH}/users/{upn}/chats/getAllMessages/delta'
-    params, out = {'$top': 50, '$filter': f'lastModifiedDateTime gt {since_iso}'}, []
+# A LATE MESSAGE IS NOT A LOST ONE (the owner, 2026-11-13: "a bad bug dropping messages silently"). getAllMessages reads Microsoft's
+# export copy of the chats, and that copy lags the chat itself - by over half an hour on a bad morning. A filtered window ("modified
+# after the last poll, less five minutes") then asked once for each stretch of time: a message that landed in the export after its
+# stretch had been asked for carried an older lastModifiedDateTime than the next window, and was never asked for again. So the window
+# is only the FIRST read: it hands back Graph's own delta link, kept on the source (`state['link']`), and every poll after follows it -
+# everything that landed since, however late and whatever its timestamp. A link Graph no longer honours (410 Gone, or a 400/404 for a
+# token it dropped) starts over from the window. A read cut short at `cap` keeps its nextLink, so the next poll goes on from there.
+def _teams_delta(tok, upn, since_iso, cap=200, state=None):
+    """Every chat message this user can see, newest first on a first read: since a timestamp, or since the last read when `state`
+    carries the delta link that read handed back. `state` is the source's own (ingest_teams_chats): the link is updated in it."""
+    start, window = f'{GRAPH}/users/{upn}/chats/getAllMessages/delta', {'$top': 50, '$filter': f'lastModifiedDateTime gt {since_iso}'}
+    link = (state or {}).get('link')
+    (url, params), out = (link, None) if link else (start, window), []
     while url and len(out) < cap:
         r = requests.get(url, headers={'Authorization': f'Bearer {tok}'}, params=params, timeout=45)
+        if link and r.status_code in (400, 404, 410):
+            logger.info(f'teams {upn}: the delta link is no longer honoured ({r.status_code}) - reading the window again')
+            link, url, params, out, state['link'] = None, start, window, [], None; continue
         if r.status_code == 403:
             raise RuntimeError('token OK but chat read DENIED (403) - app-only Chat.Read.All is a Microsoft '
                                'protected API: submit the approval form for this app registration')
@@ -1265,28 +1295,32 @@ def _teams_delta(tok, upn, since_iso, cap=200):
         j = r.json()
         out += j.get('value', [])
         url, params = j.get('@odata.nextLink'), None       # the nextLink carries the filter itself
-    return out[:cap]
+        if state is not None: state['link'] = url or j.get('@odata.deltaLink') or state.get('link')
+    return out if state is not None else out[:cap]          # a kept link is past every message read: none may be cut
 
 
-def _teams_user_delta(tok, since_iso, cap=200):
+def _teams_user_delta(tok, since_iso, cap=200, state=None):
     """The same feed for a person's own sign-in (a Teams card's MsSignIn): getAllMessages is app-only, so their chats
     one by one - the ones whose last message is past the watermark (Graph lists /me/chats newest first), each read since
-    it. Newest first, like the delta, and each message carries its chatId as the delta's do."""
-    h, chats, out = {'Authorization': f'Bearer {tok}'}, [], []
+    it. Newest first, like the delta, and each message carries its chatId as the delta's do.
+    ...and each chat since ITS OWN newest message already in (`state['seen']`, ingest_teams_chats), not only since the poll: a message
+    that shows up after its poll, older than the next window, is still newer than the last one taken from its chat."""
+    h, chats, out, seen = {'Authorization': f'Bearer {tok}'}, [], [], (state or {}).get('seen') or {}
+    lo = lambda ch: min(seen[ch['id']], since_iso) if seen.get(ch['id']) else since_iso
     url = f'{GRAPH}/me/chats'
     params = {'$top': 50, '$expand': 'lastMessagePreview', '$orderby': 'lastMessagePreview/createdDateTime desc'}
+    when = lambda x: str((x.get('lastMessagePreview') or {}).get('createdDateTime') or x.get('lastUpdatedDateTime') or '')
     while url and len(chats) < 200:
         r = requests.get(url, headers=h, params=params, timeout=45)
         if r.status_code == 403:
             raise RuntimeError('signed in, but chat read DENIED (403) - sign in again on the Teams card and accept the chat permissions')
         r.raise_for_status()
         j = r.json(); page = j.get('value', [])
-        live = [x for x in page if str((x.get('lastMessagePreview') or {}).get('createdDateTime') or x.get('lastUpdatedDateTime') or '') > since_iso]
-        chats += live
-        url, params = (j.get('@odata.nextLink') if len(live) == len(page) else None), None   # the rest are older still
+        chats += [x for x in page if when(x) > lo(x)]
+        url, params = (j.get('@odata.nextLink') if all(when(x) > since_iso for x in page) else None), None   # the rest are older still
     for ch in chats:
         r = requests.get(f'{GRAPH}/chats/{ch["id"]}/messages', headers=h, timeout=45,
-                         params={'$top': 50, '$orderby': 'lastModifiedDateTime desc', '$filter': f'lastModifiedDateTime gt {since_iso}'})
+                         params={'$top': 50, '$orderby': 'lastModifiedDateTime desc', '$filter': f'lastModifiedDateTime gt {lo(ch)}'})
         if r.status_code in (403, 404):            # one chat refused (a federated thread) must not blind the rest
             logger.warning(f"teams chat {ch['id'][:24]} not readable ({r.status_code})"); continue
         r.raise_for_status()
@@ -1495,11 +1529,15 @@ def slack_team_name(tok: str, team: str) -> str:
     return _SLACK_TEAMS[team]
 
 
-def ingest_teams_chats(store, upn: str, tok: str, since, llm=None, file_only=False, read_it=False, user=False) -> int:
+def ingest_teams_chats(store, upn: str, tok: str, since, llm=None, file_only=False, read_it=False, user=False, state=None, feed=None) -> int:
     """Teams as an inbound channel: each chat is a conversation (so a thread keeps building
     ONE task, like a mail thread), each human message an item on the timeline. Bot posts,
-    call-started events, deletions and empty bodies are not messages anybody has to act on."""
+    call-started events, deletions and empty bodies are not messages anybody has to act on.
+    `state`: the source's read state, updated in place for the caller to keep once this returns - the delta link (_teams_delta),
+    `seen` (each chat's newest message the feed handed over, whatever became of it: teams_late and the sign-in road's per-chat
+    mark) and `from` (where reading began: nothing older is owed). `feed`: these messages instead of the delta read (teams_late)."""
     since_iso, users, chats, n = _utc(since), {}, {}, 0
+    if state is not None: state.setdefault('from', since_iso); seen = state.setdefault('seen', {})
     touched = set()                                # chats to mark read once, not per message
     me = _TEAMS_ME.get(upn.lower(), '')
     if not me:
@@ -1510,9 +1548,11 @@ def ingest_teams_chats(store, upn: str, tok: str, since, llm=None, file_only=Fal
             if me: _TEAMS_ME[upn.lower()] = me
         except requests.RequestException:
             pass
-    feed = _teams_user_delta(tok, since_iso) if user else _teams_delta(tok, upn, since_iso)
+    if feed is None: feed = _teams_user_delta(tok, since_iso, state=state) if user else _teams_delta(tok, upn, since_iso, state=state)
     tenant = _token_tenant(tok)
-    for m in reversed(feed):                                       # oldest first, so threads read in order
+    # oldest first, so threads read in order - by when each was written: a delta link's pages need not be newest first
+    for m in sorted(reversed(feed), key=lambda m: m.get('createdDateTime') or ''):
+        if state is not None and m.get('chatId'): seen[m['chatId']] = max(seen.get(m['chatId']) or '', m.get('createdDateTime') or '')
         user = (m.get('from') or {}).get('user') or {}
         body = _clean((m.get('body') or {}).get('content'))
         # Deleted at the source. Teams' delta reports it (mail's plain $top list does not, so
@@ -1584,7 +1624,40 @@ def ingest_teams_chats(store, upn: str, tok: str, since, llm=None, file_only=Fal
         if cid: touched.add(cid)
     for cid in touched if read_it else ():
         mark_chat_read(tok, upn, cid, me)
+    if state is not None and len(seen) > 500: state['seen'] = dict(sorted(seen.items(), key=lambda kv: kv[1])[-500:])
     return n
+
+
+# ...AND A LATE ONE IS NEVER SILENT. Each poll lists the chats once (their last message's preview, no history) and counts the ones whose
+# last message is older than the grace and newer than anything the feed handed over for that chat - Microsoft has it, Taskuary has not
+# been given it yet. The line goes on the card and the bell by the card's own error road (_poll_one), and goes when they come in.
+BEHIND, BEHIND_GRACE = 'Teams messages are behind', timedelta(minutes=15)
+# ...AND READ FROM THE CHAT LIST ITSELF (the owner, 2026-11-13: a colleague's ask sat in a group chat all morning while the export handed
+# over nothing, and "behind" was all the card could say). The list's preview of a chat's last message IS that message - its id, sender,
+# words and time - so one past the grace is taken from there, by the same road as every Teams message; the export's copy, when it comes,
+# is the same id and a duplicate. Per-chat history is no way round: an app is refused a group thread it is not a member of (403)
+def teams_late(store, tok, upn, state, user=False) -> list | None:
+    "The last messages of the chats Microsoft's export has not handed over past the grace, as messages (with `chatId`); None: the list failed."
+    url = f'{GRAPH}/me/chats' if user else f'{GRAPH}/users/{upn}/chats'
+    try:
+        r = requests.get(url, headers={'Authorization': f'Bearer {tok}'}, timeout=45,
+                         params={'$top': 50, '$expand': 'lastMessagePreview', '$orderby': 'lastMessagePreview/createdDateTime desc'})
+        r.raise_for_status(); rows = r.json().get('value') or []
+    except Exception as e:
+        logger.info(f'teams {upn}: the chat list for the behind check could not be read - {e}'); return None
+    seen, edge, start = state.get('seen') or {}, _utc(datetime.now() - BEHIND_GRACE), str(state.get('from') or '')
+    def late(ch):
+        p = ch.get('lastMessagePreview') or {}
+        at = str(p.get('createdDateTime') or '')
+        if not (start < at <= edge) or p.get('isDeleted') or p.get('messageType') not in (None, 'message'): return False
+        if not ((p.get('from') or {}).get('user')): return False        # a bot's or the system's line is never a message here
+        return at > str(seen.get(ch.get('id')) or '') and not store.message_exists(f"teams:{ch.get('id')}:{p.get('id')}")
+    return [{**ch['lastMessagePreview'], 'chatId': ch.get('id'), 'messageType': ch['lastMessagePreview'].get('messageType') or 'message'}
+            for ch in rows if late(ch)]
+def behind_line(store, late) -> str:
+    "'' when every late message is in now; else the line that says how many chats are still behind."
+    k = len({m['chatId'] for m in late or () if not store.message_exists(f"teams:{m['chatId']}:{m.get('id')}")})
+    return f"{BEHIND}: {plural(k, 'chat')} newer than what came in - Microsoft has not handed them over yet" if k else ''
 
 
 # Four chat servers that behave exactly like Discord - one watched room per source, and a
@@ -1950,23 +2023,14 @@ def _gh_explicit(store, connector_id) -> bool:
 
 
 # ── "the hub has read this" ─────────────────────────────────────────────────────────────
-# One switch (Settings > Sync & startup) decides whether reading an item here also marks it
-# read THERE, so the mailbox and the chat list stop showing work the funnel already took.
-# Every marker is best-effort by design: a missing consent (Graph wants Mail.ReadWrite,
-# Slack conversations.mark) must never cost the ingest that already succeeded, so failures
-# are logged once and swallowed. Protocols with no read state for a bot - Telegram, Discord,
-# the trackers - simply have no marker, and the switch is a no-op for them.
-def wants_read(store) -> bool:
-    # 'archive' marks read too, then files handled mail away (filing.py, 2026-10-25)
-    try: return str(store.get_setting('mark_read_enabled') or '0') in ('1', 'archive')
-    except Exception: return False
-
-
+# Each card's own choice (filing.read_mode) decides whether what the funnel takes in is marked read THERE, so the mailbox
+# and the chat list stop showing work the funnel already took. Every marker is best-effort by design: a missing consent
+# (Graph wants Mail.ReadWrite, Slack conversations.mark) must never cost the ingest that already succeeded, so failures
+# are logged and swallowed. Protocols with no read state for a bot - Telegram, Discord, the trackers - have no marker.
 def mark_mail_read(tok: str, upn: str, graph_id: str):
-    try:
-        requests.patch(f'{GRAPH}/users/{upn}/messages/{graph_id}', timeout=20,
-                       headers={'Authorization': f'Bearer {tok}'}, json={'isRead': True}).raise_for_status()
-    except Exception as e: logger.warning(f'marking mail {graph_id} read failed: {e}')
+    """The one Graph call that marks a mail read (Mail.ReadWrite); raises, so each caller decides what a refusal costs."""
+    requests.patch(f'{GRAPH}/users/{upn}/messages/{graph_id}', timeout=20,
+                   headers={'Authorization': f'Bearer {tok}'}, json={'isRead': True}).raise_for_status()
 
 
 def mark_chat_read(tok: str, upn: str, chat_id: str, user_id: str = ''):
@@ -2114,12 +2178,14 @@ def _poll_jobs(store, only=None):
     return jobs
 
 
-def _poll_one(store, c, file_only, backfill_hours, llm, read_it) -> int:
+def _poll_one(store, c, file_only, backfill_hours, llm) -> int:
     """One connector. HTTP lives here; store writes go through whatever store was handed
     (the writer thread when polls overlap). Messages of one conversation still land in
     arrival order because a connector is one worker."""
     n, errors = 0, []      # errors: folders a mailbox could not finish - the card shows them, the poll goes on
     full = store.get_connector(c['ConnectorId'], with_secret=True)
+    from . import filing
+    read_it = filing.takes_read(full)      # this card's own choice: mark read at the source what it takes in
     first = first_read_hours(store, full)  # how far back a source with no watermark yet goes
     try:
         if c['Type'] == 'teams' and teamsweb.personal(full):       # Teams free: the card's browser, never Graph (teamsweb.py)
@@ -2248,7 +2314,9 @@ def _poll_one(store, c, file_only, backfill_hours, llm, read_it) -> int:
                             except Exception as e: logger.warning(f"saving attachments for {m['id']} failed: {e}")
                         # a duplicate is still mail the hub has read - the flag may just be
                         # older than the switch, and skipping it would strand those bold rows
-                        if read_it and not m.get('isRead'): mark_mail_read(tok, s['Address'], m['id'])
+                        if read_it and not m.get('isRead'):
+                            try: mark_mail_read(tok, s['Address'], m['id'])
+                            except Exception as e: logger.warning(f"marking mail {m['id']} read failed: {e}")
                         # ...but only for mail that STAYED. A skip policy's mail is never shown, so the
                         # chain behind it is never read either - and a shared log mailbox is one dead
                         # conversation per message: a 3-day catch-up bought 634 history calls that each
@@ -2299,7 +2367,14 @@ def _poll_one(store, c, file_only, backfill_hours, llm, read_it) -> int:
                         except Exception as e: logger.warning(f'chain history for {conv} skipped: {e}')
                 continue                            # exact cutoff above replaces generic touch_source(now)
             elif c['Type'] == 'teams':
-                n += ingest_teams_chats(store, s['Address'], tok, since, llm, file_only, read_it, user=user)
+                # the source's read state: a rewound (or never read) source starts from its window, never from an old delta link
+                kept = _cfg(s).get('teams_state') or {}
+                state = kept if s.get('LastPolledAt') else {'seen': kept.get('seen') or {}}
+                n += ingest_teams_chats(store, s['Address'], tok, since, llm, file_only, read_it, user=user, state=state)
+                if late := teams_late(store, tok, s['Address'], state, user):
+                    n += ingest_teams_chats(store, s['Address'], tok, since, llm, file_only, read_it, user=user, state=state, feed=late)
+                store.patch_source_poll_state(s['SourceId'], config_set={'teams_state': state})
+                if (behind := behind_line(store, late)): errors.append(behind)
             elif c['Type'] == 'github':
                 from .store import roles_of
                 if s.get('ConnectorId') != c['ConnectorId']: continue
@@ -2406,13 +2481,16 @@ def poll_channels(store, backfill_hours: float = 0, progress=None, only=None) ->
 
     Independent HTTP waits overlap. SQLite writes hop onto one writer thread. Drain of
     the same conversation stays sequential - that is a later pass, not this one."""
+    # THE DEMO NEVER POLLS (server.lifespan says so; opening a chat task's row still refreshed its channel): its cards are props, and a read of
+    # one failed onto the card as "last test failed" - or reached whatever bridge listened on this computer
+    from . import demo
+    if demo.enabled(): return 0
     from .llm import build_llm
     from .ingest import _deferring
     # ...and no brain at all for a DEFERRED poll - the chat doorway's once-a-second read (server._poll_quick): what it reads is stored
     # for the drain, which builds its own brain to judge it, so the one built here every second was never called (2026-11-06)
     try: llm = None if _deferring() else build_llm(store, job='triage')
     except Exception: llm = None
-    read_it = wants_read(store)   # asked once per run, not once per message
     # a mailbox card whose source row was never created polls nothing at all, and looks connected
     # the whole time it is doing so - so it heals itself here, before the source list is read
     for c in store.list_connectors():
@@ -2437,7 +2515,7 @@ def poll_channels(store, backfill_hours: float = 0, progress=None, only=None) ->
         c, file_only = jobs[0]
         _say(c['Type'], 0, store)
         with _first_read(store, c, backfill_hours), tally.on(lambda n: _say(c['Type'], n, store)):
-            n = _poll_one(store, c, file_only, backfill_hours, llm, read_it)
+            n = _poll_one(store, c, file_only, backfill_hours, llm)
         _say(c['Type'], tally.n, store)           # the whole count, never one the once-a-second say left behind
         return _file_after(store, n)
 
@@ -2451,7 +2529,7 @@ def poll_channels(store, backfill_hours: float = 0, progress=None, only=None) ->
             # inherit the poll thread's deferred(): our threading.local is off, and without
             # this wrap we would triage in parallel - the thing drain exists to prevent
             with ingest_mod.deferred() if ingest_mod._parent_deferring() else contextlib.nullcontext(),                  _first_read(writer, c, backfill_hours), tally.on(lambda n: _say(c['Type'], n, writer)):
-                return _poll_one(writer, c, file_only, backfill_hours, llm, read_it)
+                return _poll_one(writer, c, file_only, backfill_hours, llm)
         with ThreadPoolExecutor(max_workers=min(8, len(jobs)), thread_name_prefix='poll') as pool:
             futs = [pool.submit(run, c, fo) for c, fo in jobs]
             n = 0

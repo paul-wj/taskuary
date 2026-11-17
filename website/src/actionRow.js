@@ -119,6 +119,11 @@ export function heldRow(kept, now) {
   if (kept === now) return { verbs: now, liveOf: (id) => now.list.find((x) => x.id === id) };
   const nav = (v) => v.group === "next" || v.group === "back";
   const navNow = (v) => now.list.find((x) => x.group === v.group && !x.disabled) || { ...v, disabled: true };
+  // ...a held row laid on OTHER panes than the live one has nowhere to stand on the new item (the visual audit, 2026-11-13: Back from a report
+  // drew the task's header bare for 0.3-0.8 s): the new item's own buttons stand instead, greyed and inert until the hold lets go
+  const layOf = (r) => JSON.stringify(laidOf(r.list) || r.lay || null);
+  if (layOf(kept) !== layOf(now) && now.list.some((v) => !nav(v) && !String(v.id).startsWith("floor:")))
+    return { verbs: { ...now, list: now.list.map((v) => (nav(v) ? v : { ...v, disabled: true, inert: true })) }, liveOf: (id) => now.list.find((x) => x.id === id && nav(x) && !x.disabled) };
   // ...a held button acts where its live verb stands for no item, or for the same item still on the table (2026-10-27: Run another agent did
   // nothing while a write-up re-drew the row) - never the item being left's own; a held Back or Next is the live row's, whatever the item
   // under it names it (a batch registers chat:next; the stress walk, 2026-11-02)
@@ -313,7 +318,7 @@ export function rowOf({ list, ref, end: last = false, off = "" }, pick = null) {
   // THE ADVISOR PICKS THE FILLED BUTTON (the owner, 2026-10-13: "the advisor should pick which button is dark based off its advice")
   // - AND ONLY TINTS IT, IN PLACE: the layout is the same with and without advice. A verb in More is filled where it stands
   // (clustersOf keeps the filled one in view); a card's other verb advised (its Redraft) is lit on the card (`lit`, useLit); Next is
-  // filled when the Advisor's answer is that nothing here needs a move (words.json advice_none)
+  // filled when the decision is that nothing here needs a move
   const advised = advisedIn(list, pick), primary = advised ? { ...advised, tone: "p" } : null;
   if (advised && !advised.card) {
     const fill = (xs) => xs.map((v) => (v.id === advised.id ? primary : v));
@@ -473,13 +478,15 @@ export function fitRow(row, m, avail, phone = false, extra = 0) {
   if (!m || !(avail > 0)) return at(from + extra);
   for (let i = from; i <= last; i++) if (rowWidth(all[i], navOf(row), m) <= avail) return at(i + extra);
   // ...and a move left too little room to say anything goes into the ▾ too, unless it is the lit one: a phone's report put Back, Next and
-  // the chat pill beside "Put it on my list", and it read "Pu" (the 2026-10-27 sweep). A long move with room for its words is shortened.
-  // Mark done stays (pinOf): only the move beside it goes
+  // the chat pill beside "Put it on my list", and it read "Pu" (the 2026-10-27 sweep). A long move alone with room for its words is shortened.
+  // ...BESIDE MARK DONE IT ALWAYS GOES (the owner, 2026-11-15: the others fold into the ▾ before Mark done is ever cut): shortened there, it
+  // took Mark done's letters with it - a phone's coding task read "Mark d…" and "Review ch…". Mark done stays whole (pinOf)
   const g = all[last][0], lead = g?.shown.find((v) => !isDone(v)), pin = g?.shown.find(isDone);
-  if (lead && lead.tone !== "p" && avail - (rowWidth(all[last], navOf(row), m) - (m.btn[lead.id] ?? 0)) < MOVE_MIN) {
+  if (lead && lead.tone !== "p" && (pin || avail - (rowWidth(all[last], navOf(row), m) - (m.btn[lead.id] ?? 0)) < MOVE_MIN)) {
     const one = { type: pin ? g.type : "more", label: "", shown: pin ? [pin] : [], rest: [...g.shown.filter((v) => v !== pin), ...g.rest] };
     return { ...at(last), groups: [one], ...(pin && rowWidth([one], navOf(row), m) > avail ? { tight: true } : {}) };
   }
+  // ...and a lit move too long for the line is shortened alone: Mark done and the ▾ beside it keep their width (assistantView.css, .tight)
   return { ...at(last), tight: true };
 }
 const MOVE_MIN = 72;   // a few words and the ellipsis: less reads as a stray letter

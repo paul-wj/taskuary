@@ -140,7 +140,7 @@
 .tq-pile-row .logo .goal { width: 15px; font-size: 13px; line-height: 15px; text-align: center; }
 /* a goal's count beside its title - "· 2 of 5 steps" - in the age column's quiet ink */
 .tq-pile-steps { flex: 0 0 auto; font: 400 11.5px 'IBM Plex Sans', system-ui, sans-serif; color: var(--tq-secondary, #746e64); font-variant-numeric: tabular-nums; white-space: nowrap; }
-/* ...and its due date after it - like its count and its word, the title gives way to it, never the other way round (.goal-t) */
+/* ...and its due date after it - both give way to the title on a narrow rail (.goal-t, below) */
 .tq-pile-due { flex: 0 0 auto; font: 400 11.5px 'IBM Plex Sans', system-ui, sans-serif; color: var(--tq-secondary, #746e64); white-space: nowrap; }
 /* 500, not 600: at 600 every row shouted equally and the column read as a wall of bold (the owner,
    2026-09-16: "it's all too bold"). 11.5px is the size the TIMELINE tab sets its own subjects in
@@ -198,7 +198,9 @@
 /* ── the chat ─────────────────────────────────────────────────────────────────────────────── */
 .tq-chat-head { display: flex; align-items: center; gap: 8px; padding: 4px 10px 4px 12px; border-bottom: 1px solid var(--tq-border, #e1dcd5); background: var(--tq-panel, #fffdfb); }
 .tq-chat-head .who b { display: inline; font-size: 13px; color: var(--tq-text, #262521); font-weight: 600; letter-spacing: .2px; }
-.tq-chat-head .who { min-width: 0; }
+/* ...the name keeps its room and the Back chip gives way (the phone audit, 2026-11-13): at 390px "Back to TQ-..." took the name's width, and
+   "Taskuary" ran on under the Your work icon - the chip ellipsizes and the name keeps its word (an earlier chat's date line clips at 60%) */
+.tq-chat-head .who { min-width: 0; flex-shrink: 0; max-width: 60%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .tq-chat-head .who span { display: inline; font-size: 10.5px; color: var(--tq-secondary, #6e685f); margin-left: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tq-chat-head .grow { flex: 1; }
 /* the way back to the task you were working on: quiet, the size of the header icons, never wider than half the head (a phone) */
@@ -824,7 +826,13 @@
 @container (max-width: 300px) { .tq-pile-word .w { display: none; } .tq-pile-word i { margin-right: 0; } }
 /* ...but a goal's "slipped" is its whole word, and it stays, in red, however narrow the rail (the owner, 2026-10-21) */
 .tq-pile-word.keep .w { display: inline !important; }
-.tq-pile-row .t b.goal-t { min-width: 20%; }   /* ...its title gives way to its count and its word, never the other way round */
+/* ...AND A GOAL'S TITLE KEEPS ITS ROOM, AS EVERY ROW'S (the owner, 2026-11-15: at every desktop width the row read "Migra… · 1 of 5 steps
+   slipped Nov 1" - the count and the word whole, the title five letters, the date cut at the card's edge). The title holds its half
+   (.t b); the count and the due date give way first, then the word shortens with an ellipsis - "slipped" itself stays, in red, and
+   the whole of it is the row's hover */
+.tq-pile-row .t b.goal-t { flex-shrink: 3; }
+.tq-pile-steps, .tq-pile-due { flex: 0 1000 auto; min-width: 0; overflow: hidden; }
+.tq-pile-word.keep { flex: 0 1 auto; min-width: 46px; overflow: hidden; text-overflow: ellipsis; }
 
 /* ── the canvas (the canvas redesign, 2026-09-29) ─────────────────────────────────────────────── */
 /* the item on the table: the Tasks tab's task view, full width of the conversation, the body's own height */
@@ -906,6 +914,8 @@
    takes the step's own width (FirstRun's 980px column), centred, so its line and Back/Next sit under the cards */
 .tq-dock.tq-setup-dock { width: min(980px, 100%); margin-inline: auto; }
 .tq-arow-verbs.tight > .tq-cl:not(.tq-cl-next) { flex-shrink: 1; }
+/* ...and there MARK DONE KEEPS ITS WORDS (the owner, 2026-11-15: a phone's bar read "Mark d…"): only the lit move beside it is shortened */
+.tq-arow-verbs.tight .tq-ab[data-tq-verb="done"], .tq-arow-verbs.tight .tq-ab[data-tq-verb$=":done"], .tq-arow-verbs.tight .tq-cl-more { flex-shrink: 0; }
 /* the unseen copy ActionRow measures: every part in the row's own classes, at its natural width, taking no room */
 .tq-arow-ghost { position: absolute; left: 0; top: 0; width: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
 .tq-arow-ghost .tq-cl { width: max-content; max-width: none; }
@@ -985,9 +995,6 @@
 .tq-welcome .tq-day-agenda .ev.cal-note { grid-template-columns: minmax(0, 1fr); }
 .tq-welcome .tq-day-agenda .ev.cal-note .s { white-space: normal; }
 .tq-day-agenda .cal-go { align-self: flex-start; }
-/* the Advisor's own button, when the move it names has none on the row (ActionRow.AdvisorNext `own`) - beside its line, Why? after */
-.tq-next .tq-next-go { flex: 0 0 auto; min-height: 30px; padding: 0 14px; font-size: 12.5px; }
-.tq-next-err { color: var(--tq-danger, #8a3646); font-weight: 400; }
 /* the thing a link named, shown for a moment where it landed (appLinks.focusPlace) - an outline that fades, nothing moves */
 .tq-flash { animation: tq-flash 1.8s ease-out; border-radius: 6px; }
 @keyframes tq-flash { 0%, 35% { box-shadow: 0 0 0 3px rgba(85, 105, 122, 0.38); } 100% { box-shadow: 0 0 0 3px rgba(85, 105, 122, 0); } }

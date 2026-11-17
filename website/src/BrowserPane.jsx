@@ -8,16 +8,20 @@ import api from "./api.js";
 import { failLine, landed, press as pressReview } from "./press.js";
 import { label } from "./buttons.js";
 import { useAgents } from "./ui.jsx";
-import { BORDER, CATPPUCCIN, FAINT, PANEL, mono } from "./theme.jsx";
+import { ACCENT, BORDER, CATPPUCCIN, DIM, FAINT, INK, PANEL, PANEL2, mono } from "./theme.jsx";
+import { activeTab, tabList, FIRST_WAIT, fitFrame, holdFirst, isPaste, isPress, keyMessage, mayShape, pasteMessages, mouseMessage, parseMessage, shortUrl, viewportFor,
+  viewportMoved, wheelMessage } from "./browserSplit.js";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
-import { fitFrame, isPaste, isPress, keyMessage, mayShape, pasteMessages, mouseMessage, parseMessage, shortUrl, viewportFor, viewportMoved,
-  wheelMessage } from "./browserSplit.js";
 
 const wsUrl = (sid) => {
   const t = localStorage.getItem("taskuary_token");
   return `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/terminals/${sid}/browser/ws${t ? `?token=${encodeURIComponent(t)}` : ""}`;
 };
+
+// ...kept per browser across the view's remounts: a resize that re-laid the task out drew the view without its strip until the relay's greeting
+// came back, ~3 s later (recorded, 2026-11-15)
+const TABS = new Map();
 
 export const hostOf = (u) => { try { return new URL(u).host; } catch { return ""; } };
 
@@ -37,6 +41,7 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
   const { devMode } = useAgents();
   const [live, setLive] = useState(false);
   const [url, setUrl] = useState(url0);
+  const [tabs, setTabs] = useState(() => TABS.get(sid) || []);     // the browser's tabs (browserSplit.tabList): a strip once there are two
   /* THE PAGE THE SERVER SAYS IT IS ON. A reopened task mounts this before the parent's first poll, so
      url0 is "" here - and the relay only sends a url message when the page MOVES. The address bar sat
      blank and "an empty tab, live" was drawn over a real, painting page (the 2026-10-02 pane pass). */
@@ -51,11 +56,11 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
   const held = useRef(null);    // the newest frame while this tab is hidden: drawn and acked on return
   // null until the daemon says; false = it is up but holding no page, so no frame is coming
   const [attached, setAttached] = useState(null);
-  const shape = useRef(null), shapeTimer = useRef(null), shaped = useRef(false);
+  const shape = useRef(null), shapeTimer = useRef(null), shaped = useRef(false), firstAt = useRef(0), late = useRef(null);
 
   /* THE PAGE IS GIVEN THIS PANE'S SHAPE, so there is nothing left to letterbox. Debounced, because
      the splitter drags; ignored on failure, because a browser that will not resize still draws. */
-  const fitViewport = (claim = false) => {
+  const fitViewport = (claim = false, now = false) => {
     if (!box.current || !mayShape(document.hidden, document.hasFocus(), claim)) return;
     const r = box.current.getBoundingClientRect();
     const want = viewportFor(r.width, r.height);
@@ -65,7 +70,7 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
     shapeTimer.current = setTimeout(() => {
       shape.current = want;
       api.post(`/api/terminals/${sid}/browser/viewport`, want).catch(() => { shape.current = null; });
-    }, 400);
+    }, now ? 0 : 400);      // ...at once for a view that is opening: the wait is for a splitter being dragged
   };
 
   // draw whatever the newest frame is into whatever size the box is now
@@ -77,7 +82,9 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
     if (c.width !== bw * dpr || c.height !== bh * dpr) { c.width = bw * dpr; c.height = bh * dpr; c.style.width = `${bw}px`; c.style.height = `${bh}px`; }
     const ctx = c.getContext("2d");
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = "#101010"; ctx.fillRect(0, 0, bw, bh);
+    // THE GROUND IS THE APP'S OWN, NOT BLACK: a view opening for a step of his drew a black box for a beat, then the page between black
+    // bars until its shape landed, in a cream window (recorded, the browser round 2026-11-14) - "black" is how a broken pane has been described
+    ctx.fillStyle = getComputedStyle(box.current).backgroundColor || "#fffdfb"; ctx.fillRect(0, 0, bw, bh);
     if (!im) return;
     fit.current = fitFrame(im.naturalWidth, im.naturalHeight, bw, bh);
     const f = fit.current;
@@ -91,10 +98,16 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
          and an ack-paced stream sends no frame at all while a page sits still, so a sign-in
          form the agent was waiting on read as a dead pane (2026-09-15). It is live until the
          relay closes; a page that is not moving is a page that is not moving. */
-      img.current = im; paint(); setLive(true);
+      const show = () => { clearTimeout(late.current); img.current = im; paint(); setLive(true); };
       // the FIRST frame of a connection sends the pane's shape: one sent while the browser was still starting is refused (browserview.set_viewport),
       // and the page would stay letterboxed - black bars at its sides - until a resize (2026-11-04)
-      if (!shaped.current) { shaped.current = true; fitViewport(true); }
+      if (!shaped.current) { shaped.current = true; firstAt.current = Date.now(); fitViewport(true, true); }
+      /* ...AND THE FIRST PICTURE WAITS FOR THAT SHAPE, a moment: the page was drawn small between bars, then again at its size - a thing that
+         appears and then moves (recorded, the browser round 2026-11-14). Only while nothing is drawn yet, and never for long: a still
+         page sends no second frame, so the one held is drawn when the wait is over (browserSplit.holdFirst). */
+      if (holdFirst(!!img.current, m, box.current?.getBoundingClientRect(), Date.now() - firstAt.current)) {
+        clearTimeout(late.current); late.current = setTimeout(() => { if (!img.current) show(); }, FIRST_WAIT);
+      } else show();
       send?.({ type: "ack", seq: m.seq });       // ack AFTER drawing: the next frame is the page now, not history
     };
     im.src = m.src;
@@ -117,6 +130,9 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
           if (document.hidden) { held.current = m; return; }
           draw(m, send);
         } else if (m.type === "url" && m.url) setUrl(m.url);
+        // ...and the tabs a viewer is greeted with say where the page is NOW: opened after the saved sign-in had moved it on, the address bar
+        // read the sign-in page's address over the code page for three seconds (recorded, the browser round 2026-11-14)
+        else if (m.type === "tabs") { const u = activeTab(m); if (u) setUrl(u); const l = tabList(m); TABS.set(sid, l); setTabs(l); }
         /* THE STREAM SAYS WHEN IT HAS NOTHING, and we used to drop that on the floor. An
            agent-browser daemon answers its screencast port the moment it launches, whether or not
            a page was ever opened in it - browserview.state() calls that "open", the relay
@@ -132,8 +148,10 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
          page, no close code to read) and this knocked every two seconds for as long as the task stayed
          open (the 2026-10-02 pane pass). Now the poll turning `open` false tears this effect down and
          true brings it back; in between, the retry backs off instead of hammering. */
-      ws.onopen = () => { tries = 0; };
-      ws.onclose = () => { setLive(false); shaped.current = false; if (!closed) retry = setTimeout(connect, Math.min(15000, 2000 * 2 ** tries++)); };
+      // ...and the page is asked for this pane's shape as the view connects, not after its first picture: asked then, the view stood empty
+      // for the 1.7 s the reshaping took (recorded at 800x600, the browser round 2026-11-14)
+      ws.onopen = () => { tries = 0; fitViewport(true, true); };
+      ws.onclose = () => { setLive(false); shaped.current = false; clearTimeout(late.current); if (!closed) retry = setTimeout(connect, Math.min(15000, 2000 * 2 ** tries++)); };
     };
     connect();
     return () => { closed = true; clearTimeout(retry); ws?.close(); };
@@ -169,7 +187,8 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
      that without taking over"). The page is yours while it waits, and goes back to it when you answer - unless you
      took it yourself, which only you hand back. */
   const handed = useRef(false);
-  useEffect(() => {
+  // ...BEFORE THE PAINT (the browser audit, 2026-11-15): set after it, a page handed over drew one frame with "Take over" where "I'm done" belongs
+  React.useLayoutEffect(() => {
     if (yourTurn && !drivingRef.current) { handed.current = true; setAsked(false); setDriving(true); }
     if (!yourTurn && handed.current) { handed.current = false; setDriving(false); }
   }, [yourTurn]);
@@ -215,6 +234,15 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
   };
   const onPaste = (e) => { if (!drivingRef.current) return; e.preventDefault(); pasted.current++; typeIn(e.clipboardData?.getData("text/plain")); };
 
+  // ANOTHER TAB IS SHOWN BY SWITCHING THE BROWSER TO IT - the picture is the active tab's, and the agent's next command works that tab too, so
+  // it is his to switch only while the page is his (handed over, or taken over); watching, a press says how, as a click on the page does
+  const pick = (t) => {
+    if (t.active) return;
+    if (!drivingRef.current) return void setAsked(true);
+    const send = sendRef.current;
+    send?.({ type: "tab", tab: t.id });
+  };
+
   const snapshot = async () => {
     try {
       const r = await api.post(`/api/terminals/${sid}/browser/snapshot`, { task_id: taskId || null });
@@ -222,10 +250,19 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
     } catch (e) { const detail = e?.response?.data?.detail; say(detail || "could not save the snapshot", true, 3000, !detail); }
   };
 
+  // ...A SHORT PANE KEEPS ITS PAGE (the browser audit, 2026-11-15: in a window ~500 px tall the step's card took 96 of the pane's 215 px, the
+  // page under it 119): below SHORT_PANE the card is one line, its full words on hover
+  const root = useRef(null), [short, setShort] = useState(false);
+  useEffect(() => {
+    if (!root.current) return undefined;
+    const ro = new ResizeObserver(([e]) => setShort(e.contentRect.height < SHORT_PANE));
+    ro.observe(root.current);
+    return () => ro.disconnect();
+  }, []);
   return (
-    <Box sx={{ position: overlay ? "absolute" : "relative", ...(overlay ? { inset: 0, zIndex: 3 } : {}), display: "flex",
+    <Box ref={root} sx={{ position: overlay ? "absolute" : "relative", ...(overlay ? { inset: 0, zIndex: 3 } : {}), display: "flex",
       flexDirection: "column", minHeight: 0, minWidth: 0, border: `1px solid ${driving ? CATPPUCCIN.yellow : BORDER}`,
-      borderRadius: 2, overflow: "hidden", bgcolor: "#101010", transition: "border-color .15s" }}>
+      borderRadius: 2, overflow: "hidden", bgcolor: PANEL, transition: "border-color .15s" }}>
       {/* toolbar: what page, whether frames are flowing, who is driving */}
       {/* clearRight: the session's full-screen button floats over this corner, and it sat on the fold arrow - the one way
           to put the browser away was under it (2026-10-09) */}
@@ -254,30 +291,52 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
         {note && <Typography title={note.local ? t(note.text, note.values) : note.text} sx={{ ...mono, fontSize: 10, flexShrink: 1, minWidth: 0, maxWidth: "45%",
           overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
           color: note.bad ? CATPPUCCIN.red : CATPPUCCIN.green }}>{note.local ? t(note.text, note.values) : note.text}</Typography>}
-        <Box component="button" onClick={() => (driving ? setDriving(false) : takeOver())}
+        {!turn && <Box component="button" onClick={() => (driving ? setDriving(false) : takeOver())}
           title={driving ? t("give the page back to the agent") : t("drive the page yourself - for a password or a code the agent must not type")}
           sx={{ ...btn, ...(driving ? { color: CATPPUCCIN.yellow, borderColor: CATPPUCCIN.yellow } : {}) }}>
           {driving ? t("I'm done") : t("Take over")}
-        </Box>
+        </Box>}
         {/* ...Snapshot only in Developer mode (audit, 2026-11-05): a frame filed as an attachment is a developer's record */}
         {devMode && <Box component="button" onClick={snapshot} title={t("keep this frame on the task as an attachment")} sx={btn}>{t("Snapshot")}</Box>}
         {onFold && <Box component="button" onClick={onFold} title={overlay ? t("back to the terminal") : t("fold the browser away - the browser chip above the terminal brings it back")} sx={btn}>{overlay ? "✕" : "›"}</Box>}
       </Box>
+      {/* THE TASK'S SITES AS TABS (the owner, 2026-11-15): each by its title or host, the one the agent works marked; one site draws none */}
+      {tabs.length > 1 && (
+        <Box data-tq-browser-tabs="" role="tablist" sx={{ display: "flex", gap: 0.5, px: 1, py: 0.4, bgcolor: PANEL, borderBottom: `1px solid ${BORDER}`,
+          flexShrink: 0, overflowX: "auto", scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" } }}>
+          {tabs.map((t) => (
+            <Box key={t.id} component="button" role="tab" aria-selected={t.active} data-tq-browser-tab={t.id} onClick={() => pick(t)}
+              title={`${t.name}
+${t.url}
+
+${t.active ? "the tab the agent is working on - shown now" : driving ? "show this tab - the agent works on the tab shown" : "Take over to switch to this tab"}`}
+              sx={{ ...mono, fontSize: 10.5, lineHeight: 1.2, display: "flex", alignItems: "center", gap: 0.6, flex: "0 1 auto", minWidth: 0, maxWidth: 180,
+                px: 0.9, py: 0.4, borderRadius: 1, cursor: t.active ? "default" : "pointer", whiteSpace: "nowrap",
+                border: `1px solid ${t.active ? ACCENT : BORDER}`, bgcolor: t.active ? PANEL2 : "transparent",
+                color: t.active ? INK : FAINT, fontWeight: t.active ? 600 : 400,
+                "&:hover": t.active ? {} : { borderColor: ACCENT, color: DIM } }}>
+              {t.active && <Box component="span" aria-hidden sx={{ width: 6, height: 6, borderRadius: 99, flexShrink: 0, bgcolor: live ? CATPPUCCIN.green : "#5a554d" }} />}
+              <Box component="span" sx={{ overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{t.name}</Box>
+            </Box>
+          ))}
+        </Box>
+      )}
       {/* the page. tabIndex so keystrokes land here while driving; the canvas swallows the wheel
           the same way the terminal does, so scrolling the page never scrolls the app */}
       {/* a click on the page is not a claim on its shape: re-sending it reshaped the page under the owner's first click, and the box they
           clicked could lose its caret before the first keys arrived (2026-11-03) */}
       <Box ref={box} onPointerDown={() => fitViewport()}
-        sx={{ flex: 1, minHeight: 0, position: "relative", cursor: driving ? "default" : "not-allowed" }}>
+        sx={{ flex: 1, minHeight: 0, position: "relative", bgcolor: PANEL, cursor: driving ? "default" : "not-allowed" }}>
         <Box component="canvas" ref={canvas} tabIndex={0} onMouseDown={onMouse} onMouseUp={onMouse} onMouseMove={onMouse}
           onWheel={onWheel} onKeyDown={onKey} onKeyUp={onKey} onPaste={onPaste} onContextMenu={(e) => e.preventDefault()}
           sx={{ display: "block", outline: "none", position: "absolute", inset: 0 }} />
         {/* BEFORE ANYTHING ARRIVES, it says it is starting: a black box marked "…" is how the owner has described a broken pane
             ("freezes and is just black") - the chip already said "browser · starting…" (2026-10-25) */}
-        {attached === null && !live && (
+        {attached !== false && !live && (
           <Box data-tq-browser-starting="" sx={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
             pointerEvents: "none" }}>
-            <Typography sx={{ ...mono, fontSize: 11.5, color: "var(--tq-warning, #a8a196)" }}>{t("starting the browser…")}</Typography>
+            {/* ...and once the browser has answered, what is awaited is its page's picture - said, not an empty box */}
+            <Typography sx={{ ...mono, fontSize: 11.5, color: "var(--tq-warning, #a8a196)" }}>{t(attached ? "loading the page…" : "starting the browser…")}</Typography>
           </Box>
         )}
         {/* Only before the first frame: once a page has painted, a momentary "not connected"
@@ -330,7 +389,7 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
           <Box sx={{ position: "absolute", left: 8, right: 8, bottom: 6, display: "flex", alignItems: "center", gap: 1,
             bgcolor: "#000000cc", border: `1px solid ${CATPPUCCIN.yellow}66`, px: 1, py: 0.5, borderRadius: 1 }}>
             <Typography sx={{ ...mono, fontSize: 10, color: "var(--tq-muted, #e1dcd5)", flex: 1 }}>
-              {t("You are watching the agent's page — Take over to type on it.")}
+              {t(tabs.length > 1 ? "You are watching the agent's page — Take over to type on it or switch tabs." : "You are watching the agent's page — Take over to type on it.")}
             </Typography>
             <Box component="button" onClick={takeOver}
               sx={{ ...btn, color: CATPPUCCIN.yellow, borderColor: CATPPUCCIN.yellow }}>{t("Take over")}</Box>
@@ -340,7 +399,7 @@ export default function BrowserPane({ sid, taskId, url: url0 = "", open = true, 
       {/* WHAT WAITS ON THE OWNER, ON THE PAGE IT WAITS ON - below the page, never over it: a CAPTCHA box under a bar is not one they
           can tick. A held act's Approve / Dismiss, and the owner's turn with its hand-back; both flow back into the agent's chat. */}
       {waiting.map((h) => <HeldBar key={h.id} held={h} onDecided={onDecided} />)}
-      {turn && <TurnBar turn={turn} onHandBack={onHandBack} />}
+      {turn && <TurnBar turn={turn} url={url} onHandBack={onHandBack} short={short} />}
     </Box>
   );
 }
@@ -386,7 +445,8 @@ function HeldBar({ held: h, onDecided }) {
 
 // THE OWNER'S TURN (browserview.your_turn): the page is theirs to click and type on (yourTurn hands it over), and Done hands it back -
 // their press, never words in their name: Taskuary tells the agent, which looks at the page and goes on (browsergate.done).
-function TurnBar({ turn, onHandBack }) {
+export const SHORT_PANE = 360;
+function TurnBar({ turn, url = "", onHandBack, short = false }) {
   useLocale();
   const [busy, setBusy] = useState(false), [err, setErr] = useState("");
   const back = async () => {
@@ -399,11 +459,19 @@ function TurnBar({ turn, onHandBack }) {
   // when the page moves on (the owner, 2026-11-05) - Done stays, quiet, for a page Taskuary cannot read
   const pressing = isPress(turn);
   return (
-    <Box data-tq-browser-turn={turn.request_id} data-tq-browser-press={pressing ? "" : undefined} sx={bar}>
-      <Typography sx={barText}>
+    <Box data-tq-browser-turn={turn.request_id} data-tq-browser-press={pressing ? "" : undefined} data-tq-browser-turn-short={short ? "" : undefined}
+      sx={short ? { ...bar, flexWrap: "nowrap", py: 0.4 } : bar}>
+      <Typography sx={short ? { ...barText, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } : barText}
+        title={short ? `${turn.text || t("Your turn in the browser")}${pressing ? "" : " - do it on the page, and the agent goes on when it moves on"}` : undefined}>
         <Box component="span" sx={{ color: CATPPUCCIN.yellow, fontWeight: 600 }}>{turn.text || t("Your turn in the browser")}</Box>
-        {!pressing && <Box component="span" sx={{ color: "var(--tq-warning, #a8a196)" }}>{t(" · do it on the page, and the agent goes on when it moves on")}</Box>}
+        {!pressing && !short && <Box component="span" sx={{ color: "var(--tq-warning, #a8a196)" }}>{t(" · do it on the page, and the agent goes on when it moves on")}</Box>}
       </Typography>
+      {/* ...AND IN HIS OWN BROWSER WHERE THIS ONE IS REFUSED (the owner, 2026-11-13: a registrar's "Verifying you are human" spun forever in the
+          agent's browser - a check that turns away an automated browser even with a person at it, and Approve could not get past it): the
+          same page in his everyday browser, where he does the step; his I'm done hands it back */}
+      {/^https?:\/\//i.test(url) && <Box component="a" href={url} target="_blank" rel="noreferrer" data-tq-browser-own=""
+        title="If the page will not let you through here - a check that you are human that never ends - do the step in your own browser, then press I'm done"
+        sx={{ ...mono, fontSize: 11, color: "var(--tq-link, #8fb3d9)", whiteSpace: "nowrap", "&:hover": { textDecoration: "underline" } }}>Open in my browser</Box>}
       <Box component="button" onClick={back} disabled={busy} sx={press}
         title={t("The agent looks at the page as you left it and carries on")}>{busy ? t("handing back…") : t("I'm done")}</Box>
       {err && <Typography role="alert" sx={{ ...mono, fontSize: 10.5, color: CATPPUCCIN.red, flexBasis: "100%" }}>{err.local ? t(err.text) : err.text}</Typography>}

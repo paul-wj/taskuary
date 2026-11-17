@@ -76,29 +76,6 @@ def test_all_read_next_with_the_cache_emptied_and_a_build_running(world):
     assert out['item']['key'] == below
 
 
-def test_the_advisor_never_reads_the_rail_through_its_lock(world):
-    from taskuary import advisor, funnel
-    s, src = world
-    funnel.pile(s)
-    key = walkworld.key_of(s, src, 'T1')
-    with mock.patch.object(advisor, 'notice', return_value=None):
-        d = run_with_build_running(lambda: advisor.status(s, key))
-        rid = run_with_build_running(lambda: advisor.press(s, key, None, 'next', surface='desk'))
-    assert d.get('key') == key or d.get('none'), d
-    assert rid, 'the press is kept'
-
-
-def test_the_advisor_read_ahead_never_builds(world):
-    from taskuary import advisor, funnel
-    s, src = world
-    funnel.pile(s)
-    seen = []
-    with mock.patch.object(advisor, 'BACKGROUND', True), mock.patch.object(advisor, 'notice', side_effect=lambda *a, **k: seen.append(k.get('key'))), \
-         mock.patch.object(funnel, 'pile', side_effect=AssertionError('the read ahead built the rail')), \
-         mock.patch.object(advisor.threading, 'Thread', side_effect=lambda target, **k: mock.Mock(start=target)):
-        advisor._preread(s, funnel.known(s)['items'][0]['key'])
-    assert seen, 'the next rows were read ahead off the known rail'
-
 
 def test_readers_queued_behind_one_build_share_the_next_one():
     """A tab, the Advisor and a press queued behind a build while an agent kept writing each rebuilt in turn. A read that waited out a

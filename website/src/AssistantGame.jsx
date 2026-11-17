@@ -109,7 +109,7 @@ export default function AssistantGame({ onOpenTask, onExit, onNavigate, active =
   const [busy, setBusy] = useState("");
   const [trophies, setTrophies] = useState(false);
   const [folded, setFolded] = useState(false);    // the room panel, down to its title bar
-  const [chat, setChat] = useState([{ who: "core", intro: true, text: "I'm the Assistant Core. Ask me who should take what, or what to do next - I read the same pile you do." }]);
+  const [chat, setChat] = useState([{ who: "core", intro: true, text: "I'm the Taskuary Core. Ask me who should take what, or what to do next - I read the same pile you do." }]);
   const sound = useSound();
   const wide = useMediaQuery("(min-width:900px)");
   const opened = useRef(new Set());
@@ -363,7 +363,7 @@ export default function AssistantGame({ onOpenTask, onExit, onNavigate, active =
               fontWeight: 600, fontSize: 14, color: G.gold }}>{lv.level}</Box>
           </Box>
           <Box sx={{ minWidth: 0 }}>
-            <Typography sx={{ fontSize: 10, letterSpacing: 1.4, color: G.faint, fontWeight: 600, textTransform: "uppercase" }}>{tr("Assistant game")}</Typography>
+            <Typography sx={{ fontSize: 10, letterSpacing: 1.4, color: G.faint, fontWeight: 600, textTransform: "uppercase" }}>{tr("Taskuary game")}</Typography>
             <Typography noWrap sx={{ fontSize: 14, fontWeight: 600, color: G.ink }}>{tr(lv.title)}</Typography>
             <Typography sx={{ ...mono, fontSize: 10.5, color: G.dim }}>{tr("{xp} XP · {left} to Lv {level}", { xp: game.xp, left: lv.span - lv.into, level: lv.level + 1 })}</Typography>
           </Box>
@@ -411,7 +411,7 @@ export default function AssistantGame({ onOpenTask, onExit, onNavigate, active =
           <HudButton onClick={() => setTrophies((v) => !v)} title={tr("Trophies")}>🏆 {game.got.length}/{ACHIEVEMENTS.length}</HudButton>
           <HudButton onClick={sound.toggle} title={tr(sound.on ? "Sound on" : "Sound off")}>{sound.on ? "🔊" : "🔇"}</HudButton>
           <HudButton onClick={share} title={tr("Copy your run to share - counts only")} gold>{tr("Share run")}</HudButton>
-          <HudButton onClick={onExit} title={tr("Back to the Assistant's chat - the same items, as a conversation")}>{tr("💬 Back to chat")}</HudButton>
+          <HudButton onClick={onExit} title={tr("Back to the Taskuary's chat - the same items, as a conversation")}>{tr("💬 Back to chat")}</HudButton>
         </Box>
       </Box>
 

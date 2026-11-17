@@ -54,7 +54,7 @@ usually `report` and `tool`.
 | System | Notes |
 |---|---|
 | **Outlook** | Mail and calendar, through Microsoft sign-in or a tenant app registration - answering invites and booking meetings needs Calendars.ReadWrite, which a sign-in from before it asks for again |
-| **Gmail and IMAP** | Any IMAP mailbox. Approved replies go back through the provider's SMTP, in-thread. A Gmail card can also sign in with Google, which adds the calendar and contacts |
+| **Gmail and IMAP** | Any IMAP mailbox. Approved replies go back through the provider's SMTP, in-thread. A Gmail card signs in with Google - mail, calendar and contacts on one sign-in - or takes an App Password for the mail alone |
 
 ### How Microsoft sign-in works
 
@@ -176,6 +176,46 @@ Taskuary knows otherwise. Name your own addresses in `SOUL.md` so triage can tel
 me" from "someone asked the team".
 :::
 
+### Gmail: Sign in with Google, or an App Password
+
+A Gmail card has two ways in, and you can use either.
+
+| | Brings | Needs |
+|---|---|---|
+| **Sign in with Google** | Mail in and replies out, the calendar (read, accept and decline invites, set up meetings) and your contacts | A Google client of your own, made once in Google Cloud |
+| **App Password** | Mail in and replies out, nothing else | 2-Step Verification on the account, then [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords) |
+
+**Taskuary ships no Google client**, as it ships no Microsoft app: the sign-in runs through one you
+make, so Google's consent page carries your name and nothing passes through anybody else's project.
+The card lists the steps where you paste the result. They take about five minutes, once:
+
+1. Open [console.cloud.google.com](https://console.cloud.google.com/projectcreate), create a
+   project and name it Taskuary. It is free.
+2. In that project enable three APIs: **Gmail API**, **Google Calendar API** and **People API**
+   (APIs & Services → Library → search each → Enable).
+3. **Google Auth Platform → Get started**: app name Taskuary, your own email. Audience:
+   **Internal** on a Google Workspace account. On a personal Gmail account choose **External**,
+   then **Audience → Test users → Add users** and add your own address.
+4. **Clients → Create client** → Application type **Desktop app** → Create. No redirect address
+   is needed: a Desktop client may come back to any port on this computer.
+5. On the Gmail card, paste the **Client ID** and **Client secret** into the Sign in with Google
+   box (each saves itself) and press **Sign in with Google**. Google says the app is not
+   verified, because it is yours and nobody reviewed it: **Advanced → Go to Taskuary**, and leave
+   the boxes ticked.
+
+Which one carries the mail: while an App Password is saved on the card, the mail uses it, and the
+sign-in adds the calendar and contacts. With no App Password, the mail comes in and goes out
+through the sign-in - the same IMAP and SMTP, signed in to with Google's token. The card says which
+it is.
+
+A sign-in from before Taskuary could answer invites only reads the calendar. The card says so with
+**Sign in again**, which asks Google for the calendar itself.
+
+**If Google signs you out every week**, the client is an External one still in *Testing*: Google
+ends those sign-ins after 7 days. **Google Auth Platform → Audience → Publish app** stops it - for
+your own use no review is needed, and the "not verified" page stays. When a sign-in has lapsed the
+card says so, mail polling says why instead of going quiet, and **Sign in again** fixes it.
+
 ### Finding people: the permissions it asks for
 
 To, Cc and the other recipient boxes search everyone Taskuary knows by name, company or any part
@@ -185,11 +225,11 @@ of an address. Each sign-in also asks for read-only access to the people the acc
 |---|---|---|
 | **Outlook** (Sign in with Microsoft) | `People.Read`, `Contacts.Read` | The people you write with, including outside contacts and their companies, and your Outlook contacts |
 | **Teams** (Sign in with Microsoft) | `People.Read`, besides `User.ReadBasic.All` | Your organisation's people, not only the chats already seen here. Picking one sends into your one-to-one chat with them, and opens that chat if you don't have one yet |
-| **Gmail** (Sign in with Google for the calendar) | `contacts.readonly`, `contacts.other.readonly`, `directory.readonly` | Your Google contacts, the addresses Gmail saved for you, and your Workspace directory |
+| **Gmail** (Sign in with Google) | `contacts.readonly`, `contacts.other.readonly`, `directory.readonly` | Your Google contacts, the addresses Gmail saved for you, and your Workspace directory |
 
 Microsoft lets each person consent to these themselves, without an admin, unless your
 organisation limits user consent. In that case **Get the admin link** on the card asks for them
-as well. On Google's consent page each one is its own box, and only the calendar is required.
+as well. On Google's consent page each one is its own box; the sign-in is kept as long as the mail or the calendar is ticked.
 
 A sign-in made before Taskuary asked for these still works. The search skips what that sign-in
 can't read, and the card says so. To add them on the Outlook or Teams card, sign out and sign in again. A Gmail card that
@@ -650,20 +690,23 @@ to the S3 bucket named on the card, a job transcribes it, and the clip and its t
 deleted once read. With no voice card a voice note still lands, filed with a line
 saying it was not transcribed and why, its audio attached so one click transcribes it later.
 
-Open **Windows / browser voice** under **AI · voice** to choose and test built-in dictation.
-**Windows speech recognition** uses the microphone on the computer running Taskuary;
-**Browser speech recognition** uses the current tab's speech service where supported, such as
-Edge or Chrome. The Windows app's embedded browser has no browser speech service, so choose Windows
-there. Neither choice needs an API key or another voice provider. An explicit choice applies to
-microphone buttons in this browser or app window and overrides a connected voice AI card for
-dictation. **Automatic** uses a connected card first, then browser speech, then Windows speech.
+**On Windows the mic is Windows voice typing.** With no voice card, pressing the mic puts the cursor in
+the box and opens Windows' own voice typing bar (the same as pressing Win+H), which types what you say
+straight into the box; press the mic again, or the bar's own stop, to end. Nothing is recorded by
+Taskuary. If Windows needs a setting turned on, its bar asks. A voice card, when you set one up, is
+used instead.
 
-Windows needs **Online speech recognition** under Settings > Privacy & security > Speech and
-desktop microphone access under Microphone. If speech recognition is off, pressing the mic asks
-before enabling it. Failed availability checks can be retried on the card without restarting the
-app. Windows and browser speech may use their own online services. The microphone test keeps its
-words on the card. These built-in services handle live dictation; voice-note files still use a
-transcription card. On a Mac, click in the box and press the Dictation key (or Fn twice).
+Open **Windows / browser voice** under **AI · voice** to choose and test built-in dictation.
+**Browser speech recognition** uses the current tab's speech service where supported, such as
+Chrome; on a Mac or Linux it is what a tab uses with no card. Edge carries the same speech API, but
+its service often hears the speech and sends back no words (or answers "network" while online); when
+that happens the mic says so in one line, with a button that switches it to your voice card or to
+Windows voice typing. An explicit choice applies to microphone buttons in this browser or app window
+and overrides a connected voice AI card for dictation. **Automatic** uses a connected card first,
+then Windows voice typing, then browser speech.
+
+The microphone test keeps its words on the card. On a Mac, click in the box and press the Dictation
+key (or Fn twice).
 
 ## A vendor's own MCP server
 

@@ -40,6 +40,15 @@ def world(s):
 def tos(r): return [x['to'] for x in r['data']]
 
 
+def test_a_public_mail_service_is_nobodys_company_by_the_one_list_trust_reads():
+    """The audit, 2026-11-15: people search and the trust rules each kept a list of the free mail services and they disagreed - an msn.com or
+    mail.com domain could be trusted as one organisation, and a fastmail.com address was a company called "fastmail" in people search."""
+    from taskuary.projects import PUBLIC_MAIL
+    for d in sorted(PUBLIC_MAIL): assert ps.org_of(f'gail@{d}') == '', d
+    for d in ('msn.com', 'mail.com', 'fastmail.com', 'gmail.com'): assert d in PUBLIC_MAIL and ps.org_of(f'omar@{d}') == '', d
+    assert ps.org_of('omar@yahoo.co.uk') == '' and ps.org_of('gail@northwind.example') == 'northwind'
+
+
 def test_a_company_word_lists_everyone_at_it_most_written_with_first(s):
     world(s)
     assert tos(ps.search(s, 'dynamo')) == ['vhale@dynamo.example', 'lortiz@dynamo.example', 'nprice@dynamo.example']
@@ -155,7 +164,7 @@ def test_the_sign_ins_ask_for_people_and_contacts():
     assert {'People.Read', 'User.ReadBasic.All', 'Chat.ReadWrite'} <= set(msauth.TEAMS_SCOPES.split())
     # an Outlook sign-in a Teams card reads through is never asked for more than it was: its chats would read as lapsed
     assert 'People.Read' not in msauth.TEAMS_CHAT.split()
-    assert googlecal.SCOPES.split() == [googlecal.SCOPE, *googlecal.PEOPLE]
+    assert googlecal.SCOPES.split() == [googlecal.MAIL, googlecal.SCOPE, *googlecal.PEOPLE]
     assert {x.rpartition('/')[2] for x in googlecal.PEOPLE} == {'contacts.readonly', 'contacts.other.readonly', 'directory.readonly'}
 
 

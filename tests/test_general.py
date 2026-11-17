@@ -132,8 +132,12 @@ class SharedSessionTests(unittest.TestCase):
         handbook.post(store, 'Customer launches need operations approval',
                       'Ask the operations owner before fixing the date.', 'customer-launch',
                       'decision', 'agent')
-        _system, user = general._prompt(store, tid)
-        self.assertIn('FROM HUB', user)
+        from tests import fake_embed
+        from taskuary import context
+        context._recalled.clear()
+        with fake_embed.reads({'launch': ['launch']}): _system, user = general._prompt(store, tid)
+        self.assertIn(context.KNOWN_HEAD, user)          # what bears on this task, read for it (context.recall) - one block, not two
+        self.assertNotIn('FROM HUB', user)
         self.assertIn('Customer launches need operations approval', user)
         self.assertNotIn('taskuary --upvote', user)  # an API assistant has no shell for this
 
@@ -224,7 +228,7 @@ class SharedSessionTests(unittest.TestCase):
             reply = session.send_prompt('Research this', pick='cli:codex')
         self.assertEqual(reply, 'Done through the CLI.')
         self.assertEqual((session.pick, session.model), ('cli:codex', 'gpt-test'))
-        self.assertIn('on this computer', session.provider)
+        self.assertEqual(session.provider, 'OpenAI Codex CLI')          # its one name (clis.name_of), never "codex (on this computer)"
         self.assertEqual(build.call_args.kwargs['pick'], 'cli:codex')
 
     def test_one_session_persists_chat_and_exposes_the_terminal_contract(self):
@@ -332,7 +336,7 @@ class SharedSessionTests(unittest.TestCase):
         answer = 'Here is the comparison.\n[[TASKUARY-DONE]] Finished the comparison.'
         timer = mock.Mock()
         with mock.patch.object(llm, 'build_llm', return_value=lambda *a, **k: answer), mock.patch('taskuary.origin.launch_mode', return_value='full'), \
-             mock.patch.object(general.threading, 'Timer', return_value=timer) as make_timer:
+             mock.patch('taskuary.origin.hold', return_value=None), mock.patch.object(general.threading, 'Timer', return_value=timer) as make_timer:
             session.send_prompt('Compare them')
         make_timer.assert_not_called()
         self.assertNotIn(store.get_task(tid)['Status'], ('done', 'dropped'))
@@ -388,26 +392,31 @@ class GeneralApiTests(unittest.TestCase):
             first = client.post(f'/api/tasks/{tid}/assistant/stream', json={'text': 'Make the chart', 'pick': 'cli:claude'})
             self.assertEqual(json.loads(first.text.splitlines()[-1])['type'], 'done')
             self.assertTrue(general.session_for(tid).waiting(), 'parked: the agent is waiting on you, with no question open')
-            with mock.patch.object(server, '_refresh_chat_context', side_effect=busy):
+            with mock.patch.object(server, '_refresh_chat_context', side_effect=busy) as read:
                 r = client.post(f'/api/tasks/{tid}/assistant/stream', json={'text': 'Now make it blue', 'pick': 'cli:claude'})
         events = [json.loads(line) for line in r.text.splitlines()]
         self.assertEqual(events[-1]['type'], 'done', events[-1])
         self.assertEqual(events[-1]['reply'], 'Turn 2 done.')
-        self.assertIn({'type': 'progress', 'name': 'sync_messages', 'detail': server.FOLLOW_UP_STALE}, events)
+        self.assertFalse(read.called, 'his words go straight in: nothing is fetched first')
+        self.assertFalse([e for e in events if e.get('name') == 'sync_messages'], events)
         self.assertIn('Now make it blue', said[-1])
         self.assertEqual([m['role'] for m in events[-1]['payload']['messages']], ['user', 'assistant', 'user', 'assistant'])
 
-    def test_starting_an_agent_still_reads_the_chat_first(self):
-        "No agent live: a typed message STARTS one, and that still waits on a sync it can trust - said, not swallowed."
+    def test_a_typed_line_starts_the_agent_without_reading_the_mail_first(self):
+        """No agent live: a typed message STARTS one, and nothing is fetched first (the owner, 2026-11-16: "tell me what to do and i will do
+        it" - his own line - came back under "The newest mail could not be read first, so the agent goes on from what it already has"): his
+        words are his, and mail that comes meanwhile reaches the agent as it arrives. Nothing is said about mail on his turn."""
         store = MemoryStore(); tid = general_task(store)
         connect_cli(self, claude={'cmd': 'claude'})
         busy = RuntimeError('messages are still syncing; I did not use stale chat context - try again in a moment')
         with mock.patch.object(server, 'store', store), mock.patch.dict(terminal.SESSIONS, {}, clear=True), \
-             mock.patch.object(server, '_refresh_chat_context', side_effect=busy), \
-             mock.patch.object(llm, 'build_llm', return_value=lambda *a, **k: 'never asked'):
+             mock.patch.object(server, '_refresh_chat_context', side_effect=busy) as read, \
+             mock.patch.object(llm, 'build_llm', return_value=lambda *a, **k: 'The chart is made.'):
             r = TestClient(server.app).post(f'/api/tasks/{tid}/assistant/stream', json={'text': 'Make the chart', 'pick': 'cli:claude'})
         events = [json.loads(line) for line in r.text.splitlines()]
-        self.assertEqual(events, [{'type': 'error', 'error': str(busy)}])
+        self.assertFalse(read.called)                                                                 # ...nothing fetched first
+        self.assertFalse([e for e in events if e['type'] == 'error' or e.get('name') == 'sync_messages'], events)
+        self.assertEqual(next(e for e in events if e['type'] == 'done')['reply'], 'The chart is made.')
 
     def test_a_turn_that_dies_mid_way_is_said_once_its_session_is_down(self):
         """The page reads the conversation again on the stream's error: said before the session's close (0.1 s after the raise), it
@@ -578,7 +587,7 @@ class BrainOptionsTests(unittest.TestCase):
         """Three profiles on Claude are ONE brain. The picker listed them as three providers."""
         self.connected(claude={'cmd': 'claude'})
         got = general.brain_options(self.store())
-        self.assertEqual([o['label'] for o in got if o.get('type') == 'cli'], ['Claude Code (on this computer)'])
+        self.assertEqual([o['label'] for o in got if o.get('type') == 'cli'], ['Claude Code'])
         self.assertEqual(len({o['pick'] for o in got}), len(got))
         # and it carries that CLI's own model list, so the model dropdown beside it is real
         self.assertTrue(all(m['id'] and m['label'] for o in got if o.get('type') == 'cli' for m in o['models']))
@@ -602,7 +611,7 @@ class BrainOptionsTests(unittest.TestCase):
         got = [o for o in general.brain_options(self.store()) if o.get('type') == 'cli']
         # installed ones only (devin is connected but not on this machine), and claude still once
         self.assertEqual([o['pick'] for o in got], ['cli:claude', 'cli:codex', 'cli:qwen'])
-        self.assertEqual([o['label'] for o in got], ['Claude Code (on this computer)', 'OpenAI Codex CLI (on this computer)', 'Qwen Code (on this computer)'])
+        self.assertEqual([o['label'] for o in got], ['Claude Code', 'OpenAI Codex CLI', 'Qwen Code'])
 
     def test_a_connection_pick_resolves_like_a_profile(self):
         """Picking it must RUN it: every door resolves a `cli:` pick through an agent row, which a
@@ -649,7 +658,7 @@ class OneGoalTests(unittest.TestCase):
         s = self._store(); plain = general_task(s); mailed = general_task(s); self._mail(s, mailed)
         for tid in (plain, mailed):
             system = general._prompt(s, tid)[0]
-            for want in ("off the owner's hands", 'only what you cannot find', 're-plan', 'never send', 'goes only in the reply you draft',
+            for want in ("off the owner's hands", 'look with your tools first', 're-plan', 'never send', 'goes only in the reply you draft',
                          selfclose.SUMMARY_OPEN, selfclose.SUMMARY_LINE, general.SHORT_LINE):
                 self.assertIn(want, system, (tid, want))
             self.assertNotIn('into the conversation or a draft', system)
@@ -664,7 +673,7 @@ class OneGoalTests(unittest.TestCase):
         s.cx.execute("UPDATE task SET OriginBase='stranger' WHERE TaskId=?", (tid,)); s.cx.commit()
         s.upsert_agent('assistant', 'general', 'cli', json.dumps({'kind': 'general'}))     # PROFILE RULES (the file ASSISTANT.md) ride as on an install
         system, user = general._prompt(s, tid)
-        for want in ("off the owner's hands", 'only what you cannot find', 're-plan', 'never send'): self.assertIn(want, system, want)
+        for want in ("off the owner's hands", 'look with your tools first', 're-plan', 'never send'): self.assertIn(want, system, want)
         self.assertIn('PROFILE RULES (the file ASSISTANT.md)', system)
         flat = ' '.join(f'{system}\n{user}'.split())
         for gone in ('put it in the reply you draft', 'goes only in the reply you draft', 'A login or secret', 'A login or key',
@@ -696,6 +705,11 @@ class OneGoalTests(unittest.TestCase):
         self.assertLess(user.index('TASK '), user.index('THE ASK, AS TRIAGE READ IT'))
         self.assertLess(user.index('THE ASK, AS TRIAGE READ IT'), user.index('FROM Ray Colton'))
         self.assertLessEqual(len(general.reading_block(s, tid)), 1500)
+        # ...and a task of ONE mail hands no number: there is none to choose, and the agent said "mail #3" to the owner
+        one = general_task(s); gail = self._mail(s, one)
+        self._read(s, one, on_you=['confirm Gail has it'])
+        got = general.reading_block(s, one)
+        self.assertIn('The mail the reply answers: Ray Colton', got); self.assertNotIn(f'[#{gail}]', got); self.assertNotIn('THE MAIL ON THIS TASK', got)
         # ...never on a stranger's task: the reading is of their words
         s.cx.execute("UPDATE task SET OriginBase='stranger' WHERE TaskId=?", (tid,)); s.cx.commit()
         self.assertNotIn('THE ASK, AS TRIAGE READ IT', general._prompt(s, tid)[1])

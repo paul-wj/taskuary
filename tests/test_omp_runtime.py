@@ -531,7 +531,7 @@ def test_omp_acp_rejects_unresumable_custom_session_directory(args):
         with pytest.raises(ValueError, match='session-dir'):
             agents.run_acp({'cmd': 'omp', 'acp': args}, 'hello', lambda *a: None)
 def test_omp_cannot_be_used_for_unverified_restricted_work():
-    for restrict in (clis.readonly_args, clis.report_read_args, clis.quick_read_args):
+    for restrict in (clis.readonly_args, clis.report_read_args):
         with pytest.raises(ValueError): restrict(r'C:\tools\omp.exe', [])
     assert 'omp' not in clis.AUTO
 

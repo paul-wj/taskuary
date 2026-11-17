@@ -142,7 +142,7 @@ class ConsistencyTests(unittest.TestCase):
             self.assertNotIn('almost every task goes to the coding agent', low, name)
             self.assertNotIn('this is the default', low, name)
             # ...said as a sign against it, not a "never" (the guide, 2026-10-09)
-            self.assertIn('signs against coding', low, name)
+            self.assertIn('is general, not coding', low, name)
             self.assertIn('a repository whose topic matches the message, without a change to make there', low, name)
             # the two claims that used to contradict the rest of the document
             self.assertNotIn('and every task goes to the coding agent', low, name)
@@ -232,8 +232,20 @@ class CodingIsNotTheDefaultMigrationTests(unittest.TestCase):
         # the shipped guide says the same in its own words (section 4): a CHANGE is coding, a read is not
         tmpl = open(os.path.join(os.path.dirname(store_mod.__file__), 'templates', 'triage.md'), encoding='utf-8').read()
         self.assertIn('does the work CHANGE something inside a system this install holds the code or the credentials for', tmpl)
-        self.assertIn('the work only reads from a system (a query, a report, a look-up)', tmpl)
+        self.assertIn('Reading from a system', tmpl)
 
     def test_an_unnamed_kind_is_the_owners_list(self):
         from taskuary.routing import draft_task_fields
         self.assertEqual(draft_task_fields({'subject': 'Valley BAI feed', 'body': 'Kevin still has not started the feed.'})['kind'], 'task')
+
+    def test_a_reply_prefix_comes_off_one_way_wherever_a_subject_is_shown_or_compared(self):
+        """The audit, 2026-11-15: six regexes took "Re:" off a subject, each knowing fewer prefixes than routing's - a German "AW:" stayed on
+        the phone's row and on a workstream's subjects, "Re[2]:" on a meeting's title. One function, and every one of them asks it."""
+        from taskuary import calwrite, remote_assistant, routing
+        s = MemoryStore(); tid = s.create_task({'Title': 'Ledger export', 'Kind': 'reply', 'Status': 'open'}, 't')
+        for said in ('Re: Fwd: Ledger export', 'AW: WG: Ledger export', 'RE[2]: Ledger export', ' sv : Ledger export '):
+            self.assertEqual((routing.bare_subject(said), routing.norm_subject(said)), ('Ledger export', 'ledger export'), said)
+            self.assertEqual(calwrite._title({'Subject': said}), 'Ledger export', said)                 # a meeting's title
+            s._exec('DELETE FROM message'); s.add_message({'TaskId': tid, 'ExternalId': said, 'Channel': 'email', 'Subject': said, 'FromName': 'Gail Moreno', 'Status': 'routed'})
+            self.assertEqual(remote_assistant.subject_of(s, {'tid': tid}), 'Ledger export', said)       # the phone's row
+        self.assertEqual(routing.bare_subject('Regarding the export'), 'Regarding the export')         # a word, never a prefix

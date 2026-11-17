@@ -7,23 +7,30 @@ what it was about, what triage made of it, what the owner did and how soon, and 
     msg455 2026-10-20 · erin@northwind.example (your manager) · "Q3 budget numbers" · triage: task · you: replied 38 min after it arrived
     fs88 2026-10-21 · renewals@payworth.example · "Renewal notice" · you: put it off to Fri 2026-10-24 09:00, 2h after it arrived
     task91 2026-10-21 · east.manager@northwind.example · "Payroll correction" · you: handed it to ray@northwind.example, the sender on copy
+    task93 2026-10-22 · alerts@vendor.example · "License usage report" · you: closed it without replying
+    say812 2026-10-22 · gail@northwind.example · "Headcount" · you wrote: "Gail's numbers always go to Ray first" (answering the agent: ...)
 
 Code builds them from rows that already exist and cites them by their ids, so every line the reflection writes can be traced to what
 happened. Parsing addresses, times and weekdays is fact, not meaning: no word list decides anything here. What counts:
 
-    acts       a reply (and how soon), a draft edited or rejected, a put-off with its day, a hand-off, a close, Not ours / Not a task,
-               an idea taken up or dismissed, a promise in the owner's sent mail
-    never      navigation - Next, open, focus: "Next" is "not now, in this walk", never a judgement (Shown is not acted on)
-    excluded   personal mailboxes (presses.personal), agents' own acts, auto-replies
+    acts       a reply (and how soon - evidence of who matters, never a number to keep), a draft edited or rejected, a put-off with its
+               day, a hand-off, a close without a reply, Not ours / Not a task, an idea taken up or dismissed, a promise in sent mail
+    words      what the owner typed to a task's agent (say ids) - the agent's line before it rides along only as what they answered
+               and the note they closed a task with (Close with a note), on its close
+    never      navigation - Next, open, focus: "Next" is "not now, in this walk", never a judgement (Shown is not acted on); and never
+               an agent's own summary, lesson or outcome: what an agent concluded is not a fact about the owner (the owner, 2026-11-13)
+    excluded   personal mailboxes (personal), agents' own acts, auto-replies
 
 Evidence ids: msg (a reply to an inbound message, by its id), rv (a review decision), fs (a task put off, by the task's id), task (an
-owner act on a task), idea (an Advisor idea's fate), sv (a promise in sent mail, by the sent message's id), out (an outcome row)."""
+owner act on a task), idea (an Advisor idea's fate), sv (a promise in sent mail, by the sent message's id), say (a line the owner typed
+in a task's chat, by its comment id). out (an outcome row) is no longer an episode, but old lines still cite it."""
 import json, re
 from datetime import datetime
 from loguru import logger
 
 CAP_N, CAP_CHARS = 40, 5000          # what one reflection reads; the rest is counted, never silently cut
-ACTS = ('msg', 'rv', 'fs', 'task', 'idea', 'sv', 'out', 'mem')   # evidence of something the OWNER did (or said: mem is a verdict note)
+ACTS = ('msg', 'rv', 'fs', 'task', 'idea', 'sv', 'say', 'out', 'mem')   # evidence of something the OWNER did or said (mem: a verdict note)
+SAY_CHARS, CONTEXT_CHARS = 400, 160  # an owner's line, and the agent's line it answered (context only)
 
 
 def _dt(s):
@@ -60,10 +67,30 @@ def _mine(store) -> set:
     return ({own} if own else set()) | owner_addresses(store)
 
 
+def personal(store, item: dict | None, m: dict | None = None) -> bool:
+    """Mail from a mailbox the owner marked personal ({"personal": true} on its source) teaches nothing (the owner, 2026-10-23:
+    "nothing learned from personal mail"). The app has no other mark of personal mail: a mailbox is work unless marked."""
+    m = m or {}
+    # ...nor anything under a PERSONAL WORKSTREAM, whichever mailbox or chat it came by (workstreams.py, the owner 2026-11-01)
+    try:
+        from . import workstreams
+        if workstreams.is_personal(store, tid=(item or {}).get('tid'), m=m or None): return True
+    except Exception: pass
+    name, ch = str(m.get('SourceName') or '').lower(), str(m.get('Channel') or (item or {}).get('channel') or '').lower()
+    if not name: return False
+    try: srcs = store.list_sources(active_only=False)
+    except Exception: return False
+    for s in srcs:
+        if str(s.get('Address') or '').lower() != name or (ch and str(s.get('Channel') or '').lower() not in (ch, '')): continue
+        try: cfg = json.loads(s.get('ConfigJson') or '{}') or {}
+        except ValueError: cfg = {}
+        if cfg.get('personal'): return True
+    return False
+
+
 def _skip(store, m: dict) -> bool:
     """Personal mail, an auto-reply: nothing is learned from either."""
     from .autoreply import is_auto
-    from .presses import personal
     return bool(not m or is_auto(m) or personal(store, None, m))
 
 
@@ -95,7 +122,7 @@ def build(store, since: str) -> list:
             tri = _triage(store, m['MessageId'])
             out.append((f"msg{m['MessageId']}", m['SentAt'], str(m.get('FromEmail') or '').lower(),
                         f"{_head(m, store)}" + (f' · triage: {tri}' if tri else '') + f" · you: replied {lag(m['SentAt'], nxt['SentAt'])} after it arrived"))
-        for r in store._rows("SELECT * FROM review WHERE DecidedBy='owner' AND Status IN ('edited','rejected','no_reply') AND IFNULL(DecidedAt,CreatedAt)>=?", (since,)):
+        for r in own_verdicts(store, since):
             m = store.get_message(r['MessageId']) if r.get('MessageId') else None
             if m and _skip(store, m): continue
             did = {'edited': 'edited the draft before it went', 'rejected': 'threw the draft away', 'no_reply': 'sent no reply'}[r['Status']]
@@ -145,13 +172,67 @@ def build(store, since: str) -> list:
             if len({d.isocalendar()[:2] for _, d in xs}) < 3: continue
             out.append((xs[-1][0], xs[-1][1].strftime('%Y-%m-%d %H:%M:%S'), who, f"you keep a promise to {who}{_relation(store, who)} on {day}s: "
                         f"{len(xs)} weeks ({', '.join(e for e, _ in xs[-4:])})"))
-        from . import outcomes
-        for r in store._rows("SELECT * FROM outcome WHERE ResolvedAt IS NOT NULL AND Verdict!='unknown' AND At>=? AND IFNULL(Actor,'') NOT LIKE 'agent%' ORDER BY Id", (since,)):
-            who = str((json.loads(r.get('FactsJson') or '{}') or {}).get('who') or '').lower()
-            out.append((f"out{r['Id']}", r['At'], who, f"{who + ' · ' if who else ''}{outcomes._sentence(store, r)}"))
+        seen = {e[0] for e in out}                    # a Not for me closes the task too: said once, as what the owner said
+        out += [e for e in _closed(store, since, me) if e[0] not in seen] + _owner_said(store, since)
     except Exception as e:
         logger.warning(f'episodes: some not read - {e}')
     return sorted(out, key=lambda e: str(e[1] or ''))
+
+
+def own_verdicts(store, since: str) -> list:
+    """The drafts the OWNER gave a verdict on since `since` - edited, thrown away, no reply - oldest first. Never one somebody else put down
+    (the reply writer finding nothing to send, an agent saying no reply is owed, a pull request closed upstream: what an agent concluded is
+    not a fact about the owner), and never one the task's own close put down with it: that is one act, the close, and it is said once
+    (_closed) - it read as a second episode, and its note, Taskuary's words, as the owner's (the audit, 2026-11-13)."""
+    from .concierge import CLOSED_TASK
+    from .processing_unread import OWNER_ACTORS
+    return store._rows(f"SELECT * FROM review WHERE DecidedBy IN ({','.join('?' * len(OWNER_ACTORS))}) AND Status IN ('edited','rejected','no_reply') "
+                       "AND IFNULL(DecideNote,'')<>? AND IFNULL(DecidedAt,CreatedAt)>=? ORDER BY IFNULL(DecidedAt,CreatedAt)", (*OWNER_ACTORS, CLOSED_TASK, since))
+
+
+def _closed(store, since: str, me: set) -> list:
+    """A task the owner closed with no reply of theirs after its last inbound (the owner, 2026-11-13: "if i close task without responding
+    memory should say seems like issue x is not his problem and that should feed into next triage"). The ledger's close row is the fact;
+    what kind of issue it was is the reflection's to read from the task, never a word match here.
+    ...AND THE NOTE THEY CLOSED IT WITH, in their words (the audit, 2026-11-13: Close with a note - "Ray owns vendor renewals, not me" - was
+    kept on the task and read by nobody; the one line where the owner says WHY reached the memory as a bare "closed it without replying",
+    and a task they had answered before closing, not at all). A close with a note is an episode whether or not a reply went."""
+    from .workstreams import is_personal
+    out = []
+    for r in store._rows("SELECT TargetId, At FROM outcome WHERE Kind='task.closed' AND TargetKind='task' AND Actor IN ('owner','web') AND At>=? ORDER BY Id", (since,)):
+        tid = r['TargetId']; m = store.last_inbound_on_task(tid)
+        note = ' '.join(next((c['note'] for c in store.closeouts(tid) if c['what'] == 'closed' and c['at'][:19] == str(r['At'])[:19]), '').split())[:SAY_CHARS]
+        if (m and (_skip(store, m) or str(m.get('FromEmail') or '').lower() in me)) or (not m and not note) or is_personal(store, tid=tid): continue
+        own = store.own_reply_on_thread(m.get('ConversationId'), tid) if m and m.get('ConversationId') else None
+        answered = bool(not m or (own and str(own.get('SentAt') or '') >= str(m.get('SentAt') or '')))
+        if answered and not note: continue
+        t = store.get_task(tid) or {}
+        what = ' '.join(str(t.get('Summary') or t.get('Title') or '').split())[:160]
+        out.append((f'task{tid}', r['At'], str((m or {}).get('FromEmail') or '').lower(),
+                    (f"{_head(m, store)}" + (f' · the task: {what}' if what else '') if m else repr(what or 'a task of their own'))
+                    + ' · you: closed it' + ('' if answered else ' without replying') + (f', and wrote: "{note}"' if note else '')))
+    return out
+
+
+def _owner_said(store, since: str) -> list:
+    """Every line the owner typed into a task's chat (general.USER_TYPE by 'owner' - never a brief Taskuary wrote in their voice), with the
+    agent's line before it as what they were answering. The owner's words are the evidence; the agent's are context, never a fact."""
+    from .general import USER_TYPE, ASSISTANT_TYPE
+    from .outcomes import owner_words
+    from .workstreams import is_personal
+    out, last = [], {}
+    for c in store._rows("SELECT * FROM comment WHERE CreatedAt>=? AND ActorType IN (?,?) ORDER BY CommentId", (since, USER_TYPE, ASSISTANT_TYPE)):
+        tid = c.get('TaskId')
+        if c['ActorType'] == ASSISTANT_TYPE: last[tid] = c.get('Body'); continue
+        words = owner_words(c.get('Body'))[:SAY_CHARS]
+        if c.get('Actor') != 'owner' or not words or (tid and is_personal(store, tid=tid)): continue
+        m = store.last_inbound_on_task(tid) if tid else None
+        if m and _skip(store, m): continue
+        ctx = ' '.join(str(last.get(tid) or '').split())[:CONTEXT_CHARS]
+        out.append((f"say{c['CommentId']}", c['CreatedAt'], str((m or {}).get('FromEmail') or '').lower(),
+                    f"{_head(m, store) if m else repr((store.get_task(tid) or {}).get('Title') or 'a chat')} · you wrote: \"{words}\""
+                    + (f' (answering the agent: "{ctx}")' if ctx else '')))
+    return out
 
 
 def block(store, since: str, cap_n: int = CAP_N, cap_chars: int = CAP_CHARS) -> tuple:

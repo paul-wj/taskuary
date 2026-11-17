@@ -14,6 +14,7 @@ import { hunkText, parseUnified } from "./diffView.js";
 import DiffView from "./DiffView.jsx";
 import { plural } from "./timeWords.js";
 import { FOCUS_RING, pressable } from "./pressable.js";
+import { PressedButton } from "./PassedCard.jsx";
 import { ALERT_INK, BORDER, DIM, FAINT, INK, mono } from "./theme.jsx";
 
 const btn = { minHeight: 32, py: 0, px: 1.4, fontSize: 12.5, textTransform: "none" };
@@ -26,13 +27,16 @@ export const SHOWN = 8;
 // the row's Review changes asks the task's own card to open its diff (TaskPage): `handled` says a card took it
 export const LANDING_DIFF = "tq-landing-diff";
 
-export default function LandingCard({ taskId, onChanged, onState, inChat = false }) {
-  const [s, setS] = useState(null), [diff, setDiff] = useState(null), [busy, setBusy] = useState(""), [said, setSaid] = useState(""),
+export default function LandingCard({ taskId, onChanged, onState, inChat = false, initial = null, rev = "" }) {
+  const [s, setS] = useState(initial), [diff, setDiff] = useState(null), [busy, setBusy] = useState(""), [said, setSaid] = useState(""),
     [err, setErr] = useState(""), [sure, setSure] = useState(false), [marks, setMarks] = useState({}), [open, setOpen] = useState(false),
     [diffErr, setDiffErr] = useState(""), [filesOpen, setFiles] = useState(false);
   const load = () => api.get(`/api/tasks/${taskId}/landing`).then(({ data }) => { setS(data?.data || null); onState?.(data?.data || null); })
     .catch(() => { setS(null); onState?.(null); });
-  useEffect(() => { setS(null); setDiff(null); setOpen(false); setSaid(""); setErr(""); setSure(false); setMarks({}); setFiles(false); load(); }, [taskId]);   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!initial) setS(null); setDiff(null); setOpen(false); setSaid(""); setErr(""); setSure(false); setMarks({}); setFiles(false); load(); }, [taskId]);   // eslint-disable-line react-hooks/exhaustive-deps
+  // ...AND READ AGAIN AS THE CHAT CHANGES (recorded on the real CLI, 2026-11-16): read once per task, a push the agent set up while the task
+  // was open stood nowhere until he left and came back - and the email behind it in the line of cards (cardqueue) waited on a card unseen
+  useEffect(() => { if (rev) load(); }, [rev]);   // eslint-disable-line react-hooks/exhaustive-deps
   const seeRef = useRef(null);
   useEffect(() => {
     const on = (e) => { if (Number(e.detail?.taskId) === Number(taskId) && seeRef.current) { e.detail.handled = true; seeRef.current(); } };
@@ -125,8 +129,7 @@ export default function LandingCard({ taskId, onChanged, onState, inChat = false
         {sure && <Button size="small" sx={{ ...btn, color: DIM }} onClick={() => setSure(false)}>Keep it</Button>}
       </Box> : s.landed && <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap", mt: 0.6 }}>
         {/* ...the press it took, drawn pressed, and what came of it on the same line */}
-        <Button size="small" variant={s.landed.how === "discard" ? "outlined" : "contained"} disableElevation disabled data-tq-pressed={s.landed.how}
-          sx={{ ...btn, "&.Mui-disabled": s.landed.how === "discard" ? { color: FAINT } : { bgcolor: "var(--tq-tint-sage, #dfe8dd)", color: "var(--tq-success, #47654a)" } }}>{w.done}</Button>
+        <PressedButton pressed={s.landed.how} label={w.done} />
         <Typography data-tq-act-done="" sx={{ fontSize: 12, color: DIM, overflowWrap: "anywhere" }}>{said ? said.replace(url, "").replace(/[:\s]+$/, "") : w.doneLine}
           {url && <> · <a href={url} target="_blank" rel="noreferrer">{url.replace(/^https?:\/\//, "").slice(0, 70)}</a></>}</Typography>
       </Box>}

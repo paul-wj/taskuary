@@ -12,7 +12,8 @@ const PUT_DOWN = new Set(["wrong", "forgotten", "closed", "retired"]);
 
 // the moves a line takes: your own line only Forget (it is not something Taskuary learned wrong); a learned one all three - and one you
 // Kept no Keep again: Visualize was pixel-identical after Keep (the Advisor audit's judge, F6, 2026-10-26), so it says Kept instead
-export const marksFor = (l) => (!l?.key ? [] : l.own ? ["forget"] : l.kept ? ["wrong", "forget"] : ["keep", "wrong", "forget"]);
+// ...and a line one of your verdicts taught (`taught`) is the model's words for what you pressed, not yours: Wrong and Forget, as memoryedit.mark takes
+export const marksFor = (l) => (!l?.key ? [] : l.own ? (l.taught ? ["wrong", "forget"] : ["forget"]) : l.kept ? ["wrong", "forget"] : ["keep", "wrong", "forget"]);
 // ...and a What changed row carries them once, on the newest row of a line that is not already put down
 // (an owner's own line - standing "own" - Forget alone; one no longer anywhere - "gone" - nothing)
 export const changeMarks = (r) => (!r?.key || !r.newest || PUT_DOWN.has(r.standing) || r.standing === "gone" ? []
@@ -27,11 +28,11 @@ export const byPerson = (ls) => {
 
 // the five as an older server (or the demo's recorded page) names none: the same words learned_cut.reads_label says
 export const SECTIONS = [
-  { slug: "people", title: "Your people", reads: "read by triage (priority only) · drafts · the Advisor · the Assistant · agents" },
-  { slug: "care", title: "What you care about", reads: "read by triage · the Advisor · the Assistant · agents" },
-  { slug: "work", title: "How you work", reads: "read by triage · drafts · the Advisor · the Assistant · agents" },
-  { slug: "promises", title: "Promises", reads: "read by triage · the Advisor · the Assistant · agents" },
-  { slug: "bring", title: "What to bring up", reads: "read by triage · the Assistant · agents" },
+  { slug: "people", title: "Your people", reads: "read by triage (priority only) · drafts · the Advisor · Taskuary · agents" },
+  { slug: "care", title: "What you care about", reads: "read by triage · the Advisor · Taskuary · agents" },
+  { slug: "work", title: "How you work", reads: "read by triage · drafts · the Advisor · Taskuary · agents" },
+  { slug: "promises", title: "Promises", reads: "read by triage · the Advisor · Taskuary · agents" },
+  { slug: "bring", title: "What to bring up", reads: "read by triage · Taskuary · agents" },
 ];
 
 // [{slug, title, reads, lines, people?}] - the five subjects in the document's order, then Watching and Proposed

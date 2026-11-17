@@ -42,7 +42,7 @@ NEWS = 'problems:news'                # {key: what ended, and when} - the text i
 THINKING = 'problems:thinking'        # {'at': when the brain went down} for as long as the outage lasts
 AWAY = 'problems:mail_away:'          # + connector id: {'at', 'seen'} while Microsoft has the owner signed out
 OPEN = 'problems:open'                # {key: the failure as last seen, 'from' its start, 'shown' once it rang} while it lasts
-OWN_NEWS = ('signed_out', 'thinking')  # these two say their own end (watch_mail, thinking) - no second line for them
+OWN_NEWS = ('signed_out', 'thinking', 'ask')  # the first two say their own end (watch_mail, thinking), and a question's end is its answer
 
 
 def _now(): return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -182,10 +182,18 @@ def _episodes(store, failing: list) -> tuple:
         got[p['key']] = {**{k: p.get(k) for k in ('title', 'back', 'detail', 'where', 'connector', 'report', 'kind')}, 'from': e['from'], 'shown': shown}
         if shown: ring.append(p)
     for k, e in was.items():
-        if k in got or not e.get('shown') or e.get('kind') in OWN_NEWS: continue
+        if k in got or not e.get('shown') or e.get('kind') in OWN_NEWS or _off(store, e): continue
         _news_put(store, f'back:{k}', {**e, 'kind': 'recovered', 'to': now})
     if got != was: store.set_setting(OPEN, json.dumps(got), 'system')
     return ring, failing
+
+
+def _off(store, e) -> bool:
+    """The card or report the episode was about is switched off or gone: its failure stopped being read, it did not
+    heal, so the episode closes quietly - "working again" for a card the owner just turned off would be untrue."""
+    if e.get('connector'): return not (store.get_connector(e['connector']) or {}).get('Active')
+    if e.get('report'): return not (store.get_source(e['report']) or {}).get('Active')
+    return False
 
 
 # ── 1. signed out of Microsoft ───────────────────────────────────────────────────────────────────
@@ -299,14 +307,18 @@ def collect(store, all_of_them: bool = False) -> list:
                         'since': away_since(store, c['ConnectorId']) or c.get('LastErrorAt') or '', 'where': 'Connections',
                         'connector': str(c['ConnectorId']), 'fix': 'Sign in', 'kind': 'signed_out', 'now': True})
             continue
+        from .channels import card_error
         # a bridge this machine runs is started again from the bell itself - its error says "Restart bridge starts it"
         from . import wabridge
         restart = c.get('Type') == 'whatsapp' and wabridge.managed(c)
         # ...and the bridge it stopped starting again is past any retry (wabridge.supervise's give-up line)
         gave_up = restart and bool(wabridge._SUP.get('gave_up'))
-        out.append({'key': f"connector:{c['ConnectorId']}", 'title': f"{c.get('Name') or c['Type']}: the last poll failed",
+        # ...a read that worked but has not been handed everything says so, not "failed" (channels.behind_line)
+        from .channels import BEHIND
+        late = err.startswith(BEHIND)
+        out.append({'key': f"connector:{c['ConnectorId']}", 'title': f"{c.get('Name') or c['Type']}: {'messages are behind' if late else 'the last poll failed'}",
                     'back': f"{c.get('Name') or c['Type']} is working again",
-                    'detail': err[:400], 'since': c.get('LastErrorAt') or '', 'where': 'Connections', 'connector': str(c['ConnectorId']),
+                    'detail': card_error(c)[:400], 'since': c.get('LastErrorAt') or '', 'where': 'Connections', 'connector': str(c['ConnectorId']),
                     'fix': 'Open the card', **({'restart': True} if restart else {}), **({'now': True} if gave_up else {})})
     s = store.get_settings()
     brain = thinking(store)
@@ -315,11 +327,27 @@ def collect(store, all_of_them: bool = False) -> list:
         out.append({'key': 'triage', 'title': brain['title'], 'detail': brain['detail'], 'since': brain['since'], 'error': brain['error'][:400],
                     'now': True, 'where': 'Connections', 'connector': pick[10:] if pick.startswith('connector:') else None,
                     'fix': 'Check my setup', 'kind': 'thinking'})
+    # ...and an AI card answered by ANOTHER model than the one asked for (brainroute.heard): its own episode, said at once - working, so
+    # not a red poll failure, but the owner is told which model is really answering until the one asked for answers again
+    from .brainroute import fell_back, fell_line
+    from .llm import words
+    for pick, e in fell_back(store).items():
+        c = store.get_connector(int(pick[10:])) if pick.startswith('connector:') and pick[10:].isdigit() else None
+        name = (c or {}).get('Name') or (c or {}).get('Type') or pick
+        out.append({'key': f'fell_back:{pick}', 'title': f'{name}: {fell_line(store, pick)}', 'detail': 'Every call still gets an answer - '
+                    'from the model the gateway fell back to.', 'back': f"{name}: {words(e.get('asked'))} answers again", 'since': e.get('from') or '',
+                    'now': True, 'where': 'Connections', 'connector': pick[10:] if c else None, 'fix': 'Open the card'})
     # ...and the day's ceiling for AI work nobody asked for, while it holds: one line, gone tomorrow or when the limit is raised
     from .brainroute import auto_held
     if held := auto_held(store):
         out.append({'key': 'auto_ai_cap', 'title': 'Automatic AI work is paused for today', 'detail': held[0].upper() + held[1:] + '.',
                     'since': datetime.now().strftime('%Y-%m-%d'), 'now': True, 'where': 'Settings', 'fix': 'Open Settings'})
+    # ...and the one question a start may not answer for the owner: which AI is the default, with several connected (agents.default_ask).
+    # Asked once - put down, it stays down; answered in Settings, it is gone and says no "working again"
+    from .agents import default_ask
+    if ask := default_ask(store):
+        out.append({'key': 'default_ai', 'title': ask['title'], 'detail': ask['detail'], 'since': datetime.now().strftime('%Y-%m-%d'),
+                    'now': True, 'where': 'Settings', 'fix': 'Open Settings', 'kind': 'ask'})
     # A REPORT'S FAILURE LIVES HERE AND NOWHERE ELSE (the owner, 2026-09-28): a failed run files no row, so
     # this reads each report's latest run - failed, or run without one of its sources - and clears itself
     # the moment a run works again

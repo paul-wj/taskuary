@@ -1,0 +1,327 @@
+// THE CONVERSATION, WALKED ON THE REAL CLI WITH A PER-FRAME SAMPLER (not a test: nothing here runs in CI). node real-conv.mjs <name> <general|acp|pty> [steps...]
+// Each animation frame the page writes down what the chat holds - the items in order (their names, where each stands), what waits by the box,
+// the scroll - and the rules are read off the frames afterwards (check): his line once from the frame it is heard, nothing new above what was
+// drawn, the working line under it in that frame, the scroll never going back, a waiting line never in the conversation, and words that
+// name a button only where that button can be pressed in the same frame.
+import path from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { api, connect, open, chat, shot, save, sleep, type, press, buttons, out, info } from "./real-lib.mjs";
+import { record } from "./recorder.mjs";
+
+// THE BUTTONS' OWN NAMES (taskuary/buttons.json, one name per button) and the ones a card draws: what "names a button" is read against
+export const NAMES = [...new Set([...Object.values(JSON.parse(await readFile(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "taskuary", "buttons.json"), "utf8")).verbs).map((v) => v.label || v.name || v),
+  "Approve", "Reject", "Allow once", "Trust", "Withdraw", "Not now"].filter((x) => typeof x === "string" && x))];
+
+export const sampler = (names, owner = "Alex") => {
+  window.__frames = []; let last = "";
+  // WHAT WAS PAINTED, NOT WHAT WAS READ (2026-11-12: a preview landing in a card read as "fell 482 px behind" on a chat that never left its
+  // end - a draw had landed between the paint and this read, and reading it laid it out before the chat's own pin had run): how much of
+  // the chat stands under the view's foot is taken from an IntersectionObserver, whose word is the frame's own rendering step
+  // ...and a frame painted short of its end between two reads is kept (`peak`) for the next one to say
+  let ioOf = null, io = null, under = null, peak = 0;
+  const watch = (vp) => { const c = vp.querySelector(".tq-conv"); if (!c || c === ioOf) return; ioOf = c; under = null; peak = 0; io?.disconnect();
+    io = new IntersectionObserver((es) => { const e = es.at(-1), was = under; under = e.rootBounds ? Math.max(0, Math.round(e.boundingClientRect.bottom - e.rootBounds.bottom)) : null;
+      if (was != null && was <= 2 && under > 2) peak = Math.max(peak, under); }, { root: vp, threshold: Array.from({ length: 1001 }, (_, i) => i / 1000) });
+    io.observe(c); };
+  const seen = new Set(names), esc = (s) => s.replace(/[^A-Za-z0-9 ]/g, "\\$&");
+  // ...named: a name of several words anywhere; a single word only as a name in the middle of a sentence or marked ("your Send", `Send`) -
+  // "Send me the list" names nothing
+  const namedIn = (text) => [...seen].filter((n) => new RegExp(n.includes(" ") ? `(^|[^A-Za-z])${esc(n)}($|[^A-Za-z])` : `([a-z,] |["'\`*(])${esc(n)}($|[^A-Za-z])`).test(text));
+  const tick = () => {
+    // ...while the walk has another task open (`leave`) nothing is read: the frames are this task's alone, the one before he left and the one after
+    // ...and only the walk's own task (`__tid`): Send and close moves on to the next item, whose chat is no frame of this one
+    const page = window.__tid ? document.querySelector(`[data-tq-task-page="${window.__tid}"]`) : document.querySelector("[data-tq-task-page]");
+    const vp = window.__away || !page ? null : page.querySelector(".tq-aui-viewport");
+    // A TASK IS NEVER ITS HEAD OVER NOTHING (recorded 2026-11-12: on every rail click, Next and Back the chat's room stood with a spinner in
+    // it for up to a second): how long the room was drawn with no chat in it, said on the first frame that has one
+    // ...and a chat drawn but not yet SEEN counts as none (the rail walk, 2026-11-12: its section faded in from nothing on every Next and row
+    // click, the head over an empty body for ~0.4 s)
+    const faded = !!vp && +getComputedStyle(vp.closest("[role=region]") || vp).opacity < 0.99;
+    if (!window.__away && (!vp && document.querySelector("[data-tq-task-page] [data-tq-agent-room]")) || faded) window.__bare ||= performance.now();
+    if (vp && !faded) {
+      const items = [...vp.querySelectorAll("[data-tq-item]")].map((e) => [e.getAttribute("data-tq-item"), e.getAttribute("data-tq-turn") || "", Math.round(e.getBoundingClientRect().top - vp.getBoundingClientRect().top + vp.scrollTop)]);
+      // ...what waits: his lines' rows, and the messages a sender's chip counts (data-tq-pending-ids)
+      const pend = [...document.querySelectorAll("[data-tq-task-page] [data-tq-pending-item]")].map((e) => e.getAttribute("data-tq-pending-item"))
+        .concat([...document.querySelectorAll("[data-tq-task-page] [data-tq-pending-ids]")].flatMap((e) => e.getAttribute("data-tq-pending-ids").split(" ").filter(Boolean)));
+      watch(vp);
+      const f = { items, pend, ...(window.__dropped?.length ? { dropped: [...window.__dropped] } : {}), top: Math.round(vp.scrollTop), h: vp.scrollHeight, ch: vp.clientHeight, ...(under == null ? {} : { under }), working: !!vp.querySelector("[data-tq-working]"), cards: vp.querySelectorAll("[data-tq-turn-cards] button:not([disabled])").length };
+      // WORDS THAT NAME A BUTTON, AND THE BUTTON (the owner: never "press X" with nothing to press): the newest thing in the chat, where it is
+      // the agent's answer - an older one named a button he has pressed since
+      const shown = [...document.querySelectorAll("[data-tq-task-page] button")].filter((b) => b.getBoundingClientRect().width > 0).map((b) => [b.innerText.trim().replace(/\s+/g, " "), !b.disabled]);
+      vp.querySelectorAll("[data-tq-turn-cards] button").forEach((b) => { const n = b.innerText.trim().replace(/\s+/g, " "); if (n.length > 2 && n.length < 40 && /^[A-Z]/.test(n)) seen.add(n); });
+      const tail = [...vp.querySelectorAll("[data-tq-item]")].pop(), said = tail?.hasAttribute("data-tq-turn") ? [...tail.querySelectorAll("[data-tq-said]")].map((e) => e.innerText).join(" / ") : "";
+      // NOTHING EMPTY IS DRAWN (the owner, 2026-11-11: a blank card stood for his approval): an item with no words that is not a turn at work,
+      // a card in a turn with none, a line waiting by the box with none
+      const bare = (e) => !e.innerText.trim() && !e.querySelector("[data-tq-working], img, video, canvas, textarea");
+      const empty = [...[...vp.querySelectorAll("[data-tq-item]")].filter(bare).map((e) => e.getAttribute("data-tq-item")),
+        ...[...vp.querySelectorAll("[data-tq-turn-cards] > *")].filter(bare).map((e) => `a card of ${e.closest("[data-tq-item]")?.getAttribute("data-tq-item")}`),
+        ...[...document.querySelectorAll("[data-tq-task-page] [data-tq-pending-item]")].filter(bare).map((e) => `waiting ${e.getAttribute("data-tq-pending-item")}`)];
+      if (empty.length) f.empty = empty;
+      if (peak) { f.peak = peak; peak = 0; }
+      if (window.__bare) { f.bare = Math.round(performance.now() - window.__bare); window.__bare = 0; }
+      // A CARD THAT CANNOT BE PRESSED SHOWS NO BUTTON, AND ONE ACTION IS ONE CARD (the owner, 2026-11-11: "the question has 2 approve buttons?"):
+      // a disabled button on a card at rest, and a settled card standing under a live one
+      const cardsOf = [...vp.querySelectorAll("[data-tq-turn-cards] > *, [data-tq-row-cards] .tq-aui-agent-body > *")];
+      const dead = cardsOf.filter((c) => c.matches("[data-tq-passed], [data-tq-past-card]") || c.querySelector("[data-tq-passed]"));
+      // ...and so does every card that is SETTLED - pressed, sent, dismissed, failed (the card round, 2026-11-12: a greyed "✓ Approved" / "✓ Sent"
+      // <button> on each): its state is a mark, and any <button> on it is a finding, greyed or not
+      const settled = cardsOf.flatMap((c) => [c, ...c.querySelectorAll("[data-tq-act-state]")]).filter((c) => c.matches("[data-tq-act-state]:not([data-tq-act-state=waiting]):not([data-tq-act-state=resting]), [data-tq-past-card], [data-tq-passed]"));
+      if (dead.some((c) => c.querySelector("button[disabled]")) || settled.some((c) => c.querySelector("button"))) f.deadButton = true;
+      // ...ONE REVIEW, ONE CARD, AND NO CARD SHOWS ITS OWN JSON: two cards of one review in the chat, and a card whose box holds `{"action": ...`
+      const rids = cardsOf.map((c) => (c.matches("[data-tq-passed], [data-tq-act]") ? c : c.querySelector("[data-tq-passed], [data-tq-act]"))).filter(Boolean).map((c) => c.getAttribute("data-tq-passed") || c.getAttribute("data-tq-act")).filter(Boolean);
+      if (new Set(rids).size < rids.length) f.cardTwice = true;
+      if (cardsOf.some((c) => [...c.querySelectorAll("textarea")].some((t) => /^\s*\{\s*"action"\s*:/.test(t.value)))) f.rawCard = true;
+      // EACH MESSAGE OF A TURN IS A PARAGRAPH (the owner, 2026-11-11: three messages of one turn stacked as consecutive lines): two blocks of a
+      // turn's words with no room between them
+      const box = document.querySelector("[data-tq-task-page] .tq-aui-footer")?.getBoundingClientRect();
+      f.w = Math.round(vp.getBoundingClientRect().width);
+      // THE TASK'S CARD STANDS WHOLE UNDER THE CANVAS'S HEAD (seen 2026-11-11 with lines waiting by the box: its top edge 8 px under the head -
+      // the canvas had scrolled the task to centre a waiting line): its top is never above the top of the canvas's own scroller
+      const card = vp.closest(".tq-canvas-live"), body = card?.closest(".tq-chat-body");
+      if (card && body && body.getBoundingClientRect().top - card.getBoundingClientRect().top > 2) f.cut = Math.round(body.getBoundingClientRect().top - card.getBoundingClientRect().top);
+      // THE CORNER'S "BACK TO" IS FOR A PAGE OVER THE TASK, NEVER OVER A TASK ITSELF (the rail walk, 2026-11-12: it flashed the task just left
+      // on every Next) - the task in view is the one worked on, from the frame it is drawn
+      if (document.querySelector("[data-tq-back-work]")) f.backOver = true;
+      // THE RAIL'S ROWS NEVER STAND ON EACH OTHER (the rail walk, 2026-11-12: a new task fell from above its band across five rows), and a
+      // rail under the pointer never scrolls by itself (a clicked row slid out from under it)
+      for (const st of document.querySelectorAll("[data-tq-rail] .tq-pile-stack")) {
+        const rs = [...st.querySelectorAll(".tq-pile-row[data-tq-key]")].filter((e) => +getComputedStyle(e).opacity > 0.5).map((e) => e.getBoundingClientRect()).sort((a, b) => a.top - b.top);
+        if (rs.some((r, i) => i && rs[i - 1].bottom - r.top > 6)) f.railOver = true;
+      }
+      const rail = document.querySelector("[data-tq-rail]");
+      if (rail?.matches(":hover")) { if (window.__railTop != null && rail.scrollTop !== window.__railTop) f.railScrolled = true; window.__railTop = rail.scrollTop; } else window.__railTop = null;
+      if (box && (box.right > innerWidth + 1 || box.bottom > innerHeight + 1)) f.boxOff = [Math.max(0, Math.round(box.right - innerWidth)), Math.max(0, Math.round(box.bottom - innerHeight))];
+      if ([...vp.querySelectorAll(".tq-aui-agent-body > .tq-md + .tq-md")].some((e) => e.getBoundingClientRect().top - e.previousElementSibling.getBoundingClientRect().bottom < 4)) f.tight = true;
+      // ...and where each card stands, by its own first line and the item it is under: one that goes back UP the chat is a finding (check)
+      f.at = cardsOf.filter((c) => !c.matches("[data-tq-past-card]")).map((c) => [c.innerText.trim().split("\n")[0].slice(0, 60), c.closest("[data-tq-item]")?.getAttribute("data-tq-item") || ""]);
+      // ...ONE STEP, ONE PAIR OF BUTTONS, AND HIS WORDS ONCE (recorded on a coding agent, 2026-11-11: a held delete drew Allow once / Reject
+      // twice - its card, and the same request as the agent's question - and the line he typed under it stood in the chat twice)
+      f.allows = [...document.querySelectorAll("[data-tq-task-page] button:not([disabled])")].filter((b) => b.getBoundingClientRect().width > 0 && b.innerText.trim() === "Allow once").length;
+      const said2 = [...vp.querySelectorAll(".tq-aui-user-bubble")].map((e) => e.innerText.trim());
+      f.twice = said2.filter((w, i) => i && w === said2[i - 1] && w.length > 12);
+      if (!f.twice.length) delete f.twice;
+      const lastLive = cardsOf.map((c, i) => (c.querySelector("button:not([disabled])") ? i : -1)).reduce((a, b) => Math.max(a, b), -1);
+      if (lastLive >= 0 && dead.some((c) => cardsOf.indexOf(c) > lastLive && c.matches("[data-tq-passed]"))) f.staleUnder = true;
+      const named = said ? namedIn(said) : [];
+      // ...read once its turn is at rest (its card lands when its words have), and never for a button that WAS lit under this answer and
+      // has been pressed since: "it waits for your Send" was true when said
+      const lit = (window.__lit ||= {}), key = tail?.getAttribute("data-tq-item"), had = (lit[key] ||= []);
+      named.filter((n) => shown.some(([b, on]) => on && b === n) && !had.includes(n)).forEach((n) => had.push(n));
+      if (named.length && !f.working) { f.named = named; f.unlit = named.filter((n) => !had.includes(n)); if (!f.unlit.length) delete f.unlit; }
+      // THE BASIC FLOW (the owner, 2026-11-12, back on a task: "shows ... on top of new prompt and action card is not greyed out"): his newest
+      // line, and above it no turn at work and no card that can still be pressed; every card counted, settled or not, so one that goes is seen
+      const his = items.map((x, i) => (/^(l[0-9a-z]|s[0-9a-z]|a:|c:|y:)/.test(x[0]) ? i : -1)).reduce((a, b) => Math.max(a, b), -1);
+      if (his >= 0 && items.slice(0, his).some((x) => x[1] === "working" || x[1] === "starting")) f.workAbove = items[his][0];
+      const hostAt = (c) => items.findIndex((x) => x[0] === c.closest("[data-tq-item]")?.getAttribute("data-tq-item"));
+      if (his >= 0 && cardsOf.some((c) => c.querySelector("button:not([disabled])") && hostAt(c) >= 0 && hostAt(c) < his)) f.liveAbove = items[his][0];
+      f.cardN = cardsOf.length;
+      // ...and the one live line beside a turn's dots: what it does, or what we wait for (workingLine)
+      const doing = vp.querySelector("[data-tq-working-line]")?.textContent || ""; if (doing) f.doing = doing;
+      if (vp.querySelector("[data-tq-working]") && !doing && !vp.querySelector("[data-tq-compacting]")) f.bareDots = true;
+      f.hint = document.querySelector("[data-tq-task-page] .tq-aui-input")?.getAttribute("placeholder") || "";
+      // THE AGENT'S WORDS, WHAT CODE CAN SEE OF THEM (conversation.odd_words, rule 8): an id this app mints, the owner named to his face, and
+      // the turn's own card said again above it - read once the turn is at rest, structure only
+      if (said && !f.working) {
+        const odd = [...said.matchAll(/\b(?:TQ-\d{3,}|rv\d+|m-?\d+)\b|\((?:review|mail|message) #?\d+\)|\b(?:mail|message|review) #\d+\b/g)].map((m) => `names "${m[0]}"`);
+        if (owner && new RegExp(`\\b${owner}\\b`).test(said)) odd.push(`calls the owner "${owner}" to his face`);
+        const words = (s) => s.toLowerCase().replace(/[^\w\s]/g, " ").split(/\s+/).filter(Boolean), w = words(said).join(" ");
+        for (const t of tail.querySelectorAll("[data-tq-turn-cards] textarea")) { const b = words(t.value);
+          for (let i = 0; i + 12 <= b.length; i++) if (w.includes(b.slice(i, i + 12).join(" "))) { odd.push("quotes its own card"); break; } }
+        if (odd.length) f.odd = [...new Set(odd)];
+      }
+      const sig = JSON.stringify(f);
+      if (sig !== last) { last = sig; window.__frames.push({ t: Math.round(performance.now()), ...f }); }
+    }
+    window.__raf = requestAnimationFrame(() => setTimeout(tick, 0));     // read AFTER the frame is painted: what he saw, never a layout the page had not pinned yet
+  };
+  tick();
+};
+export function check(frames) {
+  const bad = [], say = (t, m) => bad.push(`${t} ms: ${m}`);
+  let prev = null, before = null; const heard = new Set();
+  for (const f of frames) {
+    const ids = f.items.map((x) => x[0]), seen = new Set();
+    for (const id of ids) { if (seen.has(id)) say(f.t, `${id} drawn twice`); seen.add(id); }
+    for (const id of f.pend) if (seen.has(id)) say(f.t, `${id} is by the box AND in the conversation`);
+    // ...ONE PLACE, NEVER NEITHER (the owner, 2026-11-12): what left the waiting room is in the chat in the same frame - unless he took it back
+    if (prev) for (const id of prev.pend) if (!f.pend.includes(id) && !seen.has(id) && !(f.dropped || []).includes(id)) say(f.t, `${id} left the waiting room and is nowhere`);
+    for (const id of heard) if (!seen.has(id)) say(f.t, `${id} was in the conversation and is gone`);
+    if (prev) {
+      const was = new Set(prev.items.map((x) => x[0])), lastOld = Math.max(-1, ...ids.map((id, i) => (was.has(id) ? i : -1)));
+      ids.forEach((id, i) => { if (!was.has(id) && i < lastOld) say(f.t, `${id} drawn ABOVE ${ids[lastOld]}, which was already there`); });
+      // ...the view went back: only where it is no longer at its end, or went back though nothing above got shorter (a fold closing at the end keeps it pinned)
+      if (f.top < prev.top - 2 && f.h - f.top - f.ch > 2 && (f.h - f.top - f.ch > 60 || f.h >= prev.h)) say(f.t, `scrolled back ${prev.top} -> ${f.top} (height ${prev.h} -> ${f.h})`);
+      // THE CHAT FOLLOWS ITS END (the owner, 2026-11-11): at the bottom it stays at the bottom through every draw; scrolled up to read, it is
+      // not moved (this driver never scrolls, so any move there is the page's own)
+      // ...by the painted word where there is one (`under`, the sampler's IntersectionObserver): never further off than the layout read says
+      const gap = (x) => Math.min(x.h - x.top - x.ch, x.under ?? Infinity);
+      if (gap(prev) <= 2 && gap(f) > 2) say(f.t, `was at its end and fell ${gap(f)} px behind (height ${prev.h} -> ${f.h})`);
+      if (gap(prev) > 60 && f.top !== prev.top) say(f.t, `moved by itself while he read above: ${prev.top} -> ${f.top}`);
+      // his line, the frame it enters the conversation: a turn at work right under it
+      ids.forEach((id, i) => { if (!was.has(id) && /^(l|s)[0-9a-z]/.test(id) && !f.items.slice(i + 1).some((x) => x[1] === "starting" || x[1] === "working")) say(f.t, `${id} heard with no turn at work under it in that frame`); });
+    }
+    // words that name a button, with no such button to press in that frame (said once per run of frames that lack it)
+    if (f.unlit?.length && JSON.stringify(f.unlit) !== JSON.stringify(prev?.unlit || [])) say(f.t, `the agent's words name ${f.unlit.map((n) => `"${n}"`).join(", ")} and no such button is lit`);
+    for (const id of f.empty || []) if (!(prev?.empty || []).includes(id)) say(f.t, `${id} is drawn empty`);
+    if (f.peak) say(f.t, `a painted frame stood ${f.peak} px short of the chat's end, which it had been at`);
+    if (f.bare > 120) say(f.t, `the task stood ${f.bare} ms with its head drawn and no chat under it`);
+    if (f.railOver && !prev?.railOver) say(f.t, "two rail rows drawn over each other");
+    if (f.railScrolled) say(f.t, "the rail scrolled by itself under the pointer");
+    if (f.backOver && !prev?.backOver) say(f.t, "the corner offers \"Back to\" another task while a task is in view");
+    if (f.deadButton && !prev?.deadButton) say(f.t, "a card nobody can press draws a button");
+    if (f.cut && !prev?.cut) say(f.t, `the task's card stands ${f.cut} px under the canvas's head`);
+    if (f.cardTwice && !prev?.cardTwice) say(f.t, "one action stands in the chat as two cards");
+    if (f.rawCard && !prev?.rawCard) say(f.t, "a card shows its own JSON");
+    if (f.tight && !prev?.tight) say(f.t, "two messages of one turn stand as consecutive lines, no paragraph's room between");
+    // A CHAT IS FIRST SEEN AT ITS END (the owner, 2026-11-11: "task should open on last thing not randomly in middle"): the first painted frame too
+    if (!prev && f.h - f.top - f.ch > 2) say(f.t, `first seen ${f.h - f.top - f.ch} px short of its end`);
+    // NOTHING JUMPS OR RESIZES (the owner, 2026-11-11): a chat whose width changes and is back within 600 ms drew a layout nobody meant - the
+    // pane beside it arriving in three steps, the section's room changing as its agent started - and the box never stands past the window
+    if (prev && before && f.w && f.w === before.w && prev.w !== f.w && f.t - before.t < 600) say(f.t, `the chat's width jumped ${before.w} -> ${prev.w} -> ${f.w} px within ${f.t - before.t} ms`);
+    for (const o of f.odd || []) if (!(prev?.odd || []).includes(o)) say(f.t, `the agent's words: ${o}`);
+    if (f.boxOff && !prev?.boxOff) say(f.t, `the box stands past the window's edge (${f.boxOff[0]} px right, ${f.boxOff[1]} px down)`);
+    before = prev;
+    if (f.staleUnder && !prev?.staleUnder) say(f.t, "a settled card stands under the live one");
+    // A CARD NEVER GOES BACK UP THE CHAT (the recorded held step, 2026-11-11: approved under the newest answer, it failed and was drawn again
+    // under the turn that first raised it - where he had pressed stood nothing): the lowest place a card stood is where it stays, or lower
+    if (prev) for (const [title, host] of prev.at || []) {
+      const was = ids.indexOf(host), now = Math.max(-1, ...(f.at || []).filter(([t]) => t === title).map(([, h]) => ids.indexOf(h)));
+      if (title && was >= 0 && now >= 0 && now < was && !(f.at || []).some(([t, h]) => t === title && ids.indexOf(h) >= was)) say(f.t, `the card "${title}" went back up the chat: from under ${host} to under ${ids[now]}`);
+    }
+    // THE BASIC FLOW, per frame (the owner, 2026-11-12): nothing at work above his newest line, no card above it that can still be pressed,
+    // no card gone from the canvas, and a box that does not say "pick the session back up" while a turn is at work
+    if (f.workAbove && f.workAbove !== prev?.workAbove) say(f.t, `a working row stands ABOVE his newest line ${f.workAbove}`);
+    if (f.liveAbove && f.liveAbove !== prev?.liveAbove) say(f.t, `a card above his newer line ${f.liveAbove} still has live buttons`);
+    if (prev && f.cardN < prev.cardN) say(f.t, `a card vanished from the canvas (${prev.cardN} -> ${f.cardN})`);
+    if (f.working && /pick .*back up/i.test(f.hint || "") && !(prev?.working && prev.hint === f.hint)) say(f.t, `the box says "${f.hint}" while a turn is at work`);
+    if (f.bareDots && !prev?.bareDots) say(f.t, "the dots stand alone - no line says what the agent does or what we wait for");
+    if (f.allows > 1 && !(prev?.allows > 1)) say(f.t, `${f.allows} lit "Allow once" buttons: one step drawn as two cards`);
+    for (const w of f.twice || []) if (!(prev?.twice || []).includes(w)) say(f.t, `his line "${w.slice(0, 60)}" stands in the chat twice, one under the other`);
+    // THE CHAT OPENS WITH AN INPUT, NEVER WITH THE AGENT (the owner, 2026-11-11: "it did not show the prompt i asked it to do"): the first
+    // thing drawn is what the first turn heard - his ask, a message that came in - and a turn at work has his newest line above it
+    if (f.items.length && f.items[0][1] && !(prev?.items.length && prev.items[0][1])) say(f.t, `the chat begins with the agent's turn ${f.items[0][0]} - no ask above it`);
+    ids.filter((id) => !id.startsWith("t:")).forEach((id) => heard.add(id)); prev = f;
+  }
+  // NO DEAD END AT THE END (the recorded restart, 2026-11-11: his line stood heard, nothing under it, nothing at work): the walk's last frame
+  // never ends on a line of his with no turn at work
+  const end = frames.at(-1), tail = end?.items.at(-1);
+  const his = (x) => !!x && /^(l[0-9a-z]|s[0-9a-z]|a:|c:|y:)/.test(x[0]);
+  if (his(tail) && !end.working) say(end.t, `the chat ends on his line ${tail[0]} with nothing under it and nothing at work`);
+  // ...nor on his press with a line of his right above it that no turn answered (recorded on a coding agent, 2026-11-11: two lines sent
+  // into the turn, Stop - and they stood over "You stopped the agent" for good)
+  if (tail && /^p:/.test(tail[0]) && his(end.items.at(-2)) && !end.working && !end.pend.length) say(end.t, `the chat ends on his press with his line ${end.items.at(-2)[0]} above it and no turn that answered it`);
+  return bad;
+}
+const frames =(page) => page.evaluate(() => window.__frames);
+const working = (page) => page.evaluate(() => !!document.querySelector("[data-tq-task-page] .tq-aui-viewport [data-tq-working]"));
+// at rest by the SERVER's word and the page's both - the two disagreeing for long is a finding (said when it ends)
+export async function rest(page, tid, timeout = 300000, settle = 4000) { const end = Date.now() + timeout; let calm = 0, split = 0, how = "";
+  while (Date.now() < end) { const dom = await working(page), list = await api(`/api/tasks/${tid}/conversation`), srv = list.working;
+    // A STEP THAT WAITS ON HIS ANSWER HAS ITS BUTTONS ON THE PAGE (recorded 2026-11-12: a chat agent's delete waited on Allow once / Reject
+    // that no page drew - "working" for ten minutes): the server holds a permission and nothing lit answers it
+    if (list.permissions?.length && !(await page.evaluate(() => [...document.querySelectorAll("[data-tq-task-page] button:not([disabled])")].some((b) => b.getBoundingClientRect().width > 0 && b.innerText.trim() === "Allow once")))) {
+      if ((rest.unasked = (rest.unasked || 0) + 400) === 4000) console.log("FINDING: the server waits on his Allow once and the page shows no such button"); } else rest.unasked = 0;
+    if (dom !== srv) { split += 400; how = `page ${dom ? "working" : "at rest"}, server ${srv ? "working" : "at rest"}`; }
+    // ...and where the server says nothing works, nothing on the page spins: a turn left at work under a finished one is a finding at once
+    if (!srv && dom && (split += 0) >= 0 && (rest.ghost = (rest.ghost || 0) + 400) === 3200) console.log("FINDING: the server says at rest and a working indicator still stands on the page");
+    if (dom || srv) calm = 0; else if ((calm += 400) >= settle) { if (split > 2500) console.log(`FINDING: page and server disagreed on "working" for ${split} ms (${how})`); return true; }
+    await sleep(400); } console.log("FINDING: never came to rest"); return false; }
+async function untilWorking(page, timeout = 60000) { const end = Date.now() + timeout; while (Date.now() < end) { if (await working(page)) return true; await sleep(100); } return false; }
+
+if (process.argv[1]?.endsWith("real-conv.mjs")) {
+  const [name, road = "general", ...steps] = process.argv.slice(2);
+  let tid; const leave = {};
+  // THE TASK'S OWN CHANNEL, for its first message and every one after it (`mail`): a WhatsApp task's next message came in as an email
+  const CH = process.env.TOPIC_CHANNEL || "email", CHAT = ["whatsapp", "teams", "telegram", "slack", "sms"].includes(CH);
+  const FROM = { ...(process.env.TOPIC_SOURCE ? { source_name: process.env.TOPIC_SOURCE } : {}), ...(process.env.TOPIC_LINK ? { source_link: process.env.TOPIC_LINK } : {}) };
+  await api("/api/fixture/outbox", {});          // ...the mailbox that sends nowhere lives in the server's process: set again after a restart of it
+  // ...`stranger`: a general task whose first mail is from someone the owner never trusted (no agent starts: the hold and its Trust action)
+  const who = road === "stranger" ? { from_name: "Paula Vance", from_email: "paula@vendor.example" } : { from_name: "Gail Moreno", from_email: "gail@northwind.example" };
+  // ...TID: carry on a task an earlier walk left (leave and come back; a timeline of several walks on one task)
+  if (process.env.TID) tid = Number(process.env.TID);
+  else if (road === "general" || road === "stranger") {
+    // ...TOPIC_SUBJECT / TOPIC_BODY: another ask than the venue one - a second walk of one instance with the same words is read as the same mail again
+    // ...TOPIC_CHANNEL: the entry as a chat message (whatsapp, teams) - no subject, the sender's words alone
+    // ...TOPIC_SOURCE / TOPIC_LINK: where a tracker's item came from (a GitHub issue of `northwind/ledger`, a Monday board) - the walk of every
+    // source (the owner, 2026-11-13: "task coming in via email/chat/github/monday"); such an item has a subject, a chat message none
+    const got = await api("/api/ingest/push", { channel: CH, subject: CHAT ? "" : process.env.TOPIC_SUBJECT || "Offsite venue", ...who, ...FROM, conversation_id: `conv-${name}`,
+      body: (process.env.TOPIC_BODY || "Hi Alex,\n\nCan you suggest two venues for the March offsite, about 40 people, and tell me which one you would pick? A short answer is fine.\n\nThanks,\nGail").replace(/\\n/g, "\n") });
+    console.log("push", JSON.stringify(got).slice(0, 200)); tid = got.task_id;
+  // ...`new`: a task he made himself with New - no mail, no typed line: its ask is the task's own words, and its agent is started as the page starts it
+  } else if (road === "new") { const got = await api("/api/tasks", { Title: process.env.TOPIC_BODY || "Suggest two venues for a 40-person offsite in March and tell me which one you would pick.", Kind: "general" });
+    // ...by the page's own road (NewSheet: the task, then /dispatch) - Continue's road told a task that had never run "the owner chose Resume",
+    // and its agent opened on "Nothing had been done before this resume" (the recorded walk, 2026-11-11)
+    tid = got.taskId; console.log("new", JSON.stringify(got), JSON.stringify(await api(`/api/tasks/${tid}/dispatch`, { kind: "general" })).slice(0, 160));
+  } else { const got = await api("/api/fixture/coding", { git: info.git, real: true, pty: road === "pty", conversation: `conv-${name}` }); tid = got.taskId; }
+  const subject = road === "general" || road === "stranger" ? `Re: ${process.env.TOPIC_SUBJECT || "Offsite venue"}` : "Re: Ledger totals";
+  const { browser, page } = await connect();
+  await page.reload({ waitUntil: "domcontentloaded" }); await sleep(3000);
+  await open(page, tid);
+  await page.waitForSelector("[data-tq-task-page] .tq-aui-input", { visible: true, timeout: 120000 });
+  await sleep(2500);                    // ...the task's own page, not the one a walk before this left open: its box took the first line and went away
+  const rec = await record(page, path.join(out, "video", name));
+  await page.evaluate((id) => { window.__tid = id; }, tid); await page.evaluate(sampler, NAMES);
+  const snap = async (n) => { await shot(page, `${name}-${n}`); const c = await api(`/api/tasks/${tid}/conversation`); await save(`${name}-${n}-list.json`, c);
+    console.log(`[${n}]`, c.items.map((x) => `${x.kind}${x.state ? ":" + x.state : ""}${x.cards?.length ? "+" + x.cards.length + "c" : ""}`).join(" "), "| pending", c.pending.length, "| working", c.working); };
+  for (const s of steps.length ? steps : ["rest", "say:Make it one paragraph shorter.", "rest"]) {
+    const [k, ...r] = s.split(":"), arg = r.join(":");
+    if (k === "rest") { await rest(page, tid); await snap(`rest${Date.now() % 100000}`); }
+    else if (k === "say") { await type(page, arg); await sleep(300); }
+    else if (k === "busy") await untilWorking(page);                     // wait until a turn is at work
+    else if (k === "wait") await sleep(Number(arg));
+    // ...a stranger writes on the thread: his words wait by the box, behind the Trust action
+    else if (k === "strangermail") console.log("mail", JSON.stringify(await api("/api/ingest/push", { channel: "email", subject, from_name: "Omar Keller", from_email: "omar@other.example", conversation_id: `conv-${name}`, body: arg })).slice(0, 160));
+    else if (k === "mail") console.log("mail", JSON.stringify(await api("/api/ingest/push", { channel: CH, subject: CHAT ? "" : subject, ...who, ...FROM, conversation_id: `conv-${name}`, body: arg })).slice(0, 160));
+    // ...the mailbox refuses from here on (`refuse:<its words>`), or sends again (`refuse:`): a press whose act fails
+    else if (k === "refuse") console.log("refuse", JSON.stringify(await api("/api/fixture/outbox", arg ? { fail: arg } : {})));
+    else if (k === "press") console.log(await press(page, new RegExp(arg), "[data-tq-task-page]"));
+    // ...pressed twice in one breath (one send, one line), his own answer on the channel outside the app, a card's words changed before its press
+    else if (k === "press2") console.log(await press(page, new RegExp(arg), "[data-tq-task-page]"), "|", await press(page, new RegExp(arg), "[data-tq-task-page]"));
+    else if (k === "own") console.log("own", JSON.stringify(await api("/api/fixture/own-reply", { id: `own-${name}-${Date.now()}`, conversation: `conv-${name}`, subject, body: arg })));
+    else if (k === "edit") { const ok = await page.evaluate(() => { const t = [...document.querySelectorAll("[data-tq-task-page] [data-tq-turn-cards] textarea")].filter((x) => !x.disabled && !x.readOnly).pop(); t?.focus(); return !!t; });
+      if (ok) { await page.keyboard.down("Control"); await page.keyboard.press("End"); await page.keyboard.up("Control"); await page.keyboard.type(arg); } console.log("edit", ok); }
+    else if (k === "chat") { const t = await chat(page); await save(`${name}-chat-${arg || "end"}.txt`, t); console.log(`--- chat (${arg || "end"})\n${t.slice(-(Number(process.env.CHAT_TAIL) || 900))}`); }
+    else if (k === "flood") { const n = Number(arg) || 50;
+      // ...three voices, mixed: the sender on the channel, his own replies on that channel, lines typed here
+      for (let i = 0; i < n; i++) { const w = `flood line ${i + 1} of ${n}: note ${i + 1}`;
+        if (i % 3 === 1) api("/api/fixture/own-reply", { id: `own-${name}-${i}`, conversation: `conv-${name}`, subject, body: w }).catch((e) => console.log("own", e.message));
+        else if (i % 3 === 0) api("/api/ingest/push", { channel: "email", subject, from_name: "Gail Moreno", from_email: "gail@northwind.example", conversation_id: `conv-${name}`, body: w }).catch(() => {});      // a mail's triage takes its time: never waited for either
+        else api(`/api/tasks/${tid}/assistant/messages`, { text: w, line_id: `lflood${name}${i}` }).catch(() => {});      // not waited for: typed as fast as he can
+        await sleep(150); } }
+    else if (k === "snap") await snap(arg || "snap");
+    // ...the chat's level after a turn ends (summary | steps | everything), for both kinds of agent
+    else if (k === "level") { for (const name of ["chat_detail_other", "chat_detail_coding"]) await api("/api/settings", { name, value: arg }, "PATCH"); await page.reload({ waitUntil: "domcontentloaded" }); await sleep(2500); await open(page, tid); await sleep(2500); await page.evaluate((id) => { window.__tid = id; }, tid); await page.evaluate(sampler, NAMES); }
+    // ...the waiting room's own presses: the newest row's trash (noted, so its leaving is his), Send now
+    else if (k === "drop") console.log("drop", await page.evaluate(() => { const r = [...document.querySelectorAll("[data-tq-task-page] [data-tq-pending-item]")].filter((e) => e.querySelector("[data-tq-drop-line]")).pop();
+      if (!r) return "no row"; (window.__dropped ||= []).push(r.getAttribute("data-tq-pending-item")); r.querySelector("[data-tq-drop-line]").click(); return r.getAttribute("data-tq-pending-item"); }));
+    else if (k === "now") console.log("now", await page.evaluate(() => { const b = document.querySelector("[data-tq-task-page] [data-tq-send-now]"); b?.click(); return !!b; }));
+    else if (k === "sayq") { await page.evaluate(() => document.querySelector("[data-tq-task-page] .tq-aui-input").focus()); await page.keyboard.type(arg); await page.keyboard.press("Enter"); await sleep(150); }
+    // ...he goes to another task and comes back: a task of his own with no agent, opened as a rail row opens one; the sampler reads nothing meanwhile
+    else if (k === "leave") { const other = (leave.tid ||= (await api("/api/tasks", { Title: "Book the team lunch for Friday", Kind: "general" })).taskId);
+      await page.evaluate(() => { window.__away = true; }); await open(page, other); await sleep(Number(arg) || 4000); }
+    else if (k === "back") { await open(page, tid); await page.waitForFunction((id) => (document.querySelector("[data-tq-task-page]")?.innerText || "").includes(`TQ-${String(id).padStart(4, "0")}`), { timeout: 30000 }, tid).catch(() => console.log("FINDING: the task did not come back"));
+      await page.evaluate(() => { window.__away = false; }); await sleep(Number(arg) || 0); }
+    // ...the three ways a turn ends with his lines still waiting: his own stop (the x on the turn), its process dying under it, the app restarting
+    else if (k === "stop") console.log("stop", await page.evaluate(() => { const b = document.querySelector("[data-tq-task-page] [data-tq-stop-run]"); b?.click(); return !!b; }));
+    // ...and its agent idling out, as time does it (closed quietly; the next input - his line, or a message that joins - brings it back)
+    else if (k === "idle") console.log("idle", JSON.stringify(await api("/api/fixture/session", { taskId: tid, state: "idled" })));
+    // ...Taskuary waking its agent to go on from the turn that just ended (no input between: the same work)
+    else if (k === "wake") console.log("wake", JSON.stringify(await api("/api/fixture/session", { taskId: tid, state: "woken", why: arg })));
+    else if (k === "kill") console.log("kill", JSON.stringify(await api("/api/fixture/session", { taskId: tid, state: "killed" })));
+    else if (k === "restart") { await writeFile(path.join(out, "restart"), ""); const end = Date.now() + 120000;
+      while (existsSync(path.join(out, "restart")) && Date.now() < end) await sleep(500);
+      console.log("restart", existsSync(path.join(out, "restart")) ? "NOT DONE" : "done"); await sleep(3000); await api("/api/fixture/outbox", {}).catch(() => {}); }
+    else if (k === "count") { const c = await api(`/api/tasks/${tid}/conversation`); const w = (x) => String(x.text || x.words || "");
+      const on = c.items.filter((x) => ["line", "arrival"].includes(x.kind)).map((x) => (w(x).match(/flood line (\d+) of/) || [])[1]).filter(Boolean).map(Number);
+      const pe = c.pending.map((x) => (w(x).match(/flood line (\d+) of/) || [])[1]).filter(Boolean).map(Number);
+      console.log(`COUNT on canvas ${new Set(on).size} (drawn twice ${on.length - new Set(on).size}) | by the box ${pe.length} | both ${pe.filter((n) => on.includes(n)).length} | in order ${on.every((n, i) => !i || on[i - 1] < n)} | order ${on.join(",")}`); }
+  }
+  const fr = await frames(page), bad = check(fr);
+  await save(`${name}-frames.json`, fr); await save(`${name}-findings.txt`, bad.join("\n") || "no rule broken");
+  await rec.stop({ sheet: 12 });
+  console.log("FRAMES", fr.length, "RULES BROKEN", bad.length); console.log(bad.slice(0, 25).join("\n"));
+  console.log("TASK", tid, "BUTTONS", (await buttons(page)).slice(0, 30));
+  await browser.disconnect();
+}

@@ -12,6 +12,7 @@ import json
 import re
 from email.utils import parseaddr
 from .timewords import plural
+from loguru import logger
 
 # what a slot can be - a new kind is a new entry here, never a branch elsewhere. A chat (the owner, 2026-10-09: "teams/chat
 # too") is one message into one chat id, sent by outbound.send_out like any of these: no CC, no files, no subject.
@@ -57,7 +58,7 @@ def is_sender(sender, to: str, name: str = '') -> bool:
     return bool(want) and want <= words(who)
 
 
-def add(store, tid: int, outputs, actor: str, sender: dict = None) -> list:
+def add(store, tid: int, outputs, actor: str, sender: dict = None, again: bool = False) -> list:
     """Append these outputs as slots; one already open to the same person is not added twice, and one to `sender` (the
     message's own {name, address}) is never added - that is the reply (is_sender). A person named, not addressed, takes
     their address when exactly one person in the owner's own mail matches (people.resolve); several are kept on the slot
@@ -65,7 +66,10 @@ def add(store, tid: int, outputs, actor: str, sender: dict = None) -> list:
     from . import people
     # every email the task has owed - sent and dropped ones too: an email already sent is not owed again because a later
     # message words it differently (one taken back unsent is owed again: draft reopens it, _reopen)
-    have = {str(i['out'].get('to')).casefold() for i in all_(store, tid)}
+    # ...`again`: the email its agent or the owner writes NOW (draft) - to someone whose earlier email on this task went is a new letter,
+    # never "could not add an email" (recorded on the real CLI, 2026-11-13: a second ask joined the task, and the agent told the owner
+    # the email "would not save, though I tried four ways"); what triage lists (not `again`) is never owed twice
+    have = {str(i['out'].get('to')).casefold() for i in (open_ if again else all_)(store, tid)}
     new = []
     for i in clean(outputs):
         if is_sender(sender, i['out']['to'], i['out'].get('name', '')): continue
@@ -120,7 +124,10 @@ def drop(store, tid: int, slot_id: str, actor: str) -> bool:
     hit = next((i for i in all_(store, tid) if i['id'] == slot_id), None)
     if not hit: return False
     rv = store.get_review(hit['rid']) if hit.get('rid') else None
-    if rv and rv.get('Status') == 'pending': store.decide_review(rv['ReviewId'], 'rejected', None, actor, DROPPED)
+    if rv and rv.get('Status') == 'pending' and store.decide_review(rv['ReviewId'], 'rejected', None, actor, DROPPED):
+        from . import cardqueue          # ...a no, like any card's: what waits behind it is its agent's to decide on first
+        try: cardqueue.said_no(store, rv, 'reject', actor)
+        except Exception as e: logger.warning(f"rv{rv['ReviewId']}: the agent was not told of the dropped email - {e}")
     mark(store, tid, slot_id, done=True, actor=actor)
     store.audit('task', tid, 'slot_dropped', actor, detail={'to': hit['out'].get('name') or hit['out'].get('to'), 'kind': hit['out'].get('kind') or 'email'})
     return _left(store, tid, f"Dropped: {hit['text']}.", actor)
@@ -150,6 +157,8 @@ def draft(store, tid: int, text: str, to: str = '', subject: str = '', slot: str
     # ...a recipient with no words is no email (the owner, 2026-11-10: "it created reply with nothing in it ... if you have nothing to reply just
     # ask what should i reply?"): nothing is filed, and the agent is told its two ways on
     if not text: return {'ok': False, 'why': NO_WORDS}
+    from .wrapup import blank_why
+    if agent != 'owner' and (why := blank_why(text)): return {'ok': False, 'why': why}       # a blank left to fill is no letter (wrapup.blanks)
     mailbox = str(mailbox or '').strip()
     if mailbox:
         from . import outbound
@@ -177,7 +186,7 @@ def draft(store, tid: int, text: str, to: str = '', subject: str = '', slot: str
         hit = _point(store, tid, hit, ' '.join(str(to).split()), agent)
     if not hit:
         if not want: return {'ok': False, 'why': 'name the slot (--slot) or who it goes to (--to)'}
-        made = add(store, tid, [{'to': to, 'about': subject, 'kind': channel, **({} if agent == 'owner' else {'by': 'agent'}), **({'name': name} if name else {})}], f'agent:{agent}')
+        made = add(store, tid, [{'to': to, 'about': subject, 'kind': channel, **({} if agent == 'owner' else {'by': 'agent'}), **({'name': name} if name else {})}], f'agent:{agent}', again=True)
         if not made: return {'ok': False, 'why': f'could not add an email to {to}'}
         hit, added = made[0], True
         store.add_comment(tid, agent, 'agent', f'{agent} added an email to {to} to what this task owes.')

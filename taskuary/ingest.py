@@ -10,11 +10,11 @@ from datetime import datetime, timedelta
 from loguru import logger
 from . import kinds as task_kinds
 from .timewords import plural
-from .routing import first_line, draft_task_fields, norm_subject
+from .routing import first_line, draft_task_fields, norm_subject, CHAT_CHANNELS     # ...and the one list of chat channels
 from .policy import evaluate
 from .triage import agent_words, classify_intent, person_name, sender_called, wrapper_of
 from .store import task_ref, auto_code_enabled, _now
-from . import brainroute, buttons, remind, senders, textsim, watch, wrapup, words, workstreams
+from . import aiusage, brainroute, buttons, remind, senders, textsim, watch, wrapup, words, workstreams
 from .categories import agent_word, route_head
 
 # A task the stranger gate held back (senders.known). It is a TAG rather than a column because
@@ -123,6 +123,8 @@ def _land(store, msg: dict, task_id, status: str) -> int:
         store.place_message(msg['_mid'], task_id, status, title=msg.get('_title'))
         mid = msg['_mid']
     else: mid = store.add_message({**_fields(msg, task_id), 'Status': status})
+    # ...and the calls that judged it are this message's, now that it has a row (judge; aiusage.for_message)
+    if msg.get('_route_rows'): aiusage.for_message(store, msg.pop('_route_rows'), mid)
     _place(store, mid, task_id, msg.get('_workstream'))
     return mid
 
@@ -208,7 +210,7 @@ def _from_row(r: dict, store=None) -> dict:
             'subject': r.get('Subject'), 'from_name': r.get('FromName'), 'from_email': r.get('FromEmail'), 'sent_at': r.get('SentAt'),
             'body': r.get('BodyText'), 'own_text': r.get('OwnText'), 'source_link': r.get('SourceLink'), 'source_name': r.get('SourceName'),
             'to': rec.get('to'), 'cc': rec.get('cc'), 'no_auto': _gh_no_auto(store, r), **({'images': images} if images else {}),
-            **({'file_text': files} if files else {})}
+            **({'file_text': files} if files else {}), **({'header_says': r['HeaderClass']} if r.get('HeaderClass') else {})}
 
 
 def _workflow_menu(store) -> str:
@@ -719,6 +721,7 @@ def judge(store, msg: dict, llm, mine=(), me=(), home=None) -> tuple[dict, dict]
         if (found := taskcontext.found_tasks(store, msg, shown | {int((thread.get('thread_task') or {}).get('tid') or 0)})):
             thread = {**thread, 'found_by_search': found}
         # ...and how this sender's last asks were worked, further back than three days (TQ-0955, 2026-10-05)
+        if (notices := taskcontext.filed_notices(store, msg)): thread = {**thread, 'filed_notices': notices}
         theirs = taskcontext.sender_history(store, msg)
         if theirs: thread = {**thread, 'sender_history': theirs}
     except Exception as e: logger.debug(f'recent closures skipped: {e}')
@@ -747,25 +750,42 @@ def judge(store, msg: dict, llm, mine=(), me=(), home=None) -> tuple[dict, dict]
     from .assistant import said_about
     said = said_about(store, msg.get('conversation_id'))
     if said: thread = {**thread, 'assistant_said': said}
+    # THE WHOLE MEMORY, every time (the owner, 2026-10-27: "triage needs the entire thing to make a decision every time, so load the
+    # whole thing") - not the care and people lines cut to 1500 characters.
+    # ...and THE SAME BYTES ON EVERY MAIL: the lines this mail's EVIDENCE also carries were taken out of it here, so the memory - a cached
+    # block of the prompt (triage's stable()) - was a different one for every sender with a note, and was billed whole again each time
+    # (5 memories over 40 mails, measured 2026-11-11). A line may now be read twice, once there under its id; what is cached is paid once
+    lrn = learned_cut.whole(store, 'triage', target=f"mail:{msg.get('external_id') or ''}")
+    # WHO IS ASKING, for the usage row (aiusage.asking, 2026-11-11): triage of a mail, of a report's own run or of an Advisor idea - whichever
+    # brain it rides - and about which message. A new mail has no row yet, so the rows written ride the msg until it lands (_land)
+    who = 'triage.report' if report_brief(msg) else 'triage.idea' if msg.get('idea_context') else 'triage.classify'
+    with aiusage.asking(who, msg.get('_mid')) as a: intent = _classify(store, msg, _guarded, thread, carried, lrn, notes, notes_left, me, candidates)
+    msg['_route_rows'] = a.rids
+    intent['notes'], intent['notes_left'] = notes, notes_left
+    if intent.get('workstream'): msg['_workstream'] = intent['workstream']
+    personal_fyi(store, msg, intent)
+    return intent, fail
+
+
+NO_BRIEF = 'none written - the owner set this report to reach triage when it runs'
+
+def report_brief(msg: dict) -> str | None:
+    """What triage is told a scheduled report's run is for: its brief, or that it has none. Triage never sees the channel, so a run with
+    no brief read as any machine's notice - and a notice is fyi (templates/triage.md) - though the owner sent it to triage to be acted on."""
+    return msg.get('watch_for') or (NO_BRIEF if msg.get('channel') == 'report' else None)
+
+
+def _classify(store, msg, llm, thread, carried, lrn, notes, notes_left, me, candidates) -> dict:
+    "judge's one call to triage, with what the store holds beside the message: the documents, the menus, what this install can do."
     from . import capabilities
     from .triage import job_doc
-    # THE WHOLE MEMORY, every time (the owner, 2026-10-27: "triage needs the entire thing to make a decision every time, so load the
-    # whole thing") - not the care and people lines cut to 1500 characters. A line already in the EVIDENCE (a verdict about this sender
-    # or topic: both come from LEARNED.md now) is said once, there
-    lrn = learned_cut.whole(store, 'triage', target=f"mail:{msg.get('external_id') or ''}")
-    from .memorylines import ABOUT
-    from .triage import note_id
-    said = {str(n)[len(note_id(n)) + 3 if note_id(n) else 0:].strip() for n in notes}     # a note's words, past the id it carries
-    blocks = [[l for l in b.splitlines() if l.startswith('#') or ABOUT.sub('', l.strip().lstrip('-* ')).strip() not in said]
-              for b in lrn.split('\n\n')]
-    lrn = '\n\n'.join('\n'.join(b) for b in blocks if any(not l.startswith('#') for l in b))
-    intent = classify_intent(msg, llm=_guarded, soul=store.doc('soul'), job=job_doc(store), thread=thread, seen=carried,
+    return classify_intent(msg, llm=llm, soul=store.doc('soul'), job=job_doc(store), thread=thread, seen=carried,
                              learned=lrn,
                              notes=notes, notes_left=notes_left, images=msg.get('images'),
                              system=store.doc('triage'), mine=me,
                              # a scheduled report carries its own brief - what the owner
                              # set it up to catch (reports.py: the card's watch_for)
-                             watch=msg.get('watch_for'),
+                             watch=report_brief(msg),
                              # ...and the playbooks: a message that is an instance of one is
                              # tagged with it, and the agent is seeded from it (playbooks.py)
                              playbooks=_playbook_menu(store), workflows=_workflow_menu(store), candidates=candidates,
@@ -778,12 +798,9 @@ def judge(store, msg: dict, llm, mine=(), me=(), home=None) -> tuple[dict, dict]
                              connected=connected_systems(store),
                              # ...and the owner's workstreams, so the sort knows which hat this is under (workstreams.py, 2026-11-01)
                              workstreams=workstreams.menu(store) or None)
-    intent['notes'], intent['notes_left'] = notes, notes_left
-    if intent.get('workstream'): msg['_workstream'] = intent['workstream']
-    personal_fyi(store, msg, intent)
-    return intent, fail
 
 
+INVITE_FYI = {'intent': 'fyi', 'why': 'a calendar invite - a meeting to be ready for, not work'}    # the one verdict made without a model
 QUIET = ('fyi', 'watch')     # the verdicts that ask nothing of the owner now: a line that joins existing work on either is kept for the chain
 
 
@@ -949,7 +966,7 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
         # a calendar invite is a meeting to be ready for on BOTH roads - an updated invite joins its meeting's thread
         # as the newest word on it, never work and never a reopening (the owner, 2026-09-25)
         # ...unless it MOVED a meeting the owner had accepted: then it is theirs to answer again, on the same task (invite_verdict)
-        elif msg.get('invite'): follow = invite_verdict(store, msg) or {'intent': 'fyi', 'why': 'a calendar invite - a meeting to be ready for, not work'}
+        elif msg.get('invite'): follow = invite_verdict(store, msg) or dict(INVITE_FYI)
         # no keyword fyi before the model any more (the owner, 2026-09-25): triage reads every follow-up
         elif cfg.get('intent_classify_enabled', '1') == '1' and llm is not None and not is_chat(msg):
             try: follow, _fail = judge(store, msg, llm, mine, me, home=tid)
@@ -964,6 +981,11 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
         # say this is a different job - "separately, can you set up the new starter's laptop" on a refund thread. Then it opens its
         # own task by the one create road below, judged once, and the thread's task gets one note: never reopened or retitled by it.
         # The mirror of same_as, for the thread's own task; Fold in Reshape puts it back where a split was wrong.
+        # ...but a job the thread's task ALREADY HOLDS is not new to it (the owner, 2026-11-13): a cc'd colleague's own problem kept on
+        # the closed task, then their "can we get this fixed please" next morning, was measured against the task's first ask alone and
+        # opened a second task. Where the lines the ask rests on (rests_on) sit is a stored fact: on this task, it joins this task.
+        if read and follow.get('new_job') and tid in {(store.get_message(m) or {}).get('TaskId') for m in follow.get('rests_on') or []}:
+            follow = {k: v for k, v in follow.items() if k != 'new_job'}
         if read and follow.get('new_job'):
             split_from, verdict = tid, (follow, _fail)
             r = {'decision': 'create', 'task_id': None, 'score': 0.0, 'candidates': [],
@@ -999,7 +1021,7 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
             # ...unless it is a REQUEST nobody has answered (calwrite.needs_answer, by the mail system's own type): then the answer is
             # the owner's move - its row offers Accept, Decline and Propose a new time, each drafted for their yes (the owner, 2026-10-20).
             # An answer, an update or a cancellation is still a meeting to be ready for.
-            pre = (invite_verdict(store, msg) or {'intent': 'fyi', 'why': 'a calendar invite - a meeting to be ready for, not work'}) if msg.get('invite') else None
+            pre = (invite_verdict(store, msg) or dict(INVITE_FYI)) if msg.get('invite') else None
             if pre:
                 intent = pre
             elif llm is None:
@@ -1071,9 +1093,15 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
         # triage should not make it a task"). The End of day checkup's line about an open thread was read as same_as that task, the
         # whole digest joined it, and the next run followed it there for the chain - turning the task's origin to a stranger. A run
         # that points at existing work leaves the task a note and files as its own row; only what no task covers opens one.
+        # ...AND A RUN REPORTS SEVERAL THINGS AT ONCE (the owner, 2026-11-15: "bug is in 4 places?? can't have that"): a nightly error check
+        # whose run held one new failure and one an open task already had could name neither as same_as, so it opened a second task titled
+        # for both - the old failure on the rail twice. Triage names the open tasks that hold a part (`covered`): each gets the note, and
+        # the task the run opens is only for the rest. A run whose every part is covered opens nothing
+        covered = [t for t in intent.get('covered') or [] if joinable(store, t, shut=False)] if msg.get('channel') == 'report' else []
         if msg.get('channel') == 'report' and (hit := (same if (same := intent.get('same_as')) and store.get_task(same) else None)
-                                               or (sv['task'] if sv and store.get_task(sv['task']) else None)):
-            return _mention(store, msg, hit, intent, actor, _notes_note())
+                                               or (sv['task'] if sv and store.get_task(sv['task']) else None)
+                                               or (covered[0] if covered and intent['intent'] == 'fyi' else None)):
+            return _mention(store, msg, list(dict.fromkeys([hit, *covered])), intent, actor, _notes_note())
         if sv and joinable(store, sv['task']) and any(x['id'] == sv['step'] for x in store.goal_steps(sv['task'])):
             return _split_note(store, split_from, msg, _serve_step(store, msg, sv, intent, actor, _notes_note(), pol, cfg, mine))
         same = intent.get('same_as')
@@ -1086,6 +1114,11 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
             return _split_note(store, split_from, msg, land_on(store, msg, same, intent, actor, 'same', cfg=cfg, pol=pol, mine=mine,
                                                                notes_note=_notes_note()))
         if intent['intent'] == 'fyi':
+            # ...A NOTICE COME AGAIN JOINS THE ONE IT REPEATS (the owner, 2026-11-16: "one failure is one row"): triage named the filed notice it
+            # repeats (same_notice), so it lands on that notice's thread - the rail folds a thread's notices into one row (fold_fyi_threads)
+            if (was := store.get_message(intent['same_notice']) if intent.get('same_notice') else None) and was.get('ConversationId'):
+                msg['conversation_id'] = was['ConversationId']
+                if msg.get('_mid'): store.set_conversation(msg['_mid'], was['ConversationId'])
             mid = _land(store, msg, None, 'filed')
             store.add_route(mid, None, 'file', None,
                             f"triage: {route_head('fyi')} - {intent.get('why') or 'informational'}" + _notes_note(), [], 'triage',
@@ -1167,6 +1200,11 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
             # ...and WHERE the work is done is the coding agent's to pick when it starts (repochoice, the owner 2026-11-06): nothing here
             mid = _land(store, msg, tid, 'routed')
             if intent.get('checklist') and not goal: store.source_checklist(tid, mid, 'triage')     # its boxes came from this message
+            # ...and the part of a report's run that open work already holds is said on both sides: this task is for the rest (`covered`)
+            if covered:
+                _mentioned(store, msg, covered, mid, actor, f" - what is new in it is {task_ref(tid)}")
+                store.add_comment(tid, 'triage', 'agent', 'This run also reports what ' + ', '.join(
+                    f"{task_ref(h)} ({(store.get_task(h) or {}).get('Title') or ''})" for h in covered) + f" already hold{'s' if len(covered) == 1 else ''} - that part stays there; this task is for the rest.")
             # the same-day lines this one continues or answers that had no task yet join the task it opens:
             # the fyi that opened a subject belongs with the ask that followed it (PW-031)
             for rel_mid in (intent.get('related_message_ids') or []):
@@ -1278,8 +1316,8 @@ NOTE_BUDGET = 2000       # ...and how many characters, whichever runs out first
 #
 # 'subject' scope keys on the subject the verdict was given on. Whether a message is ABOUT that topic is
 # never a share of shared words (the owner, 2026-10-28): every topic note is in scope for every message,
-# ranked by how alike in meaning it is (textsim, embeddings), and triage says which ones it applied
-# (its verdict's notes_applied) - "Resident Refund Request - Doe" and "a refund for a resident" are the
+# ranked by how alike in meaning it is (textsim, embeddings), and which ones bear on it is triage's to weigh
+# (it is no longer asked to name them: nothing read the answer, 2026-11-11) - "Resident Refund Request - Doe" and "a refund for a resident" are the
 # same standing decision, and "Refund the vendor's overpayment" is not, whatever words they share.
 SCOPE_PRIOR = {'sender': 3.0, 'sender_domain': 1.5, 'source': 1.5, 'subject': 1.5}     # how narrowly a note was scoped
 # ...and how much what it MEANS adds: less than the step from one scope to the next, so a note about the person in front of you
@@ -1325,8 +1363,8 @@ def relevant_notes(store, senders, text: str, cap: int = NOTE_CAP, budget: int =
 
     Ranked by how alike in MEANING each note is to the message (textsim, embeddings) on top of how narrowly it was scoped; with no
     embedder, by the scope alone. `senders` is every address on the thread - one message's sender, or a whole chain's. `keep`, when
-    given, says which note rows may be used at all. `ids` puts each note's own id in front of it ("[lrn123] ...") - triage names the
-    ones it applied by it (notes_applied)."""
+    given, says which note rows may be used at all. `ids` puts each note's own id in front of it ("[lrn123] ...", learned_cut.cite_of):
+    triage's old answer shape named the ones it applied by it (notes_applied); the lean one is not asked to (2026-11-11)."""
     from .learned_cut import cite_of
     hits = [n for n in applicable_notes(store, senders, subject, text, source) if keep is None or keep(n)]
     key = lambda n: f"note:{cite_of(n.get('Key'))}"
@@ -1452,18 +1490,25 @@ def _retitle(store, t: dict, msg: dict, intent: dict, actor: str, reopened: bool
     return True
 
 
-def _mention(store, msg: dict, tid: int, intent: dict, actor: str, notes_note: str = '') -> dict:
-    """A report run about a task that exists: the run is filed as its own row (never on the task, so it cannot become the task's
-    origin or its chain) and the task gets ONE note a day per report that the report named it - a daily run does not stack them."""
-    mid = _land(store, msg, None, 'feed')
-    ref, who = task_ref(tid), msg.get('source_name') or msg.get('from_name') or 'A report'
-    store.add_route(mid, None, 'file', None, f"triage: it is about {ref}, which already holds that work - filed as the report's own row, "
-                    f"not joined to it · {intent.get('why') or ''}" + notes_note, [], 'triage', verdict=_stored_verdict(intent))
+def _mentioned(store, msg: dict, tids: list, mid: int, actor: str, tail: str = '') -> None:
+    "ONE note a day per report on each task its run named - a daily run does not stack them."
+    who = msg.get('source_name') or msg.get('from_name') or 'A report'
     head, today = f'{who} mentions this', datetime.now().strftime('%Y-%m-%d')
-    if not any(str(c.get('Body') or '').startswith(head) and str(c.get('CreatedAt') or '')[:10] == today for c in store.list_comments(tid)):
-        store.add_comment(tid, actor, 'agent', f"{head} in its run of {str(msg.get('sent_at') or today)[:16]} (report row #{mid}): {msg.get('subject') or ''}")
+    for tid in tids:
+        if any(str(c.get('Body') or '').startswith(head) and str(c.get('CreatedAt') or '')[:10] == today for c in store.list_comments(tid)): continue
+        store.add_comment(tid, actor, 'agent', f"{head} in its run of {str(msg.get('sent_at') or today)[:16]} (report row #{mid}): {msg.get('subject') or ''}{tail}")
+
+
+def _mention(store, msg: dict, tids: list, intent: dict, actor: str, notes_note: str = '') -> dict:
+    """A report run about work that exists: the run is filed as its own row (never on a task, so it cannot become the task's origin
+    or its chain) and each task that holds a part of it gets the note that the report named it (_mentioned)."""
+    mid = _land(store, msg, None, 'feed')
+    ref = ' and '.join(task_ref(t) for t in tids)
+    store.add_route(mid, None, 'file', None, f"triage: it is about {ref}, which already hold{'s' if len(tids) == 1 else ''} that work - filed as the report's own row, "
+                    f"not joined to it · {intent.get('why') or ''}" + notes_note, [], 'triage', verdict=_stored_verdict(intent))
+    _mentioned(store, msg, tids, mid, actor)
     logger.info(f"ingest: a report run about {ref} - filed as its own row, noted on the task")
-    return {'status': 'feed', 'task_id': None, 'message_id': mid, 'mentions': tid}
+    return {'status': 'feed', 'task_id': None, 'message_id': mid, 'mentions': tids[0]}
 
 
 def joinable(store, tid, shut: bool = True):
@@ -1549,7 +1594,8 @@ def land_on(store, msg: dict, tid: int, v: dict | None, actor: str, how: str = '
         # a moved meeting reads as itself on its task (invite_verdict)
         return (f"{v['why']} · your answer goes out only when you press {buttons.label('approve')}" if (v or {}).get('invite') else reason, new)
     # ...and a WATCH on a line that joins its thread (the owner, 2026-11-03) asks nothing of the owner either: kept for the chain like an fyi
-    if v and not awaited and (v.get('intent') in QUIET or kept):
+    # ...and a notice the task already holds, come again with nothing new (triage's `repeat`), is kept the same way, whatever its intent
+    if v and not awaited and (v.get('intent') in QUIET or kept or v.get('repeat') == 'same'):
         mid = _land(store, msg, tid, 'filed')
         route, note = said(True)
         store.add_route(mid, tid, 'attach', score, route, [], 'triage', verdict=_stored_verdict(v))
@@ -1560,7 +1606,10 @@ def land_on(store, msg: dict, tid: int, v: dict | None, actor: str, how: str = '
         watch.moved(store, tid, msg, v, mine, actor)
         # nothing for the owner, but the answer the waiting agent asked for all the same - it was typed in when a
         # busy thread skipped triage, and judging it must not strand the agent (B6, 2026-10-11)
-        if talking: _hand_to_agent(store, cfg, tid, msg, actor)
+        # ...but A NOTICE THE TASK HOLDS, COME AGAIN WITH NOTHING NEW, wakes nobody (the owner, 2026-11-15: repeats wake only on change): the note
+        # is on the task, and its agent hears of it only when triage's `repeat` says it changed - it spread, its cause differs, it came back
+        if v.get('repeat') == 'same': pass
+        elif talking: _hand_to_agent(store, cfg, tid, msg, actor)
         # ...and nothing for the owner is still a change for the assistant on it: someone else may have answered what its draft
         # answers (thread_moved - the agent re-plans; a filed line's own verdict and reading ride with it)
         # ...by any road (the night run, 2026-11-09: "never mind, Omar sent it" on another channel was filed as "the same, nothing new" -
@@ -1627,8 +1676,14 @@ def land_on(store, msg: dict, tid: int, v: dict | None, actor: str, how: str = '
         # left the pending reply pinned to his first one, warned as behind, with nothing behind
         # the warning (TQ-0665, 2026-09-21). The reply is owed to the newest line either way, and
         # the owner still approves it. An fyi never reaches here: it files and returns above.
+        # ...BUT WHO AN UNWRITTEN REPLY GOES TO IS ITS AGENT'S TO SAY (the owner, 2026-11-15: "shouldn't the agent decide this. It's not a
+        # hard coded decision"): a stranger wrote on a thread where the reply owed to a colleague waited with no words yet, the pin moved
+        # to the newest line whoever wrote it, and the empty card read "To" the stranger. Only a draft that EXISTS is pinned to the line
+        # it is now behind (its freshness marker - whom it answers stays its own, AnswersMid). One nobody wrote stays owed to whom it was
+        # raised for: its agent hears the new line (reply_to_agent, thread_moved) and names who its letter goes to where it writes it
+        # (wrapup.agent_reply)
         if v and not talking:
-            store.update_review_message(behind['ReviewId'], mid)
+            if drafted: store.update_review_message(behind['ReviewId'], mid)
             if not msg.get('_reply_agent') and not agent_drafts(store, tid, went):
                 if drafted: store.add_comment(tid, 'triage', 'agent', 'The thread moved - the drafted reply is behind it.')
                 owed = behind['ReviewId']
@@ -1644,7 +1699,7 @@ def land_on(store, msg: dict, tid: int, v: dict | None, actor: str, how: str = '
         unsendable = send_block(store, msg.get('channel'))
         owed = store.add_review({'TaskId': tid, 'MessageId': mid, 'Kind': 'draft', 'Status': 'pending', 'Origin': 'triage',
                                  'Reason': f"needs a reply: {v.get('why') or 'question for you'}" + (f' · {unsendable}' if unsendable else '')})
-    if owed: _spawn(reply_to_agent, store, tid, owed, msg)
+    if owed: _spawn(reply_to_agent, store, tid, owed, {**msg, 'message_id': mid})
     # the classic round trip: the agent asked something, the hub asked the person, and
     # THIS is their answer arriving on the same thread. With answer_to_agent=auto it is
     # typed straight into the live session; 'ask' leaves the one-click offer in the
@@ -1813,6 +1868,7 @@ def _split_note(store, old, msg: dict, res: dict) -> dict:
 ECHO_HOURS = 12
 ECHO_MIN = 20           # a line this short ("ok", "thanks!") is said too often to identify one message
 ECHO_KEY = 160          # a notification quotes the start of a long line, so the start is what is matched
+ECHO_PART = 80          # ...and may cut it shorter than that (a long line quoted to its first hundred-odd characters and "…")
 _INVISIBLE = re.compile('[­​-‏⁠﻿]')
 
 def _plain(t) -> str: return ' '.join(_INVISIBLE.sub(' ', str(t or '')).lower().split())
@@ -1838,8 +1894,8 @@ def echo_route(store, msg: dict) -> dict | None:
         if _secs(m.get('SentAt'), msg.get('sent_at')) > ECHO_HOURS * 3600: continue
         line, mail = ((msg.get('body'), (store.get_message(m['MessageId']) or {}).get('BodyText')) if chat
                       else (m.get('BodyText'), msg.get('body')))
-        key = _plain(line).rstrip('.… ')[:ECHO_KEY]
-        if len(key) >= ECHO_MIN and key in _plain(mail):
+        key, quoted = _plain(line).rstrip('.… ')[:ECHO_KEY], _plain(mail)
+        if len(key) >= ECHO_MIN and (key in quoted or key[:ECHO_PART] in quoted):
             return {'decision': 'attach', 'task_id': tid, 'score': 1.0, 'candidates': [], 'echo': True,
                     'reason': f"the same words from {m.get('FromName')} already came by {m.get('Channel')} on {task_ref(tid)} - one message, two ways"}
     return None
@@ -2024,10 +2080,6 @@ def answered_before(store, msg: dict, me=(), days=365, n=6, crowd=8) -> list:
 # unfinished sentence from "Also, separate thing:": a reader, holding the exchange, OURS AND
 # THEIRS. Our own replies are the strongest boundary in the conversation and nothing ever showed
 # them to a classifier before.
-CHAT_CHANNELS = {'teams', 'slack', 'telegram', 'whatsapp', 'discord', 'imessage',
-                 'mattermost', 'rocketchat', 'matrix', 'google_chat'}
-
-
 def is_chat(msg: dict) -> bool:
     return str(msg.get('channel') or '').lower() in CHAT_CHANNELS
 
@@ -2151,11 +2203,12 @@ def pass_in_why(store, tid, msg: dict, mid, follow: dict | None) -> str:
 # possible"). Carrying a stopped agent on, passing a line into a live one and waking one to re-plan each re-derived these checks, and
 # they had drifted: answer_to_agent=off stopped two of the three, one let a dismissed task through, one read the verdict's danger only
 # while the agent was live. Each road now asks only what is its own (new work, a conversation to carry on) and this for the rest.
-def reach_why(store, tid, msg: dict, mid, follow: dict | None, kind: str, own: bool = False, lack: str = '') -> str:
+def reach_why(store, tid, msg: dict, mid, follow: dict | None, kind: str, own: bool = False, lack: str = '', vouched: bool = False) -> str:
     """'' when this line may reach the task's `kind` agent by itself, else why not. A LIVE agent hears it where its sender may start
     one (senders.start_known); a STOPPED one is carried on only where a fresh task would have started it (auto_start_ok). `own`: the
     owner's own line or press - no sender to check, nothing of theirs read as steering. `lack`: what the road itself is missing (no
-    conversation to carry on), said only past the gate - a road that starts a first agent on it instead never passes a held channel."""
+    conversation to carry on), said only past the gate - a road that starts a first agent on it instead never passes a held channel.
+    `vouched`: the owner's Trust on this task is the line's pass - its sender is not judged again (a bare quote names nobody to remember)."""
     live = live_agent(store, tid)
     if (follow or {}).get('degraded'): return reason('degraded')
     if not joinable(store, tid): return reason('closed')      # dismissed: a done task new work reopens first (land_on)
@@ -2165,7 +2218,7 @@ def reach_why(store, tid, msg: dict, mid, follow: dict | None, kind: str, own: b
     if live and live != kind: return reason('another')
     # ...nor a line that reads as steering an AI (the owner, 2026-10-28): it waits for the owner's press
     if not own and (d := danger(store, msg, mid, follow)): return f'it reads as an attempt to steer an AI ({d})'
-    if lack or (own and live): return lack
+    if lack or (own and live) or vouched: return lack
     ok, why = senders.start_known(store, msg, mid) if live else auto_start_ok(store, msg, mid, kind, own=own)
     return '' if ok else str(why)
 
@@ -2212,7 +2265,7 @@ def _carry_on(store, tid, msg: dict, mid, follow: dict | None, actor: str) -> bo
         return False
     from . import blackboard as bb, general, quickwork
     coding = not general.handles(store.get_task(tid) or {})
-    # a conversation of quick answers carries on quick while the task still reads quick: one call at a fraction of a desk (quickwork._take)
+    # a conversation of quick answers carries on quick while the task still reads quick: the warm agent, at a fraction of a desk (quickwork._take)
     quick = not coding and quickwork.only_quick(store, tid) and _reads_quick(store, tid)
     if not quick and not has_room(store):
         queue_turn(store, tid)
@@ -2244,7 +2297,7 @@ def queue_turn(store, tid, turn: str = '') -> None:
 def queued_turn(store, tid, turn: str, said: str = '') -> None:
     "Run a turn queue_turn held, now a slot is free: a coding task's own session reopened, else the assistant handed its turn."
     from . import general
-    if not general.handles(store.get_task(tid) or {}): general.OPENING.add(tid); return _continue_coding(store, tid)
+    if not general.handles(store.get_task(tid) or {}): general.OPENING.add(tid); return _continue_coding(store, tid, said)
     general.OPENING.add(tid)
     _replan_general(store, tid, '\n\n---\n\n'.join(x for x in [carry_on_turn(store, tid) if turn == 'carry_on' else '', said] if x))
 
@@ -2328,7 +2381,8 @@ REPLY_JOB = ('THIS TASK IS A REPLY OWED to {who}. Work out the answer - read, lo
              'up, check or think it through - then write the reply they get, in the owner\'s voice, with the substance in it: never a '
              'promise to look into it later. Nothing is sent: the reply waits for the owner\'s Send. When they asked for your thoughts '
              'on something (a draft, a plan, numbers), your result for the owner is those thoughts - what works, what to change, the '
-             'specific points - and the reply is built from them.')
+             'specific points - and the reply is built from them. A turn that ends without the reply written asks the owner the one '
+             'thing it needs for it - that question stands on the reply\'s card - or marks the reply not needed.')
 
 
 def reply_job(store, tid) -> str:
@@ -2407,6 +2461,9 @@ def reply_to_agent(store, tid, rid, msg: dict = None) -> bool:
         m = store.get_message(rv['MessageId']) if rv.get('MessageId') else None
         if not m: return False
         msg = msg or _from_row(m, store)
+        # ...and the line that ARRIVED is what a start is judged by (its sender, what triage read in it), where the caller says which it
+        # was: the review is no longer moved onto it (land_on), so the message it was raised for may be an earlier one from somebody else
+        mid = msg.get('message_id') or m['MessageId']
         ran = bool(general.history(store, tid) or store.list_runs(tid) or store.resumable_session(tid))
         if t.get('Kind') not in ('reply', 'task') and (ran or started(store, tid) or not general.handles(t)):
             # ...a start set going a beat ago with nothing to show yet is that agent on its way: a burst's second line starts no second
@@ -2416,12 +2473,12 @@ def reply_to_agent(store, tid, rid, msg: dict = None) -> bool:
             # reply and nobody writing one until the owner pressed Continue. The question is that agent's next turn, by the road new
             # work takes (_carry_on: its session reopened, or a first start, where one may start by itself - else the task says why)
             if not general.handles(t):
-                return _carry_on(store, tid, msg, m['MessageId'], {'intent': 'task', 'kind': t.get('Kind'), 'why': rv.get('Reason') or ''}, 'triage')
+                return _carry_on(store, tid, msg, mid, {'intent': 'task', 'kind': t.get('Kind'), 'why': rv.get('Reason') or ''}, 'triage')
             # ...its conversation's own road said why where it refused (thread_moved); only what that road keeps quiet is said here
-            why = w if code_of(w := wake_why(store, tid, msg, m['MessageId'], None)) in QUIET_WHY else ''
+            why = w if code_of(w := wake_why(store, tid, msg, mid, None)) in QUIET_WHY else ''
             if why: not_started(store, tid, f'{why} - {general.carry_on(t)}')
             return False
-        try: return agent_on_reply(store, tid, msg, m['MessageId'], {'intent': 'task', 'kind': 'general', 'why': rv.get('Reason') or ''}, 'triage', opening=True)
+        try: return agent_on_reply(store, tid, msg, mid, {'intent': 'task', 'kind': 'general', 'why': rv.get('Reason') or ''}, 'triage', opening=True)
         except Exception as e: logger.warning(f'the reply on task {tid} was not handed to an agent: {e}'); return False
 
 
@@ -2514,7 +2571,7 @@ def _pass_in(store, tid, msg: dict, mid, follow: dict | None, actor: str) -> boo
 def _pass_turn(msg: dict) -> str:
     body = ' '.join(agent_words(msg).split())[:4000]          # their new words, without the chain, an address or a number
     return (f"NEW MESSAGE ON THIS TASK from {sender_called(msg)} (by {msg.get('channel') or 'mail'}) - triage read it as more work on this task. "
-            f"These are their words, not the owner's: take what they ask into the work. A reply you write waits for the owner's Send.\n\n{body}")
+            f"These are their words, not the owner's: take what they ask into the work.\n\n{body}")
 
 
 def _pass_general(store, tid, msg: dict, turn: str = None):
@@ -2541,8 +2598,8 @@ def _pass_general(store, tid, msg: dict, turn: str = None):
     # free, with every line that joined - one turn
     with _PASS_LOCK:
         waiting = _PASSING.get(tid)
-        if waiting is not None: waiting.append(turn or _pass_turn(msg))
-        else: _PASSING[tid] = [turn or _pass_turn(msg)]
+        if waiting is not None: waiting.append((turn or _pass_turn(msg), msg.get('message_id')))
+        else: _PASSING[tid] = [(turn or _pass_turn(msg), msg.get('message_id'))]
     if waiting is not None:
         store.add_comment(tid, 'router', 'agent', f"Passed {_who_said(msg)}'s new message to the agent - it joins the turn already waiting.")
         return
@@ -2554,12 +2611,17 @@ def _pass_general(store, tid, msg: dict, turn: str = None):
             time.sleep(.25); ses = general.session_for(tid) or ses
         time.sleep(PASS_GATHER)                    # ...and the rest of a burst still landing
     finally:
-        with _PASS_LOCK: lines = _PASSING.pop(tid, None) or [turn or _pass_turn(msg)]
+        with _PASS_LOCK: got = _PASSING.pop(tid, None) or [(turn or _pass_turn(msg), msg.get('message_id'))]
+    lines, mails = [x[0] for x in got], [x[1] for x in got if x[1]]
+    # ...what a turn since has already heard (general.send_prompt hears everything that came in when it begins) is not said a second time
+    from . import conversation
+    if mails and len(mails) == len(got) and conversation.heard(store, tid, 'mail', mails): return
     said = lines[0] if len(lines) == 1 else f'{len(lines)} NEW LINES ON THIS TASK, in the order they came - one turn for all of them:\n\n' + '\n\n---\n\n'.join(lines)
     try:
-        # a session of quick answers re-decides on the task's depth now: still quick, one more call on it; else the turn runs the agent
-        if ses.quick and quickwork.takes(store, tid): quickwork.again(store, tid, ses, said)
-        else: ses.send_prompt(said, brief=True)      # Taskuary's brief, shown in the chat as coding's typed line is
+        # a session of quick answers re-decides on the task's depth now: still quick, the warm agent's turn on it; else the full agent's
+        kept = mails if len(mails) == len(got) else ()
+        if ses.quick and quickwork.takes(store, tid): quickwork.again(store, tid, ses, said, mails=kept)
+        else: ses.send_prompt(said, brief=True, mails=kept)      # Taskuary's brief, shown in the chat as coding's typed line is
     except Exception as e:
         # ...the session ended under it - the agent closed its own at the end of the turn this line waited behind (the stress run,
         # 2026-11-05): the line is not lost to a Continue, it carries the conversation on in a session of its own, as a mail on a quiet task does
@@ -2637,16 +2699,9 @@ REPLAN = ('Re-plan the WHOLE next step from here, not only the draft: it may nee
           '`taskuary --reply-not-needed "<why>"` or the reply_not_needed tool - it is put down, kept under Not sent, never deleted), new research, a '
           'corrected or an added draft, or nothing left at all. Open with one plain line on what changed, in the owner\'s terms - "I see you answered '
           'Ray there", "Gail took care of it" - then either that we are good, nothing left (nothing_left true), or what is still open as next '
-          'steps. Start the summary\'s "did" with that same line: the owner reads the summary, not the words above it. Your answer is to the '
-          'newest message, read against everything before it. A pending draft written for this message is kept, or improved in place - '
-          'never withdrawn. One that answers an older message and no longer fits is replaced with a corrected one or withdrawn '
-          '(`taskuary --withdraw-draft "<why>"`, the withdraw_draft tool, or [[TASKUARY-WITHDRAW: <why>]], with which=<its id or who> '
-          'for an email or a post - say why in one line); never draft again what already went out. When the new message '
-          'changes nothing - it repeats what you already had, or adds nothing to act on - say exactly that in one line ("Nothing new here: '
-          'the plan above still stands") and stop: no re-research, no rewritten answer, the earlier draft stays as it is. And when it '
-          'needs no real response at all - a thanks, an acknowledgement, a sign-off; your judgement of the thread, not a word list - the '
-          'whole turn is ONE line saying what it was ("Ray thanked you."), with a summary of only that line as "did", "about" empty, no steps '
-          'and no draft. You never send or close anything. End with the [[TASKUARY-SUMMARY]] block.')
+          'steps. Start the summary\'s "did" with that same line: the owner reads the summary, not the words above it. A pending draft written for this '
+          'message is kept, or improved in place - never withdrawn. When the new message changes nothing - it repeats what you already had, '
+          'or adds nothing to act on - say that in one line of your own and stop: no re-research, no rewritten answer.')
 
 
 def replan_turn(msg: dict, follow: dict | None = None, own: bool = False) -> str:
@@ -2667,32 +2722,38 @@ def replan_turn(msg: dict, follow: dict | None = None, own: bool = False) -> str
     return '\n\n'.join(x for x in [head + '\n' + body, '\n'.join(x for x in read if x), REPLAN] if x)
 
 
-def wake_why(store, tid, msg: dict, mid, follow: dict | None, own: bool = False) -> str:
+def wake_why(store, tid, msg: dict, mid, follow: dict | None, own: bool = False, vouched: bool = False) -> str:
     "'' when a line that joined the task should wake its assistant to re-plan (replan_turn), else why not."
     from . import general
     t = store.get_task(tid) or {}
     if t.get('Status') in ('done', 'dropped'): return reason('closed')
     # ...and a coding agent live on it hears it the same way (the audit, 2026-11-10: a sender's second mail woke no turn of a parked coding session)
-    if (kind := 'general' if general.handles(t) else 'coding') == 'coding' and live_agent(store, tid) != 'coding': return reason('not_assistant')
+    # ...AND ONE WHOSE SESSION ENDED, as a typed line reopens it (the owner, 2026-11-13: "if a new message comes in, it's like typing, which
+    # should restart the agent"): after a restart the coding session was neither live nor idled, so the owner's outside answer and the
+    # sender's next line both read "not this agent's" - its draft stood "ready to send" and nothing ran. A coding agent with a conversation
+    # here (a transcript - general.tell's own test) is told through the waiting room, which reopens it (waitroom.reopen_coding)
+    live, kind = live_agent(store, tid), 'general' if general.handles(t) else 'coding'
+    if kind == 'coding' and not (live == 'coding' or not live and store.last_transcript(tid)): return reason('not_assistant')
     # ...with the assistant's conversation on it: a writer's draft alone (a reply task, an invite and its banter) never starts an agent
     # by itself - the reply writer's own redraft (attach, above) is that task's road
     # A turn still OPENING counts (the night run, 2026-11-09: a colleague answered the group 6s into the task's quick call, the line went
     # unheard, and the turn asked the owner for a password nobody needed any more)
-    if not live_agent(store, tid) and not general.history(store, tid): return reason('no_conversation')
-    return reach_why(store, tid, msg, mid, follow, kind, own)
+    if kind == 'general' and not live and not general.history(store, tid): return reason('no_conversation')
+    return reach_why(store, tid, msg, mid, follow, kind, own, vouched=vouched)
 
 
-def thread_moved(store, tid, msg: dict, mid, follow: dict | None, actor: str, own: bool = False) -> bool:
+def thread_moved(store, tid, msg: dict, mid, follow: dict | None, actor: str, own: bool = False, vouched: bool = False) -> bool:
     """A line joined the task: wake its assistant to re-plan (wake_why) - queued behind a live or opening turn as its next one, else
     the conversation carried on. Once per arrival; nothing is sent or closed by it. True when the agent was handed the turn."""
     from . import general
     if not own and (went := start_lifted(store, tid, msg, mid, actor)) is not None: return went
-    if why := wake_why(store, tid, msg, mid, follow, own):
+    if why := wake_why(store, tid, msg, mid, follow, own, vouched):
         if code_of(why) not in QUIET_WHY: not_started(store, tid, why)
         return False
     turn = replan_turn(msg, follow, own)
     store.audit('task', tid, 'thread_moved', actor, 'agent', {'message_id': mid, 'own': own})
-    if live_agent(store, tid):
+    # ...a coding agent, live or not, by the waiting room (general.tell): it reopens an ended session as a typed line does, and waits for room
+    if live_agent(store, tid) or not general.handles(store.get_task(tid) or {}):
         _spawn(_replan_pass, store, tid, {**msg, 'message_id': mid}, turn)
         return True
     if not has_room(store): queue_turn(store, tid, turn); return True
@@ -2764,21 +2825,22 @@ def folded_in(store, tid, src, title: str, msgs: list, result: str = '', drafts:
 def _asker(msg: dict) -> str: return person_name(msg.get('from_name')) or msg.get('from_email') or 'someone'
 
 
-def _continue_coding(store, tid):
-    """Continue's resume road (server.continue_session) without the press: the same CLI, the same checkout, its own conversation
-    by the id its CLI gave it. No instruction rides it - terminal.resume_seed tells it how many messages are new and where they are."""
-    from . import terminal
+def _continue_coding(store, tid, said: str = ''):
+    """A stopped coding task carries on BY THE ONE ROAD Taskuary's words to an agent take (general.tell -> the waiting room): its own CLI
+    conversation reopened in its checkout (waitroom.reopen_coding), told what came in since - as a typed line, an approval and a line that
+    joins after a restart reach it. It started the CLI itself here, a second road: nothing was written down as heard (a reply draft above
+    the new mail stood pending), and a start that found no room said "Continue picks it up" with nothing to try it again. Through the
+    waiting room the turn is kept until its agent takes it, and the hand-over is the ledger's (conversation.hear)."""
+    from . import general
     try:
         row, why = _resumable_coding(store, tid)
         if not row: raise RuntimeError(why)
         if (store.get_task(tid) or {}).get('Status') not in ('open', 'waiting', 'in_progress'): store.update_task(tid, {'Status': 'in_progress'}, 'router')
-        terminal.start_on_task(store, tid, row['Agent'], None, None, 'router', cwd=row['Cwd'], resume=row['ExtId'], brain=row.get('Brain') or None)
+        general.tell(store, tid, '\n\n---\n\n'.join(x for x in (carry_on_turn(store, tid), said) if x), 'router')
     except Exception as e:
         logger.warning(f'coding carry-on failed for task {tid}: {e}')
         store.add_comment(tid, 'router', 'agent', f"The coding agent couldn't reopen its session by itself: {' '.join(str(e).split())[:200]} - Continue picks it up.")
-    finally:
-        from . import general
-        general.OPENING.discard(tid)
+    finally: general.OPENING.discard(tid)
 
 
 def _who(m: dict) -> str:
@@ -2947,6 +3009,8 @@ def _reopen(store, tid, msg: dict, actor: str, intent: dict = None) -> bool:
     return True
 
 
+LIVE_JOIN = 'an agent is working this and asked on this chat'      # the one join made unread: a running agent's own conversation (day_count)
+
 def chat_route(store, msg: dict, cfg: dict, llm, mine=(), me=()) -> tuple:
     """Where a chat line goes: (route dict, (verdict, fail) or None).
 
@@ -2970,7 +3034,7 @@ def chat_route(store, msg: dict, cfg: dict, llm, mine=(), me=()) -> tuple:
     # live task among the room's lines it may name: it joins if the verdict says it belongs, else it is its own work.
     if live and from_opener(store, live, msg):
         return ({'decision': 'attach', 'task_id': live, 'score': 1.0, 'candidates': [],
-                 'reason': 'an agent is working this and asked on this chat'}, None)
+                 'reason': LIVE_JOIN}, None)
     room = next((c['task_id'] for c in reversed(cands) if joinable(store, c['task_id'], shut=False)), None)
     apart = f", so it did not join {task_ref(room)}" if room else ''
     if cfg.get('intent_classify_enabled', '1') != '1' or llm is None:
@@ -3141,9 +3205,15 @@ def split_message(store, mid: int, actor: str = 'owner', kind: str = None) -> in
 def _spawn(fn, *args):
     # ...an agent's start is at work from the moment it is set going, as a hand-over's is (agent_on_reply `opening`): read before its thread
     # had run, a mail's new task said "yours" with nothing at work for the seconds its CLI took to come up (the audit, 2026-11-10)
-    if fn is _auto_general:
-        from . import general
-        general.OPENING.add(args[1])
+    from . import general
+    if fn is _auto_general: general.OPENING.add(args[1])
+    # ...and so is an input handed to a chat agent (general.HANDED), from the hand-over until its pass is through - the burst it waits for
+    # (PASS_GATHER), the idled agent it starts again - as a typed line is from the press (the owner, 2026-11-13: "it's like typing")
+    elif fn in (_pass_general, _replan_pass) and general.handles(args[0].get_task(args[1]) or {}):
+        general.hand(args[1])
+        def fn(*a, _f=fn):
+            try: _f(*a)
+            finally: general.hand(a[1], -1)
     threading.Thread(target=fn, args=args, daemon=True).start()
 
 
@@ -3187,6 +3257,7 @@ def _fill(store, tid: int, plain: str, ask: dict):
     if ask.get('checklist') and not store.task_checklist(tid): store.set_task_checklist(tid, ask['checklist'], 'triage')
 
 
+@aiusage.named('triage.title')       # the triage brain titling a task the owner made by hand: not a mail's triage (aiusage.asking)
 def _enrich(store, tid: int, m: dict, plain: str, llm, earlier: dict = None):
     from . import triage as _triage
     try: _fill(store, tid, plain, _triage.extract_ask(m, llm, earlier=earlier))
@@ -3292,6 +3363,7 @@ def _is_raw_body(summary: str, body: str) -> bool:
     return b.startswith(s[:400]) if len(s) >= 400 else b.startswith(s)
 
 
+@aiusage.named('triage.reread')
 def backfill_asks(store, llm=None, actor: str = 'owner', dry_run: bool = True,
                   include_closed: bool = False, limit: int = 0) -> list:
     """Re-derive the ask and the todos for tasks that were filed with the raw email as their ask.
@@ -3361,10 +3433,10 @@ def advisor_brief(store, msg: dict, mid: int) -> str | None:
     return '\n\n'.join(parts)
 
 
-def _reads_quick(store, tid, first: bool = False) -> bool:
-    "quickwork.takes (`first`: an arrival's first look, quickwork.looks_first), or False - the agent starts - when the depth cannot be read."
+def _reads_quick(store, tid) -> bool:
+    "quickwork.takes, or False - the full agent starts - when the depth cannot be read."
     from . import quickwork
-    try: return quickwork.looks_first(store, tid) if first else quickwork.takes(store, tid)
+    try: return quickwork.takes(store, tid)
     except Exception as e:
         logger.warning(f'the depth of task {tid} could not be read - it starts the agent: {e}')
         return False
@@ -3375,11 +3447,11 @@ def _auto_general(store, tid, brief: str = None, deep: bool = False):
     owner sees when they open the task (PW-069). A full house queues it like a coding task; the
     queue drain knows the kind. A live conversation is reused - the ask is put once.
     `deep`: the quick path already handed this one on (quickwork.escalate), so it never goes back to it.
-    A task triage judged quick (quickwork.takes) is answered in one call instead: no desk, a fraction of one (quickwork._take). Every door reaching
-    here has passed auto_start_ok already, so the gate is the same for both; a task triage never judged reads as deep."""
+    A task triage judged quick or normal (quickwork.takes) is the warm agent's instead: no desk, a fraction of one (quickwork._take). Every door
+    reaching here has passed auto_start_ok already, so the gate is the same for both."""
     from . import blackboard as bb, general, quickwork
     try:
-        if not deep and _reads_quick(store, tid, first=True): return quickwork.start(store, tid, brief)
+        if not deep and _reads_quick(store, tid): return quickwork.start(store, tid, brief)
         if not has_room(store):
             # the brief waits with it (a quick call's notes, an Advisor's idea): the drain starts the agent on it, not on the bare Summary
             store.enqueue_dispatch(tid, None, 'assistant', busy_words(store), brief=brief)
@@ -3446,6 +3518,8 @@ def _fields(msg, task_id):
                                                           **({'unsub': msg['unsub']} if isinstance(msg.get('unsub'), dict) else {})}) else None,
             # what the mail's own headers say sent it (categories.header_class) - the verdict overwrites it (store.add_route)
             'SenderClass': msg.get('sender_class') if msg.get('sender_class') in ('automated', 'bulk') else None,
+            # ...and kept as the headers said it, with the header that did, where the verdict never writes (HeaderClass, 2026-11-12)
+            'HeaderClass': msg.get('header_says') or None,
             # kept so a verdict can be replayed against the lines that decided it (evalset.py)
             'RecipientsJson': json.dumps({'to': list(msg.get('to') or []), 'cc': list(msg.get('cc') or [])})
                               if (msg.get('to') or msg.get('cc')) else None,
@@ -3565,3 +3639,45 @@ def _sweep(store, llm, limit, hours, tries) -> int:
         done += 1
     if done: logger.info(f'retry sweep: {done} stranded row(s) judged')
     return done
+
+
+# EVERY ARRIVAL IS ACCOUNTED FOR (2026-11-12): each inbound message is either judged by triage or kept by a road that wrote down why on
+# its route row - a policy, a feed, an auto-reply, a chat app's copy, a report run its triage line did not send - and the day's count
+# says how many went each way. A message no road gave a reason is UNACCOUNTED: the count is how a silent drop gets seen.
+SEEN_ELSEWHERE = {'context': 'your own line in the conversation', 'history': 'earlier mail on a thread, kept as its history'}
+BOUND_IGNORED = "a line in an agent's chat from someone not in it"
+
+
+def _why_key(reason: str) -> str:
+    "A route's reason as a line of the count: its head, before the detail, with a task's ref said as 'a task'."
+    return re.sub(r'TQ-\d+', 'a task', str(reason or 'no reason written').split(' - ')[0]).strip()[:120]
+
+
+def day_count(store, day: str = None) -> dict:
+    """What became of `day`'s inbound messages (YYYY-MM-DD, local; today by default): {judged, skipped_by_rule {why: n}, joined_live,
+    report_feed, waiting, unaccounted, unaccounted_ids}. Judged = a model's verdict is on file for it; skipped_by_rule counts the rest
+    under the reason their road wrote (a calendar invite and a reused verdict are rules too); joined_live = a line that reached an agent's
+    own chat unread (chat_route's LIVE_JOIN, and a bound chat's lines - agentchannels); waiting = an error or a queue triage still owes."""
+    day = day or datetime.now().strftime('%Y-%m-%d')
+    out = {'judged': 0, 'skipped_by_rule': {}, 'joined_live': 0, 'report_feed': 0, 'waiting': 0, 'unaccounted': 0, 'unaccounted_ids': []}
+    def skip(why): out['skipped_by_rule'][why] = out['skipped_by_rule'].get(why, 0) + 1
+    routes = {}
+    for r in store._rows('SELECT r.MessageId, r.Decision, r.Reason, r.RoutedBy, r.VerdictJson FROM route r JOIN message m ON m.MessageId=r.MessageId '
+                         'WHERE substr(m.CreatedAt, 1, 10)=? ORDER BY r.RouteId', (day,)): routes.setdefault(r['MessageId'], []).append(r)
+    for m in store._rows("SELECT MessageId, Status FROM message WHERE substr(CreatedAt, 1, 10)=? AND IFNULL(Direction, 'in')='in'", (day,)):
+        rs = routes.get(m['MessageId']) or []
+        v = next((json.loads(r['VerdictJson']) for r in rs if r['VerdictJson'] and r['RoutedBy'] != 'owner'), None)
+        first = next((r for r in rs if r['Decision'] not in ('queued', store.HELD) and r['RoutedBy'] != 'owner'), None)
+        if m['Status'] in SEEN_ELSEWHERE: skip(SEEN_ELSEWHERE[m['Status']])
+        elif v and (v.get('invite') or v.get('why') == INVITE_FYI['why']): skip('a calendar invite')
+        elif v and v.get('reused'): skip('filed as the last ones like it from this sender were')
+        elif v: out['judged'] += 1
+        elif m['Status'] in ('error', 'triaging'): out['waiting'] += 1
+        elif not first: out['unaccounted'] += 1; out['unaccounted_ids'].append(m['MessageId'])
+        elif first['Decision'] == 'feed': out['report_feed'] += 1
+        elif first['Reason'] == LIVE_JOIN: out['joined_live'] += 1
+        else: skip(_why_key(first['Reason']))
+    for r in store._rows("SELECT Role FROM agentchannel_msg WHERE Dir='in' AND substr(At, 1, 10)=?", (day,)):
+        if r['Role'] == 'ignored': skip(BOUND_IGNORED)
+        else: out['joined_live'] += 1
+    return out

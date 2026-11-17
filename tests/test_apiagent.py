@@ -154,11 +154,27 @@ class OneRoundTripTests(unittest.TestCase):
         kept = []
         with mock.patch.object(apiagent, 'run_tool', side_effect=lambda s, t, i, n, a: page(a['path'])):
             apiagent.turn(Reader(), MemoryStore(), 1, 's', 'sys ' * 2000, 'go', 500, history=kept)
-        self.assertLess(len(seen[-1]), 8000 + 3 * 5100 + 6 * 400 + 2000, 'the last call carries three answers whole, the rest as lines')
+        self.assertLess(len(seen[-1]), 8000 + 5 * 5100 + 3 * 400 + 2000, 'the last call carries at most five answers whole, the rest as lines')
         self.assertTrue('the answer to file_read' in seen[-1] and 'f1.txt' in seen[-1] and 'call it again' in seen[-1])
         self.assertEqual(sum(len(m.get('content') or '') > 5000 for m in kept if m['role'] == 'tool'), 8, 'what is kept is whole')
         same = lambda a, b: next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
         self.assertTrue(all(same(a, b) >= 8000 for a, b in zip(seen, seen[1:])), 'the system and the task lead every call, byte for byte')
+        # ...and a call is the one before it with more at the end, but where the line moves - a block of three steps at a time (the cache
+        # audit, 2026-11-14: moved on every step, each step wrote the last three answers to the cache again)
+        self.assertLessEqual(sum(same(a, b) < len(a) - 2 for a, b in zip(seen, seen[1:])), 2)
+
+    def test_the_request_bound_counts_the_tools_sent_beside_the_conversation(self):
+        "The gateway's own log, 2026-11-15: calls of 35-60K tokens under a 120,000-character bound - the tools' schemas were never counted."
+        page = lambda k: f'PAGE {k} ' + 'x' * 9000
+        seen, tools = [], [apiagent._fn(f'tool{i}', 'd' * 700, apiagent._S({})) for i in range(20)]
+        class Reader:
+            def chat(self, msgs, tools, max_tokens, **kw):
+                seen.append(len(json.dumps(msgs)) + len(json.dumps(tools))); k = len(seen)
+                return {'content': 'Read all eight.'} if k > 8 else {'tool_calls': [{'id': f'c{k}', 'function': {'name': 'file_read', 'arguments': json.dumps({'path': f'f{k}.txt'})}}]}
+        s = MemoryStore(); s.set_setting('agent_request_chars', '60000', 'owner')
+        with mock.patch.object(apiagent, 'run_tool', side_effect=lambda s, t, i, n, a: page(a['path'])):
+            apiagent.turn(Reader(), s, 1, 's', 'sys ' * 2000, 'go', 500, tools=tools)
+        self.assertLess(max(seen), 60000 * 1.05, 'the whole request - its tools with it - under the bound')
 
     def test_a_read_made_again_in_one_turn_is_answered_from_the_first_until_something_else_runs(self):
         """A model that read the same file or brief twice paid for the whole answer twice and the server ran it twice. A read-only tool
@@ -211,24 +227,105 @@ class OneRoundTripTests(unittest.TestCase):
 
     def test_tools_are_offered_as_the_work_needs_them_and_a_loaded_one_is_added_at_the_end(self):
         """The owner's rule, "model sees all, tools progressive" (2026-11-10: "the ai limits as much as possible to use ai"): every schema rode
-        on every step. The core is offered whole, the rest named in load_tools; loading one appends it, so what went before is the same bytes."""
+        on every step. The core is offered, a line each; the rest are found with find_tools, which appends what it finds, so what went before is the
+        same bytes - and the whole list stays under TOOL_CHARS (the owner, 2026-11-15: "MCP-style tools with simple JSON")."""
         from taskuary import agenttools
         def post(url, json=None, headers=None, timeout=None):
             r = mock.Mock(status_code=200); r.json.return_value = agenttools.rpc(json, lambda n, a: f'{n} answered', ()); return r
         whole = len(json.dumps(apiagent.tools_for(1, 'p', True, post=post) + list(apiagent.DEFERRED[(1, 'p')].values())))
         core = apiagent.tools_for(1, 'p', True, post=post)
         names = [t['function']['name'] for t in core]
-        assert {'search_messages', 'read_message', 'propose_reply', 'check_back', 'show'} <= set(names) and 'calendar' not in names
-        line = core[-1]['function']['description']
-        assert names[-1] == 'load_tools' and all(n in line for n in apiagent.LATER if n in apiagent.DEFERRED[(1, 'p')])
-        assert len(json.dumps(core)) < whole * 0.7
-        seen, steps = [], iter([{'tool_calls': [{'id': 'a', 'function': {'name': 'load_tools', 'arguments': '{"names": ["calendar"]}'}}]},
+        assert {'search_messages', 'read_message', 'propose_reply', 'propose_email', 'show', 'file_write'} <= set(names) and 'calendar' not in names
+        assert names[-1] == 'find_tools' and len(json.dumps(core)) < whole * 0.5
+        TOOL_CHARS = 4_000                # what every call carries before a word of the job: was ~15,000 (23 tools at ~650 characters)
+        assert len(json.dumps(core, separators=(',', ':'))) < TOOL_CHARS
+        said = apiagent.find(1, 'p', list(core), 'meeting calendar')
+        assert 'set_up_meeting:' in said and 'calendar:' in said, 'found by words, each with its whole instructions'
+        seen, steps = [], iter([{'tool_calls': [{'id': 'a', 'function': {'name': 'find_tools', 'arguments': '{"query": "calendar"}'}}]},
                                 {'tool_calls': [{'id': 'b', 'function': {'name': 'set_up_meeting', 'arguments': '{}'}}]}, {'content': 'Booked.'}])
         class Brain:
             def chat(self, msgs, tools, max_tokens, **kw): seen.append([t['function']['name'] for t in tools]); return next(steps)
         with mock.patch.object(apiagent, 'run_tool', return_value='done'):
             self.assertEqual(apiagent.turn(Brain(), MemoryStore(), 1, 'p', 'sys', 'book it', 500, tools=core), 'Booked.')
         assert seen[1] == names + ['calendar'] and seen[2] == names + ['calendar', 'set_up_meeting'], 'appended, never reordered'
+
+    def test_an_invoice_job_of_25_steps_stays_under_the_bound_on_every_call(self):
+        """The gateway's own per-call log for an outside client (2026-11-15): one invoice job, 139 calls at 35-60K prompt tokens, 6.4M in all.
+        The bound counted the messages' text alone - not the tools' schemas, not the arguments of the agent's own calls - so every whole file
+        it wrote (an invoice, a PowerShell script) rode on every call after it. The job's shape: a real-size template and timesheet read, the
+        invoice written whole four times and edited between, reads in parallel, a page searched, across two turns."""
+        import tempfile
+        from taskuary import agenttools, officefiles
+        d = Path(tempfile.mkdtemp())
+        tpl, xl, out = d / 'invoice-template.docx', d / 'timesheet.xlsx', d / 'invoice-october.docx'
+        officefiles.write(tpl, '\n'.join(['# INVOICE', 'Bill to: [client]', 'Date | Session | Hours | Rate | Amount', '[date] | [session] | [hours] | [rate] | [amount]',
+                                          *[f'Terms {i}: payment within thirty days of the invoice date, by bank transfer.' for i in range(30)]]))
+        officefiles.write(xl, '\n'.join(['Date | Person | Session | Hours | Rate', *[f'2026-10-{1 + i % 28:02d} | Erin Blake | Team coaching item {i} | {1 + i % 3} | 120'
+                                                                                    for i in range(300)]]))
+        full = lambda r: '\n'.join(['# INVOICE', 'Bill to: Payworth', 'Date | Session | Hours | Rate | Amount',
+                                    *[f'2026-10-{1 + i % 28:02d} | Team coaching item {i} | {1 + i % 3} | {r} | {(1 + i % 3) * r}' for i in range(90)]])
+        P = lambda n, **a: (n, a)
+        turn1 = [[P('file_read', path=str(tpl)), P('file_read', path=str(xl))], [P('search_messages', query='invoice Payworth')],
+                 [P('web_search', query='Payworth billing address')], [P('file_write', path=str(out), text=full(120))], [P('file_read', path=str(out))],
+                 *[[P('file_edit', path=str(out), old=f'Team coaching item {i}', new=f'Team coaching, item {i}')] for i in (81, 82, 83)],
+                 [P('file_write', path=str(out), text=full(125))], [P('file_read', path=str(out)), P('file_read', path=str(xl))], None]
+        turn2 = [[P('file_write', path=str(out), text=full(130))], *[[P('file_edit', path=str(out), old=f'Team coaching item {i}', new=f'Coaching {i}')] for i in (81, 82, 83)],
+                 [P('file_read', path=str(out))], [P('web_search', query='Payworth accounts payable')], [P('file_write', path=str(out), text=full(135))],
+                 [P('file_read', path=str(out)), P('file_read', path=str(xl))], [P('file_read', path=str(tpl))], [P('search_messages', query='Paula rate')],
+                 [P('web_search', query='Payworth tax number')], [P('show', files=[str(out)])],
+                 [P('propose_email', to='billing@vendor.example', subject='October invoice', text='The October invoice is attached.', attach=[str(out)])], None]
+        plan, seen = [*turn1, *turn2], []
+        class Model:
+            def chat(self, msgs, tools, max_tokens, **kw):
+                seen.append((json.loads(json.dumps(msgs)), json.loads(json.dumps(tools))))
+                step = plan.pop(0)
+                if step is None: return {'content': 'Filled; the rate is the open question.' if plan else 'Filled, and the email is drafted.'}
+                return {'tool_calls': [{'id': f'c{len(seen)}-{j}', 'function': {'name': n, 'arguments': json.dumps(a)}} for j, (n, a) in enumerate(step)],
+                        'provider_specific_fields': {'thought_signatures': [f'sig{len(seen)}' + 'A' * 3000]}}      # Gemini's, handed back as it came
+        def post(url, json=None, headers=None, timeout=None):
+            r = mock.Mock(status_code=200); r.json.return_value = agenttools.rpc(json, lambda n, a: f'{n}: ' + 'a found line of mail. ' * 120, ()); return r
+        real = apiagent.run_tool
+        def run(s, t, i, n, a):
+            if n == 'web_search': return apiagent._cut('\n'.join(f'{a["query"]} - result {k}: ' + 'what the page says ' * 6 for k in range(200)))
+            if n in apiagent.LOCAL and n != 'show': return real(s, t, i, n, a)
+            return f'{n} done.'
+        system = 'You are the agent on this task. ' * 1_000           # a fresh install's system prompt is ~33,000 characters (measured)
+        task = 'TASK TQ-0001\nTITLE: October invoice\n' + 'Paula asks for the October invoice from the timesheet. ' * 60
+        tools, kept = apiagent.tools_for(1, 'inv', False, post=post), []
+        try:
+            with mock.patch.object(apiagent, 'run_tool', side_effect=run):
+                apiagent.turn(Model(), MemoryStore(), 1, 'inv', system, task, 500, tools=tools, history=kept)
+                apiagent.turn(Model(), MemoryStore(), 1, 'inv', system, 'go on - the rate is 130', 500, tools=tools, history=kept)
+        finally: apiagent.forget(1, 'inv')
+        # ...what a model READS: a thought signature is carried back whole (the model needs it) but is never read as tokens
+        read = lambda m: [{k: v for k, v in x.items() if k != 'provider_specific_fields'} for x in m]
+        size = lambda m, t: len(json.dumps({'messages': read(m), 'tools': t}, separators=(',', ':'), ensure_ascii=False))
+        self.assertTrue(all(f'sig{k}A' in json.dumps(seen[-1][0]) for k in range(13, 24)), "this turn's signatures go back, every one")
+        sizes = [size(m, t) for m, t in seen]
+        self.assertEqual(len(seen), 25)
+        # FIRST: the system, the tools and the task - nothing else rides on a call before the work begins
+        self.assertLess(sizes[0], len(system) + len(task) + len(json.dumps(tools)) + 500)
+        # EVERY CALL, the WHOLE of it (tools and the calls' own arguments counted), under the bound
+        self.assertLessEqual(max(sizes), apiagent.REQUEST_CHARS, f'calls over the bound: {[s for s in sizes if s > apiagent.REQUEST_CHARS]}')
+        # ...and a file the agent wrote whole goes once, not on every call after it
+        self.assertLessEqual(max(json.dumps(m).count('Coaching 89 |') + json.dumps(m).count('item 89 | 3 | 1') for m, _ in seen[-3:]), 2)
+        # THE PREFIX - system, then the tools offered first - is the same bytes on every call (the provider's cache)
+        self.assertTrue(all(m[0] == seen[0][0][0] and t[:len(tools)] == seen[0][1][:len(tools)] for m, t in seen))
+        # ...and the WORK, what the calls carried beyond that prefix: under WORK a call on average. This job sent ~27,000 a call before (the
+        # files it wrote, again and again) and ~18,000 after; the prefix itself is the provider's cache to serve
+        WORK = 22_000
+        self.assertLess(sum(s - sizes[0] for s in sizes) / len(sizes), WORK)
+
+    def test_the_line_that_stands_for_text_sent_earlier_is_never_written(self):
+        """The real run on gemini-2.5-pro (2026-11-15): shown its earlier file_edit with `new` shortened to a line, the model made the call again
+        with that line as `new`, and the line went into the invoice. A call carrying it is refused before it runs, and says what to do."""
+        import tempfile
+        f = Path(tempfile.mkdtemp()) / 'invoice.txt'; f.write_text('Rows: [rows]\n', encoding='utf-8')
+        line = json.loads(apiagent._slim(json.dumps({'path': str(f), 'old': '[rows]', 'new': 'a session row. ' * 40})))['new']
+        self.assertIn(apiagent.SLIMMED, line)
+        with self.assertRaisesRegex(ValueError, 'send the full text itself'):
+            apiagent.run_tool(MemoryStore(), 1, 'sl', 'file_edit', {'path': str(f), 'old': '[rows]', 'new': line})
+        self.assertEqual(f.read_text(encoding='utf-8'), 'Rows: [rows]\n')
 
     def test_a_long_conversation_drops_its_oldest_tool_answers_then_its_oldest_turns(self):
         call = lambda k: {'role': 'assistant', 'tool_calls': [{'id': k, 'function': {'name': 'file_read', 'arguments': '{}'}}]}
@@ -349,13 +446,14 @@ class TheSessionTests(unittest.TestCase):
         self.assertEqual([m['role'] for m in session.card_msgs], ['user', 'assistant', 'user'])
         self.assertIn('and the newest?', session.card_msgs[-1]['content'])
 
-    def test_two_turns_of_one_task_share_their_system_up_to_the_lines_a_turn_changes(self):
-        """A provider's prompt cache serves a prompt only up to its first changed byte: "the owner answered this themselves" landed a third of
-        the way into the system, and everything after it - the conversation kept too - was paid for again on the next turn."""
+    def test_a_kept_conversation_s_system_never_changes_and_what_changed_leads_the_next_turn(self):
+        """A provider's prompt cache serves a prompt only up to its first changed byte: "the owner answered this themselves" landed in the
+        system, and everything after it - the conversation kept too - was paid for again on the next turn (the owner, 2026-11-14: "every agent
+        turn should not refresh the entire cache"). The system is the first turn's, byte for byte; the new line leads the turn, once."""
         from taskuary import general, llm as llm_mod, selfclose
         heard = []
         class Brain:
-            def chat(self, msgs, tools, max_tokens, **kw): heard.append(msgs[0]['content']); return {'content': 'Found it.'}
+            def chat(self, msgs, tools, max_tokens, **kw): heard.append((msgs[0]['content'], msgs[-1]['content'])); return {'content': 'Found it.'}
         s = MemoryStore(); s.set_setting('owner_email', 'alex@northwind.example', 't')
         tid = s.create_task({'Title': 'August export', 'Summary': 'Erin asks for the August export', 'Kind': 'general', 'Status': 'open'}, 'owner')
         mail = lambda i, who, at, body, **kw: s.add_message({'TaskId': tid, 'ExternalId': f'x-{i}', 'ConversationId': 'c1', 'Channel': 'email',
@@ -369,10 +467,12 @@ class TheSessionTests(unittest.TestCase):
             session.send_prompt('find the export', echo=False)
             mail(2, ('Alex Doyle', 'alex@northwind.example'), '2026-11-06 10:00:00', 'Sent it.', Direction='out')
             session.send_prompt('and the September one?', echo=False)
-        a, b = heard
-        at = b.index(selfclose.OWNER_ANSWERED_LINE)
-        self.assertEqual(a[:at], b[:at], 'everything before the changed line is the same bytes')
-        self.assertGreater(at, b.index(apiagent.TOOLS_BRIEF), 'and the stable lines - the tools brief among them - come before it')
+            session.send_prompt('and the October one?', echo=False)
+        (a, _), (b, said), (c, again) = heard
+        self.assertEqual(a, b); self.assertEqual(b, c)
+        self.assertNotIn(selfclose.OWNER_ANSWERED_LINE, b)
+        self.assertIn(selfclose.OWNER_ANSWERED_LINE, said); self.assertTrue(said.startswith(general.UPDATED))
+        self.assertNotIn(selfclose.OWNER_ANSWERED_LINE, again, 'said once')
 
     def test_a_model_that_refuses_tools_is_asked_the_plain_way(self):
         seen = []
@@ -507,6 +607,50 @@ class TheHandsTests(unittest.TestCase):
         self.assertIn('Payworth,4100', self.run_('file_read', path='notes/quotes.csv'))
         with self.assertRaises(ValueError): self.run_('file_edit', path='notes/quotes.csv', old='nowhere', new='x')
 
+    def test_a_word_invoice_template_is_filled_by_its_own_file_tools(self):
+        """An outside user's ask (2026-11-15, "it says it took 25 min"): fill an invoice template with a month's sessions and mail it. A
+        .docx was text to file_edit (a decode error) and file_write made a file Word cannot open, so the agent spliced the template's XML
+        in PowerShell, a script a step. Now its line-item row, read as `a | b | c`, becomes one row per session - and the template keeps its look."""
+        from taskuary import officefiles
+        d = Path(apiagent.workdir(self.s, self.tid)); (d / 'Invoice template.docx').write_bytes(officefiles.docx(
+            'Invoice number: {{NO}}\n| Date | Units | Amount |\n| {{DATE}} | {{UNITS}} | {{AMOUNT}} |\nTotal due: {{TOTAL}}'))
+        shown = self.run_('file_read', path='Invoice template.docx')
+        self.assertIn('{{DATE}} | {{UNITS}} | {{AMOUNT}}', shown)
+        said = self.run_('file_edit', path='Invoice template.docx', old='{{DATE}} | {{UNITS}} | {{AMOUNT}}',
+                         new='2026-10-01 | 4 | 60.00\n2026-10-02 | 6 | 90.00\n2026-10-03 | 2 | 60.00', save_as='Invoice INV-2026-10.docx')
+        self.assertIn('3 rows', said)
+        self.run_('file_edit', path='Invoice INV-2026-10.docx', old='{{NO}}', new='INV-2026-10')
+        self.run_('file_edit', path='Invoice INV-2026-10.docx', old='{{TOTAL}}', new='$210.00')
+        got = self.run_('file_read', path='Invoice INV-2026-10.docx')
+        for line in ('Invoice number: INV-2026-10', 'Date | Units | Amount', '2026-10-01 | 4 | 60.00', '2026-10-03 | 2 | 60.00', 'Total due: $210.00'):
+            self.assertIn(line, got)
+        self.assertIn('{{DATE}}', self.run_('file_read', path='Invoice template.docx'))          # save_as left the template as it was
+        with self.assertRaises(ValueError): self.run_('file_edit', path='Invoice INV-2026-10.docx', old='60.00', new='61.00')   # twice: say so
+
+    def test_an_excel_invoice_is_written_and_its_template_row_filled_with_the_total_widened(self):
+        from openpyxl import Workbook, load_workbook
+        d = Path(apiagent.workdir(self.s, self.tid))
+        self.assertIn('Excel workbook', self.run_('file_write', path='hours.xlsx', text='Date | Units | Rate | Amount\n2026-10-01 | 4 | 15.00 | =B2*C2'))
+        ws = load_workbook(d / 'hours.xlsx').active
+        self.assertEqual([ws['B2'].value, ws['C2'].value, ws['D2'].value], [4, 15.0, '=B2*C2'])
+        wb = Workbook(); ws = wb.active
+        ws.append(['Date', 'Units', 'Rate', 'Amount']); ws.append(['2026-10-01', 4, 15, '=B2*C2']); ws.append([None, None, 'Total', '=SUM(D2:D2)'])
+        wb.save(d / 'Invoice template.xlsx')
+        self.assertIn('2026-10-01 | 4 | 15 | =B2*C2', self.run_('file_read', path='Invoice template.xlsx'))    # a formula no Excel worked out, as itself
+        self.run_('file_edit', path='Invoice template.xlsx', old='2026-10-01 | 4 | 15 | =B2*C2',
+                  new='2026-10-01 | 4 | 15\n2026-10-02 | 6 | 15\n2026-10-03 | 2 | 30', save_as='Invoice INV-2026-10.xlsx')
+        ws = load_workbook(d / 'Invoice INV-2026-10.xlsx').active
+        self.assertEqual([ws['A4'].value, ws['B4'].value, ws['C4'].value, ws['D4'].value], ['2026-10-03', 2, 30, '=B4*C4'])
+        self.assertEqual([ws['C5'].value, ws['D5'].value], ['Total', '=SUM(D2:D4)'])
+        self.assertIn('Total | =SUM(D2:D4)', self.run_('file_read', path='Invoice INV-2026-10.xlsx'))      # the total it can check, read back
+
+    def test_the_file_tools_are_offered_whole_not_behind_load_tools(self):
+        "A model never shown file_write said it had no way to make the file (the same ask, on a card): making one is the hands' first job."
+        with mock.patch.object(apiagent, 'taskuary_tools', return_value=[]):
+            names = [t['function']['name'] for t in apiagent.tools_for(self.tid, 'sid-h', browser=False)]
+        self.assertTrue({'file_write', 'file_edit'} <= set(names))
+        apiagent.forget(self.tid, 'sid-h')
+
     def test_a_command_the_cli_would_run_runs_now_in_the_working_folder(self):
         class Done:
             pid, returncode = 4242, 0
@@ -531,7 +675,7 @@ class TheHandsTests(unittest.TestCase):
     def test_a_step_that_waits_for_approve_is_asked_for_by_calling_it(self):
         "Told only that a push waits for the owner's Approve, a model wrote that it needed approval and never called: no button on the task."
         from taskuary import apiagent
-        said = next(t['function']['description'] for t in apiagent.SHELL if t['function']['name'] == 'run_command')
+        said = apiagent.FULL['run_command']                     # its whole words, as find_tools answers
         for text in (said, apiagent.TOOLS_BRIEF):
             self.assertIn("waits for the owner's Approve", text); self.assertIn(apiagent.ASK_BY_CALLING, text)
 
@@ -585,8 +729,8 @@ class TheHandsTests(unittest.TestCase):
         with mock.patch.object(apiagent, 'taskuary_tools', return_value=[]):
             names = {t['function']['name'] for t in apiagent.tools_for(self.tid, 'sid-h', browser=False, hands=False)}
         try:
-            self.assertTrue({'files_list', 'file_read', 'web_fetch', 'web_search'} <= names)
-            self.assertFalse({'file_write', 'file_edit', 'run_command', 'browser_open'} & names)
+            self.assertTrue({'files_list', 'file_read', 'web_fetch', 'web_search'} <= apiagent.OFFERED[(self.tid, 'sid-h')])
+            self.assertFalse({'file_write', 'file_edit', 'run_command', 'browser_open'} & apiagent.OFFERED[(self.tid, 'sid-h')])
             with self.assertRaises(ValueError): self.run_('run_command', command='dir', why='list')
         finally: apiagent.OFFERED.pop((self.tid, 'sid-h'), None); apiagent.TOOLBOX.pop((self.tid, 'sid-h'), None)
 

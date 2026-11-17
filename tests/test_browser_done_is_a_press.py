@@ -47,19 +47,53 @@ class DoneIsAPress(unittest.TestCase):
         self.assertEqual((out['delivered'], out['state']), (True, 'delivered'))
         [(words, as_owner)] = self.heard()
         self.assertFalse(as_owner, "Taskuary's note to the agent, never the owner's line")
-        self.assertIn('The owner pressed Done', words); self.assertIn("tick the \"I'm not a robot\" box", words)
+        self.assertIn("The owner pressed I'm done", words); self.assertIn("tick the \"I'm not a robot\" box", words)
         self.assertIn('did not see the page move', words); self.assertIn('look at it as it is now', words)
         self.assertEqual(self.said(), [], 'no bubble, and no line by Taskuary either')
-        self.assertEqual(self.lines(), [f'You pressed Done: the step on {SITE} is finished.'])
+        # ...in the words of the button he pressed: the view's "I'm done" left "You pressed Done" (the overnight walk, 2026-11-11)
+        self.assertEqual(self.lines(), [f"You pressed I'm done: the step on {SITE} is finished."])
         self.assertEqual(self.open(), []); self.assertEqual(bg.HANDS, {})
         again = ws.answer(self.s, self.tid, rid, '', press=True)                  # a second press, or the watch got there first
         self.assertEqual((again['delivered'], again['state']), (False, 'resolved')); self.assertEqual(len(self.told), 1)
+
+    def test_his_done_puts_the_browser_back_on_the_steps_own_tab_before_the_agent_looks(self):
+        """The owner, 2026-11-15: sites are tabs of one browser, and while a step was his he could show another tab - the agent, told to
+        look at the page, worked whichever tab he left showing. The tab the step was handed over on is kept with it, and his I'm done
+        switches the browser back to it before the agent is told."""
+        order = []
+        with mock.patch.object(browserview, 'active_tab', return_value='5E59148433CDB7E3310EE4A0CD72F41B'): rid = self.turn()
+        self.sess.send_prompt = lambda text, as_owner=True, **k: order.append(('told', text[:20]))
+        with mock.patch.object(browserview, 'switch_tab', side_effect=lambda sid, tab: order.append(('tab', sid, tab)) or True):
+            ws.answer(self.s, self.tid, rid, '', press=True)
+            end = time.time() + 5
+            while len(order) < 2 and time.time() < end: time.sleep(.01)
+        self.assertEqual(order[0], ('tab', 'run1', '5E59148433CDB7E3310EE4A0CD72F41B'))
+        self.assertEqual(order[1][0], 'told')
+        self.assertTrue(browserview.TAB_REF.fullmatch('5E59148433CDB7E3310EE4A0CD72F41B'))
+        self.assertIsNone(browserview.TAB_REF.fullmatch('t1 & del x'))
+
+    def test_from_his_done_until_the_agent_is_told_the_task_is_at_work(self):
+        """Recorded on the real CLI (the browser audit, 2026-11-15): he passed the check and pressed I'm done; the step closed, and until the
+        told agent's turn had begun the task read as nothing at work, the page still drawn beside a chat that said nothing was happening.
+        The telling is an input on its way to the agent: at work from the press until it has handed on."""
+        import threading
+        go, begun = threading.Event(), threading.Event()
+        def told(text, as_owner=True, **k): begun.set(); go.wait(5); self.told.append((text, as_owner))
+        self.sess.send_prompt = told
+        rid = self.turn()
+        self.assertFalse(general.starting(self.tid))
+        self.assertTrue(ws.answer(self.s, self.tid, rid, '', press=True)['delivered'])
+        self.assertTrue(general.starting(self.tid), 'at work from the press, before the agent has been told')
+        self.assertTrue(begun.wait(5)); go.set(); self.heard()
+        end = time.time() + 5
+        while general.starting(self.tid) and time.time() < end: time.sleep(.01)
+        self.assertFalse(general.starting(self.tid), 'and no longer once it has handed on')
 
     def test_done_on_a_button_handed_over_names_the_button(self):
         rid = self.press()
         self.assertTrue(ws.answer(self.s, self.tid, rid, '', press=True)['delivered'])
         self.assertIn(f'pressing {BTN}', self.heard()[0][0])
-        self.assertEqual(self.lines(), [f'You pressed Done: {BTN} on {SITE} is pressed.'])
+        self.assertEqual(self.lines(), [f"You pressed I'm done: {BTN} on {SITE} is pressed."])
 
     def test_the_press_the_page_saw_is_one_line_in_plain_words(self):
         rid = self.press()
@@ -87,7 +121,7 @@ class DoneIsAPress(unittest.TestCase):
             self.assertTrue(ws.answer(self.s, self.tid, rid, '', press=True)['delivered'])
             end = time.time() + 5
             while not typed and time.time() < end: time.sleep(.01)
-        self.assertIn('The owner pressed Done', typed[0][0]); self.assertEqual(typed[0][1], {'brief': True})
+        self.assertIn("The owner pressed I'm done", typed[0][0]); self.assertEqual(typed[0][1], {'brief': True})
 
     def test_a_resting_agent_is_started_on_it(self):
         rid, woke = self.turn(), []

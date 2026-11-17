@@ -62,6 +62,19 @@ def _answering(option):
 STORE = [None]
 
 
+def test_a_chat_agents_held_step_is_its_approve_card_at_once_never_buttons_no_page_draws():
+    """Recorded on the real CLI, 2026-11-12: with Developer mode on, a chat agent's delete was put to the owner as Allow once / Reject -
+    buttons only a coding task's chat draws. Its turn read "working" for ten minutes with nothing to press; only then the Approve card
+    came. A chat agent's held step is that card from the start, whatever Developer mode says."""
+    s = MemoryStore()
+    tid = s.create_task({'Title': 'Tidy the exports folder', 'Kind': 'general', 'Status': 'open'}, 'owner')
+    with mock.patch.object(shellgate, 'trusted', return_value=''), mock.patch.object(permissions, 'ask', side_effect=AssertionError('buttons were asked')):
+        out, ev = run(profile(), env={'FAKE_ACP_ASK': 'git push origin main'}, store=s, task_id=tid)
+    assert next(d for k, _n, d in ev if k == 'permission')['answer'] == acpgate.HELD and not permissions.pending(tid, s)
+    [rv] = s._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action'", (tid,))
+    assert rv['Status'] == 'pending' and 'git push origin main' in rv['DraftText']
+
+
 @pytest.mark.parametrize('option,granted', [('allow_once', True), ('reject_once', False)])
 def test_a_held_push_is_the_owners_buttons_and_their_answer_is_the_answer(option, granted):
     s = STORE[0] = MemoryStore()
@@ -110,6 +123,21 @@ def test_the_owners_reject_reaches_the_agent_as_the_owners_no_and_their_allow_sa
         [(text, as_owner)] = told
         assert not as_owner and browsergate.OWNER_NO in text and 'git push origin main' in text and "not a block of Taskuary's" in text
         assert 'do not ask for the same step again' in text
+
+
+def test_a_step_taskuary_refuses_is_told_to_the_agent_with_the_way_on():
+    """Recorded on the real CLI, 2026-11-15: a push from the task's own checkout was refused with "call propose_land" - in the log and the
+    page's trace only. The adapter told the agent "User refused permission to run tool", and it told the owner "Once you approve, I'll
+    push" with nothing on screen to approve."""
+    from taskuary import browsergate, landing
+    s = MemoryStore()
+    tid = s.create_task({'Title': 'Fix the budget total', 'Kind': 'coding', 'Status': 'open'}, 'owner')
+    told, way = [], "a push from this task's checkout is the owner's Push button - call propose_land (how push)"
+    call = {'toolCall': {'toolCallId': 'c', 'kind': 'execute', 'rawInput': {'command': 'git push origin master'}},
+            'options': [{'optionId': 'y', 'kind': 'allow_once'}, {'optionId': 'n', 'kind': 'reject_once'}]}
+    with mock.patch.object(shellgate, 'trusted', return_value=''), mock.patch.object(landing, 'push_asked', return_value=(False, way)),          mock.patch.object(browsergate, '_tell', lambda store, t, text, **k: told.append((t, text))):
+        assert acpgate.answerer({'store': s, 'task_id': tid, 'cwd': HERE})(call) == {'outcome': 'selected', 'optionId': 'n'}
+    assert len(told) == 1 and told[0][0] == tid and way in told[0][1] and 'git push origin master' in told[0][1] and "Taskuary's own answer, not the owner's" in told[0][1]
 
 
 def test_the_automatic_rules_still_answer_first_and_never_reach_the_owner():
@@ -263,6 +291,37 @@ def test_a_kept_conversation_holds_its_connection_between_turns():
     finally: clipool.close(key)
 
 
+def test_a_stop_ends_its_own_turn_and_never_the_one_that_begins_after_it(monkeypatch):
+    """The recorded stop, 2026-11-11: he stopped a turn with two lines waiting. Their turn began at once on the same kept conversation, and the
+    stop's backstop closed it two seconds after the press - "died mid-turn", nothing drawn, his lines unanswered. Read by states, never the
+    clock: the backstop's grace is long enough for the slowest runner, and the backstop itself is seen to have let go."""
+    import threading
+    monkeypatch.setattr(agents, 'STOP_GRACE', 60)
+    key, said, heard, real = 'general:test-acp-stop', {}, threading.Event(), agents.ACPSteps.__call__
+    def steps(self, u): real(self, u); heard.set()                             # the turn's first update: its prompt is at the agent
+    monkeypatch.setattr(agents.ACPSteps, '__call__', steps)
+    trace = lambda *a: None
+    def turn(n, stop, resume=None):
+        with mock.patch.object(agents, '_resolve_cmd', return_value=[FAKE[0]]):
+            try: said[n] = agents.run_cli(profile(keep_alive=key), f'turn {n}', trace, extra_env={'FAKE_ACP_HANG': '1'}, cancel=stop, resume=resume)
+            except Exception as e: said[n] = e
+    others = {t for t in threading.enumerate() if t.name == 'acp-stop-backstop'}       # ...an earlier test's, still waiting on a stop never pressed
+    backstops = lambda: [t for t in threading.enumerate() if t.name == 'acp-stop-backstop' and t not in others]
+    try:
+        s1, s2 = threading.Event(), threading.Event()
+        a = threading.Thread(target=turn, args=(1, s1)); a.start()
+        assert heard.wait(60), 'the first turn began'
+        s1.set(); a.join(60)                                                   # his stop: the turn honours it and ends
+        assert isinstance(said[1], tuple), said                                # ...as an answer, its conversation kept
+        for t in backstops(): t.join(10)
+        assert not backstops(), 'the stopped turn is over: its backstop let go at once'
+        b = threading.Thread(target=turn, args=(2, s2, said[1][1]), daemon=True); b.start(); b.join(60)
+        c = threading.Thread(target=turn, args=(3, s2, said[1][1]), daemon=True); c.start(); c.join(60)
+        assert 'turn=2' in str(said[2]) and 'turn=3' in str(said[3]), (said.get(2), said.get(3))    # ...both on that one conversation
+        assert clipool.is_live(key)
+    finally: s1.set(); s2.set(); clipool.close(key)
+
+
 # ── how claude and codex launch ───────────────────────────────────────────────────────────────────────────────────────────
 def test_claude_and_codex_launch_through_their_pinned_adapter_driving_the_owner_s_own_binary():
     for name, pkg in (('claude', 'claude-agent-acp@'), ('codex', 'codex-acp@')):
@@ -287,6 +346,12 @@ def test_claude_s_argv_reaches_the_adapter_as_sdk_options(tmp_path):
     assert o['extraArgs'] == {'mcp-config': '/h/agent-tools/TQ-7.mcp.json'} and o['settings'] == '/h/hold.json'
     assert o['additionalDirectories'] == ['/h/out']
     assert not any(k in json.dumps(o) for k in ('dangerously', 'stream-json', '"-p"'))      # the protocol's own, never passed on
+    # ...and WHAT STANDS AFTER A FLAG WITH NO VALUE STILL REACHES IT (found on the real CLI, 2026-11-12): a chat agent's argv ends
+    # `--setting-sources project,local --strict-mcp-config --settings <its file>` (llm.make_cli_llm), and everything after the bare flag was
+    # dropped - its session ran with no hook of Taskuary's (a held step reached the model only as "User refused permission") and read the
+    # owner's own CLAUDE.md, which that file excludes
+    o = agents.claude_acp_options(['-p', '--setting-sources', 'project,local', '--strict-mcp-config', '--settings', '/h/general-7.json', '--add-dir', '/h/out'])
+    assert o == {'settingSources': ['project', 'local'], 'extraArgs': {'strict-mcp-config': None}, 'settings': '/h/general-7.json', 'additionalDirectories': ['/h/out']}
 
 
 def test_codex_s_config_flags_become_its_session_config():
@@ -305,3 +370,76 @@ def test_a_closed_connection_takes_its_whole_process_tree_on_windows():
         c.close()
     assert r.call_args[0][0][:2] == ['taskkill', '/PID'] and '/T' in r.call_args[0][0]
     c.p.kill()
+
+
+# ── a CLI whose reads no command line can keep works only on the held road (the owner, 2026-11-16) ────────────────────────────
+# Codex quick work - a look with no hands, on `codex exec` - listed the owner's Documents folder and nobody was asked: even its read-only
+# sandbox reads the whole disk, and its only way to act alone was --dangerously-bypass-approvals-and-sandbox
+@pytest.mark.parametrize('how', [dict(research=True), dict(cli_tools=True)])
+def test_codex_quick_and_full_work_on_a_task_go_held_and_claude_s_look_keeps_its_confined_road(how):
+    from taskuary import llm
+    s = MemoryStore()
+    tid = s.create_task({'Title': 'List my Documents folder', 'Kind': 'general', 'Source': 'manual', 'OriginBase': 'owner'}, 'owner')
+    seen = {}
+    for name in ('codex', 'claude'):
+        s.upsert_agent(name, 'general', 'cli', json.dumps({'cmd': name}))
+        brain = llm.make_cli_llm(s, name, task_id=tid, keep=f'general:{tid}', **how)
+        with mock.patch.object(agents, 'run_cli', side_effect=lambda prof, *a, **k: (seen.update({prof['cmd']: prof}), ('ok', 'sid', None))[1]):
+            brain('sys', 'list my Documents folder')
+    assert seen['codex'].get('held_only') and agents._acp_road(seen['codex'], s)
+    assert '--dangerously-bypass-approvals-and-sandbox' not in clis.preset_args('codex')
+    assert not seen['claude'].get('held_only')                                   # its reads are kept by its own permission rules
+
+
+def test_a_held_only_run_that_cannot_start_over_acp_runs_nothing_and_says_so():
+    s = MemoryStore()
+    real_popen = agents.spawn.popen
+    def popen(cmd, **kw):
+        if '-p' in cmd: raise AssertionError('the command line must never be reached')
+        return real_popen(cmd, **kw)
+    with mock.patch.object(agents.spawn, 'popen', side_effect=popen):
+        with pytest.raises(RuntimeError, match='nothing ran'): run(profile(args=['-p'], held_only=True), env={'FAKE_ACP_FAIL': 'init'}, store=s)
+    s.set_setting(agents.ACP_SETTING, '0', 'owner')                              # ...nor with the owner's ACP switch off
+    with mock.patch.object(agents, 'run_acp', side_effect=AssertionError('off')), mock.patch.object(agents.spawn, 'popen', side_effect=popen):
+        with pytest.raises(RuntimeError, match="Run CLI agents over ACP"): run(profile(args=['-p'], held_only=True), store=s)
+
+
+# ── a conversation the CLI no longer has (agents.Gone): the turn is said again to a fresh one, never the CLI's error ─────────────────────────
+GONE_ENV = {'FAKE_ACP_RESUME': '1', 'FAKE_ACP_GONE': '1'}
+
+def test_a_resume_the_agent_refuses_is_gone_and_the_fresh_conversation_it_opened_takes_the_whole_turn():
+    """The owner's chat after a restart, 2026-11-16: its saved conversation was gone from the CLI. The resume used to fail over to the command
+    line, which resumed the same dead id and printed "No conversation found with session ID" into the steps. Now the ACP road says Gone, and
+    the turn said again (with no id) runs on the fresh conversation that was opened for it - one start, no fallback, no CLI error anywhere."""
+    key, ev = 'general:test-acp-gone', []
+    trace = lambda k, n, d=None: ev.append((k, n, d))
+    try:
+        with mock.patch.object(agents, '_resolve_cmd', return_value=[FAKE[0]]):
+            with pytest.raises(agents.Gone): agents.run_cli(profile(keep_alive=key), 'and the totals?', trace, resume='sess_gone_1', extra_env=GONE_ENV)
+            conv = clipool._POOL[key]
+            said, sid, _ = agents.run_cli(profile(keep_alive=key), 'the whole conversation, then: and the totals?', trace, extra_env=GONE_ENV)
+        assert clipool._POOL[key] is conv and sid == conv.sid                 # the conversation opened for it, not a second start
+        assert 'heard: the whole conversation' in said and 'turn=1' in said and 'resumed=' not in said
+        assert not any(agents.gone(str(d)) or 'did not start' in str(d) for _k, _n, d in ev), ev
+    finally: clipool.close(key)
+
+
+def test_a_gone_resume_on_a_one_shot_acp_run_is_gone_too_never_the_command_line():
+    ev = []
+    with mock.patch.object(agents, '_resolve_cmd', return_value=[FAKE[0]]), pytest.raises(agents.Gone):
+        agents.run_cli(profile(), 'carry on', lambda k, n, d=None: ev.append((k, n, d)), resume='sess_gone_2', extra_env=GONE_ENV)
+    assert not any('did not start' in str(d) for _k, _n, d in ev)
+
+
+@pytest.mark.parametrize('keep', ['', 'general:test-argv-gone'])
+def test_the_command_line_says_gone_for_claude_s_own_no_conversation_found(monkeypatch, keep):
+    """The same refusal on the argv road, as claude 2.1.326 gives it - with -p on its own (a one-shot) and on a kept stream-json process: the
+    line on stderr, a result of error_during_execution with the line in `errors`. Gone, never "claude exit 1: ..." or "error_during_execution"."""
+    monkeypatch.setattr(clis, 'ADAPTERS', {}); monkeypatch.setenv('FAKE_CLAUDE_GONE', '1'); monkeypatch.setenv('FAKE_CLAUDE_SPAWN', '0')
+    fake = [sys.executable, str(Path(HERE) / 'fake_claude.py')]
+    args = ['-p', '--output-format', 'stream-json', '--verbose'] + (['--input-format', 'stream-json'] if keep else [])
+    try:
+        with mock.patch.object(agents, '_resolve_cmd', return_value=fake), pytest.raises(agents.Gone):
+            agents.run_cli({'cmd': 'claude', 'args': args, 'cwd': HERE, **({'keep_alive': keep} if keep else {})}, 'carry on', lambda *a: None,
+                           resume='3f1c2b9a-0000-4000-8000-00000000000a')
+    finally: clipool.close(keep) if keep else None

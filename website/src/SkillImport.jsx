@@ -278,7 +278,7 @@ export default function SkillImport({ onClose, onImported }) {
           ? t("Overwrite {doc}.md?", { doc: rows[overwrite].clash.doc.toUpperCase() })
           : t('Overwrite the "{name}" profile?', { name: rows[overwrite]?.name })}
         text={rows[overwrite]?.clash?.doc
-          ? t("That is an operator document the assistant reads on every message, not a worker profile. Its current text has no history to restore from, so this cannot be undone. Rename the import instead unless you mean it.")
+          ? t("That is an operator document Taskuary reads on every message, not a worker profile. Its current text has no history to restore from, so this cannot be undone. Rename the import instead unless you mean it.")
           : t("Its kind and its whole rules document are replaced by this skill's. A profile's document has no history to restore from, so this cannot be undone.")}
         onConfirm={() => { setRow(overwrite, { replace: true, clash: null }); }} />
     </Dialog>

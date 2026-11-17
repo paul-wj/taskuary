@@ -19,7 +19,13 @@ OPEN = {}
 OPEN_PARITY = {('j', 'coding'),     # a reply owed on arrival is a 'draft' review the general road opens and a joined mail marks behind; a coding
                                     # task's reply is the agent's own draft_reply, which no join marks (ingest: behind = pending_review(kind='draft'))
                ('m', 'coding'),     # put to rest, the rail lights Continue on a coding task (rulebook MOVES 'stopped') and nothing on a chat
-               ('r', 'coding')}     # held for a stranger, the rail lights Send to agent (regular_agent) on a general task and nothing on a coding one
+               ('r', 'coding'),     # held for a stranger, the rail lights Send to agent (regular_agent) on a general task and nothing on a coding one
+               ('s', 'coding'),     # a coding task's close writes its session up (wrapup): a playbook it proposes is put down with the close, a card no chat has
+               ('t', 'coding'),
+               # a reply owed is drafted at the arrival where a quick call can (cli, acp): its card stands from then, above the turn that goes on to
+               # rewrite it, until that turn ends and keeps it; an AI card has no quick call, so its turn raises the card itself
+               ('s', 'api'), ('t', 'api')}     # a reply sent while its coding turn still worked is named by no turn in the coding payload (found 2026-11-11, open),
+                                    # and a coding session takes the queued word at its turn's end, a chat at the waiting room's next look
 
 
 @pytest.mark.parametrize('backend', A.BACKENDS)
@@ -42,3 +48,20 @@ def test_parity(name):
     runs = {b: RUNS[name, b].snaps for b in A.BACKENDS if (name, b) in RUNS and (name, b) not in OPEN_PARITY}
     if len(runs) < 2: pytest.skip('fewer than two backends ran it')
     assert A.parity(runs) == []
+
+
+def test_a_line_carried_while_its_opening_turn_begins_still_makes_the_turn_his(tmp_path, monkeypatch):
+    """Scenario o on a coding agent, with the order a slow machine gives it (macOS, twice at a release: "coding: turn 1 never started"): the
+    session opened for his line begins its opening turn BEFORE the opener hands it the line it carries (waitroom.reopen_coding -> carries).
+    The turn then wrote itself down as nobody's, so when it said nothing it was never asked again - his ask answered by silence, for good."""
+    import threading
+    from taskuary.acpcoding import ACPCoding
+    carried, real_c, real_b = threading.Event(), ACPCoding.carries, ACPCoding._begins
+    def carries(self, shown): real_c(self, shown); carried.set()
+    def begins(self, items, text):
+        out = real_b(self, items, text)
+        carried.wait(15 * A.SLACK)             # ...the opener's hand-over lands while the turn is beginning: a state, never a sleep
+        return out
+    monkeypatch.setattr(ACPCoding, 'carries', carries); monkeypatch.setattr(ACPCoding, '_begins', begins)
+    with A.world('coding', tmp_path, monkeypatch) as r: A.SCENARIOS['o'](r)
+    assert A.broken(r) == [], A.broken(r)

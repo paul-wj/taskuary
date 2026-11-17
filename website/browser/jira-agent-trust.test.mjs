@@ -25,14 +25,14 @@ test("a refused Jira agent start exposes trust in the chat, including pre-merge 
     await page.evaluateOnNewDocument((lang) => localStorage.setItem("taskuary.language", lang), language);
     await page.goto(`${h.ui}/#task=${taskId}`, { waitUntil: "domcontentloaded", timeout: 90000 });
     await page.waitForSelector("[data-tq-agent-room] .tq-aui-input", { visible: true, timeout: 30000 });
-    // The failed start opens on Agent, with Came from folded: the recovery must not hide in that other pane.
-    const trust = await page.waitForSelector("[data-tq-agent-section] [data-tq-trust]", { visible: true, timeout: 10000 });
+    // Master renders a held sender's single Trust action inside the unified chat.
+    const trust = await page.waitForSelector("[data-tq-agent-room] [data-tq-trust-sender]", { visible: true, timeout: 10000 });
     if (legacy) {
       assert.equal(await trust.evaluate((b) => b.textContent.trim()), "信任来自 jira.northwind.example 的所有人");
-      assert.equal(await page.$("[data-tq-agent-section] [data-tq-trust-org]"), null);
+      assert.equal(await page.$("[data-tq-agent-room] [data-tq-trust-org]"), null);
     } else {
       assert.equal(await trust.evaluate((b) => b.textContent.trim()), "Trust Erin");
-      assert.ok(await page.$("[data-tq-agent-section] [data-tq-trust-org]"));
+      assert.equal(await page.$("[data-tq-agent-room] [data-tq-trust-org]"), null);
     }
     const input = await page.$("[data-tq-agent-room] .tq-aui-input");
     await input.type("Keep these instructions for the next start");
@@ -41,9 +41,9 @@ test("a refused Jira agent start exposes trust in the chat, including pre-merge 
       const r = await fetch(`/api/tasks/${id}`, { headers: { "X-Taskuary-Token": localStorage.getItem("taskuary_token") } });
       return (await r.json()).origin.origin === "trusted";
     }, { timeout: 20000 }, taskId);
-    await page.waitForFunction(() => !document.querySelector("[data-tq-agent-section] [data-tq-trust]"), { timeout: 20000 });
+    await page.waitForFunction(() => !document.querySelector("[data-tq-agent-room] [data-tq-trust-sender]"), { timeout: 20000 });
     assert.equal(await page.$eval("[data-tq-agent-room] .tq-aui-input", (el) => el.value), "Keep these instructions for the next start");
-    assert.deepEqual(starts, [], "trusting never starts an agent without another owner send");
+    assert.deepEqual(starts, [], "the Trust route owns the start; the page never dispatches a second agent");
     assert.deepEqual(errors, []);
     assert.deepEqual(page.fixtureEscapes, []);
     await page.close();

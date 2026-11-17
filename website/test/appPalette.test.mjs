@@ -25,3 +25,28 @@ test("changing the theme does not remount work and custom styles use shared toke
     assert.ok(/var\(--tq-(?:text|secondary|muted),/.test(css), `${file}: reading text token`);
   }
 });
+
+// rendered in the dark theme (2026-11-11): the strip of lines waiting by the box stood as a light box - its ground was a token no
+// palette declares, so its light fallback was all it ever had. A colour the chat's styles take from a token is one the night palette names
+test("every colour token the chat's own styles use is one the dark palette declares", async () => {
+  const { darkVariables } = await import("../src/appPalette.js");
+  for (const file of ["generalWorkspace.css", "agentStepRows.css", "publishedPages.css"]) {
+    const css = readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
+    const used = [...new Set([...css.matchAll(/var\((--tq-[a-z0-9-]+),\s*#/g)].map((m) => m[1]))];
+    assert.deepEqual(used.filter((v) => !(v in darkVariables)), [], `${file}: a colour with a light fallback and no dark value`);
+  }
+});
+
+// the dark-mode audit (2026-11-13): the rail's two commonest marks were fixed near-black art - the envelope's slate body vanished
+// into the night rail and left only its flap, GitHub's disc was a hole - so each takes palette tokens the dark root declares
+test("the mail and GitHub marks are drawn from palette tokens, so they show on the night rail", async () => {
+  const { darkVariables } = await import("../src/appPalette.js");
+  const logos = readFileSync(new URL("../src/logos.jsx", import.meta.url), "utf8");
+  for (const name of ["email", "github"]) {
+    const at = logos.indexOf(`  ${name}: (p) => (`), art = logos.slice(at, logos.indexOf("</S>", at));
+    const used = [...art.matchAll(/(?:fill|stroke): "var\((--tq-[a-z-]+),/g)].map((m) => m[1]);
+    assert.ok(used.length >= 2, `${name}: body and mark take tokens`);
+    assert.deepEqual(used.filter((v) => !(v in darkVariables)), [], `${name}: a token the night palette names`);
+    assert.doesNotMatch(art, /(?:fill|stroke)="#[0-9a-f]{3,6}"/i, `${name}: no fixed colour left`);
+  }
+});

@@ -152,41 +152,36 @@ export function shownOnce(cited, shown) {
   return { isShown: (rel) => seen.has(baseName(rel)), rest: (shown || []).filter((p) => !names.has(p.name)) };
 }
 
-// the task's files no answer names: listed at the foot of the conversation, so every one is reachable and none is drawn twice
-// ...and an older version of a file an answer names is that file's history, not one more file at the foot (deliverables)
-export const uncited = (listed, answers, tid) => {
-  const named = new Set((answers || []).flatMap((t) => outputRefs(t, tid, listed).files)), fams = new Set([...named].map(family));
-  return (listed || []).filter((r) => !named.has(r.path) && !fams.has(family(r.name || r.path)));
+// A FILE IS IN THE TURN THAT MADE IT, OR NOT IN THE CHAT (the owner, 2026-11-13: nothing is pinned at the chat's foot): one the server named no
+// turn of this list for (`after`) goes to the turn at work when it was written - begun by then, not ended more than a second before - as the
+// work card goes to its turn (landing.landingTurn). One no turn was at work for keeps `after` null: no turn draws it, and it stays in the
+// task's files (Email someone, the task's folder), never a row under the conversation
+const secs = (s) => (typeof s === "number" ? s : +new Date(String(s || "").replace(" ", "T")) / 1000);
+export const placeMade = (listed, turns) => {
+  const ts = (turns || []).map((t) => ({ key: t.answer || t.id, from: t.started ?? secs(t.at), to: t.ended })), keys = new Set(ts.map((t) => t.key));
+  const madeIn = (at) => { const s = secs(at); return Number.isFinite(s) ? ts.filter((t) => t.from <= s + 1 && (t.to == null || t.to + 1 >= s)).at(-1)?.key ?? null : null; };
+  return (listed || []).map((r) => (keys.has(r.after) ? r : { ...r, after: madeIn(r.at || r.created_at) }));
 };
 
 // ONE OF EACH THING IT MADE (the owner, 2026-10-28: "it looks like it created a million attachments. Agents should not create lists of
 // lists of attachments unless specifically asked"). The same rule as outputs.deliverables - keep the two alike: a FAMILY is one name with
-// its version marks off (v2, _final, (1), a timestamp) and only its newest is listed, the rest `earlier` on it; the agent's own working
-// files (scripts, logs, temp and cache, anything under tmp/ or scratch/) are `working`, folded under one line. Never dropped: reachable.
+// its version marks off (v2, _final, (1), a timestamp) and only its newest is listed, the rest `earlier` on it. Never dropped: reachable.
 const VER = /(?:[ _.-]+(?:v|ver|version|rev)[ _.-]?\d+|[ _.-]+(?:final|draft|copy|old|new|latest|updated|edited|revised)|[ _.-]*\(\d+\)|[ _.-]+\d{8}(?:[ _T-]?\d{4,6})?|[ _.-]+\d{4}-\d\d-\d\d(?:[ _T-]?\d\d[-.]?\d\d(?:[-.]?\d\d)?)?)+$/i;
-const WORK_EXT = new Set(["log", "tmp", "temp", "bak", "pyc", "cache", "lock", "swp", "part", "crdownload",
-  "py", "ps1", "sh", "bat", "cmd", "js", "mjs", "ts", "sql", "r", "ipynb"]);
-const WORK_DIR = /(?:^|\/)(?:tmp|temp|scratch|cache|__pycache__|work|working|intermediate|drafts?)\//i;
-const WORK_NAME = /^(?:tmp|temp|scratch|debug)(?:[ _.-]|$)/i;
-
 export function family(name) {
   const b = baseName(name).toLowerCase(), i = b.lastIndexOf("."), stem = i > 0 ? b.slice(0, i) : b, x = i > 0 ? b.slice(i) : "";
   return (stem.replace(VER, "").replace(/^[ _.-]+|[ _.-]+$/g, "") || stem).replace(/[ _.-]+/g, " ") + x;
 }
-export const isWorking = (rel) => {
-  const p = String(rel || "").replace(/\\/g, "/");
-  return WORK_EXT.has(ext(baseName(p))) || WORK_DIR.test(p) || WORK_NAME.test(baseName(p));
-};
-// {made, working}, newest first; a shown or published page is never working - the agent chose to show it
+// {made}, newest first - every file is in it: NOTHING AN AGENT MADE IS HIDDEN (the owner, 2026-11-15, of a query saved as a file and folded
+// away as the agent's own scratch: "this has nothing to do with sql, anything an agent creates should not be hidden of course"). No list of
+// extensions, folders or names says what he may see: a helper script stands in the list with the workbook it built
 export const deliverables = (rows) => {
-  const by = new Map(), made = [], working = [], at = (r) => String(r?.at || r?.created_at || "");
+  const by = new Map(), made = [], at = (r) => String(r?.at || r?.created_at || "");
   for (const r of [...(rows || [])].sort((a, b) => at(b).localeCompare(at(a)))) {
-    if (r.kind === "output" && isWorking(r.path || r.name)) { working.push(r); continue; }
     const k = family(r.name || r.path), kept = by.get(k);
     if (kept) kept.earlier.push(r);
     else { const n = { ...r, earlier: [] }; by.set(k, n); made.push(n); }
   }
-  return { made, working };
+  return { made };
 };
 
 // EACH TURN SHOWS THE FILE AS IT MADE IT (the owner, 2026-11-07: "same file with revisions"): turn 1 named the table a later turn rewrote in
@@ -201,7 +196,7 @@ export const forTurn = (listed, versions, id) => {
 
 // WHAT A TURN MADE, IN THE TURN (the owner, 2026-11-05: "the post and images are as artifacts separate not inline???"): the files placed on this
 // answer by when they were made (the server's `after`, as a shown page's) and the ones its words or its summary name - each thing once, the
-// newest of a family, never the agent's working files - less `skip` (a post's own picture, drawn on the post)
+// newest of a family, whatever its kind - less `skip` (a post's own picture, drawn on the post)
 export const turnFiles = ({ listed = [], id, words = "", did = "", tid, skip = [] } = {}) => {
   const no = new Set((skip || []).map(baseName)), by = new Map();
   for (const r of (listed || []).filter((x) => x?.after != null && x.after === id)) by.set(r.path, r);

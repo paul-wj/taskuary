@@ -115,6 +115,8 @@ DENIED = (
     (r'POST', r'^/api/(mcp|mssql)/', 'runs a command, or sends saved credentials to a host of the caller\'s choosing'),
     (r'POST', r'^/api/(reports/(preview|compose|compose-sources)|workflows/compose|dashboards/(compose|preview|tile))$',
      'the report/workflow composer may read a connected system with the card\'s credentials'),
+    # ...and Set up with AI (build.py) runs those composers, then saves and tests what they made - the owner's press, never an agent's
+    (r'POST', r'^/api/build(/[\w-]+/answer)?$', 'Set up with AI saves and tests what it builds with the cards\' credentials'),
     # testing a step reads a connected system with the card's credentials; a repair rewrites a saved workflow
     (r'POST', r'^/api/workflows/(step-test|\d+/repair)$',
      "a workflow's steps - testing one reads with the card's credentials, a repair changes what runs on its schedule"),
@@ -137,11 +139,12 @@ AGENT_WRITES = (
     (r'POST', r'^/api/hooks/claude/(floor|permit)$', "a stranger's session asking the floor, or the owner, before a tool call"),
     (r'POST', r'^/api/hooks/claude/reason$', "the Reason Network hook - a message to someone untrusted is refused, an approval goes to the owner"),
     (r'POST', r'^/api/hooks/claude/browser$', "the browser hook - an act that can't be undone is held for the owner (browsergate)"),
-    (r'POST', r'^/api/agent/(reply|done|draft|item|tick|waiting|not-needed|withdraw-draft|check-back|todos|remind)$',
-     "`taskuary --reply/--done/--draft/--item/--tick/--waiting-on/--reply-not-needed/--withdraw-draft/--check-back`, the todos and remind "
-     "tools, on the session's OWN task (owns_task); nothing leaves"),
+    (r'POST', r'^/api/agent/(reply|done|draft|item|tick|waiting|not-needed|withdraw-draft|check-back|todos|remind|remember)$',
+     "`taskuary --reply/--done/--draft/--item/--tick/--waiting-on/--reply-not-needed/--withdraw-draft/--check-back`, the todos, remind and "
+     "remember tools, on the session's OWN task (owns_task); nothing leaves"),
     (r'POST', r'^/api/agent/propose$', "an act only the owner's press runs (proposals.queue), filed on the session's OWN task; nothing runs"),
     (r'POST', r'^/api/agent/(answer-invite|meeting|share)$', "an invite's answer, a new meeting or a share set up on the session's OWN task - a card the owner presses; nothing leaves"),
+    (r'POST', r'^/api/agent/browser$', "`taskuary --browser <url>`: the browser of the session's OWN task opened on a page by Taskuary (browserview.ask_open) - what its own `agent-browser open` does; nothing leaves"),
     (r'POST', r'^/api/agent/ask-stronger$', "the session's own question to a stronger model (askstronger), on its OWN task - an answer in words, nothing moves"),
     (r'POST', r'^/api/agent/note-peers$', "a note to another agent (peers.py), from the session's OWN task - framed as a peer's, it approves nothing"),
     (r'POST', r'^/api/agent/use-repo$', "the checkout the session's OWN task is worked in (repochoice.use) - inside the folders the owner allows, never over their pick"),
@@ -172,6 +175,8 @@ AGENT_READS = (
 # door is a decision, not something that inherits whatever the table happened to say.
 OWNER_ONLY = (
     (r'POST', r'^/api/skill-library(/.*)?$', "Skill analysis, authoring, review revisions and publication are the owner's decisions"),
+    # a bulk card's press does every act on it, and its Stop ends the rest (bulkcard.py): his alone, as each act's own press is
+    (r'POST', r'^/api/reviews/batch/[0-9a-f]+/(run|cancel)$', "a bulk card's press does every act on it - that is the owner's"),
     # the first thing a cornered model would do is mark the send tool it was denied as one that does not send (sendfilter)
     (r'POST', r'^/api/sendfilter/(correct|scan)$', "which of the owner's own MCP tools count as sends is the owner's word"),
     # the router's rules, a judgement's correction and a step up to the strong model are the owner's (the router, 2026-10-25)
@@ -185,14 +190,16 @@ OWNER_ONLY = (
     (r'POST', r'^/api/concierge/chats/\d+/continue$', "continuing an earlier Assistant chat is the owner's own conversation"),
     (r'POST', r'^/api/concierge/chat-ai$', "which AI answers one Assistant chat is the owner's choice for their own conversation"),
     (r'PATCH', r'^/api/tasks/\d+/checklist/[^/]+/note$', "a note on one of a task's to-dos is the owner's (the agent writes through its own task tools)"),
-    (r'POST', r'^/api/advice/press$', "the owner's own press, recorded against what the Advisor lit (presses.py)"),
     (r'POST', r'^/api/launch-key$', "a launch key opens a page that carries the owner token (launchkey.py, R29)"),
+    (r'POST', r'^/api/window$', "bringing the app's window to the front is Taskuary started again by the owner (desktop.show_running)"),
     (r'PUT', r'^/api/tasks/\d+/workstream$', "which of the owner's workstreams a task belongs to is the owner's word - it teaches where its people belong"),
     (r'PUT', r'^/api/about/workstreams$', "what the owner works on - kept, renamed, personal - is the owner's word, as at setup"),
     (r'DELETE', r'^/api/tasks/\d+/check-back$', "cancelling the agent's check-back is the owner's press - the agent sets its own"),
     (r'POST', r'^/api/tasks/\d+/desktop$', "marking a task 'needs desktop' hands its agent the owner's desktop - never its own agent's press"),
     (r'POST', r'^/api/tasks/\d+/trust$', "raising a task's origin is the owner's decision (origin.raise_to) - never a session's"),
+    (r'POST', r'^/api/trusted/remove$', "taking back a trust is the owner's - who starts an agent by their mail is his word (senders.untrust)"),
     (r'POST', r'^/api/tasks/\d+/assistant/seen$', "the owner's open task keeps its agent's process warm - a session never keeps itself alive (clipool.touch)"),
+    (r'POST', r'^/api/tasks/\d+/waiting/(now|[^/]+/drop)$', "what he typed and has not been heard is his to take back or send in now - never an agent's (general.drop_line)"),
     (r'POST', r'^/api/reason/(trusted|gate|folder|held/[0-9A-Za-z]+)$', "who may reach the owner's agents over Reason Network is the owner's"),
     (r'POST', r'^/api/tasks/\d+/reason-ask$', "asking a teammate's agent is the owner's - an agent uses its own Reason Network tools"),
     (r'POST', r'^/api/cloudfix/setup$', 'it commits a workflow to the repository - only ever the owner pressing Set up (cloudfix.install)'),
@@ -222,7 +229,7 @@ OWNER_ONLY = (
     (r'POST', r'^/api/roles/[a-z0-9_-]+$', "a role adds a worker and a workflow and narrows a ledger's authority"),
     (r'POST', r'^/api/platform/macos/(open-settings|probe)$', "operating-system permission prompts are the owner's"),
     (r'POST', r'^/api/deleted/\d+/restore$', "Undo and Restore put back what the owner removed - a report, a rule, a profile, a sign-in (recentlydeleted)"),
-    (r'POST|PUT', r'^/api/voice/(transcribe|vocabulary|speech-on|open-settings|listen(/[0-9a-f]+/stop)?)$', "the owner's microphone and vocabulary"),
+    (r'POST|PUT', r'^/api/voice/(transcribe|vocabulary|open-settings|keys)$', "the owner's microphone and vocabulary"),
     (r'POST', r'^/api/terminals/[^/]+/(browser/(open|snapshot|viewport)|image|pause|wrap)$', 'the pane the owner is watching'),
 )
 _c = lambda t: tuple((re.compile(f'^({m})$', re.I), re.compile(p), why) for m, p, why in t)

@@ -1,4 +1,5 @@
 {
+  "Waiting for you. {Agent} finished its turn and waits on you.": "等待你操作。{Agent} 已完成本轮处理，正在等你。",
   "No answer yet - it may still be going. Nothing runs twice.": "尚未收到响应，操作可能仍在进行。同一操作不会重复执行。",
   "It didn't go through - nothing was published. Try again.": "操作未成功，未发布任何内容。请重试。",
   "today at {time}": "今天 {time}",

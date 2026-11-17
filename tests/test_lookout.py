@@ -216,15 +216,21 @@ def test_the_pass_runs_on_the_advisors_own_clock_never_inside_a_report_run(monke
 def test_the_server_clock_runs_it_off_the_reports_lock_at_most_every_fifteen_minutes(monkeypatch):
     import threading
     from taskuary import demo, server
-    done, calls = threading.Event(), []
+    from taskuary import brainroute, learn
+    done, calls, reflected, held = threading.Event(), [], [], [False]
     monkeypatch.setattr(assistant, 'clock', lambda store: (calls.append(1), done.set()))
+    # ...and what the verdicts taught is consolidated on the same clock: an app left open all week reflected only at its next start
+    monkeypatch.setattr(learn, 'reflect_if_due', lambda store: reflected.append(1))
+    monkeypatch.setattr(brainroute, 'auto_held', lambda store: held[0])
     monkeypatch.setattr(demo, 'enabled', lambda: False)
     monkeypatch.setattr(server, '_ADVISOR_AT', [0.0])
     t0 = 10_000.0
     assert server.advisor_pass(t0) is True and done.wait(5)
     assert server.advisor_pass(t0 + 60) is False, 'a tick a minute later does not look again'
     assert server._ADVISOR_BUSY.acquire(timeout=5); server._ADVISOR_BUSY.release()
+    held[0] = True                                   # past the day's AI ceiling nothing unasked runs, reflection included
     done.clear(); assert server.advisor_pass(t0 + server.ADVISOR_TICK) is True and done.wait(5) and calls == [1, 1]
+    assert reflected == [1], 'once on the first tick, and not while the ceiling holds'
     monkeypatch.setattr(demo, 'enabled', lambda: True)
     assert server.advisor_pass(t0 + 3 * server.ADVISOR_TICK) is False, 'the demo world runs nothing on a clock'
 
@@ -273,6 +279,43 @@ def test_an_asked_pass_still_keeps_max_open_waiting_at_most_and_needs_an_ai(monk
     assert now.startswith('Nothing started: no AI is connected') and later is None and not s2.get_setting(lookout.TRIED_KEY)
     now, later = asked(s2, monkeypatch, lambda system, user, **k: 'I would rather chat')
     assert later == 'The pass for ideas for your job got no answer from the AI - nothing raised. Ask again in a while.'
+
+
+def test_four_ideas_the_owner_read_leave_room_for_the_next_days_pass():
+    """The live shape (2026-11-12): four ideas raised on one morning, each opened and read - off the rail, still open - and the daily pass
+    never ran again: six days with no idea for the owner's job. Waiting means on the rail; one put away till a later day still waits."""
+    from taskuary import funnel
+    s, ids = world()
+    a, b = ids['dup']
+    n = ago(); s.reconcile_processing_membership(fixed_now=n); s.activate_processing_reads(fixed_now=n, live_state=[])
+    def rail():
+        s.reconcile_processing_membership(fixed_now=ago()); funnel.invalidate()
+        return [x for x in funnel.pile(s, force=True, quiet=True)['items'] if x.get('kind') == 'idea']
+    for t in ('Invoice 4471 billed twice', 'Trainly seats unused for 60 days', 'Payworth late fee on the 14th', 'Spendly renewal at a higher tier'):
+        lookout.tick(s, brain({'ideas': [idea('money', t, [f'msg{a}', f'msg{b}'])]}, {'keep': [1]}), force=True)
+    assert len(rail()) == 4 and len(lookout.waiting(s)) == 4 and lookout.tick(s, brain(), force=True)['ran'] is False, 'four on the rail: no pass'
+    first = rail()[0]
+    s.set_idea_status(first['idea'], 'snoozed', 'owner'); s._exec('UPDATE idea SET SnoozeUntil=? WHERE IdeaId=?', (ago(days=-2), first['idea']))
+    for x in rail(): funnel.settle(s, x['key'], 'surfaced', read=True)                    # the owner opens each and reads it
+    assert rail() == [] and len(lookout.open_ideas(s)) == 4, 'read: off the rail, still open'
+    assert [i['IdeaId'] for i in lookout.waiting(s)] == [first['idea']], 'the one put away till Saturday still waits'
+    s.set_setting(lookout.LAST_KEY, ago(days=2), 't'); s.set_setting(lookout.TRIED_KEY, ago(days=2), 't')
+    assert lookout.due(s) is True
+    out = lookout.tick(s, brain({'ideas': [idea('money', 'Vendor billing charged $900 twice in October', [f'msg{a}', f'msg{b}'])]}, {'keep': [1]}))
+    assert len(out['raised']) == 1 and [x['title'] for x in rail()] == ['Vendor billing charged $900 twice in October']
+
+
+def test_a_family_under_the_bar_still_raises_one_idea_a_day():
+    s, ids = world()
+    a, b = ids['dup']
+    for n in range(10): s.upsert_idea({'key': f'{lookout.KEY}old-{n}', 'kind': 'money', 'text': f'Old {n}', 'action': {'type': 'lookout'}}, ago(days=3))
+    s._exec("UPDATE idea SET Status='done', DecidedBy='sweep'")
+    s.set_setting(ideagrade.SINCE_KEY, ago(days=20), 't')
+    assert 'money' in ideagrade.quiet_kinds(s) and 'money' in lookout.families(s), 'quiet, and still asked for'
+    out = lookout.tick(s, brain({'ideas': [idea('money', 'Invoice 4471 billed twice', [f'msg{a}']), idea('money', 'Trainly seats unused', [f'msg{b}'])]},
+                                {'keep': [1, 2]}), force=True)
+    assert [s.get_idea(i)['Text'] for i in out['raised']] == ['Invoice 4471 billed twice'], 'one a day'
+    assert 'money' not in lookout.families(s), 'its one raised: not asked for again today'
 
 
 def test_the_days_pass_runs_from_the_morning_not_a_day_after_the_last(monkeypatch):

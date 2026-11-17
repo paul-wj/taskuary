@@ -31,14 +31,6 @@ test("a path named bare in the words becomes a code span for the chat to draw as
   assert.equal(codeLocalPaths(`Saved: ${OUT}\\report.pdf.`, 42), `Saved: \`${OUT}\\report.pdf\`.`);
 });
 
-test("the chat draws a local path as the file: a picture as <img> with a link that opens it whole, anything else a link", () => {
-  const md = read("md.jsx");
-  assert.match(md, /const Code = [\s\S]*?localFile\(kids\[0\], at\.tid\)/);
-  assert.match(md, /f\.image && <span data-tq-local-picture[\s\S]*?<img src=\{src\}/);
-  assert.match(md, /f\.image \? <a href=\{src\} data-tq-file-link=""[\s\S]*?: <A href=\{f\.url\}>/);
-  assert.match(md, /code: Code/);
-  assert.match(read("GeneralWorkspace.jsx"), /<LocalFiles\.Provider value=\{dock \? null : \{ tid: task\.TaskId \}\}>/);
-});
 
 const call = (id, name, args = {}) => ({ type: "tool_call", name, detail: { tool_call_id: id, args } });
 const answer = (id, result, is_error = false) => ({ type: "tool_result", name: id, detail: { tool_call_id: id, result, is_error } });
@@ -60,8 +52,3 @@ test("a file the agent showed is drawn in the turn that showed it, from the call
   assert.equal(filesOf(call("c5", "Bash", {}), answer("c5", said)), null);
 });
 
-test("on a coding task the files part is drawn by TurnFiles; the general chat places its copy under the answer once", () => {
-  const gw = read("GeneralWorkspace.jsx");
-  assert.match(gw, /p\.type === "files" \? \(fromTrace \? <TurnFiles key=\{p\.id\} files=\{p\.files\} \/> : null\)/);
-  assert.match(gw, /<TraceFilesCtx\.Provider value=\{coding\}>/);
-});

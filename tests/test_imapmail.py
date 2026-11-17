@@ -22,7 +22,7 @@ def _mime(frm='Rita Vole <rita@partner.example>', subj='the export is broken', b
 
 class FakeImap:
     def __init__(self, msgs):
-        self.msgs, self.readonly, self.flagged = msgs, None, []
+        self.msgs, self.readonly, self.flagged, self.fetched = msgs, None, [], []
         # imaplib.IMAP4_SSL keeps the TLS socket here, and _login reads the certificate off it
         self.sock = mock.Mock(getpeercert=mock.Mock(return_value=b'the mail host certificate'))
     def login(self, u, p): return 'OK', []
@@ -32,8 +32,8 @@ class FakeImap:
     def uid(self, cmd, *a):
         if cmd == 'search': return 'OK', [' '.join(str(u) for u in sorted(self.msgs)).encode()]
         if cmd == 'fetch':
-            u = int(a[0])
-            return 'OK', [(f'{u} (RFC822)'.encode(), self.msgs[u])]
+            u = int(a[0]); self.fetched.append(a[1])
+            return 'OK', [(f'{u} (UID {u} BODY[] {{{len(self.msgs[u])}}}'.encode(), self.msgs[u])]
         if cmd == 'store':
             self.flagged.append((int(a[0]), a[1], a[2]))
             return 'OK', []
@@ -83,9 +83,17 @@ class ImapTests(unittest.TestCase):
         self.assertTrue(fake.readonly)          # readonly is what stops RFC822 setting \Seen
         self.assertEqual(fake.flagged, [])
 
+    def test_every_fetch_peeks_so_polling_never_marks_mail_read_by_itself(self):
+        """A plain RFC822 FETCH sets the Seen flag on a writable box - and the box is writable whenever a switch may flag or file."""
+        s, c = self._store(cfg={'address': 'me@myco.example', 'mark_read': 'taken'})
+        fake = FakeImap({101: _mime()})
+        with mock.patch.object(imapmail.imaplib, 'IMAP4_SSL', return_value=fake):
+            imapmail.poll_imap(s, c, [], llm=None)
+        self.assertTrue(fake.fetched)
+        self.assertTrue(all('BODY.PEEK[]' in f and 'RFC822' not in f for f in fake.fetched), fake.fetched)
+
     def test_mark_read_flags_seen_on_what_it_took(self):
-        s, c = self._store()
-        s.set_setting('mark_read_enabled', '1', 'o')
+        s, c = self._store(cfg={'address': 'me@myco.example', 'mark_read': 'taken'})
         fake = FakeImap({101: _mime(), 102: _mime(frm='Me <me@myco.example>')})
         with mock.patch.object(imapmail.imaplib, 'IMAP4_SSL', return_value=fake):
             imapmail.poll_imap(s, c, [], llm=None)
@@ -93,8 +101,7 @@ class ImapTests(unittest.TestCase):
         self.assertEqual(fake.flagged, [(101, '+FLAGS', r'(\Seen)')])   # my own mail is skipped whole
 
     def test_a_refused_flag_never_costs_the_ingest(self):
-        s, c = self._store()
-        s.set_setting('mark_read_enabled', '1', 'o')
+        s, c = self._store(cfg={'address': 'me@myco.example', 'mark_read': 'taken'})
         fake = FakeImap({101: _mime()})
         fake.uid = lambda cmd, *a: (_ for _ in ()).throw(OSError('read-only mailbox'))             if cmd == 'store' else FakeImap.uid(fake, cmd, *a)
         with mock.patch.object(imapmail.imaplib, 'IMAP4_SSL', return_value=fake):
@@ -158,6 +165,94 @@ class ImapTests(unittest.TestCase):
         self.assertIn('me@myco.example', detail)
         src = [x for x in s.list_sources() if x['Channel'] == 'email'][0]
         self.assertEqual(src['ConnectorId'], c['ConnectorId'])  # owned, so outlook skips it
+
+
+class SignedInWithGoogle(unittest.TestCase):
+    """THE GMAIL CARD WITH NO APP PASSWORD (the owner, 2026-11-15: "add that option as well not just app password"): the same IMAP
+    and SMTP, signed in to by XOAUTH2 with the card's Google sign-in. Google's token endpoint and both protocols are mocked."""
+    ME = 'alex@northwind.example'
+
+    def card(self, secret=None, scope=None):
+        from taskuary import googlecal
+        googlecal._TOK.clear(); googlecal._GONE.clear()
+        self.scope = googlecal.SCOPES if scope is None else scope
+        s = MemoryStore(); cid = s.get_connector_by_type('gmail')['ConnectorId']
+        s.save_connector({'ConnectorId': cid, 'Active': 1, **({'Secret': secret} if secret else {}), 'ConfigJson': json.dumps(
+            {'address': self.ME, 'google_client_id': 'own.apps.example', 'google_client_secret': 'sec', 'google_refresh_token': 'rt', 'google_scope': self.scope})}, 'o')
+        return s, s.get_connector_by_type('gmail', with_secret=True)
+
+    def google(self, status=200, body=None):
+        r = mock.Mock(status_code=status, text=json.dumps(body or {}))
+        r.json.return_value = body if body is not None else {'access_token': 'at-1', 'expires_in': 3600, 'scope': self.scope}
+        if status == 200 and body is None: r.text = json.dumps(r.json.return_value)
+        return mock.patch('taskuary.googlecal.requests.post', return_value=r)
+
+    def test_the_auth_string_is_googles_own_shape(self):
+        self.assertEqual(imapmail.xoauth2(self.ME, 'at-1'), f'user={self.ME}\x01auth=Bearer at-1\x01\x01')
+
+    def test_imap_signs_in_with_the_token_and_reads_the_mail(self):
+        s, c = self.card()
+        fake = FakeImap({101: _mime()})
+        said = []
+        fake.authenticate = lambda mech, answer: said.append((mech, answer(b''), answer(b'eyJzdGF0dXMiOiI0MDAifQ=='))) or ('OK', [])
+        fake.login = mock.Mock(side_effect=AssertionError('a card with no App Password never sends one'))
+        with self.google() as post, mock.patch.object(imapmail.imaplib, 'IMAP4_SSL', return_value=fake):
+            self.assertEqual(imapmail.poll_imap(s, c, [], llm=None), 1)
+        # the token first, and an empty line to the challenge Google sends when it is about to say no
+        self.assertEqual(said, [('XOAUTH2', f'user={self.ME}\x01auth=Bearer at-1\x01\x01'.encode(), b'')])
+        self.assertEqual(post.call_args.kwargs['data']['client_id'], 'own.apps.example')     # the install's own client renews it
+
+    def test_a_saved_app_password_is_what_the_card_uses(self):
+        s, c = self.card(secret='app-password')
+        fake = FakeImap({})
+        fake.login = mock.Mock(return_value=('OK', []))
+        with self.google() as post, mock.patch.object(imapmail.imaplib, 'IMAP4_SSL', return_value=fake):
+            imapmail.test_imap(s, c)
+        fake.login.assert_called_once_with(self.ME, 'app-password'); post.assert_not_called()
+
+    def test_smtp_sends_with_the_same_token(self):
+        s, c = self.card()
+        S = mock.MagicMock(); S.__enter__.return_value = S
+        with self.google(), mock.patch.object(imapmail.smtplib, 'SMTP', return_value=S), mock.patch.object(imapmail, 'verify_pin'):
+            imapmail.send_smtp(s, c, ['erin@northwind.example'], 'hello', 'body')
+        S.login.assert_not_called()
+        mech, answer = S.auth.call_args.args
+        self.assertEqual((mech, answer(), answer('challenge'), S.auth.call_args.kwargs), ('XOAUTH2', imapmail.xoauth2(self.ME, 'at-1'), '', {'initial_response_ok': True}))
+        self.assertEqual(S.sendmail.call_args.args[:2], (self.ME, ['erin@northwind.example']))
+
+    def test_a_lapsed_sign_in_says_so_on_the_card_and_opens_no_socket(self):
+        from taskuary import channels, googlecal
+        s, c = self.card()
+        with self.google(400, {'error': 'invalid_grant'}), mock.patch.object(imapmail.imaplib, 'IMAP4_SSL') as sock:
+            with self.assertRaises(RuntimeError) as e: imapmail.poll_imap(s, c, [], llm=None)
+        sock.assert_not_called()
+        self.assertTrue(googlecal.lapsed(e.exception))
+        # the poll's error is the card's line, in words with the press that fixes it - and the card's Google box offers that press
+        self.assertEqual(channels.plain_failure(e.exception), 'the Google sign-in has lapsed - press Sign in with Google on the Gmail card')
+        st = googlecal.state(c, json.loads(c['ConfigJson']))
+        self.assertEqual((st['lapsed'], st['again']), (True, True)); self.assertIn('sign in again', st['said'])
+
+    def test_a_sign_in_without_the_mail_says_which_box_was_left_unticked(self):
+        from taskuary import googlecal
+        s, c = self.card(scope=googlecal.SCOPE)
+        with self.google(), mock.patch.object(imapmail.imaplib, 'IMAP4_SSL') as sock:
+            with self.assertRaises(RuntimeError) as e: imapmail.test_imap(s, c)
+        sock.assert_not_called()
+        self.assertIn('was not given the mail', str(e.exception)); self.assertIn('App Password', str(e.exception))
+
+    def test_gmail_refusing_the_token_is_said_as_the_sign_in_not_a_password(self):
+        import imaplib
+        s, c = self.card()
+        M = mock.MagicMock(); M.authenticate.side_effect = imaplib.IMAP4.error(b'[AUTHENTICATIONFAILED] Invalid credentials (Failure)')
+        with self.google(), mock.patch.object(imapmail.imaplib, 'IMAP4_SSL', return_value=M), mock.patch.object(imapmail, 'verify_pin'):
+            with self.assertRaises(RuntimeError) as e: imapmail._login(c)
+        self.assertIn('Sign in with Google', str(e.exception)); self.assertNotIn('password', str(e.exception).lower())
+
+    def test_a_gmail_card_with_neither_says_both_ways_in(self):
+        s = MemoryStore(); cid = s.get_connector_by_type('gmail')['ConnectorId']
+        s.save_connector({'ConnectorId': cid, 'ConfigJson': json.dumps({'address': self.ME})}, 'o')
+        with self.assertRaises(RuntimeError) as e: imapmail._login(s.get_connector_by_type('gmail', with_secret=True))
+        self.assertIn('Sign in with Google', str(e.exception)); self.assertIn('App Password', str(e.exception))
 
 
 class SourceOwnershipTests(unittest.TestCase):

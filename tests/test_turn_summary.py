@@ -22,10 +22,12 @@ def task(s):
     return s.create_task({'Title': 'Pay date', 'Kind': 'general', 'Status': 'in_progress'}, 't')
 
 
-def turn(s, tid, answer, sess=None):
+def turn(s, tid, answer, sess=None, draft=None):
+    "One turn answering `answer`; `draft`: the reply it writes as it works (after his line - a draft older than his line is one he moved past)."
     if sess is None:
         with mock.patch.object(general, '_selected', return_value=('api:test', 'Test', 'm')): sess = general.GeneralSession(s, tid)
-    with mock.patch.object(general.llm_mod, 'build_llm', return_value=lambda system, user, **kw: answer), mock.patch('taskuary.hooks.judge_ended'):
+    brain = lambda system, user, **kw: (draft and s.add_review({'TaskId': tid, 'Kind': 'draft_reply', 'Status': 'pending', 'DraftText': draft}), answer)[1]
+    with mock.patch.object(general.llm_mod, 'build_llm', return_value=brain), mock.patch('taskuary.hooks.judge_ended'):
         return sess.send_prompt('when is payday?'), sess
 
 
@@ -39,6 +41,18 @@ def test_the_block_is_read_and_always_taken_out():
                                                      'on_you': [STEP], 'nothing_left': False}
     assert selfclose.summary_marker(f'Hi.\n{selfclose.SUMMARY_OPEN}{{not json{selfclose.SUMMARY_CLOSE}') == ('Hi.', None)
     assert selfclose.SUMMARY_OPEN not in selfclose.for_screen(f'Working on it.\n{block()}')
+
+
+# A STEP IS NEVER CUT MID-SENTENCE (the live chat, 2026-11-16: "For you to do: ... then ask me again and." - a 200-character cut of the agent's
+# step, its last word an "and"): a long step reaches the screen and the To do whole up to its last full sentence, the same in both places
+def test_a_long_step_is_kept_to_its_last_whole_sentence():
+    long = 'Open the vendor portal and download the October statement as a PDF. ' * 4 + 'Then forward it to Erin Blake, check the totals, and then ask me again and I will pay it.'
+    _, summ = selfclose.summary_marker(block(on_you=[long, 'Approve the draft']))
+    (cut, short) = summ['on_you']
+    assert cut.endswith('as a PDF.') and long.startswith(cut) and short == 'Approve the draft'
+    s = MemoryStore(); tid = task(s)
+    turn(s, tid, f'Done.\n{block(on_you=[long])}')
+    assert [i['text'] for i in on_you(s, tid)] == [cut]
 
 
 def test_a_turn_ends_with_three_parts():
@@ -202,6 +216,17 @@ def test_not_the_ask_is_an_owner_correction():
     lf.assert_called_once(); assert 'owner_correction' in lf.call_args[0][1] and 'the pay date, not the bonus' in lf.call_args[0][1]
 
 
+def test_the_memory_learns_the_owners_own_words_never_the_agents_account_of_them():
+    """The owner, 2026-11-13: the memory "saves information about the user from the agents' takeaway and not what [the user] writes" - the
+    model only says a correction was made; what is learned is what the owner typed."""
+    s = MemoryStore(); tid = task(s)
+    s.add_comment(tid, 'owner', general.USER_TYPE, 'Wrong one - Paula wants the vendor list, the invoices can wait')
+    with mock.patch('taskuary.learn.learn_from') as lf:
+        assert general.take_corrections(s, tid, [{'kind': 'ask', 'review': None, 'said': 'Alex prefers vendor work over invoices in general'}]) == 1
+    said = lf.call_args[0][1]
+    assert 'Paula wants the vendor list, the invoices can wait' in said and 'prefers vendor work' not in said
+
+
 def test_the_models_statement_of_a_correction_is_trusted():
     "The owner, 2026-11-05: the model reads intent - a correction it states in its own words is kept, not only one quoted word for word."
     s = MemoryStore(); tid = task(s); rid = draft_for(s, tid, 'ray@northwind.example')
@@ -237,11 +262,12 @@ def test_the_rows_recommended_move_reads_the_agents_own_word():
 
 
 def test_a_pending_draft_is_not_nothing_left():
-    from taskuary import advisor, rulebook
+    from taskuary import rulebook
     s = MemoryStore(); tid = task(s)
     turn(s, tid, f'Done.\n{block(on_you=[], nothing_left=True)}')
     s.add_review({'TaskId': tid, 'Kind': 'reply', 'Status': 'pending', 'DraftText': 'Hi Gail'})
-    with mock.patch.object(advisor, 'unconnected', return_value=False), mock.patch.object(advisor, 'pressable', return_value=''):
+    row = [{'verb': v, 'label': v} for v in ('send_close', 'approve', 'close')]
+    with mock.patch.object(rulebook, 'unconnected', return_value=False), mock.patch.object(rulebook, 'offered', lambda *a, **k: row):
         assert rulebook.recommended_task(s, tid)['verb'] in ('send_close', 'approve'), 'the draft that waits is the move, not Mark done'
 
 
@@ -251,20 +277,19 @@ def _redraft(s, tid, rid, text): s._exec('UPDATE review SET DraftText=? WHERE Re
 
 def test_a_turns_draft_keeps_its_own_words_after_a_later_redraft():
     s = MemoryStore(); tid = task(s)
-    rid = s.add_review({'TaskId': tid, 'Kind': 'draft_reply', 'Status': 'pending', 'DraftText': 'Hi Gail, the run is Friday.'})
-    _, sess = turn(s, tid, f'Drafted it.\n{block()}')
-    _redraft(s, tid, rid, 'Hi Gail, the run moved to Thursday.')
-    turn(s, tid, f'Redrafted it.\n{block()}', sess)
+    # ...each turn's draft as it left it: the turn after his next line writes its own (his line set the first aside, greyed where it stood)
+    _, sess = turn(s, tid, f'Drafted it.\n{block()}', draft='Hi Gail, the run is Friday.')
+    turn(s, tid, f'Redrafted it.\n{block()}', sess, draft='Hi Gail, the run moved to Thursday.')
     turn(s, tid, f'Nothing new on the draft.\n{block()}', sess)
+    rid, rid2 = [r['ReviewId'] for r in s._rows('SELECT ReviewId FROM review WHERE TaskId=? ORDER BY ReviewId', (tid,))]
     answers = [m for m in general.shown_history(s, tid) if m.get('summary')]
     assert [[d['text'] for d in m.get('drafts_then', [])] for m in answers] == [['Hi Gail, the run is Friday.'], ['Hi Gail, the run moved to Thursday.'], []]
-    assert [m['summary']['drafted'] for m in answers] == [[{'review': rid}], [{'review': rid}], []]
+    assert [m['summary'].get('drafted', []) for m in answers] == [[{'review': rid}], [{'review': rid2}], []]
 
 
 def test_the_kept_draft_never_puts_its_words_in_the_summary():
     s = MemoryStore(); tid = task(s)
-    s.add_review({'TaskId': tid, 'Kind': 'draft_reply', 'Status': 'pending', 'DraftText': 'Hi Gail,\nThe code is Tern-Vault-9081.\nAlex'})
-    turn(s, tid, f'Drafted it.\n{block()}')
+    turn(s, tid, f'Drafted it.\n{block()}', draft='Hi Gail,\nThe code is Tern-Vault-9081.\nAlex')
     (row,) = summaries(s, tid)
     assert 'Tern-Vault-9081' not in row['Body']
     assert 'Tern-Vault-9081' in general.shown_history(s, tid)[-1]['drafts_then'][0]['text']

@@ -61,6 +61,9 @@ CHANNEL_MARKS = {'email': '📧', 'teams': '👥', 'slack': '💬', 'telegram': 
                  'promise': '🤝', 'followup': '📨', 'prep': '📅', 'cold': '🥶'}
 
 
+def _written_past(store, tid) -> set:
+    from . import proposals
+    return proposals.written_past(store, tid)
 def owed_no_draft(item: dict) -> bool:
     """A reply owed with NO DRAFT YET (the owner, 2026-10-27): it rode the 'approve' lane and said "ready to send" with its flag on the
     rail, the header and the phone over a reply nothing had written. It reads "reply owed" until the draft lands (railStatus.owedNoDraft)."""
@@ -82,7 +85,7 @@ def mark_for(item: dict) -> str:
     if not item: return ''
     if owed_no_draft(item): return KIND_MARKS['owed']
     return KIND_MARKS.get(str(item.get('kind') or '')) or LANE_MARKS.get(str(item.get('lane') or ''), '')
-SOON_MIN, ALERT_MIN, STARTED_MIN = 120, lanes.ALERT_MIN, 5   # calendar visibility window; attention boundary (lanes.json `urgent`); grace after the start
+ALERT_MIN, STARTED_MIN = lanes.ALERT_MIN, 5   # when a meeting comes onto the rail and rings (lanes.json `urgent`); grace after the start
 SETUP_GRACE_MIN = 15              # a walk-through the owner is still in does not raise its own hand
 LATER_HOURS = 3                   # "not now" - it comes back this much later
 FEED_DAYS = 7
@@ -318,7 +321,9 @@ def from_feed(store, rows: list, *, canonical=False) -> list:
                              ranked_wait=waits, **base))
             if group and threads.get(group) is None: threads[group] = out[-1]
             continue
-        if r.get('ReviewStatus') == 'pending' and r.get('ReviewId'):
+        # ...never a reply draft the thread has moved past (proposals.written_past, the one rule the chat greys it by and the task's state
+        # reads): after a restart the row said "ready to send" over a draft the owner had answered past (the owner's live task, 2026-11-13)
+        if r.get('ReviewStatus') == 'pending' and r.get('ReviewId') and not (r.get('TaskId') and r['ReviewId'] in _written_past(store, r['TaskId'])):
             if r['ReviewId'] in reviews: continue
             reviews.add(r['ReviewId'])
             action = r.get('ReviewKind') == 'action'
@@ -329,16 +334,21 @@ def from_feed(store, rows: list, *, canonical=False) -> list:
             # SQLite and still show only the old "yes" that opened the draft.
             latest = None if canonical else (store.last_inbound_on_task(r.get('TaskId')) if r.get('TaskId') else
                       store.last_inbound_in(cid) if cid else None)
-            stale = bool(latest and latest.get('MessageId') != rv.get('MessageId'))
+            # ...and only a draft that EXISTS is behind a newer line: a reply nobody wrote yet stays on the message it was raised for
+            # (ingest.land_on, 2026-11-15) and is behind nothing
+            stale = bool(r.get('HasDraft') and latest and latest.get('MessageId') != rv.get('MessageId'))
             if latest:
                 base.update(mid=latest.get('MessageId'), when=latest.get('SentAt'),
                             who=latest.get('FromName') or latest.get('FromEmail') or who,
                             preview=latest.get('BodyText') or base.get('preview'),
                             channel=latest.get('Channel') or base.get('channel'))
                 subj = says(latest) or subj
+            from . import capabilities
             out.append(_item(f"review:{r['ReviewId']}", 'action' if action else 'review', 'approve', subj, rid=r['ReviewId'],
                              why='an agent proposed an action - it runs only if you say so' if action
-                                 else ('a reply is drafted for you to send' if r.get('HasDraft') else 'a reply is owed - draft it with AI or write it'),
+                                 # ...a draft its channel cannot send says what the task's chip says (lanes.json `unsendable`, decided 2026-11-12)
+                                 else (('a reply is drafted for you to send' if capabilities.can_send_draft(store, r['ReviewId']) else lanes.hint('unsendable'))
+                                       if r.get('HasDraft') else 'a reply is owed - draft it with AI or write it'),
                              draft=bool(r.get('HasDraft')), summary=agent_found(store, r.get('TaskId')),
                              stale=stale,
                              sig=hashlib.sha1(str(rv.get('DraftText') or '').encode()).hexdigest()[:10],   # the draft's fingerprint: a rewrite is news
@@ -388,7 +398,7 @@ def from_feed(store, rows: list, *, canonical=False) -> list:
                 out.append(_item(f"report:{r['MessageId']}", 'report', 'broken' if bad else 'report', subj, bad=bad, source_id=sid,
                                  brief_today=brief, **dash,
                                  why='your brief for today - what is going on, and what is pressing' if brief
-                                     else ('the check failed - the cause is in it' if bad else 'a report you set up landed'), **base))
+                                     else ('the check failed - the cause is in it' if bad else 'a dashboard you set up refreshed' if dash else 'a report you set up landed'), **base))
                 if group and threads.get(group) is None: threads[group] = out[-1]
                 continue
         cat = r.get('Category') or ''
@@ -711,6 +721,12 @@ def idle_state(store, tid, st=None) -> dict:
     # a parked one fell through every fact below to "Not started yet" - and NOT "LEFT" EITHER (the audit, 2026-11-10): a coding session parked
     # over its reply read "ran on this and left without finishing it" off the transcript an earlier session of it filed
     if (live := live_session_state(tid, agent)): return out('live', *live, line_i18n=_story_i18n(live[0]))
+    # ...NOR ONE THAT IDLED OUT AT REST (recorded on the real CLI, 2026-11-16: a coding agent answered, its session closed quietly, and its chat
+    # ended "ran on this and left without finishing it" under the answer): it waits on you as it did live (taskstate.left reads the close)
+    from . import workerstate
+    if not st.left and (workerstate.newest(store, tid, st.events) or {}).get('Kind') == 'idled' and workerstate.at_rest(store, tid, st.events):
+        return out('live', f'Waiting for you. {_cap(agent)} finished its turn and waits on you.', 'waiting on you',
+                   line_i18n=_idle_i18n('Waiting for you. {Agent} finished its turn and waits on you.', agent))
     # A RUN THAT FAILED SAYS SO, with its reason in plain words (owner-approved, 2026-10-21): it read "Not started yet. Nothing has
     # started the assistant on this." under a chip saying stopped, while the run's own last word was why it failed
     if (f := st.failed):
@@ -1009,7 +1025,13 @@ def paused_conversation(store, item: dict, st=None) -> dict:
         # ...nor one that IDLED OUT (general.idle_out): nothing stopped and nothing was saved - its agent is just not running until the next
         # input, and the task reads as the task (a reply ready, on you), never "agent stopped" or "conversation saved" (the owner, 2026-11-05)
         # ...and AS IT READ LIVE (the owner, 2026-11-07): its open question still asks you, and a turn that asked nothing is done for now
-        if general.idled(tid, store):
+        # ...OFF THE TASK'S SAVED RECORD, as its state is read (taskstate._chat_resting), never only this process's memory of who idled out
+        # (recorded on the real CLI, 2026-11-13: after a restart the same agent at rest read "agent done" on its task and "agent stopped -
+        # its conversation is saved" on its row): its run's last word is a turn's end or its question (workerstate.at_rest), and nothing
+        # says it stopped, was saved or failed (the record's `left`). A conversation saved with no such word - an older one, a walkthrough's -
+        # is the paused one below, as before
+        from . import workerstate
+        if general.idled(tid, store) or (not st.left and workerstate.at_rest(store, tid, st.events)):
             if (q := taskstate.open_question(store, tid)):
                 return item | {'key': f'agent:{tid}', 'kind': 'agent', 'lane': 'blocked', 'asking': True, 'agent': 'assistant', 'mode': 'assistant',
                                'tail': [str(q.get('text') or '')[:300]], 'request_id': q.get('request_id'), 'request_kind': q.get('kind'),
@@ -1105,7 +1127,9 @@ def from_calendar(store, now: datetime) -> list:
         # into (2026-09-07: an hour-old meeting sat at the top of Unread as "next - coming up")
         if not st or (en and en <= now) or st <= now - timedelta(minutes=grace): continue
         mins = int((st - now).total_seconds() // 60)
-        if mins > SOON_MIN and st.date() != now.date(): continue   # the rest of today is visible; the walk still waits for ALERT_MIN
+        # ...and only from ALERT_MIN before it (the owner, 2026-11-09: "a notification 15 minutes before the meeting, not two hours"):
+        # the day's meetings are the digest's strip; the rail's row comes with the notification and its Prepare (meetingAlert.js)
+        if mins > ALERT_MIN: continue
         who = [w for w in (e.get('who') or []) if w]
         key = f"meeting:{str(e.get('start') or '')[:16]}:{_short(e.get('subject'), 40)}"
         out.append(_item(key, 'meeting', 'time', e.get('subject') or 'the meeting', who=', '.join(who[:3]), when=e.get('start'),
@@ -1673,9 +1697,8 @@ def fyi_batch_size(store) -> int:
     except (AttributeError, TypeError, ValueError): return FYI_BATCH
     return max(lo, min(hi, n))
 
-# On the timeline, but nothing to say about it YET - the walk skips it and comes back. A meeting enters the pipe two hours out
-# (SOON_MIN) so the day is visible, and the assistant opened with one still an hour and a half away, ahead of mail that wanted
-# answering now (the owner, 2026-09-04: "meetings should not go down into the chat until 15 minutes before like a agent in
+# On the timeline, but nothing to say about it YET - the walk skips it and comes back. A meeting once entered the pipe two hours
+# out, and the assistant opened with one still an hour and a half away, ahead of mail that wanted answering now (the owner, 2026-09-04: "meetings should not go down into the chat until 15 minutes before like a agent in
 # middel of working"). The same line that turns a meeting urgent (lanes.not_yet, at ALERT_MIN).
 _not_yet = lanes.not_yet
 

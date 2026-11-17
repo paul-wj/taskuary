@@ -409,7 +409,7 @@ export function Foot({ verb, then, where, covers = [], close, onDone, more, prom
   // THE ROW ABOVE THE CHAT LINE (layout B, 2026-09-30): Next and the card's other words ride there, in the one place every item
   // keeps them; the card keeps its own move. The same handlers - a word's click still gets the element it was pressed on.
   const rowed = !!nav.row;
-  // The first three of the card's own words stand in the row (a report's Put it on my list, Send to agent); the rest - and Mark done and
+  // The first three of the card's own words stand in the row (a report's Send to agent); the rest - and Mark done and
   // the task page's acts - sit behind More. The card's own move (its Foot `verb`) stays in the card.
   // ...and in a task's three sections on a desk, EVERY one rides the pane the item is about (ItemLay: actionRow.splitRow `all`) - the bar keeps
   // Back and Next, as under a task (the owner, 2026-10-31)
@@ -494,7 +494,7 @@ function RowsTable({ rows }) {
 }
 
 // `report`: { name } - a report on the table: its rows drawn as a report (ReportRows), its words on the card without a box (reportRows.css)
-function FullText({ mid, revision, report = null }) {
+export function FullText({ mid, revision, report = null }) {
   useLocale();
   // a card with no mail behind it asks for nothing. A task whose only message a skip rule hid has no
   // mid, and fetching /api/messages/null painted FastAPI's own validation sentence ("path.mid: Input
@@ -768,8 +768,8 @@ export function ReplyCard({ card, onDone, onSent, onOpenTask, onTimeline }) {
   if (rv?.gone) return <CardShell card={card} kicker={t("already handled")} title={card.title} sub={t("This one is no longer waiting on you.")} />;
   const goSx = conflict || (co && blocked) ? alertSx : moveSx;
   const verb = conflict
-    ? <Button size="small" variant="contained" disableElevation data-tq-verb="continue" disabled={!!busy} onClick={() => sendBack(`The merge was refused: ${gh.reason.split(" - ")[0]}. Resolve that on the pull request and push; the owner approves it once it is clean.`)} sx={goSx}>
-        {busy === "back" ? t("Sending…") : btn("continue")}</Button>
+    ? <Button size="small" variant="contained" disableElevation disabled={!!busy} onClick={() => sendBack(`The merge was refused: ${gh.reason.split(" - ")[0]}. Resolve that on the pull request and push; the owner approves it once it is clean.`)} sx={goSx}>
+        {busy === "back" ? btn("approve", "busy") : btn("continue")}</Button>
     : action
     ? <Button size="small" variant="contained" disableElevation data-tq-verb="approve" data-tq-view-btn="approve" data-tq-send="" disabled={!!busy || !rv || (co && blocked)} title={co && blocked ? gh.reason : btnHint("approve", "action")} startIcon={<DoneRoundedIcon />} onClick={() => decide("approve")} sx={goSx}>{busy === "approve" ? (co ? co.busy : t("Running…")) : btn("approve", "action")}</Button>
     : rv && !draftCanSend(caps, rv) && !card.closeout ? null : rv && !value.trim() && !stale ? (
@@ -786,8 +786,8 @@ export function ReplyCard({ card, onDone, onSent, onOpenTask, onTimeline }) {
         title={btnHint("redraft")}>
         {busy === "redraft" ? t("Drafting…") : btn("redraft")}</Button>
     ) : (
-      <Button size="small" variant="contained" disableElevation data-tq-verb="approve" data-tq-view-btn="approve" data-tq-send="" disabled={!!busy || !rv || !value.trim() || blocked} title={blocked ? gh.reason : undefined} startIcon={<SendRoundedIcon />} onClick={() => decide("approve")} sx={goSx}>
-        {busy === "approve" ? t("Sending…") : btn("approve")}</Button>
+      <Button size="small" variant="contained" disableElevation disabled={!!busy || !rv || !value.trim() || blocked} title={blocked ? gh.reason : undefined} startIcon={<SendRoundedIcon />} onClick={() => decide("approve")} sx={goSx}>
+        {busy === "approve" ? btn("approve", "busy") : btn("approve")}</Button>
     );
   const then = conflict ? t("tells it to resolve the conflicts and push; this card comes back when it stops, and nothing is merged or sent until then.")
     : co ? <>{co.then}{mate ? t(", then the reply above {send}", { send: sendsBy(mate.Channel, mate.FromName || t("them")) }) : null}.</>
@@ -834,7 +834,7 @@ export function ReplyCard({ card, onDone, onSent, onOpenTask, onTimeline }) {
           <TextField fullWidth multiline minRows={1} maxRows={4} autoFocus value={back} onChange={(e) => setBack(e.target.value)}
             placeholder={t("What should {agent} change?", { agent: card.agent || t("the agent") })} sx={{ "& textarea": { fontSize: 12.5 } }} />
           <Button size="small" variant="outlined" disabled={!!busy || !back.trim()} onClick={() => sendBack(back.trim())} sx={quiet}>
-            {busy === "back" ? t("Sending…") : btn("continue")}</Button>
+            {busy === "back" ? btn("approve", "busy") : btn("continue")}</Button>
         </div>
       )}
       {/* "Mark done" arrives as a conversation word; off the walk (no words), the same road is still offered
@@ -1536,7 +1536,7 @@ export function DayOpener({ groups = [], onSection, top = null, loading = false 
       {!!cal && (
         <div className="tq-day-pane tq-day-agenda" data-tq-cal={cal}>
           <div className="tq-day-h">{t(cal === "empty" ? "Your day · no meetings" : "Your day · calendar")}</div>
-          <div className="ev cal-note"><span className="s">{cal === "none" ? t("No calendar connected - a calendar-capable card such as Microsoft 365 or Gmail reads it once it is allowed to.")
+          <div className="ev cal-note"><span className="s">{cal === "none" ? t("No calendar connected - connect Microsoft 365 or Gmail and allow its calendar, and your day is read from there.")
             : cal === "error" ? <>{t("Your calendar could not be read.")}<span className="why">{String(today.errors[0])}</span></> : t("Nothing on your calendar today.")}</span></div>
           {cal !== "empty" && <button type="button" className="tq-linkish cal-go" onClick={() => openAppLink(place("mail").href)}>
             {t(cal === "none" ? "Connect a calendar" : "Open the calendar's card")}</button>}
@@ -1560,8 +1560,9 @@ export function DayOpener({ groups = [], onSection, top = null, loading = false 
       )}
       {waits && (
         <div className="tq-day-pane tq-day-wait">
-          {/* ...said ONCE (the owner, 2026-10-28): "13 TASKS" stood over a Tasks row saying 13 - the heading names the band, the row counts it */}
-          <div className="tq-day-h">{loading ? t("Counting…") : tasks ? t("Tasks") : t("Nothing on you")}</div>
+          {/* ...said ONCE (the owner, 2026-10-28): "13 TASKS" stood over a Tasks row saying 13 - the row names its band and counts it; the
+              heading names the card (what is open, the owner's word of 2026-10-31), never a band: "TASKS" over the Tasks row read twice (2026-11-12) */}
+          <div className="tq-day-h">{loading ? t("Counting…") : tasks ? t("What's open") : t("Nothing on you")}</div>
           {!groups.length && <div className="note">{t("Your mail is still being read - what needs you shows up here.")}</div>}
           {act.map(row)}
         </div>
@@ -1785,7 +1786,7 @@ export function SetupCard({ card, onNavigate, onHandOff }) {
   const [text, setText] = useState("");
   return (
     <CardShell card={{ ...card, lane: "report" }} kicker={t("set something up")} title={t("What should it do?")}
-      sub={t("A report that pulls last month's Zoho invoices, a connection to a new system, an alert when a job fails - in your words. The assistant walks you through it and can navigate a browser beside the conversation.")}>
+      sub={t("A report that pulls last month's Zoho invoices, a connection to a new system, an alert when a job fails - in your words. Taskuary walks you through it and can navigate a browser beside the conversation.")}>
       <TextField fullWidth multiline minRows={2} maxRows={6} value={text} onChange={(e) => setText(e.target.value)}
         placeholder={t("Set up a report that…")} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onHandOff?.(text); setText(""); } }}
         sx={{ mt: 1, "& textarea": { fontSize: 12.5 } }} />

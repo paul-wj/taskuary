@@ -26,6 +26,17 @@ def test_ai_agent_workflow_uses_a_real_configured_agent():
     assert 'reports only read and summarize' in seen['system']
 
 
+def test_a_weekly_routine_the_model_nested_stays_weekly():
+    # the visual audit, 2026-11-13: a nested {"schedule": {"cron": ...}} was filtered out with the other unknown keys, and the routine fell
+    # to the default "every day at 08:00" - a weekly job run daily
+    store = MemoryStore()
+    store.upsert_agent('coding', 'cli', 'local', json.dumps({'cmd': 'codex'}))
+    out = compose.compose_workflow(store, 'every Monday', answering({
+        'config': {'type': 'agent', 'title': 'Weekly review', 'agent': 'coding', 'prompt': 'review', 'schedule': {'cron': '0 8 * * 1'}},
+        'explain': 'Mondays.', 'confidence': 'high'}))
+    assert out['config'].get('cron') == '0 8 * * 1' and 'daily_at' not in out['config']
+
+
 def test_invoice_workflow_resolves_customer_ids_to_trusted_zoho_records(monkeypatch):
     store = MemoryStore()
     card = store.get_connector_by_type('zoho_invoice')
@@ -127,3 +138,13 @@ def test_the_workflow_builder_sees_the_catalog_and_a_lone_agent_step_is_still_a_
                    'flow': [{'id': 's1', 'kind': 'agent', 'label': 'Download', 'prompt': "Download this week's statements."}]}}, seen))
     assert 'flow' not in out['config'] and out['config']['prompt'] == "Download this week's statements." and 'repair' not in out['config']
     assert {c['type'] for c in seen['user']['catalog']} >= {'sqlite', 'taskuary'} and 'FLOW RULES' in seen['system']
+
+
+def test_a_brain_that_fails_is_the_builders_answer_not_a_500():
+    # New -> a routine on an API card whose quick model ran out of room: the composer raised, the endpoint answered 500, the builder stood
+    # empty and the Assistant's turn ended on no words. The brain's own failure, with its way past, is the composer's answer
+    def failing(system, user, **_kwargs):
+        raise RuntimeError('hipaa_ai: the model ran out of room before answering (finish_reason length) - pick a non-thinking model on its card')
+    out = compose.compose_workflow(MemoryStore(), 'Every day, list the vendors with no invoice this month', failing)
+    assert 'config' not in out
+    assert 'ran out of room' in out['error'] and 'pick a non-thinking model on its card' in out['error']

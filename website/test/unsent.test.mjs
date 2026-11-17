@@ -41,10 +41,10 @@ test("both of a task's boxes keep them: the chat's composer and the box before i
   assert.match(first, /else keepUnsent\(task\.TaskId, text\);/);
 });
 
-test("the arrow holds the line while a turn runs, as Enter does", () => {
-  const chat = src("GeneralWorkspace.jsx");
-  // assistant-ui's own Send is disabled for as long as the thread runs: it is drawn only while it does not
-  assert.match(chat, /<ThreadPrimitive\.If running><HeldSend composer=\{runtime\.thread\.composer\} files=\{attachmentsRef\.current\.length\}/);
-  assert.match(chat, /onHold=\{\(\) => \{ const c = runtime\.thread\.composer; holdText\(c\.getState\(\)\.text\.trim\(\), c\); \}\}/);
-  assert.match(chat, /data-tq-held-send="" aria-label="Send" disabled=\{!text\.trim\(\) && !files\}/, "grey only over an empty box");
+test("words sent from the box before the first agent are not kept: the chat that draws next finds its box empty", () => {
+  // the recorded walk, 2026-11-11: his first line stood in his bubble AND in the box under it, and his next line went out glued to it
+  const first = src("AgentSummary.jsx"), send = first.slice(first.indexOf("const send = async () => {"));
+  const cleared = send.indexOf('keepUnsent(task.TaskId, "");'), posted = send.indexOf("await api.post(`/api/tasks/${task.TaskId}/dispatch`");
+  assert.ok(cleared > 0 && cleared < posted, "cleared at the press, before the start is asked for");
+  assert.match(send, /catch \(e\) \{ keepUnsent\(task\.TaskId, text\);/, "a start that failed keeps them");
 });

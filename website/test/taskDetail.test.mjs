@@ -1,7 +1,10 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { forgetTasks, heldSteps, heldTask, keepTask, prefetchTask } from "../src/taskDetail.js";
 
+const src = (f) => readFileSync(fileURLToPath(new URL(`../src/${f}`, import.meta.url)), "utf8");
 const fake = (calls) => ({ get: async (url) => { calls.push(url); const id = Number(url.split("/")[3]);
   return url.endsWith("/steps") ? { data: { steps: [{ id: 1, text: "Book the room" }] } } : { data: { task: { TaskId: id, DoneWhen: id === 9 ? "booked" : "" } } }; } });
 
@@ -27,12 +30,164 @@ test("a task read ahead is held for its view, once per task, and a goal brings i
   assert.equal(heldTask(4), null);
 });
 
+// NEVER A BLANK BEAT (seen 2026-11-11: a task opened for the first time drew its header and box over an empty chat for a quarter of a
+// second): the chat's list is asked for with the task, held with it through the view's own read, and is the chat's first frame
+test("a task read ahead brings its chat's list, and the chat draws it on its first frame", async () => {
+  forgetTasks();
+  const { heldConversation } = await import("../src/taskDetail.js");
+  const calls = [], list = { rev: "r1", items: [{ id: "m:1", kind: "arrival" }], pending: [] };
+  const api = { get: async (url) => { calls.push(url); return url.endsWith("/conversation") ? { data: list } : { data: { task: { TaskId: 4 } } }; } };
+  assert.equal(heldConversation(4), null);
+  await prefetchTask(api, 4); await new Promise((r) => setTimeout(r, 0));
+  assert.ok(calls.includes("/api/tasks/4/conversation"));
+  assert.equal(heldConversation(4).rev, "r1");
+  keepTask(4, { task: { TaskId: 4, Title: "newer" } });
+  assert.equal(heldConversation(4).rev, "r1", "the view's own read of the task keeps it");
+  forgetTasks(4); assert.equal(heldTask(4), null, "a write to the task lets its read go");
+  assert.equal(heldConversation(4).rev, "r1", "...its chat stays for the first paint only, read again on mount (the bug hunt, 2026-11-12)");
+  const view = src("GeneralWorkspace.jsx");
+  // ...whichever was asked last of the two, the view's own last read or the read-ahead (chatStream.newerList; basicFlow.test.mjs)
+  assert.match(view, /const listOf = \(tid\) => \{ const l = paintable\(LISTS\.get\(tid\), heldConversation\(tid\)\); if \(l\) LISTS\.set\(tid, l\); return l; \};/);
+  assert.match(view, /const \[list, setList\] = useState\(\(\) => listOf\(tid\)\)/);
+});
+
+// ...AND THE CHAT DREW NOTHING UNTIL ITS OWN READ OF THE AGENT'S STATE LANDED (recorded 2026-11-12: on a rail click, Next and Back the task's
+// header stood over a spinner for up to a second, its list already in hand): that read is asked ahead and held with the task too, and
+// the chat's first frame is drawn from it
+test("a task read ahead brings what its chat stands on, and the chat is drawn from it on its first frame", async () => {
+  forgetTasks();
+  const { heldChat } = await import("../src/taskDetail.js");
+  const calls = [], chat = { messages: [], providers: [{ id: 3 }] };
+  const api = { get: async (url) => { calls.push(url); return url.endsWith("/assistant") ? { data: chat } : url.endsWith("/conversation") ? { data: { items: [] } } : { data: { task: { TaskId: 6 } } }; } };
+  assert.equal(heldChat(6), null);
+  await prefetchTask(api, 6); await new Promise((r) => setTimeout(r, 0));
+  assert.ok(calls.includes("/api/tasks/6/assistant"));
+  assert.equal(heldChat(6), chat);
+  keepTask(6, { task: { TaskId: 6, Title: "newer" } });
+  assert.equal(heldChat(6), chat, "the view's own read of the task keeps it");
+  forgetTasks(6); assert.equal(heldTask(6), null, "a write to the task lets its read go"); assert.equal(heldChat(6), chat, "...its chat paints first");
+  const view = src("GeneralWorkspace.jsx");
+  assert.match(view, /const chatOf = \(tid\) => \{ if \(!CHATS\.has\(tid\)\) \{ const h = heldChat\(tid\); if \(h\) CHATS\.set\(tid, h\); \} return CHATS\.get\(tid\) \|\| null; \};/);
+  assert.match(view, /const \[data, setData\] = useState\(first\);/);
+  assert.doesNotMatch(view, /setData\(null\)/, "a chat drawn again never empties itself to read");
+});
+
+// ...AND A VIEW MOUNTED BEFORE IT LANDED DRAWS IT AS IT LANDS (recorded 2026-11-12 on the built app: a rail row clicked straight away drew
+// its head and then 830 ms of spinner where the chat goes - the read asked at the press landed half-way through and was never drawn)
+test("a chat read still on its way when the view mounts is handed over as it lands, unless the view's own read came first", async () => {
+  forgetTasks();
+  const { aheadChat, heldChat } = await import("../src/taskDetail.js");
+  let land; const chat = { messages: [], providers: [] };
+  const api = { get: (url) => (url.endsWith("/assistant") ? new Promise((r) => { land = () => r({ data: chat }); }) : Promise.resolve({ data: url.endsWith("/conversation") ? { items: [] } : { task: { TaskId: 7 } } })) };
+  prefetchTask(api, 7); await new Promise((r) => setTimeout(r, 0));
+  const p = aheadChat(7);
+  assert.ok(p, "a read on its way is offered to the view");
+  land(); assert.equal(await p, chat);
+  assert.equal(heldChat(7), chat); assert.equal(aheadChat(7), null, "once landed it is held, not ahead");
+  const view = src("GeneralWorkspace.jsx");
+  assert.match(view, /if \(!first\(\)\) aheadChat\(task\.TaskId\)\?\.then\(\(d\) => \{ if \(live && !own && d\) accept\(d\); \}\);/);
+  assert.match(view, /\.then\(\(r\) => \{ own = true; if \(live\) accept\(r\.data\); \}\)/, "the view's own read is newer: what lands ahead after it is not drawn");
+  // ...and the task view's first frame waits for it - capped - so head and chat are one move; never drawn from the list alone, whose files and
+  // cards then landed a beat later and grew the turn by 900 px (recorded 2026-11-12)
+  const page = src("TaskPage.jsx");
+  assert.match(page, /const \[detail, setDetail\] = useState\(\(\) => \(aheadChat\(selected\) \? null : heldTask\(selected\)\)\);/);
+  assert.match(page, /const chat = aheadChat\(id\), both = \(p\) => \(chat \? Promise\.all\(\[p, Promise\.race\(\[chat, new Promise\(\(r\) => setTimeout\(r, CHAT_WAIT\)\)\]\)\]\)/);
+  assert.match(page, /if \(coming\) \{ const data = await both\(coming\);/);
+  assert.match(view, /if \(!data && !error && !\(opening && conv\.list\?\.items\?\.length\)\) return <Box data-tq-chat-reading=""/);
+});
+
+// ...AND THE LIST IS PART OF IT (the bug hunt, 2026-11-12: a job New had just made opened its head over an empty chat for a beat, the agent's
+// state in hand and the list still out, then the owner's ask faded in): the chat read ahead lands when both have
+test("a chat read ahead is in hand only once its list has landed too", async () => {
+  forgetTasks();
+  const { aheadChat, heldConversation } = await import("../src/taskDetail.js");
+  let land; const chat = { messages: [], providers: [] }, list = { rev: "r2", items: [{ id: "a:8", kind: "line" }], pending: [] };
+  const api = { get: (url) => (url.endsWith("/conversation") ? new Promise((r) => { land = () => r({ data: list }); })
+    : Promise.resolve({ data: url.endsWith("/assistant") ? chat : { task: { TaskId: 8 } } })) };
+  prefetchTask(api, 8); await new Promise((r) => setTimeout(r, 0));
+  const p = aheadChat(8); let got = "out";
+  p.then((d) => { got = d; }); await new Promise((r) => setTimeout(r, 0));
+  assert.equal(got, "out", "the agent's state alone is not the chat");
+  land(); await p;
+  assert.equal(got, chat); assert.equal(heldConversation(8).rev, "r2");
+});
+
+// ...AND A WRITE TO THE TASK DOES NOT TAKE ITS CHAT'S FIRST PAINT AWAY (the bug hunt, 2026-11-12): a job just made and started writes to its
+// task over and over in its first seconds, and each write let the chat read ahead go - the view opened on its head over an empty chat and
+// read it all again. The task's own read is let go (its buttons must never be drawn stale); its chat is drawn from what was read and read again
+test("a write lets the task's read go, but its chat's first paint stays - still awaited, still drawn - for a few seconds", async () => {
+  forgetTasks();
+  const { aheadChat, heldChat, heldConversation } = await import("../src/taskDetail.js");
+  let land; const chat = { messages: [], providers: [] }, list = { rev: "r3", items: [{ id: "a:5", kind: "line" }], pending: [] };
+  const api = { get: (url) => (url.endsWith("/assistant") ? new Promise((r) => { land = () => r({ data: chat }); })
+    : Promise.resolve({ data: url.endsWith("/conversation") ? list : { task: { TaskId: 5 } } })) };
+  prefetchTask(api, 5); await new Promise((r) => setTimeout(r, 0));
+  forgetTasks(5);                                                                       // the job's first write
+  assert.equal(heldTask(5), null, "the task's own read is let go");
+  assert.equal(heldConversation(5)?.rev, "r3", "its chat's list still paints first");
+  const p = aheadChat(5); assert.ok(p, "...and the read on its way is still waited for");
+  keepTask(5, { task: { TaskId: 5, Title: "read again" } });                           // the view's own read of the task, kept since
+  assert.equal(heldConversation(5)?.rev, "r3", "a task read kept after the write does not hide it");
+  land(); await p; assert.equal(heldChat(5), chat);
+  // ...and a write that names no task (an act, a sync) the same: the chat's first paint stays, the task's read goes
+  prefetchTask(api, 6); await new Promise((r) => setTimeout(r, 0)); forgetTasks();
+  assert.equal(heldTask(6), null); assert.equal(heldConversation(6)?.rev, "r3");
+});
+
+// A CHAT THAT HAS DRAWN NEVER DRAWS EMPTY (recorded 2026-11-12 on the ACP sign-in walk: two seconds after the hand-back the whole chat stood
+// empty for a second, his ask and his press gone): a read with no items over a held list that has some is not drawn
+test("an empty read never replaces a chat that has drawn", () => {
+  const view = src("GeneralWorkspace.jsx");
+  assert.match(view, /if \(!\(d\.items \|\| \[\]\)\.length && \(LISTS\.get\(tid\)\?\.items \|\| \[\]\)\.length\) return false;\s*rev\.current = d\.rev; LISTS\.set\(tid, d\); setList\(d\);/);
+});
+
+// THE RAIL WALK (2026-11-12): a coding task has no chat read - the server answers 422 - and that answer left its read "still on the way" for
+// the whole two minutes it is held, so Next onto a stopped coding task drew the loading frame first, then the page faded in
+test("a chat read that answered with nothing is no longer ahead: the view draws the task at once", async () => {
+  forgetTasks();
+  const { aheadChat } = await import("../src/taskDetail.js");
+  const api = { get: (url) => (url.endsWith("/assistant") ? Promise.reject(Object.assign(new Error("422"), { response: { status: 422 } }))
+    : Promise.resolve({ data: url.endsWith("/conversation") ? { items: [] } : { task: { TaskId: 9, Kind: "coding" } } })) };
+  await prefetchTask(api, 9); await new Promise((r) => setTimeout(r, 0));
+  assert.equal(aheadChat(9), null, "answered, even with no chat: nothing to wait for");
+  assert.equal(heldTask(9).task.TaskId, 9, "...and the task's own read is drawn from its first frame");
+});
+
 test("a failed read ahead holds nothing, so the view reads it itself", async () => {
   forgetTasks();
   await prefetchTask({ get: async () => { throw new Error("down"); } }, 5);
   assert.equal(heldTask(5), null);
 });
 
+test("the view draws from the held read, and the reads ahead are where the next view is already known", () => {
+  const page = src("TaskPage.jsx"), view = src("AssistantView.jsx"), search = src("SearchEverything.jsx");
+  assert.match(page, /const \[detail, setDetail\] = useState\(\(\) => \(aheadChat\(selected\) \? null : heldTask\(selected\)\)\);/);
+  assert.match(page, /setDetail\(data\); keepTask\(id, data, undefined, asked\);/);
+  assert.match(view, /useEffect\(\(\) => \{ if \(nextTid\) prefetchTask\(api, nextTid\); \}, \[nextTid, displayRevision\(pile\)\]\);/);   // the row Next brings
+  assert.match(view, /onPointerEnter=\{\(\) => \{ if \(!isCur && i\.tid\) prefetchTask\(api, i\.tid\); \}\}/);        // a rail row under the pointer
+  assert.match(search, /if \(aheadTid\) prefetchTask\(api, aheadTid\);/);                                             // a search hit highlighted
+  // an act makes the held reads old - but Next is no act, it is what they are for
+  assert.match(view, /onPressed\(\(id\) => \{ if \(!walkMove\(id\)\) forgetTasks\(actedTid\.current \?\? null\); \}\)/);
+  assert.match(view, /useEffect\(\(\) => \{ if \(currentItem\?\.tid\) actedTid\.current = currentItem\.tid; \}, \[currentItem\]\);/,
+    "an act lets go of its own task's read only - not the next item's");
+});
+
+// the bug hunt, 2026-11-12: a task New or the Assistant had just made and opened (`open: '#task=N'`) drew its title alone, then its head over
+// an empty chat, then the chat - nobody had read it ahead, so the view asked only once it had mounted. A task opened by its number is read at the press
+test("a task opened by its number - New's or the Assistant's just-made job - is read ahead at the press", () => {
+  const hub = src("TaskHubPage.jsx"), view = src("AssistantView.jsx");
+  // ...the link road (onPlace: the Assistant's #task=N, a cold link) and New's press take the one read-ahead
+  assert.match(hub, /const readAhead = \(req\) => \{[^\n]*if \(req\?\.kind === "task" && req\.tid\) prefetchTask\(api, req\.tid\); \};/);
+  assert.match(hub, /const req = canvasRequestFromHash\(h, 0\);\s*readAhead\(req\);/);
+  assert.match(hub, /const openTask = \(taskId, opts\) => \{\s*readAhead\(\{ kind: "task", tid: taskId \}\);/);
+  // ...and the Assistant's open of a row the rail holds, which presses the row rather than follow the link
+  assert.match(view, /const pressRow = \(n\) => \{\s*prefetchTask\(api, n\);/);
+  // ...and every read of the task while that chat is on the way waits for it: the write a just-started job makes re-read the task, and its
+  // held head was drawn at once over an empty chat
+  const page = src("TaskPage.jsx");
+  assert.match(page, /const chat = aheadChat\(id\), both = /);
+  assert.match(page, /if \(chat && \(await both\(0\), stale\(id\)\)\) return;\s*return detailReads\.current\.run\(id, id\);/);
+});
 
 test("a task's session is held with it: unknown until read, null for a task no agent holds", async () => {
   const { heldTerm, keepTerms } = await import("../src/taskDetail.js");
@@ -48,6 +203,12 @@ test("a task's session is held with it: unknown until read, null for a task no a
   assert.equal(heldTerm(3), undefined, "a write that names no task lets the whole list go");
 });
 
+// A ROW CLICKED COLD IS DRAWN AT THE CLICK (owner-approved, 2026-10-20): the old view and its ring stayed up for the whole read
+test("a rail row clicked before its task is read puts its frame up at the click, titled, over the view's loading state", () => {
+  const view = src("AssistantView.jsx"), page = src("TaskPage.jsx"), item = src("CanvasItem.jsx");
+  assert.match(item, /<TaskPage taskId=\{card\.tid\} title=\{card\.title \|\| ""\}/, "the frame knows which item it is");
+  assert.match(page, /data-tq-task-loading=[\s\S]{0,800}canvas && !!title && <Typography data-tq-task-loading-title=""/, "...and says it while it reads");
+});
 
 // WHICH READ IS NEWER (the owner, 2026-10-23: "this shows agent working but it's not working"): the rail was built under the server's lock
 // for minutes, and its "agent working" stood over a task whose own read said the agent had finished - a task read asked after the rail's
@@ -74,3 +235,19 @@ test("a task read speaks over the rail only when it was asked after the rail's, 
   assert.equal(pageRead(7), null);
 });
 
+test("the rail stamps its reads and its rows and the header pill take the task's newer read", () => {
+  const view = src("AssistantView.jsx"), page = src("TaskPage.jsx");
+  assert.match(view, /pileRef\.current = refreshPilePresentation\(pileRef\.current, data\); notePile\(askedAt\);/, "a rail read, stamped when asked");
+  assert.match(view, /notePile\(forcedLoadStartedAt\.current\);/, "...and one that came with an answer");
+  assert.match(view, /const page = i\.tid \? pageRead\(i\.tid\) : null, why = rowWhy\(i, page\);/);
+  assert.match(view, /railStatus\(i, !canSend\(sendCaps, i\.channel\), page\)/, "the row's icon");
+  assert.match(view, /useEffect\(\(\) => watchReads\(\(\) => reread\(\(n\) => n \+ 1\)\), \[\]\);/, "the rail draws again on a new read");
+  assert.match(page, /page: rail\?\.tid \? pageRead\(rail\.tid\) : null,\n/, "the header pill takes the same read");
+});
+
+// THE RECORDED RESTART (2026-11-11): one poll failed while the app restarted and the red line stood over a task that loaded fine ever after
+test("a task read that works takes back the line a failed one left", () => {
+  const page = src("TaskPage.jsx").replace(/\r\n/g, "\n"), read = page.slice(page.indexOf("detailReads.current ||= coalesce("), page.indexOf("const loadDetail = useCallback("));
+  assert.match(read, /setDetail\(data\); keepTask\(id, data, undefined, asked\);[\s\S]*?if \(loadFailed\.current\) \{ loadFailed\.current = false; setErr\(""\); \}/, "cleared by the next read that works");
+  assert.match(read, /loadFailed\.current = true; setErr\(e\?\.response\?\.data\?\.detail \|\| "Failed to load task"\);/, "...and only the line this read wrote: another error is not its to clear");
+});

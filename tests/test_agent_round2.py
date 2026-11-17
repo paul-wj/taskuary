@@ -1,8 +1,8 @@
 """THE GENERAL AGENT, ROUND TWO (the owner, 2026-11-05: adapt the best of the open-source assistants - Hermes' skills and session_search,
 OpenClaw's cron).
 
-5. Playbooks learn: a turn's lesson reaches its playbook as an amend_playbook proposal on the task - the card a drafted playbook already
-   has - and a lesson no playbook takes goes to LEARNED.md. The model says whether there is one.
+5. A turn leaves no lesson: what an agent concluded never becomes memory about the owner (the owner, 2026-11-13). Its check-back
+   still rides the summary.
 6. Playbooks are a menu: every one's `when` and its file, read by the agent itself; code no longer hands it one.
 7. Search before asking: the search an agent already has also reads what earlier tasks settled (their own endings).
 8. Check-backs: the agent wakes on its own task at a time it set, on the reminders' clock, with its note as the turn.
@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from unittest import mock
 
 from fastapi.testclient import TestClient
-from taskuary import agenttools, checkback, config, general, guard, playbooks, proposals, remind, search, selfclose, server
+from taskuary import agenttools, checkback, config, general, guard, playbooks, remind, search, selfclose, server
 from taskuary.store import MemoryStore
 from tests.test_general_turn_ends_short import a_claude, turn
 
@@ -41,49 +41,29 @@ def summary(**extra):
     return selfclose.SUMMARY_OPEN + json.dumps({'about': 'a card charge', 'did': 'Posted the bill', 'on_you': [], 'nothing_left': False, **extra}) + selfclose.SUMMARY_CLOSE
 
 
-# ── 5. playbooks learn ──────────────────────────────────────────────────────────────────────
-class PlaybooksLearnTests(unittest.TestCase):
+# ── 5. a turn leaves no lesson: an agent's takeaway is never memory (the owner, 2026-11-13) ─────────────────────────────────
+class NoLessonTests(unittest.TestCase):
     def setUp(self): fresh_books(('bill', BILL))
 
-    def test_the_summary_carries_the_lesson_and_the_check_back_off_the_page(self):
+    def test_the_summary_carries_the_check_back_and_no_lesson(self):
         text, summ = selfclose.summary_marker('Done.\n' + summary(lesson={'playbook': 'bill', 'text': 'Payworth is vendor 4471'},
                                                                  check_back={'when': 'tomorrow 9am', 'what': 'the bill posted'}))
         self.assertEqual(text, 'Done.')
-        self.assertEqual(summ['lesson']['text'], 'Payworth is vendor 4471'); self.assertEqual(summ['check_back']['what'], 'the bill posted')
-        self.assertNotIn('lesson', selfclose.summary_marker(summary(lesson={'playbook': 'bill', 'text': ' '}))[1])
+        self.assertNotIn('lesson', summ); self.assertEqual(summ['check_back']['what'], 'the bill posted')
 
-    def test_a_lesson_goes_to_learned_md_named_for_its_playbook_and_no_card_is_made(self):
-        """The owner, 2026-11-05: "i thought we were using same memory learned.md" - one memory; the playbook page is theirs alone."""
+    def test_a_strangers_task_schedules_nothing(self):
         s = MemoryStore(); tid = owner_task(s)
-        with mock.patch('taskuary.learn.learn_from') as lf:
-            self.assertEqual(playbooks.take_lesson(s, tid, {'playbook': 'bill', 'text': 'Payworth is vendor 4471 in QuickBooks'}), {'learned': True})
-        said = lf.call_args[0][1]
-        self.assertIn('Payworth is vendor 4471', said); self.assertIn(playbooks.parse(BILL)['title'], said)
-        self.assertEqual([r for r in s.list_reviews('pending') if r['TaskId'] == tid], [])
-        self.assertEqual(playbooks.read('bill'), BILL, 'the page is untouched')
+        with mock.patch('taskuary.origin.of_task', return_value=('stranger', 'unknown sender')):
+            general.take_check(s, tid, {'when': 'tomorrow', 'what': 'y'})
+        self.assertFalse(s.get_task(tid).get('CheckBackAt'))
 
-    def test_a_lesson_no_playbook_takes_goes_to_learned_md_and_a_secret_goes_nowhere(self):
-        s = MemoryStore(); tid = owner_task(s)
-        with mock.patch('taskuary.learn.learn_from') as lf:
-            self.assertEqual(playbooks.take_lesson(s, tid, {'playbook': None, 'text': 'The Trainly portal signs in through the company SSO'}), {'learned': True})
-            self.assertEqual(playbooks.take_lesson(s, tid, {'playbook': 'no-such-book', 'text': 'Spendly exports as CSV only'}), {'learned': True})
-            self.assertIsNone(playbooks.take_lesson(s, tid, {'playbook': 'bill', 'text': 'password: hunter2-Secret!9 for the portal'}))
-        self.assertEqual(lf.call_count, 2); self.assertIn('company SSO', lf.call_args_list[0][0][1])
-        self.assertEqual([r for r in s.list_reviews('pending') if r['TaskId'] == tid], [])
-
-    def test_a_strangers_task_teaches_nothing_and_schedules_nothing(self):
-        s = MemoryStore(); tid = owner_task(s)
-        with mock.patch('taskuary.origin.of_task', return_value=('stranger', 'unknown sender')), mock.patch.object(playbooks, 'take_lesson') as tl:
-            general.take_lesson_and_check(s, tid, {'playbook': 'bill', 'text': 'x'}, {'when': 'tomorrow', 'what': 'y'})
-        tl.assert_not_called(); self.assertFalse(s.get_task(tid).get('CheckBackAt'))
-
-    def test_a_real_turn_leaves_its_lesson_and_its_check_back(self):
+    def test_a_real_turn_leaves_its_check_back_and_teaches_the_memory_nothing(self):
         s = MemoryStore(); a_claude(self); tid = owner_task(s)
         reply = 'Posted the bill as Payworth (vendor 4471).\n' + summary(lesson={'playbook': 'bill', 'text': 'Payworth is vendor 4471'},
                                                                           check_back={'when': 'in 2 days', 'what': 'the bill shows paid'})
         with mock.patch('taskuary.learn.learn_from') as lf: seen = turn(s, tid, reply)
-        self.assertIn(general.LESSON_LINE, seen['prompt']); self.assertIn(general.CHECK_BACK_LINE, seen['prompt'])
-        self.assertTrue(any('Payworth is vendor 4471' in c[0][1] for c in lf.call_args_list), 'the lesson went to LEARNED.md')
+        self.assertIn(general.CHECK_BACK_LINE, seen['prompt']); self.assertNotIn('A LESSON FOR NEXT TIME', seen['prompt'])
+        self.assertFalse(any('Payworth is vendor 4471' in c[0][1] for c in lf.call_args_list), "the agent's takeaway is not learned")
         t = s.get_task(tid); self.assertEqual(t['CheckBackWhat'], 'the bill shows paid'); self.assertTrue(t['CheckBackAt'])
         kept = [json.loads(c['Body']) for c in s.list_comments(tid, internal=True) if c['ActorType'] == general.SUMMARY_TYPE]
         self.assertTrue(kept and not any('lesson' in k or 'check_back' in k for k in kept))     # taken off the summary, never drawn
@@ -221,14 +201,14 @@ class CheckBackTests(unittest.TestCase):
         """Ray has not answered the W-9 for a week (the owner, 2026-11-10: "job of agent is to be helpful and do as much as possible. it
         shoudl prompt you"): nothing woke the task's agent. Now the reminders' clock hands it one turn saying who is late on what - once per
         lateness, through the check-back road - and never where the owner's own line could not wake it (the switch, no conversation)."""
-        from taskuary import advisor, rulebook
+        from taskuary import rulebook
         s = MemoryStore(); tid = owner_task(s, 'Vendor W-9', Status='waiting')
         s._exec("UPDATE task SET WaitingOn='ray.colton@northwind.example' WHERE TaskId=?", (tid,))
         s.add_message({'TaskId': tid, 'Direction': 'out', 'Subject': 'W-9?', 'Body': 'Could you send the W-9?', 'Channel': 'email',
                        'SentAt': f'{datetime.now() - timedelta(days=7):%Y-%m-%d %H:%M:%S}', 'Status': 'routed'})
         it = {'key': f'task:{tid}', 'kind': 'todo', 'lane': 'theirs', 'tid': tid}
         fired = []
-        with mock.patch.object(advisor, '_item', lambda *a, **k: it), mock.patch.object(checkback, 'fire', side_effect=lambda st, t, what: fired.append((t, what))), \
+        with mock.patch.object(rulebook, '_item', lambda *a, **k: it), mock.patch.object(checkback, 'fire', side_effect=lambda st, t, what: fired.append((t, what))), \
              mock.patch('taskuary.ingest._spawn', lambda fn, *a: fn(*a)), mock.patch('taskuary.ingest.has_room', return_value=True), \
              mock.patch.object(general, 'provider_options', return_value=[{'pick': 'api:x', 'type': 'api'}]):
             with mock.patch.object(general, 'history', return_value=[{'role': 'user', 'text': 'x'}]):
@@ -242,7 +222,7 @@ class CheckBackTests(unittest.TestCase):
     def test_a_late_answer_starts_a_first_agent_where_none_has_worked(self):
         """The same lateness on a task no agent has worked (the owner, 2026-11-10: "yes"): it starts the task's first agent with the same turn,
         through the start check every start passes - the switch off says why once on the task and leaves Chase lit; a full house queues it."""
-        from taskuary import advisor, ingest, rulebook
+        from taskuary import ingest, rulebook
         def late_task(title):
             tid = owner_task(s, title, Status='waiting')
             s._exec("UPDATE task SET WaitingOn='ray.colton@northwind.example' WHERE TaskId=?", (tid,))
@@ -251,7 +231,7 @@ class CheckBackTests(unittest.TestCase):
             return tid, {'key': f'task:{tid}', 'kind': 'todo', 'lane': 'theirs', 'tid': tid}
         s = MemoryStore(); tid, it = late_task('Vendor W-9')
         fired, room = [], [True]
-        with mock.patch.object(advisor, '_item', lambda st, k, t, **kw: {**it, 'key': f'task:{t}', 'tid': t}), \
+        with mock.patch.object(rulebook, '_item', lambda st, k, t, **kw: {**it, 'key': f'task:{t}', 'tid': t}), \
              mock.patch.object(checkback, 'fire', side_effect=lambda st, t, what: fired.append((t, what))), \
              mock.patch('taskuary.ingest._spawn', lambda fn, *a: fn(*a)), mock.patch('taskuary.ingest.has_room', side_effect=lambda *a: room[0]), \
              mock.patch.object(general, 'provider_options', return_value=[{'pick': 'api:x', 'type': 'api'}]):
@@ -259,7 +239,7 @@ class CheckBackTests(unittest.TestCase):
             self.assertEqual(fired, [], 'the switch is off')
             said = [c['Body'] for c in s.list_comments(tid) if c['Body'].startswith(ingest.NOT_STARTED)]
             self.assertEqual(len(said), 1, 'why is said once'); self.assertIn('switched off', said[0])
-            self.assertEqual((rulebook.recommended(s, it) or {}).get('verb'), 'chase', 'Chase stays lit where none started')
+            self.assertIsNone((rulebook.recommended(s, it) or {}).get('verb'), 'nothing is lit: the agent suggests (2026-11-15)')
             s.set_setting('general_auto_enabled', '1', 'owner')
             other, _ = late_task('Signed lease'); remind.tick(s); remind.tick(s)
             self.assertEqual([t for t, _ in fired], [other], 'a first agent, once, on the task none has worked')
@@ -298,12 +278,36 @@ def test_the_general_agent_reads_the_learned_lines_nearest_its_task():
     system = general._prompt(s, tid)[0]
     assert 'WHAT TASKUARY HAS LEARNED ABOUT THE OWNER' in system and 'Payworth is vendor 4471' in system and '--memory' in system
     # ...counted in learned lines, not characters: the head now says how to lean on them too (2026-11-09)
-    assert general.learned_block(s, 'x', budget=10).count('\n- ') == 1, 'held to its budget: the first line, never the whole doc'
+    assert general.learned_block(s, tid, budget=45).count('\n- ') == 1, 'held to its budget: whole lines, never the whole doc'
     with mock.patch('taskuary.origin.of_task', return_value=('stranger', 'unknown sender')):
         assert 'WHAT TASKUARY HAS LEARNED' not in general._prompt(s, tid)[0], "a stranger's task is never told who the owner is"
+
+
+def test_the_general_agent_never_reads_the_owners_lines_about_people_off_its_task():
+    """Its learned block was every bullet of LEARNED.md in the document's order wherever no embedder ranked them - so the people lines
+    about EVERYONE came first, and the verdict lines about other senders after (the memory audit, 2026-11-12). The owner, 2026-10-25: an
+    agent reads how the owner deals with the people on its own task, never the rest. One road now: learned_cut.for_reader."""
+    from taskuary import context, learn, learned_cut as lc
+    s = MemoryStore(); s.set_setting('owner_email', 'alex@northwind.example', 'o')
+    tid = s.create_task({'Title': 'Offsite venues for March', 'Kind': 'general', 'Status': 'open'}, 'o')
+    s.add_message({'TaskId': tid, 'ExternalId': 'g1', 'Channel': 'email', 'FromName': 'Gail Moreno', 'FromEmail': 'gail@northwind.example',
+                   'Subject': 'Offsite venues', 'BodyText': 'Two venues for March?', 'Status': 'routed'})
+    doc = s.get_doc(learn.DOC)
+    for head, ls in ((lc.PEOPLE, ['- You answer Erin Blake (erin@northwind.example) the same morning', '- Gail Moreno (gail@northwind.example) books the offsites']),
+                     (lc.CARE, ['- Payroll questions are never yours', '- Weekly digests from this sender are reading only (about: digest@vendor.example)',
+                                '- Venue quotes from this sender go to Paula (about: gail@northwind.example)']),
+                     (lc.WORK, ['- You batch expense approvals on Monday mornings'])):
+        doc = doc.replace(head + '\n', head + '\n' + '\n'.join(ls) + '\n', 1)
+    s.save_doc(learn.DOC, doc, 'owner')
+    block, brief = general.learned_block(s, tid), context.for_prompt(s, tid)
+    assert 'Payroll questions are never yours' in block and 'Monday mornings' in block, 'what the owner cares about and how they work'
+    assert 'Venue quotes from this sender go to Paula' in block, 'a line about this very sender'
+    assert 'erin@northwind.example' not in block + brief and 'digest@vendor.example' not in block, 'nobody off the task'
+    assert (block + brief).count('books the offsites') == 1, "the task's own people once, in its brief"
 
 
 def test_a_message_that_changes_nothing_is_said_so_in_one_line():
     """The owner, 2026-11-05: "the agent gets new message which is new input it can just say this is the same result nothing changed"."""
     from taskuary import ingest
-    assert 'changes nothing' in ingest.REPLAN and 'Nothing new here' in ingest.REPLAN and 'the earlier draft stays' in ingest.REPLAN
+    # ...in a line of its own: a sentence scripted for it was said back word for word, turn after turn (the recorded flood, 2026-11-11)
+    assert 'changes nothing' in ingest.REPLAN and 'one line of your own' in ingest.REPLAN and 'Nothing new here' not in ingest.REPLAN

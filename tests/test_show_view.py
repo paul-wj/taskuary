@@ -148,7 +148,7 @@ class TheTool(unittest.TestCase):
         from pathlib import Path
         from taskuary import config, session_artifacts
         d = Path(tempfile.mkdtemp(dir=tempfile.gettempdir()))           # a CLI's own scratchpad lives in the system's temp folder
-        (d / 'dark.png').write_bytes(PNG + b'fake'); (d / 'run.exe').write_bytes(b'MZ')
+        (d / 'dark.png').write_bytes(PNG + b'fake'); (d / 'run.exe').write_bytes(b'MZ' + bytes([0x90, 0, 3, 0, 0, 0, 0xff, 0xff]))
         text, err = tool(self.tid, 'show', files=[str(d / 'dark.png'), str(d / 'run.exe'), str(d / 'gone.png')])
         self.assertFalse(err, text)
         head, rows = text.split(agenttools.FILES_MARK)
@@ -195,6 +195,22 @@ class TheTool(unittest.TestCase):
             self.assertEqual([x['name'] for x in drawn(chat)], ['mcp__taskuary__show'])
             self.assertEqual([x['name'] for x in drawn(sessionrecord.record(self.s, self.tid)['sessions'])], ['mcp__taskuary__show'])
 
+    def test_a_turn_whose_show_step_kept_only_its_title_draws_the_view_the_task_kept(self):
+        """Recorded on the real CLI, 2026-11-15: Codex calls `show` from inside its own `exec` tool, and its turn's step held the call's title
+        and no answer - the chat said "Your bar chart is ready" over no chart, and the step opened to `show {"title": ...}` as JSON. The
+        conversation's turn draws the view the task kept, on its `show` step, as the server's answer."""
+        from taskuary import conversation, sessionrecord
+        text, err = tool(self.tid, 'show', **SPEC)
+        self.assertFalse(err, text)
+        (art,) = [a for a in self.s.list_task_artifacts(self.tid) if a.get('Kind') == 'view']
+        at = conversation.ep(art['CreatedAt'])
+        turn = {'kind': 'turn', 'state': 'done', 'started': at - 5, 'ended': at + 3, 'text': 'Your chart is ready.', 'cards': [],
+                'steps': [{'k': 'tool', 'name': 'mcp__taskuary__show', 'text': 'Northwind renewals', 'args': {'title': 'Northwind renewals'}}]}
+        later = {**turn, 'started': at + 60, 'ended': at + 90, 'steps': [{'k': 'tool', 'name': 'mcp__taskuary__show', 'args': {'title': 'x'}}]}
+        sessionrecord.views_onto([turn, later], self.s.list_task_artifacts(self.tid))
+        self.assertEqual(json.loads(turn['steps'][0]['output'].split(viewspec.MARK)[1])['title'], 'Northwind renewals')
+        self.assertNotIn('output', later['steps'][0], 'a view goes only on the turn it was drawn in')
+
     def test_a_file_outside_the_agents_folders_is_never_read(self):
         from pathlib import Path
         from taskuary import config
@@ -211,6 +227,34 @@ class TheTool(unittest.TestCase):
 if __name__ == '__main__': unittest.main()
 
 
+# WHAT IT MAKES FOR HIM TO LOOK AT, IT SHOWS (the owner, 2026-11-15: he asked for a query to review, the agent saved it as a file and said
+# only that it was ready - the ruling: the agent decides what to show, code draws it). One sentence, the same on every road, and a file
+# that is plain text can be shown whatever its name - by its bytes
+def test_every_road_is_told_in_one_sentence_to_show_what_it_makes():
+    from taskuary import apiagent, selfclose
+    assert selfclose.SHOW_WHAT in agenttools.TOOLS['show'][1], 'the tool a CLI session is handed'
+    # ...and, where a tool is listed by one line (the owner, 2026-11-15), in the few words every session is told about its tools
+    assert selfclose.SHOW_WHAT in apiagent.FULL['show'] and selfclose.SHOW_WHAT in apiagent.TOOLS_BRIEF, 'the tool an API brain is handed'
+    assert selfclose.SHOW_WHAT in agenttools.rpc({'id': 1, 'method': 'initialize'}, None)['result']['instructions'], 'what a CLI session is told'
+    assert selfclose.SHOW_WHAT in selfclose.SHOW_LINE, 'the line a chat with no tool reads'
+
+
+def test_a_query_saved_as_a_file_is_shown_as_text_by_its_bytes():
+    import tempfile
+    from pathlib import Path
+    from taskuary import session_artifacts
+    from taskuary.store import MemoryStore
+    s = MemoryStore(); tid = s.create_task({'Title': 'Clear three columns on three rows', 'Kind': 'general'}, 'owner')
+    d = Path(tempfile.mkdtemp(dir=tempfile.gettempdir()))
+    (d / 'clear_columns.sql').write_text('BEGIN;\nUPDATE facilities SET fax = NULL WHERE id IN (14, 22, 31);\nCOMMIT;\n', encoding='utf-8')
+    a = session_artifacts.shown(s, tid, d / 'clear_columns.sql', 'agent')
+    assert (a['Name'], a['ContentType'], a['Kind']) == ('clear_columns.sql', 'text/plain', 'shown')
+    assert 'UPDATE facilities' in Path(a['Path']).read_text(encoding='utf-8')
+    (d / 'blob.dat').write_bytes(bytes([0, 1, 2, 255]) * 40)
+    try: session_artifacts.shown(s, tid, d / 'blob.dat', 'agent'); raise AssertionError('bytes that are no text are not shown')
+    except ValueError as e: assert 'cannot be shown' in str(e)
+
+
 def test_the_tool_says_not_to_repeat_the_view_in_words():
     from taskuary import agenttools
     assert 'never the same table or list again in text' in agenttools.TOOLS['show'][1]
@@ -224,16 +268,35 @@ def test_the_tools_one_example_is_a_good_spec_with_a_grid_tiles_a_chart_a_table_
     assert len(v['elements']['kpi']['props']['items']) == 3
 
 
+def test_the_answer_is_the_answer_never_a_line_of_what_did_not_happen():
+    """The owner, 2026-11-16: "tell me what to do and i will do it" was answered "No changes were made to Azure permissions, resources, or the
+    implementation this turn" - and on the real CLI a plain question closed "I didn't change anything. I couldn't open the context file...".
+    The verify rule told every turn to say what it checked, "or that you could not": it says how an effect was checked, and what did not
+    happen only where it changes the answer - in the template, the line a pre-template copy hears, and an edited copy that read as shipped."""
+    import tempfile
+    from pathlib import Path
+    from taskuary import store as store_mod
+    from taskuary.store import SQLiteStore
+    agent = (Path(agenttools.__file__).parent / 'templates' / 'agent.md').read_text(encoding='utf-8')
+    assert store_mod._VERIFY_NOW in agent and 'or that you could not' not in agent
+    assert 'Answer what was asked' in agenttools.VERIFY_RULE and 'could not check it' not in agenttools.VERIFY_RULE
+    path = Path(tempfile.mkdtemp()) / 'taskuary.db'
+    s = SQLiteStore(str(path)); s.save_doc('agent', 'MINE.\r\n' + store_mod._VERIFY_WAS.replace('\n', '\r\n') + 'last.', 'owner')
+    s.cx.execute("DELETE FROM setting WHERE Name='agent_answers_the_ask'"); s.cx.commit()
+    a = SQLiteStore(str(path)).get_doc('agent')
+    assert store_mod._VERIFY_NOW.replace('\n', '\r\n') in a and 'or that you could not' not in a and a.startswith('MINE.') and a.endswith('last.')
+
+
 def test_every_worker_is_told_to_show_files_through_the_tool_and_never_claim_an_unchecked_effect():
     # 2026-11-09: a coding agent "opened" screenshots in an image viewer nobody could see and said they were on the owner's screen
     from taskuary import brief, selfclose, terminal
     rules = terminal.with_fence_rule(brief.rules(MemoryStore(), 'agent', terminal.AGENT_CHARS))      # the coding road's cut, the template's copy
     for said in ('call the `show` tool with its path in `files`', 'Never open a viewer, a browser or an app on the computer',
-                 'unless the show tool returned it', 'Never claim an effect you did not verify - opened, sent, pushed, deployed, on screen'):
+                 'unless the show tool returned it', 'Claim an effect'):
         assert said in rules, said
     old = terminal.with_fence_rule('Honest reporting: say what you did.')        # an owner's AGENT.md from before it hears both too
     assert agenttools.SHOW_RULE in old and agenttools.VERIFY_RULE in old
     assert rules.count('unless the show tool returned it') == 1                  # ...and the template's own copy is not said twice
-    assert 'never say it is on the owner\'s screen' in selfclose.SHOW_LINE and '`show` tool\'s `files`' in selfclose.SHOW_LINE
+    assert "show's `files`" in selfclose.SHOW_LINE      # ...the screen and the viewer are AGENT.md's to say (above), once
     desc = agenttools.TOOLS['show'][1]
     assert '`files`' in desc and 'never open a viewer' in desc and 'unless this tool said it was shown' in desc

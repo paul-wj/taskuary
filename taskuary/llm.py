@@ -87,6 +87,68 @@ class BudgetSpent(RuntimeError):
         super().__init__(line); self.until = datetime.now() + timedelta(seconds=rest)
 
 
+# A MODEL THAT DID NOT ANSWER IS SAID, NOT HIDDEN (the owner, 2026-11-15: "it should tell the user as well that the model did not work because
+# of quota so we know what it's doing"). A gateway asked for one model may answer with another - LiteLLM's `fallbacks` put Gemini 2.5 Pro on
+# every Claude call while Claude's quota was 0, and the owner believed he was on Claude. The answer names who answered (its `model`), and
+# LiteLLM counts its fallbacks in a header; where one of them shows another model answered, the call says so (fell_back) and the router
+# keeps it as the card's episode (brainroute.heard) - the card, the bell and the task's "AI used" read one line (fallback_line). A call
+# turned down outright on a quota (429, every retry spent) is the provider's quota, in those words, with the way on (QuotaSpent).
+QUOTA_LINE = "{name}: {model} is over its quota at the provider (it answered 429) - raise the quota there, or pick another model on its card"
+QUOTA_REST = 600           # seconds before a card over its quota is asked again: a per-minute quota is back by then, a raised one too
+_FAMILY = re.compile(r'claude|gemini|gpt|o\d|llama|mistral|grok|deepseek|qwen|command|sonar|kimi', re.I)
+_FELL = contextvars.ContextVar('tq_llm_fell', default=None)
+
+
+class QuotaSpent(BudgetSpent):
+    "The provider turned the call away on its quota (429 after every retry): said as that, and the card rests (brainroute.spend) for QUOTA_REST."
+    def __init__(self, line: str): super().__init__(line, QUOTA_REST)
+
+
+def words(model: str) -> str:
+    "A model id as a person says it: 'vertex_ai/claude-sonnet-5-5@2026' -> 'Claude Sonnet 5.5', 'gemini-2.5-pro' -> 'Gemini 2.5 Pro'."
+    out = []
+    for w in re.split(r'[-_ ]+', str(model or '').rsplit('/', 1)[-1].split('@')[0]):
+        if not w: continue
+        if out and w.isdigit() and re.fullmatch(r'[\d.]+', out[-1]): out[-1] += f'.{w}'
+        else: out.append(w.upper() if w.lower() == 'gpt' else w[:1].upper() + w[1:])
+    return ' '.join(out) or str(model or '')
+
+
+def fell_back(asked: str, answered: str, headers=None) -> bool:
+    "Did another model answer than the one asked for? LiteLLM's own count where it sent one; else the two ids' families differ."
+    n = str((headers or {}).get('x-litellm-attempted-fallbacks') or '').strip()
+    if n.isdigit(): return int(n) > 0
+    a, b = _FAMILY.search(str(asked or '')), _FAMILY.search(str(answered or ''))
+    return bool(a and b and a[0].lower() != b[0].lower())
+
+
+def fallback_line(asked: str, answered: str) -> str:
+    "The one line every surface says a fallback in."
+    fam = (_FAMILY.search(str(asked or '')) or [words(asked)])[0]
+    return (f'Asked for {words(asked)} - answered by {words(answered)}: the gateway fell back '
+            f'({fam[:1].upper() + fam[1:]} not available - e.g. its quota)')
+
+
+def heard_from() -> dict | None:
+    "What the calls made inside `hearing` were answered by: {'asked', 'answered', 'fell'} of the last one, None when none answered."
+    return _FELL.get()
+
+
+@contextmanager
+def hearing():
+    box = {}
+    tok = _FELL.set(box)
+    try: yield box
+    finally: _FELL.reset(tok)
+
+
+def refused(t: str, r, url: str, model: str) -> Exception:
+    "The error a refused call raises: a quota in plain words with the way on (QuotaSpent), else the provider's own."
+    if r.status_code == 429:
+        return QuotaSpent(QUOTA_LINE.format(name='HIPAA AI' if t == 'hipaa_ai' else t, model=words(model) or 'its model'))
+    return RuntimeError(f'{t} error {r.status_code} at {url.split("?")[0]}{tried(r)}: {r.text[:300]}')
+
+
 def budget_said(text) -> str:
     "The spent-budget line inside an error however it was wrapped ('AI triage failed (...)'), else ''."
     m = re.search(r"[A-Za-z][\w .-]{0,40}?" + re.escape(BUDGET_LINE.split('{name}')[1]), str(text or ''))
@@ -213,6 +275,12 @@ VERTEX_DEFAULT = 'gemini-3.8-flash'
 # kept a copy, and it drifted: it said Vertex ran 'google/gemini-3.8-flash' while it ran this (the router, 2026-10-25).
 PROVIDER_DEFAULT = {'anthropic': 'claude-opus-5', 'openai': 'gpt-4o-mini', 'openrouter': 'openrouter/auto', 'meta': 'muse-spark-1.2',
                     'vertex_ai': VERTEX_DEFAULT}
+# ...and its QUICK work - triage, ranking, memory, summaries - where the box is blank too, as a CLI's quick work runs on its light model
+# (LIGHT_DEFAULT): a blank Anthropic card read every mail on Opus (the readiness review, 2026-11-14). A provider not here thinks less instead.
+PROVIDER_LIGHT = {'anthropic': 'claude-haiku-5-5'}
+def light_of(kind: str, config: dict) -> str:
+    "The model an AI card's quick work runs on: its own quick box, else its provider's light model while its model box is blank, else ''."
+    return str(config.get('light_model') or '').strip() or ('' if str(config.get('model') or '').strip() else PROVIDER_LIGHT.get(kind, ''))
 # AN ANSWER CUT OFF BY THE LIMIT IS ASKED AGAIN WITH ROOM. A thinking model (Gemini 2.5+, the reasoning GPTs) spends its token budget
 # thinking before it writes, so a 400-token triage came back with no message at all - read as a refused format, then as an error with
 # no reason, and a connected Vertex AI sorted no mail (2026-10-15). Once more with this much room; empty after that says so.
@@ -221,6 +289,7 @@ ROOM = 8000
 # reasoning and handed back 16 words with finish_reason 'length' - "Tell me what you'd like the routine to do-what", a CALL cut at
 # `{"params` - and the chat showed the stub (the owner, 2026-11-09). A route seen thinking is asked with ROOM from then on.
 _THINKS = set()            # (type, endpoint, model) whose answers were seen cut by reasoning tokens
+_SAID = {}                 # a CLI conversation's id -> the hash of the instructions it was last typed (make_cli_llm: said once)
 def cut_by_thinking(j: dict) -> bool:
     "A 'length' finish whose budget went mostly to reasoning: the visible words are a stub, not the answer the cap allowed."
     ch, u = (j.get('choices') or [{}])[0], j.get('usage') or {}
@@ -281,7 +350,7 @@ def _general(store, task_id) -> bool:
 def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, trace=None, cancel=None,
                  resume=None, cli_tools: bool = False, extra_env: dict = None, read_only: bool = None,
                  research: bool = False, gear: str = 'light', keep: str = None, extra_args: list = None, task_id=None,
-                 user_settings: bool = True, hold_sid: str = None):
+                 user_settings: bool = True, hold_sid: str = None, reads: dict = None):
     """A CLI agent as the classifier: prompt in on stdin, JSON out. The repo working dir
     is dropped - triage is about the message, not about any checkout.
 
@@ -304,6 +373,10 @@ def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, tra
     # `read_only` is explicit for scheduled reports: a folder tells the agent where it may READ,
     # not whether it may write. None preserves the older caller contract where a cwd meant hands.
     no_hands = read_only if read_only is not None else not (cwd or cli_tools)
+    # A ONE-SHOT WITH NO HANDS READS NONE OF THE OWNER'S OWN CLI SETUP either (agents._own_settings, as the Assistant and a general task):
+    # their CLAUDE.md, skills and plugins rode every verdict, after the cached instructions and so billed whole each time - 5,624 tokens
+    # written a call against 865 without them, measured on the real CLI (2026-11-11). A classifier has no use for a coding style guide
+    if no_hands and not keep: prof['user_settings'] = False
     raw_args = prof.get('args')          # the profile's own, before any road below restricts them
     if not no_hands and cli_tools and (extra_env or {}).get('TASKUARY_SKILL_GENERATION'):
         from . import skillstate, skillpackages
@@ -319,11 +392,16 @@ def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, tra
     else:
         # The classifier reads untrusted text with every tool off. A report is different: it may
         # safely read files and the web, but never gets command, edit, write, or connector tools.
-        from .clis import preset_args, quick_read_args, readonly_args, report_read_args
+        from .clis import preset_args, readonly_args, report_read_args
         from . import config
-        restrict = quick_read_args if research == 'web' else report_read_args if research else readonly_args
+        # ...and one that can reach the web as well reads only the files its report names (`reads`: reports.web_reads, clis.CONFINE)
+        from .clis import confines
+        reads = reads if research and reads and confines(prof['cmd']) else None        # ...where this CLI can be kept to them
+        restrict = (lambda c, a: report_read_args(c, a, reads)) if research else readonly_args
         prof['args'] = restrict(prof['cmd'], list(prof.get('args') or preset_args(prof['cmd']) or ['-p']))
-        scratch = config.home() / 'scratch'; scratch.mkdir(exist_ok=True)
+        # ...from a folder of its own outside Taskuary's home when it names none: the scratch folder is inside what it may not read
+        scratch = reads['folder'] if reads else config.home() / 'scratch'
+        scratch.mkdir(parents=True, exist_ok=True)
         prof['cwd'] = cwd or str(scratch)
     # The ACP road is for the general agent's tool-using runs only. `no_hands` is exactly the
     # classifier - triage and the drafter, one verdict with every tool off - and it keeps argv.
@@ -358,6 +436,13 @@ def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, tra
             if resume and resume != store.get_setting(f'stranger_sid:{task_id}'): resume = None
     if not no_hands: prof.setdefault('acp_ok', True)
     else: prof['acp_ok'] = False         # a run with every tool off has nothing to permit, whatever a saved profile says
+    # AN AGENT'S CHAT ON A CLI WHOSE READS NO COMMAND LINE CAN KEEP (clis.confines - codex: even its read-only sandbox reads the whole disk,
+    # and its only way to act alone is the bypass) works on the held road, its look and its hands alike (the owner, 2026-11-16: Codex quick
+    # work listed his Documents folder without asking): over ACP every read outside the task asks and every gated act holds (acpgate), and
+    # where that road cannot start nothing runs on the command line instead (agents.run_cli, `held_only`)
+    from . import clis as clis_mod
+    if task_id and keep and stranger_mode not in ('auto', 'look') and not clis_mod.confines(prof['cmd']) and clis_mod.acp_adapter(prof['cmd']):
+        prof['acp_ok'] = prof['held_only'] = True
     if extra_args:
         from .clis import preset_args
         prof['args'] = list(prof.get('args') or preset_args(prof['cmd']) or ['-p']) + list(extra_args)
@@ -428,6 +513,10 @@ def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, tra
         kwargs = {'cancel': cancel} if cancel is not None else {}
         if extra_env: kwargs['extra_env'] = extra_env
         run_prof, prompt = shaped(system, user)
+        # ...A CLI WITH NO SYSTEM CHANNEL HEARS ITS INSTRUCTIONS ONCE PER CONVERSATION (the cache audit, 2026-11-14): codex and gemini had the
+        # whole ~30K-character system typed above every resumed turn, ~7.5K tokens more history each turn. A changed system is said again
+        sid0, said = (llm.session_id if keep else resume), hashlib.sha1(str(system).encode('utf-8')).hexdigest()
+        if system and cli != 'claude' and sid0 and _SAID.get(sid0) == said: prompt = user
         if run_prof.get('model'): aiusage.note(str(run_prof['model']).split('@')[0])
         # A KEPT conversation goes on with the session its last call was on, not the id this brain was built with: a new
         # chat's second round (a look-up, the gate's retry) went out with no id, which clipool reads as New chat - so it
@@ -445,6 +534,7 @@ def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, tra
                 raise
         # what the caller needs to CONTINUE this conversation instead of starting another one
         llm.session_id = sid or resume
+        if system and cli != 'claude' and llm.session_id: _SAID[llm.session_id] = said
         if stranger_mode in ('auto', 'look') and sid: store.set_setting(f'stranger_sid:{task_id}', sid, 'router')   # born in the stranger's folder
         return out
     def shaped(system, user):
@@ -458,6 +548,11 @@ def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, tra
             # conversation (clipool keys on the command) stays warm until the instructions actually change. Without
             # hands it REPLACES Claude Code's own coding prompt; with tools it is appended to it.
             from . import config
+            # ...and ONLY WHAT EVERY CALL SHARES is in that file (stable()'s blocks): Claude Code caches its system prompt as one piece,
+            # so this call's own part at its end - the evidence picked for one sender - re-billed the whole guide on every mail (23,376
+            # tokens written, none read, against 17,720 read with it under the instructions; measured on the real CLI, 2026-11-11).
+            # It leads the turn instead, above the message it is about
+            if getattr(system, 'blocks', None) and system.rest.strip(): system, user = ''.join(system.blocks), f'{system.rest.strip()}\n\n{user}'
             folder = config.home() / 'prompts'; folder.mkdir(parents=True, exist_ok=True)
             path = folder / f"system-{hashlib.sha1(system.encode('utf-8')).hexdigest()[:16]}.md"
             if not path.exists(): path.write_text(system, encoding='utf-8')
@@ -476,12 +571,10 @@ def make_cli_llm(store, agent_name: str, model: str = None, cwd: str = None, tra
         with run_context(store, task_id if not no_hands else None):
             return warm_cli(shaped(system, '')[0], resume=llm.session_id, extra_env=extra_env, swap=swap)
     llm.session_id, llm.warm = resume, warm
-    # ...and whether it can look a fact up: only a quick call's own flags give the web (clis.quick_web), and a stranger's look has no tools
-    from .clis import quick_web
-    llm.looks_up = no_hands and research == 'web' and stranger_mode != 'look' and quick_web(prof['cmd'])
     # said out loud, not merely absent: a brain that CANNOT carry a schema is the one whose answer
     # is worth rechecking in code (llm.ask_json). Silence means "do not second-guess me".
     llm.takes_want = False
+    llm.kept_to = reads if no_hands else None      # the files this run was kept to, for the caller to say (reports.reads_said)
     return llm
 
 
@@ -580,18 +673,28 @@ class _Cooling:
     raises the same line at once, so a poll with no backup holds its mail without a request per message (brainroute.spend)."""
     def __init__(self, store, pick, brain):
         for k, v in (('_store', store), ('_pick', pick), ('_brain', brain)): object.__setattr__(self, k, v)
-    def __call__(self, *a, **kw):
+    def __call__(self, *a, **kw): return self._asked(self._brain, a, kw)
+    def _asked(self, f, a, kw):
         from . import brainroute
         if (line := brainroute.spent(self._store, self._pick)): raise BudgetSpent(line)
-        try: out = self._brain(*a, **kw)
+        try:
+            with hearing() as box: out = f(*a, **kw)
         except Exception as e:
             if isinstance(e, BudgetSpent): brainroute.spend(self._store, self._pick, str(e), e.until)
             elif getattr(e, 'until', None): brainroute.cool(self._store, self._pick, e.until)
             raise
         brainroute.unspend(self._store, self._pick)
+        brainroute.heard(self._store, self._pick, box)
+        from . import agents
+        agents.answered(self._store, self._pick)
         return out
     def __bool__(self): return bool(object.__getattribute__(self, '_brain'))
-    def __getattr__(self, k): return getattr(object.__getattribute__(self, '_brain'), k)
+    def __getattr__(self, k):
+        v = getattr(object.__getattribute__(self, '_brain'), k)
+        # ...and EVERY STEP OF AN AGENT'S LOOP the same (apiagent.turn's brain.chat): a spent card, a quota, a fallback are each step's too
+        if k != 'chat' or not callable(v): return v
+        def chat(*a, **kw): return self._asked(v, a, kw)
+        return chat
     def __setattr__(self, k, v): setattr(object.__getattribute__(self, '_brain'), k, v)
 
 
@@ -715,8 +818,6 @@ def _build_llm(store, pick=None, model=None, trace=None, cancel=None, resume=Non
     failover.is_failover, failover.route = True, None     # build_llm hands it its route row, for a backup to be written on
     failover.takes_want = True          # it forwards one to each brain that can carry it, and drops it for the rest
     failover.takes_web = any(getattr(b, 'takes_web', False) for _, b in brains)
-    # a prompt that says lookups exist is written before the answering brain is known: every brain of the chain must have them
-    failover.looks_up = all(getattr(b, 'looks_up', getattr(b, 'takes_web', False)) for _, b in brains)
     # a tool loop runs on the primary alone: a backup's own tools and conversation are not this one's (apiagent.py)
     failover.chat = getattr(brains[0][1], 'chat', None) if brains[0][0] == primary else None
     return failover
@@ -779,6 +880,61 @@ def ask_json(brain, system: str, user: str, want: dict = None, need=(), **kw) ->
     second = ask(user + again)
     out = second if second.data is not None and not short(second) else (second if second.data is not None else first)
     return _stepped(brain, system, user, want, need, kw, out)
+
+
+# lines new + gone that one short call weighs against the last answer. One new mail shows on 3-4 lines of an Advisor payload (its arrival,
+# its thread, the threads list, a capped list's last line falling off): 12 is two or three mails - past that the picture itself has moved
+SMALL_FACTS = 12
+MAX_RECHECKS = 3    # small checks stacked on one full answer before it is asked again whole, however small each was - so it never drifts
+NO_CHANGE = 'NO CHANGE'
+RECHECK_ASK = (f"Would anything in your last answer change because of these? If nothing would, answer exactly {NO_CHANGE}. If something "
+               'would, answer again in the same format as your last answer, as it should now stand.')
+# the app's own clock words in a payload (timewords.span's '5m' / '3 hours' / '1h05m' and 'just now', and the clock line a payload opens
+# with): a fact is what it is, not how long ago it was looked at - half an hour later "4h since" reads "5h since" and nothing happened.
+# And a list's own position number (assistant.connect_text's [T3], newest first): one new mail renumbers every line under it
+_CLOCK = re.compile(r'^NOW: .*$|^\[[TN]\d+\]|-?\b\d+h\d\dm\b|-?\b\d+[mhd]\b|\b\d+ (?:minute|hour|day)s?\b|\bjust now\b')
+
+
+def fact(line) -> str: return _CLOCK.sub('~', str(line)).strip()
+def facts(text) -> list: return [l.strip() for l in str(text or '').splitlines() if fact(l).strip('~ ')]
+
+
+def standing(store, key: str, system: str, user: str, ask, small: bool = True, now=None) -> tuple:
+    """(answer, what this run was) for a question a clock asks, decided on its facts (the owner, 2026-11-12: "if it only changes a little
+    take the past result and say would anything change based off of this small change"). `ask(user)` asks the model; `key` is the setting
+    the last answer stands under. Three cases, by plain code:
+      - the same facts, only clocks moved: nothing is asked, the last answer stands ('nothing changed');
+      - a few facts new or gone (SMALL_FACTS, at most MAX_RECHECKS times): one short call - the last answer and only those facts
+        (`small=False`: a question that cannot be asked that way, asked whole instead);
+      - many, a changed instruction, nothing kept or a new day: asked whole ('rebuilt').
+    An answer of None (the model did not answer) is never kept. Never for what the owner asks again on purpose (Run now, a redraft)."""
+    from collections import Counter
+    from datetime import datetime
+    day, sh, now_f = (now or datetime.now()).strftime('%Y-%m-%d'), hashlib.sha1(str(system).encode('utf-8', 'replace')).hexdigest(), facts(user)
+    try: had = json.loads(store.get_setting(key) or '{}')
+    except ValueError: had = {}
+    def keep(out, n, said):
+        if out is not None: store.set_setting(key, json.dumps({'sys': sh, 'facts': now_f, 'out': out, 'day': day, 'n': n}), 'router')
+        return out, said
+    ok = isinstance(had, dict) and had.get('sys') == sh and had.get('day') == day and 'out' in had
+    if not ok: return keep(ask(user), 0, 'asked' if not had else 'rebuilt: a new day' if had.get('day') != day else 'rebuilt: its instruction changed')
+    was = had.get('facts') or []
+    old, new = Counter(map(fact, was)), Counter(map(fact, now_f))
+    plus, minus = new - old, old - new
+    def pick(ls, c):                                    # the lines as they were written, each one as often as it changed
+        out = []
+        for l in ls:
+            if c[fact(l)] > 0: c[fact(l)] -= 1; out.append(l)
+        return out
+    added, gone = pick(now_f, plus), pick(was, minus)
+    n = len(added) + len(gone)
+    if not n: return had['out'], 'nothing changed'
+    if not small or n > SMALL_FACTS or int(had.get('n') or 0) >= MAX_RECHECKS: return keep(ask(user), 0, f'rebuilt: {n} facts changed')
+    said = '\n'.join([f'new: {l[:600]}' for l in added] + [f'gone: {l[:600]}' for l in gone])
+    got = ask(f"YOUR LAST ANSWER:\n{had['out']}\n\nSINCE IT, ONLY THESE FACTS CHANGED (everything else you were shown is the same):\n{said}\n\n{RECHECK_ASK}")
+    if got is None: return keep(ask(user), 0, f'rebuilt: {n} facts changed')
+    same = str(got).strip().strip('.').upper() == NO_CHANGE
+    return keep(had['out'] if same else got, int(had.get('n') or 0) + 1, f"checked {n} changed facts - {'no change' if same else 'updated'}")
 
 
 _FENCE = re.compile(r'```[a-zA-Z]*\s*\n?(.*?)```', re.S)
@@ -1008,15 +1164,44 @@ def said_text(msg: dict) -> str:
 # - OpenAI, and Gemini 2.5+ behind a gateway, cache a repeated prefix by themselves (OpenAI from 1,024 tokens; Gemini Flash from 4,096) - there
 #   the order alone hits. A LiteLLM gateway also takes cache_control and makes a Vertex cachedContent of the marked part, but on Gemini that
 #   turns the free implicit cache off for it and bills storage, so it is the card's choice (`cache: explicit` in its settings), not the default;
+# - CLAUDE BEHIND A GATEWAY caches only what is marked, as on the Messages API (the HIPAA AI card, 2026-11-15: Vertex caching turned on, and a
+#   Claude model on it was never marked - every step of an agent's turn paid its whole prefix again). So the MODEL decides, not the card: the
+#   one the call goes to, and once one has answered, the one that did (a gateway that falls back to Gemini for a Claude name says so in its
+#   answer's `model`). Marked there: the stable system and the conversation's last message, in the Messages API's own shape (LiteLLM hands
+#   cache_control on to Vertex's and Bedrock's Claude, and OpenRouter to Anthropic's);
 # - a card that refuses the marker (a 400 naming it) is asked again without it, and never marked again (_NO_CACHE).
 # Whatever reads it as text - a CLI's prompt file, a log - reads the same words: Stable is a str.
 EPHEMERAL, CACHE_FROM = {'type': 'ephemeral'}, 2_000      # characters: under ~512 tokens no provider caches at all
 _NO_CACHE = set()          # (type, endpoint, model) that refused a cache marker
-# how each card's provider caches: 'explicit' takes the marker; 'implicit' caches a repeated prefix by itself (OpenAI-style APIs; Gemini behind a
-# gateway - its newest Flash models cache implicitly only, at a 90% discount, from ~4-6K tokens, for up to a day). The Messages API is marked in
-# make_llm's own branch. A card's `cache` setting overrides its type's; a type not listed is implicit
-CACHE_MARKS = {'anthropic': 'explicit', 'hipaa_ai': 'implicit', 'vertex_ai': 'implicit', 'gemini': 'implicit', 'openai': 'implicit',
-               'azure_openai': 'implicit', 'openrouter': 'implicit', 'deepseek': 'implicit'}
+_ANSWERED = {}             # (type, endpoint, model) -> the model that last answered it, as its answer named it
+_CLAUDE = re.compile(r'claude|anthropic', re.I)          # a model id's own family name: Vertex's, Bedrock's and OpenRouter's all carry it
+
+
+def cache_mode(cfg: dict, model: str, answered: str = '') -> str:
+    "'explicit' where the model the call reaches caches only what is marked (Claude), else 'implicit'; a card's `cache` setting overrides."
+    return cfg.get('cache') or ('explicit' if _CLAUDE.search(str(answered or model or '')) else 'implicit')
+
+
+def mark_last(msgs: list) -> list:
+    "The conversation with its last message marked, so the next step reads all before it from the cache: a user line in its content, else the message."
+    if not msgs: return msgs
+    m, c = msgs[-1], msgs[-1].get('content')
+    if m.get('role') != 'user': return [*msgs[:-1], {**m, 'cache_control': EPHEMERAL}]
+    parts = [{'type': 'text', 'text': c}] if isinstance(c, str) else list(c or [])
+    return [*msgs[:-1], {**m, 'content': parts[:-1] + [{**parts[-1], 'cache_control': EPHEMERAL}]}] if parts else msgs
+
+
+def unmark(msgs: list) -> bool:
+    "Every cache marker taken out of `msgs`, in place - a system of blocks back to its words. Whether there was one."
+    had = False
+    for i, m in enumerate(msgs):
+        c = m.get('content')
+        if 'cache_control' in m: had, m = True, {k: v for k, v in m.items() if k != 'cache_control'}
+        if isinstance(c, list) and any(isinstance(b, dict) and 'cache_control' in b for b in c):
+            had, c = True, [{k: v for k, v in b.items() if k != 'cache_control'} for b in c]
+            m = {**m, 'content': ''.join(b.get('text') or '' for b in c) if m.get('role') == 'system' else c}
+        msgs[i] = m
+    return had
 _CACHE_REFUSED = re.compile(r'cache_control|cached_?content|cache', re.I)
 
 
@@ -1163,13 +1348,22 @@ def make_llm(t, cfg: dict, key: str):
     else:
         raise RuntimeError(f'unknown AI connector type: {t}')
     ek = (t, urls[0], model)
-    marked = lambda system: ((cfg.get('cache') or CACHE_MARKS.get(t, 'implicit')) == 'explicit' and ek not in _NO_CACHE
-                             and blocks(system, seconds=True)) or str(system)
+    # ...marked as the model it reaches caches (cache_mode): Claude's TTL in its own words, Gemini's cachedContent in seconds
+    claude = lambda: bool(_CLAUDE.search(str(_ANSWERED.get(ek) or model or '')))
+    marking = lambda: cache_mode(cfg, model, _ANSWERED.get(ek)) == 'explicit' and ek not in _NO_CACHE
+    marked = lambda system, marks=4: (marking() and blocks(system, marks, seconds=not claude())) or str(system)
+    def heard(r):
+        """The model that answered, as the answer names it: a gateway that put a Claude name on Gemini is marked as Gemini from the next call,
+        and the call says whether it fell back (hearing)."""
+        said = str((r.json() or {}).get('model') or '') if isinstance(r.json(), dict) else ''
+        if said: _ANSWERED[ek] = said
+        if (box := _FELL.get()) is not None and said and model:
+            box.update(asked=model, answered=said, fell=fell_back(model, said, getattr(r, 'headers', None)))
+        if said and model and fell_back(model, said, getattr(r, 'headers', None)): aiusage.fell(model)
     def unmarked(r, msgs) -> bool:
         "A refused cache marker (a 400 naming it): taken off this request and never put on this card again."
-        if r.status_code not in (400, 422) or not msgs or isinstance(msgs[0].get('content'), str) or msgs[0].get('role') != 'system': return False
-        if not _CACHE_REFUSED.search(r.text or ''): return False
-        _NO_CACHE.add(ek); msgs[0] = {**msgs[0], 'content': ''.join(b.get('text') or '' for b in msgs[0]['content'])}
+        if r.status_code not in (400, 422) or not msgs or not _CACHE_REFUSED.search(r.text or '') or not unmark(msgs): return False
+        _NO_CACHE.add(ek)
         from loguru import logger
         logger.info(f'{t}: the card refused a cache marker - asked without one from now on'); return True
 
@@ -1212,7 +1406,7 @@ def make_llm(t, cfg: dict, key: str):
                         if not _THINK_REFUSED.search(said): _no_effort(ek, said)
                         r = post_retrying(url, headers, body, (CONNECT_TIMEOUT, READ_TIMEOUT))
                     if r.status_code == 200:
-                        aiusage.openai(r.json())
+                        aiusage.openai(r.json()); heard(r)
                         ch = (r.json().get('choices') or [{}])[0]
                         said = said_text(ch.get('message') or {})
                         if cut_by_thinking(r.json()): _THINKS.add(ek); raise _Empty('length')
@@ -1223,7 +1417,7 @@ def make_llm(t, cfg: dict, key: str):
                     if r.status_code == 400 and images and _IMAGE_REFUSED.search(r.text): raise _ImageRefused(r.text[:300])
                     if r.status_code == 400 and 'max_completion_tokens' in r.text: continue
                     if fmt and refused_format(r): return None           # cannot carry this format -> ask with the next one
-                    raise RuntimeError(f'{t} error {r.status_code} at {url.split("?")[0]}{tried(r)}: {r.text[:300]}')
+                    raise refused(t, r, url, model)
             return None
 
         # `want` is a JSON schema the answer MUST fit, and the strongest form is worth asking for:
@@ -1246,7 +1440,7 @@ def make_llm(t, cfg: dict, key: str):
                 if out is not None:
                     if fmt or want: _FORMAT_FROM[where] = i
                     return out
-            raise RuntimeError(f'{t} error {last.status_code} at {urls[-1].split("?")[0]}{tried(last)}: {last.text[:300]}')
+            raise refused(t, last, urls[-1], model)
         # ...and an empty 'stop' is asked once more as it was: Gemini behind the HIPAA AI gateway now and then thinks and writes nothing
         spent = 0
         while True:
@@ -1265,7 +1459,9 @@ def make_llm(t, cfg: dict, key: str):
     # carries `tools` on to the Gemini and Claude models behind a gateway (verified live on the HIPAA AI card, 2026-11-09).
     def chat(messages, tools, max_tokens=MAX_TOKENS, **extra):
         last = None
-        if messages and messages[0].get('role') == 'system': messages = [{**messages[0], 'content': marked(messages[0].get('content') or '')}, *messages[1:]]
+        # ...where the model caches only what is marked, the conversation too: each step reads every step before it from the cache
+        if messages and messages[0].get('role') == 'system': messages = [{**messages[0], 'content': marked(messages[0].get('content') or '', 2)}, *messages[1:]]
+        if marking() and claude() and len(messages) > 1: messages = mark_last(messages)
         for url in urls:
             for tok_param in ('max_completion_tokens', 'max_tokens'):
                 body = {'messages': messages, 'tools': tools, tok_param: max_tokens, **extra, **({'model': model} if model else {}),
@@ -1276,13 +1472,13 @@ def make_llm(t, cfg: dict, key: str):
                 if r.status_code in (400, 422) and body.pop('reasoning_effort', None) and _EFFORT_REFUSED.search(r.text or ''):
                     r = post_retrying(url, headers, body, (CONNECT_TIMEOUT, READ_TIMEOUT))
                 if r.status_code == 200:
-                    aiusage.openai(r.json())
+                    aiusage.openai(r.json()); heard(r)
                     return (r.json().get('choices') or [{}])[0].get('message') or {}
                 last = r
                 if r.status_code == 404: break
                 if r.status_code == 400 and 'max_completion_tokens' in (r.text or ''): continue
-                raise RuntimeError(f'{t} error {r.status_code} at {url.split("?")[0]}{tried(r)}: {r.text[:300]}')
-        raise RuntimeError(f'{t} error {last.status_code} at {urls[-1].split("?")[0]}{tried(last)}: {last.text[:300]}')
+                raise refused(t, r, url, model)
+        raise refused(t, last, urls[-1], model)
     llm.chat = chat
 
     # THE MODEL'S OWN WEB SEARCH, through the gateway (the owner, 2026-11-09: "why can't the model itself do web search?"): LiteLLM's
@@ -1299,7 +1495,7 @@ def make_llm(t, cfg: dict, key: str):
                 'max_tokens': max_tokens, 'web_search_options': {'search_context_size': 'medium'}, **({'model': model} if model else {})}
         r = post_retrying(urls[0], headers, body, (CONNECT_TIMEOUT, READ_TIMEOUT))
         if budget_spent(r): raise BudgetSpent(BUDGET_LINE.format(name='HIPAA AI' if t == 'hipaa_ai' else t))
-        if r.status_code != 200: raise RuntimeError(f'{t} error {r.status_code}: {r.text[:300]}')
+        if r.status_code != 200: raise refused(t, r, urls[0], model)
         aiusage.openai(r.json())
         m = (r.json().get('choices') or [{}])[0].get('message') or {}
         cites = list(dict.fromkeys(str((a.get('url_citation') or a).get('url') or '') for a in m.get('annotations') or [] if isinstance(a, dict)))

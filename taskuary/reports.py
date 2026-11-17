@@ -10,7 +10,7 @@ taking it out of PLANNED - PRs welcome.
 import contextlib, contextvars, hashlib, io, json, os, re, sqlite3, threading, time
 from datetime import datetime, timedelta
 from loguru import logger
-from . import apireads, spawn
+from . import aiusage, apireads, spawn
 from .timewords import ago_m, plural, span
 
 PLANNED = [
@@ -59,6 +59,9 @@ def rows_out(rows, limit, unit='rows', mine=True):
     """(headline, body) from executor rows, SAYING SO when the result was cut. A silent cap
     made the AI describe 20 rows of a TOP 500 query as 'all of them' - fetch one extra row
     and the headline can tell the truth instead."""
+    # ...a write's one row is its count (db.odbc_rows): "1 row" over an approved INSERT read as one row back, whatever it changed
+    if len(rows) == 1 and isinstance(rows[0], dict) and set(rows[0]) == {'rows_affected'}:
+        n = rows[0]['rows_affected']; return f"{n} row{'s' * (n != 1)} changed", json.dumps(rows[0])
     more = len(rows) > limit
     rows = rows[:limit]
     why = (f'capped at {limit}' if mine else f'capped at the default {limit}') + ' — set "max rows" on this source to see more'
@@ -271,6 +274,61 @@ def _outline(body: str) -> str:
     return ' / '.join(out[:24])
 
 
+# Where a path starts in the owner's own instruction - a drive letter, ~ or / - and what cannot be in one. Structure only: which
+# run of words after it is a file is the disk's to say (named_paths).
+_PATH_START = re.compile(r'(?<![\w:/\\.~-])(?:[A-Za-z]:[\\/]|~[\\/]|/(?=[\w.]))')
+_PATH_END = re.compile(r"""[\n"'`<>|*?]""")
+
+
+def named_paths(text: str) -> list:
+    """The files and folders a report's instruction names by their full path, as the disk has them. A path may have spaces in it
+    ("C:/Exports/Payworth export.csv is yesterday's"), so from each start the longest run of words that exists is the path."""
+    from pathlib import Path
+    def real(s):
+        try:
+            p = Path(s.strip().rstrip('.,;:)')).expanduser()
+            return p.resolve() if p.is_absolute() and p.exists() and p != Path(p.anchor) else None
+        except (OSError, RuntimeError, ValueError): return None
+    text, out = str(text or ''), []
+    for m in _PATH_START.finditer(text):
+        end = _PATH_END.search(text, m.start())
+        words = text[m.start():end.start() if end else len(text)].split(' ')[:12]
+        if (p := next((r for n in range(len(words), 0, -1) if (r := real(' '.join(words[:n])))), None)): out.append(p)
+    return list(dict.fromkeys(out))
+
+
+def report_folder():
+    "Where a report's agent runs when its report names no folder: its own, outside Taskuary's home (one per home, as origin.stranger_path)."
+    import tempfile
+    from pathlib import Path
+    from . import config
+    tag = hashlib.sha256(os.path.normcase(os.path.realpath(config.home())).encode()).hexdigest()[:8]
+    return Path(tempfile.gettempdir()).resolve() / 'taskuary-report' / tag
+
+
+def web_reads(cfg: dict, text: str = '') -> dict:
+    """WHAT A REPORT'S AGENT MAY READ WHEN IT CAN ALSO REACH THE WEB (clis.CONFINE, the owner 2026-11-15): `roots` - the folder the
+    report runs in and every file or folder its instruction names by path (`text`: the prompt and the skill, the owner's own words);
+    `never` - Taskuary's own folder and where sign-ins are kept (floor.kept_secret), named or not; `folder` - where it runs when the
+    report names none. One rule, said to each CLI in its own flags where it has them (clis.CONFINE)."""
+    from pathlib import Path
+    from . import floor
+    never = floor.kept_secret()
+    inside = lambda p: any(p == n or n in p.parents for n in never)
+    cwd = Path(cfg['cwd']).expanduser() if cfg.get('cwd') else None
+    roots = [p for p in dict.fromkeys([*([cwd.resolve()] if cwd and cwd.exists() else []), *named_paths(text)]) if not inside(p)]
+    return {'roots': roots, 'never': never, 'folder': report_folder()}
+
+
+def reads_said(reads: dict) -> str:
+    "The rule as the agent is told it, so a refused read is something it can act on: say which file, never try another way."
+    where = ', '.join(str(p) for p in reads['roots']) or 'none on this computer'
+    return (' FILES: this run can reach the web, so it reads files only where this report names them - '
+            f"{where} - and the folder it runs in; never Taskuary's own folder or a place sign-ins are kept. A read anywhere else is "
+            'refused: do not try it another way. Go on with what you can read, and say in the report which file you needed and that '
+            "the owner can name its full path in this report's instruction.")
+
+
 def run_agent(cfg):
     """{"agent": "researcher", "skill": "weekly-user-review", "prompt": "...", "cwd": "C:/repo", "model": "..."} -
     the AI itself as the source: a coding CLI agent (Connections -> AI CLI agents) runs your saved
@@ -296,10 +354,22 @@ def run_agent(cfg):
     # Agent-backed reports are read-only even when their source lives in a repository folder.
     # Only the Workflows door persists this explicit grant; executor type alone grants nothing.
     writes = cfg.get('access') == 'write'
+    # Long workflows promoted from an assistant conversation live in Taskuary's neutral skill
+    # store. Expand them into the prompt so one skill works through Claude, Codex, Gemini, or any
+    # custom CLI. A skill that is not there remains the provider's normal `/skill-name` command.
+    owned = None
+    if skill:
+        from . import config
+        candidate = config.home() / 'skills' / skill / 'SKILL.md'
+        try: owned = candidate.read_text(encoding='utf-8') if candidate.is_file() else None
+        except OSError: owned = None
+    # ...and a run that only looks can look at the web as well, so the files it may open are the report's own (web_reads): the
+    # folder it names and the paths its prompt and skill name - which is why the skill is read ahead of the brain
+    reads = None if writes else web_reads(cfg, f'{prompt}\n{owned or ""}')
     llm = None
     if name:
         try: llm = make_cli_llm(store, name, cfg.get('model') or None, cwd=cfg.get('cwd') or None,
-                                cli_tools=writes, read_only=not writes, research=not writes)
+                                cli_tools=writes, read_only=not writes, research=not writes, reads=reads)
         except hub_agents.NoAI: llm = None
     if llm is None:
         api = pick if pick.startswith('connector:') else hub_agents.resolve_brain(store, 'general')
@@ -310,15 +380,6 @@ def run_agent(cfg):
     if llm is None:
         from . import words
         raise RuntimeError(f"{hub_agents.NO_AI} to run this report - connect one on {words.name('ai_apps')}")
-    # Long workflows promoted from an assistant conversation live in Taskuary's neutral skill
-    # store. Expand them into the prompt so one skill works through Claude, Codex, Gemini, or any
-    # custom CLI. A skill that is not there remains the provider's normal `/skill-name` command.
-    owned = None
-    if skill:
-        from . import config
-        candidate = config.home() / 'skills' / skill / 'SKILL.md'
-        try: owned = candidate.read_text(encoding='utf-8') if candidate.is_file() else None
-        except OSError: owned = None
     # ...and it runs as THAT worker. A workflow pointed at `researcher` was getting the researcher's
     # CLI and none of the researcher's rules, because this road never loaded an operator document at
     # all. Only when the workflow NAMES its agent: an unnamed one keeps the behaviour it always had,
@@ -340,7 +401,10 @@ def run_agent(cfg):
     if shape: ask += ('\n\nSTRUCTURE: keep the sections, their order and the table columns of the previous run of this '
                       'report so runs stay comparable - change only the content - except that the result always comes first '
                       f'and how you got it last. Previous outline: {shape}')
-    out = str(llm(AGENT_SYSTEM, ask) or '').strip()
+    # ...said only to a brain that is kept to it: an API connection has no file tool on this road (llm.make_llm), and a CLI that
+    # cannot be kept to a list (clis.CONFINE) is not told it is
+    told = AGENT_SYSTEM + (reads_said(kept) if (kept := getattr(llm, 'kept_to', None)) else '')
+    with aiusage.asking('reports.agent'): out = str(llm(told, ask) or '').strip()
     if not out: raise RuntimeError(f'{name} answered nothing')
     why, out = agent_failed(out)
     # an answer ABOUT a failed run is not a report - file it as FAILED, the way the timeout and the
@@ -907,6 +971,7 @@ REGISTRY = {'sqlite': run_sqlite, 'mssql': run_mssql, 'database': run_database,
             'linkedin_me': _lazy('linkedin', 'run_linkedin_me'),
             'linkedin_post': _lazy('linkedin', 'run_linkedin_post'),
             'github_issue': _lazy('github', 'run_github_issue'),     # a new issue, on the owner's press (github.run_github_issue)
+            'github_issues': _lazy('github', 'run_github_issues'), 'github_close': _lazy('github', 'run_github_close'),
             # Robinhood over its hosted MCP: the manifest, the reads, and the one write.
             # The write is registered like QuickBooks' bill - PROPOSED on a card narrowed to read, run at FULL.
             'robinhood_tools': _lazy('robinhood', 'run_robinhood_tools'),
@@ -1036,7 +1101,7 @@ CARD_OF = {'postgresql': 'postgresql', 'mysql': 'mysql', 'clickhouse': 'clickhou
            'cockroachdb': 'cockroachdb', 'oracle': 'oracle', 'duckdb': 'duckdb', 'dynamodb': 'dynamodb', 'mongodb': 'mongodb', 'redis': 'redis', 'neo4j': 'neo4j', 'obsidian_read': 'obsidian',
            **{f'{t}_read': t for t in apireads.types()}, 
            'treg_tools': 'treg', 'treg_search': 'treg', 'treg_call': 'treg',
-           'linkedin_me': 'linkedin', 'linkedin_post': 'linkedin', 'github_issue': 'github',
+           'linkedin_me': 'linkedin', 'linkedin_post': 'linkedin', 'github_issue': 'github', 'github_issues': 'github', 'github_close': 'github',
            'bluesky_me': 'bluesky', 'bluesky_timeline': 'bluesky', 'bluesky_post': 'bluesky',
            'mastodon_me': 'mastodon', 'mastodon_timeline': 'mastodon', 'mastodon_post': 'mastodon',
            's3_object': 'aws', 'cloudwatch_logs': 'aws', 'azure_blob': 'azure', 'azure_logs': 'azure', 'calendar': 'outlook',
@@ -1289,7 +1354,7 @@ CONNECTION_OF = {'mssql': mssql_connection, 'winrm': winrm_connection, 'database
                  'robinhood_tools': robinhood_connection, 'robinhood_read': robinhood_connection,
                  'robinhood_order': robinhood_connection,
                  'linkedin_me': linkedin_connection, 'linkedin_post': linkedin_connection,
-                 'github_issue': github_connection,
+                 'github_issue': github_connection, 'github_issues': github_connection, 'github_close': github_connection,
                  'bluesky_me': bluesky_connection, 'bluesky_timeline': bluesky_connection,
                  'bluesky_post': bluesky_connection,
                  'mastodon_me': mastodon_connection, 'mastodon_timeline': mastodon_connection,
@@ -1547,10 +1612,19 @@ def with_judge(chosen, default_llm, learned: str = '') -> dict:
     return {'llm': default_llm, 'learned': learned} if chosen is default_llm else {'judge': chosen}
 
 
-def decide_for(store, cfg: dict, res: dict, default_llm) -> dict:
-    """`decide` with this install's judge already resolved."""
+def decide_for(store, cfg: dict, res: dict, default_llm, memo: str = None) -> dict:
+    """`decide` with this install's judge already resolved. `memo` names where a scheduled report keeps its judge's last answer: a run
+    that came back saying what the last one said, under the same questions and the same memory, is not judged again (llm.standing) -
+    an unchanged run skipped its summary and was still read by the judge, the owner's whole memory with it, every time it was due."""
     mem = judge_memory(store, cfg) if asks_ai(cfg) else ''
-    return decide(cfg, res, **with_judge(judge_for(store, cfg, default_llm, mem), default_llm, mem))
+    kw = with_judge(judge_for(store, cfg, default_llm, mem), default_llm, mem)
+    j = kw.get('judge') or (chat_judge(kw['llm'], mem) if kw.get('llm') else None)
+    if memo and j:
+        from .llm import standing
+        # a judge's answer is a verdict on the whole run, never re-weighed on a few lines: small=False
+        kw = {'judge': lambda state, ask, c: standing(store, memo, f'{judge_prompt(c)}\0{mem}', '\n'.join(map(str, (state, *ask))),
+                                                       lambda u: j(state, ask, c), small=False)[0]}
+    return decide(cfg, res, **kw)
 
 
 def is_digest(cfg: dict) -> bool: return 'digest' in {cfg.get('type'), *(s.get('type') for s in cfg.get('sources') or [])}
@@ -1602,6 +1676,46 @@ def headline_from(summary: str, fallback: str) -> str:
 
 UNCHANGED = 'Nothing new since the last run: its sources returned the same rows, so the AI summary was not asked for again.'
 
+# A SMALL CHANGE KEEPS THE LAST REPORT (the owner, 2026-11-11: "if it's only a small thing can we use the same report and say only
+# these things were updated"). Beside the data's hash a scheduled report keeps the summary it last WROTE and the rows it wrote it
+# from (`<mark>:kept`). A run whose rows differ from those by a few lines lands as that summary under an "Updated since HH:MM"
+# list of the changed rows, built here by plain code - no model. It is written again in full when the change is not small, when
+# updates have stacked up on one summary, when a day has passed, or when its instruction changed - and says which it was.
+SMALL_ROWS = 6        # rows new + gone since the summary was written: past ~3 changed rows its sentences describe data that has moved
+MAX_UPDATES = 3       # small updates stacked on one summary before it is written again, however small each was
+KEEP_CHARS = AI_CHARS  # rows are kept for comparing only up to what the model was shown: past that the summary never saw the rest
+
+
+def _prompt_key(cfg) -> str: return hashlib.sha256(str(cfg.get('ai_prompt') or '').encode('utf-8', 'replace')).hexdigest()[:16]
+def _rows(text) -> list: return [l.strip() for l in str(text or '').splitlines() if l.strip()]
+
+
+def kept_report(store, mark: str) -> dict:
+    "The summary a scheduled report last wrote, with what it was written from - {} when there is none to stand."
+    try: k = json.loads(store.get_setting(f'{mark}:kept') or '{}')
+    except ValueError: k = {}
+    return k if isinstance(k, dict) and k.get('ai') and k.get('at') else {}
+
+
+def since_kept(kept: dict, cfg: dict, summary: str, now: datetime = None) -> tuple:
+    """(small, words) for this run's rows against the kept summary's: small True -> `words` is the "Updated since" block that
+    stands above the kept summary; False -> `words` is why it is written again ('' with nothing kept to compare)."""
+    from collections import Counter
+    if not kept: return False, ''
+    at, was = str(kept['at']), kept.get('rows')
+    day, clock = at[:10], at[11:16]
+    if kept.get('prompt') != _prompt_key(cfg): return False, 'Rebuilt: its instruction changed.'
+    if was is None or len(summary) > KEEP_CHARS: return False, ''                      # too long to compare row by row: written each time
+    if day != (now or datetime.now()).strftime('%Y-%m-%d'): return False, f'Rebuilt: the last full report was from {day}.'
+    old, new = Counter(_rows(was)), Counter(_rows(summary))
+    added, gone = list((new - old).elements()), list((old - new).elements())
+    n = len(added) + len(gone)
+    if n > SMALL_ROWS: return False, f'Rebuilt: {n} rows changed since {clock}.'
+    if int(kept.get('updates') or 0) >= MAX_UPDATES: return False, f'Rebuilt: {MAX_UPDATES} small updates had stacked up on the report from {clock}.'
+    lines = [f'new: {l[:300]}' for l in added] + [f'gone: {l[:300]}' for l in gone] or ['the same rows, in another order']
+    return True, (f"Updated since {clock}: {plural(n, 'row')} changed. The report below is the one written at {clock}; "
+                  f"the AI was not asked again.\n" + '\n'.join(lines))
+
 
 def render_report(store, cfg: dict, llm=None, notes: list = None, files: list = None, mark: str = None):
     """Run the executor(s), then (optionally) the AI pass: cfg['ai_prompt'] + a configured
@@ -1649,6 +1763,13 @@ def render_report(store, cfg: dict, llm=None, notes: list = None, files: list = 
     from .brainroute import auto_held
     if mark and cfg.get('ai_prompt') and llm and (held := auto_held(store)):
         return head, f'No AI summary this run: {held}.{RAW_MARK}{summary[:4000]}'
+    # ...and a few rows' difference from what the last summary was written from: that summary stands, under the rows that changed
+    kept = kept_report(store, mark) if seen and cfg.get('ai_prompt') and llm else {}
+    small, says = since_kept(kept, cfg, summary)
+    if small:
+        store.set_setting(mark, seen, 'report')
+        store.set_setting(f'{mark}:kept', json.dumps({**kept, 'updates': int(kept.get('updates') or 0) + 1}), 'report')
+        return headline_from(kept['ai'], head), f"{says}\n\n{kept['ai']}{RAW_MARK}{summary[:4000]}"
     if cfg.get('ai_prompt') and llm:
         try:
             # a prompt that names a source gets that source's rows in its place; the rest, and a
@@ -1660,18 +1781,23 @@ def render_report(store, cfg: dict, llm=None, notes: list = None, files: list = 
             data = rest[:cap]
             if len(rest) > cap: data +='\n…(data truncated here - later rows were NOT shown to you)'
             charts = str(store.get_setting('report_images_enabled') or '1') == '1'
-            ai = (llm(report_system(store, cfg, charts),
-                      f"Instruction: {instr[:AI_CHARS]}\n\nData ({head}):\n"
-                      + (data if rest.strip() else '(every source is placed in the instruction above)'),
-                      max_tokens=SUMMARY_TOKENS) or '').strip()
+            with aiusage.asking('reports.summary'):
+                ai = (llm(report_system(store, cfg, charts),
+                          f"Instruction: {instr[:AI_CHARS]}\n\nData ({head}):\n"
+                          + (data if rest.strip() else '(every source is placed in the instruction above)'),
+                          max_tokens=SUMMARY_TOKENS) or '').strip()
         except Exception as e:
             raise RuntimeError(f'the AI summary failed: {str(e)[:300]}') from e
         # A SUMMARY THAT DID NOT HAPPEN IS A FAILED RUN, not a success with raw rows under a note: the
         # report exists for the summary (the owner, 2026-09-27)
         if not ai: raise RuntimeError('the model returned an empty summary - it may have spent its budget thinking. '
                                       'Try a shorter prompt, or a non-reasoning model for report summaries.')
-        if seen: store.set_setting(mark, seen, 'report')
-        return headline_from(ai, head), f"{ai}{RAW_MARK}{summary[:4000]}"
+        if seen:
+            store.set_setting(mark, seen, 'report')
+            store.set_setting(f'{mark}:kept', json.dumps({'at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'ai': ai, 'updates': 0,
+                'prompt': _prompt_key(cfg), 'rows': summary if len(summary) <= KEEP_CHARS else None}), 'report')
+        # ...written again over a kept one says why, under the summary (the first line stays the summary's own: headline_from)
+        return headline_from(ai, head), f"{ai}{f'{chr(10) * 2}{says}' if says else ''}{RAW_MARK}{summary[:4000]}"
     if cfg.get('ai_prompt') and not llm:
         return head, f'{NO_BRAIN} - raw data below)\n\n{summary}'
     return head, summary
@@ -1778,6 +1904,16 @@ def _ran_this_week(last_polled) -> bool:
     except (TypeError, ValueError): return False
 
 
+def times_a_day(cron: str) -> str:
+    """A cron at a few set times of every day, said as the owner would - "twice a day: 7:30 and 16:30" (the Advisor's TWICE_A_DAY) - else ''."""
+    m, h, *rest = (str(cron or '').split() + [''] * 5)[:5]
+    if rest != ['*'] * 3 or not m.isdigit() or not all(x.isdigit() for x in h.split(',')): return ''
+    hs = sorted({int(x) for x in h.split(',')})
+    if len(hs) < 2: return ''
+    at = [f'{x}:{int(m):02d}' for x in hs]
+    return f"{'twice' if len(hs) == 2 else f'{len(hs)} times'} a day: {', '.join(at[:-1])} and {at[-1]}"
+
+
 def schedule_words(cfg: dict) -> str:
     """A report's WHOLE clock in one phrase, guard included. Every surface that printed half of it
     invited the same misreading: "on startup" alone hid the Monday cron behind it, and "on every app
@@ -1785,7 +1921,7 @@ def schedule_words(cfg: dict) -> str:
     greeting one evening launch read as a scheduler fault, or as an unexplained restart (TQ-0010)."""
     cap = (' (at most once a day)' if cfg.get('once_per_day') else
            ' (at most once a week)' if cfg.get('once_per_week') else '')
-    parts = [f"cron {cfg['cron']}" if cfg.get('cron') else '', f"daily at {cfg['daily_at']}" if cfg.get('daily_at') else '',
+    parts = [times_a_day(cfg['cron']) or f"cron {cfg['cron']}" if cfg.get('cron') else '', f"daily at {cfg['daily_at']}" if cfg.get('daily_at') else '',
              f"every {cfg['every_minutes']} minutes" if cfg.get('every_minutes') else '',
              f'on app start{cap}' if cfg.get('on_startup') else '']
     return ' + '.join(p for p in parts if p) or 'no schedule - run it by hand'
@@ -1834,6 +1970,16 @@ def runs_per_day(cfg: dict) -> float:
     if cfg.get('once_per_week'): n = min(n, 1 / 7)
     elif cfg.get('once_per_day'): n = min(n, 1)
     return round(n, 3)
+
+
+WHOLE_UP_TO = 4     # runs a day: a look booked at a few times of day reads whole; one on a short interval asks on what moved (llm.standing)
+
+
+def reads_whole(cfg: dict, trigger: str = 'schedule') -> bool:
+    """Does this Advisor look read everything afresh? Run now always (the owner asked); a clock's look when its report runs at most WHOLE_UP_TO
+    times a day - the twice-a-day Advisor's two looks are the full run the owner asked for (2026-11-12: "make sure the full advisor run
+    happens"), never cut to "nothing changed" or a short check. A half-hourly one keeps its guards: most of its looks find nothing moved."""
+    return trigger != 'schedule' or runs_per_day(cfg) <= WHOLE_UP_TO
 
 
 def _daily_slot(cfg: dict, now: datetime):
@@ -2026,15 +2172,19 @@ def _run_report_source(store, src: dict, cfg: dict, llm=None, trigger: str = 'sc
         from . import assistant
         from . import assistantblocks as blk
         chosen = blk.resolve(store, cfg)
+        # the day's job ideas land BEFORE the clock's look, which carries them (assistant.job_ideas: once a day, by its own rule)
+        if trigger == 'schedule': assistant.job_ideas(store, wait=True)
         out = assistant.run(store, report_llm(store, cfg, llm), force=True, instruction=cfg.get('ai_prompt'),
                             watch_source_ids=cfg.get('watch_source_ids') or [], watch_sources=cfg.get('watch_sources') or [],
                             systems_only=not blk.reads_taskuary(chosen), blocks=chosen,
-                            report_id=src.get('SourceId'), report_title=title,
+                            report_id=src.get('SourceId'), report_title=title, asked=reads_whole(cfg, trigger),
                             always_post=route_of(cfg, 'timeline')[0] == 'always',
                             # the judge reads the lines BEFORE they post: a post the card would have
                             # held back is not quiet once it is on the Timeline (2026-09-20)
                             judge=lambda lines, n: decide_for(store, cfg, read_result(title, lines, False, n), report_llm(store, cfg, llm)))
         said = int(out.get('said') or 0)
+        # ...and which of the three the look was - "nothing changed", "checked 2 changed facts - no change", "rebuilt" - where the run is read
+        if (look := (out.get('reviewed') or {}).get('look')): out = {'summary': f'Model: {look}.', **out}
         # a model pass that failed is a FAILED run, filed below like any report's (R2)
         if out.get('failed'): failed_model = out.get('error') or 'the model pass failed'
     if cfg.get('type') == 'assistant' and not failed_model:
@@ -2071,7 +2221,8 @@ def _run_report_source(store, src: dict, cfg: dict, llm=None, trigger: str = 'sc
         return {'message_id': None, 'subject': subject, 'files': 0, 'said': 0, 'failed': True, 'error': body, 'summary': text[:2000]}
     # the sources it went without are said on the report itself too, its first line - on the card where it is read (2026-10-21)
     if notes: text = f'{unread_note(notes)}\n\n{text}'
-    d = decide_for(store, cfg, read_result(head, text, failed), report_llm(store, cfg, llm))
+    d = decide_for(store, cfg, read_result(head, text, failed), report_llm(store, cfg, llm),
+                   memo=f"report_judge_mark:{src['SourceId']}" if trigger == 'schedule' else None)
     # ONLY A RUN THE TRIAGE LINE SENDS IS TRIAGED (the owner, 2026-10-16, reversing D1 of 2026-09-28): "most reports should not
     # go through triage ... if it's always show up then it's just a report fyi, not a optional if this happens, then triage then
     # fix type of thing." A daily summary triaged as mail had its line about an open thread read as that task, and the whole run
@@ -2083,18 +2234,31 @@ def _run_report_source(store, src: dict, cfg: dict, llm=None, trigger: str = 'sc
     # retells work that already has its own row, so judging it as mail only ever made a duplicate of that work - triage
     # flipped to "task" on two runs (TQ-0938, TQ-1038: "Review today's meetings and waiting work", urgent, on the rail
     # above the very items it listed) and the owner, 2026-10-12: "should not be a task"
-    out = {} if is_digest or not d['triage'] else ingest_message(store, msg={'external_id': f'report:{src["SourceId"]}:{stamp}', 'channel': 'report',
+    # ...and A SCHEDULED RUN THAT SAYS WHAT ITS LAST RUN SAID IS NOT TRIAGED AGAIN (the owner, 2026-11-11: "if nothing changed in raw
+    # stuff ... just run it on changes"): the last run was read under the whole guide and memory, and these are its words again. It lands
+    # as the run it is, under Reports; a run with other words, and one the owner asked for, is read as before
+    seen = hashlib.sha256(f"{subject}|{text}|{work_brief(cfg) or ''}".encode('utf-8', 'replace')).hexdigest()
+    tkey = f"report_triage_mark:{src['SourceId']}"
+    same = trigger == 'schedule' and d['triage'] and (text.startswith(UNCHANGED) or store.get_setting(tkey) == seen)
+    if same: logger.info(f'report {title}: the same words as its last run - not triaged again')
+    elif trigger == 'schedule' and d['triage'] and not is_digest: store.set_setting(tkey, seen, 'report')
+    out = {} if is_digest or same or not d['triage'] else ingest_message(store, msg={'external_id': f'report:{src["SourceId"]}:{stamp}', 'channel': 'report',
                                      'subject': subject, 'body': text, 'from_name': title,
                                      'conversation_id': f'report:{src["SourceId"]}', 'sent_at': stamp,
                                      'source_link': cfg.get('link'), 'source_name': title, 'mail_meta': {'built_from': built_from(cfg)},
                                      'watch_for': work_brief(cfg) or None}, llm=llm,
                          # no brain to triage with is a plain row under Reports, never "triage failed" on every run
                          file_only=llm is None)
-    mid = out.get('message_id') or store.add_message({'TaskId': None, 'ExternalId': f'report:{src["SourceId"]}:{stamp}:feed',
-                                                      'ConversationId': f'report:{src["SourceId"]}', 'Channel': 'report',
-                                                      'SourceName': title, 'Subject': subject, 'FromName': title, 'SentAt': stamp,
-                                                      'BodyText': text, 'SourceLink': cfg.get('link'), 'Status': 'feed',
-                                                      'MailMetaJson': json.dumps({'built_from': built_from(cfg)})})
+    mid = out.get('message_id')
+    if not mid:
+        mid = store.add_message({'TaskId': None, 'ExternalId': f'report:{src["SourceId"]}:{stamp}:feed',
+                                 'ConversationId': f'report:{src["SourceId"]}', 'Channel': 'report',
+                                 'SourceName': title, 'Subject': subject, 'FromName': title, 'SentAt': stamp,
+                                 'BodyText': text, 'SourceLink': cfg.get('link'), 'Status': 'feed',
+                                 'MailMetaJson': json.dumps({'built_from': built_from(cfg)})})
+        # ...and why it was not triaged, on its route row like every other arrival's (ingest.day_count)
+        store.add_route(mid, None, 'feed', None, 'the morning digest - never triaged' if is_digest else
+                        'the same words as its last run - not triaged again' if same else "its triage line did not send it to triage", [], 'report')
     # the rows are the report: hand back the spreadsheet to open and the chart to look at
     try:
         from .artifacts import attach_report_output, attach_files
@@ -2195,7 +2359,9 @@ def route_of(cfg: dict, line: str) -> tuple:
     r = (cfg.get('route') or {}).get(line) or default_route(cfg)[line]
     how, when = str(r.get('how') or '').strip().lower(), str(r.get('when') or '').strip()
     if how not in ROUTE: how = default_route(cfg)[line]['how']
-    if how == 'ai' and not when: return 'always', ''
+    # ...but TRIAGE asked of an AI that has nothing to judge by is not triaged (decided 2026-11-12): triage makes work, and a run reaches it
+    # only where its line says so
+    if how == 'ai' and not when: return ('never' if line == 'triage' else 'always'), ''
     if how == 'rule':
         if str(r.get('rule') or '').strip().lower() not in ALERT_WHEN: return 'always', ''
         return 'rule', rule_words(r)
@@ -2444,6 +2610,7 @@ def judge_state(res: dict) -> str:
 def chat_judge(llm, learned: str = ''):
     """An ordinary brain, wearing the judge's contract: `judge(state, ask, cfg) -> {line: bool}`,
     or None for "this judge did not answer"."""
+    @aiusage.named('reports.judge')
     def judge(state: str, ask: list, cfg: dict):
         try: out = llm(JUDGE_SYSTEM + judge_prompt(cfg) + memory_rule(learned), f'What the run came back with:\n\n{state}',
                        max_tokens=JUDGE_TOKENS) or ''
@@ -2475,7 +2642,8 @@ def decide(cfg: dict, res: dict, llm=None, judge=None, learned: str = '') -> dic
     said = {}
     if ask:
         said = judge(judge_state(res), ask, cfg) if judge is not None else chat_judge(llm, learned)(judge_state(res), ask, cfg) if llm else None
-        if said is None: said = {l: True for l in ask}
+        # ...a line the judge did not answer reaches the owner - but triage, which makes work, is not run on no answer (decided 2026-11-12)
+        if said is None: said = {l: l != 'triage' for l in ask}
     rule = lambda l: bool(condition_fires(**{k: v for k, v in ((cfg.get('route') or {}).get(l) or {}).items() if k in ('rule', 'count', 'text')}, res=res))
     out = {l: rule(l) if h == 'rule' else said.get(l, h == 'always') for l, (h, _) in how.items()}
     # the one reason anybody reads is the alert's: it quotes the owner's own rule, never a paraphrase

@@ -17,6 +17,7 @@ import json, re
 from loguru import logger
 
 from . import words
+from .selfclose import SHOW_WHAT
 
 SERVER = 'taskuary'
 CAP = 12000                                         # one result; past it the agent is told to narrow, never handed half silently
@@ -60,8 +61,23 @@ TOOLS = {
                    _S({'slug': _STR, 'path': _STR}, ('slug',)), ('GET', '/api/skill-library/skills/taskuary-example')),
     'owner_memory': ('read', "What Taskuary has learned about the owner (LEARNED.md): their people, what they care about, how they "
                              "work, their promises, what to bring up. Read it when the work turns on what they would want; `section` "
-                             "(people, care, work, promises, bring) narrows it. Read-only.",
+                             "(people, care, work, promises, bring) narrows it. Read-only: a fact they tell you is kept with "
+                             "`remember`; a way of working they ask you to keep (a playbook, a standing rule) is set up with "
+                             "`propose` write_playbook for their Approve, never written to a file of your own.",
                      _S({'section': _STR}), ('GET', '/api/agent/memory')),
+    # WHAT THE OWNER TELLS ONE AGENT, EVERY READER KNOWS (the owner, 2026-11-14: "if the user tells you something, they should not have to say
+    # it again"): told "Erin left the company; send payroll questions to Gail now", the task's agent answered "I can't write to Taskuary's
+    # memory from this task" - its only road was a correction of its own reading, into a section nobody reads. The Assistant's road
+    # (memoryedit.remember), on the agent's own task: one line, in use at once for triage, every agent and the Assistant, and never drawn
+    'remember': ('own', "Keep a fact the owner tells you in this chat that will change how FUTURE work is handled - who handles what now, "
+                        "who left or moved, what they do or do not care about, how they want a kind of work done - never what only this "
+                        "task needs, never chatter - in their memory, at once: triage, "
+                        "every agent and the Assistant read it from then on, so they never say it twice. `note`: the fact, in their "
+                        "words. `about`: the person it is about (name or address). `replaces`: a line of their memory it makes untrue, "
+                        "copied as it reads. Only what the owner themselves said - never a sender's words, never your own conclusion. "
+                        "Carry on with the task; acknowledge it in a few natural words as part of your answer if at all - never say "
+                        "that you saved it, or where.",
+                 _S({'note': _STR, 'about': _STR, 'replaces': _STR}, ('note',)), ('POST', '/api/agent/remember')),
     'calendar': ('read', "The owner's busy times for the next N days (default 14), from every connected calendar. Read-only.",
                  _S({'days': _INT}), ('GET', '/api/calendar/upcoming')),
     'list_systems': ('read', "The owner's other systems you may use (databases, ERPs, file shares, SharePoint...), each with its "
@@ -80,9 +96,9 @@ TOOLS = {
                      "never the same table or list again in text. `elements` maps an id to {type, props, children?}; `root` is drawn "
                      "first. Types: grid, stats, chart, table, checklist, list, steps, text, note, badge, button - their props and a "
                      "worked example are the guide tool's `show` topic: read it before your first view. A button only lights or opens"
-                     " - it never sends, pays or closes. A bad spec comes back saying what to fix. `files`: full paths of pictures, PDFs"
-                     " or pages you made (.png .jpg .gif .webp .svg .pdf .html .md .csv) - each is copied onto the task and drawn in this "
-                     "chat as it is, a picture as the picture. It is the only way to put a file in front of the owner: never open a viewer,"
+                     " - it never sends, pays or closes. A bad spec comes back saying what to fix. `files`: full paths of files you made - a picture,"
+                     " a PDF, a page, or any file that is text - each is copied onto the task and drawn in this "
+                     f"chat as it is, a picture as the picture. {SHOW_WHAT} It is the only way to put a file in front of the owner: never open a viewer,"
                      " a browser or an app on the computer, and never say something is on their screen unless this tool said it was shown.",
              _S({'title': _STR, 'root': _STR, 'elements': {'type': 'object', 'additionalProperties': {'type': 'object'}},
                  'files': {'type': 'array', 'items': _STR}}),
@@ -210,12 +226,17 @@ TOOLS = {
                            "these three are the landing card's Push / Push & deploy / PR buttons), run_tool {type, connector_id, ...} (a send, post or order on one of"
                            " their systems - a post, a new GitHub issue and a Jira, Monday or Linear write are the guide tool's "
                            "`propose` topic), write_playbook {slug, text}, settings {changes}, break_out {title, summary, messages: [m-ids], items: "
-                           "[to-do ids]} (a part of this task that is another matter, to a task of its own), save_routine {title, script, reads?: {a source "
-                           "type and its keys}, prompt?, daily_at? | cron? | every_minutes?} (a script you wrote for a job that will come again, "
-                           "kept as a routine - the guide tool's `propose` topic). Always give `why`. It puts an Approve "
+                           "[to-do ids]} (a part of this task that is another matter, to a task of its own), save_routine {title, script: whole standard-library Python, "
+                           "rows on stdin and JSON rows out, reads?: {a source type and its keys}, prompt?: an AI step on its output, daily_at?: "
+                           "\"07:00\" | cron? | every_minutes? - none: on demand} (a script you wrote for a job that will come again, kept as a "
+                           "routine). Always give `why`. It puts an Approve "
                            "button in front of the owner - nothing happens until they press it. `replaces`: as on propose_email.",
                 {'type': 'object', 'properties': {'action': _STR, 'why': _STR}, 'required': ['action', 'why'],
                  'additionalProperties': True}, ('POST', '/api/agent/propose')),
+    # ...and EVERY TOOL'S FULL INSTRUCTIONS, ON ASK (the owner, 2026-11-15: "MCP-style tools with simple JSON ... All methods can be searched
+    # later"): listed, a tool is its name, one line and its parameters (SHORT, lean); what it takes and its rules are read here
+    'find_tools': ('read', "A tool's full instructions by its name, or the tools that fit what you need by words - read a tool's before its "
+                           "first use where its line does not say enough. Read-only.", _S({'query': _STR}, ('query',)), ('GET', '/api/tasks/1')),
 }
 # ...`reach`: a read of a system outside Taskuary (run_system) - its answer can change under the agent, and a save it runs is a write
 ANNOTATIONS = {'read': {'readOnlyHint': True, 'openWorldHint': False}, 'reach': {'readOnlyHint': True, 'openWorldHint': True},
@@ -234,9 +255,69 @@ REPLY_TOOLS = ('propose_reply', 'reply_not_needed')
 # ...and the tools only a coding agent has a use for are not offered on any other task (2026-11-09): a general agent called find_repos
 # for a WhatsApp bug report - and four tool schemas rode on every turn for nothing
 CODING_TOOLS = ('note_peers', 'use_repo', 'find_repos', 'propose_land')
+# ...AND THE FEW AN AGENT MUST KNOW FROM ITS FIRST TURN LOAD WITH IT (the owner, 2026-11-13: "i don't see the agents using the json renders"):
+# Claude Code defers an MCP server's tools - the model holds a bare name like `show` until it searches for it, and none of 8 sessions ever
+# did, so no view was drawn and every result came back as prose. These ride whole on every turn (Claude Code 2.1.285+, the per-tool
+# `anthropic/alwaysLoad`): the view, and the three that set an act up for the owner's press
+ALWAYS_LOAD = ('show', 'propose_reply', 'propose_email', 'propose', 'remember')     # ...and the one that keeps what the owner tells it: said in passing, never searched for
+# ONE LINE A TOOL, FOR EVERY BRAIN (the owner, 2026-11-15: "They should be MCP-style tools with simple JSON: what they do and descriptions.
+# All methods can be searched later"): the whole description of every tool rode on every call - ~15,000 characters, ~650 a tool. A tool is
+# listed by its name, this line and its parameters' names and types (lean); its full words, rules and examples are find_tools' answer
+SHORT = {
+    'search_messages': "Search the owner's saved mail and chats (dates YYYY-MM-DD).",
+    'read_message': 'One saved message in full (id: m1073).',
+    'read_attachment': 'The text of one attachment on a saved message, by its id.',
+    'my_task': "This task's brief and to-dos with their ids.",
+    'search_tasks': "Search the owner's tasks, mail, chats and pull requests, and what earlier tasks settled.",
+    'person': "Who a name or address is in the owner's mail, and their latest messages.",
+    'search_knowledge': "Search the owner's knowledge base (indexed folders, SharePoint).",
+    'owner_memory': 'What Taskuary has learned about the owner: their people, priorities and ways.',
+    'remember': 'Keep a fact the owner tells you for future work.',
+    'calendar': "The owner's busy times for the next N days.",
+    'list_systems': "The owner's other systems you may use, with their connector ids and tool types.",
+    'guide': "Read one of Taskuary's how-tos (browser, number, propose ...).",
+    'run_system': "Run one tool on one of the owner's systems: {type, connector_id, ...its fields}.",
+    'show': 'Draw a view (table, chart, tiles) or show files in this chat.',
+    'tick': "Tick or untick one of this task's to-dos.",
+    'todos': "Add, reword or merge this task's to-dos.",
+    'check_back': 'Be woken on this task later, at `when`, with `what` as your next turn.',
+    'remind': "Take the task off the owner's list until `when`.",
+    'ask_stronger': 'Ask a stronger model one hard question; `context` is all it sees.',
+    'note_peers': 'Leave a note for another coding agent (`to`: TQ-0123, repo or all).',
+    'use_repo': "Pick the git checkout this task's work belongs in.",
+    'find_repos': 'The git checkouts you may work in, newest commit first.',
+    'propose_land': "How your work lands (rebase, merge, pr ...), as the owner's buttons.",
+    'propose_reply': "Set up this task's reply for the owner's Send.",
+    'reply_not_needed': 'The reply waiting here is no longer needed; say why.',
+    'withdraw_draft': 'Take back a reply, email or proposal you set up that has not gone out.',
+    'propose_email': "Draft an email for the owner's Send - many at once in `items`, one card.",
+    'sign_form': "Fill and sign a PDF form with the owner's saved signature.",
+    'answer_invite': "Answer this task's meeting invite: accept, decline or propose.",
+    'set_up_meeting': "Set up a meeting for the owner's press.",
+    'share': 'Share a dashboard or report you made with a person.',
+    'propose': 'Ask the owner to approve an act Taskuary runs on their press (action, why) - many at once in `items`, one card.',
+    'find_tools': "A tool's full instructions by name, or more tools by need.",
+}
+def lean(s):
+    "A schema as a list shows it: names, types, enums and what is required - no words, no examples (find_tools has them)."
+    if isinstance(s, list): return [lean(v) for v in s]
+    if not isinstance(s, dict): return s
+    return {k: ({p: lean(v) for p, v in s[k].items()} if k == 'properties' else lean(v)) for k, v in s.items() if k not in ('description', 'examples', 'default', 'title') and not (k == 'required' and not v)}
+def instructions(name: str) -> str:
+    "One tool's whole description and parameters, as find_tools answers it."
+    c, d, s, _ = TOOLS[name]
+    return f'{name}: {d}\nParameters: {json.dumps(s, ensure_ascii=False)}'
+def found(query, names: dict) -> list:
+    "The tools of `names` ({name: description}) that `query` asks for: by name, else by most of its words in a name and description (at most 4)."
+    q = str(query or '').strip().lower()
+    if q in names: return [q]
+    ws = [w for w in re.findall(r'[a-z0-9_]+', q) if len(w) > 2]
+    score = lambda n: sum((w in n) * 3 + (w in str(names[n]).lower()) for w in ws)
+    return [n for n in sorted(names, key=lambda n: -score(n)) if score(n)][:4]
 def listing(skip=()) -> list:
-    "tools/list: every tool with what it does and whether it only reads - but those in `skip`."
-    return [{'name': n, 'description': d, 'inputSchema': s, 'annotations': ANNOTATIONS[c]} for n, (c, d, s, _) in TOOLS.items() if n not in skip]
+    "tools/list: every tool by its name, its line and its parameters, and whether it only reads - but those in `skip`."
+    return [{'name': n, 'description': SHORT.get(n) or d, 'inputSchema': lean(s), 'annotations': ANNOTATIONS[c], **({'_meta': {'anthropic/alwaysLoad': True}} if n in ALWAYS_LOAD else {})}
+            for n, (c, d, s, _) in TOOLS.items() if n not in skip]
 
 
 def _out(text, fence_it: bool = False) -> str:
@@ -250,7 +331,54 @@ def _out(text, fence_it: bool = False) -> str:
 def _j(o) -> str: return json.dumps(o, indent=1, default=str, ensure_ascii=False)
 
 
+NOT_LISTED = ("A SITE OR SYSTEM NOT LISTED HERE has no connection: say so in one line, and reach it in Taskuary's browser where you have one "
+              "(the guide `browser` first) - a sign-in is done on the page there, by a saved sign-in or by the owner, and kept for next time. "
+              "Never ask the owner for a password, and never work a sign-in from your shell.")
+
 def call(store, tid: int, name: str, args: dict, doors: dict) -> str:
+    """_call - and a card's tool says where its card stands in the task's line (cardqueue: one card at a time, in the order raised)."""
+    if TOOLS[name][0] == 'propose' and isinstance((args or {}).get('items'), list): out = _many(store, tid, name, args, doors)
+    else: out = _call(store, tid, name, args, doors)
+    if TOOLS[name][0] != 'propose' or not isinstance(out, str): return out
+    from . import cardqueue
+    if not (line := cardqueue.says(store, tid)): return out
+    try: got = json.loads(out)
+    except ValueError: got = None
+    return _j({**got, 'your_cards': line}) if isinstance(got, dict) else f'{out} {line}'
+
+
+# MANY OF ONE ACT, ONE CARD (bulkcard.py; the owner, 2026-11-16: "for a job that is a bulk process you should be able to review a few of them and
+# then send them all out"): any card's tool takes `items` - each item that tool's own fields, over the ones given beside them - and files each
+# by its own door, as one call would; the rows share one Batch, which the line of cards and the chat hold as ONE card with one press
+ITEMS = {'type': 'array', 'items': {'type': 'object'},
+         'description': "many of this same act at once (25 emails, 40 issues to close): a list of objects, each with this tool's own fields - "
+                        "fields beside `items` are shared by all. ONE card holds them: the owner reviews a few, does them all with one press, "
+                        "and you hear how the whole run went, once."}
+# ...the two every act goes by: an email, and any other act (`propose`: a close, a post, a SQL write, an API call) - a reply answers one
+# message, an invite one meeting, and the landing question is one per checkout
+for _n, (_c, _d, _s, _door) in TOOLS.items():
+    if _n in ('propose_email', 'propose'):
+        need = _s.get('required') or []
+        # ...what one card needs, each item needs - or the call carries it whole: one or the other, never neither
+        _s['properties']['items'] = {**ITEMS, 'items': {**ITEMS['items'], **({'required': need} if need else {})}}
+        if need: _s.pop('required'); _s['anyOf'] = [{'required': need}, {'required': ['items']}]
+def _many(store, tid: int, name: str, args: dict, doors: dict) -> str:
+    from . import bulkcard
+    base, items = {k: v for k, v in args.items() if k != 'items'}, [x for x in args['items'] if isinstance(x, dict)]
+    if not items: raise ValueError('`items` holds no objects - give each item its own fields')
+    if len(items) > 500: raise ValueError(f'{len(items)} items is past what one card holds (500) - split them, or narrow the list')
+    key, top = bulkcard.new_key(), (store._one('SELECT MAX(ReviewId) AS m FROM review') or {}).get('m') or 0
+    refused = []
+    for i, it in enumerate(items):
+        try: _call(store, tid, name, {**base, **it}, doors)
+        except Exception as e: refused.append(f'item {i + 1}: {failed(name, e)}')
+    store._exec('UPDATE review SET Batch=? WHERE TaskId=? AND ReviewId>? AND Status=?', (key, int(tid), top, 'pending'))
+    n = (store._one('SELECT COUNT(*) AS n FROM review WHERE Batch=?', (key,)) or {}).get('n') or 0
+    return _j({'ok': n > 0, 'batch': key, 'on_the_card': n, **({'refused': refused} if refused else {}),
+               'shown': 'They stand as ONE card: the owner reviews a few and does them all with one press; you hear the whole run once.'})
+
+
+def _call(store, tid: int, name: str, args: dict, doors: dict) -> str:
     """Run one tool for the session on task `tid`. `doors` are the server's own handlers for the acts that have one (tool_run, tick,
     reply, draft, propose), called with the caller's request so their own checks - owns_task, scopes, the send-to-proposal rule -
     are the ones that hold. Raises ValueError for a call the model can correct; the answer is text the model reads."""
@@ -320,10 +448,15 @@ def call(store, tid: int, name: str, args: dict, doors: dict) -> str:
         return _out(f'{head}\n{body}', fence_it=True)
     if name == 'list_systems':
         from .docsync import agent_systems
-        return agent_systems(store) or 'no connection is marked as an agent tool - the owner turns that on per card'
+        # ...AND WHAT TO DO FOR ONE THAT IS NOT THERE (the recorded walk, 2026-11-11): an agent asked to sign in to a site read this list, found
+        # no connection, fetched the sign-in form from its shell and asked the owner for the password - the browser's offer, far up its prompt, unread
+        return (agent_systems(store) or 'no connection is marked as an agent tool - the owner turns that on per card') + '\n' + NOT_LISTED
     if name == 'guide':
         from . import guides
         return _out(guides.read(a.get('topic')))
+    if name == 'find_tools':
+        hits = found(a.get('query'), {n: d for n, (_, d, _s, _) in TOOLS.items()})
+        return '\n\n'.join(map(instructions, hits)) if hits else f"No tool fits {a.get('query')!r} - name one, or say what it should do in other words."
     if name == 'run_system':
         r = doors['tool_run']({**a, 'task_id': tid})
         return _out(_j(json.loads(r.body) if hasattr(r, 'body') else r), fence_it=True)     # a 202 (queued) comes back as a response
@@ -342,6 +475,7 @@ def call(store, tid: int, name: str, args: dict, doors: dict) -> str:
     if name == 'check_back': return _j(doors['check_back'](tid, str(a.get('when') or ''), str(a.get('what') or '')))
     if name == 'todos': return _j(doors['todos'](tid, a))
     if name == 'remind': return _j(doors['remind'](tid, str(a.get('when') or '')))
+    if name == 'remember': return doors['remember'](tid, str(a.get('note') or ''), str(a.get('about') or ''), str(a.get('replaces') or ''))['says']
     if name == 'ask_stronger':
         out = doors['ask_stronger'](tid, str(a.get('question') or ''), str(a.get('context') or ''))
         return out['answer'] if out.get('ok') else out.get('says') or _j(out)
@@ -540,7 +674,9 @@ def rpc(msg: dict, run, skip=()) -> dict | None:
         return ok({'protocolVersion': v if v in PROTOCOLS else PROTOCOLS[0], 'capabilities': {'tools': {'listChanged': False}},
                    'serverInfo': {'name': SERVER, 'version': '1'},
                    'instructions': "Taskuary's tools reach the owner's saved mail, chats, tasks, people, calendar and documents. None "
-                                   "of them sends: to answer anyone, propose it and the owner presses Send."})
+                                   "of them sends: to answer anyone, propose it and the owner presses Send. Each is listed by one line: find_tools "
+                                   "with a tool's name gives its whole instructions - read them before its first use where the line does not say enough. "
+                                   + SHOW_WHAT})
     if m == 'ping': return ok({})
     if m == 'tools/list': return ok({'tools': listing(skip)})
     if m == 'tools/call':
@@ -570,8 +706,11 @@ TOOLS_LINE = ("Your Taskuary tools (the `taskuary` MCP server, where your sessio
 SHOW_RULE = ("To show the owner an image, a file or a page, call the `show` tool with its path in `files` - it appears in this chat. Never "
              "open a viewer, a browser or an app on the computer to show them something, and never say something is on their screen "
              "unless the show tool returned it.")
-VERIFY_RULE = ("Never claim an effect you did not verify - opened, sent, pushed, deployed, on screen. Say what you checked it by, or that "
-               "you could not check it.")
+# ...and THE ANSWER IS THE ANSWER (the owner, 2026-11-16: "tell me what to do and i will do it" was answered "No changes were made to Azure
+# permissions, resources, or the implementation this turn"): "say what you checked it by, or that you could not" closed every turn with what it
+# had NOT done - a line of what did not happen is said only where it changes the answer
+VERIFY_RULE = ("Answer what was asked. Claim an effect (searched, opened, sent, changed, pushed, deployed, on screen) only once you verified it, "
+               "and say how; what you did not do or could not open is said only where it changes the answer.")
 
 
 def url(task_id) -> str:

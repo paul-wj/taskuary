@@ -12,7 +12,7 @@ pruning its logs next month does not take the record with it.
 A step is {k, text, name?, file?, at?}: k is `you` (what the agent was told), `brief` (what Taskuary told it - keep_seed),
 `thought`, `said`, `tool` (name + what it was pointed at), `plan` (its todo list), `compact` (the CLI compacted its context) or `error`. Tool OUTPUT is left out on purpose - it is the noise the record
 is read past, and the agent's next thought or answer says what it made of it."""
-import json
+import json, threading
 import re
 from datetime import datetime
 from pathlib import Path
@@ -159,72 +159,84 @@ def _typed(j: dict, x: str) -> bool:
 def _texts(content) -> list: return [x for b in _blocks(content) if b.get('type') == 'text' and (x := str(b.get('text') or '').strip())]
 
 
-def _claude(path: Path) -> list:
-    out, uses = [], {}
+# EACH LOG IS READ AS A FEED, one line at a time onto a state ({'out': the steps, ...what a later line completes}): the whole file at once
+# (_read_all), or only the lines a growing log added since (cli_steps) - the same steps either way
+def _read_all(path: Path, line_of) -> list:
+    st = {'out': []}
     for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
         try: j = json.loads(line)
         except ValueError: continue
-        if j.get('isCompactSummary') or (j.get('type') == 'system' and j.get('subtype') == 'compact_boundary'):
-            if not j.get('isSidechain'): _compact(out, j.get('timestamp'))
-            continue
-        q = j.get('attachment') if j.get('type') == 'attachment' and isinstance(j.get('attachment'), dict) else {}
-        if q.get('type') == 'queued_command' and not j.get('isSidechain'):
-            out += [{'k': 'you', 'text': _cut(x, YOU_N), 'at': j.get('timestamp') or q.get('timestamp')} for x in _texts(q.get('prompt')) if _typed(q, x)]
-            continue
-        if j.get('isMeta') or j.get('isSidechain') or j.get('type') not in ('user', 'assistant'): continue
-        at, msg = j.get('timestamp'), j.get('message') or {}
-        # ...an API error is a failure, said as one; any other line Claude writes in the agent's place ("No response requested.") is no one's
-        if j['type'] == 'assistant' and (j.get('isApiErrorMessage') or j.get('sessionFailureNotice')):
-            out.append({'k': 'error', 'text': _cut(' '.join(_texts(msg.get('content'))) or 'The model could not answer.', 400), 'at': at}); continue
-        if j['type'] == 'assistant' and msg.get('model') == '<synthetic>': continue
-        # ...an edit's result carries the patch Claude wrote, line numbers and all: it replaces the before/after its call was handed
-        res = j.get('toolUseResult') if isinstance(j.get('toolUseResult'), dict) else {}
-        for b in _blocks(msg.get('content')):
-            t = b.get('type')
-            if t == 'tool_result' and (s := uses.get(b.get('tool_use_id'))) and (h := _hunks(res.get('structuredPatch'))): s['edit'] = {'hunks': h}
-            # ...A CALL THAT FAILED READS AS FAILED, with what it said (a held step's "Taskuary held this" too - the chat draws that held, not red)
-            if t == 'tool_result' and b.get('is_error') and (s := uses.get(b.get('tool_use_id'))):
-                s['status'], s['output'] = 'failed', _cut(' '.join(_texts(b.get('content'))) if isinstance(b.get('content'), list) else b.get('content'), 400)
-            if j['type'] == 'user':
-                if t == 'text' and (x := str(b.get('text') or '').strip()) and _typed(j, x): out.append({'k': 'you', 'text': _cut(x, YOU_N), 'at': at})
-            elif t == 'thinking' and str(b.get('thinking') or '').strip(): out.append({'k': 'thought', 'text': _cut(b['thinking'], THOUGHT_N), 'at': at})
-            elif t == 'text' and str(b.get('text') or '').strip(): out.append({'k': 'said', 'text': _cut(b['text'], SAID_N), 'at': at})
-            elif t == 'tool_use': out.append(s := _tool(b.get('name'), b.get('input'), at)); uses[b.get('id')] = s
-    return out
+        line_of(st, j)
+    return st['out']
+
+
+def _claude(path: Path) -> list: return _read_all(path, _claude_line)
+
+
+def _claude_line(st: dict, j) -> None:
+    "One line of a Claude Code log onto `st` - a tool call its later result completes is kept by id (`uses`)."
+    out, uses = st['out'], st.setdefault('uses', {})
+    if not isinstance(j, dict): return
+    if j.get('isCompactSummary') or (j.get('type') == 'system' and j.get('subtype') == 'compact_boundary'):
+        if not j.get('isSidechain'): _compact(out, j.get('timestamp'))
+        return
+    q = j.get('attachment') if j.get('type') == 'attachment' and isinstance(j.get('attachment'), dict) else {}
+    if q.get('type') == 'queued_command' and not j.get('isSidechain'):
+        out += [{'k': 'you', 'text': _cut(x, YOU_N), 'at': j.get('timestamp') or q.get('timestamp')} for x in _texts(q.get('prompt')) if _typed(q, x)]
+        return
+    if j.get('isMeta') or j.get('isSidechain') or j.get('type') not in ('user', 'assistant'): return
+    at, msg = j.get('timestamp'), j.get('message') or {}
+    # ...an API error is a failure, said as one; any other line Claude writes in the agent's place ("No response requested.") is no one's
+    if j['type'] == 'assistant' and (j.get('isApiErrorMessage') or j.get('sessionFailureNotice')):
+        out.append({'k': 'error', 'text': _cut(' '.join(_texts(msg.get('content'))) or 'The model could not answer.', 400), 'at': at}); return
+    if j['type'] == 'assistant' and msg.get('model') == '<synthetic>': return
+    # ...an edit's result carries the patch Claude wrote, line numbers and all: it replaces the before/after its call was handed
+    res = j.get('toolUseResult') if isinstance(j.get('toolUseResult'), dict) else {}
+    for b in _blocks(msg.get('content')):
+        t = b.get('type')
+        if t == 'tool_result' and (s := uses.get(b.get('tool_use_id'))) and (h := _hunks(res.get('structuredPatch'))): s['edit'] = {'hunks': h}
+        # ...A CALL THAT FAILED READS AS FAILED, with what it said (a held step's "Taskuary held this" too - the chat draws that held, not red)
+        if t == 'tool_result' and b.get('is_error') and (s := uses.get(b.get('tool_use_id'))):
+            s['status'], s['output'] = 'failed', _cut(' '.join(_texts(b.get('content'))) if isinstance(b.get('content'), list) else b.get('content'), 400)
+        if j['type'] == 'user':
+            if t == 'text' and (x := str(b.get('text') or '').strip()) and _typed(j, x): out.append({'k': 'you', 'text': _cut(x, YOU_N), 'at': at})
+        elif t == 'thinking' and str(b.get('thinking') or '').strip(): out.append({'k': 'thought', 'text': _cut(b['thinking'], THOUGHT_N), 'at': at})
+        elif t == 'text' and str(b.get('text') or '').strip(): out.append({'k': 'said', 'text': _cut(b['text'], SAID_N), 'at': at})
+        elif t == 'tool_use': out.append(s := _tool(b.get('name'), b.get('input'), at)); uses[b.get('id')] = s
 
 
 def _codex_file(ext: str): return _newest(_home() / '.codex' / 'sessions', f'**/rollout-*{ext}.jsonl')
 
 
-def _codex(path: Path) -> list:
-    out = []
-    for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
-        try: j = json.loads(line)
-        except ValueError: continue
-        p, at = j.get('payload') or {}, j.get('timestamp')
-        if j.get('type') == 'compacted': _compact(out, at); continue           # ...and Codex's own compaction, its rollout's `compacted` item
-        if j.get('type') == 'event_msg' and p.get('type') == 'user_message' and str(p.get('message') or '').strip():
-            out.append({'k': 'you', 'text': _cut(p['message'], YOU_N), 'at': at})
-        if j.get('type') != 'response_item': continue
-        t = p.get('type')
-        if t == 'reasoning':
-            # its summary when the model wrote one; the rest is encrypted and stays that way
-            x = '\n\n'.join(str(s.get('text') or '') for s in p.get('summary') or [] if isinstance(s, dict)).strip()
-            if x: out.append({'k': 'thought', 'text': _cut(x, THOUGHT_N), 'at': at})
-        elif t == 'message' and p.get('role') == 'assistant':
-            x = '\n'.join(str(c.get('text') or '') for c in p.get('content') or [] if isinstance(c, dict)).strip()
-            if x: out.append({'k': 'said', 'text': _cut(x, SAID_N), 'at': at})
-        elif t in ('function_call', 'custom_tool_call', 'local_shell_call'):
-            args = p.get('arguments') or p.get('input') or (p.get('action') or {})
-            if t == 'custom_tool_call' and p.get('name') == 'apply_patch':
-                # ...each file with its own part of the patch, the diff the coding chat draws (chatStream.js)
-                cuts = re.split(r'^\*\*\* (?:Update|Add|Delete) File: (.+)$', re.sub(r'\n?\*\*\* End Patch\s*$', '', str(args)), flags=re.M)
-                out += [{'k': 'tool', 'name': 'apply_patch', 'text': _cut(f, TARGET_N), 'file': f, 'at': at, 'edit': {'patch': p.strip('\n')[:EDIT_N]}}
-                        for f, p in zip(cuts[1::2], cuts[2::2])] or [_tool('apply_patch', '', at)]
-            elif t == 'custom_tool_call' and (cmds := re.findall(r'\bcmd:\s*"((?:[^"\\]|\\.)*)"', str(args))):
-                out += [{'k': 'tool', 'name': 'shell', 'text': _cut(_hide_flags(c.replace('\\"', '"')), TARGET_N), 'at': at} for c in cmds]   # codex's js harness: the commands it ran
-            else: out.append(_tool(p.get('name') or 'shell', args, at))
-    return out
+def _codex(path: Path) -> list: return _read_all(path, _codex_line)
+
+
+def _codex_line(st: dict, j) -> None:
+    out = st['out']
+    if not isinstance(j, dict): return
+    p, at = j.get('payload') or {}, j.get('timestamp')
+    if j.get('type') == 'compacted': _compact(out, at); return           # ...and Codex's own compaction, its rollout's `compacted` item
+    if j.get('type') == 'event_msg' and p.get('type') == 'user_message' and str(p.get('message') or '').strip():
+        out.append({'k': 'you', 'text': _cut(p['message'], YOU_N), 'at': at})
+    if j.get('type') != 'response_item': return
+    t = p.get('type')
+    if t == 'reasoning':
+        # its summary when the model wrote one; the rest is encrypted and stays that way
+        x = '\n\n'.join(str(s.get('text') or '') for s in p.get('summary') or [] if isinstance(s, dict)).strip()
+        if x: out.append({'k': 'thought', 'text': _cut(x, THOUGHT_N), 'at': at})
+    elif t == 'message' and p.get('role') == 'assistant':
+        x = '\n'.join(str(c.get('text') or '') for c in p.get('content') or [] if isinstance(c, dict)).strip()
+        if x: out.append({'k': 'said', 'text': _cut(x, SAID_N), 'at': at})
+    elif t in ('function_call', 'custom_tool_call', 'local_shell_call'):
+        args = p.get('arguments') or p.get('input') or (p.get('action') or {})
+        if t == 'custom_tool_call' and p.get('name') == 'apply_patch':
+            # ...each file with its own part of the patch, the diff the coding chat draws (chatStream.js)
+            cuts = re.split(r'^\*\*\* (?:Update|Add|Delete) File: (.+)$', re.sub(r'\n?\*\*\* End Patch\s*$', '', str(args)), flags=re.M)
+            out += [{'k': 'tool', 'name': 'apply_patch', 'text': _cut(f, TARGET_N), 'file': f, 'at': at, 'edit': {'patch': p.strip('\n')[:EDIT_N]}}
+                    for f, p in zip(cuts[1::2], cuts[2::2])] or [_tool('apply_patch', '', at)]
+        elif t == 'custom_tool_call' and (cmds := re.findall(r'\bcmd:\s*"((?:[^"\\]|\\.)*)"', str(args))):
+            out += [{'k': 'tool', 'name': 'shell', 'text': _cut(_hide_flags(c.replace('\\"', '"')), TARGET_N), 'at': at} for c in cmds]   # codex's js harness: the commands it ran
+        else: out.append(_tool(p.get('name') or 'shell', args, at))
 
 
 def _copilot_file(ext: str):
@@ -232,20 +244,20 @@ def _copilot_file(ext: str):
     return p if p.is_file() else None
 
 
-def _copilot(path: Path) -> list:
-    out = []
-    for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
-        try: j = json.loads(line)
-        except ValueError: continue
-        d, at, t = j.get('data') or {}, j.get('timestamp'), j.get('type')
-        if t == 'user.message' and str(d.get('content') or '').strip(): out.append({'k': 'you', 'text': _cut(d['content'], YOU_N), 'at': at})
-        elif t == 'assistant.message':
-            if str(d.get('reasoningText') or '').strip(): out.append({'k': 'thought', 'text': _cut(d['reasoningText'], THOUGHT_N), 'at': at})
-            if str(d.get('content') or '').strip(): out.append({'k': 'said', 'text': _cut(d['content'], SAID_N), 'at': at})
-        elif t == 'tool.execution_start': out.append(_tool(d.get('toolName'), d.get('arguments'), at))
-        elif t == 'tool.execution_complete' and d.get('success') is False:
-            out.append({'k': 'error', 'text': _cut((d.get('error') or {}).get('message') if isinstance(d.get('error'), dict) else d.get('error') or 'a tool failed', 400), 'at': at})
-    return out
+def _copilot(path: Path) -> list: return _read_all(path, _copilot_line)
+
+
+def _copilot_line(st: dict, j) -> None:
+    out = st['out']
+    if not isinstance(j, dict): return
+    d, at, t = j.get('data') or {}, j.get('timestamp'), j.get('type')
+    if t == 'user.message' and str(d.get('content') or '').strip(): out.append({'k': 'you', 'text': _cut(d['content'], YOU_N), 'at': at})
+    elif t == 'assistant.message':
+        if str(d.get('reasoningText') or '').strip(): out.append({'k': 'thought', 'text': _cut(d['reasoningText'], THOUGHT_N), 'at': at})
+        if str(d.get('content') or '').strip(): out.append({'k': 'said', 'text': _cut(d['content'], SAID_N), 'at': at})
+    elif t == 'tool.execution_start': out.append(_tool(d.get('toolName'), d.get('arguments'), at))
+    elif t == 'tool.execution_complete' and d.get('success') is False:
+        out.append({'k': 'error', 'text': _cut((d.get('error') or {}).get('message') if isinstance(d.get('error'), dict) else d.get('error') or 'a tool failed', 400), 'at': at})
 
 
 def _gemini_file(ext: str):
@@ -328,17 +340,95 @@ def _omp_usage(path: Path, since: str) -> dict:
 READERS = {'claude': (_claude_file, _claude, 'Claude Code log'), 'codex': (_codex_file, _codex, 'Codex rollout'),
            'copilot': (_copilot_file, _copilot, 'Copilot session log'), 'gemini': (_gemini_file, _gemini, 'Gemini chat file'),
            'omp': (_omp_file, _omp, 'Oh My Pi session log')}
+# ...the logs written a line at a time, read as a feed (_read_all): a log that grew is read from where the last read stopped (cli_steps)
+FEEDS = {_claude: _claude_line, _codex: _codex_line, _copilot: _copilot_line}
+
+
+# ...READ ONCE PER VERSION OF THE LOG (the owner's live app, 2026-11-16: a coding task's chat took 15-43 s a poll - every poll parsed each of its
+# sessions' whole CLI log again, ~1 s per 100 MB, and the page polls every few seconds): kept by the file, read again only when the log changed
+# ...AND A LOG THAT GROWS IS READ ONLY WHERE IT GREW (the owner's live app, the same day: a WORKING agent's log grows every few seconds, so every
+# poll missed and parsed the whole multi-hundred-MB log again - 25-40 s a call): the bytes read so far (`pos`) and the parser's state are kept,
+# and only what was appended since is read, its last line left for later until it is whole. A log that shrank or was replaced (its head is
+# not the one read) is read afresh. ONE READ OF A LOG AT A TIME: two polls at once wait on its lock, and the second finds it read
+_STEPS, _STEPS_LOCK = {}, threading.Lock()
+HEAD = 4096                                     # the bytes that say it is still the same file
+
+def _read_from(f: Path, pos: int) -> bytes:
+    "The log's bytes from `pos` to its end (one place, so a test can count what is read)."
+    with open(f, 'rb') as h: h.seek(pos); return h.read()
+
+
+def _head(f: Path) -> bytes:
+    with open(f, 'rb') as h: return h.read(HEAD)
+
+
+def _fed(f: Path, line_of, hit: dict | None) -> dict:
+    "`hit` brought up to the log's end: {'pos', 'head', 'st'} - from where it stopped when the log only grew, else from the start."
+    head = _head(f)
+    if not hit or f.stat().st_size < hit['pos'] or head[:min(len(head), len(hit['head']))] != hit['head'][:min(len(head), len(hit['head']))]:
+        hit = {'pos': 0, 'head': b'', 'st': {'out': []}}
+    data = _read_from(f, hit['pos'])
+    cut = data.rfind(b'\n') + 1
+    lines, rest = data[:cut].split(b'\n'), data[cut:]
+    # ...a last line with no newline yet is read when it parses whole (a log that ends without one); else it waits for the next read
+    try: tail = json.loads(rest.decode('utf-8', errors='replace')) if rest.strip() else None
+    except ValueError: tail = None
+    else: cut += len(rest)
+    for raw in lines:
+        if not raw.strip(): continue
+        try: j = json.loads(raw.decode('utf-8', errors='replace'))
+        except ValueError: continue
+        line_of(hit['st'], j)
+    if tail is not None: line_of(hit['st'], tail)
+    hit['pos'] += cut
+    if len(hit['head']) < HEAD: hit['head'] = head
+    return hit
+
+
+def _cli_read(cli: str, ext: str):
+    "(the log's kept read - {'st': {'out': steps}, 'ver'}, its steps never edited by a reader -, source), or (None, '') where none can be read."
+    r = READERS.get(str(cli or '').split('/')[-1].removesuffix('.exe'))
+    if not (r and ext): return None, ''
+    try:
+        f = r[0](str(ext))
+        if not f: return None, ''
+        key = (r[2], str(f))
+        with _STEPS_LOCK:
+            if len(_STEPS) > 64: _STEPS.clear()
+            slot = _STEPS.setdefault(key, {'lock': threading.Lock(), 'hit': None})
+        with slot['lock']:
+            st, line_of = f.stat(), FEEDS.get(r[1])
+            ver = (st.st_mtime_ns, st.st_size)
+            if line_of: slot['hit'] = _fed(f, line_of, slot['hit']) if not slot['hit'] or slot['hit'].get('ver') != ver else slot['hit']
+            elif not slot['hit'] or slot['hit'].get('ver') != ver: slot['hit'] = {'st': {'out': r[1](f)}}
+            slot['hit']['ver'] = ver
+            return slot['hit'], r[2]
+    except Exception as e:
+        logger.debug(f'session record: {cli} log for {ext} unreadable - {e}'); return None, ''
 
 
 def cli_steps(cli: str, ext: str) -> tuple[list, str]:
     """(steps, source) from the CLI's own log, or ([], '') when it keeps none we can read."""
-    r = READERS.get(str(cli or '').split('/')[-1].removesuffix('.exe'))
-    if not (r and ext): return [], ''
-    try:
-        f = r[0](str(ext))
-        return (r[1](f), r[2]) if f else ([], '')
-    except Exception as e:
-        logger.debug(f'session record: {cli} log for {ext} unreadable - {e}'); return [], ''
+    hit, src = _cli_read(cli, ext)
+    return ([dict(x) for x in hit['st']['out']], src) if hit else ([], '')
+
+
+# A LONG SESSION'S LOG IS MARKED ONCE, NOT ON EVERY READ OF ITS CHAT (the owner's restart, 2026-11-16: GET .../conversation took 7 s, and a 200 MB
+# log's ~100,000 steps run through mark_briefs on each of the page's polls held the interpreter from every other request): kept beside the log's
+# read, for as long as neither the log nor the task's kept seeds change
+def marked_steps(tid: int, cli: str, ext: str) -> tuple[list, str]:
+    "cli_steps, each told step marked as the seed it was (mark_briefs) - a copy of each step, so a reader may edit what it gets."
+    hit, src = _cli_read(cli, ext)
+    if not hit: return [], ''
+    try: sv = (lambda st: (st.st_mtime_ns, st.st_size))(_seeds_path(tid).stat())
+    except OSError: sv = None
+    # ...only a told step is marked, each once: the rest is what the log says (a tool step a later result completes included), read fresh
+    memo, mark, out = hit.setdefault('marks', {}).setdefault((int(tid), sv), {}), None, []
+    for i, x in enumerate(hit['st']['out']):
+        if x.get('k') not in ('you', 'brief'): out.append(dict(x)); continue
+        if (c := memo.get(i)) is None or c[0] != x.get('text'): mark = mark or _marker(tid); c = memo[i] = (x.get('text'), mark(dict(x)))
+        out += [dict(y) for y in c[1]]
+    return out, src
 
 
 # WHAT A RUN COST (the owner, 2026-10-22: cost & time per run): the tokens each CLI's own log counts, from `since` - a resumed
@@ -470,6 +560,12 @@ def said(trace: list) -> str:
 
 def keep_turn(tid: int, reply_id, trace: list):
     """A general turn's tool calls and thinking, filed under the reply they led to (general.send_prompt)."""
+    if not (steps := trace_steps(trace)): return
+    with _gen_path(tid).open('a', encoding='utf-8') as f: f.write(json.dumps({'reply': reply_id, 'steps': steps}) + '\n')
+
+
+def trace_steps(trace: list) -> list:
+    "A chat turn's trace as steps, the one shape every road's record reads in - the turn at work's too (conversation.items)."
     from .viewspec import MARK
     steps, calls = [], {}
     for e in trace or []:
@@ -481,12 +577,17 @@ def keep_turn(tid: int, reply_id, trace: list):
         # once the turn was filed the table or chart was gone from the chat - only the live turn had ever drawn one
         elif k == 'tool_result' and isinstance(d, dict) and MARK in str(d.get('result') or '') and (s := calls.get(d.get('tool_call_id') or name)):
             s['output'] = str(d['result'])
-        elif k == 'progress' and name in ('thinking', 'reasoning') and str(d or '').strip(): steps.append({'k': 'thought', 'text': _cut(d, THOUGHT_N)})
+        # ...a thought still being written is ONE open step its snapshots update (agents.ACPSteps._thinking), the whole paragraph taking its place
+        elif k == 'live' and name == 'thinking' and str(d or '').strip():
+            if steps and steps[-1].get('live'): steps[-1]['text'] = _cut(d, THOUGHT_N)
+            else: steps.append({'k': 'thought', 'text': _cut(d, THOUGHT_N), 'live': True})
+        elif k == 'progress' and name in ('thinking', 'reasoning') and str(d or '').strip():
+            if steps and steps[-1].get('live'): steps.pop()
+            steps.append({'k': 'thought', 'text': _cut(d, THOUGHT_N)})
         elif k == 'progress' and name in ('text', 'agent_message') and str(d or '').strip(): steps.append({'k': 'said', 'text': _cut(d, SAID_N)})
         elif k == 'tool_result' and isinstance(d, dict) and d.get('is_error'): steps.append({'k': 'error', 'text': _cut(d.get('result'), 400)})
         elif k == 'error': steps.append({'k': 'error', 'text': _cut((d or {}).get('result') if isinstance(d, dict) else d, 400)})
-    if not steps: return
-    with _gen_path(tid).open('a', encoding='utf-8') as f: f.write(json.dumps({'reply': reply_id, 'steps': steps}) + '\n')
+    return steps
 
 
 # TASKUARY'S INSTRUCTIONS ARE NOT THE OWNER'S WORDS (the owner, 2026-10-30): a coding agent's log has the prompt Taskuary typed into it
@@ -510,14 +611,17 @@ def keep_seed(tid: int, seed: str):
 
 # THE WAITING ROOM'S BATCH TYPED INTO A PTY (waitroom.batch) is Taskuary's head round the owner's notes: drawn whole it was their bubble, "While
 # you were working, the owner queued 1 note for you..." (the owner, 2026-11-09: only what they typed, or what came in on the thread, is an input)
-_QUEUED = re.compile(r'(?:While you were working, (?P<a>[\w ]+?) queued \d+ notes? for you\. Take them in order, after finishing the step you are on; '
-                     r'if one conflicts with work already done, say so instead of undoing it:|(?P<b>[\w ]+?) left \d+ notes? for you(?: after the last '
+# ...WHO left them is a name of a few words (waitroom.batch: the owner, Taskuary, a teammate, both) - bounded, or a long step of words with no
+# stop in them was searched from every word to its end, and a 200 MB log's steps took minutes (2026-11-16)
+_QUEUED = re.compile(r'(?:While you were working, (?P<a>[\w ]{1,40}?) queued \d+ notes? for you\. Take them in order, after finishing the step you are on; '
+                     r'if one conflicts with work already done, say so instead of undoing it:|(?P<b>[\w ]{1,40}?) left \d+ notes? for you(?: after the last '
                      r'session ended)?\. Take them in order:)')
 _LEFT = re.compile(r'\s*\(\d+ more notes? waits? behind this one.*$', re.S)
 def queued(text):
     "[(k, text)] of a typed waiting-room batch - the owner's notes `you`, the rest `brief` - or None when `text` is not one."
-    s = ' '.join(str(text or '').split()); m = _QUEUED.search(s)
-    if not m: return None
+    s = ' '.join(str(text or '').split())
+    if ' for you' not in s: return None              # ...the words every head has, looked for at C speed before the pattern walks the step
+    if not (m := _QUEUED.search(s)): return None
     if 'owner' not in (m.group('a') or m.group('b') or '').lower(): return [('brief', s)]
     rest = s[m.end():]; tail = _LEFT.search(rest)
     head, rest = (s[:m.end()] + (tail.group(0) if tail else '')).strip(), rest[:tail.start()] if tail else rest
@@ -536,6 +640,12 @@ def mark_briefs(tid: int, steps: list) -> list:
     `you` line just before it (outcomes.owner_split). A told step headed with those words is ours too, kept seed or not: only Taskuary writes
     them (2026-11-09: a typed resume lost a space - "try now" landed "trynow" - matched no kept seed, and the chat drew the whole wrapper,
     Resume's handover and all, as the owner's line). Compared without spacing, which a typed seed does not keep."""
+    mark = _marker(tid)
+    return [y for x in steps for y in mark(x)]
+
+
+def _marker(tid: int):
+    "mark_briefs' rule for one step - [the step it is, as `you`, `brief` or `compact`] - with the task's kept seeds read once."
     from .outcomes import owner_split
     p, seeds = _seeds_path(tid), set()
     if p.is_file():
@@ -553,7 +663,7 @@ def mark_briefs(tid: int, steps: list) -> list:
         if x.get('k') not in ('you', 'brief') or (x['k'] == 'you' and not ours(x) and not owner_split(x.get('text'))[0]): return [x]
         w, rest = owner_split(x.get('text'))
         return ([{**x, 'k': 'you', 'text': w}] if w else []) + ([{**x, 'k': 'brief', 'text': rest}] if rest.strip() else [])
-    return [y for x in steps for y in mark(x)]
+    return mark
 
 
 def general_steps(store, tid: int) -> list:
@@ -580,7 +690,7 @@ def general_steps(store, tid: int) -> list:
     for c in chat_rows(store, tid):
         mine = c.get('ActorType') == ASSISTANT_TYPE
         # a turn's own working comes BEFORE its reply - and the reply is the said step, so a streamed copy of it is not said twice
-        # ...nor a quick answer's raw JSON, kept as its working before quickwork.answer_text took it out (cut at SAID_N, it never parses)
+        # ...nor a quick answer's raw JSON, kept as its working while a quick answer was one JSON call (cut at SAID_N, it never parses)
         if mine: out += [s for s in by.get(c['CommentId'], []) if not (s['k'] == 'said' and (s['text'].strip() == str(c.get('Body') or '').strip() or is_raw(s['text'])))]
         out.append({'k': ('said' if turn(c) else 'note') if mine else 'brief' if is_brief(c) else 'you', 'text': _cut(c.get('Body'), SAID_N if mine else YOU_N), 'at': c.get('CreatedAt')})
     return out
@@ -719,6 +829,27 @@ def with_views(sessions: list, arts: list) -> list:
             st = s.setdefault('steps', []); i = next((i for i, x in enumerate(st) if x.get('at') and _local(x['at']) > at), len(st))
             st.insert(i, {'k': 'tool', 'id': vid, 'name': 'show', 'text': '', 'output': said, 'at': at})
     return sessions
+
+
+def views_onto(turns: list, arts: list) -> list:
+    """...AND A CONVERSATION'S TURNS THE SAME WAY (recorded on the real CLI, 2026-11-15): Codex calls `show` from inside its own `exec` tool, so
+    its turn's step held the call's title and no answer - "Your bar chart is ready" over no chart, and the step opened to `show {"title": ...}`
+    as JSON. Each view the task kept goes on the `show` step of the turn it was drawn in, as the server's answer (viewspec.shown): the chat
+    draws the checked spec, from whichever CLI it came. The last steps of a turn take its views - a refused first try stays a step."""
+    from .viewspec import MARK
+    from .conversation import ep
+    views = sorted((a for a in arts or [] if a.get('Kind') == session_artifacts.VIEW), key=lambda a: (str(a.get('CreatedAt') or ''), a['ArtifactId']))
+    used = set()
+    for t in (x for x in turns if x.get('kind') == 'turn' and x.get('started')):
+        mine = [a for a in views if a['ArtifactId'] not in used and t['started'] - 1 <= ep(a.get('CreatedAt')) <= (t.get('ended') or float('inf')) + 1]
+        shows = [x for x in t.get('steps') or [] if x.get('k') == 'tool' and re.fullmatch(r'(mcp__taskuary__)?show', str(x.get('name') or ''))
+                 and MARK not in str(x.get('output') or '')]
+        for x, a in zip(reversed(shows), reversed(mine)):
+            p = session_artifacts.confined(a.get('Path'))
+            try: spec = p.read_text(encoding='utf-8').strip() if p else ''
+            except OSError: spec = ''
+            if spec: x['output'] = f"Shown in the owner's chat. {MARK}{spec}"; used.add(a['ArtifactId'])
+    return turns
 
 
 def record(store, tid: int) -> dict:

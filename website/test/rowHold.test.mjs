@@ -49,7 +49,7 @@ test("the row is never hidden while it waits: the old one stays up, and the hold
 
 test("a decision that lights nothing on purpose leaves a hidden mark, never a word", () => {
   const view = src("AssistantView.jsx");
-  assert.match(view, /advice\?\.state && !advice\.verb && !advice\.none && <div hidden data-tq-advice="" data-tq-silent="" data-tq-unlit=\{advice\.state\} \/>/);
+  assert.match(view, /&& <div hidden data-tq-recommended=\{shownAdvice\?\.verb \|\| ""\} \/>\}/);
 });
 
 // THE OWNER, 2026-11-09: "I thought it's greyed out until you can click it again" - a second Mark done while the next task loaded did nothing
@@ -72,4 +72,21 @@ test("a held button that would do nothing is greyed, and un-greys the moment a p
   assert.equal(heldRow(same, same).verbs, same, "released: the live row itself, nothing greyed by the hold");
   assert.ok(heldOff(verbs.list.filter((v) => v.group === "more")) && !heldOff(h.filter((v) => v.group === "more")) && !heldOff([]), "a ▾ of held moves greys with them");
   assert.ok(src("ActionRow.jsx").includes("aria-disabled={v.disabled || undefined}"), "a greyed button says so to a reader too");
+});
+
+// THE BLANK BEAT ON BACK (the visual audit, 2026-11-13): Back from a report to a task drew the task's header with no buttons for 0.3-0.8 s.
+// The held row was the report's, laid on the report's one pane; the task lays Came from and the chat, so nothing held had a pane to stand
+// on. Where the held row lays other panes than the live one, the live item's own buttons stand, greyed until the hold lets go
+test("a held row laid on other panes gives way to the new item's own buttons, greyed", () => {
+  const kept = { list: [{ id: "next", group: "next" }, { id: "r:mine", group: "more" }], lay: { all: "report", keys: ["from", "report"] } };
+  const now = { list: [{ id: "next", group: "next", disabled: true }, { id: "done", group: "more", at: "t", laid: { open: "from" } },
+    { id: "remind", group: "more", at: "t", laid: { open: "from" } }] };
+  const { verbs, liveOf } = heldRow(kept, now), by = (id) => verbs.list.find((v) => v.id === id);
+  assert.ok(by("done") && by("remind"), "the task's own buttons stand on its own panes, not a blank header");
+  assert.ok(by("done").disabled && by("done").inert && !by("r:mine"), "...greyed while the hold is on, the report's gone");
+  assert.equal(liveOf("done"), undefined, "...and a press on one runs nothing yet");
+  assert.ok(by("next").disabled, "Next stays as the live one is");
+  // ...the same panes (task to task): the held row stands as before
+  const prev = { list: [{ id: "next", group: "next" }, { id: "done", group: "more", at: "s", laid: { open: "from" } }] };
+  assert.ok(heldRow(prev, now).verbs.list.some((v) => v.id === "done" && v.at === "s"), "a task left for a task keeps its row held");
 });

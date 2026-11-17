@@ -7,7 +7,8 @@ takes the ones that help it (learned_cut.READS): triage what you care about, the
 work and your promises, the agents the people on their own task, what you care about and your promises, the Assistant all of it.
 Each within its budget, every read with a receipt, and hand edits stick."""
 import pytest
-from taskuary import advisor, assistantblocks, byrecipient, context, ingest, learn, learned_cut, learnedgraph, learnedlines, since
+from tests import memory_cases as MC
+from taskuary import assistantblocks, byrecipient, context, ingest, learn, learned_cut, learnedgraph, learnedlines, since
 from taskuary.store import MemoryStore
 
 CARE_LINE = '- Vendor statements from vendor.example are fyi, never a task. [s:5 | ev: mem1, mem2, mem3 | seen: 2026-10-20 | k: vendor statements]'
@@ -134,14 +135,44 @@ def test_triage_reads_the_whole_memory_every_time():
     assert learned_cut.used(s, 'mail:r11-1', 'triage')[0]['keys'], 'the read left a receipt'
 
 
+def test_a_reader_gets_the_words_and_a_reflection_that_only_confirmed_a_line_changes_no_byte_of_it():
+    """The `[s:N | ev | seen | k]` tag is the reflection's bookkeeping, explained to no reader, and its date and evidence move every time a
+    line is confirmed - so triage's cached memory block was new bytes after each reflection, though no line said anything new (2026-11-12)."""
+    s = full()
+    before = {r: learned_cut.whole(s, r) for r in ('triage', 'agents')} | {'advisor': learned_cut.for_reader(s, 'advisor'),
+                                                                        'assistant': learned_cut.for_reader(s, 'assistant')}
+    assert all('[s:' not in v and '| seen:' not in v for v in before.values()), 'the words, never the tag'
+    assert '- Vendor statements from vendor.example are fyi, never a task.' in before['triage']
+    s.save_doc('learned', s.get_doc('learned').replace('ev: mem1, mem2, mem3 | seen: 2026-10-20', 'ev: mem1, mem2, mem3, rv9 | seen: 2026-11-12')
+               .replace('[s:4 | ev: out4', '[s:6 | ev: out4'), 'reflect')
+    assert {r: learned_cut.whole(s, r) for r in ('triage', 'agents')} | {'advisor': learned_cut.for_reader(s, 'advisor'),
+                                                                        'assistant': learned_cut.for_reader(s, 'assistant')} == before
+
+
 def test_the_whole_memory_keeps_whole_sections_and_logs_what_did_not_fit():
     s = full()
     got = learned_cut.whole(s, 'triage')
     assert [h for h in learned_cut.SECTIONS.values() if h in got] == list(learned_cut.SECTIONS.values()), 'every section, in order'
-    cut = learned_cut.whole(s, 'triage', cap=len(learned_cut.PEOPLE) + len(ERIN_LINE) + len(GAIL_LINE) + 4)
-    assert cut.startswith(learned_cut.PEOPLE) and GAIL_LINE in cut and learned_cut.CARE not in cut, 'a whole section, never half of one'
-    assert learned_cut.over_budget(s).get('vendor statements') == ['triage'], 'what did not fit is noted, not silently dropped'
     assert learned_cut.whole(MemoryStore(), 'triage') == '', "a fresh memory is placeholders"
+
+
+def test_past_its_cap_the_whole_memory_lets_the_lines_about_one_sender_go_first_never_a_section():
+    """Six hundred verdict lines made What you care about 67,671 characters, past the 60,000 cap - and triage read NONE of it, the owner's
+    own general lines with them (the memory audit, 2026-11-12). Past the cap the lines about one sender or topic go, the oldest first: each
+    still reaches the mail it is about as evidence (ingest.relevant_notes). Whole lines, and the same bytes for every mail."""
+    from taskuary import memorylines
+    s = full()
+    scoped = [memorylines.line(f'Weekly digests from this sender are reading only, number {i}', 'sender', f'digest{i}@vendor.example') for i in range(60)]
+    s.save_doc('learned', put(s.get_doc('learned'), learned_cut.CARE, *scoped), 'owner')
+    every = learned_cut.whole(s, 'triage', cap=10**6)
+    got = learned_cut.whole(s, 'triage', cap=len(every) // 2)
+    assert all(learned_cut.said(l) in got for l in (CARE_LINE, ERIN_LINE, GAIL_LINE, WORK_LINE, PROMISE_LINE, BRING_LINE)), 'every general line stays'
+    assert scoped[-1] in got and scoped[0] not in got and len(got) <= len(every) // 2, 'the newest about one sender stay, the oldest go'
+    assert all(l in every.splitlines() for l in got.splitlines()), 'whole lines, never a cut through one'
+    keys = [k for _, k in learned_cut.lines(s.get_doc('learned'), learned_cut.CARE)]
+    assert len(set(keys)) == len(keys), 'a line about each sender is a line of its own'
+    assert learned_cut.over_budget(s).get(keys[1]) == ['triage'] and keys[-1] not in learned_cut.over_budget(s), 'what did not fit is noted'
+    assert learned_cut.whole(s, 'triage', cap=len(every) // 2) == got, 'the same bytes, read after read'
 
 
 def test_the_drafter_reads_the_people_lines_about_whoever_it_writes_to():
@@ -154,8 +185,6 @@ def test_the_drafter_reads_the_people_lines_about_whoever_it_writes_to():
 
 def test_each_reader_reads_the_sections_of_the_matrix():
     s = full()
-    adv = advisor._learned(s)
-    assert all(x in adv for x in ('Erin Blake', 'Vendor statements', 'Vendor renewals', 'headcount sheet every Monday')) and 'Newsletter' not in adv
     told, _ = assistantblocks._learned(s, {})
     assert all(x in told for x in ('Erin Blake', 'Vendor statements', 'Vendor renewals', 'every Monday', 'Newsletter'))
 
@@ -213,8 +242,8 @@ def test_budget_takes_whole_lines_closest_scope_first_and_records_what_did_not_f
     s.save_doc('learned', put(s.get_doc('learned'), learned_cut.CARE, *general, mine), 'owner')
     out = learned_cut.for_reader(s, 'triage', {'sender': 'erin@northwind.example', 'domain': 'northwind.example'}, budget=600)
     body = out.split('\n')[1:]
-    assert body[0] == mine.strip(), 'the line about this sender leads'
-    assert all(l in general + [mine] for l in body), 'whole lines, never a cut through one'
+    assert body[0] == learned_cut.said(mine), 'the line about this sender leads'
+    assert all(l in map(learned_cut.said, general + [mine]) for l in body), 'whole lines, never a cut through one'
     over = learned_cut.over_budget(s)
     assert len(over) == 15 - len(body) and all(r == ['triage'] for r in over.values()), 'what did not fit is marked, not silently dropped'
     g = {l['key']: l for l in learnedgraph.graph(s)['lines']}
@@ -350,7 +379,7 @@ def test_adopting_a_line_about_someone_files_it_under_your_people():
 
 def test_the_hot_pass_is_told_never_to_count_presses():
     assert 'button' in learn.LESSON_SYSTEM and 'pr ids' not in learn.LESSON_SYSTEM
-    assert 'never a count of button presses' in learn.REFLECT_SYSTEM and 'pr ids' not in learn.REFLECT_SYSTEM
+    assert 'never a line that names a' in learn.REFLECT_SYSTEM and 'no counts' in learn.REFLECT_SYSTEM and 'pr ids' not in learn.REFLECT_SYSTEM
 
 
 def test_the_drafter_reads_how_you_work():
@@ -366,3 +395,69 @@ def test_voice_line_stays_in_budget():
     for h, head in (('p', learned_cut.PEOPLE), ('w', learned_cut.WORK)): doc = put(doc, head, *[mk(h, i) for i in range(40)])
     s.save_doc('learned', doc, 'reflect')
     assert len(responder.voice_line(s, ['gail@northwind.example'])) <= 600 + len(responder.PEOPLE_HEAD) + 200
+
+
+def test_what_was_just_told_makes_the_cut_on_the_task_it_bears_on_sixty_lines_in():
+    """The memory round, 2026-11-14 ("if the user tells you something, they should not have to say it again"): a fact told is the LAST line
+    of its section, and ties fell in the document's order - so with sixty lines kept, the Assistant read the oldest and never the one just
+    said, and the agent on a vendor's payroll question read thirty lines about parking and none about payroll - least of all one filed
+    under Your people, which an agent reads only for the people ON its task."""
+    from taskuary import concierge, general, memoryedit
+    s = MemoryStore(); s.set_setting('owner_email', 'alex@northwind.example', 'owner')
+    for i in range(60):
+        memoryedit.remember(s, f"Mail about {('parking permits', 'badge reprints', 'toner orders', 'the holiday rota')[i % 4]} at site {i} is "
+                               f"{('Paula Vance', 'Marcus Reed', 'Omar Keller')[i % 3]}'s to handle, not yours - no task unless they ask you directly")
+    memoryedit.remember(s, 'Paula Vance (paula@northwind.example) prefers a call to a long mail')
+    memoryedit.remember(s, 'Erin left the company; send payroll questions to Gail now', about='Erin Blake')      # ...filed under Your people
+    assert 'send payroll questions to Gail' in learned_cut.section(s.get_doc('learned'), learned_cut.PEOPLE)
+    # the Assistant reads the memory whole - Your people too, which sixty lines of What you care about had filled its budget before
+    told = concierge._system(s)
+    assert 'send payroll questions to Gail' in told and 'prefers a call' in told and 'memory.list reads all of it' not in told
+    # ...and past its budget the newest word is never the one left out, and it is told where the rest is
+    for i in range(140): memoryedit.remember(s, f'Site {i} sends its own weekly cleaning rota to the regional office and none of it is yours to chase or answer')
+    memoryedit.remember(s, 'Ray Colton covers the warehouse audits from now on')
+    told = concierge._system(s)
+    assert len(s.get_doc('learned')) > learned_cut.BUDGET['assistant'] and 'Ray Colton covers the warehouse audits' in told and 'memory.list reads all of it' in told
+    # an agent on a vendor's payroll question: the line about payroll, of sixty-two, in its 1,500 characters - nobody on the task is named in it
+    tid = s.create_task({'Title': 'Payroll question from Payworth', 'Summary': 'Their support asks who answers payroll questions at Northwind now',
+                         'Kind': 'general', 'Status': 'open'}, 'triage')
+    s.add_message({'TaskId': tid, 'ExternalId': 'v1', 'Channel': 'email', 'FromName': 'Payworth Support', 'FromEmail': 'support@vendor.example',
+                   'Subject': 'Payroll question', 'BodyText': 'Who should we send payroll questions to?', 'Status': 'routed'})
+    block = general.learned_block(s, tid)
+    assert 'send payroll questions to Gail' in block and len(block) < general.LEARNED_CHARS + 600
+    assert 'prefers a call' not in block, "the notes on people who are not on the task, and not about its subject, stay out"
+    # ...nor the lines that only share everyday words with it, or the company's own address: two about its subject at most
+    for who in ('Ray Colton', 'Omar Keller', 'Marcus Reed'): memoryedit.remember(s, f'{who} ({who.split()[0].lower()}@northwind.example) asks about support rotas at Northwind first')
+    assert sum(l.count('@northwind.example') for l in general.learned_block(s, tid).splitlines()) <= learned_cut.NEAR_PEOPLE
+    # ...and an agent on Paula's own mail reads how the owner deals with her in its brief, once - and not the payroll line, which is not this task's
+    t2 = s.create_task({'Title': 'Lobby repaint dates', 'Summary': 'Paula asks which week suits', 'Kind': 'general', 'Status': 'open'}, 'triage')
+    s.add_message({'TaskId': t2, 'ExternalId': 'p1', 'Channel': 'email', 'FromName': 'Paula Vance', 'FromEmail': 'paula@northwind.example',
+                   'Subject': 'Lobby repaint', 'BodyText': 'Which week suits you?', 'Status': 'routed'})
+    from taskuary import context
+    b2 = general.learned_block(s, t2) + context.for_prompt(s, t2)
+    assert b2.count('prefers a call') == 1 and 'payroll' not in b2
+
+
+def test_a_word_and_its_plural_are_one_word_to_the_ranking_and_a_rare_shared_word_counts_for_more():
+    about = {'topic': 'Payroll question from Payworth'}
+    assert learned_cut.rank('- Send payroll questions to Gail', 'k', about) == 2            # "question" / "questions"
+    ls = [('- Payworth mail about parking is not yours', 'a', 'care'), ('- Payroll is checked on Fridays', 'b', 'care'), ('- Mail about toner is not yours', 'c', 'care'),
+          ('- Payworth mail about toner is not yours', 'd', 'care')]
+    near = learned_cut.nearness(ls, about)
+    assert near[1] > near[0] > near[2] == 0, 'payroll is in one line, Payworth in two: the rarer word is the nearer line'
+    assert learned_cut.cut(ls, 40, about)[0] == ['- Payroll is checked on Fridays']
+
+
+_RAY = '- Ray Colton (ray@northwind.example) runs payroll for you; you hand payroll asks to him [s:5 | ev: out12, out13 | seen: 2026-10-19 | k: ray payroll]'
+_GAIL_PROMISE = '- You told Gail Moreno (gail@northwind.example) the headcount sheet reaches her every Monday [s:4 | ev: out60, out71 | seen: 2026-10-18 | k: gail monday sheet]'
+
+
+def test_people_lines_rank_by_who_is_on_the_item_then_its_subject():
+    ls = [(_RAY, 'ray payroll'), (MC.ERIN_LINE, 'erin blake manager answer'), (_GAIL_PROMISE, 'gail monday sheet')]
+    one = max(len(learned_cut.said(r)) for r, _ in ls) + 1
+    # every colleague shares the domain: by domain alone, the document's first line won the budget
+    assert learned_cut.cut(ls, one, {'domain': 'northwind.example'})[0] == [_RAY]
+    assert learned_cut.cut(ls, one, {'domain': 'northwind.example', 'people': ['gail@northwind.example']})[0] == [_GAIL_PROMISE]
+    assert learned_cut.cut(ls, one, {'domain': 'northwind.example', 'people': ['erin blake']})[0] == [MC.ERIN_LINE]
+    assert learned_cut.cut(ls, one, {'topic': 'Weekly headcount sheet for Monday'})[0] == [_GAIL_PROMISE]
+    assert learned_cut.cut(ls, one, {'sender_name': 'erin blake', 'people': ['gail@northwind.example']})[0] == [MC.ERIN_LINE], 'the sender first'

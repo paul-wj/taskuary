@@ -253,7 +253,7 @@ class ScheduleFromAThread(unittest.TestCase):
         got = triage.classify_intent({'subject': 'x', 'body': 'y', 'sent_at': sent}, llm=llm({'minutes': 9999, 'from': '1999-01-01', 'to': 'Thursday'}))
         self.assertEqual(got['meet'], {'minutes': None, 'from': None, 'to': None})
         self.assertNotIn('meet', triage.classify_intent({'subject': 'x', 'body': 'y'}, llm=llm(None)))
-        self.assertIn('meet', triage.verdict_schema()['schema']['properties'])
+        self.assertIn('meet', triage.verdict_schema()['schema']['properties']['more']['properties'])
 
 
 class TheWriteScope(unittest.TestCase):
@@ -315,6 +315,10 @@ class Google(unittest.TestCase):
         s.save_connector({'ConnectorId': gm['ConnectorId'], 'Active': 1,
                           'ConfigJson': json.dumps({'address': ME, 'google_client_id': 'id', 'google_client_secret': 'sec', 'google_refresh_token': 'rt'})}, 't')
         self.tok = R(200, {'access_token': 'g', 'scope': scope})
+        # Google's token endpoint is asked on the one road (googlecal.token), which every Google read and write here shares
+        from taskuary import googlecal
+        googlecal._TOK.clear()
+        p = mock.patch('taskuary.googlecal.requests.post', return_value=self.tok); p.start(); self.addCleanup(p.stop)
         return s
 
     def test_accept_patches_the_owners_own_attendee_row(self):
@@ -338,6 +342,15 @@ class Google(unittest.TestCase):
         with mock.patch.object(calwrite, 'requests', Fake({'oauth2.googleapis.com/token': self.tok})):
             with self.assertRaises(calwrite.NoAccess) as e: calwrite.draft(s, out['message_id'], 'accept')
         self.assertEqual(e.exception.fix['href'], '#connector=gmail')
+        # ...and the line is one the owner can act on: the sign-in now asks for calendar.events, so pressing it again is the fix
+        self.assertIn('Press Sign in with Google on the Gmail card again', str(e.exception))
+
+    def test_a_gmail_card_never_signed_in_is_sent_to_the_sign_in(self):
+        s = MemoryStore(); s.set_setting('calendar_enabled', '0', 't')
+        s.save_connector({'ConnectorId': s.get_connector_by_type('gmail')['ConnectorId'], 'Active': 1, 'Secret': 'app-password',
+                          'ConfigJson': json.dumps({'address': ME})}, 't')
+        with self.assertRaises(calwrite.NoAccess) as e: calwrite.account(s, provider='google')
+        self.assertIn('press Sign in with Google on the card', str(e.exception)); self.assertEqual(e.exception.fix['href'], '#connector=gmail')
 
 
 class TheDemo(unittest.TestCase):
@@ -354,7 +367,9 @@ class TheDemo(unittest.TestCase):
             self.assertEqual(json.loads(s.get_review(d['reviewId'])['Deliver'])['act'], 'accept')
             self.assertEqual(len(calwrite.slots_for(s, ask, 'schedule')['slots']), 3)
             self.assertEqual(demo.refuse('POST', f"/api/messages/{inv['MessageId']}/calendar", s), '', 'drafting is the demo')
-            self.assertEqual(demo.refuse('POST', f"/api/reviews/{d['reviewId']}/decide", s), demo.SENDS, 'Send stays refused')
+            # ...a card's verdict is judged by its verb (demo.refuse_verdict): the answer is never sent, and the card can be put down
+            self.assertEqual(demo.refuse_verdict('approve'), demo.SENDS, 'an action approved stays refused')
+            self.assertEqual(demo.refuse('POST', f"/api/reviews/{d['reviewId']}/decide", s), '')
 
 
 class MovedMeeting(unittest.TestCase):

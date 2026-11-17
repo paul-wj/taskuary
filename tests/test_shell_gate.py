@@ -2,7 +2,7 @@
 hold risky steps on the existing proposal card). A push, a merge, a public post, a publish or a mail an agent runs from its shell is read by
 each tool's own grammar, refused to the agent and put on the task with Approve and Dismiss; Approve runs that exact command in the folder it
 was held in and tells the agent; Dismiss tells it no. Everything else passes at once. Invented Northwind repositories only (CLAUDE.md)."""
-import json, time, unittest
+import json, os, time, unittest
 from types import SimpleNamespace
 from unittest import mock
 
@@ -38,7 +38,6 @@ class Holding(unittest.TestCase):
         self.s = MemoryStore(); self.tid = Factory(self.s).task('Fix the ledger export')
         self.told = []
         self.sess = SimpleNamespace(sid='run1', send_prompt=lambda text, as_owner=True: self.told.append(text))
-        proposals._PRESSED.clear()       # a store's ids start at 1 again: an earlier test's press is not this one's
 
     def held(self, cmd='git push origin fix-export'):
         return sg.check(self.s, self.tid, 'run1', cmd, 'Bash', r'C:\work\ledger')
@@ -87,7 +86,6 @@ class Holding(unittest.TestCase):
         self.assertTrue(out['ok'], out)
         self.assertEqual(len(calls), 1); self.assertEqual((calls[0][0][-1], calls[0][1]), ('git push origin fix-export', r'C:\work\ledger'))
         self.assertIn('The owner approved it', self.heard()[0]); self.assertEqual(self.pending(), [])
-        self.assertIn(rv['ReviewId'], proposals._PRESSED, 'its told turn will not supersede it under the press')
 
     def test_a_step_that_fails_says_so_and_runs_nowhere_else(self):
         self.held(); [rv] = self.pending()
@@ -102,23 +100,28 @@ class Holding(unittest.TestCase):
     # the owner, 2026-11-09: a held run declined in the agent's chat stood on as "Approve runs: ..." after the agent had asked something else
     # ...and the owner, 2026-11-10: "once youa re passed it, it should stay where it is with buttons grayed out" - the conversation moving on
     # passes every card of the task (proposals.move_on), whichever session held it
-    def test_the_owner_speaking_to_that_session_again_settles_its_held_step(self):
-        self.held(); sg.check(self.s, self.tid, 'other', 'git push origin other', 'Bash', r'C:\work\ledger')
-        self.assertEqual(len(proposals.move_on(self.s, self.tid)), 2)
-        self.assertEqual(self.pending(), [])
-        gone = self.s._one("SELECT * FROM review WHERE TaskId=? AND Status='superseded'", (self.tid,))
-        self.assertEqual(gone['DecideNote'], proposals.SET_ASIDE); self.assertTrue(proposals.passed(gone))
+    # ...REVISED 2026-11-11 (the owner: "the question has 2 approve buttons?"): his next line leaves a held step lit, and the same step run
+    # again is the card that waits - one card, never a second beside it
+    def test_the_owner_speaking_to_that_session_again_leaves_its_held_step_lit_and_the_step_run_again_is_that_card(self):
+        self.held(); n = len(self.pending())
+        self.assertEqual(proposals.move_on(self.s, self.tid), [])
+        self.held()
+        self.assertEqual(len(self.pending()), n)
+        self.assertIsNone(self.s._one("SELECT * FROM review WHERE TaskId=? AND Status='superseded'", (self.tid,)))
 
-    def test_the_prompt_hook_moves_past_it_and_a_step_being_approved_is_not_touched(self):
+    def test_the_prompt_hook_sets_a_held_step_aside_when_he_writes_never_on_a_wake(self):
+        """2026-11-12, one rule for every card: a line he types past a held step greys it in its place and the agent is told so - raised again
+        if still needed. A background job's wake is no line of his: the step stays lit."""
+        from taskuary import proposals
         self.held(); [rv] = self.pending()
         t = SimpleNamespace(store=self.s, task_id=self.tid, sid='run1', bg={})
-        with mock.patch.object(proposals, '_PRESSED', {rv['ReviewId']: time.time()}):
-            hooks._events(t, {'hook_event_name': 'UserPromptSubmit', 'prompt': 'carry on'})
-            self.assertEqual(len(self.pending()), 1, 'its own Approve is telling the agent - never superseded under the press')
         hooks._events(t, {'hook_event_name': 'UserPromptSubmit', 'prompt': '<task-notification>done</task-notification>'})
-        self.assertEqual(len(self.pending()), 1, 'a background wake is not the owner moving on')
-        hooks._events(t, {'hook_event_name': 'UserPromptSubmit', 'prompt': 'no, leave the checkout - is it ready to push?'})
-        self.assertEqual(self.pending(), [])
+        self.assertEqual([r['ReviewId'] for r in self.pending()], [rv['ReviewId']], 'a wake leaves it lit')
+        told = []
+        with mock.patch('taskuary.general.tell', lambda st, tid, note, actor='owner': told.append(note) or 'told'):
+            hooks._events(t, {'hook_event_name': 'UserPromptSubmit', 'prompt': 'no, leave the checkout - is it ready to push?'})
+        self.assertEqual(self.pending(), []); self.assertTrue(proposals.passed(self.s.get_review(rv['ReviewId'])))
+        self.assertTrue(told and proposals.PASSED_TOLD in told[0] and f"rv{rv['ReviewId']}" in told[0], told)
 
     def test_the_agents_own_words_for_the_call_ride_on_the_card(self):
         sg.check(self.s, self.tid, 'run1', 'git push origin fix-export', 'Bash', r'C:\work\ledger', about='  ship the export fix  ')
@@ -281,3 +284,180 @@ class Deleting(unittest.TestCase):
         # ...and where the owner can answer the CLI's own prompt, it asks there, with the same words
         a = sg.check(self.s, self.tid, 'p1', f'rm -rf "{self.dl}"', 'Bash', self.cwd, ask=True)['hookSpecificOutput']
         self.assertEqual(a['permissionDecision'], 'ask'); self.assertIn("(it can't be undone)", a['permissionDecisionReason'])
+
+
+class ReadingOutside(unittest.TestCase):
+    """AN AGENT ASKS BEFORE IT READS OUTSIDE ITS WORK (the owner, 2026-11-15: "for all agents they should ask before acting like all other
+    actions that ask for permissions"). Its own folders run freely; a read anywhere else is the same held card a push is, and Approve lets the
+    task read that folder from then on; Taskuary's home and the sign-in places are never read. The 'owner's folder' here is this test folder -
+    outside the scratch home, the temp folder and the agent's working folder."""
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from taskuary import config
+        self.s = MemoryStore(); self.tid = Factory(self.s).task('Sum the quarter from his spreadsheet')
+        self.work, self.docs = tempfile.mkdtemp(), str(Path(__file__).parent)
+        config.home().mkdir(parents=True, exist_ok=True); self.secret = str(config.home() / 'config.toml')
+        self.told = []
+        self.sess = SimpleNamespace(sid='run1', send_prompt=lambda text, as_owner=True: self.told.append(text))
+        self.ctx = {'store': self.s, 'task_id': self.tid, 'cwd': self.work, 'sid': 'run1'}
+
+    def pending(self): return self.s._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action' AND Status='pending'", (self.tid,))
+    def read(self, p): return {'toolCallId': 'c', 'kind': 'read', '_meta': {'claudeCode': {'toolName': 'Read'}}, 'rawInput': {'file_path': p}}
+
+    def heard(self):
+        end = time.time() + 5
+        while not self.told and time.time() < end: time.sleep(.01)
+        return self.told
+
+    def test_a_shell_line_is_read_for_the_paths_it_names(self):
+        from taskuary import readgate as rg
+        here = os.path.join(self.docs, 'conftest.py')
+        self.assertEqual(rg.command_paths(f'cat "{here}"', self.work), [here])
+        self.assertEqual(rg.command_paths(f'cd "{self.docs}" && ls', self.work), [self.docs])
+        self.assertEqual(rg.command_paths('cat $NOPE_NOT_SET/x.txt', self.work), [None], 'a path built from a variable it cannot read is held')
+        # ...the real CLI's own shape (2026-11-16): the path kept in a variable, then read through it - it passed the gate unread
+        live = f"$p='{here}'; $l=Get-Content $p; \"rows: $((Import-Csv $p).Count)\""
+        self.assertTrue(rg.command_paths(live, self.work) and set(rg.command_paths(live, self.work)) == {here}, rg.command_paths(live, self.work))
+        self.assertTrue(rg.of_command(self.s, self.tid, live, self.work)[0])
+        for cmd in ('git status', 'for f in *.csv; do wc -l "$f"; done', 'grep -rn /api/tasks src', 'curl -s https://docs.northwind.example/a',
+                    'dir /s', 'python script.py 2>/dev/null', 'cat "$TASKUARY_OUTPUTS/total.txt"'):
+            self.assertEqual(rg.of_command(self.s, self.tid, cmd, self.work), ([], ''), cmd)
+
+    def test_work_in_its_own_folders_runs_and_a_read_outside_is_the_held_card(self):
+        from taskuary import acpgate, outputs
+        self.assertEqual(acpgate.decide(self.read(os.path.join(self.work, 'notes.md')), self.ctx)[0], acpgate.ALLOWED)
+        self.assertEqual(acpgate.decide(self.read(str(outputs.folder(self.tid) / 'total.xlsx')), self.ctx)[0], acpgate.ALLOWED)
+        got = acpgate.decide(self.read(os.path.join(self.docs, 'conftest.py')), self.ctx)
+        self.assertEqual(got[0], acpgate.HELD); self.assertIn('held this for the owner', got[1])
+        [rv] = self.pending(); p = json.loads(rv['DraftText'])
+        self.assertEqual((p['action'], p['command'], p['why']), ('shell_act', '', "it is outside this task's own folders"))
+        self.assertIn('conftest.py', p['what']); self.assertEqual(p['reads'], [os.path.realpath(self.docs)], 'the folder as he spells it, not case-folded')
+        # ...the same read on the shell road, by the one gate a CLI's and the API's commands pass
+        d = hooks.command_gate(self.s, self.tid, 'run1', f'Get-Content "{os.path.join(self.docs, "conftest.py")}"', 'PowerShell', self.work)
+        self.assertEqual(d['hookSpecificOutput']['permissionDecision'], 'deny')
+        self.assertEqual(hooks.command_gate(self.s, self.tid, 'run1', 'Get-Content notes.md', 'PowerShell', self.work), {})
+
+    def test_what_its_own_cli_downloaded_is_its_work_and_the_rest_of_that_home_still_asks(self):
+        """The owner, 2026-11-16: a research turn's read-back of the PDF its own WebFetch had saved was held as a card under its finished
+        answer - "files the agent's own CLI downloaded during the task count as its work area". The exact folders: Claude Code's tool-results
+        for a session started in this task's folder, Codex's pictures for this task's own threads - never another session's, nor the rest of
+        those homes."""
+        from taskuary import acpgate, climodels, readgate
+        claude = os.path.join(self.docs, 'claude-home'); codex = os.path.join(self.docs, 'codex-home')         # ...outside its work, as his own are
+        with mock.patch.dict(os.environ, {'CLAUDE_CONFIG_DIR': claude, 'CODEX_HOME': codex}):
+            mine = os.path.join(claude, 'projects', readgate._slug(self.work), '4efe24ce', 'tool-results', 'webfetch-17948.pdf')
+            other = os.path.join(claude, 'projects', readgate._slug(self.docs), '4efe24ce', 'tool-results', 'webfetch-1.pdf')
+            log = os.path.join(claude, 'projects', readgate._slug(self.work), '4efe24ce.jsonl')
+            self.assertEqual(acpgate.decide(self.read(mine), self.ctx)[0], acpgate.ALLOWED, 'its own download, read back')
+            self.assertEqual(acpgate.decide(self.read(other), self.ctx)[0], acpgate.HELD, "another folder's session is not its own")
+            self.assertNotEqual(acpgate.decide(self.read(log), self.ctx)[0], acpgate.ALLOWED, 'its session log is no download')
+            self.s.add_transcript(self.tid, 'thread-7', 'Drew the chart.', 'codex', self.work)
+            self.assertTrue(readgate.fetched(readgate._n(os.path.join(codex, 'generated_images', 'thread-7', 'chart.png')), self.work, readgate._sids(self.s, self.tid)))
+            self.assertFalse(readgate.fetched(readgate._n(os.path.join(codex, 'generated_images', 'thread-8', 'x.png')), self.work, readgate._sids(self.s, self.tid)))
+
+    def test_a_checkout_of_a_repository_taskuary_has_is_every_agents_work(self):
+        """The owner's live task, 2026-11-16 ("we went through this 50 times"): a general agent on a question about one app asked to "read the
+        folder FanApp" - his GitHub-connected repository, whose checkout the coding agents' map names. Every checkout Taskuary has - a
+        profile's map, a folder a coding session ran in - is any agent's work; the folder above it still asks."""
+        from taskuary import acpgate, repochoice
+        fan, ledger = os.path.join(self.docs, 'FanApp'), os.path.join(self.docs, 'ledger')
+        self.s.upsert_agent('coding', 'coding', 'cli', json.dumps({'cmd': 'claude', 'cwd_map': {'northwind/fanapp': fan}}))
+        self.assertEqual(acpgate.decide(self.read(os.path.join(fan, 'src', 'App.tsx')), self.ctx)[0], acpgate.ALLOWED)
+        other = Factory(self.s).task('Fix the ledger rounding', kind='coding'); self.s.add_transcript(other, 'run9', 'Fixed.', 'claude', ledger)
+        with mock.patch.object(repochoice, 'is_checkout', lambda p: os.path.normcase(str(p)) == os.path.normcase(ledger)):
+            self.assertEqual(acpgate.decide(self.read(os.path.join(ledger, 'totals.py')), self.ctx)[0], acpgate.ALLOWED, 'a checkout a coding task ran in')
+        self.assertEqual(acpgate.decide(self.read(os.path.join(self.docs, 'conftest.py')), self.ctx)[0], acpgate.HELD, 'the folder above them still asks')
+
+    def test_a_step_held_in_a_turn_that_finished_the_job_greys_with_the_true_line(self):
+        """The same walk: the PDF read was held, the turn finished the report another way and said its goal was met (nothing_left) - and the
+        Approve stood live under the complete answer. Steps held in a turn that finished are over: greyed in place, with what happened."""
+        from taskuary import acpgate, proposals
+        acpgate.decide(self.read(os.path.join(self.docs, 'conftest.py')), self.ctx); [rv] = self.pending()
+        self.assertEqual(proposals.finished_without(self.s, self.tid), [rv['ReviewId']])
+        r = self.s.get_review(rv['ReviewId'])
+        self.assertTrue(proposals.passed(r), 'nothing presses it')
+        self.assertEqual(proposals.passed_why(self.s, r), 'Not needed - the agent finished without it')
+        self.assertEqual(proposals.passed_since(self.s, self.tid, ''), [], 'never told back as a card he moved past')
+
+    def test_approve_lets_the_task_read_that_folder_from_then_on_and_tells_the_agent(self):
+        from taskuary import acpgate
+        call = self.read(os.path.join(self.docs, 'conftest.py'))
+        acpgate.decide(call, self.ctx); [rv] = self.pending()
+        with mock.patch('taskuary.workerstate._live', return_value=self.sess):
+            self.assertTrue(verdicts.decide(self.s, rv, 'approve')['ok'])
+        self.assertIn('The owner let you read', self.heard()[0])
+        # ...and his press, where it is said as a line, reads as what it did - nothing "ran" (the owner, 2026-11-16; the card: heldCard)
+        from taskuary import general, readgate
+        said = general.PRESSES['shell_act_done']({'what': 'read conftest.py in tests', 'reads': [self.docs]})
+        self.assertIn(readgate.ALLOWED, said); self.assertNotIn('it ran', said)
+        self.assertEqual(acpgate.decide(call, self.ctx)[0], acpgate.ALLOWED)
+        self.assertEqual(acpgate.decide(self.read(os.path.join(self.docs, 'browser', 'x.mjs')), self.ctx)[0], acpgate.ALLOWED)
+        self.assertEqual(self.pending(), [])
+
+    def test_dismiss_tells_the_agent_whose_no_it_was(self):
+        from taskuary import acpgate, browsergate
+        acpgate.decide(self.read(os.path.join(self.docs, 'conftest.py')), self.ctx); [rv] = self.pending()
+        with mock.patch('taskuary.workerstate._live', return_value=self.sess):
+            self.assertTrue(verdicts.decide(self.s, rv, 'reject')['ok'])
+        self.assertIn('did not approve it', self.heard()[0]); self.assertIn(browsergate.OWNER_NO, self.told[0])
+
+    def test_the_context_file_taskuary_wrote_for_the_task_is_its_to_read_and_no_other_tasks(self):
+        """Recorded on the real CLI, 2026-11-16: the brief points the agent at its context file in Taskuary's home, and its Read was refused
+        as Taskuary's own data - the agent told the owner "the task's context file was blocked from reading". It is the task's own; another
+        task's is not."""
+        from taskuary import acpgate, context, readgate
+        own, batch = context.files(self.tid)
+        self.assertEqual(acpgate.decide(self.read(str(own)), self.ctx)[0], acpgate.ALLOWED)
+        self.assertEqual(acpgate.decide(self.read(str(batch)), self.ctx)[0], acpgate.ALLOWED)
+        other = context.files(self.tid + 1)[0]
+        self.assertEqual(acpgate.decide(self.read(str(other)), self.ctx), (acpgate.REFUSED, readgate.NEVER))
+
+    def test_a_search_over_the_tasks_own_mail_folders_is_its_own_work_and_no_other_messages(self):
+        """Timed on a long task, 2026-11-16: a grep over the files that came on the task's mail was refused as Taskuary's own data, and the
+        agent spent its turn working around it. Each of the task's messages' folders is its own; another message's is not."""
+        from taskuary import acpgate, config, readgate
+        mine = self.s.add_message({'TaskId': self.tid, 'ExternalId': 'g1', 'Channel': 'email', 'Subject': 'plan', 'Status': 'routed'})
+        other = self.s.add_message({'ExternalId': 'g2', 'Channel': 'email', 'Subject': 'not ours', 'Status': 'routed'})
+        there = (config.home() / 'attachments' / str(mine)).exists()      # ...the test home is shared: another test may have made it
+        grep = lambda d: {'toolCallId': 'g', 'kind': 'search', '_meta': {'claudeCode': {'toolName': 'Grep'}}, 'rawInput': {'pattern': 'sign-off', 'path': d}}
+        self.assertEqual(acpgate.decide(grep(str(config.home() / 'attachments' / str(mine))), self.ctx)[0], acpgate.ALLOWED)
+        self.assertEqual(acpgate.decide(grep(str(config.home() / 'attachments' / str(other))), self.ctx), (acpgate.REFUSED, readgate.NEVER))
+        self.assertEqual((config.home() / 'attachments' / str(mine)).exists(), there, 'the gate names the folder, never makes it')
+
+    def test_taskuarys_own_home_is_never_read_not_even_on_a_yes(self):
+        from taskuary import acpgate, apiagent, readgate
+        self.assertEqual(acpgate.decide(self.read(self.secret), self.ctx), (acpgate.REFUSED, readgate.NEVER))
+        d = hooks.command_gate(self.s, self.tid, 'run1', f'cat "{self.secret}"', 'Bash', self.work)
+        self.assertEqual(d['hookSpecificOutput']['permissionDecisionReason'], readgate.NEVER)
+        readgate.grant(self.s, self.tid, [os.path.dirname(self.secret)])
+        self.assertEqual(acpgate.decide(self.read(self.secret), self.ctx)[0], acpgate.REFUSED)
+        self.assertEqual(self.pending(), [])
+        # ...and the API road's own file tools, by the same rule
+        with mock.patch.object(apiagent, 'workdir', return_value=self.work):
+            self.assertRaisesRegex(ValueError, 'never read by an agent', apiagent._hands, self.s, self.tid, 'run1', 'file_read', {'path': self.secret})
+            self.assertIn('held this for the owner', apiagent._hands(self.s, self.tid, 'run1', 'files_list', {'path': self.docs}))
+
+    def test_a_cli_file_tool_on_the_hook_road_is_judged_the_same(self):
+        t = SimpleNamespace(store=self.s, task_id=self.tid, sid='run1', cwd=self.work)
+        call = lambda p: hooks.browser({'tool_name': 'Read', 'tool_input': {'file_path': p}, 'cwd': self.work})
+        with mock.patch.object(hooks, '_pane', return_value=t), mock.patch.object(sg, 'asks', return_value=''):
+            self.assertEqual(call(os.path.join(self.work, 'a.md')), {})
+            self.assertEqual(call(os.path.join(self.docs, 'conftest.py'))['hookSpecificOutput']['permissionDecision'], 'deny')
+        self.assertEqual(len(self.pending()), 1)
+        self.assertIn('Read', hooks.BROWSER_MATCH.split('|'))
+
+
+class TwoGatesAtOnce(unittest.TestCase):
+    def test_one_call_held_by_two_gates_at_the_same_moment_is_one_card(self):
+        """Recorded on the real CLI, 2026-11-16: the hook and the ACP gate held one command in the same millisecond - two cards of it, "2 of 2
+        ran", the command run twice. The look for a waiting card and the filing of one are one step."""
+        import threading
+        s = MemoryStore(); tid = Factory(s).task('Fill the invoice templates'); go = threading.Barrier(4)
+        # ...a push: held on every OS (a C:/ path is a relative one on macOS, and its delete held nothing there - CI run 43895206403)
+        with mock.patch.object(sg, 'trusted', return_value=''), mock.patch('taskuary.landing.push_asked', return_value=None):
+            def hold(): go.wait(); sg.check(s, tid, 'run1', 'git push origin main', 'Bash', '')
+            ts = [threading.Thread(target=hold) for _ in range(4)]
+            for t in ts: t.start()
+            for t in ts: t.join(10)
+        self.assertEqual(len(s._rows("SELECT * FROM review WHERE TaskId=? AND Kind='action'", (tid,))), 1)

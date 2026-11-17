@@ -25,7 +25,7 @@ from . import buttons, calendar as cal, net as requests
 
 GRAPH = cal.GRAPH
 MS_WRITE = 'Calendars.ReadWrite'
-G_WRITE = ('https://www.googleapis.com/auth/calendar.events', 'https://www.googleapis.com/auth/calendar')
+from .googlecal import CAL_WRITE as G_WRITE, G_SIGNIN, READ_ONLY as NEED_G    # what the card's sign-in asks for, and its line when an older one did not
 ACTS = ('accept', 'decline', 'propose', 'schedule')
 SAID = {'accept': 'Accept', 'decline': 'Decline', 'propose': 'Propose a new time', 'schedule': 'Invite'}
 # the line the reply box starts with - the owner's to change or empty; empty sends the answer with no note
@@ -206,16 +206,21 @@ _BUSY = {'at': 0.0, 'data': None, 'days': 0}
 BUSY_TTL = 300
 
 
-def busy(store, days: int = 14) -> list:
+def busy(store, days: int = 14, sure: bool = False) -> list:
     """The owner's busy events from now for `days` days, every calendar the cards reach - cached like the reply's read, and read
     again when a longer window is asked for than the cache holds. The demo has no calendar behind it, so it has a scripted week
-    (demo.agenda)."""
+    (demo.agenda). A calendar that could not be read is never cached as an empty week; `sure` (free times are offered off it)
+    raises NoAccess with the card for it - an unread calendar offered as free time had the owner booked over his own meetings."""
     from . import demo
     if demo.enabled(): return demo.agenda()
     days = max(14, int(days or 14))
     if _BUSY['data'] is not None and time.time() - _BUSY['at'] < BUSY_TTL and _BUSY['days'] >= days: return _BUSY['data']
     tz = cal.tz_of(store)
     ag = cal.agenda(store, days=days, start=datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0))
+    if ag.get('errors'):
+        if sure: raise NoAccess(f"Your calendar could not be read, so I can't say when you're free. {ag['errors'][0]}",
+                                'Open the card', connect_fix(store)['href'])
+        return ag['events']
     _BUSY.update(at=time.time(), data=ag['events'], days=days)
     return ag['events']
 
@@ -252,7 +257,7 @@ def free_slots(store, minutes: int = 30, start: date = None, end: date = None, n
     now = datetime.now(tz).replace(tzinfo=None, second=0, microsecond=0)
     start, minutes = max(start or now.date(), now.date()), max(15, min(int(minutes or 30), 480))
     end = end if end and end >= start else start + timedelta(days=6)
-    evs = events if events is not None else busy(store, days=max(1, (end - now.date()).days + 1))
+    evs = events if events is not None else busy(store, days=max(1, (end - now.date()).days + 1), sure=True)
     picks, seen_days, d = [], set(), start
     while d <= end and len(picks) < n * 4:
         if d.weekday() < 5:
@@ -303,23 +308,12 @@ def ms_can_write(cfg: dict, tok: str = None) -> bool:
     return not held or any(h.startswith('calendars.readwrite') for h in held)
 
 
-def _google_token(cfg: dict) -> tuple:
-    """(access token, granted scopes) off the Gmail card's refresh token."""
-    from .googlecal import client         # a token signed in on Taskuary's own client renews with it (googlecal.client)
-    gid, gsec = client(cfg)
-    t = requests.post('https://oauth2.googleapis.com/token', timeout=20,
-                      data={'client_id': gid, 'client_secret': gsec, 'refresh_token': cfg.get('google_refresh_token'), 'grant_type': 'refresh_token'})
-    if t.status_code != 200: raise RuntimeError(f'Google token failed ({t.status_code})')
-    j = t.json() or {}
-    return j.get('access_token') or '', str(j.get('scope') or '')
-
-
 MS_FIX = ('Sign in again', '#connector=outlook')
 NO_CALENDAR = 'No calendar is connected - connect one, and the answer goes to it.'
 G_FIX = ('Open the Gmail card', '#connector=gmail')
 NEED_MS = (f'Calendar access needs to be granted - sign in again on the Outlook card and allow {MS_WRITE} '
            '(a tenant app needs it as an application permission).')
-NEED_G = 'Calendar access needs to be granted - the Gmail card needs a Google refresh token with the calendar.events scope.'
+NO_G = f'The Gmail card has no Google sign-in, and its App Password carries no calendar - press {G_SIGNIN} on the card.'
 
 
 def account(store, msg: dict = None, provider: str = '') -> dict:
@@ -343,7 +337,7 @@ def account(store, msg: dict = None, provider: str = '') -> dict:
     # NOTHING CONNECTED IS SAID SO, with the connect step (B15, the email walk 2026-10-29): with no mailbox card at all, Accept on an
     # invite talked about a Google refresh token and "Open the Gmail card", and Find a time offered "Sign in again" - nothing had ever
     # been signed in. The Gmail card's calendar wording is for a Gmail card that is there.
-    if want == 'google' and any(c.get('Active') for c in store.connectors_by_type('gmail')): raise NoAccess(NEED_G, *G_FIX)
+    if want == 'google' and any(c.get('Active') for c in store.connectors_by_type('gmail')): raise NoAccess(NO_G, *G_FIX)
     fix = connect_fix(store)
     raise NoAccess(NO_CALENDAR, fix['label'], fix['href'])
 
@@ -353,8 +347,9 @@ def require_write(store, acct: dict):
     from . import demo
     if demo.enabled(): return
     if acct['provider'] == 'google':
-        try: _, granted = _google_token(acct['cfg'])
-        except Exception as e: raise NoAccess(f'The Google calendar could not be reached ({str(e)[:120]}).', *G_FIX)
+        from .googlecal import token
+        try: _, granted = token(acct['cfg'])
+        except Exception as e: raise NoAccess(f'The Google calendar could not be reached: {str(e)[:160]}.', *G_FIX)
         if not any(s in granted.split() for s in G_WRITE): raise NoAccess(NEED_G, *G_FIX)
         return
     cfg = acct['cfg']
@@ -450,7 +445,8 @@ def _people(store, msg: dict) -> list:
 
 
 def _title(msg: dict) -> str:
-    s = re.sub(r'^\s*((re|fw|fwd|aw)\s*:\s*)+', '', str(msg.get('Subject') or ''), flags=re.I).strip()
+    from .routing import bare_subject
+    s = bare_subject(msg.get('Subject'))
     return s[:200] or 'Meeting'
 
 
@@ -627,7 +623,7 @@ def suggest(store, people, minutes: int = 30, within: str = '', first=None, last
     mins = mins if mins in LENGTHS else 30
     a, b = within_days(within, first, last, today)
     theirs, read, unread = their_busy(store, acct, _addrs(people), a, b + timedelta(days=7))
-    evs = busy(store, days=(b - today).days + 8) + theirs
+    evs = busy(store, days=(b - today).days + 8, sure=True) + theirs
     out, later = free_slots(store, mins, a, b, n=n, events=evs), False
     if not out: out, later = free_slots(store, mins, b + timedelta(days=1), b + timedelta(days=7), n=n, events=evs), True
     return {'slots': out, 'minutes': mins, 'first': str(a), 'last': str(b), 'later': later, 'read': read, 'unread': unread, 'provider': acct['provider']}
@@ -761,7 +757,8 @@ def deliver(store, env: dict, note: str) -> dict:
     to = list(env.get('to') or [])
     if env.get('provider') == 'google':
         cfg = _cfg(c)
-        tok, _ = _google_token(cfg)
+        from .googlecal import access_token
+        tok = access_token(cfg)
         h = {'Authorization': f'Bearer {tok}', 'Content-Type': 'application/json'}
         base = 'https://www.googleapis.com/calendar/v3/calendars/primary/events'
         if act == 'schedule':

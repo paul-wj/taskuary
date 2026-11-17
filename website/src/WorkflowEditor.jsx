@@ -95,7 +95,7 @@ export const SchedulePicker = ({ sched, setSched, cron = "" }) => {
       inputProps={{ min: 1, max: 28 }} sx={{ width: 80, bgcolor: "var(--tq-panel, #fff)" }}
       onChange={(e) => setSched((s) => ({ ...s, day: Math.min(28, Math.max(1, Number(e.target.value) || 1)) }))} />}
     {["daily", "weekly", "monthly"].includes(sched.mode) && <TextField size="small" type="time" label={t("at")} value={sched.at}
-      sx={{ width: 120, bgcolor: "var(--tq-panel, #fff)" }} onChange={(e) => setSched((s) => ({ ...s, at: e.target.value }))} />}
+      sx={{ width: 140, bgcolor: "var(--tq-panel, #fff)" }} onChange={(e) => setSched((s) => ({ ...s, at: e.target.value }))} />}
     {sched.mode === "every" && <TextField size="small" type="number" label={t("minutes")} value={sched.minutes}
       sx={{ width: 110, bgcolor: "var(--tq-panel, #fff)" }} onChange={(e) => setSched((s) => ({ ...s, minutes: e.target.value }))} />}
     {sched.mode === "cron" && <TextField size="small" label="cron" value={sched.cron} placeholder="0 8 * * 1"
@@ -248,7 +248,7 @@ export default function WorkflowEditor({ sourceId, sources, connectors, types, d
         <Button size="small" color="inherit" onClick={() => { setCfg((c) => ({ ...c, flow: repair.was })); setRepair(null); }}>{t("Discard")}</Button></Box>}>
         {repair.explain ? t("The AI's repair: {explain} The changed steps are marked below - nothing is saved yet.", { explain: repair.explain }) : t("The AI's repair. The changed steps are marked below - nothing is saved yet.")}</Alert>}
       {/* describing it is how a new one starts; a draft that arrived built (New, or this box) is already past that */}
-      {!cur && !draft && composer}
+      {!cur && !draft && (typeof composer === "function" ? composer(cfg) : composer)}
       {note && <Alert severity={note.severity} sx={{ mb: 1.5, fontSize: 12.5 }}>{note.text}</Alert>}
 
       <Box sx={{ ...card, p: 2.5 }}>
@@ -287,7 +287,7 @@ export default function WorkflowEditor({ sourceId, sources, connectors, types, d
           </Box>
         </Field>}
         <Field label="Who does it" hint="the profile whose rules it works by">
-          <Select size="small" displayEmpty value={roles.includes(cfg.agent) ? cfg.agent : ""} onChange={(e) => set("agent", e.target.value)}
+          <Select size="small" displayEmpty value={roles.includes(cfg.agent) && cfg.agent !== "assistant" ? cfg.agent : ""} onChange={(e) => set("agent", e.target.value)}
             sx={{ minWidth: 220, bgcolor: "var(--tq-panel, #fff)", fontSize: 13 }}>
             <MenuItem value="" sx={{ fontSize: 13 }}>{t(roles.includes("assistant") ? "assistant (the default)" : "the default")}</MenuItem>
             {roles.filter((a) => a !== "assistant").map((a) => <MenuItem key={a} value={a} sx={{ fontSize: 13 }}>{a}</MenuItem>)}

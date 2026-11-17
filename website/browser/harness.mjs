@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -12,7 +12,9 @@ import puppeteer from "puppeteer-core";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const website = path.resolve(here, "..");
 const repository = path.resolve(website, "..");
-const forbiddenPorts = new Set([7787, 7790]);
+// the owner's running Taskuary and its hook listeners: a fixture never takes them, and a real-CLI walk's hooks are refused there
+export const liveHookPorts = [7787, 7796, 7797];
+const forbiddenPorts = new Set([...liveHookPorts, 7790]);
 
 // THE ASK BAR'S ONE WIDTH on a desk (assistantView.css --tq-ask-w): a third of the window, 360-520px, at rest and open alike
 export const askWidth = (vw) => Math.min(520, Math.max(360, 0.34 * vw));
@@ -160,13 +162,14 @@ export async function startHarness({ fresh = false, bin = "", tour = false } = {
   const localAppData = path.join(home, "localappdata");
   const codexHome = path.join(home, "codex");
   const claudeHome = path.join(home, "claude");
-  const agentBrowserHome = path.join(home, "agent-browser");
   const userHome = path.join(home, "user");
+  // ...under the scratch profile, by the name the driver itself gives it: a program run with that profile keeps its state where Taskuary reads it
+  const agentBrowserHome = path.join(userHome, ".agent-browser");
   const xdgConfig = path.join(home, "xdg-config");
   const xdgCache = path.join(home, "xdg-cache");
   const xdgData = path.join(home, "xdg-data");
   await Promise.all([browserProfile, appData, localAppData, codexHome, claudeHome, agentBrowserHome, userHome, xdgConfig, xdgCache, xdgData]
-    .map((folder) => mkdir(folder)));
+    .map((folder) => mkdir(folder, { recursive: true })));
 
   const fixtureApi = `http://127.0.0.1:${backendPort}`;
   const ui = `http://127.0.0.1:${frontendPort}`;
@@ -206,6 +209,31 @@ export async function startHarness({ fresh = false, bin = "", tour = false } = {
     const system = process.platform === "win32" ? [path.join(process.env.SystemRoot || "C:\\Windows", "System32"), process.env.SystemRoot || "C:\\Windows"]
       : ["/usr/bin", "/bin"];
     backendEnv = { ...isolated, TASKUARY_FIXTURE_FRESH: "1", PATH: [bin, ...system].filter(Boolean).join(path.delimiter) };
+    // THE OWNER'S REAL CLI, for a recorded walk only (the owner, 2026-11-11: "run it against my real claude cli"): TASKUARY_BROWSER_REAL_CLI names
+    // the folders its programs are in (claude, node, git). The CLI signs in from the person's own profile, so the profile folders stay theirs;
+    // Taskuary's home is still the scratch one, and the fixture still opens no connection out. Never set in CI: the stand-in is the default.
+    if (process.env.TASKUARY_BROWSER_REAL_CLI) {
+      backendEnv.PATH = [bin, ...process.env.TASKUARY_BROWSER_REAL_CLI.split(path.delimiter), ...system].filter(Boolean).join(path.delimiter);
+      // ...CODEX_HOME with them: another CLI of theirs (REAL_EXTRA_PATH) signs in from their own profile as Claude does - a copy of its
+      // sign-in in the scratch home would be refreshed there, and their own left stale
+      for (const k of ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "CODEX_HOME"]) {
+        if (process.env[k] === undefined) delete backendEnv[k]; else backendEnv[k] = process.env[k];
+      }
+      // ...and the person's own user-level Claude hooks post every CLI event to THEIR running Taskuary, a scratch session's among them. curl
+      // reads CURL_HOME/.curlrc: each of their live ports is sent to a closed one, so nothing of a walk reaches it. The ports are a fixed list,
+      // never read out of their settings file - a walk reads nothing of the person's own profile but what the CLI itself signs in with.
+      const ports = [...liveHookPorts].map(String).filter((p) => p !== String(backendPort));
+      mkdirSync(xdgConfig, { recursive: true });
+      writeFileSync(path.join(xdgConfig, ".curlrc"), ports.map((p) => `connect-to = "127.0.0.1:${p}:127.0.0.1:9"`).join("\n") + "\n");
+      backendEnv.CURL_HOME = xdgConfig;
+      // ...REAL_BROWSER=own (the owner, 2026-11-11: "yes run browser thing under my profile"): the driver keeps its sessions under the person's own
+      // profile, so Taskuary reads them there - only the files of its own sessions, by their names
+      if (process.env.REAL_BROWSER === "own") backendEnv.AGENT_BROWSER_HOME = path.join(os.homedir(), ".agent-browser");
+      // ...and Taskuary reads that browser's own ports on this computer (fixture_server.py LOOPBACK): blocked, no sign-in was ever raised
+      if (process.env.REAL_BROWSER) backendEnv.TASKUARY_FIXTURE_LOOPBACK = "1";
+      // ...and the Chrome it runs, where the scratch home has none of its own (AGENT_BROWSER_EXECUTABLE_PATH, as the owner may set it)
+      if (process.env.REAL_BROWSER && process.env.AGENT_BROWSER_EXECUTABLE_PATH) backendEnv.AGENT_BROWSER_EXECUTABLE_PATH = process.env.AGENT_BROWSER_EXECUTABLE_PATH;
+    }
     delete backendEnv.TASKUARY_DEMO;
     if (process.platform === "win32") delete backendEnv.Path;
   }
@@ -258,9 +286,12 @@ export async function startHarness({ fresh = false, bin = "", tour = false } = {
       pages.add(page);
       await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 });
       await page.evaluateOnNewDocument((fixtureTokenValue) => {
-        localStorage.setItem("taskuary_token", fixtureTokenValue);
-        // Fixtures use English unless a test explicitly switches; retain that choice on reload.
-        if (!localStorage.getItem("taskuary.language")) localStorage.setItem("taskuary.language", "en");
+        // Sandboxed agent pages have no storage; fixture settings belong only to the app.
+        if (window === window.top) {
+          localStorage.setItem("taskuary_token", fixtureTokenValue);
+          // Fixtures use English unless a test explicitly switches; retain that choice on reload.
+          if (!localStorage.getItem("taskuary.language")) localStorage.setItem("taskuary.language", "en");
+        }
       }, token);
       await page.evaluateOnNewDocument((allowedHttpOrigin) => {
         const NativeWebSocket = window.WebSocket;

@@ -15,7 +15,7 @@ from pathlib import Path
 
 HOST = "127.0.0.1"
 PORT = int(os.environ["TASKUARY_PORT"])
-if PORT in (7787, 7790):
+if PORT in (7787, 7790, 7796, 7797):
     raise RuntimeError("the browser fixture may not use Taskuary's live ports")
 # FRESH: a first start on a machine with nothing set up - not the demo world, still a disposable home and no outbound sockets
 FRESH = os.environ.get("TASKUARY_FIXTURE_FRESH") == "1"
@@ -42,12 +42,20 @@ def _pty_own(address) -> bool:
     return host in ("127.0.0.1", "localhost") and sys._getframe(2).f_globals.get("__name__", "").startswith("winpty")
 
 
+# THE AGENT'S OWN BROWSER, on a recorded real-CLI walk only (TASKUARY_FIXTURE_LOOPBACK=1, set by harness.mjs under REAL_BROWSER): Taskuary reads
+# the browser's screencast and DevTools ports on this computer, so loopback - and only loopback - is let through. Without it every read of the
+# browser raised, no sign-in was ever raised and the walk ended in a dead end the product does not have. Never set in CI.
+LOOPBACK = os.environ.get("TASKUARY_FIXTURE_LOOPBACK") == "1"
+def _local(host) -> bool: return LOOPBACK and str(host) in ("127.0.0.1", "localhost", "::1")
+
+
 class NoOutboundSocket(socket.socket):
     def connect(self, address):
-        if _pty_own(address): return super().connect(address)
+        if _pty_own(address) or _local(address[0] if isinstance(address, tuple) else ""): return super().connect(address)
         raise RuntimeError(f"browser fixture blocked outbound socket connection to {address!r}")
 
     def connect_ex(self, address):
+        if _local(address[0] if isinstance(address, tuple) else ""): return super().connect_ex(address)
         raise RuntimeError(f"browser fixture blocked outbound socket connection to {address!r}")
 
 
@@ -81,12 +89,21 @@ def _install_fresh_routes(app, store):
         repo = Path(os.environ["TASKUARY_HOME"]) / "ledger"; repo.mkdir(exist_ok=True)
         (repo / "totals.py").write_text("def total(a, tax):\n    return a + tax\n", encoding="utf-8")
         git = lambda *a: subprocess.run([body.get("git") or "git", "-C", str(repo), *a], check=True, capture_output=True)
-        git("init", "-q"); git("config", "user.name", "Alex Doyle"); git("config", "user.email", "alex@northwind.example"); git("add", "."); git("commit", "-qm", "start")
+        git("init", "-q"); git("config", "user.name", "Alex Doyle"); git("config", "user.email", "alex@northwind.example"); git("add", "."); git("commit", "-qm", "start", "--allow-empty")       # ...a second coding task of one home: nothing new to commit
         store.set_setting(agents.DEV_MODE, "1", "owner")
+        if "pty" in body: store.set_setting(agents.ACP_SETTING, "0" if body["pty"] else "1", "owner")      # ...in its terminal, not over ACP
         fake = str(Path(__file__).resolve().parents[2] / "tests" / "fake_acp_server.py")
         # ...under the CLI's own name too: a conversation reopened after a restart starts its session by the name it kept (waitroom.reopen_coding)
-        for name in ("coding", "claude"): store.upsert_agent(name, "coding", "cli", json.dumps({"cmd": "claude", "acp_cmd": [sys.executable, fake], "cwd": str(repo)}))
+        # ...`real`: the CLI on PATH through its own adapter, not the stand-in (a recorded walk with TASKUARY_BROWSER_REAL_CLI)
+        conn = {"cmd": "claude", "cwd": str(repo)} | ({} if body.get("real") else {"acp_cmd": [sys.executable, fake]})
+        for name in ("coding", "claude"): store.upsert_agent(name, "coding", "cli", json.dumps(conn))
         tid = store.create_task({"Title": body.get("title") or "Comment the ledger totals", "Kind": "coding", "Status": "in_progress"}, "owner")
+        # ...`conversation`: the task came from a colleague's mail on that thread, so what is pushed on it later joins this task (a recorded flood)
+        if body.get("conversation"):
+            store.set_setting("owner_name", "Alex Doyle", "owner"); store.set_setting("owner_email", "alex@northwind.example", "owner")
+            store.add_message({"TaskId": tid, "ExternalId": f"fx-coding-{tid}", "ConversationId": body["conversation"], "Channel": "email", "FromName": "Gail Moreno",
+                               "FromEmail": "gail@northwind.example", "ToEmail": "alex@northwind.example", "Subject": "Ledger totals", "Status": "routed",
+                               "BodyText": "Hi Alex, could someone comment the totals function in the ledger? Thanks, Gail"})
         return {"taskId": tid, "repo": str(repo)}
 
     @app.post("/api/fixture/mail-task")
@@ -102,16 +119,101 @@ def _install_fresh_routes(app, store):
         mid = store.add_message({"TaskId": tid, "ExternalId": f"fx-{tid}", "Channel": "email", "FromName": who, "FromEmail": addr,
                                  "ToEmail": "alex@northwind.example", "Subject": body.get("title") or "Your review of the tool?", "SentAt": body.get("sent") or "2026-11-10 08:00:00",
                                  "BodyText": f"Hi Alex, could you send me your review of the tool? Thanks, {who.split()[0]}", "Status": "routed"})
+        # ...`owed`: the reply as arrival opens it - no words yet, the agent's to write (ingest: reply_to_agent); `needs`: and its drafter said why not
+        if body.get("owed"):
+            rid = store.add_review({"TaskId": tid, "MessageId": mid, "Kind": "draft", "Status": "pending", "Origin": "triage", "Channel": "email",
+                                    "Reason": "needs a reply: a question for you"})
+            if body.get("needs"): store.set_review_draft_needs(rid, body["needs"])
+            return {"taskId": tid, "reviewId": rid, "messageId": mid}
         rid = store.add_review({"TaskId": tid, "MessageId": mid, "Kind": "draft_reply", "Status": "pending", "Channel": "email",
                                 "DraftText": body.get("draft") or "Hi Erin, here is a long review of every flaw we found in the tool, one by one. Alex"})
         return {"taskId": tid, "reviewId": rid, "messageId": mid}
 
+    @app.post("/api/fixture/invite")
+    def fixture_invite(body: dict = Body(...)):
+        """An Outlook invite from Erin, its Accept drafted on its task, and the calendar a stand-in that answers after `delay` seconds (or
+        refuses with `fail`): every calendar press's remote call, slow as Graph and Google can be. Nothing leaves."""
+        import json as _json
+        from datetime import datetime, timedelta
+        from unittest import mock
+        from taskuary import calwrite, channels
+        me = "alex@northwind.example"
+        store.set_setting("owner_email", me, "owner"); store.set_setting("owner_name", "Alex Doyle", "owner")
+        ol = store.get_connector_by_type("outlook")
+        store.save_connector({"ConnectorId": ol["ConnectorId"], "Active": 1, "Secret": "rt", "ConfigJson": _json.dumps({"auth": "user", "account": me,
+                              "granted_scope": "offline_access User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite"})}, "owner")
+        if not any(s.get("Address") == me for s in store.list_sources(False)): store.save_source({"Channel": "email", "Address": me, "Owner": "me", "Active": 1, "ConnectorId": ol["ConnectorId"]}, "owner")
+        day = datetime.now() + timedelta(days=1)
+        while day.weekday() >= 5: day += timedelta(days=1)
+        d, n = day.strftime("%Y-%m-%d"), int(time.time())
+        cal = {"kind": "request", "provider": "outlook", "mailbox": me, "event_id": f"ev-{n}", "ical_uid": f"uid-{n}", "update": False, "answered": False, "asks": True,
+               "subject": body.get("subject") or "Budget sync", "start": f"{d} 14:30", "end": f"{d} 15:00", "all_day": False,
+               "organizer": "Erin Blake", "organizer_email": "erin@northwind.example", "attendees": ["erin@northwind.example", me]}
+        def slow(st, env, note):
+            time.sleep(float(body.get("delay") or 0))
+            if body.get("fail"): raise RuntimeError(body["fail"])
+            return {"channel": "calendar", "to": list(env.get("to") or []), "act": env.get("act")}
+        calwrite.deliver = slow
+        with mock.patch.object(calwrite, "busy", return_value=[]):
+            out = ingest.ingest_message(store, {"external_id": f"graph:ev-{n}-request", "channel": "email", "subject": f"Invitation: {cal['subject']}", "body": "Join us",
+                                                "from_name": "Erin Blake", "from_email": "erin@northwind.example", "to": [me], "source_name": me,
+                                                "sent_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "invite": True, "cal": cal, "mail_meta": {"invite": True, "cal": cal}}, llm=None)
+        if not [r for r in store.list_reviews("pending") if r.get("TaskId") == out["task_id"]]: calwrite.draft(store, out["message_id"], "accept", actor="agent")
+        return {**out, "taskId": out["task_id"]}
+
+    @app.post("/api/fixture/attach-mail")
+    def fixture_attach_mail(body: dict = Body(...)):
+        """A mail with files on it (`files`: paths on disk), taken in as the Graph road takes one: its files read for triage, then saved on it."""
+        import base64, mimetypes
+        from taskuary import channels, server
+        atts = [{"id": str(i), "name": Path(p).name, "contentType": mimetypes.guess_type(p)[0] or "application/octet-stream", "size": Path(p).stat().st_size,
+                 "contentBytes": base64.b64encode(Path(p).read_bytes()).decode()} for i, p in enumerate(body.get("files") or [])]
+        ext = f"fx-att:{time.time()}"
+        out = ingest.ingest_message(store, {"external_id": ext, "channel": "email", "subject": body.get("subject") or "Training seats", "body": body.get("body") or "See attached.",
+                                            "from_name": "Erin Blake", "from_email": "erin@northwind.example", "conversation_id": body.get("conversation") or ext,
+                                            "images": channels.images_for_triage(store, atts), **channels.files_for_triage(atts), "mail_meta": channels.att_marks(atts)}, llm=server._llm())
+        if out.get("message_id"): channels.save_attachments(store, out["message_id"], atts, ext)
+        return out
+
+    @app.post("/api/fixture/incoming")
+    def fixture_incoming(body: dict = Body(...)):
+        "A mail from anyone (`from_email`, `from_name`, `subject`, `body`) taken in on the real arrival road, triage and all - a site's code, a vendor's answer."
+        from taskuary import server
+        ext = f"fx-in:{time.time()}"
+        return ingest.ingest_message(store, {"external_id": ext, "channel": "email", "subject": body.get("subject") or "", "body": body.get("body") or "", "conversation_id": ext,
+                                             "from_name": body.get("from_name") or "", "from_email": body["from_email"], "to": ["alex@northwind.example"],
+                                             "source_name": "alex@northwind.example"}, llm=server._llm())
+
+    @app.post("/api/fixture/own-reply")
+    def fixture_own_reply(body: dict = Body(...)):
+        "The owner's own line on the task's channel, read back from it as a poll reads it (channels.ingest_own_message) - a recorded flood's third voice."
+        from taskuary.channels import ingest_own_message
+        ingest_own_message(store, {"external_id": body["id"], "channel": body.get("channel") or "email", "conversation_id": body["conversation"], "source_name": body.get("source") or "",
+                                   "subject": body.get("subject") or "", "body": body["body"]}, "your own reply on the thread - kept for context")
+        return {"ok": True}
+
     @app.post("/api/fixture/session")
     def fixture_session(body: dict = Body(...)):
-        "The task's live session put where time would put it: `ended` (closed, forgotten) or `idled` (closed quietly, the next line wakes it)."
+        """The task's live session put where time would put it: `ended` (closed, forgotten) or `idled` (closed quietly, the next line wakes it) -
+        or `killed`: its process dies under it, as a crash takes it - nothing of Taskuary's closes it (a recorded walk: a turn that fails)."""
         from taskuary import terminal
         tid = int(body["taskId"]); t = general._live_of(tid)
         if t is None: return {"ok": False, "why": "no live session"}
+        if body.get("state") == "killed":
+            import subprocess
+            from taskuary import clipool
+            lv = clipool._POOL.get(f"general:{tid}")          # a chat agent's kept CLI: a process of its own, or an ACP connection's
+            ps = [p for p in (getattr(getattr(t, "client", None), "p", None), getattr(lv, "p", None), getattr(getattr(lv, "client", None), "p", None), getattr(t, "pty", None)) if p is not None]
+            for p in ps:
+                # ...the whole tree: a CLI is node under a shell, and the shell alone dying leaves it at work
+                if os.name == "nt" and getattr(p, "pid", None): subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True)
+                else: p.kill()
+            return {"ok": bool(ps)}
+        # ...`woken`: Taskuary wakes its agent to go on, as the turn-end judge does when a turn ended short (hooks.judge_ended -> wake) - the
+        # judge is a model's reading and cannot be asked for on demand; the turn that goes on is the shape a walk needs
+        if body.get("state") == "woken":
+            t.woke = False; t.wake(str(body.get("why") or "the rest of what the owner asked"))
+            return {"ok": True}
         if body.get("state") == "idled":
             t.last -= 10 ** 6; was = general.idle_for; general.idle_for = lambda: 0
             try: ok = t.idle_out()
@@ -119,6 +221,42 @@ def _install_fresh_routes(app, store):
             return {"ok": ok, "why": t.idle_why()}
         t.close(); general.drop_session(tid); terminal.SESSIONS.pop(t.sid, None)
         return {"ok": True}
+
+    PAGES = {}
+    @app.post("/api/fixture/browser-page")
+    def fixture_browser_page(body: dict = Body(...)):
+        """The task's agent with its browser open on `url` - agent-browser is not here, so its state is said for it (browser/hand-over): the page
+        a step is handed over on. `close`: the browser closed under it."""
+        from taskuary import browserview, terminal
+        tid = int(body["taskId"])
+        if body.get("close"): PAGES.pop(tid, None)
+        else: PAGES[tid] = body.get("url") or "https://portal.vendor.example/login"
+        if not getattr(browserview.state, "fixture", False):
+            real = browserview.state
+            def state(sid, fresh=False):
+                url = PAGES.get(getattr(terminal.SESSIONS.get(str(sid)), "task_id", None))
+                return {"open": True, "url": url, "port": 0} if url else real(sid, fresh)
+            state.fixture = True; browserview.state = state
+        return {"ok": True}
+
+    @app.post("/api/fixture/outbox")
+    def fixture_outbox(body: dict = Body(...)):
+        """A mailbox that sends nowhere: every send is a line in the home's outbox.jsonl and answers as sent (a recorded walk presses Send
+        and Send and close). The fixture has no connection out, so nothing can leave either way."""
+        import json
+        from taskuary import outbound, server
+        from taskuary import store as store_mod
+        store_mod.set_owner(store, "Alex Doyle", "alex@northwind.example", "owner")     # ...the one door: the agents' documents name him too
+        box = Path(os.environ["TASKUARY_HOME"]) / "outbox.jsonl"
+        def out(*a, **k):
+            if body.get("fail"): raise RuntimeError(body["fail"])         # ...a mailbox that refuses: a press whose act fails (`fail` its words)
+            keep = lambda v: v if isinstance(v, (str, list, int, type(None))) else type(v).__name__
+            with box.open("a", encoding="utf-8") as f: f.write(json.dumps({"args": [keep(x) for x in a[1:]], "kw": {n: keep(v) for n, v in k.items()}}, default=str) + "\n")
+            return {"channel": "email", "to": k.get("to") or ["gail@northwind.example"], "cc": k.get("cc") or []}
+        outbound.send_out = outbound.reply_to_message = out
+        outbound.send_block = lambda *a, **k: ""; outbound.review_connect = lambda *a, **k: None
+        server._refresh_chat_context = lambda *a, **k: {}          # no mailbox to read before a Send
+        return {"ok": True, "outbox": str(box)}
 
     @app.post("/api/fixture/no-readonly")
     def fixture_no_readonly(body: dict = Body(...)):
@@ -137,12 +275,15 @@ async def run() -> None:
     socket.socket = NoOutboundSocket
     loop = asyncio.get_running_loop()
 
+    real_connection = loop.create_connection
+
     async def no_outbound_connection(*args, **kwargs):
         target = kwargs.get("host") or (args[1] if len(args) > 1 else "unknown")
+        if _local(target): return await real_connection(*args, **kwargs)
         raise RuntimeError(f"browser fixture blocked event-loop connection to {target!r}")
 
     loop.create_connection = no_outbound_connection
-    for operation in ("connect", "connect_ex"):
+    for operation in () if LOOPBACK else ("connect", "connect_ex"):
         probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             getattr(probe, operation)((HOST, PORT))
@@ -154,6 +295,7 @@ async def run() -> None:
         finally:
             probe.close()
     try:
+        if LOOPBACK: raise RuntimeError("blocked event-loop connection: loopback is let through on this walk")
         await loop.create_connection(asyncio.Protocol, HOST, PORT)
     except RuntimeError as error:
         if "blocked event-loop connection" not in str(error):

@@ -2,10 +2,12 @@
 // its own words when it failed. An act's card said "nothing was posted. Try again" over a post still going up; six presses had no timeout at
 // all. One press now (src/press.js), and no card posts a verdict any other way.
 import assert from "node:assert/strict";
+import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 import { STILL, failLine, landed, outcomeOf, press, pressSteps, sure } from "../src/press.js";
 import { DECIDE_TIMEOUT } from "../src/sendState.js";
 
+const SRC = new URL("../src/", import.meta.url), read = (f) => readFileSync(new URL(f, SRC), "utf8");
 const api = (answer) => { const calls = []; return { calls, post: async (url, body, opts) => { calls.push({ url, body, opts });
   if (answer instanceof Error || answer?.code || answer?.response) throw answer; return { data: answer }; } }; };
 
@@ -57,5 +59,4 @@ test("a road that reports what is thrown gets the answer, the line, or the reque
   const refusal = Object.assign(new Error("demo"), { response: { status: 403, data: { detail: "The demo does not send.", fix: { href: "#x", label: "Open" } } } });
   assert.throws(() => sure(outcomeOf(null, refusal)), (e) => e === refusal, "its reader knows a refusal's fix: the error itself, not a copy of its words");
 });
-
 

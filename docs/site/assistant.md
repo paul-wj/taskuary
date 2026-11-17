@@ -1,5 +1,5 @@
 The Assistant walks you through what is waiting: one item at a time, with a few buttons under it.
-There are eight buttons in all. Anything without a button still works when you ask for it in your own
+There are fourteen buttons in all. Anything without a button still works when you ask for it in your own
 words, in the app or on your phone.
 
 ## One screen: the sidebar and the canvas
@@ -14,7 +14,7 @@ and whatever part of the app is in use opens inside it.
 | Search | One box over everything, open or closed: tasks, mail, chats, pull requests and issues, Advisor posts, reports and your sources. Each result wears a pill saying what it is; the strip above them narrows to one kind (**Tab** steps through it). **Enter** opens the result - a task on the canvas, a message in full, a source as the rail's filter - and the task number on a message opens the task it is on |
 | The rail | **Tasks** (every open task; a ring spins round the icon of one an agent is working), **For later**, **Reports**, **Advisor**, **FYI** - click a heading to walk that section |
 | The canvas | The item on the table: a task opens as its full task view - Came from and Agent, the agent's one chat - with **Next** under it |
-| The top bar | **Board** - every agent and its session, full screen - and back to the Assistant |
+| The top bar | **Chat** - the Assistant and the rail - and **Game**, the same items as an office you walk around; in Developer mode also **Board**, every agent and its session, full screen |
 
 **Reports, Connections, Hub and Settings are browsed in the canvas**, by clicks: a button shows that part's sections, a
 section shows its cards, and a card opens with its own controls - **Back** returns to the list. Ask the Assistant about
@@ -36,7 +36,7 @@ phone the task view is the screen, and **Expand** takes the session full screen 
 | **Approve and close** | a task's close-out with your reply (in its chat) | What **Approve** does, then the task closes - kept open while an agent works on it. The card puts it first; **Approve** folds into its **▾** when the line is tight | you confirm |
 | **Approve** | an agent's proposal, a task's close-out (a pull request to merge, an issue to close) | Runs only that action - on GitHub merges the pull request or closes the issue and posts the reply as its comment. The task stays open until you **Mark done** | you confirm |
 | **Reply** | a person's ask, a finished agent with no draft | Writes a draft reply. Nothing is sent | at once |
-| **Make a task** | an ask, an fyi, an idea | A task on your own list. No agent starts | you confirm |
+| **Make it a task** | an ask, an fyi, an idea | A task on your own list. No agent starts | you confirm |
 | **Send to agent** | an ask, an fyi, an idea, a meeting, a report | A task and an agent on it. The card asks which agent | you confirm |
 | **Not for me** | a draft reply, a proposal (not a close-out), an ask, an fyi | Files it. The card asks how far | you confirm |
 | **Send back to the agent** | a draft reply on a task (under More actions); a close-out GitHub refuses for merge conflicts (the main button) | Picks the task's own agent back up with your note - or, on a conflict, GitHub's reason - as the first thing it hears. The card comes back when it stops | at once |
@@ -55,7 +55,7 @@ separate Reject: the reply on it is edited or redrafted in place.
 | Button | Answer | What happens |
 |---|---|---|
 | **Not for me** | Just this once | This message is filed. Its task is deleted if nothing was done on it, otherwise marked done |
-| | From now on | Triage learns to file everything from this sender. Their mail still arrives and stays readable |
+| | From now on | Triage learns to file mail like this from this sender. Their mail still arrives and stays readable, and another kind of mail from them is still judged |
 | | A rule in Settings | An exclusion rule: their mail never reaches triage, and what already arrived leaves the rail. Reversible |
 | **Send to agent** | A coding agent | A task and a coding agent in a repository. The card asks which repository when it is not clear |
 | | A non-coding agent | A task and an agent for reading, checking, drafting or research |
@@ -126,7 +126,7 @@ These have no button. Say them, in the app or on your phone.
 | "tell the agent to use the main branch" to an agent at work | Your next prompt, as **Tell the agent** takes it: typed in when it stops at its prompt, never mid-step | at once |
 | "run it again" on a report | **Run it again** lit on the report | you press it |
 | "remember that…", "I don't care about X any more" | Kept at once as a line in your memory (LEARNED.md), where triage, reports, the Advisor and agents read it | at once |
-| "set up a report that…" | **New** opens on Report with your words in it | you press **Set up with AI** |
+| "set up a report that…" | The report's page opens and the Assistant builds it there from your words | at once |
 | "turn off sign every email" (over Settings) | The setting's group opens and its switch is turned off - a step in the chat | at once |
 | "what's waiting on me?" | Looked up and answered — tasks, reports, mail, calendar, settings | at once |
 | "what's in For later?" | The rail read by its own sections - Tasks, For later (with when each comes back), Reports, FYI | at once |
@@ -154,10 +154,12 @@ step under its answer in the chat:
   value, and it never types one: it tells you to paste it into its box. The server checks this again.
 - **Your hand wins.** A click or a key on the page while it is working stops the rest.
 
-**Get AI to set it up** on a connection's card, **Set up with AI** on Reports, Dashboards and Routines (and
-on New's tabs), **let AI fill this in** on a report's source card and **Fix with AI** on a routine's failed
-run all open the chat window on that page and ask for you - there is no AI box on the page any more, and no
-task on the Board: the chat is the record. Its **Test** tries the values on screen before you save them.
+**Set up with AI** - on a report, dashboard, routine or playbook, and on a connection's card - is the Assistant
+building it right there on that page, with no chat window and no task: it drafts it, checks it (a report's
+preview, a connection's **Test**), fixes what failed and tries again, and saves it. Its steps show on the page,
+and so does the one question only you can answer, with a box to answer it. It never types a secret - you paste
+it into its own box - and anything that sends something out still waits for your press. **let AI fill this in**
+on a report's source card and **Fix with AI** on a routine's failed run open the chat window on that page.
 
 While you are talking to it about a page, it notices what you do there - "I see you pasted the secret -
 testing again" - once per change, and never while you are typing to it. With the window shut its answer

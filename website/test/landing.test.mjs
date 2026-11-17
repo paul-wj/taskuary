@@ -1,10 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import { HOW, landingFiles, landingTurn, landingWords } from "../src/landing.js";
-import { setLocale } from "../src/i18n.js";
-
-// The card's words read English (timeWords' plurals): the locale is pinned, never the host's.
-setLocale("en");
 
 test("the landing card says the branch's stat and the agent's pick", () => {
   const w = landingWords({ own: true, ahead: 2, changed: 3, plus: 40, minus: 12, proposal: { how: "merge", why: "the base moved" } });
@@ -18,21 +16,33 @@ test("the landing card says the branch's stat and the agent's pick", () => {
 
 test("the four answers are the server's and discard asks once more before it goes", () => {
   assert.deepEqual(Object.keys(HOW), ["rebase", "merge", "pr", "discard", "push", "deploy"]);
+  const body = fs.readFileSync(path.join(process.cwd(), "src", "LandingCard.jsx"), "utf8");
+  assert.match(body, /how === "discard" && !sure/);
+  assert.match(body, /\/api\/tasks\/\$\{taskId\}\/landing/);
 });
 
-test("the card is part of the turn its newest change came in, and moves with the chat", () => {
-  const ms = [{ id: "u1", role: "user", createdAt: "2026-11-08 15:55:00" }, { id: "t1", role: "assistant", createdAt: "2026-11-08 15:55:12" },
-    { id: "u2", role: "user", createdAt: "2026-11-08 15:56:15" }, { id: "t2", role: "assistant", createdAt: "2026-11-08 15:56:16" },
-    { id: "t3", role: "assistant", createdAt: "2026-11-08 16:30:00" }];
-  assert.equal(landingTurn(ms, "2026-11-08 16:09:55"), "t2");
-  assert.equal(landingTurn(ms, ""), "t3");
-  assert.equal(landingTurn(ms.slice(0, 1), "2026-11-08 16:09:55"), null);
+test("the chat draws it only where the task works in a checkout, whatever its kind", () => {
+  const page = fs.readFileSync(path.join(process.cwd(), "src", "TaskPage.jsx"), "utf8");
+  assert.match(page, /landing=\{canCode && detail\?\.checkout && <LandingCard /);
+  assert.equal((page.match(/<LandingCard /g) || []).length, 1, "once, in the chat");
 });
+
 
 test("the card's list folds the generated files and says how many more, apart from See the diff", () => {
   const { src, gen } = landingFiles([{ path: "taskuary/landing.py" }, { path: "website/package-lock.json" }, { path: "taskuary/static/assets/index-AbCd1234.js" }]);
   assert.deepEqual(src.map((f) => f.path), ["taskuary/landing.py"]);
   assert.equal(gen.length, 2);
+  const body = fs.readFileSync(path.join(process.cwd(), "src", "LandingCard.jsx"), "utf8");
+  assert.match(body, /sx=\{\{ display: "block", color: FAINT \}\}>and \{src\.length - SHOWN\} more<\/Typography>/, "its own line: never \"510 moreSee the diff\"");
+  assert.match(body, /<Dialog open=\{open\}.*fullWidth maxWidth=\{false\}/, "the whole diff opens the window wide");
+});
+
+// the owner, 2026-11-09: See the diff waited for the read before anything opened - it felt dead for a second
+test("See the diff opens its window at the press, reading the changes in it, and says so if they cannot be read", () => {
+  const body = fs.readFileSync(path.join(process.cwd(), "src", "LandingCard.jsx"), "utf8");
+  assert.match(body, /const seeDiff = \(\) => \{ if \(open\) return setOpen\(false\); setOpen\(true\); setDiff\(null\); readDiff\(\); \};/);
+  assert.match(body, /<CircularProgress size=\{14\} color="inherit" \/>Loading the changes…<\/Typography>/);
+  assert.match(body, /\{diffErr && <Typography variant="body2" data-tq-diff-error=""/);
 });
 
 // the owner, 2026-11-09 (~20th time): "i thought actions should be cards/buttons??? why is this text??" - an agent's commits straight on
@@ -47,6 +57,10 @@ test("unpushed commits on the shared base are Push and Push & deploy buttons, an
   assert.equal(landingWords({ ...s, proposal: { how: "push" } }).primary, "push");
   assert.equal(landingWords({ ...s, push: { ...s.push, deploy: "" }, answers: s.answers.slice(0, 1) }).question, "Push 1 commit to origin/master, up to 3a1b9a8?");
   assert.equal(landingWords({ own: true, ask: true, answers: [] }).question, "How should it land?");
+  const body = fs.readFileSync(path.join(process.cwd(), "src", "LandingCard.jsx"), "utf8");
+  assert.match(body, /data-tq-land=\{h\}[\s\S]*onClick=\{\(\) => answer\(h\)\}/);
+  assert.match(body, /\{s\.ask \? <Box[\s\S]*\{w\.first && press\(w\.first, "p"\)\}\{w\.second && press\(w\.second, "s"\)\}/);
+  assert.match(body, /api\.post\(`\/api\/tasks\/\$\{taskId\}\/landing`, \{ how \}\)/, "Push and Push & deploy go down the landing road");
 });
 
 // the owner, 2026-11-09: "compact the land" - 26 files listed over Push and Push & deploy; then the card went once pressed
@@ -68,6 +82,10 @@ test("the landing card is one title, the files folded, one filled button and the
   const done = landingWords({ ...s, ask: false, push: null, answers: [], landed: { how: "deploy", sha: "3a1b9a81c0ffee", deploy: "deploy" } });
   assert.equal(done.done, "✓ Pushed and deployed");
   assert.equal(done.doneLine, "3a1b9a8 · to master and deploy");
+  const body = fs.readFileSync(path.join(process.cwd(), "src", "LandingCard.jsx"), "utf8");
+  assert.match(body, /\{filesOpen && <Box data-tq-landing-list=""/, "the file list waits behind Show the files");
+  assert.match(body, /<PressedButton pressed=\{s\.landed\.how\} label=\{w\.done\} \/>/, "the press it took stays drawn");
+  assert.doesNotMatch(body, /LAND THE BRANCH/);
 });
 
 // NO NOT NOW (the owner, 2026-11-10: "why ddo we need not now card? just hit next and you go to the next task and it stays on the rail"): the
@@ -77,4 +95,39 @@ test("the push card has no Not now; a passed one is greyed with no button, the w
     push: { tip: "3a1b9a81c0ffee", ahead: 1, to: "master", deploy: "" }, answers: [] };
   assert.equal(landingWords(s).passed, "Set aside when you moved on - ask the agent to bring it back.");
   assert.equal(landingWords({ ...s, passed: false }).passed, "");
+  const body = fs.readFileSync(path.join(process.cwd(), "src", "LandingCard.jsx"), "utf8");
+  assert.doesNotMatch(body, /landing\/hold|data-tq-land-hold|Not now|s\.held/);
+  assert.match(body, /data-tq-act-state=\{s\.passed \? "passed" : s\.ask \? "waiting"/);
+  assert.match(body, /const sub = s\.passed \? w\.passed :/);
+});
+
+// REVIEW CHANGES STAYS AFTER THE SESSION IS GONE (the owner, 2026-11-10: "yes, keep it"): lit on work left to review, the row's button opens
+// the landing card's own diff - one road to the diff, never a second viewer; the checkout's drawer only where no card stands to take it
+test("the row's Review changes with no session open opens the landing card's diff", async () => {
+  const { readFileSync } = await import("node:fs");
+  const read = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
+  const card = read("LandingCard.jsx"), page = read("TaskPage.jsx");
+  assert.match(card, /export const LANDING_DIFF = "tq-landing-diff";/);
+  assert.match(card, /window\.addEventListener\(LANDING_DIFF, on\)/);
+  assert.match(card, /e\.detail\.handled = true; seeRef\.current\(\);/);
+  // ...the listener stands before the card's early return: hooks in one order on every render
+  assert.ok(card.indexOf("window.addEventListener(LANDING_DIFF") < card.indexOf("if (!s || (!s.ask && !s.landed && !s.changed)) return null;"));
+  assert.match(page, /!liveSession && filled\("review_changes"\) \? \[\{ id: "diff"/);
+  assert.match(page, /window\.dispatchEvent\(new CustomEvent\(LANDING_DIFF, \{ detail: ask \}\)\); if \(!ask\.handled\) setDiffOpen\(true\);/);
+});
+
+// THE WORK'S CARD IS PART OF THE AGENT TURN THAT DID IT, OR NOT THERE (the owner, 2026-11-13: "stop putting worked on master at the bottom.
+// i told you this 20 times.. it's part of the agent turn or doesn't belong at all. we have diff thing in the logo on top")
+test("the chat draws the work's card inside the turn its newest change came in, never at the chat's foot", async () => {
+  const fs = await import("node:fs");
+  const ws = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
+  assert.match(ws, /const landIn = landAt \? landingTurn\(/);
+  // ...a turn's cards, its last thing (cardsOf): what the list placed in it, the letters that wait where this is their turn, then the work's card
+  assert.match(ws, /\.\.\.\(x\.id === landIn \? \[\.\.\.\(live\.has\("land"\) \? qLine\(\) : \[\]\), <React\.Fragment key="landing">\{landing\}<\/React\.Fragment>\] : \[\]\)\];/);
+  assert.match(ws, /cards=\{cardsOf\(x\)\}/);
+  assert.match(ws, /\{!landIn && landing && <div hidden>\{landing\}<\/div>\}<\/>;/, "unplaced, it is mounted hidden - never drawn at the foot");
+  assert.match(ws, /const landAt = landS && \(landS\.ask \|\| landS\.landed\) \? landS\.at \|\| "" : null;/, "only a press, or what a press did - the diff is the header's");
+  const { landingTurn } = await import("../src/landing.js");
+  const turns = [{ role: "assistant", id: "t1", createdAt: "2026-11-12 21:00:00" }, { role: "assistant", id: "t2", createdAt: "2026-11-12 21:30:00" }];
+  assert.equal(landingTurn(turns, "2026-11-12 21:10:00"), "t1", "the turn the change came in, not the newest");
 });

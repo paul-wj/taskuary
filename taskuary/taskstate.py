@@ -155,8 +155,11 @@ class TaskState:
         interrupted / needs you, and the rail said "handed to an agent, not started yet" (2026-09-17). Never over news: what is open
         then is the message, not the session that went before it."""
         if self.news or self.live: return ''
+        # ...but a transcript filed by a session that IDLED OUT is no walk-out (recorded on the real CLI, 2026-11-16: a coding agent answered,
+        # idled out, and read "ran on this and left without finishing it" under its answer): its run's newest word is that quiet close
         return funnel.left_by_facts(self.t.get('Tags'), self.runs) or (
-            'stopped' if self.end in workerstate.TERMINAL or (bool(self.transcript) and not self.finished) else '')
+            'stopped' if self.end in workerstate.TERMINAL or (bool(self.transcript) and not self.finished
+                                                              and (self.last() or {}).get('Kind') != 'idled') else '')
 
     @cached_property
     def idle(self) -> dict:
@@ -175,25 +178,31 @@ class TaskState:
         # PREDATES the close is a terminal nobody shut, not the task picked back up (the Board's old rule, kept).
         if live and t.get('Status') == 'done' and t.get('ClosedAt') and str(session.get('started') or '') < str(t['ClosedAt']): live = False
         if live:
-            if not session.get('waiting'): return 'working'
+            # ...by the one function every surface asks (general.working): the session's own word here, a line it was just handed (owed), or
+            # an input on its way to its next turn (starting: a typed line from the press, a mail from its hand-over)
+            from .general import owed, starting
+            if not session.get('waiting') or starting(tid) or owed(store, tid): return 'working'
             # ...but an agent PARKED - it answered, asked nothing - over a reply it drafted is the reply waiting, as the rail says: the Board
             # put it under "agent waiting on you" with "ready to send" on the same card, and the header said so until a reload (email walk 2026-10-29)
             parked = (session.get('state') or 'parked') == 'parked' and not session.get('request')
-            if parked and (t.get('ReviewStatus') == 'pending' or store.waiting_on_owner(tid)): return 'approve'
-
-            # ...and an agent whose turn asked nothing is done for now, never waiting on you (the owner, 2026-11-07) - as it reads once idled out
-            return 'agentdone' if done_for_now(store, t, session) else 'blocked'
+            if parked and waits_press(store, t): return 'approve'
+            # ...A CHAT SESSION THAT NEVER BEGAN A TURN IS NO AGENT AT REST (recorded on the real CLI, 2026-11-13: a start was refused - its
+            # sender not trusted yet - after the session had opened; the session stayed, parked, and the task read "agent done" with Mark
+            # done lit over a chat that held only the sender's message and the Trust action): the task reads as it does with no session
+            if not (parked and never_ran(store, t, session)):
+                # ...and an agent whose turn asked nothing is done for now, never waiting on you (the owner, 2026-11-07) - as it reads once idled out
+                return 'agentdone' if done_for_now(store, t, session) else 'blocked'
         st = t.get('Status')
         if st == 'dropped': return 'dropped'
         # ...and a start in flight for his line is at work from the press, whichever agent comes up (general.OPENING - one mark for every kind): a
         # coding task read "yours" while its adapter came up, a chat "working" (the audit, 2026-11-10)
-        from .general import OPENING
-        if tid in OPENING and st in ('open', 'in_progress'): return 'working'
+        from .general import starting
+        if starting(tid) and st in ('open', 'in_progress'): return 'working'
         if st == 'done':
             if str(t.get('UpdatedBy') or '') in OWNER_ACTORS: return 'closed'        # yours: no need to read its notes
             return 'agentdone' if finish_evidence(store, tid) else 'closed'
         if t.get('RunStatus') == 'running': return 'working'
-        if t.get('ReviewStatus') == 'pending': return 'approve'
+        if waits_press(store, t, row=True): return 'approve'
         # still waiting to start, a failed start included - the row carries the error and the page offers Start now / Cancel (T10)
         if self.queued: return 'queued'
         left = funnel.left_by_facts(t.get('Tags'), [{'Status': t.get('RunStatus')}] if t.get('RunStatus') else [])
@@ -212,6 +221,26 @@ class TaskState:
         return 'yours'
 
 
+def never_ran(store, t: dict, session: dict) -> bool:
+    "A chat agent's live session with no word of its own - no event of a turn, no answer on the task: opened, and never set to work."
+    from . import workerstate as ws
+    from .general import ASSISTANT_TYPE, handles
+    if not handles(t) or (session.get('mode') or 'assistant') != 'assistant': return False
+    if any(e['Kind'] not in ws.NOTES for e in ws.events(store, t['TaskId'], session.get('sid'))): return False
+    return not store._one('SELECT 1 AS x FROM comment WHERE TaskId=? AND ActorType=? LIMIT 1', (t['TaskId'], ASSISTANT_TYPE))
+
+
+def waits_press(store, t: dict, row: bool = False) -> bool:
+    """DOES SOMETHING ON THIS TASK WAIT FOR HIS PRESS - one read for the task's state: the list row's own latest ReviewStatus, and (not `row`)
+    anything else the queue shows waiting (store.waiting_on_owner). Never a reply draft the thread has moved past (proposals.written_past):
+    its row still reads pending until an agent hears the newer message, and the pill said "ready to send" over a draft the chat had greyed
+    (the owner's live task, 2026-11-13)."""
+    from . import proposals
+    pending = t.get('ReviewStatus') == 'pending'
+    if pending and not proposals.written_past(store, t['TaskId']): return True
+    return bool(store.waiting_on_owner(t['TaskId'])) if pending or not row else False
+
+
 def done_for_now(store, t: dict, session: dict) -> bool:
     """A live agent whose turn ENDED with nothing asked and nothing left for a press: "agent done", Mark done lit, the task still open under
     Tasks (the owner, 2026-11-10). A chat agent always read so; a coding agent that had pushed and said "Nothing is left to do on this
@@ -219,7 +248,7 @@ def done_for_now(store, t: dict, session: dict) -> bool:
     a pane just opened has done nothing yet, and one with work still in the background is not over - and no landing question of its waits."""
     if (session.get('state') or 'parked') != 'parked' or session.get('request') or session.get('held'): return False
     tid = t['TaskId']
-    if t.get('ReviewStatus') == 'pending' or store.waiting_on_owner(tid): return False
+    if waits_press(store, t): return False
     from . import landing, workerstate as ws
     from .general import handles
     last = next((e['Kind'] for e in reversed(ws.events(store, tid, session.get('sid'))) if e['Kind'] not in ws.NOTES), None)
@@ -250,6 +279,13 @@ def closed_why(store, t: dict, comments=None) -> str | None:
     no close out is needed, I have no idea what the agent did and why it closed"). The agent's own done sentence, else the
     first line of its report. None for an open task, one the owner closed, or one its upstream item ended (`ended` says that)."""
     if not t or t.get('Status') != 'done': return None
+    # ...A ROUTINE'S RUN CLOSED BY THE ROUTINE (flow.execute; the visual audit, 2026-11-13): it read "✓ Mark done just now", a press the owner
+    # never made, over nothing of what ran - its last line says that, and a draft step's line where its draft waits
+    if str(t.get('UpdatedBy') or '') == 'workflow':
+        said = [str(c.get('Body') or '') for c in (comments if comments is not None else store.list_comments(t['TaskId'], internal=True) or [])
+                if c.get('Actor') == 'workflow']
+        waits = [b.split(': ', 1)[-1].rsplit(' (', 1)[0] for b in said if 'waiting for your yes on' in b]
+        if said: return 'Closed by the routine: ' + ' '.join([said[-1], *(f'{w[:1].upper()}{w[1:]}.' for w in waits)])[:400]
     ev = finish_evidence(store, t['TaskId'])
     if not ev or str(ev.get('who') or '').startswith('Its '): return None
     from .wrapup import is_report, report_body

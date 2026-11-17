@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import { awayFromClear } from "../src/funnelPile.js";
 import { dropHeld, ghostsOf, holds, keepHeld, movedEntry, refOf } from "../src/movedFyi.js";
 
@@ -13,12 +14,16 @@ test("only an FYI line made a task is kept, by the row it was", () => {
   assert.deepEqual([m.key, m.tid, m.ref, m.on, m.row.title], ["p:2", 1290, "TQ-1290", batch.key, "Floor notice 2"]);
   assert.equal(movedEntry("p:2", 7, null, [], batch).ref, "TQ-0007", "from the batch's own line when the rail has paged it out");
   assert.equal(movedEntry("t:9", 9, "TQ-0009", [{ key: "t:9", lane: "asked", tid: 9 }], null), null, "a task's own Put it on my list is no FYI");
-  // ...and a report put on the list stays in Reports the same way (the owner, 2026-11-03)
-  const rep = { key: "r:1", kind: "report", lane: "report", order_band: 3, title: "Headcount by site" };
-  const r = movedEntry("r:1", 31, null, [rep], rep);
-  assert.deepEqual([r.ref, r.on, ghostsOf({ "r:1": r })[0].lane], ["TQ-0031", "r:1", "report"]);
   assert.equal(movedEntry("p:2", null, null, [fyi("p:2")], batch), null, "no task, nothing moved");
   assert.equal(refOf(12, "TQ-0012"), "TQ-0012");
+});
+
+// A REPORT SENT TO AN AGENT MOVES (the owner, 2026-11-13: "send to agent and that will move it to task"): kept in Reports it was the same title
+// twice on the rail - under Tasks, and greyed in Reports showing only the task's ref. No ghost: the task's own row under Tasks is the row
+test("a report made a task leaves Reports - no ghost of it stays", () => {
+  const rep = { key: "r:1", kind: "report", lane: "report", order_band: 3, title: "Headcount by site, nightly" };
+  assert.equal(movedEntry("r:1", 31, null, [rep], rep), null);
+  assert.deepEqual(ghostsOf({}), []);
 });
 
 test("it stays while the table holds it and goes when the walk moves past - a batch, or the task it became", () => {
@@ -39,3 +44,4 @@ test("its ghost is its FYI row, wearing the task", () => {
   assert.ok(holds(batch, { key: "p:2", on: batch.key, tid: 1290 }));
   assert.equal(awayFromClear([{ level: "task", items: [{ key: "p:2", tid: 1290 }] }, { level: "fyi", items: [g, fyi("p:3")] }]), 2, "counted once, as the task");
 });
+

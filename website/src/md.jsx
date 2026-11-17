@@ -12,7 +12,10 @@ import { linkRefs, looksMd, refParts } from "./mdText.js";
 import { appLink, linkRoad, openAppLink, ownPath } from "./appLinks.js";
 import { codeLocalPaths, localFile, plainCitations } from "./taskOutputs.js";
 import CopyCorner from "./CopyCorner.jsx";
-import { attUrl, isPdf, PdfView, useSave } from "./Attachments.jsx";
+import { attUrl, saveFile } from "./fileSave.js";
+import { FileView, isPdf } from "./PublishedPages.jsx";
+import ViewSpec from "./ViewSpec.jsx";
+import { fencedView } from "./viewSpec.js";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 export { looksMd };
@@ -60,10 +63,10 @@ const A = ({ href, children, onTask }) => {
   const page = road === "page" ? appLink(hash) || String(hash).trim() : null;
   // ...and a file an agent made, as the Assistant links it (lookups.outputs_find): the Result's own Download - one tap saves it
   const file = road === "file";
-  // ...SAVED where it is (Attachments.saveFile), never a new tab: the desktop window handed that tab to the system browser, and a file
+  // ...SAVED where it is (fileSave.saveFile), never a new tab: the desktop window handed that tab to the system browser, and a file
   // moved or deleted since the link was written opened a raw 404 there - now it is a line beside the link
-  const [err, save, saved] = useSave(), raw = file ? own : href;
-  // ...but a PDF is READ under the link, Download beside it (Attachments.PdfView; the owner, 2026-11-04)
+  const [err, setErr] = React.useState(""), [saved, setSaved] = React.useState(""), raw = file ? own : href;
+  // ...but a PDF is READ under the link, Download beside it (PublishedPages.FileView, the viewer every file opens in; the owner, 2026-11-04)
   const [view, setView] = React.useState(false), pdf = file && isPdf({ name: fileName(raw) });
   const pop = React.useContext(LinkPop), web = !!pop && road === "outside" && isWebLink(href);
   if (file) href = attUrl({ url: own }, true);
@@ -75,14 +78,14 @@ const A = ({ href, children, onTask }) => {
         else if (page) { e.preventDefault(); openAppLink(page); }
         else if (web) { e.preventDefault(); pop(String(href).trim()); }
         else if (pdf) { e.preventDefault(); setView((v) => !v); }
-        else if (file) { e.preventDefault(); save({ url: raw }); }
+        else if (file) { e.preventDefault(); setErr(""); setSaved(""); saveFile({ url: raw }).then(setSaved, (x) => setErr(x.message)); }
       }}>
       {m && !bare ? t("open TQ-{id} →", { id: String(m[1]).padStart(4, "0") }) : children}
     </a>
     {err && <span data-tq-file-error="" style={{ color: DIM, fontWeight: 400 }}> — {err}</span>}
     {saved && <span data-tq-file-saved="" style={{ color: DIM, fontWeight: 400 }}> — {saved}</span>}
     {view && <span data-tq-file-link-view="" style={{ display: "block" }}>
-      <PdfView file={{ url: raw, name: fileName(raw) }} onClose={() => setView(false)} /></span>}
+      <FileView file={{ url: raw, name: fileName(raw), preview: "pdf" }} onClose={() => setView(false)} /></span>}
   </>);
 };
 
@@ -149,8 +152,11 @@ const keepRefs = (kids) => React.Children.map(kids, (k) => typeof k !== "string"
   : refParts(k).map((p, i) => i % 2 ? <span key={i} className="ref">{p}</span> : p));
 const Td = ({ children, node, ...rest }) => <td {...rest}>{keepRefs(children)}</td>;
 
-// ...a code block - a command, a prompt to paste somewhere - copies at its corner (CopyCorner)
-const Pre = ({ children, node, ...rest }) => { const box = React.useRef(null);
+// ...a code block - a command, a prompt to paste somewhere - copies at its corner (CopyCorner); one that is a view (viewSpec.fencedView) is
+// drawn by the view's own renderer, the road a `show` call takes, so a chart in an answer is a chart wherever answers are drawn
+const textOf = (n) => (n?.type === "text" ? n.value : (n?.children || []).map(textOf).join(""));
+const Pre = ({ children, node, ...rest }) => { const box = React.useRef(null), src = textOf(node), view = React.useMemo(() => fencedView(src), [src]);
+  if (view) return <ViewSpec spec={view} />;
   return <div className="tq-copy-host"><pre ref={box} {...rest}>{children}</pre><CopyCorner text={() => box.current?.innerText || ""} /></div>; };
 
 // ...and one line of it, inline: a brief's bullet keeps its bold and its links without a paragraph around them (ReportBrief)
@@ -160,7 +166,7 @@ export const MdLine = ({ text }) => (
 export const Md = ({ text, onTask = null }) => {
   const at = React.useContext(LocalFiles), words = at ? codeLocalPaths(plainCitations(text || ""), at.tid) : plainCitations(text || "");
   return (
-  <Box sx={sx}>
+  <Box sx={sx} className="tq-md">
     <ReactMarkdown remarkPlugins={[remarkGfm]}
       components={{ a: onTask ? (p) => <A {...p} onTask={onTask} /> : A, img: Img, td: Td, pre: Pre, code: Code, table: ({ children }) => <div className="tbl"><table>{children}</table></div> }}>
       {/* a Codex citation marker reads as the file's name wherever an answer is shown; the chat makes it a file (taskOutputs.js) */}

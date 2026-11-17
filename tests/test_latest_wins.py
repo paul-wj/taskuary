@@ -26,6 +26,7 @@ def task_with(s):
                          'Subject': 'Vendor list', 'FromName': 'Gail Moreno', 'FromEmail': 'gail@northwind.example', 'SentAt': '2026-11-05 09:00:00',
                          'BodyText': 'Can you send me the vendor list?', 'Status': 'routed'})
     s._exec("UPDATE message SET CreatedAt='2026-11-05 09:00:00' WHERE MessageId=?", (mid,))
+    s._exec('UPDATE task SET TrustedThrough=? WHERE TaskId=?', (10 ** 9, tid))      # he trusts this thread: an untrusted sender's task starts no agent (origin.hold)
     return tid, mid
 
 
@@ -52,17 +53,18 @@ def the_owners_day(s):
 def test_a_correction_after_a_pending_draft_names_the_newest_message_and_the_draft():
     s = MemoryStore(); tid, _, _, rid = the_owners_day(s)
     system, turn = general._prompt(s, tid)
-    assert selfclose.LATEST_LINE in turn and 'THE NEWEST MESSAGE' not in system
+    # ...and each rule ONCE, in the startup context (selfclose.DRAFTS_ONCE): the turn carries the facts under a short head
+    assert selfclose.DRAFTS_ONCE in system and selfclose.LATEST_LINE not in turn and selfclose.LATEST_HEAD in turn and 'THE NEWEST MESSAGE' not in system
     assert 'THE NEWEST MESSAGE - from the owner (in this chat)' in turn and FIX in turn
-    assert f'THE DRAFT WAITING NOW (rv{rid}, to Gail Moreno, drafted at 02:48 PM' in turn and 'BEFORE the newest message' in turn
-    assert OLD in turn and selfclose.WITHDRAW_LINE in turn
+    assert 'THE DRAFT WAITING NOW (to Gail Moreno, drafted at 02:48 PM' in turn and f'rv{rid}' not in turn and 'BEFORE the newest message' in turn
+    assert OLD in turn and selfclose.WITHDRAW_LINE in system and selfclose.WITHDRAW_LINE not in turn
 
 
 def test_already_sent_replies_are_in_the_turns_context():
     s = MemoryStore(); tid, *_ = the_owners_day(s)
     _, turn = general._prompt(s, tid)
     assert 'ALREADY SENT ON THIS TASK - never draft these again' in turn
-    line = next(l for l in turn.splitlines() if SENT in l)
+    line = next(l for l in turn.split('ALREADY SENT ON THIS TASK')[1].splitlines() if SENT in l)
     assert 'to Gail Moreno' in line and line.startswith('- 06:10 PM')
 
 def test_a_resumed_turn_carries_the_draft_and_the_sent_but_not_a_bare_answer():
@@ -102,7 +104,7 @@ def test_a_new_mail_is_the_newest_message_and_the_replan_says_latest_wins():
                        'FromEmail': 'gail@northwind.example', 'BodyText': 'Actually I need the December one.', 'Status': 'routed'})
     at(s, 'message', 'MessageId', m, '2026-11-06 15:40:00')
     assert general.newest_message(s, tid)['who'] == 'Gail Moreno'
-    assert 'withdraw' in ingest.REPLAN and 'newest message' in ingest.REPLAN
+    assert 'TASKUARY-WITHDRAW' not in ingest.REPLAN and 'withdraw' in selfclose.DRAFTS_ONCE and 'newest message' in selfclose.DRAFTS_ONCE      # said once, at startup
 
 
 def test_the_agents_new_draft_supersedes_the_old_one():
@@ -134,7 +136,10 @@ def test_withdraw_by_its_marker_and_by_the_cli_door():
     summ = f"{selfclose.SUMMARY_OPEN}{json.dumps({'did': 'Withdrew it'})}{selfclose.SUMMARY_CLOSE}"
     answer = f"You're right - that was October.\n[[TASKUARY-WITHDRAW: wrong month]]\n{summ}"
     with mock.patch.object(general, '_selected', return_value=('api:test', 'Test', 'm')): sess = general.GeneralSession(s, tid)
-    with mock.patch.object(general.llm_mod, 'build_llm', return_value=lambda system, user, **kw: answer), mock.patch('taskuary.hooks.judge_ended'):
+    # ...the marker's own road: his line sets a draft older than it aside as it is heard (proposals.set_aside_drafts) - held off here, so the
+    # marker is what settles it
+    with mock.patch.object(general.llm_mod, 'build_llm', return_value=lambda system, user, **kw: answer), mock.patch('taskuary.hooks.judge_ended'), \
+            mock.patch('taskuary.proposals.set_aside_drafts', return_value=[]):
         reply = sess.send_prompt('so withdraw it')
     assert 'TASKUARY-WITHDRAW' not in reply and s.get_review(rid)['DecideNote'] == wrapup.WITHDRAWN + 'wrong month'
     s2 = MemoryStore(); tid2, _, _, rid2 = the_owners_day(s2)
@@ -206,6 +211,18 @@ def test_a_coding_turn_is_told_what_any_agent_s_turn_is():
     s.decide_review(rid, 'approved', 'Hi Ray - fixed.', 'owner')
     assert [x.split(': ', 1)[1] for x in general.owner_did(s, tid)] == [f'approved (sent, if it sends) rv{rid} (the reply to Ray)']
     assert 'WHAT THE OWNER DID SINCE YOUR LAST TURN' in general.turn_facts(s, tid, resumed=True)
+
+
+def test_what_the_owner_did_is_told_as_lines_already_in_his_chat_never_to_say_again():
+    # the recorded walk, 2026-11-12: "You signed in to localhost - saved for next time (remove it under Settings ...)" stood in the chat as his
+    # press, and the agent's next answer said the same two sentences again under it
+    s = MemoryStore(); tid = s.create_task({'Title': 'Payroll date for Gail', 'Kind': 'general', 'Status': 'open'}, 'owner')
+    s.add_comment(tid, 'agent', general.ASSISTANT_TYPE, 'The sign-in page is open.')
+    s._exec("UPDATE comment SET CreatedAt='2000-01-01 00:00:00' WHERE TaskId=?", (tid,))
+    s.audit('task', tid, 'signin_fill', 'owner', detail={'site': 'payworth.example', 'ok': True, 'saved': True})
+    facts = general.turn_facts(s, tid)
+    assert 'signed in to payworth.example - saved for next time' in facts
+    assert 'each is a line in the chat already: take it as said, never undo it, never say it again' in facts
 
 
 def test_an_email_the_owner_dropped_is_told_to_its_agent_and_is_a_line_in_the_chat():

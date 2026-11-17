@@ -2,13 +2,30 @@
 // tab beside Report and Workflow, Reports has + New playbook beside + New report and + New workflow, and both open the one road to a
 // playbook there is - the Playbooks shelf's New playbook dialog (NewPlaybookDialog), with the words New was given.
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 import { canvasRequestFromHash } from "../src/canvasLinks.js";
 import { NEW_PB, askPlaybook, takePlaybookAsk } from "../src/playbookOpen.js";
 
+const read = (name) => fs.readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8");
+
+test("a playbook the Assistant wrote up on New hands its words to the shelf's New playbook", () => {
+  const src = read("NewSheet.jsx");
+  assert.match(src, /askPlaybook\(about, true\); onClose\?\.\(\); openAppLink\(`report=\$\{NEW_PB\}`\);/);
+  assert.match(src, /kind === "playbook" \? "Set up with AI"/);
+});
+
+test("Reports offers + New playbook beside + New report and + New workflow, opening New playbook on its shelf", () => {
+  const view = read("ReportsView.jsx");
+  // ...and + New dashboard second, beside + New report (the owner, 2026-10-23)
+  assert.match(view, /\{ key: "new-dashboard", label: DASH\.new \}, \{ key: "new-agent", label: "\+ New routine" \},\s*\{ key: NEW_PB, label: "\+ New playbook" \}\]/);
+  assert.match(view, /key === NEW_PB \? \{ section: "playbooks", open: null, newPb: Date\.now\(\) \}/);
+  assert.match(view, /<NewPlaybook key=\{browseState\.newFor \|\| browseState\.newPb \|\| ""\}[^>]*asked=\{!!browseState\.newPb\}/);
+});
 
 test("New's link lands on the Playbooks shelf with New playbook asked for - each ask numbered, so a second opens it again", () => {
-  assert.deepEqual(canvasRequestFromHash("#report=new-playbook", 4).state, { section: "playbooks", open: null, newPb: 5 });
+  assert.equal(NEW_PB, "new-playbook");
+  assert.deepEqual(canvasRequestFromHash(`#report=${NEW_PB}`, 4).state, { section: "playbooks", open: null, newPb: 5 });
   assert.deepEqual(canvasRequestFromHash("#report=playbooks").state, { section: "playbooks", open: null });
   // ...and About you's link of the few hours it held them (2026-11-06) lands on Reports too
   assert.deepEqual(canvasRequestFromHash(`#about=${NEW_PB}`, 4), { kind: "browse", area: "reports", state: { section: "playbooks", open: null, newPb: 5 }, n: 4 });
@@ -18,4 +35,10 @@ test("the words wait for the shelf and are taken once; the dialog starts from th
   askPlaybook("when Erin asks for the weekly numbers, gather them for my review", true);
   assert.deepEqual(takePlaybookAsk(), { text: "when Erin asks for the weekly numbers, gather them for my review", start: true });
   assert.equal(takePlaybookAsk(), null);
+  const shelf = read("PlaybookShelf.jsx"), dlg = read("NewPlaybookDialog.jsx");
+  assert.match(shelf, /initialText=\{ask\?\.text \|\| ""\} autoStart=\{!!ask\?\.start\}/);
+  assert.match(dlg, /useState\(initialText\.trim\(\) \? "scratch" : ""\)/);
+  // ...and it builds right there (taskuary/build.py): the strip, started with the words, opens the playbook once it is saved
+  assert.match(dlg, /useState\(autoStart && !!initialText\.trim\(\)\)/);
+  assert.match(dlg, /<SetupWithAi kind="playbook"[\s\S]{0,260}auto\s+onDone=\{\(v\) => \{ onClose\?\.\(\); openAppLink\(v\.link\); \}\} \/>/);
 });

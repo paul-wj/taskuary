@@ -1,7 +1,55 @@
+// COPY SLIPS (the product audit, 2026-11-08): one word for one thing, no internal words on a screen
 import test from "node:test";
 import assert from "node:assert/strict";
-test("an ask already contained in the message body is recognized", async () => {
+import { readFileSync } from "node:fs";
+
+const src = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
+
+test("Reports says routines, a data card has no template line, profiles live in Settings, the Hub names no agent's tool", () => {
+  assert.match(src("ReportsView.jsx"), /plural\(workflowSources\.length, "routine"\)[^`]*routines act/);
+  const cv = src("ConnectorsView.jsx");
+  assert.doesNotMatch(cv, /\{meta\.desc\} The connection only/); assert.doesNotMatch(cv, /ships at authority READ/);
+  assert.match(src("AgentsPanel.jsx"), />Manage profiles in Settings</);
+  const hub = src("HubView.jsx");
+  assert.doesNotMatch(hub, /`agent \$\{p\.Author/); assert.doesNotMatch(hub, /whitfield/i, "no person's name decides whose a post is"); assert.match(hub, /byOwner\(p\.Author\) \? \(\s*<Typography[^>]*>posted by hand/);
+});
+
+test("What the assistant changed lists only what it changed - a setting, a report, a connection", () => {
+  const sv = src("SettingsView.jsx");
+  assert.match(sv, /const CHANGED = \["setting", "source", "connector"\];/);
+  assert.match(sv, /filter\(\(r\) => CHANGED\.includes\(r\.entity\)\)/);
+});
+
+// SAID ONCE (the product audit, 2026-11-08): the to-do's paragraph under What came in and again as The ask; "+ New playbook" twice on its
+// shelf; a back crumb under the Phone & chats chip that is already lit
+test("an ask that is its message's words, a second New playbook and a single page's back crumb are each drawn once", async () => {
   const { askInBody } = await import("../src/taskLayout.js");
   const body = "Welcome to the demo. Northwind, its people and their mail are invented, and nothing you press here reaches anyone.";
   assert.equal(askInBody(body, `${body}\n\nAlex`), true); assert.equal(askInBody("Book the room", body), false);
+  assert.match(src("TaskPage.jsx"), /!\(sourceCount === 1 && askInBody\(askText, opener\?\.ReadText \|\| opener\?\.BodyText\)\)/);
+  assert.match(src("ReportsView.jsx"), /<NewPlaybook [^>]*button=\{false\}/);
+  assert.match(src("PlaybookShelf.jsx"), /\{button && <Button size="small" variant="outlined"/);
+  assert.match(src("SettingsView.jsx"), /noBack: onePage\(section, SHELF\)/);
+  // ...and every section that is one page opens from its chip: Mail rules and Updates drew one card named like the chip, to press again
+  const { onePage } = await import("../src/settingsMap.js"), SHELF = { docs: 1, profiles: 1 };
+  assert.deepEqual(["you", "phone", "policies", "updates", "audit", "config", "memory", "docs", "profiles", null].map((k) => onePage(k, SHELF)),
+    [true, true, true, true, true, false, false, false, false, false]);
+  assert.match(src("SettingsView.jsx"), /open: onePage\(key, SHELF\) \? key : null/);
+  assert.match(src("CanvasBrowse.jsx"), /\{!noBack && <Box sx=\{\{ display: "flex", alignItems: "center", gap: 1\.25, px: 1\.75/);
+});
+
+test("Esc closes the Past chats panel: it stood over the task with its x the only way out", () => {
+  const view = src("AssistantView.jsx");
+  assert.match(view, /if \(!chatsOpen\) return undefined;\s*const esc = \(e\) => \{ if \(e\.key === "Escape"\) \{ e\.stopPropagation\(\); setChatsOpen\(false\); \} \};/);
+});
+
+test("a start that did not happen says why under the chat: the list's idle line, where no hold says its own", () => {
+  const view = src("GeneralWorkspace.jsx");
+  assert.match(view, /\{!hold && !!idle && <Box data-tq-not-started=""/);
+  assert.match(view, /idle=\{conv\.list\?\.idle \|\| ""\}/);
+});
+
+test("an AI connected after the page opened is seen: the rail stopped saying No AI is connected only on a reload", () => {
+  const view = src("AssistantView.jsx");
+  assert.match(view, /picksOf\(s\.providers\) !== picksOf\(st\.providers\) \? \{ \.\.\.s, providers: st\.providers \|\| \[\] \} : s/);
 });

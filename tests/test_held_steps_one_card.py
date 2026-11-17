@@ -14,7 +14,7 @@ HELD = r'C:\work\portal'
 
 class HeldStepsOneCard(unittest.TestCase):
     def setUp(self):
-        self.s = MemoryStore(); self.tid = Factory(self.s).task('Ship the portal fix to deploy'); proposals._PRESSED.clear()
+        self.s = MemoryStore(); self.tid = Factory(self.s).task('Ship the portal fix to deploy')
 
     def hold(self, cmd):
         sg.check(self.s, self.tid, 'run1', cmd, 'Bash', HELD)
@@ -96,7 +96,9 @@ class HeldStepsOneCard(unittest.TestCase):
 
     def test_the_hold_tells_the_agent_the_button_is_the_ask(self):
         said = sg.check(self.s, self.tid, 'run1', 'git push origin deploy', 'Bash', HELD)['hookSpecificOutput']['permissionDecisionReason']
-        self.assertIn('never ask them to run it', said); self.assertIn('never print the command', said)
+        self.assertIn('never ask them to run it', said); self.assertIn('print it for them to copy', said)
+        from taskuary.selfclose import CARD_TAIL
+        self.assertIn(CARD_TAIL, said)                    # ...and the one tail every hold ends on: the card says it waits, so the agent never does
 
 
 if __name__ == '__main__': unittest.main()

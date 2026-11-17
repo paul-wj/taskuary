@@ -55,10 +55,6 @@ def org_of(store, domain: str = '', tenant: str = '', team: str = '') -> dict | 
     return next((o for o in trusted_orgs(store) if any(v and o.get(k) == v for k, v in want.items())), None)
 
 
-def _opener(store, tid: int, msgs=None) -> dict | None:
-    "The task's first line that is not ours - whose organisation Trust their organisation names (ingest.from_opener's reading)."
-    from .ingest import is_ours
-    return next((m for m in (store.list_messages(tid) if msgs is None else msgs) if not is_ours(m)), None)
 
 
 def sender_org(store, m: dict) -> dict:
@@ -99,6 +95,31 @@ def trust_org(store, tid: int, actor: str) -> dict:
     store.set_setting('trusted_orgs', json.dumps(orgs), actor)
     origin.raise_to(store, tid, 'trusted', actor)
     return {'domain': o.get('domain', ''), 'tenant': o.get('tenant', ''), **{k: o[k] for k in ('team', 'name') if o.get(k)}}
+
+
+# WHO HE TRUSTED, AND TAKING IT BACK (the readiness review, 2026-11-14: one press trusted a sender for good, and nothing listed or undid it).
+# Only his own word is listed - a Trust press, a vouch, an organisation; an address found in his Sent Items is known by that, not by a press.
+OWNER_SAID = ('trusted by the owner', 'you vouched for them', 'you trust this source')
+
+def _org_label(o: dict) -> str:
+    return (f"everyone at {o['domain']}" if o.get('domain') else f"the Slack workspace {o.get('name') or o['team']}" if o.get('team')
+            else 'their organisation on Teams')
+
+def trusted(store) -> list:
+    "[{kind: 'person' | 'org', key, label, via}] - every sender and organisation the owner trusted, newest first."
+    ps = [{'kind': 'person', 'key': {'mailbox': r['Mailbox'], 'address': r['Address']}, 'label': r['Address'],
+           'via': r['Mailbox'] if '@' in (r['Mailbox'] or '') else (r['Mailbox'] or '').capitalize(), 'at': r['CheckedAt']}
+          for r in store.trusts(OWNER_SAID)]
+    return ps + [{'kind': 'org', 'key': {k: o[k] for k in _ORG_KEYS if o.get(k)}, 'label': _org_label(o), 'via': ''} for o in trusted_orgs(store)]
+
+def untrust(store, kind: str, key: dict, actor: str) -> bool:
+    "Takes one trust back: their next message waits behind Trust again. Tasks already worked keep what they were vouched for."
+    if kind == 'person': ok = store.forget_trust(key.get('mailbox') or '', key.get('address') or '')
+    else:
+        orgs = trusted_orgs(store); keep = [o for o in orgs if not any(key.get(k) and o.get(k) == key[k] for k in _ORG_KEYS)]
+        if ok := len(keep) < len(orgs): store.set_setting('trusted_orgs', json.dumps(keep), actor)
+    if ok: store.audit('trust', 0, 'untrust', actor, detail={'kind': kind, **key})
+    return ok
 
 
 def trust_offer(store, tid: int, msgs=None) -> dict | None:
@@ -245,7 +266,7 @@ def _known(store, msg: dict, exclude_mid=None, deep: bool = False, memo: dict = 
     from .store import OWN_CHANNELS
     ch = msg.get('channel') or ''
     if ch in OWN_CHANNELS:                                                                # X3: never "a chat you control"
-        return True, _said('Taskuary wrote this report.' if ch == 'report' else "Taskuary's assistant wrote this.")
+        return True, _said('Taskuary wrote this report.' if ch == 'report' else 'Taskuary wrote this.')
     from .ingest import CHAT_CHANNELS
     if ch.lower() in CHAT_CHANNELS: return _chat_known(store, msg, ch.lower(), exclude_mid, on('trust_non_email'), memo)
     if ch in ALERTS or ch in TRACKERS: return _item_known(store, msg, ch, on('trust_trackers'), memo)
@@ -479,8 +500,15 @@ def quoted_authors(text: str) -> list:
     ls, out = str(text or '').splitlines(), []
     for i, l in enumerate(ls):
         if (m := _HDR.match(l)) and m[1].lower() == 'from' and any(_HDR.match(x) for x in ls[i + 1:i + 4]): out.append(_who_of(m[2]))
-    out += [_who_of(m[0]) if _ADDR.search(m[0]) else ('', '') for m in _WROTE.finditer(str(text or ''))]
+    # an attribution with no address (Apple Mail: "On Nov 10, 2026, at 9:14 AM, Alex Doyle wrote:") names its author after the last comma;
+    # that name is only ever looked up (_by_name), so one that is not a single known person stays unreadable
+    out += [_who_of(m[0]) if _ADDR.search(m[0]) else (_named(m[0]), '') for m in _WROTE.finditer(str(text or ''))]
     return list(dict.fromkeys(out))
+
+def _named(line: str) -> str:
+    "The name an address-less 'On <when>, <name> wrote:' line ends with, else ''."
+    head = re.sub(r'\bwrote:\s*$', '', ' '.join(line.split()), flags=re.I).strip()
+    return head.rsplit(',', 1)[1].strip() if ',' in head else ''
 
 def _chain(body: str, own) -> str:
     "The quoted or forwarded block under the sender's own words (triage.split_own, or below the mailbox's uniqueBody)."
@@ -494,7 +522,9 @@ def _by_name(store, name: str) -> str:
     n = ' '.join(str(name or '').split()).lower()
     if not n: return ''
     o = store.owner() or {}
-    if n == str(o.get('owner_name') or '').strip().lower(): return str(o.get('owner_email') or '').lower()
+    # store.owner() names him 'owner' - read as 'owner_name' it never matched, and his own message quoted back by name was a stranger's
+    me = str(o.get('owner') or '').strip().lower()
+    if me and me != 'the owner' and n in (me, ', '.join(reversed(me.split(' ', 1)))): return str(o.get('owner_email') or '').lower()
     ns = (n, ' '.join(reversed([x.strip() for x in n.split(',', 1)]))) if ',' in n else (n,)
     xs = {r['a'] for r in store._rows("SELECT DISTINCT lower(FromEmail) a FROM message WHERE lower(FromName) IN (%s) AND FromEmail LIKE '%%@%%'"
                                       % ','.join('?' * len(ns)), ns)}

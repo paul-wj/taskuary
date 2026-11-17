@@ -50,6 +50,18 @@ class TheGeneralAgentsBrowserIsHeld(unittest.TestCase):
             self.assertEqual(hooks.browser(self.pay), {'held': 1})
         self.assertEqual(check.call_args.args[1], self.tid)
 
+    def test_its_task_settings_find_it_before_its_first_turn_named_a_conversation(self):
+        """The real-CLI walks, 2026-11-12: a chat agent's delete in its FIRST turn passed the shell hold unread - no conversation id yet -
+        and was held at the ACP permission, where the agent hears only "User refused permission" and told the owner it "waits for your
+        approval". The task's own settings file names its task on the hold, and the hook finds the chat by it."""
+        f = Path(hooks.general_settings(self.tid))
+        cmd = next(h['hooks'][0]['command'] for h in json.loads(f.read_text(encoding='utf-8'))['hooks']['PreToolUse'] if h['matcher'] == hooks.BROWSER_MATCH)
+        self.assertIn(f'{hooks.BROWSER_MARK}?task={self.tid}', cmd)
+        with mock.patch.object(bg, 'check', return_value={'held': 1}) as check:
+            self.assertEqual(hooks.browser(self.pay, task=str(self.tid)), {'held': 1})
+            self.assertEqual(hooks.browser(self.pay, task=str(self.tid + 1)), {})                   # another task's: not this chat
+        self.assertEqual(check.call_args.args[1], self.tid)
+
     def test_a_session_that_is_not_ours_is_left_alone(self):
         with mock.patch.object(bg, 'check') as check:
             self.assertEqual(hooks.browser(self.pay, sid='nobody'), {})
@@ -202,7 +214,7 @@ class TheHeldActInWords(unittest.TestCase):
     def test_a_dead_approve_says_the_way_on(self):
         with mock.patch.object(browserview, 'state', return_value={'open': False}):
             with self.assertRaises(RuntimeError) as e: bg.perform(MemoryStore(), 1, {'sid': 'r1', 'args': ['click', '@e1']})
-        self.assertIn('Dismiss this, and ask the agent to open the page again', str(e.exception))
+        self.assertIn('the agent opens the page again and holds the step anew', str(e.exception))
 
 
 class ThePaneSaysWhatIsHappening(unittest.TestCase):
@@ -326,7 +338,7 @@ class SignedInIsAPressOnEveryAgent(unittest.TestCase):
             out = ws.answer(s, tid, 'signin:toll.example', 'Signed in', 'owner')
             self.assertEqual(ws.status(s, tid)['requests'], [])
         self.assertTrue(out['delivered'], out)
-        self.assertEqual(typed, [('run1', 'Signed in to toll.example - continue.')])
+        self.assertEqual(typed, [('run1', 'Signed in to toll.example - continue. The owner signed in on the page themselves.')])
         self.assertTrue(any('Signed in to toll.example - the agent goes on.' in (c.get('Body') or '') for c in s.list_comments(tid)))
 
     def test_other_words_to_a_sign_in_ask_stay_the_owners(self):

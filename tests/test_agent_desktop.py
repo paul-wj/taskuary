@@ -179,7 +179,7 @@ class Holding(unittest.TestCase):
         with installed(), mock.patch.object(ad, '_run', return_value=(1, stale)):
             out = verdicts.decide(self.s, rv, 'approve')
         self.assertFalse(out['ok']); self.assertIn('nothing was done', out['send_error'])
-        self.assertEqual(len(self.pending()), 1)
+        self.assertEqual(self.pending(), [], "over, its error kept - the agent holds it anew (the owner, 2026-11-16: no Try again)")
 
     def test_dismiss_tells_the_agent_it_was_not_done(self):
         self.check(); [rv] = self.pending()
@@ -251,7 +251,7 @@ class TheMark(unittest.TestCase):
 
     def test_triage_is_asked_and_keeps_it_on_a_task_only(self):
         from taskuary import triage
-        self.assertIn('needs_desktop', triage.verdict_schema()['schema']['properties'])
+        self.assertIn('needs_desktop', triage.verdict_schema()['schema']['properties']['more']['properties'])
         self.assertIn('**needs_desktop**', triage.SHIPPED)
 
     def test_a_task_sessions_brief_names_it_only_on_a_marked_task(self):

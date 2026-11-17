@@ -54,6 +54,7 @@ export function RemindPicker({ task, anchor, onClose, onDone, path, act = null, 
       <Box sx={{ p: 1.5, display: "grid", gap: 1, width: 240 }}>
         <Typography sx={{ fontSize: 12, fontWeight: 600, color: "var(--tq-link, #41525f)" }}>
           {away ? t("Away until {day}", { day: remindDay(task.RemindAt) }) : t("Bring it back on…")}</Typography>
+        <>
           {/* THE DAY THE OWNER SAID leads (the owner, 2026-10-27): "remind me Monday" lit this picker with no Monday in it */}
           {said?.until && said?.day && !away && (
             <Button size="small" variant="contained" disabled={busy} onClick={() => set(said.until)} disableElevation data-tq-remind-said=""
@@ -87,6 +88,7 @@ export function RemindPicker({ task, anchor, onClose, onDone, path, act = null, 
               onChange={(e) => e.target.value && set(e.target.value)}
               style={{ font: "inherit", fontSize: 13, padding: "4px 6px", borderRadius: 6, border: "1px solid var(--tq-border, #d8d1c5)" }} />
           </Box>
+        </>
         {away && <Button size="small" disabled={busy} onClick={() => set("none")} sx={{ justifySelf: "start", fontSize: 11 }}>{t("Bring it back now")}</Button>}
         {err && <Typography sx={{ fontSize: 11.5, color: "var(--tq-danger, #7a2f3c)" }}>{err.text || t(err.key)}</Typography>}
       </Box>

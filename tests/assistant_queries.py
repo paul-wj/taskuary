@@ -180,7 +180,6 @@ CASES = [
     Q('settings', 'change my signature', None, c('setting.set', setting='email_signature', value='Alex'), 'open:#settings=config', freq=3),
     Q('settings', 'connect Outlook', None, c('setup', text='connect Outlook'), 'open:#connector=outlook', sort={'kind': 'connection', 'provider': 'outlook'}, freq=4),
     Q('settings', 'turn off background sync', None, c('setting.set', setting='poll_minutes', value='0'), 'open:#settings=config', freq=2),
-    Q('settings', 'stop marking mail read in my inbox', None, c('setting.set', setting='mark_read_enabled', value='0'), 'open:#settings=config', freq=2),
     Q('settings', 'what timezone am I in', None, [c('setting.read', key='timezone'), 'Your timezone is set to the computer.'], 'read:setting.read', freq=1),
     Q('settings', 'turn off the desktop notifications', None, c('setting.set', setting='hand_desktop', value='0'), 'open:#settings=config', freq=2),
     Q('settings', 'switch off the GitHub connection', None, c('connection.pause', name='GitHub'), 'open:#connector=github', freq=1),
@@ -214,9 +213,9 @@ CASES = [
     Q('agents', 'tell the agent to use the main branch', 'todo', [c('agent.tell', text='use the main branch'),
       'No agent is working on TQ-0001 - Send to agent starts one.'], 'words', freq=2, note='nobody at work: said, nothing queued'),
     Q('agents', 'start a researcher on what Payworth charges per seat', None,
-      c('task.create_from_text', kind='general', text='what Payworth charges per seat', title='Payworth seat price'), 'press:new', freq=3),
-    Q('agents', 'research what Payworth charges per seat', None, c('task.create_from_text', kind='general', text='research what Payworth charges per seat', title='Payworth seat price'), 'new:agent:general', freq=3),
-    Q('agents', 'have a coding agent fix the census sync timeout', None, c('task.create_from_text', kind='coding', text='fix the census sync timeout', title='Census sync timeout'), 'new:agent', freq=3, note='no coding CLI in the demo world: written into New as an agent job'),
+      c('task.create_from_text', kind='general', text='what Payworth charges per seat', title='Payworth seat price'), 'did:task.create_from_text', freq=3),
+    Q('agents', 'research what Payworth charges per seat', None, c('task.create_from_text', kind='general', text='research what Payworth charges per seat', title='Payworth seat price'), 'did:task.create_from_text', freq=3),
+    Q('agents', 'have a coding agent fix the census sync timeout', None, c('task.create_from_text', kind='coding', text='fix the census sync timeout', title='Census sync timeout'), 'did:task.create_from_text', freq=3, note='started on a task of its own and opened (the owner, 2026-11-12)'),
     Q('agents', 'kill all the agents', None, c('agents.stop', all=True), 'words', freq=1, note='none running in the demo world: said, nothing pressed'),
     # ── reports ──
     Q('reports', 'run the end of day report', None, c('report.run', title='End of day checkup'), 'open:#report=', freq=4),
@@ -265,8 +264,8 @@ BRING_UP = [
     ('the sync interval', 'sync interval', '#settings=config&group=Sync%20%26%20startup&key=poll_minutes'),
     ('desktop notifications', 'desktop notification', '#settings=config&group=Notifications&key=hand_desktop'),
     ('which AI sorts my mail', 'AI that sorts your mail', '#settings=config&group=How%20mail%20is%20sorted&key=triage_ai'),
-    ('the assistant model', 'assistant model', '#settings=config&group=How%20mail%20is%20sorted&key=concierge_model'),
-    ('stop marking mail read in my inbox setting', 'mark read source', '#settings=config&group=Sync%20%26%20startup&key=mark_read_enabled'),
+    # ...by the name it has on screen since 2026-11-15 ("Taskuary"): that is the word a model that has seen the page searches by
+    ('the assistant model', 'model for Taskuary', '#settings=config&group=How%20mail%20is%20sorted&key=concierge_model'),
     ('how many days back it catches up', 'catch-up window', '#settings=config&group=Sync%20%26%20startup&key=startup_sync_days'),
     ('the FYI batching setting', 'fyi read together', '#settings=config&group=Assistant&key=fyi_batch'),
     ('my second Outlook', 'outlook', '#connector=outlook'),
@@ -302,7 +301,7 @@ BRING_UP = [
     ('install the latest release', 'install the latest release', '#settings=updates&key=update'),
     # ...and its siblings: a connection or a brain is its own screen too, never an agent's job
     ('connect my mail', 'email connections', '#connections=Email'),
-    ('change the assistant brain', 'assistant brain', '#settings=config&group=How%20mail%20is%20sorted&key=concierge_ai'),
+    ('change the assistant brain', 'Taskuary brain', '#settings=config&group=How%20mail%20is%20sorted&key=concierge_ai'),
     ('the Hub', 'hub', '#hub'),
 ]
 CASES += [Q('bring-up', t, None, find(q), f'link:{h}', freq=4) for t, q, h in BRING_UP]
@@ -394,12 +393,12 @@ POWERS = [
     Q('help', 'what changed in the last update', None, [c('docs.search', query='what changed'), 'The help pages ship with the app now.'], 'read:docs.search', freq=3),
     Q('help', 'how does Watch it work?', None, [c('docs.search', query='watch it'), 'The task stays open under Watching, still walked, until the thread moves.'],
       'read:docs.search', freq=2),
-    Q('help', 'what is the Advisor?', None, [c('docs.search', query='advisor'), 'It lights the button it thinks you will press.'], 'read:docs.search', freq=2),
+    Q('help', 'what is the Advisor?', None, [c('docs.search', query='advisor'), 'It raises ideas on its own rows under Advisor - it lights no button.'], 'read:docs.search', freq=2),
     # ── work that is an agent's, never done in the chat (the owner, 2026-11-01: "probably should have put agent on it") ──
     Q('agentwork', 'make me an image of the AP ageing as a bar chart', None,
-      c('task.create_from_text', kind='general', text='a bar chart image of the AP ageing report', title='AP ageing chart'), 'new:agent:general', freq=3),
+      c('task.create_from_text', kind='general', text='a bar chart image of the AP ageing report', title='AP ageing chart'), 'did:task.create_from_text', freq=3),
     Q('agentwork', 'write a spreadsheet of every vendor we paid last month', None,
-      c('task.create_from_text', kind='general', text='a spreadsheet of every vendor paid last month', title='Vendors paid last month'), 'new:agent:general', freq=3),
+      c('task.create_from_text', kind='general', text='a spreadsheet of every vendor paid last month', title='Vendors paid last month'), 'did:task.create_from_text', freq=3),
     Q('agentwork', 'where is the spreadsheet the agent made?', None, [c('outputs.find', query='spreadsheet', kind='xlsx'), 'No agent has made one yet.'],
       'read:outputs.find', freq=3),
     Q('agentwork', 'stop all the agents', None, c('agents.stop', all=True), 'did:agents.stop', freq=2, live=6),
@@ -585,13 +584,13 @@ def idea_row(s):
                        'action': {}}, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
     funnel.invalidate(); return f"idea:{i['IdeaId']}"
 def meeting_row(s):
-    "A meeting coming up in 40 minutes, on a calendar the demo world lacks (`agenda`, read by _guards) - invented people."
+    "A meeting coming up in 10 minutes - inside the fifteen the rail takes one from (2026-11-09), on a calendar the demo world lacks (`agenda`, read by _guards) - invented people."
     from datetime import datetime, timedelta
     from taskuary import funnel
     at = lambda m: (datetime.now() + timedelta(minutes=m)).strftime('%Y-%m-%dT%H:%M:%S')
-    s.agenda = [{'subject': 'Ledger cut-over plan', 'start': at(40), 'end': at(70), 'who': ['Gail Moreno', 'Paula Vance'], 'where': 'Teams',
+    s.agenda = [{'subject': 'Ledger cut-over plan', 'start': at(10), 'end': at(40), 'who': ['Gail Moreno', 'Paula Vance'], 'where': 'Teams',
                  'about': 'Which entities move first', 'join': 'https://meet.northwind.example/cutover', 'all_day': False, 'id': 'ev-cutover'}]
-    funnel.invalidate(); return f"meeting:{at(40)[:16]}:Ledger cut-over plan"
+    funnel.invalidate(); return f"meeting:{at(10)[:16]}:Ledger cut-over plan"
 AREA_RAIL = [
     Q('rail', 'whats nxt', 'todo', c('next'), 'next', freq=4),
     Q('rail', 'go back to the one before', 'todo', c('button.light', button='back'), 'card', freq=4,
@@ -632,7 +631,7 @@ AREA_RAIL = [
     Q('rail', 'prepare me for this meeting', 'meeting', c('prepare'), 'did:calendar.prepare', freq=4, seed=meeting_row,
       note="the row's Prepare, pressed - an agent start the Assistant may make (2026-11-02)"),
     # ...while a job that is not about the meeting stays the model's call: `new` makes it a task of its own, written into New
-    Q('rail', 'get an agent to research three expense tools', 'meeting', c('regular_agent', text='research three expense tools', new=True), 'new:agent',
+    Q('rail', 'get an agent to research three expense tools', 'meeting', c('regular_agent', text='research three expense tools', new=True), 'did:task.create_from_text',
       freq=2, seed=meeting_row, note='the model says the job is not the meeting\'s (`new`); code never decides that'),
     # ── about the rail itself ──
     Q('rail', 'why is this one at the top?', 'todo', [c('docs.search', query='work rail'), 'Rows sit in the order they arrived.'], 'read:docs.search', freq=2),
@@ -688,7 +687,7 @@ AREA_CONNECTIONS = [
       note="walked in words with its box lit - Get AI to set it up is the door into this chat, kept out of the view (ConnectorsView AiWalkButton)"),
     Q('connections', 'go back to all of them', None, [v(op='press', button='Messaging')], 'view:press:messaging', tools=('words',), view=SLACKCARD, freq=2,
       note="the card's back button says the section it came from"),
-    Q('connections', 'list my slack channels', None, gen('list the Slack channels the bot token can see', 'Slack channels'), 'new:agent:general',
+    Q('connections', 'list my slack channels', None, gen('list the Slack channels the bot token can see', 'Slack channels'), 'did:task.create_from_text',
       view=SLACKCARD, freq=2, note='a token used on this computer is an agent job (pageview.GUIDE), never the chat'),
     # ── a card connected: on and off, rename, another of the kind, remove ──
     Q('connections', 'switch it off for now', None, [v(op='set', field='On', value='off')], 'view:set:on', tools=('words',), view=WORKCARD, freq=3),
@@ -814,7 +813,7 @@ AREA_REPORTS = [
       'read:report.read', freq=3),
     Q('reports', 'go through the last three AP ageing runs and write up the trend', None,
       c('task.create_from_text', kind='general', text='read the last three AP ageing runs and write up the trend', title='AP ageing trend'),
-      'new:agent:general', freq=2, note="reading across runs and writing it up is an agent's job"),
+      'did:task.create_from_text', freq=2, note="reading across runs and writing it up is an agent's job"),
 ]
 CASES += AREA_REPORTS
 
@@ -892,7 +891,7 @@ AREA_SETTINGS = [
       view=PROFILES, freq=2),
     # ...and work that needs this computer is an agent's, never a setting (agentwork: the app's own asks never end at one, test_app_own_screens)
     Q('agentwork', 'write a script that backs up my docs folder every night', None,
-      c('task.create_from_text', kind='general', text='a script that backs up the docs folder every night', title='Nightly docs backup'), 'new:agent:general',
+      c('task.create_from_text', kind='general', text='a script that backs up the docs folder every night', title='Nightly docs backup'), 'did:task.create_from_text',
       freq=1),
 ]
 CASES += AREA_SETTINGS
@@ -987,17 +986,17 @@ AREA_NEW = [
       freq=3, note='"Send to coding agent" read as an outward send, and only lit'),
     # ── a job in words: written into New on its tab - an agent's Send to agent pressed for the owner (2026-11-02), every other tab's theirs ──
     Q('new', 'have an agent look into why the census moved in july', None,
-      c('task.create_from_text', kind='general', text='why did the census move in July', title='Census move in July'), 'new:agent:general', freq=4),
+      c('task.create_from_text', kind='general', text='why did the census move in July', title='Census move in July'), 'did:task.create_from_text', freq=4),
     Q('new', 'get a coding agent to fix the nightly export', None,
-      c('task.create_from_text', kind='coding', text='fix the nightly export', title='Nightly export fix'), 'new:agent:terminal', freq=4),
-    Q('new', 'write to Erin about the Q3 numbers', None, c('task.create_from_text', kind='send', text='the Q3 numbers', to='Erin Blake'), 'new:send', freq=3),
+      c('task.create_from_text', kind='coding', text='fix the nightly export', title='Nightly export fix'), 'did:task.create_from_text', freq=4),
+    Q('new', 'write to Erin about the Q3 numbers', None, c('task.create_from_text', kind='send', text='the Q3 numbers', to='Erin Blake'), 'did:outbox', freq=3),
     # ...and on the channel named, to the chat found by its name (the owner, 2026-11-02: it opened on email with To empty)
     Q('new', 'write to the Northwind team WhatsApp group that the installer is ready to go', None,
       c('task.create_from_text', kind='send', channel='whatsapp', to='Northwind team', text='I have updated everything and the installer is ready to go'),
-      'new:send', freq=3, seed=wa_group),
+      'did:outbox', freq=3, seed=wa_group),
     Q('new', 'send this on WhatsApp to the Northwind team: the ledger is closed for October', None,
       c('task.create_from_text', kind='send', channel='whatsapp', to='Northwind team', text='the ledger is closed for October'),
-      f'to:whatsapp:{TEAM_GROUP}', freq=3, seed=wa_group, note='New, filled in, for their Send (2026-11-03) - nothing pasted, nothing sent'),
+      'did:outbox', freq=3, seed=wa_group, note='drafted on a task of its own for their Send (2026-11-12) - nothing sent'),
     Q('new', 'set a goal: books closed by the 5th', None, c('task.create_from_text', kind='goal', text='books closed by the 5th'), 'new:goal', freq=2),
     Q('new', 'note to self: call the bank', None, c('task.create_from_text', kind='task', text='call the bank'), 'new:note', freq=3),
     Q('new', 'new dashbaord of open tasks by person', None, c('task.create_from_text', kind='dashboard', text='open tasks by person'), 'new:dashboard', freq=2,
@@ -1114,7 +1113,7 @@ AREA_HUB_BOARD_SEARCH = [
     Q('hub-board-search', 'which of these are running right now', None, [c('agents.now'), 'One, on TQ-0006.'], 'read:agents.now', view=BOARD, freq=3),
     Q('hub-board-search', 'why is the census sync stuck?', None, [c('task.read', ref=T12), 'It is waiting on a repository.'], 'read:task.read', view=BOARD, freq=3),
     Q('hub-board-search', 'put an agent on tidying the vendor list', None,
-      c('task.create_from_text', kind='general', text='tidy the vendor list', title='Tidy the vendor list'), 'new:agent:general', view=BOARD, freq=3),
+      c('task.create_from_text', kind='general', text='tidy the vendor list', title='Tidy the vendor list'), 'did:task.create_from_text', view=BOARD, freq=3),
     Q('hub-board-search', 'take me to the board', None, c('page.open', page='board'), 'open:#board', freq=3),
     # ── Search everything ──
     Q('hub-board-search', 'find anything mentioning pyodbc', None, c('page.open', page='search', query='pyodbc'), 'open:#search=pyodbc', freq=3),
@@ -1287,7 +1286,7 @@ AREA_LIVE = [
       'read:sender.read', tools=('sender.read',), freq=2, note='cut off, asked again: the retry runs its one look-up and answers'),
     Q('agentwork', 'what is the PO approval limit here', None,
       [c('knowledge.search', query='PO approval limit'), 'Nothing written here says.\n' + c('regular_agent', text='find the PO approval limit', new=True)],
-      'new:', freq=2, note='what it did leads, what it found follows (said_what)'),
+      'did:task.create_from_text', freq=2, note='what it did leads, what it found follows (said_what)'),
 ]
 CASES += AREA_LIVE
 
@@ -1348,6 +1347,10 @@ def _guards(stack, sort=None, live=None, agenda=None):
     # ...nor a general hand-off's chat session: no first turn is sent to an AI (concierge.handoff_task)
     from taskuary import general
     stack.enter_context(mock.patch.object(general, 'start_session', return_value=mock.Mock()))
+    # ...and the AI and coding tool a job is started on count as there (concierge._made_now), and a message is drafted by a stand-in
+    from taskuary import outbox
+    stack.enter_context(mock.patch.object(concierge, 'no_start', lambda store, kind: ''))
+    stack.enter_context(mock.patch.object(outbox, 'draft_message', lambda *a, **k: 'Drafted by the stand-in.'))
     def never(*a, **k): raise AssertionError('a real model was asked for')
     stack.enter_context(mock.patch.object(llm_mod, 'make_cli_llm', never))
     stack.enter_context(mock.patch.object(llm_mod, 'build_llm', never))
@@ -1373,7 +1376,7 @@ def _guards(stack, sort=None, live=None, agenda=None):
 # bare word. A proposal on a phone is its question; a look-up's answer and a link are the model's own words.
 ACTS = ('Opened ', 'Marked ', 'Wrote ', 'Put down ', 'Drafting ', 'Rewriting ', 'Snoozed ', 'Closed ', 'Added ', 'Set ', 'Noted ',
         'Ticked ', 'Unticked ', 'Took ', 'Renamed ', 'Brought up ', 'Remembered ', 'Filed ', 'Put on ', 'Blocked', 'Stopped ', 'Triage already ', 'Org chart: ',
-        'Nothing went', 'Saved ', 'Adopted ', 'Kept ', 'Told ', 'Pressed ', 'Started ', 'Nothing started')
+        'Nothing went', 'Saved ', 'Adopted ', 'Kept ', 'Told ', 'Pressed ', 'Started ', 'Nothing started', 'Drafted ', 'Made ')
 def said_what(say: str, got: list, q) -> bool:
     acted = [g for g in got if g.split(':')[0] in ('open', 'new', 'next', 'draft', 'cleared', 'did')]
     # ...and a lit button or a press speaks for itself - the filled button, the card's badge - and says no line (the owner, 2026-10-23)
@@ -1381,6 +1384,9 @@ def said_what(say: str, got: list, q) -> bool:
     if any(g.split(':')[0] in ('light', 'pressed', 'view') for g in got): return not say.startswith('Lit ')
     # ...and Next on a phone: remote_assistant drops its bare "Next." and the next card is the receipt (the phone audit, 2026-11-02)
     if q.phone and got == ['next']: return True
+    # ...and MEMORY IS SILENT (the owner, 2026-11-14): a fact kept - memory.remember itself having run - is answered in a few natural
+    # words ("Got it - Omar for badge faults."), never a report of the save; any words at all are its answer
+    if 'did:memory.remember' in got: return bool(say.strip())
     return not acted or say.startswith(ACTS) and len(say.split()) > 2
 
 
@@ -1393,7 +1399,6 @@ def outcomes(out: dict, reads: list) -> list:
     if out.get('open'): o.append(f"open:{out['open']}")
     if out.get('new'): o.append(f"new:{out['new'].get('kind')}" + (f":{out['new'].get('how')}" if out['new'].get('how') else ''))
     if (n := out.get('new') or {}).get('channel'): o.append(f"to:{n['channel']}:{n.get('to') or ''}")  # ...Send something's channel and To
-    if (out.get('new') or {}).get('start'): o.append('press:new')               # ...and its own Send to agent pressed by the page (NewSheet `start`)
     d = (out.get('decision') or {}).get('verb')
     if d == 'next': o.append('next')
     elif d in ('reply', 'redraft'): o.append(f'draft:{d}')
@@ -1452,7 +1457,7 @@ def demo_line(said: str, out: dict | None = None) -> str:
     from taskuary import demo
     out = out or {}
     if out.get('light') or out.get('pressed') or out.get('decision') or out.get('proposal'): return 'acted'
-    if said == demo.OUT_OF_SCRIPT and [c for c in out.get('chips') or [] if c.get('prompt')] == demo.prompt_chips(): return 'out'
+    if said in (demo.OUT_OF_SCRIPT, f'{demo.OUT_OF_SCRIPT} {demo.ASK_ONE}') and [c for c in out.get('chips') or [] if c.get('prompt')] == demo.prompt_chips(): return 'out'
     return 'other'
 
 

@@ -42,7 +42,7 @@ export default function SoulInterview({ open, onClose, onWritten }) {
     if (!question) return;
     const next = [...answers, { q: question.q, a: skip ? "" : answer.trim() }];
     if (next.length >= total && !next.some((row) => row.a)) {
-      setErr("Answer at least one question so the assistant has something true to write from.");
+      setErr("Answer at least one question so Taskuary has something true to write from.");
       return;
     }
     setBusy(next.length >= total ? "write" : "question"); setErr("");
@@ -54,7 +54,7 @@ export default function SoulInterview({ open, onClose, onWritten }) {
         const { data } = await api.post("/api/soul/interview/next", { answers: next });
         setAnswers(next); setQuestion(data.question); setAnswer("");
       }
-    } catch (e) { setErr(e?.response?.data?.detail || "The assistant could not continue the interview"); }
+    } catch (e) { setErr(e?.response?.data?.detail || "Taskuary could not continue the interview"); }
     setBusy("");
   };
 
@@ -62,7 +62,7 @@ export default function SoulInterview({ open, onClose, onWritten }) {
   return (
     <Dialog open={open} onClose={busy ? undefined : onClose} maxWidth="sm" fullWidth>
       <DialogTitle sx={{ pb: 0.5 }}>
-        {t("Shape SOUL.md with the assistant")}
+        {t("Shape SOUL.md with Taskuary")}
         <Typography variant="caption" sx={{ color: FAINT, display: "block", fontWeight: 400, mt: 0.25 }}>
           {t("Seven questions, one at a time. Each new question follows what you have already said.")}
         </Typography>
@@ -73,7 +73,7 @@ export default function SoulInterview({ open, onClose, onWritten }) {
         {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 2 }}>{err === "Could not start the interview" || err === "The assistant could not continue the interview" || err === "Answer at least one question so the assistant has something true to write from." ? t(err) : err}</Alert>}
         {!question && busy === "question" ? (
           <Box sx={{ display: "flex", gap: 1.25, alignItems: "center", color: DIM, py: 4, justifyContent: "center" }}>
-            <CircularProgress size={18} /><Typography variant="body2">{t("The assistant is choosing the first question…")}</Typography>
+            <CircularProgress size={18} /><Typography variant="body2">{t("Taskuary is choosing the first question…")}</Typography>
           </Box>
         ) : question && (
           <>
@@ -92,7 +92,7 @@ export default function SoulInterview({ open, onClose, onWritten }) {
             {!!answers.length && (
               <Box sx={{ mt: 2, bgcolor: PANEL2, border: `1px solid ${BORDER}`, borderRadius: 1.5, p: 1.25 }}>
                 <Typography variant="caption" sx={{ color: FAINT, display: "block" }}>
-                  {t(answers.filter((row) => row.a).length === 1 ? "The assistant is carrying forward {count} answer from the earlier questions." : "The assistant is carrying forward {count} answers from the earlier questions.", { count: answers.filter((row) => row.a).length })}
+                  {t(answers.filter((row) => row.a).length === 1 ? "Taskuary is carrying forward {count} answer from the earlier questions." : "Taskuary is carrying forward {count} answers from the earlier questions.", { count: answers.filter((row) => row.a).length })}
                 </Typography>
               </Box>
             )}

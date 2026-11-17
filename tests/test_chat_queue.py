@@ -50,7 +50,7 @@ class TakingTurnsTests(unittest.TestCase):
         """The owner, 2026-11-05: several lines typed during a turn are read together - the model decides if a later one clarifies."""
         sess, patched = _session(self.s, self.tid, 'answered', delay=0.8)
         got, prompts = [], []
-        with patched, mock.patch.object(general.llm_mod, 'build_llm', return_value=lambda system, user, **kw: (prompts.append(system), time.sleep(0.8), 'answered')[-1]):
+        with patched, mock.patch.object(general.llm_mod, 'build_llm', return_value=lambda system, user, **kw: (prompts.append(f'{system} {user}'), time.sleep(0.8), 'answered')[-1]):
             first = threading.Thread(target=lambda: got.append(sess.send_prompt('one')))
             first.start(); time.sleep(0.2)
             more = [threading.Thread(target=lambda w=w: got.append(sess.send_prompt(w))) for w in ('two', 'actually three')]
@@ -60,6 +60,23 @@ class TakingTurnsTests(unittest.TestCase):
         users = [c['Body'] for c in general.chat_rows(self.s, self.tid) if c['ActorType'] == general.USER_TYPE]
         self.assertEqual(users, ['one', 'two', 'actually three'])
         self.assertTrue(any('THE OWNER SENT 2 MESSAGES' in p for p in prompts))
+
+    def test_news_a_turn_has_overtaken_is_not_a_turn_of_its_own(self):
+        """Recorded on the real CLI (the browser audit, 2026-11-15): he typed a line while the saved sign-in was going in; his line's turn
+        worked the signed-in page, and Taskuary's "Signed in to <site> - continue." queued behind it made the agent answer a second time
+        ("You were already signed in ... I finished last time"). News of a moment a turn has ended after is said by that turn: once."""
+        sess, patched = _session(self.s, self.tid, 'answered', delay=0.6)
+        calls, got = [], []
+        with mock.patch.object(general.llm_mod, 'build_llm', return_value=lambda system, user, **kw: (calls.append(user), time.sleep(0.6), 'answered')[-1]):
+            his = threading.Thread(target=lambda: got.append(sess.send_prompt('list the invoices')))
+            his.start(); time.sleep(0.2)
+            got.append(sess.send_prompt('Signed in to portal.example - continue.', as_owner=False, since=time.time()))   # the sign-in went in mid-turn
+            his.join(10)
+            self.assertEqual(sorted(got), ['', 'answered'], 'his turn answers; the news behind it is no turn of its own')
+            self.assertEqual(len(calls), 1)
+            # ...and news with no turn ended after it is said, as before
+            self.assertEqual(sess.send_prompt('Signed in to portal.example - continue.', as_owner=False, since=time.time()), 'answered')
+            self.assertEqual(len(calls), 2)
 
     def test_the_third_one_lands_too(self):
         """The exact report: two answered, the third silent."""
@@ -203,6 +220,47 @@ class OneConversationNotTwentyTests(unittest.TestCase):
         self.assertNotIn('CONVERSATION', seen[1]['user'])            # the second only the new turn
         self.assertIn('and what about the chat', seen[1]['user'])
         self.assertLess(len(seen[1]['user']), len(seen[0]['user']))
+
+    def test_a_memory_line_changed_mid_conversation_leads_its_next_turn_whichever_session_picks_it_up(self):
+        """The real CLI, 2026-11-14: an agent drafted "laptop faults go to Marcus"; the owner then told the Assistant Marcus had moved and
+        they go to Omar; asked only to shorten the reply, the agent wrote Marcus again. Its conversation was picked up by another session
+        object (the quick agent's, by the full agent - as after any restart), which knew nothing of what it had been told: the system was
+        written afresh, the changed line swapped in silently among fifteen. Now the conversation keeps the system it began with, and its
+        next turn opens on the new line and on the one taken back."""
+        from taskuary import memoryedit
+        self.s.update_task(self.tid, {'Title': 'Laptop fault for Paula', 'Summary': 'Paula asks who fixes laptop faults'}, 'o')
+        memoryedit.remember(self.s, 'Laptop and badge faults go to Marcus Reed')
+        memoryedit.remember(self.s, 'You batch expense approvals on Monday mornings')
+        brain, seen = self._brain()
+        self._run(['draft the reply'], brain)
+        self.assertIn('faults go to Marcus Reed', seen[0]['system'])
+        memoryedit.remember(self.s, 'Marcus Reed moved to security: laptop and badge faults go to Omar Keller now', replaces='Laptop and badge faults go to Marcus Reed')
+        self.sess = general.GeneralSession(self.s, self.tid)                 # ...another object picks the conversation up
+        self.sess.pick, self.sess.provider, self.sess.cli_sid = 'cli:claude', 'coding', 'sess-1'
+        self.sess._remember_session(); self.assertIsNone(self.sess.frozen)
+        self._run(['make it half as long', 'and warmer'], brain)
+        self.assertEqual([x['resume'] for x in seen], [None, 'sess-1', 'sess-1'])
+        self.assertEqual(seen[1]['system'], seen[0]['system'], 'the instructions it began with, byte for byte')
+        said = seen[1]['user']
+        self.assertTrue(said.startswith(general.UPDATED), said[:200])
+        self.assertIn('faults go to Omar Keller now', said)
+        self.assertIn(general.UNLEARNED + '\n- Laptop and badge faults go to Marcus Reed', said, 'and the line taken back, named as taken back')
+        self.assertNotIn('expense approvals', said, 'only what changed: the lines it knows are not said again')
+        self.assertEqual(seen[2]['system'], seen[0]['system']); self.assertNotIn(general.UPDATED, seen[2]['user'], 'said once')
+        # ...a conversation begun before any record was kept (an upgrade) is told all that holds now, once - never a silent swap
+        self.s.save_frozen(self.tid, None)
+        self.sess = general.GeneralSession(self.s, self.tid)
+        self.sess.pick, self.sess.provider, self.sess.cli_sid = 'cli:claude', 'coding', 'sess-1'
+        self.sess._remember_session()
+        self._run(['and shorter', 'thanks'], brain)
+        self.assertTrue(seen[3]['user'].startswith(general.UPDATED)); self.assertIn('faults go to Omar Keller now', seen[3]['user'])
+        self.assertNotIn(general.UPDATED, seen[4]['user']); self.assertEqual(seen[3]['system'], seen[4]['system'])
+        del seen[3:]
+        # ...and a line the owner Forgets is taken back the same way, with nothing new beside it
+        memoryedit.mark(self.s, 'You batch expense approvals on Monday mornings', 'forget')
+        self._run(['thanks'], brain)
+        self.assertIn('- You batch expense approvals on Monday mornings', seen[3]['user'].split(general.UNLEARNED)[1])
+        self.assertNotIn('Marcus', seen[3]['user'], 'the one it was already told is taken back is not said again')
 
     def test_a_cli_that_cannot_resume_starts_over_rather_than_failing(self):
         """Its history was cleared, or the id aged out: say the whole thing again, once."""

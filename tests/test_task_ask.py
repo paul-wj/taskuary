@@ -90,7 +90,7 @@ class AutomaticRoadTests(unittest.TestCase):
 
         The shape is asked for on EVERY verdict now (2026-09-16), which is strictly stronger: an fyi
         and a report are rows the owner reads too, and a mail header is not a sentence."""
-        self.assertIn('for every verdict (an fyi and a report are rows the owner reads too)', triage.TASK_FIELDS)
+        self.assertIn('- **summary** - two sentences, for every verdict', triage.TASK_FIELDS)
         self.assertIn('"title"', triage.TASK_FIELDS)
         self.assertIn('"summary"', triage.TASK_FIELDS)
         s = MemoryStore()
@@ -334,7 +334,8 @@ class ContractTests(unittest.TestCase):
         triage.classify_intent({'subject': 'Re: Hosting', 'body': 'check back in'}, llm=fake, system=self.DOC,
                                soul='The owner runs IS at a care provider.', notes=['2026-09-01 - not ours'],
                                playbooks='- pto: PTO requests')
-        self.assertTrue(seen['sys'].rstrip().endswith(triage.TASK_FIELDS.rstrip()), seen['sys'][-400:])
+        # ...with one line under it: how little of the shape an answer needs, naming title and summary as never dropped (2026-11-11)
+        self.assertTrue(seen['sys'].rstrip().endswith(triage.TASK_FIELDS.rstrip() + '\n\n' + triage.lean_out()), seen['sys'][-400:])
 
     def test_the_shape_is_asked_for_under_the_message_too(self):
         """Moving it to the end of the instructions was not enough on a long mail - the model still

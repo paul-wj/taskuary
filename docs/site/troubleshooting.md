@@ -53,7 +53,9 @@ steps and which of them are deterministic gates.
 - **Stopped by a gate** (a feed connection, a policy rule, your own standing ruling, an agent
   already waiting) — the fix is that rule, that role or that ruling. The classifier was never
   asked.
-- **Judged and wrong** — correct it on the Triage tab. The correction is written into `TRIAGE.md`
+- **Judged and wrong** — correct it on the item with the move it should have had: **Make it a
+  task**, **Not for me**, **Watch it** or **Stop watching**, or "not a task" or another kind under
+  **Change ▾** (or say it to the Assistant). What it says about you is written into `LEARNED.md`
   and applies to the next message *like* this one.
 - **"Awaiting AI triage"** — there is no AI connector active, so nothing was guessed. Add a key,
   and the retry sweep picks it up.
@@ -87,6 +89,11 @@ and answer it.
 **It is waiting on its CLI.** A headless agent without its noninteractive flag hangs forever on a
 prompt that cannot be answered. The connector presets set the flag; a custom CLI needs it added.
 The card's **Test** action reproduces it in ten seconds.
+
+**Agents stopped starting by themselves.** Past a set number of AI calls in a day, agents stop
+starting and waking on their own until tomorrow, and the bell says so; what you ask for still runs.
+**Settings → Which AI does what** shows the day's calls and tokens under **TODAY**, with the limit
+beside them: 1500 by default, 0 for none.
 
 **It hit a limit.** The saved result says so. **Start new coding session** picks a different
 harness and keeps the checkout and the history.
@@ -149,8 +156,22 @@ altered" is not, and it names the rows.
 | A finished session's written result | `~/.taskuary/artifacts/` |
 | The context an agent was handed | `~/.taskuary/context/` |
 | Playbooks | `~/.taskuary/playbooks/*.md` |
+| Backups (a week of daily copies) | `~/.taskuary/backups/` |
 
 Under Docker, all of it is `/data` inside the container. `TASKUARY_HOME` moves it anywhere.
+
+## Going back to a backup
+
+Taskuary copies its database once a day, and again before a new version first opens it, into
+`~/.taskuary/backups/` - seven days are kept. The files your mail and agents brought in are mirrored
+beside them (`attachments/`, `artifacts/`). To go back to one, quit Taskuary, then:
+
+```bash
+cp ~/.taskuary/backups/taskuary-2026-11-16.db ~/.taskuary/taskuary.db && rm -f ~/.taskuary/taskuary.db-wal ~/.taskuary/taskuary.db-shm
+```
+
+(the date is the copy you want; a copy named `-before-<version>` is the one taken just before that version opened it). Copy
+`backups/attachments` and `backups/artifacts` back over the home's own folders if files are missing too.
 
 ## Report a bug
 

@@ -8,19 +8,12 @@ import { Box, Button, CircularProgress, Typography } from "@mui/material";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import { BORDER, DIM, FAINT, INK, PALETTE, mono } from "./theme.jsx";
 import { hhmm, storyAlarm } from "./agentStory.js";
-import { trustInBox } from "./strangerLine.js";
+import { trustInBox, trustLabel } from "./strangerLine.js";
 import { t, translateDescriptor } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
 
 const head = { fontSize: 11, fontWeight: 600, color: FAINT, letterSpacing: ".04em", textTransform: "uppercase", mb: 0.35 };
 const link = { fontSize: 11, minHeight: 0, p: 0, minWidth: 0 };
-const trustLabel = (label) => {
-  if (label === "Trust them" || label === "Trust their Slack workspace" || label === "Trust their organisation on Teams") return t(label);
-  if (label.startsWith("Trust everyone at ")) return t("Trust everyone at {name}", { name: label.slice("Trust everyone at ".length) });
-  if (label.startsWith("Trust everyone from ")) return t("Trust everyone from {name}", { name: label.slice("Trust everyone from ".length) });
-  if (label.startsWith("Trust ")) return t("Trust {name}", { name: label.slice("Trust ".length) });
-  return label;
-};
 
 export function StoryChip({ kind, text }) {
   useLocale();

@@ -18,7 +18,9 @@ test("a coding task held for a repository has Choose where the code is on its li
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(harness.ui, { waitUntil: "domcontentloaded", timeout: 90000 });
   await page.evaluate((tid) => { window.location.hash = `task=${tid}`; }, made.taskId);
-  await page.waitForSelector("[data-tq-fact-alert='repo'] [data-tq-fact-pick='repo']", { timeout: 30000 })
+  const from = await page.waitForSelector('[data-tq-section-tab="from"]', { visible: true, timeout: 30000 });
+  await from.click();
+  await page.waitForSelector("[data-tq-fact-alert='repo'] [data-tq-fact-pick='repo']", { visible: true, timeout: 30000 })
     .catch(async (e) => { throw new Error(`${e.message}\n${(await page.evaluate(() => document.body.innerText)).slice(-1500)}`); });
   const line = await page.$eval("[data-tq-fact-alert='repo']", (el) => el.innerText);
   assert.match(line, /Repository: none - not started/);
@@ -50,7 +52,9 @@ test("local code can be bound without GitHub, rejecting missing paths without ch
   page.on("pageerror", (e) => errors.push(e.message));
   page.on("request", (r) => { if (r.method() === "POST" && /dispatch|continue|sessions/.test(new URL(r.url()).pathname)) starts.push(r.url()); });
   await page.goto(`${h.ui}/#task=${made.taskId}`, { waitUntil: "domcontentloaded" });
-  await page.waitForSelector("[data-tq-fact-pick='repo']", { timeout: 30000 });
+  const from = await page.waitForSelector('[data-tq-section-tab="from"]', { visible: true, timeout: 30000 });
+  await from.click();
+  await page.waitForSelector("[data-tq-fact-pick='repo']", { visible: true, timeout: 30000 });
   await page.click("[data-tq-fact-pick='repo']");
   await page.waitForSelector("[data-tq-local-code] button", { visible: true });
   await page.click("[data-tq-local-code] button");

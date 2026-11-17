@@ -232,5 +232,90 @@ class DatasetTests(unittest.TestCase):
                 self.assertTrue(not p.get('from') or p['from'].endswith('.example'), (c['id'], p.get('from')))
 
 
+class HeaderFactTests(unittest.TestCase):
+    """What the mail's own headers say sent it is a fact the connector holds (categories.header_mark). Triage is told it in the per-mail
+    part of its prompt, the message keeps it where the verdict's word never lands (HeaderClass), and the eval splits by it - his real
+    machine mail was invisible as such once triage had overwritten SenderClass (2026-11-12)."""
+    def test_the_header_that_said_so_is_named(self):
+        from taskuary.categories import header_class, header_mark, header_words
+        self.assertEqual(header_mark({'Auto-Submitted': 'auto-generated'}), ('automated', 'Auto-Submitted: auto-generated'))
+        self.assertEqual(header_mark({'List-Id': '<news.vendor.example>'}), ('bulk', 'List-Id: <news.vendor.example>'))
+        self.assertEqual(header_mark({'Auto-Submitted': 'no', 'X-Auto-Response-Suppress': 'All'}), ('automated', 'X-Auto-Response-Suppress: All'))
+        self.assertIsNone(header_mark({'Auto-Submitted': 'no', 'Precedence': 'first-class'}))
+        self.assertEqual(header_class({'Precedence': 'bulk'}), 'bulk')
+        self.assertEqual(header_words('automated', 'Auto-Submitted: auto-generated'), 'a system (Auto-Submitted: auto-generated)')
+
+    def test_triage_is_told_and_the_message_keeps_it_past_the_verdict(self):
+        s, seen = MemoryStore(), []
+        s.save_source({'Channel': 'email', 'Address': OWNER, 'Owner': 'me', 'Active': 1}, 'test')
+        def llm(sys_, usr_, **kw):
+            seen.append((sys_, json.loads(usr_))); return json.dumps({'intent': 'fyi', 'why': 'a notice', 'sender_class': 'person'})
+        says = 'a system (Auto-Submitted: auto-generated)'
+        out = ingest.ingest_message(s, {'external_id': 'h1', 'channel': 'email', 'conversation_id': 'c-h1', 'from_email': 'monitor@corp.example',
+                                        'from_name': 'Northwind Monitor', 'subject': 'ALERT: import error', 'body': 'Job failed, 0 rows.',
+                                        'to': [OWNER], 'sender_class': 'automated', 'header_says': says}, llm=llm)
+        sys_, user = seen[-1]
+        self.assertEqual(user['headers_say'], says)
+        self.assertNotIn('Auto-Submitted', sys_)                       # the cached part is the same bytes for every mail
+        m = s.get_message(out['message_id'])
+        self.assertEqual((m['SenderClass'], m['HeaderClass']), ('person', says))      # the verdict's word, and the headers' kept apart
+        s.add_route(out['message_id'], None, 'ignore', None, 'not a task - filed by the owner', [], 'owner')
+        case = next(c for c in evalset.build(s) if c['id'] == f"m{out['message_id']}")
+        self.assertEqual(case['header_says'], says)
+        self.assertEqual(evalset.as_message(case)['header_says'], says)
+
+
+class JoinSetTests(unittest.TestCase):
+    """The joining set (tests/data/triage_join.jsonl, invented shapes and the seeds with their tasks): evaluate hands the classifier
+    the evidence each case carries - the thread's task, the room's tasks and lines, the open work, the combine level - and scores
+    same_as / new_job / relationship / same_problem where a case is labelled with them. A model is measured on it by the real CLI;
+    here an oracle answering with the labels must score every one right, and one that never joins must score the joins wrong."""
+    def cases(self): return evalset.read(DATA / 'triage_join.jsonl')
+
+    def run_with(self, answer):
+        key = lambda body, cb: (body[:15], (cb or {}).get('level'))       # the prompt's body is the sender's own words, top first
+        by = {key(c['body'], (c.get('given') or {}).get('combine')): c for c in self.cases()}
+        seen = []
+        def llm(sys_, usr_, **kw):
+            u = json.loads(usr_); seen.append(u)
+            c = by[key(u['body'], u.get('combine'))]
+            return json.dumps({'intent': c['label'], 'why': 'oracle', **answer(c)})
+        return evalset.evaluate(MemoryStore(), self.cases(), llm, verbose=False), seen
+
+    def test_the_set_is_well_formed_and_covers_every_shape(self):
+        cs = self.cases()
+        self.assertGreaterEqual(len(cs), 12)
+        for c in cs:
+            self.assertIn(c['label'], evalset.LABELS, c['id'])
+            self.assertTrue(set(c['join']) and set(c['join']) <= set(evalset.JOIN_KEYS), c['id'])
+        keys = {k for c in cs for k in c['join']}
+        self.assertEqual(keys, set(evalset.JOIN_KEYS))
+        self.assertEqual({(c.get('given') or {}).get('combine', {}).get('level') for c in cs if c['channel'] == 'teams'}, {1, 2, 3, 4, 5})
+
+    def test_the_oracle_scores_every_join_right_and_the_evidence_reaches_the_prompt(self):
+        def right(c):
+            j = c['join']
+            out = {k: v for k, v in j.items() if k in ('same_as', 'same_problem', 'relationship')}
+            if j.get('new_job'): out['new_job'] = 'a different ask'
+            if 'same_problem' in j: out['relationship'] = 'continues' if j['same_problem'] else 'new'
+            if out.get('relationship') == 'continues': out['existing_task_id'] = 70
+            return out
+        res, seen = self.run_with(right)
+        self.assertEqual(res['accuracy'], 1.0)
+        self.assertEqual((res['work_vs_nothing'], sum(v['right'] for v in res['work_by_class'].values())), (res['n'], res['n']))
+        self.assertEqual(sum(v['wrong'] for v in res['join'].values()), 0, res['join'])
+        self.assertEqual(sum(v['right'] for v in res['join'].values()), len(self.cases()))
+        self.assertTrue(all(any(k in u for k in ('thread_task', 'room_tasks', 'open_work', 'open_items')) for u in seen))
+        self.assertTrue(all('same_day_lines' in u for u in seen if 'room_tasks' in u))
+
+    def test_a_reader_that_never_joins_is_scored_wrong_on_every_join(self):
+        res, _ = self.run_with(lambda c: {'new_job': 'another job', 'relationship': 'new', 'same_problem': False} if 'same_as' not in c['join'] else {})
+        joins = lambda k, f: sum(1 for c in self.cases() if k in c['join'] and f(c))
+        self.assertEqual(res['join']['same_as']['wrong'], joins('same_as', lambda c: c['join']['same_as'] is not None))
+        self.assertEqual(res['join']['same_problem']['wrong'], joins('same_problem', lambda c: c['join']['same_problem']))
+        # ...a new_job is kept only on work (an fyi stays on its thread for the chain), so a "joins" label on an fyi still scores right
+        self.assertEqual(res['join']['new_job']['wrong'], joins('new_job', lambda c: not c['join']['new_job'] and c['label'] in evalset.WORK))
+
+
 if __name__ == '__main__':
     unittest.main()

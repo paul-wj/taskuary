@@ -9,7 +9,9 @@ import { Button, CircularProgress, Dialog, DialogContent, DialogTitle, IconButto
 import CloseIcon from "@mui/icons-material/Close";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import api from "./api.js";
-import { attUrl, fileError, useSave } from "./Attachments.jsx";
+import { attUrl, fileError, useSave } from "./fileSave.js";
+import { label as btn } from "./buttons.js";
+import { copyText } from "./CopyCorner.jsx";
 import { Md } from "./md.jsx";
 import { csvRows, fitSvg, lockDown } from "./shownPages.js";
 import { deliverables } from "./taskOutputs.js";
@@ -28,18 +30,28 @@ export const isHtml = (p) => !/markdown|csv/.test(type(p)) && !isPicture(p) && !
 export const isMedia = (p) => ["video", "audio"].includes(p?.preview) || /^(video|audio)\//.test(type(p));
 const isVideo = (p) => p?.preview === "video" || /^video\//.test(type(p));
 // drawn by <img> as itself; an SVG can carry script, so it goes through the sandboxed frame like a page
-export const isPicture = (p) => /^image\//.test(type(p)) && !/svg/.test(type(p));
+export const isPicture = (p) => p?.preview === "picture" || (/^image\//.test(type(p)) && !/svg/.test(type(p)));
 // ...and a file the agent made for its task (taskOutputs.js, outputs.py): previewed by what it is, everything else Download only
 const isOutput = (p) => p?.kind === "output";
+// ...one that reads as plain text - a query, a script, a letter - in its task's folder, shown by its agent or on a mail (the server says so by its
+// bytes: outputs.preview_of). A row that carries `preview` - an agent's file, a mail's attachment - is drawn by it, whoever made it
+export const isText = (p) => (p?.preview === "text" && !/markdown/.test(type(p))) || /^text\/plain\b/.test(type(p));
+// ...and it copies whole at a press, to paste where it is wanted (the owner, 2026-11-15: a query he asked for to review)
+export const CopyFile = ({ f }) => {
+  const [done, setDone] = useState(false);
+  const press = () => api.get(f.url, { responseType: "text", transformResponse: (x) => x }).then((r) => copyText(r.data))
+    .then(() => { setDone(true); setTimeout(() => setDone(false), 1500); }, () => {});
+  return <Button size="small" data-tq-copy-file="" onClick={press}>{btn("copy", done ? "done" : undefined)}</Button>;
+};
 const OUTPUT_LABEL = { sheet: "spreadsheet", table: "table", pdf: "PDF", picture: "picture", text: "text", page: "page", document: "document",
   video: "video", audio: "sound" };
 // ...an SVG previews through the page frame (isPicture) but it IS a picture, and the card says so: "page" read as a broken image
 const isImage = (p) => /^image\//.test(type(p)) || /\.svg$/i.test(p?.name || "");
 // ...and a PDF - one it made or one it showed - is read in place by the browser's own viewer (Preview), never only downloaded (2026-11-04)
-const isPdf = (p) => (isOutput(p) && p.preview === "pdf") || /^application\/pdf\b/i.test(type(p));
+export const isPdf = (p) => p?.preview === "pdf" || /^application\/pdf\b/i.test(type(p)) || /\.pdf$/i.test(p?.name || "");
 const label = (p) => isImage(p) && (isOutput(p) || p.kind === "shown") ? "picture" : isPdf(p) ? "PDF"
-  : isOutput(p) ? (OUTPUT_LABEL[p.preview] || (/\.xlsm?$/i.test(p.name) ? "spreadsheet" : "file"))
-  : (p.kind === "shown" ? (/csv/.test(type(p)) ? "table" : "page") : "published page");
+  : isOutput(p) || p.preview ? (OUTPUT_LABEL[p.preview] || (/\.xlsm?$/i.test(p.name) ? "spreadsheet" : "file"))
+  : (p.kind === "shown" ? (/csv/.test(type(p)) ? "table" : isText(p) ? "text" : "page") : "published page");
 
 // a workbook's sheet as the server read it (outputs.sheet): capped rows and columns, a tab per sheet
 function SheetPreview({ page }) {
@@ -110,7 +122,7 @@ function MediaPlayer({ page }) {
   return (
     <div className="tq-published-media" data-tq-media={V}>
       <V controls preload="metadata" src={attUrl(page)} onError={() => setErr(true)} title={page.name}
-        style={V === "video" ? { display: "block", width: "100%", maxHeight: "70vh", background: "#000" } : { display: "block", width: "100%" }} />
+        style={V === "video" ? { display: "block", width: "100%", maxHeight: "70vh", aspectRatio: "16 / 9", background: "#000" } : { display: "block", width: "100%" }} />
     </div>
   );
 }
@@ -118,8 +130,8 @@ function MediaPlayer({ page }) {
 export function Preview({ page }) {
   useLocale();
   const [body, setBody] = useState(null), [err, setErr] = useState("");
-  const sheet = isOutput(page) && page.preview === "sheet", pdf = isPdf(page), doc = isOutput(page) && page.preview === "document";
-  const picture = isPicture(page) || pdf, text = isOutput(page) && page.preview === "text" && !/markdown/.test(type(page));
+  const sheet = page.preview === "sheet", pdf = isPdf(page), doc = page.preview === "document";
+  const picture = isPicture(page) || pdf, text = isText(page);
   // ...and a file of a kind with no preview (a zip, a .pptx) says so: read as text it drew its raw bytes over the chat
   const media = isMedia(page), none = isOutput(page) && !page.preview && !media;
   React.useEffect(() => {
@@ -147,7 +159,7 @@ export function Preview({ page }) {
   if (pdf) return <iframe className="tq-published-frame" title={page.name} src={body} />;
   if (picture) return <div className="tq-published-picture"><img src={body} alt={page.name} /></div>;
   if (text) return <pre className="tq-published-text">{body.length > 200000 ? `${body.slice(0, 200000)}\n…` : body}</pre>;
-  if (/csv/.test(type(page))) {
+  if (page.preview === "table" || /csv/.test(type(page))) {
     const [head, ...rows] = csvRows(body);
     return (
       <div className="tq-published-table"><table>
@@ -181,6 +193,27 @@ export function FileDialog({ file, onClose }) {
   );
 }
 
+// A FILE READ IN PLACE, under the chip or the link that named it (the owner, 2026-11-04 a PDF; 2026-11-16 every attachment: "it should be the
+// same code both in the agent and on the email"): its name and kind, the one Preview an agent's file opens in, Copy for text, Download and Hide
+export function FileView({ file: f, onClose }) {
+  const [err, save, saved] = useSave();
+  return (
+    <div className="tq-published tq-file-view" data-tq-file-view={f.name || ""}>
+      <div className="tq-published-page" data-tq-pdf={isPdf(f) ? "" : undefined}>
+        <div className="tq-published-row">
+          <span className="tq-published-name tq-published-file"><b>{f.name}</b><span>{label(f)}{f.size ? ` · ${sizeOf(f.size)}` : ""}</span></span>
+          {isText(f) && <CopyFile f={f} />}
+          <Button size="small" href={attUrl(f, true)} title="Save a copy" data-tq-download="" onClick={(e) => { e.preventDefault(); save(f); }}>Download</Button>
+          {onClose && <Button size="small" onClick={onClose} title="Put it away">Hide</Button>}
+        </div>
+        {err && <div className="tq-published-note" data-tq-file-error="">{err}</div>}
+        {saved && <div className="tq-published-note" data-tq-file-saved="">{saved}</div>}
+        <Preview page={f} />
+      </div>
+    </div>
+  );
+}
+
 // a file the agent made: its name and kind, Preview where it has one, and Download - or, gone from the folder, says so
 const sizeOf = (n) => n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`;
 function OutputFile({ file: p, open, onToggle, verb = "" }) {
@@ -197,6 +230,7 @@ function OutputFile({ file: p, open, onToggle, verb = "" }) {
         </button>
         {can && <Button size="small" variant={open ? "contained" : "outlined"} disableElevation onClick={onToggle}
           title={t(open ? "Hide the preview" : "Show it here")} data-tq-open={verb ? "" : undefined}>{t(open ? (verb ? "Hide" : "Hide preview") : verb || "Preview")}</Button>}
+        {!p.missing && isText(p) && <CopyFile f={p} />}
         {!p.missing && <Button size="small" href={attUrl(p, true)} title={t("Save a copy")} data-tq-download=""
           onClick={(e) => { e.preventDefault(); save(p); }}>{t("Download")}</Button>}
       </div>
@@ -208,7 +242,7 @@ function OutputFile({ file: p, open, onToggle, verb = "" }) {
   );
 }
 
-// a quiet line that unfolds what it counts: the earlier versions of one file, the rest of a long list, the agent's working files
+// a quiet line that unfolds what it counts: the earlier versions of one file, the rest of a long list
 function Fold({ label, tag, children }) {
   const [open, setOpen] = useState(false);
   return (
@@ -221,7 +255,7 @@ function Fold({ label, tag, children }) {
 
 // `verb`: the press that shows each one is a button named for it ("Open", the Result's What it made) rather than the name's own " · show here"
 // `deliver`: an agent's files, each thing it made ONCE (taskOutputs.deliverables) - its newest version with "N earlier versions" under it,
-// the agent's working files under one line, and past FOLD the rest behind "Show N more"
+// and past FOLD the rest behind "Show N more" - every file it made is in the list, whatever its kind
 export const FOLD = 5;
 export default function PublishedPages({ pages, open: openAll = false, verb = "", deliver = false }) {
   useLocale();
@@ -233,7 +267,7 @@ export default function PublishedPages({ pages, open: openAll = false, verb = ""
     openAll ? setShut(flip) : setOpened(flip);
   };
   if (deliver) {
-    const { made, working } = deliverables(pages);
+    const { made } = deliverables(pages);
     const one = (p) => <PublishedPages key={p.id} pages={[p]} open={openAll} verb={verb} />;
     const item = (p) => <React.Fragment key={p.id}>{one(p)}
       {!!p.earlier?.length && <Fold tag="earlier" label={t(p.earlier.length === 1 ? "{count} earlier version" : "{count} earlier versions", { count: p.earlier.length })}>{p.earlier.map(one)}</Fold>}</React.Fragment>;
@@ -241,7 +275,6 @@ export default function PublishedPages({ pages, open: openAll = false, verb = ""
       <div className="tq-published" data-tq-made-list="">
         {made.slice(0, FOLD).map(item)}
         {made.length > FOLD && <Fold tag="more" label={t("Show {count} more", { count: made.length - FOLD })}>{made.slice(FOLD).map(item)}</Fold>}
-        {!!working.length && <Fold tag="working" label={t(working.length === 1 ? "{count} working file it used" : "{count} working files it used", { count: working.length })}>{working.map(one)}</Fold>}
       </div>
     );
   }
@@ -266,6 +299,7 @@ function PageRow({ p, open, onToggle, verb }) {
         </button>
         {p.url && verb && <Button size="small" variant={open ? "contained" : "outlined"} disableElevation data-tq-open=""
           onClick={onToggle} title={t(open ? "Hide it" : "Show it here")}>{t(open ? "Hide" : verb)}</Button>}
+        {p.url && isText(p) && <CopyFile f={p} />}
         {p.url && (
           <Button size="small" href={attUrl(p, true)} title={t("Save a copy")} data-tq-download=""
             onClick={(e) => { e.preventDefault(); save(p); }}>{t("Download")}</Button>
