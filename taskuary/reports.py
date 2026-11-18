@@ -39,7 +39,10 @@ def row_limit(cfg):
     the headline has to say which one it was, or "capped at 200" points the owner at a
     setting they never made and cannot find."""
     n = cfg.get('max_rows')
-    return (max(1, int(n)), True) if n else (MAX_ROWS, False)
+    if not n: return MAX_ROWS, False
+    # ...as an agent's call sends it, "50" or "50.0"; "all" was Python's "invalid literal for int()"
+    try: return max(1, int(float(str(n).strip()))), True
+    except (TypeError, ValueError, OverflowError): raise ValueError(f'max_rows is a number of rows - not {n!r}') from None
 
 
 # A DASHBOARD keeps the rows, not a summary of them: the 20K body cap is the AI pass's budget, and cut at it a chart drew a
@@ -55,7 +58,7 @@ def wide_rows():
     finally: _WIDE.reset(tok)
 
 
-def rows_out(rows, limit, unit='rows', mine=True):
+def rows_out(rows, limit, unit='rows', mine=True, how='set "max rows" on this source'):
     """(headline, body) from executor rows, SAYING SO when the result was cut. A silent cap
     made the AI describe 20 rows of a TOP 500 query as 'all of them' - fetch one extra row
     and the headline can tell the truth instead."""
@@ -64,12 +67,20 @@ def rows_out(rows, limit, unit='rows', mine=True):
         n = rows[0]['rows_affected']; return f"{n} row{'s' * (n != 1)} changed", json.dumps(rows[0])
     more = len(rows) > limit
     rows = rows[:limit]
-    why = (f'capped at {limit}' if mine else f'capped at the default {limit}') + ' — set "max rows" on this source to see more'
+    why = (f'capped at {limit}' if mine else f'capped at the default {limit}') + f' — {how} to see more'
     # one row is "1 row", one sign-in "1 sign-in": the unit's first word loses its plural s ("1 rows" was every one-row report)
     w, _, rest = unit.partition(' ')
     one = (w[:-1] if len(rows) == 1 and w.endswith('s') and not w.endswith(('ss', 'ings', 'ies')) else w) + (f' {rest}' if rest else '')
     head = f'{len(rows)} {one}' + (f' ({why})' if more else '')
     return head, '\n'.join(json.dumps(r, default=str) for r in rows)[:WIDE_CHARS if _WIDE.get() else BODY_CHARS]
+
+
+def json_body(data) -> str:
+    """A JSON answer as a body. A list is one item per line, as rows_out writes rows: a dashboard reads each line as a row and a cut
+    loses only the tail. Pretty-printed and cut at the report's cap, a 500-item answer lost every row (a cut list is no JSON, and
+    no line of an indented one is a whole item) while its headline still said 500."""
+    if isinstance(data, list): return '\n'.join(json.dumps(r, default=str) for r in data)[:WIDE_CHARS if _WIDE.get() else BODY_CHARS]
+    return json.dumps(data, indent=1, default=str)[:BODY_CHARS]
 
 
 def ro_sqlite(path: str):
@@ -120,11 +131,22 @@ CONNECTION_KEYS = frozenset({'base_url', 'site', 'account', 'gateway', 'server',
                              # ...and where a keyed read's sign-in goes (apireads.json, nosql.py, 2026-11-08): a tool call naming its own token URL,
                              # tenant or connection string would carry the card's secret to an address the owner never typed
                              'conn_str', 'uri', 'user', 'token_url', 'kid', 'subdomain', 'environment', 'access_token', 'consumer_key',
-                             'consumer_secret', 'token_id', 'tenant', 'org_uuid', 'cert_file', 'key_file'})
+                             'consumer_secret', 'token_id', 'tenant', 'org_uuid', 'cert_file', 'key_file',
+                             # ...and WHAT PROGRAM a card starts (mcp.py's stdio server): an agent's `cmd`/`env` replaced the owner's
+                             # server with a command of its choosing, spawned to list its tools before any gate (2026-11-18)
+                             'cmd', 'env'})
+# ...save where one of those names is the executor's WHAT: a page reader's `url` is the page it reads (its key goes to its own provider,
+# never there) - stripped, run_system {"type": "reader", "url": ...} answered "no url to read" every time
+ASKED = {'reader': {'url'}, 'firecrawl': {'url'}, 'scrapingbee': {'url'}}
+# ...and the other way: where a name that is a WHAT elsewhere (a Redis or Robinhood call's `args`) is the card's own place - an MCP stdio
+# server's `args` are its command line; the tool's own arguments are `tool_args`
+PLACED = {'mcp': {'args'}}
 def query_only(body: dict) -> dict:
     """The body minus every connection field - what an agent may say about a tool call. `_write` goes too: whether a
     query may commit is the card's Authority (tools/run) or the owner's approval, never the caller's say-so."""
-    return {k: v for k, v in (body or {}).items() if k not in CONNECTION_KEYS and k != '_write'}
+    t = str((body or {}).get('type') or '')
+    keep, drop = ASKED.get(t, set()), PLACED.get(t, set())
+    return {k: v for k, v in (body or {}).items() if (k not in CONNECTION_KEYS or k in keep) and k not in drop and k != '_write'}
 
 
 def run_sqlite(cfg):
@@ -427,7 +449,7 @@ def run_rest(cfg):
     data = r.json()
     for k in (cfg.get('path') or '').split('.'):
         if k: data = data[int(k)] if isinstance(data, list) else data.get(k)
-    return (plural(len(data), 'item') if isinstance(data, list) else 'ok'), json.dumps(data, indent=1, default=str)[:BODY_CHARS]
+    return (plural(len(data), 'item') if isinstance(data, list) else 'ok'), json_body(data)
 
 
 def run_graphql(cfg):
@@ -451,7 +473,7 @@ def run_graphql(cfg):
     data = payload.get('data') or {}
     for k in (cfg.get('path') or '').split('.'):
         if k: data = data[int(k)] if isinstance(data, list) else data.get(k)
-    return (f'{len(data)} items' if isinstance(data, list) else 'ok'), json.dumps(data, indent=1, default=str)[:BODY_CHARS]
+    return (f'{len(data)} items' if isinstance(data, list) else 'ok'), json_body(data)
 
 
 def run_rss(cfg):
@@ -1070,13 +1092,9 @@ REGISTRY = {'sqlite': run_sqlite, 'mssql': run_mssql, 'database': run_database,
 
 
 def _dashboard_preview(cfg):
-    """{"sources": [...], "components": [...]} - a dashboard read as a report would read it: its tiles, then its rows per source."""
+    """A dashboard read as a report reads it: its headline, and every panel as the page draws it - the words its own run files."""
     from . import dashboards
-    data = dashboards.collect(cfg['store'], cfg)
-    tiles = dashboards.headline(cfg, data)
-    head = ' · '.join(f'{t} {v}' for t, v in tiles[:3]) or f"{sum(len(d['rows']) for d in data['sources'].values())} rows"
-    return head, '\n\n'.join(f"=== {d['label']} ({d['head']}) ===\n" + '\n'.join(json.dumps(r, default=str) for r in d['rows'][:50])
-                               for d in data['sources'].values())[:BODY_CHARS]
+    return dashboards.as_text(cfg, dashboards.collect(cfg['store'], cfg))
 
 
 def executor_for(type_name):
@@ -1144,6 +1162,20 @@ def _connector(store, typ, connector_id=None, with_secret=False):
     c = store.get_connector(int(connector_id), with_secret=with_secret) if connector_id else \
         store.get_connector_by_type(typ, with_secret=with_secret)
     return c if c and c.get('Type') == typ else None
+
+
+def tool_card(store, t: str, connector_id=None):
+    """THE card an agent's call to tool `t` runs on: the one it names (None when that number is no card), else the one of its type that
+    is on and a tool - never the first row, which read one company's books as another's, or refused "not an agent tool" beside the
+    card that is one. With none such, the first of the type, for the refusal that says why; ValueError naming them when several are."""
+    from .store import roles_of
+    if connector_id not in (None, ''): return store.get_connector(int(connector_id))
+    rows = store.connectors_by_type(card_of(t))
+    live = [c for c in rows if c.get('Active') and 'tool' in roles_of(c)]
+    if len(live) > 1:
+        raise ValueError(f'{len(live)} {card_of(t)} connections are agent tools - say which with connector_id: '
+                         + ', '.join(f"{c.get('Name') or c['Type']} ({c['ConnectorId']})" for c in live))
+    return live[0] if live else (rows[0] if rows else None)
 
 
 def mssql_connection(store, connector_id=None) -> dict:
@@ -1445,15 +1477,20 @@ def source_label(sub: dict, i: int) -> str:
 # ── WHOSE SYSTEM A SOURCE READS (the owner, 2026-11-03) ─────────────────────────────────────────────────────────────────────────────
 # A report built only from the owner's own systems - their database, their books - is trusted; one that read anything from outside is
 # a stranger's (origin.report_rests_on). Each source carries `own_system`, the switch on its card; unset, the catalogue's group decides
-# (connectorcatalog.json `own_systems`). Taskuary's own tables are never one: they hold everyone's mail.
+# (connectorcatalog.json `own_systems`). Taskuary's other store readers are never one (a card, the digest, an agent: what they read is open).
+# HIS OWN DATA IS HIS (2026-11-17): a report or dashboard on Taskuary's own data ran as a stranger's task once sent to an agent - no tools, a
+# cut copy, the work handed back with no Trust in sight. The instruction is his typed line and the report is data he set up; an outsider's
+# words inside its rows stay fenced as data by the source fence, as for any own-system read of mail.
+OWN_DATA = ('taskuary_data', 'dashboard', 'evening_inbox')
+
 def own_default(t) -> bool:
     from .connectorcatalog import by_type, own_groups
-    return t not in STORE_BACKED and (by_type(card_of(t)) or {}).get('group') in own_groups()
+    return t in OWN_DATA or t not in STORE_BACKED and (by_type(card_of(t)) or {}).get('group') in own_groups()
 
 def is_own(sub: dict) -> bool:
     "Is this source marked as the owner's own system - the switch when they set it, else its card's default."
     v = sub.get('own_system')
-    if sub.get('type') in STORE_BACKED: return False
+    if sub.get('type') in STORE_BACKED and sub.get('type') not in OWN_DATA: return False
     return own_default(sub.get('type')) if v is None or v == '' else v is True or str(v).lower() in ('1', 'true', 'on', 'yes')
 
 def built_from(cfg: dict) -> list:
@@ -2813,19 +2850,22 @@ def send_failed(store, src: dict, kind: str, what: str = '', err=None) -> None:
     store.audit('source', src['SourceId'], f'report_{kind}_failed', 'report', 'agent', {'error': str(err)[:200]})
 
 
+# A REPORT HE SET UP SENDS ON ITS OWN (the owner, 2026-11-17: "approval is only for emails/chats etc where the input is from the outside,
+# internal generated reports sent out do not require approval"). Review stays his to choose for any one report.
+GATE = 'auto'
+
+
 def deliver_report(store, src: dict, cfg: dict, subject: str, body: str) -> dict:
     """A report that goes OUT: to an address the owner chose, on a channel they picked, either
     after they have read it or straight away.
 
-    `gate` is the whole point and it defaults to 'review'. Everything else in this app holds to
-    "nothing sends without you", and a scheduled job that mails your customers on its own would
-    be the one place that promise did not hold. Choosing 'auto' is the owner saying, once, that
-    THIS report is safe to send unread - not a default they discover afterwards.
+    `gate` defaults to GATE ('auto'): the report is his own work, set up by him, so it goes on its schedule - approval is for what
+    answers input from outside. 'review' holds each run as a draft on its task for him to read first.
 
     Either way it lands on the timeline as an outbound row, so the funnel shows both directions.
     """
     d = cfg.get('deliver') or {}
-    gate = str(d.get('gate') or 'review').strip().lower()
+    gate = str(d.get('gate') or GATE).strip().lower()
     if gate not in ('review', 'auto'):
         raise ValueError("invalid report delivery gate: choose 'review' or 'auto'")
     to = d.get('to') if isinstance(d.get('to'), list) else [x.strip() for x in str(d.get('to') or '').split(',') if x.strip()]

@@ -15,7 +15,9 @@ export const cardOf = (review) => {
   let p = null;
   try { p = JSON.parse(review.FinalText || review.DraftText || ""); } catch { return null; }
   const act = isCardProposal(p) ? actionFor(p.type) : null;
-  return act ? { ReviewId: review.ReviewId, Status: review.Status, CreatedAt: review.CreatedAt, Reason: review.Reason, post: p, network: act.title, as: "" } : null;
+  // ...and its connection not made, as the review says it (server _review_connect): the chat's card and this one say Connect alike
+  return act ? { ReviewId: review.ReviewId, Status: review.Status, CreatedAt: review.CreatedAt, Reason: review.Reason, ActError: review.ActError,
+    post: p, network: act.title, as: "", connect: review.Status === "pending" ? review.Connect || null : null } : null;
 };
 
 export const choiceOf = (f, v) => (f?.choices || []).find((c) => String(c.value) === String(v)) || null;
@@ -43,5 +45,12 @@ export const stateOf = (row, live = true) => {
 };
 // the box's words: the act's one editable text field (a post's `text`, a tracker comment's `body`)
 export const textKey = (act) => (act?.fields || []).find((f) => f.type === "text" && f.edit)?.key || "text";
+// the press is lit while the box holds words - or where the act may go without them (`optional`) and the agent left none: Close issue with no
+// comment greyed over its empty box was a press nothing could light. Words the agent wrote and the owner emptied still hold it - an empty box
+// is never sent as the agent's own (verdicts takes an empty box for the draft)
+export const pressable = (act, p, text) => {
+  const f = (act?.fields || []).find((x) => x.key === textKey(act));
+  return !!String(text || "").trim() || !!(f?.optional && !String(p?.[f.key] ?? "").trim());
+};
 // the choices a connection keeps its own default for (`setting`), shown on its card under Connections
 export const settingsOf = (type) => (CATALOGUE.find((c) => c.type === type)?.actions || []).flatMap((a) => (a.fields || []).filter((f) => f.setting && f.type === "choice"));

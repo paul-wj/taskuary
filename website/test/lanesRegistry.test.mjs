@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import vocab from "../../taskuary/lanes.json" with { type: "json" };
-import { KIND, attentionBand, isAgentKind, isMail, levelOf, onYou, toRead, waitsOnYou } from "../src/lanes.js";
+import { IDEA, KIND, attentionBand, ideaCounted, ideaWord, isAgentKind, isMail, levelOf, onYou, toRead, waitsOnYou } from "../src/lanes.js";
 import { getLocale, setLocale } from "../src/i18n.js";
 import { statusLine, waitedText } from "../src/funnelPile.js";
 import { needsYou, zoneOf } from "../src/assistantGame.js";
@@ -61,5 +61,11 @@ test("every kind is classified as mail or agent news and placed in its game zone
   assert.equal(zoneOf({ kind: "wrapup", lane: "report" }), "floor");
   assert.equal(zoneOf({ kind: "agentdone", lane: "yours" }), "gym");
   assert.equal(zoneOf({ kind: "action", lane: "approve" }), "meeting");
+});
+
+test("an Advisor line's kind has one word on its card, its Timeline row and its report", () => {
+  for (const [k, v] of Object.entries(IDEA)) { assert.equal(ideaWord(k), v.word); assert.equal(ideaCounted(k), v.counted); }
+  assert.equal(ideaWord("followup"), "waiting on them");
+  assert.equal(ideaWord(undefined), "advisor idea", "an unnamed kind is an Advisor idea, not a slip nobody saw");
 });
 

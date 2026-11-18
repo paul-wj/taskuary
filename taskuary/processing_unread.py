@@ -436,10 +436,14 @@ def card_for(store, item, compact, live_state, now, states=None, noise=None, lea
         # that stopped, and the owner is the only one who moves it: `stopped`, wearing the cause as its
         # word (the owner, 2026-09-17: "stopped should stay on stopped and shown to user to handle").
         # ...and a session YOU ended is `session saved`, not `agent stopped` (A1, 2026-09-25): its report is written
-        if (left := st(card['tid']).left): card.update(lane=left, why=card['why_idle'])
+        # ...but never over a new sender's hold, below: what is open is the sender to trust, not the work that went before
+        if not st(card['tid']).held and (left := st(card['tid']).left): card.update(lane=left, why=card['why_idle'])
+    # A NEW SENDER'S HELD TASK wears its own word, `held`, over its lane's (2026-11-17): "waiting to start" read as a start that comes by
+    # itself on a task nothing starts until the owner trusts the sender - the state taskstate gives the list, the Board and the page
+    if tid and active and not workers and not review and card['lane'] in ('queued', 'asked', 'yours') and st(tid).held: card['hold'] = True
     # HOW ITS LAST RUN ENDED, in the run's own word (workerstate.ended) - the reading the task list and the Board take (taskstate):
     # a run that failed or was stopped read "on you" here and one that finished "waiting to start", whatever the worker had said (G7)
-    if tid and active and not workers and not persisted_working and not news and not review and card['lane'] in ('yours', 'queued'):
+    if tid and active and not workers and not persisted_working and not news and not review and card['lane'] in ('yours', 'queued') and not card.get('hold'):
         from . import workerstate as ws
         end = st(tid).end
         if end in ws.TERMINAL:
@@ -463,6 +467,7 @@ def card_for(store, item, compact, live_state, now, states=None, noise=None, lea
     # for its task over a draft; one still WORKING did not, so a reply it wrote a minute into the session
     # read "reply ready" through forty more minutes of edits. Working is newer than any draft it made -
     # the reply is back the moment the agent parks or its session ends.
+    from .general import starting
     if worker and active:
         agent_cards = funnel.from_agents(store, live_state=[worker], now=now)
         if agent_cards:
@@ -473,7 +478,9 @@ def card_for(store, item, compact, live_state, now, states=None, noise=None, lea
             card.update(kind='agent', lane='working', working=shown_agent(worker), agent=shown_agent(worker), sid=worker.get('sid'),   # Taskuary, never the profile
                         mode=worker.get('mode') or 'terminal', tail=worker.get('tail') or [],
                         why='An agent is working on this; nothing needs your input yet')
-    elif (row.get('Working') or persisted_working) and active:          # ...a headless run too
+    # ...a headless run too, and a START IN FLIGHT (general.starting - the mark taskstate reads the task at work by, 2026-11-17): a reply owed
+    # with its agent coming up read "ready to send" over no draft while the task, the list and the Board said it was at work
+    elif active and (row.get('Working') or persisted_working or (tid and starting(tid))):
         who = row.get('Working') or SHOWN
         card.update(kind='agent', lane='working', working=who, agent=who)
     elif active and not review:
@@ -513,11 +520,12 @@ def card_for(store, item, compact, live_state, now, states=None, noise=None, lea
     # stays in Tasks until read"): its task lane, at its arrival place, worded "agent finished" - Next reads it and it leaves
     finished = _agent_finished(store, tid, active, review, processing_all._stamp(read.get('last_read_at')) or read_at, now)
     if finished:
-        from .wrapup import no_one_behind
+        from .wrapup import replies_on
         card.update(kind='agentdone', lane='yours', who=finished['who'], summary=finished['summary'], closed=True,
                     why='the agent finished and closed it - read what it found')
-        # work the owner started here has nobody behind it to answer (a brief typed in the chat)
-        if no_one_behind(row.get('Channel')): card['mid'] = None
+        # work the owner started here has nobody behind it to answer (a brief typed in the chat) - nor has a machine's notice: the one fact
+        # every Reply asks (wrapup.replies_on), where the phone read "Reply to <the notifier> with what it found"
+        if not replies_on(store, {'tid': tid}): card['mid'] = None
         closed = False
         # ...and READ ONCE IS READ (the owner, 2026-09-24: "make the Next button skip reports that have
         # already been read"). The task unit's fingerprint carries its comments and artifacts, so anything

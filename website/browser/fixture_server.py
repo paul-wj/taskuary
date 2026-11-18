@@ -118,6 +118,7 @@ def _install_fresh_routes(app, store):
         who, addr = ("Paula Vance", "paula@vendor.example") if body.get("stranger") else ("Erin Blake", "erin@northwind.example")
         mid = store.add_message({"TaskId": tid, "ExternalId": f"fx-{tid}", "Channel": "email", "FromName": who, "FromEmail": addr,
                                  "ToEmail": "alex@northwind.example", "Subject": body.get("title") or "Your review of the tool?", "SentAt": body.get("sent") or "2026-11-10 08:00:00",
+                                 "ConversationId": body.get("conversation"),
                                  "BodyText": f"Hi Alex, could you send me your review of the tool? Thanks, {who.split()[0]}", "Status": "routed"})
         # ...`owed`: the reply as arrival opens it - no words yet, the agent's to write (ingest: reply_to_agent); `needs`: and its drafter said why not
         if body.get("owed"):
@@ -175,6 +176,27 @@ def _install_fresh_routes(app, store):
         if out.get("message_id"): channels.save_attachments(store, out["message_id"], atts, ext)
         return out
 
+    @app.post("/api/fixture/live/poke")
+    def fixture_live_poke(body: dict = Body(...)):
+        "A write elsewhere wakes every tab - a drafter finishing, a mail landing - with nothing on this page's screen changed (loads-once)."
+        store._poke("feed-changed", "task-changed")
+        return {"ok": True}
+
+    @app.post("/api/fixture/report")
+    def fixture_report(body: dict = Body(...)):
+        """A report run landed on the rail - one the owner set up, its rows in the run (`dashboard`: a dashboard's run): what Send to agent on a
+        report or a dashboard starts from (browser/send-to-agent)."""
+        import json as _json
+        title = body.get("title") or "Weekly AR aging"
+        cfg = {"type": "dashboard" if body.get("dashboard") else "sql", "title": title}
+        sid = store.save_source({"Channel": "report", "Address": title, "Active": 1, "ConfigJson": _json.dumps(cfg)}, "owner")
+        mid = store.add_message({"ExternalId": f"fx-report:{time.time()}", "ConversationId": f"report:{sid}", "Channel": "report", "SourceName": title,
+                                 "Subject": f"{title} - 3 rows", "SentAt": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()), "Status": "filed",
+                                 "BodyText": body.get("body") or "| Customer | Days | Amount |\n|---|---|---|\n| Payworth | 95 | 1200 |\n| Trainly | 40 | 300 |"})
+        from taskuary import funnel
+        funnel._SOURCES["at"] = 0
+        return {"messageId": mid, "sourceId": sid, "key": f"report:{mid}"}
+
     @app.post("/api/fixture/incoming")
     def fixture_incoming(body: dict = Body(...)):
         "A mail from anyone (`from_email`, `from_name`, `subject`, `body`) taken in on the real arrival road, triage and all - a site's code, a vendor's answer."
@@ -184,12 +206,24 @@ def _install_fresh_routes(app, store):
                                              "from_name": body.get("from_name") or "", "from_email": body["from_email"], "to": ["alex@northwind.example"],
                                              "source_name": "alex@northwind.example"}, llm=server._llm())
 
+    @app.post("/api/fixture/press-page")
+    def fixture_press_page(body: dict = Body(...)):
+        """The owner's press on a page handed to him (a sign-up, a held click): the button of the page's form clicked in the task's own browser,
+        as his click in the pane is - over its DevTools socket, so the page's own submit runs and is heard. A walk's stand-in for his hand."""
+        from taskuary import general, signin
+        s = general._live_of(int(body["taskId"]))
+        if not s: return {"ok": False, "why": "no live session"}
+        c = signin.connect(s.sid)
+        try: return {"ok": bool(c.js("(() => { const b = document.querySelector('form button, form [type=submit]'); if (b) { b.click(); return true; }"
+                                     " const f = document.querySelector('form'); if (f) { f.requestSubmit(); return true; } return false; })()"))}
+        finally: c.close()
+
     @app.post("/api/fixture/own-reply")
     def fixture_own_reply(body: dict = Body(...)):
         "The owner's own line on the task's channel, read back from it as a poll reads it (channels.ingest_own_message) - a recorded flood's third voice."
         from taskuary.channels import ingest_own_message
         ingest_own_message(store, {"external_id": body["id"], "channel": body.get("channel") or "email", "conversation_id": body["conversation"], "source_name": body.get("source") or "",
-                                   "subject": body.get("subject") or "", "body": body["body"]}, "your own reply on the thread - kept for context")
+                                   "subject": body.get("subject") or "", "body": body["body"], "sent_at": body.get("sent"), "to": body.get("to") or []}, "your own reply on the thread - kept for context")
         return {"ok": True}
 
     @app.post("/api/fixture/session")
@@ -250,6 +284,7 @@ def _install_fresh_routes(app, store):
         box = Path(os.environ["TASKUARY_HOME"]) / "outbox.jsonl"
         def out(*a, **k):
             if body.get("fail"): raise RuntimeError(body["fail"])         # ...a mailbox that refuses: a press whose act fails (`fail` its words)
+            if body.get("delay"): time.sleep(float(body["delay"]))          # ...a mailbox that takes its time over each send (browser/bulk-card-queue)
             keep = lambda v: v if isinstance(v, (str, list, int, type(None))) else type(v).__name__
             with box.open("a", encoding="utf-8") as f: f.write(json.dumps({"args": [keep(x) for x in a[1:]], "kw": {n: keep(v) for n, v in k.items()}}, default=str) + "\n")
             return {"channel": "email", "to": k.get("to") or ["gail@northwind.example"], "cc": k.get("cc") or []}
@@ -257,6 +292,24 @@ def _install_fresh_routes(app, store):
         outbound.send_block = lambda *a, **k: ""; outbound.review_connect = lambda *a, **k: None
         server._refresh_chat_context = lambda *a, **k: {}          # no mailbox to read before a Send
         return {"ok": True, "outbox": str(box)}
+
+    @app.post("/api/fixture/act-card")
+    def fixture_act_card(body: dict = Body(...)):
+        """A task whose agent set up an act a connector declares a card for (ActionCard): a comment on a tracker item by default (`post`: the
+        proposal itself), waiting on the owner's press - its connection made (`connected`) or not, so the card offers Connect (browser/act-card-press)."""
+        import json
+        tid = store.create_task({"Title": body.get("title") or "Comment on the ledger ticket", "Kind": "general", "Status": "open"}, "owner")
+        # ...`lands`: the connected system takes it - a stand-in executor answering with where it went (nothing leaves the fixture either way)
+        if body.get("lands"):
+            from taskuary import reports
+            reports.REGISTRY[body["lands"]] = lambda cfg: {"rows": [{"url": "https://social.example/alex/posts/1", "saw": {k: cfg.get(k) for k in ("text", "body", "publish", "visibility")}}], "columns": ["url"]}
+        ctype = (body.get("post") or {}).get("type", "jira_comment").split("_")[0]
+        cid = store.save_connector({"Type": ctype, "Name": "Northwind " + ctype, "ConfigJson": json.dumps({"base_url": "https://tracker.northwind.example", "email": "alex@northwind.example"}),
+                                    "Secret": "fixture-token", "Active": 1}, "owner") if body.get("connected") else None
+        p = body.get("post") or {"action": "run_tool", "type": "jira_comment", "item": "NW-12", "body": "Fixed in the ledger totals, Erin - deployed this morning."}
+        if cid: p = {**p, "connector_id": cid}
+        rid = store.add_review({"TaskId": tid, "Kind": "action", "Status": "pending", "Origin": "agent", "DraftText": json.dumps(p), "Reason": "the comment Erin asked for"})
+        return {"taskId": tid, "reviewId": rid}
 
     @app.post("/api/fixture/no-readonly")
     def fixture_no_readonly(body: dict = Body(...)):

@@ -114,6 +114,39 @@ class EveryYesCarriesOn(unittest.TestCase):
             while not told and time.time() < end: time.sleep(.01)
         self.assertEqual(len(told), 1); self.assertIn('pressed Approve', told[0])
 
+    def test_a_send_whose_wake_never_started_is_still_news_to_the_next_turn(self):
+        """No AI connected when he pressed Send on the agent's email: the send went, the wake did not start - and the press was marked told
+        before the start was tried, so no later turn heard the email went (the stress round, 2026-11-18). Marked told only once it began."""
+        from taskuary import outbound, slots
+        cid = self.s.add_comment(self.tid, 'assistant', general.ASSISTANT_TYPE, 'The email to Paula is ready - press Send.')
+        self.s._exec('UPDATE comment SET CreatedAt=? WHERE CommentId=?', ('2000-01-01 00:00:00', cid))      # its answer, before the press
+        rid = slots.draft(self.s, self.tid, 'Hi Paula', to='paula@northwind.example', subject='Q4')['review_id']
+        tried = []
+        def start(*a, **kw): tried.append(1); raise RuntimeError('no AI is connected')
+        with mock.patch.object(general, 'start_session', side_effect=start), mock.patch.object(general, 'handles', return_value=True), \
+             mock.patch.object(outbound, 'send_out', return_value={'channel': 'email', 'to': ['paula@northwind.example'], 'cc': []}), \
+             mock.patch.object(outbound, 'send_block', return_value=''), mock.patch('taskuary.learn.learn_from'):
+            self.assertTrue(verdicts.decide(self.s, self.s.get_review(rid), 'approve')['ok'])
+            end = time.time() + 5
+            while not tried and time.time() < end: time.sleep(.01)
+            time.sleep(.1)
+        did = general.owner_did(self.s, self.tid)
+        self.assertEqual(len(did), 1, did); self.assertIn(f'rv{rid}', did[0])
+    def test_a_second_press_while_the_first_wake_is_starting_rides_in_that_turn(self):
+        # two held steps on two cards, pressed a few seconds apart on a resting agent: the second found its answer already woken and no session
+        # up yet, so its words went nowhere - and the turn that started answered past it, so the agent never heard it
+        self.s.add_comment(self.tid, 'assistant', general.ASSISTANT_TYPE, 'Two steps are held for you.')
+        told = []
+        def start(*a, **kw): time.sleep(0.3); return SimpleNamespace(send_prompt=lambda text, **k: told.append((text, k)))
+        with mock.patch.object(general, 'start_session', side_effect=start), mock.patch.object(general, 'handles', return_value=True):
+            self.assertEqual(general.tell(self.s, self.tid, 'The owner approved it and Taskuary ran `git push origin deploy`.'), 'woke')
+            self.assertEqual(general.tell(self.s, self.tid, 'The owner approved it and Taskuary ran `git push origin --tags`.'), 'woke')
+            end = time.time() + 5
+            while not told and time.time() < end: time.sleep(.01)
+            time.sleep(0.1)
+        [(text, kw)] = told
+        self.assertIn('origin deploy', text); self.assertIn('origin --tags', text); self.assertFalse(kw.get('as_owner', True))
+
     def test_no_agent_ever_on_it_wakes_nothing(self):
         self.assertEqual(general.approved(self.s, self.tid, 'Send', 'the reply was sent'), '')
 
@@ -314,7 +347,7 @@ def test_a_card_he_writes_past_greys_in_its_place_on_every_agents_road_and_its_a
     assert proposals.PASSED_TOLD in heard and f'rv{rid}' in heard, heard
     # ...and it keeps its record: never pressable, said so
     out = verdicts.decide(s, s.get_review(rid), 'approve')
-    assert (out['ok'], out['send_error']) == (False, proposals.PASSED_SAID), out
+    assert (out['ok'], out['send_error']) == (False, proposals.passed_why(s, rv)), out
 
 
 def test_a_reply_draft_is_the_agents_to_redecide_never_passed_by_the_line_itself():
@@ -482,6 +515,22 @@ class AFailedSendIsHandedBack(unittest.TestCase):
         self.rid = self.s.add_review({'TaskId': self.tid, 'MessageId': mid, 'Kind': 'draft_reply', 'Status': 'pending', 'DraftText': 'Confirmed.',
                                       'Deliver': json.dumps({'kind': 'reply', 'to': ['erin@northwind.example'], 'cc': [], 'mode': 'reply_to'})})
 
+    def test_a_send_tells_its_agent_whom_it_went_to_as_the_owner_left_it(self):
+        """The owner moved the reply off Erin and onto Gail, copying Ray, and pressed Send. Its agent heard only "the reply was sent", and
+        its next turn told the owner it had answered Erin. It hears whom the reply went to and who was copied - the card's envelope as sent."""
+        from taskuary import outbound
+        self.s.set_review_envelope(self.rid, {'kind': 'reply', 'mode': 'reply_to', 'to': ['gail@northwind.example'], 'cc': []})
+        heard = []
+        sent = lambda st, m, body, to=None, cc=None, **k: {'channel': 'email', 'to': to, 'cc': cc or []}
+        with mock.patch('taskuary.outbound.reply_to_message', side_effect=sent), mock.patch.object(outbound, 'send_block', return_value=''), \
+             mock.patch.object(verdicts, 'context_moved', return_value=(False, None)), \
+             mock.patch.object(general, 'tell', side_effect=lambda st, tid, said, actor='owner', **k: heard.append(said) or 'told'):
+            out = verdicts.decide(self.s, self.s.get_review(self.rid), 'approve', None, None, 'owner', cc=['ray@northwind.example'])
+        self.assertTrue(out['ok'], out)
+        [said] = heard
+        self.assertIn('gail@northwind.example', said); self.assertIn('ray@northwind.example', said)
+        self.assertNotIn('erin', said.lower())
+
     def test_a_send_the_provider_refused_wakes_its_agent_once(self):
         from taskuary import outbound
         with mock.patch('taskuary.outbound.reply_to_message', side_effect=RuntimeError('mailbox is over its sending limit')), \
@@ -491,6 +540,19 @@ class AFailedSendIsHandedBack(unittest.TestCase):
         self.assertEqual(out.get('delivery'), 'failed', out)
         [n] = self.s.waiting_notes(self.tid)
         self.assertIn('IT DID NOT GO', n['Note']); self.assertEqual(general.owner_did(self.s, self.tid), [])
+
+    def test_the_owners_own_words_on_a_send_that_failed_reach_its_agent(self):
+        """He rewrote the reply in the box and pressed Send, and the provider refused it: its agent heard "IT DID NOT GO" and nothing of his
+        words - so the one it set up again went back to its own (the stress round, 2026-11-18). His words ride with the failure, as with a yes."""
+        from taskuary import outbound
+        self.s.snap_draft(self.rid, self.s.add_comment(self.tid, 'claude', 'agent', 'Drafted the reply.'))     # the turn that left it
+        with mock.patch('taskuary.outbound.reply_to_message', side_effect=RuntimeError('mailbox is over its sending limit')), \
+             mock.patch.object(outbound, 'send_block', return_value=''), mock.patch('taskuary.waitroom.deliver', return_value={}), \
+             mock.patch.object(verdicts, 'context_moved', return_value=(False, None)):
+            verdicts.decide(self.s, self.s.get_review(self.rid), 'approve', 'Confirmed - and the new rate starts in March.')
+        [n] = self.s.waiting_notes(self.tid)
+        self.assertIn('IT DID NOT GO', n['Note']); self.assertIn('the new rate starts in March', n['Note'])
+        self.assertNotIn('what went:', n['Note'])
 
 
 class OneCardAtATime(unittest.TestCase):
@@ -541,7 +603,7 @@ class OneCardAtATime(unittest.TestCase):
         tid = Factory(self.s).task('Answer Gail and tell Ray'); self.answered(tid, 'Both letters are set up.', '2000-01-01 00:00:00')
         first, second = self.email(tid, 'gail@northwind.example', 'Gail - the rate is 4%.'), self.email(tid, 'ray@northwind.example', 'Ray - Gail has the rate.')
         told = []
-        with mock.patch.object(general, 'tell', lambda st, t, said, actor='owner': told.append(said) or 'woke'):
+        with mock.patch.object(general, 'tell', lambda st, t, said, actor='owner', heard=None: told.append(said) or (heard and heard('woke')) or 'woke'):
             self.assertTrue(verdicts.decide(self.s, self.s.get_review(first), 'reject')['ok'])
         [said] = told
         self.assertIn(f'turned down rv{first} (the email to gail@northwind.example) - their own no', said); self.assertIn(f'rv{second}', said)
@@ -593,6 +655,28 @@ class TheChatMovedOn(unittest.TestCase):
         self.s.add_message({'TaskId': self.tid, 'ExternalId': 'g-1', 'ConversationId': 'th-1', 'Channel': 'email', 'Subject': 'Deploy',
                             'FromName': 'Gail Moreno', 'FromEmail': 'gail@northwind.example', 'BodyText': 'Hold the deploy until Friday.', 'Status': 'routed'})
         self.assertEqual(proposals.written_past(self.s, self.tid), {rid})
+
+    # ONE SENTENCE FOR A GREYED CARD ON EVERY SURFACE (2026-11-17): his own answer to the sender read "you wrote again", and a press on a card
+    # the sender's new mail moved past was refused with "set aside when you moved on" - the chat, the press and the page said three things
+    def test_his_own_answer_to_the_sender_says_he_answered_them(self):
+        self.s.set_setting('owner_email', 'alex@northwind.example', 'owner')
+        mid = self.s.add_message({'TaskId': self.tid, 'ExternalId': 'g-1', 'ConversationId': 'th-1', 'Channel': 'email', 'Subject': 'Pilot',
+                                  'FromName': 'Gail Moreno', 'FromEmail': 'gail@northwind.example', 'BodyText': 'Can you price site two?', 'Status': 'routed'})
+        self.s._exec("UPDATE message SET CreatedAt='2026-11-16 08:00:00' WHERE MessageId=?", (mid,))
+        rid = self.s.add_review({'TaskId': self.tid, 'MessageId': mid, 'Kind': 'draft_reply', 'Status': 'pending', 'DraftText': 'Hi Gail - yes, by Friday.'})
+        self.s._exec("UPDATE review SET CreatedAt='2026-11-16 09:00:00' WHERE ReviewId=?", (rid,))
+        self.s.add_message({'TaskId': self.tid, 'ExternalId': 'a-1', 'ConversationId': 'th-1', 'Channel': 'email', 'Subject': 'RE: Pilot', 'Direction': 'out',
+                            'FromName': 'Alex Doyle', 'FromEmail': 'alex@northwind.example', 'BodyText': 'Done - see attached.', 'Status': 'routed'})
+        self.assertEqual(proposals.passed_why(self.s, self.s.get_review(rid)), 'Not sent - you answered Gail Moreno yourself')
+
+    def test_a_press_on_a_card_the_sender_wrote_past_is_refused_with_the_same_sentence(self):
+        self.s.set_setting('owner_email', 'alex@northwind.example', 'owner')
+        rid = self.closeout()
+        self.s.add_message({'TaskId': self.tid, 'ExternalId': 'g-1', 'ConversationId': 'th-1', 'Channel': 'email', 'Subject': 'Deploy',
+                            'FromName': 'Gail Moreno', 'FromEmail': 'gail@northwind.example', 'BodyText': 'Hold the deploy until Friday.', 'Status': 'routed'})
+        out = verdicts.decide(self.s, self.s.get_review(rid), 'approve')
+        self.assertEqual(out['send_error'], 'Not sent - Gail Moreno wrote again after it')
+        self.assertEqual(out['send_error'], proposals.passed_why(self.s, self.s.get_review(rid)))
 
     def test_the_landing_question_greys_by_the_same_rule(self):
         landing._save(self.s, self.tid, {'start': 'abc', 'cwd': HELD, 'base': 'master', 'proposal': {'how': 'push', 'why': 'ship it', 'at': '2026-11-16 09:00:00'}})

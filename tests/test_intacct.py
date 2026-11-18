@@ -92,6 +92,42 @@ class FailureIsNotAnHttpErrorTests(unittest.TestCase):
         self.assertIn('do not have permission', str(e.exception))
 
 
+# Sage's answer to a session it no longer holds: the operation's AUTHENTICATION fails, with no <result> at all
+SESSION_GONE = (b"""<response><control><status>success</status></control><operation><authentication><status>failure</status>
+</authentication><errormessage><error><errorno>XL03000006</errorno><description2>Invalid session</description2></error></errormessage>
+</operation></response>""")
+
+
+class AnExpiredSessionTests(unittest.TestCase):
+    """The session is kept 25 minutes, but Sage drops one sooner (a company's own timeout, a sign-in elsewhere): every call in between
+    failed "Invalid session" from the cache, with nothing to do about it but wait. A session Sage refuses is replaced once, and the call
+    made again on the new one."""
+    def setUp(self): intacct._sessions.clear()
+
+    def test_a_refused_session_logs_in_again_and_the_read_goes_through(self):
+        sent, fake = _posts(LOGIN_OK, _data(['<X>1</X>']), SESSION_GONE, LOGIN_OK, _data(['<X>2</X>']))
+        with mock.patch('taskuary.intacct.requests.post', fake):
+            intacct.query(dict(CFG), 'VENDOR', ['X'])
+            self.assertEqual(intacct.query(dict(CFG), 'VENDOR', ['X']), [{'X': '2'}])
+        self.assertEqual(len(sent), 5)
+        self.assertIsNotNone(sent[3][1].find('.//login'))
+
+    def test_a_write_is_made_again_under_the_same_unique_id(self):
+        sent, fake = _posts(LOGIN_OK, _data([]), SESSION_GONE, LOGIN_OK, CREATED)
+        with mock.patch('taskuary.intacct.requests.post', fake):
+            intacct.query(dict(CFG), 'VENDOR', ['X'])
+            self.assertEqual(intacct.create(dict(CFG), 'APBILL', {'VENDORID': 'V100'})['key'], '1042')
+        ids = [d.findtext('.//control/controlid') for _, d in (sent[2], sent[4])]
+        self.assertEqual(ids[0], ids[1]); self.assertEqual(sent[4][1].findtext('.//control/uniqueid'), 'true')
+
+    def test_a_fresh_session_refused_is_said_not_looped(self):
+        sent, fake = _posts(LOGIN_OK, SESSION_GONE, LOGIN_OK, SESSION_GONE)
+        with mock.patch('taskuary.intacct.requests.post', fake):
+            with self.assertRaisesRegex(intacct.IntacctError, 'Invalid session'):
+                intacct.query(dict(CFG), 'VENDOR', ['X'])
+        self.assertLessEqual(len(sent), 4)
+
+
 class QueryTests(unittest.TestCase):
     def setUp(self): intacct._sessions.clear()
 
@@ -119,11 +155,58 @@ class QueryTests(unittest.TestCase):
         self.assertIsNone(fil.find('and'))
         self.assertEqual(fil[0].tag, 'equalto')
 
-    def test_no_fields_asks_for_all_of_them(self):
-        sent, fake = _posts(LOGIN_OK, _data([]))
+    def test_no_fields_asks_for_every_field_the_object_has(self):
+        """The object's own field list, read first - GLBATCH refuses `*` ("This function requires one or more fields", the live task,
+        2026-11-17)."""
+        look = (b'<response><operation><result><status>success</status><data><Type><Fields>'
+                b'<Field><ID>RECORDNO</ID></Field><Field><ID>BATCH_TITLE</ID></Field></Fields></Type></data></result></operation></response>')
+        sent, fake = _posts(LOGIN_OK, look, _data([]))
         with mock.patch('taskuary.intacct.requests.post', fake):
-            intacct.query(dict(CFG), 'VENDOR')
-        self.assertEqual([f.text for f in sent[1][1].findall('.//select/field')], ['*'])
+            intacct.query(dict(CFG), 'GLBATCH')
+        self.assertEqual([f.text for f in sent[2][1].findall('.//select/field')], ['RECORDNO', 'BATCH_TITLE'])
+
+    # AN AGENT'S SHAPES ARE TAKEN AS MEANT (the owner, 2026-11-17: "We have a entire repo that connects to Intacct. WHy can't it use it"): its
+    # run_system call sent `fields` as "RECORDNO,BATCHNO,..." and as '["RECORDNO", ...]', each read one LETTER at a time ("cannot be queried:
+    # [R, E, C, O, D ...]"), and a filter as words. A list in words is the list; a filter in words is answered with the shape, never sent
+    def test_fields_as_words_or_json_are_the_list(self):
+        for given in ('RECORDNO, BATCH_TITLE', '["RECORDNO", "BATCH_TITLE"]'):
+            sent, fake = _posts(LOGIN_OK, _data([]))
+            intacct._sessions.clear()
+            with mock.patch('taskuary.intacct.requests.post', fake):
+                intacct.query(dict(CFG), 'GLBATCH', given, '[["BATCH_DATE", ">=", "07/01/2026"]]')
+            self.assertEqual([f.text for f in sent[1][1].findall('.//select/field')], ['RECORDNO', 'BATCH_TITLE'])
+            self.assertEqual(sent[1][1].find('.//filter/greaterthanorequalto').findtext('value'), '07/01/2026')
+
+    def test_a_filter_in_words_says_the_shape_and_sends_nothing(self):
+        sent, fake = _posts(LOGIN_OK)
+        with mock.patch('taskuary.intacct.requests.post', fake):
+            with self.assertRaisesRegex(intacct.IntacctError, r'\[\["BATCH_DATE", ">=", "07/01/2026"\]'):
+                intacct.query(dict(CFG), 'GLBATCH', ['RECORDNO'], "BATCH_DATE >= '07/01/2026'")
+        self.assertLessEqual(len(sent), 1)
+
+    def test_one_condition_given_flat_is_that_condition(self):
+        """["STATE", "=", "Posted"] - one condition without its outer list, as a list or as JSON - was read an item at a time:
+        field "S", operator "T", "unknown filter operator 'T'", about a filter that was right."""
+        for given in (['STATE', '=', 'Posted'], '["STATE", "=", "Posted"]'):
+            sent, fake = _posts(LOGIN_OK, _data([]))
+            intacct._sessions.clear()
+            with mock.patch('taskuary.intacct.requests.post', fake):
+                intacct.query(dict(CFG), 'APBILL', ['RECORDNO'], given)
+            cond = sent[1][1].find('.//query/filter/equalto')
+            self.assertEqual((cond.findtext('field'), cond.findtext('value')), ('STATE', 'Posted'))
+
+    def test_an_order_in_any_of_its_shapes_is_the_order(self):
+        """`order` had no shape but [[FIELD, dir], ...] and every other one crashed on an unpack ("not enough values to unpack"),
+        which is all the agent was told: "WHENCREATED desc", a flat pair, JSON, a field alone (ascending)."""
+        want = [('descending', 'WHENCREATED'), ('ascending', 'RECORDNO')]
+        for given in ('WHENCREATED desc, RECORDNO', ['WHENCREATED desc', 'RECORDNO'], [['WHENCREATED', 'desc'], ['RECORDNO']],
+                      '[["WHENCREATED", "DESC"], ["RECORDNO", "asc"]]', ['WHENCREATED', 'desc', 'RECORDNO']):
+            sent, fake = _posts(LOGIN_OK, _data([]))
+            intacct._sessions.clear()
+            with mock.patch('taskuary.intacct.requests.post', fake):
+                intacct.query(dict(CFG), 'APBILL', ['RECORDNO'], order=given)
+            o = sent[1][1].find('.//query/orderby')
+            self.assertEqual([(d.tag, d.findtext('field')) for d in o], want, given)
 
     def test_an_unknown_operator_is_refused_rather_than_sent(self):
         _, fake = _posts(LOGIN_OK)
@@ -138,6 +221,16 @@ class QueryTests(unittest.TestCase):
             intacct.query(dict(CFG), 'VENDOR', ['X'], [['VENDORID', 'in', ['V1', 'V2']]])
         cond = sent[1][1].find('.//filter/in')
         self.assertEqual([v.text for v in cond.findall('value')], ['V1', 'V2'])
+
+    def test_in_takes_a_list_written_as_words_or_json(self):
+        """["VENDORID", "in", "V1, V2"] sent ONE value, "V1, V2", which matches no vendor - an empty answer that read as "none"."""
+        for given in ('V1, V2', '["V1", "V2"]', 'Northwind West, V2'):
+            sent, fake = _posts(LOGIN_OK, _data([]))
+            intacct._sessions.clear()
+            with mock.patch('taskuary.intacct.requests.post', fake):
+                intacct.query(dict(CFG), 'VENDOR', ['X'], [['VENDORID', 'in', given]])
+            self.assertEqual([v.text for v in sent[1][1].findall('.//filter/in/value')][1:], ['V2'], given)
+            self.assertIn(sent[1][1].findtext('.//filter/in/value'), ('V1', 'Northwind West'), given)
 
     def test_isnull_carries_no_value(self):
         sent, fake = _posts(LOGIN_OK, _data([]))
@@ -305,6 +398,24 @@ class WriteTests(unittest.TestCase):
             out = intacct.update(dict(CFG), 'APBILL', {'RECORDNO': '1042', 'DESCRIPTION': 'corrected'})
         self.assertEqual(sent[1][1].findtext('.//update/APBILL/RECORDNO'), '1042')
         self.assertEqual(out['verb'], 'update')
+
+    def test_a_record_sent_as_json_text_is_that_record(self):
+        """A run_system call's `record` arrives as JSON text as often as an object: create died on "'str' object has no attribute
+        'items'", and update said the record named no RECORDNO when it did. Text that is not a record says the shape, sends nothing."""
+        rec = '{"VENDORID": "V-PAYWORTH", "NAME": "Payworth"}'
+        sent, fake = _posts(LOGIN_OK, CREATED, CREATED)
+        with mock.patch('taskuary.intacct.requests.post', fake):
+            intacct.create(dict(CFG), 'VENDOR', rec)
+            intacct.update(dict(CFG), 'VENDOR', rec)
+        self.assertEqual(sent[1][1].findtext('.//create/VENDOR/NAME'), 'Payworth')
+        self.assertEqual(sent[2][1].findtext('.//update/VENDOR/VENDORID'), 'V-PAYWORTH')
+        for bad in ('VENDORID V-PAYWORTH', '["V-PAYWORTH"]'):
+            sent, fake = _posts(LOGIN_OK)
+            with mock.patch('taskuary.intacct.requests.post', fake):
+                for write in (intacct.create, intacct.update):
+                    with self.assertRaisesRegex(intacct.IntacctError, 'record is'):
+                        write(dict(CFG), 'VENDOR', bad)
+            self.assertEqual(sent, [])
 
     def test_nothing_to_write_is_refused_before_a_login(self):
         for bad in ({}, None):

@@ -171,11 +171,13 @@ class Run:
         self.snap(label)
 
     def own_reply(self, text):
-        "The owner answers on the thread from his phone: his own mail on it, read in."
+        "The owner answers on the thread from his phone: his own mail on it, read in by the sync's own road (channels.ingest_own_message)."
+        from taskuary import channels
         n = len(self.s._rows('SELECT MessageId FROM message'))
-        self.s.add_message({'TaskId': self.tid, 'ExternalId': f'own-{n}', 'ConversationId': 'conv-1', 'Channel': 'email', 'Direction': 'out',
-                            'FromName': 'Alex Doyle', 'FromEmail': ME, 'To': ERIN, 'Subject': 'Re: Question', 'BodyText': text,
-                            'SentAt': time.strftime('%Y-%m-%d %H:%M:%S'), 'Status': 'routed'})
+        if self.snaps: pace()
+        channels.ingest_own_message(self.s, {'external_id': f'own-{n}', 'channel': 'email', 'source_name': ME, 'subject': 'Re: Question',
+                                             'from_email': ME, 'body': text, 'conversation_id': 'conv-1',
+                                             'sent_at': time.strftime('%Y-%m-%d %H:%M:%S')}, 'your reply on this thread - kept for context')
         self.snap('he answers on the thread himself')
 
     def drain(self):
@@ -643,6 +645,28 @@ def r_monitor_notice(r: Run):
 
 
 @on('cli', 'acp', 'api')
+def u_stranger_twice(r: Run):
+    """(u) A stranger writes twice before the owner looks, he types a line, and presses Trust - twice (a double tap; the phone and the desk):
+    nothing starts before Trust, the agent's first turn reads both mails and his line, once each, and the second press starts nothing more."""
+    v, who = {'intent': 'task', 'kind': 'general', 'title': 'Quote for the spring order'}, dict(from_email='sales@vendor.example', from_name='Gail Moreno')
+    r.arrive(v, wrote=False, body='Could you send the spring order quantities?', label='a stranger writes', **who)
+    r.quiet(label='held: nothing starts by itself')
+    r.arrive({**v, 'refines': False}, wrote=False, body='Following up - we need the quantities by Friday.', label='the stranger writes again', **who)
+    r.quiet(label='still held')
+    r.type('check what we ordered last spring')
+    r.quiet(label='his line waits behind Trust')
+    r.press(f'/api/tasks/{r.tid}/trust', label='press Trust')
+    r.press(f'/api/tasks/{r.tid}/trust', label='press Trust again')
+    p = r.turn('Last spring was 40 units; the reply with the quantities waits for your Send.')
+    assert all(said in p for said in ('spring order quantities', 'by Friday', 'check what we ordered last spring')), p
+    r.quiet(label='one turn for one Trust')
+    assert not r.started, f'{r.backend}: the second Trust started a second turn'
+    r.press(f'/api/tasks/{r.tid}/trust', label='Trust pressed again, from the phone, after the turn')
+    r.quiet(label='a press that lifts nothing starts nothing')
+    assert not r.started, f'{r.backend}: a Trust on a trusted task handed the stranger\'s mail over again'
+
+
+@on('cli', 'acp', 'api')
 def i_late_answer(r: Run):
     "(i) Someone is late answering -> the agent is woken once -> a chase card."
     r.waiting_on_ray()
@@ -657,11 +681,11 @@ def j_answered_outside(r: Run):
     "(j) The owner answers outside the app, then the sender writes again -> the agent re-plans: the old draft passed, a new card."
     r.arrive({'intent': 'reply_only', 'kind': 'task', 'title': 'Erin asks for the venue'}, body='Which venue did we pick for the offsite?')
     r.turn('The reply to Erin waits for your Send.', ('propose_reply', {'text': 'Hi Erin - we picked the Harbor Hall.'}))
-    r.own_reply('Harbor Hall - booked it this morning.')
+    r.own_reply('Harbor Hall - booked it this morning.')          # ...his draft greyed where it stood, and the agent woken to re-plan
+    assert [(c['passed'], c['turn']) for c in r.cards()] == [(True, 0)], r.cards()
+    r.turn('I see you answered Erin yourself - nothing left on the venue.')
     r.arrive({'intent': 'reply_only', 'kind': 'task', 'refines': False}, body='Great - and what time does it open?', label='Erin writes again')
-    r.turn('You answered the venue yourself, so that draft is put down; the reply about the opening time waits for your Send.',
-           ('reply_not_needed', {'why': 'the owner answered the venue on the thread'}),
-           ('propose_reply', {'text': 'It opens at 9am.'}))
+    r.turn('The reply about the opening time waits for your Send.', ('propose_reply', {'text': 'It opens at 9am.'}))
     r.send()
     r.turn('Erin has the time.')
 
@@ -778,5 +802,6 @@ def t_send_at_work(r: Run):
 SCENARIOS = {k: f for k, f in [('a', a_question_answered), ('b', b_email_rewritten), ('c', c_bug_pushed), ('d', d_page_step), ('e', e_three_asks),
                                ('f', f_ci_notice), ('g', g_invite_clash), ('h', h_steered_mail), ('i', i_late_answer), ('j', j_answered_outside),
                                ('k', k_send_fails), ('l', l_no_connector), ('m', m_remind_while_working), ('n', n_full_house), ('o', o_silent_turn),
-                               ('p', p_break_out), ('q', q_save_routine), ('r', r_monitor_notice), ('s', s_send_close_at_work), ('t', t_send_at_work)]}
+                               ('p', p_break_out), ('q', q_save_routine), ('r', r_monitor_notice), ('s', s_send_close_at_work), ('t', t_send_at_work),
+                               ('u', u_stranger_twice)]}
 def runs_on(name, backend) -> bool: return backend in getattr(SCENARIOS[name], 'on', BACKENDS)

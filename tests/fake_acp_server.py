@@ -26,7 +26,8 @@ Set in its environment, for the tests that need more:
   FAKE_DIRECTOR=<folder> each turn's words come from a scenario (fake_director.py), no permission asked; a session/cancel ends it meanwhile
   FAKE_ACP_SCRIPT=<file>  fake_claude's script: the first rule whose `when` the owner's words match answers `first`, after its `post`s ran
                          as the agent's own `taskuary --reply` would (fake_director.post) - a coding agent filing a reply, no permission asked;
-                         `wait` seconds before it answers, `exit` a code it dies with mid-turn
+                         `wait` seconds before it answers, `exit` a code it dies with mid-turn (after its `updates`),
+                         `updates` raw session updates said first
 It offers config options (mode, model, effort) the way claude-agent-acp and codex-acp do, and says what they were set to.
 """
 import json, os, re, sys
@@ -56,13 +57,13 @@ def code_done(granted):
         old = open(path, encoding='utf-8').read()
         new = '# keeps the ledger totals\n' + old
         open(path, 'w', encoding='utf-8', newline='\n').write(new)
-        update('tool_call_update', toolCallId='call_1', status='completed',
+        update('tool_call_update', toolCallId=f'call_{STARTS}', status='completed',
                content=[{'type': 'diff', 'path': path, 'oldText': old, 'newText': new}])
         update('tool_call', toolCallId='call_2', title='git status', kind='execute', status='in_progress', rawInput={'command': 'git status --short'})
         update('tool_call_update', toolCallId='call_2', _meta={'terminal_output_delta': {'data': ' M ' + os.path.basename(path) + '\n'}})
         update('tool_call_update', toolCallId='call_2', status='completed', _meta={'terminal_exit': {'exit_code': 0}})
         update('plan', entries=[{'content': 'Read the file', 'status': 'completed'}, {'content': 'Add the comment', 'status': 'completed'}])
-    else: update('tool_call_update', toolCallId='call_1', status='failed')
+    else: update('tool_call_update', toolCallId=f'call_{STARTS}', status='failed')
     update('agent_message_chunk', content={'type': 'text', 'text': ('Added the comment.' if granted else 'denied') + f' - {_heard}'})
 
 
@@ -94,7 +95,7 @@ for line in sys.stdin:
                 'reject' not in str(((msg.get('result') or {}).get('outcome') or {}).get('optionId'))
             if os.environ.get('FAKE_ACP_CODE'): code_done(granted)
             else:
-                update('tool_call_update', toolCallId='call_1', status='completed' if granted else 'failed')
+                update('tool_call_update', toolCallId=f'call_{STARTS}', status='completed' if granted else 'failed')
                 update('agent_message_chunk', content={'type': 'text', 'text': ('granted' if granted else 'denied') + f' - {_heard}'})
             reply(_prompt_id, ended())
             _prompt_id = None
@@ -132,8 +133,11 @@ for line in sys.stdin:
         _heard = f"heard: {said} [mode={SET['mode']} model={SET['model']} effort={SET['effort']} turn={STARTS}" + (f' resumed={RESUMED}' if RESUMED else '') + ']'
         rule = next((r for r in (json.load(open(os.environ['FAKE_ACP_SCRIPT'], encoding='utf-8')) if os.environ.get('FAKE_ACP_SCRIPT') else [])
                      if re.search(r['when'], said, re.I)), None)
-        if rule and rule.get('exit') is not None: sys.exit(rule['exit'])   # an agent that dies mid-turn, as fake_claude's `exit`
         if rule:
+            # ...`updates`: session updates said as they are, in order, each after its own `_sleep` - a tool that fails, a compaction (chat-render)
+            for u in rule.get('updates') or []:
+                u = dict(u); __import__('time').sleep(float(u.pop('_sleep', 0) or 0)); update(u.pop('sessionUpdate'), **u)
+            if rule.get('exit') is not None: sys.exit(rule['exit'])   # an agent that dies mid-turn, as fake_claude's `exit` - after what it said
             # ...each post the shell call a real agent makes for it, reported running before it files and done after - never a card ahead of its turn
             # ...each its own call id, as a real adapter's: one reused across turns drew a later turn's call into the first one's step
             for i, p in enumerate(rule.get('post') or []):
@@ -162,7 +166,7 @@ for line in sys.stdin:
         if os.environ.get('FAKE_ACP_CODE'):
             path = os.environ['FAKE_ACP_CODE']
             update('plan', entries=[{'content': 'Read the file', 'status': 'completed'}, {'content': 'Add the comment', 'status': 'in_progress'}])
-            tc = {'toolCallId': 'call_1', 'title': f'Edit {os.path.basename(path)}', 'kind': 'edit', 'rawInput': {'file_path': path},
+            tc = {'toolCallId': f'call_{STARTS}', 'title': f'Edit {os.path.basename(path)}', 'kind': 'edit', 'rawInput': {'file_path': path},
                   'locations': [{'path': path, 'line': 1}]}
             update('tool_call', **tc, status='pending')
             _prompt_id = mid
@@ -170,8 +174,8 @@ for line in sys.stdin:
                   'options': [{'optionId': 'reject-once', 'name': 'Reject', 'kind': 'reject_once'}, {'optionId': 'allow-once', 'name': 'Allow once', 'kind': 'allow_once'}]}})
             continue
         ask = os.environ.get('FAKE_ACP_ASK')
-        tc = {'toolCallId': 'call_1', 'title': ask, 'kind': 'execute', 'rawInput': {'command': ask}} if ask else \
-             {'toolCallId': 'call_1', 'title': 'read the ledger'}
+        tc = {'toolCallId': f'call_{STARTS}', 'title': ask, 'kind': 'execute', 'rawInput': {'command': ask}} if ask else \
+             {'toolCallId': f'call_{STARTS}', 'title': 'read the ledger'}
         update('tool_call', **tc, status='pending')
         _prompt_id = mid
         send({'jsonrpc': '2.0', 'id': PERM_ID, 'method': 'session/request_permission',

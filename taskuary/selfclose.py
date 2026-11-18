@@ -317,6 +317,15 @@ CARD_SAID = ('A reply, an email or an act you set up is its card under your answ
              'guessed address, a picked date), the one question - in one short line, or nothing. Raise your cards in the order they should '
              "happen: each waits for the owner's press before the next is shown, and you hear each outcome. Many of one act (25 emails, 40 issues "
              'to close) go as ONE card, in one call with `items`.')
+# ...AND A ROUTINE'S OWN EMAIL IS NO CARD (slots.routine_sends, the owner 2026-11-17: "routines should send on their own too"): it went at
+# once, and its agent was told the card "shows ... that it waits and that nothing went" - so it said nothing went (the tools stress round)
+def card_said(out: dict) -> str:
+    "How a draft that stood is spoken of, on every road (the draft tools, `taskuary --draft`): sent at once, failed to go, or its card."
+    if out.get('sent'): return ("It went at once - a routine's own email is sent without a press, so there is no card: say in a few words that "
+                                "it was sent, and to whom.")
+    if out.get('send_error'): return (f"It did not go ({out['send_error']}), so it stands as its card for the owner's Send - say that in one "
+                                      f"line. {CARD_SAID}")
+    return CARD_SAID
 # ...AND A STEP TASKUARY HELD IS A CARD TOO (the real-CLI walks, 2026-11-12: "The delete of old-export.csv is waiting for your approval",
 # over the card that says so; "still waiting for your Approve" the turn after): every hold's answer to its agent ends on this one tail
 CARD_TAIL = ('It is a card in this task now: the card says what it is and that it waits for their press - never say either. Add only what '
@@ -376,8 +385,8 @@ SUMMARY_OPEN, SUMMARY_CLOSE = '[[TASKUARY-SUMMARY]]', '[[/TASKUARY-SUMMARY]]'
 AFTER_PRESS = ('send', 'handoff')
 SUMMARY_LINE = (f'ENDING EVERY TURN: close with {SUMMARY_OPEN}{{"about": "<two or three plain sentences from the whole thread: which '
                 f'conversation, what about, who asked, for whom, why - naming only people it shows in that role>", "did": "<the RESULT ITSELF '
-                f'first (the path, link, figure or name), then what you did; any part unmet or unchecked>", "on_you": ["<each step truly the '
-                f'owner\'s, a line each with why - shown under your answer as its own list, so your words above never say it again>"],"nothing_left": <true only when the goal '
+                f'first (the path, link, figure or name), then what you did; any part unmet or unchecked>", "on_you": ["<a step for what they '
+                f'asked that only they can take, a line each with why, said nowhere in your words above; [] when nothing_left>"],"nothing_left": <true only when the goal '
                 f'is met and you checked it>, "answer_is_result": <true when your words above ARE what was asked>, "after_press": <"handoff" only if '
                 f'you carry on once the owner hands this to a person - that press wakes you once, as any press on your card does>}}'
                 f'{SUMMARY_CLOSE} - valid JSON, plain words, no secret, "you" to the owner. A card you set up and a question you ask are never an on_you step. A draft\'s Send card IS the confirmation: never '

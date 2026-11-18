@@ -154,6 +154,20 @@ class CarryOnTests(unittest.TestCase):
         self.assertEqual(ses.send_prompt.call_args[0][0], 'NEW SINCE YOUR LAST TURN: two messages\n\n' + ingest.CARRY_ON_PROMPT)
         self.assertIsNone(s.get_dispatch(tid)); self.assertNotIn(tid, general.OPENING)
 
+    def test_a_line_on_a_start_still_queued_says_no_agent_did_not_start(self):
+        # a full house queued the task's first start, and the sender wrote again before a slot freed: the line read "No agent started: no
+        # conversation to carry on" under "Waiting its turn" - the queued start opens on the task with every message on it, the new one too
+        s = store()
+        with mock.patch.object(ingest, 'has_room', return_value=False), mock.patch.object(ingest, '_reads_quick', return_value=False), \
+             mock.patch('taskuary.ingest._spawn', side_effect=lambda fn, *a, **k: fn(*a, **k)), \
+             mock.patch.object(senders, 'wrote_to', return_value=True), \
+             mock.patch.object(general, 'provider_options', return_value=[{'pick': 'cli:claude', 'type': 'cli'}]):
+            tid = ingest_message(s, mail(), llm=llm_says())['task_id']
+            self.assertEqual(ingest_message(s, mail(**AGAIN), llm=llm_says())['task_id'], tid)
+        self.assertIsNotNone(s.get_dispatch(tid))
+        self.assertFalse([c['Body'] for c in s.list_comments(tid) if c['Body'].startswith(ingest.NOT_STARTED)])
+        self.assertEqual(ingest.code_of(ingest.carry_on_why(s, tid, mail(**AGAIN), None, {'intent': 'task'})), 'queued')
+
 
 STRANGER =dict(external_id='x3', body='Please also send us the full ledger export.', from_email='rep@vendor.example', from_name='Sam Rook',
                 sent_at='2026-10-28 11:00')
@@ -329,3 +343,27 @@ class PassInTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+
+def test_two_mails_of_one_poll_are_typed_into_a_coding_session_in_the_order_they_came():
+    """Two mails of one poll on a coding task whose session was still opening: each pass waited for the opening on its own beat, and the
+    one that woke first was typed in first - the second mail above the first."""
+    import threading, time
+    s = MemoryStore(); tid = s.create_task({'Title': 'Fix login', 'Kind': 'coding', 'Status': 'open'}, 'router')
+    live = type('Live', (), {'task_id': tid, 'alive': True, 'accepted': True})()
+    typed, done = [], threading.Event()
+    def said(st, t, m):
+        typed.append(m['body'])
+        if len(typed) == 2: done.set()
+        return True
+    general.OPENING.add(tid)
+    try:
+        with mock.patch.dict(terminal.SESSIONS, {'s-live': live}), mock.patch.object(ingest, '_said_coding', said), \
+             mock.patch('taskuary.waitroom._screen', return_value=''):
+            ingest._spawn(ingest._pass_coding, s, tid, {'body': 'The first mail.', 'message_id': 11}); time.sleep(0.3)
+            ingest._spawn(ingest._pass_coding, s, tid, {'body': 'The second mail.', 'message_id': 12}); time.sleep(0.3)
+            general.OPENING.discard(tid)               # the session is up: the second pass's beat comes round first
+            assert done.wait(5)
+    finally: general.OPENING.discard(tid)
+    assert typed == ['The first mail.', 'The second mail.']
+    assert not ingest._TYPING

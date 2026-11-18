@@ -291,7 +291,7 @@ def raise_to(store, tid: int, to: str, actor: str):
     _HOLDS.pop((id(store), int(tid)), None)
     if to not in ('trusted', 'owner'): raise ValueError(f'cannot raise a task to {to!r}')
     ms = store.list_messages(tid); last = max((m['MessageId'] for m in ms), default=0)
-    senders.vouch(store, ms)          # a chat sender the owner vouched for here is trusted on their next task too
+    senders.vouch(store, ms, int((store.get_task(tid) or {}).get('TrustedThrough') or 0))          # a chat sender the owner vouched for here is trusted on their next task too
     store.update_task(tid, {'TrustedThrough': last, 'OriginBase': 'owner' if 'owner' in (to, (store.get_task(tid) or {}).get('OriginBase')) else to}, actor)
     store.audit('task', tid, 'origin_raised', actor, detail={'to': to, 'through': last})
     of_task(store, tid)
@@ -465,6 +465,16 @@ def stranger_file_path(tid: int):
     working directories" on every stranger session's first step. The folder is let in by --add-dir and by floor._own."""
     from .store import task_ref
     return stranger_path(tid) / f'{task_ref(tid)}.stranger.md'
+
+# ...HEADED BY THE TASK'S TITLE, AND ITS SUMMARY ONLY WHERE IT IS A READING (2026-11-17): a summary no model wrote is the message's own opening
+# (triage.extract_ask's fallback, ingest._is_raw_body), and over the message it put the same words in the file twice - every road that writes
+# a stranger's file heads it here
+def stranger_head(store, tid: int, t: dict = None) -> str:
+    from .ingest import _is_raw_body
+    t = t or store.get_task(tid) or {}
+    s = str(t.get('Summary') or '').strip()
+    copied = any(_is_raw_body(s, m.get('BodyText')) for m in store.list_messages(tid))
+    return f"TITLE: {t.get('Title') or ''}" + ('' if copied or not s else f"\nSUMMARY: {s}")
 
 def stranger_file(store, tid: int, parts: list) -> str:
     stranger_dir(tid); p = stranger_file_path(tid)      # made private and checked for a planted link before a word is written

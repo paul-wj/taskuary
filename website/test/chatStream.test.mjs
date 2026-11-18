@@ -268,3 +268,43 @@ test("a missing fact is one question: the reply not written yet waits under no o
   assert.equal(askedFirst({ request_id: "q1" }, [written]), false);                         // ...a reply with words is his to send
   assert.equal(askedFirst({ request_id: "q1" }, [empty, { Kind: "slot", Status: "pending", DraftText: "x" }]), false);   // ...emails wait with it
 });
+
+// A CARD HE SAID NO TO STAYS WHERE IT STOOD (the real-CLI walk, 2026-11-16: Don't send took the email off the chat, only "You dropped the email"
+// was left - the basic flow's "no card gone from the canvas"): drawn greyed with its words, under "Not sent"
+test("a card he said no to is drawn where it stood, with its words", async () => {
+  const { isPastCard } = await import("../src/chatStream.js");
+  assert.ok(isPastCard({ id: "r:9", review: 9, status: "rejected", was: { text: "Hi Erin, the open house moved" } }));
+  const src = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
+  assert.match(src, /rejected: \(\) => "Not sent - you said don't send"/);
+});
+
+// A TURN AT WORK SHOWS ITS STEPS COUNTED, SHUT (the owner, 2026-11-17: "7 minutes this is all the agent did? and that little feedback?" - 19 steps
+// stood behind three short lines): while it runs the turn draws the same quiet "n steps" fold a finished one has, over its words, closed
+test("a turn at work draws its steps behind the quiet n-steps fold, as a finished one does", async () => {
+  const src = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
+  assert.match(src, /if \(now\) \{\s*const shown = [^]*?<WorkFold k=\{`\$\{key\}:all`\} quiet parts=\{rest\}/);
+});
+
+// HIS LINE SHOWS WHAT HE SENT WITH IT (the owner, 2026-11-17: "the prompt box should show attachment of whatever goes into prompt like report,
+// dashboard, routine, attached pdf"): a pill per file on his bubble, from the press (his own line, files kept) to the heard line (`files`)
+test("his line draws a pill for every file he sent with it, from the press on", () => {
+  const src = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
+  assert.match(src, /\(x\.files \|\| \[\]\)\.map\(\(f\) => <AttachChip key=\{f\} name=\{fileName\(f\)\}/);
+  assert.match(src, /kind: "line", text: w, files: files\.map\(\(a\) => a\.path\)/);
+});
+
+// HIS ANSWER TO A PERMISSION REQUEST STAYS ITS CARD, greyed with what he pressed (the owner, 2026-11-17: "the approve card should never go anywhere")
+test("an answered permission request is drawn as its card, greyed, never a bare line", () => {
+  const ws = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8"), ac = fs.readFileSync(new URL("../src/AgentChannels.jsx", import.meta.url), "utf8");
+  assert.match(ws, /if \(x\.kind === "press" && x\.perm\) return [^\n]*\n\s+<AnsweredPermission perm=\{x\.perm\}/);
+  assert.match(ac, /export function AnsweredPermission\(\{ perm, at = "" \}\)[^]*?PERM_SAID\[perm\.answer\]/);
+});
+
+// ...AND WHILE IT WAITS BY THE BOX (the attach stress round, 2026-11-18): the strip over the box drew his words alone - a picture sent with words
+// lost its pill until heard, and one sent alone was an empty row with a trash can (browser/line-file-pill records it)
+test("a line waiting by the box draws a pill for every file he sent with it", () => {
+  const src = fs.readFileSync(new URL("../src/GeneralWorkspace.jsx", import.meta.url), "utf8");
+  const strip = src.slice(src.indexOf("const PendingStrip"), src.indexOf("function AssistantThread"));
+  assert.match(strip, /\(x\.files \|\| \[\]\)\.map\(\(f\) => <AttachChip key=\{f\} name=\{fileName\(f\)\}/);
+  assert.match(fs.readFileSync(new URL("../src/generalWorkspace.css", import.meta.url), "utf8"), /\.tq-conv-pending-row > \.tq-attach-chip \{ flex: 0 0 auto;/, "never squeezed to a few letters");
+});

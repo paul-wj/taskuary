@@ -216,6 +216,48 @@ class APressThatFailed(Acts):
         self.assertIn('Permission to northwind/ledger denied', self.s.get_review(rv['ReviewId'])['ActError'])
 
 
+class APressARestartCut(Acts):
+    """Taskuary restarted while a pressed act ran - a public comment going up, a push. Its only guard was in memory: the next start drew the
+    card waiting as if never pressed, Approve lit, so a second press ran it twice, and its agent heard nothing of the first. Invented people."""
+    def cut(self, rv):
+        import threading
+        going, hold = threading.Event(), threading.Event()
+        class Gone(BaseException): pass                       # the old process: it never comes back to settle the card
+        def run(*a, **k): going.set(); hold.wait(5); raise Gone()
+        def press():
+            try: verdicts.decide(self.s, rv, 'approve')
+            except Gone: pass
+        with mock.patch.object(proposals, '_run', run), mock.patch.object(proposals, 'validate', return_value=(True, 'comment')), \
+                mock.patch.object(general, 'tell', return_value=''):
+            t = threading.Thread(target=press, daemon=True); t.start()
+            self.assertTrue(going.wait(5))
+            term.recover_after_restart(self.s)                # what the next start reads: the act under way, its process gone
+            now = self.s.get_review(rv['ReviewId'])
+            hold.set(); t.join(5)
+        return now
+
+    def test_its_card_says_it_was_cut_and_may_have_gone(self):
+        rv = self.action({'action': 'comment_issue', 'body': 'Fixed.'})
+        now = self.cut(rv)
+        self.assertEqual(now['Status'], 'pending', 'his to press again, or not - never settled as if it ran or failed')
+        self.assertIn('Cut short when Taskuary restarted', now['ActError'] or '')
+        self.assertIn('may have', now['ActError'])
+
+    def test_its_agent_hears_it_may_have_gone_never_that_nothing_was_done(self):
+        self.answered(); rv = self.action({'action': 'comment_issue', 'body': 'Fixed.'})
+        self.cut(rv)
+        did = ' | '.join(general.owner_did(self.s, self.tid))
+        self.assertIn(f"rv{rv['ReviewId']}", did); self.assertIn('MAY have been done', did)
+        self.assertNotIn('nothing of it was done', did)
+
+    def test_a_press_that_finished_before_the_restart_is_not_cut(self):
+        rv = self.action({'action': 'comment_issue', 'body': 'Fixed.'})
+        with mock.patch.object(proposals, '_run', side_effect=RuntimeError('GitHub refused it')), mock.patch.object(proposals, 'validate', return_value=(True, 'comment')):
+            verdicts.decide(self.s, rv, 'approve')
+        term.recover_after_restart(self.s)
+        self.assertEqual(self.s.get_review(rv['ReviewId'])['ActError'], 'GitHub refused it')
+
+
 class AnApprovedHeldStepWakesItsAgent(Acts):
     def setUp(self):
         super().setUp()
@@ -304,6 +346,18 @@ class APartThatIsAnotherJob(Acts):
         self.assertEqual((out['ok'], out['status']), (False, 'superseded')); self.assertIn('not on this task', out['send_error'])
         self.assertEqual([i['id'] for i in self.s.task_checklist(self.tid)], ['a1', 'b2'])
 
+    def test_the_same_break_out_asked_twice_is_one_card(self):
+        """The same break_out proposed twice (a retried call) stood as two cards: the second, pressed after the first, failed with "not on this
+        task - name its own messages (their m-ids)", words for the agent shown to the owner. A repeat is the card already waiting; another
+        break_out moving what a waiting one moves is refused to the agent, with the card it collides with."""
+        one, _ = self.queue()
+        two, _ = self.queue(why='said again')
+        self.assertEqual(two['ReviewId'], one['ReviewId'])
+        self.assertEqual(len(self.s._rows("SELECT * FROM review WHERE TaskId=? AND Status='pending'", (self.tid,))), 1)
+        three, why = self.queue(title='Renew the permits this week', items=[])
+        self.assertIsNone(three)
+        self.assertIn(f"rv{one['ReviewId']}", why[0])
+
     def test_the_agent_is_told_it_can(self):
         self.assertIn('break_out', agenttools.TOOLS['propose'][1])
         self.assertIn('"action": "break_out"', general.action_line(self.s))
@@ -348,7 +402,7 @@ def test_a_yes_its_agent_was_handed_is_said_once_not_again_under_what_the_owner_
     time.sleep(1.1)
     s.decide_review(kept, 'approved', '{}', 'owner')
     assert any(f'rv{kept}' in d for d in general.owner_did(s, tid)), 'not handed to anyone yet: said under what the owner did'
-    with mock.patch.object(general, 'tell', side_effect=lambda st, t, said, actor='owner': told.append(said) or 'told'):
+    with mock.patch.object(general, 'tell', side_effect=lambda st, t, said, actor='owner', heard=None: told.append(said) or (heard and heard('told')) or 'told'):
         assert general.approved(s, tid, 'Approve', 'post - {"url": "https://social.example/p/1"}', review=kept) == 'told'
     assert len(told) == 1 and 'went through' in told[0]
     assert not any(f'rv{kept}' in d for d in general.owner_did(s, tid)), 'handed once - never a second time in the prompt'

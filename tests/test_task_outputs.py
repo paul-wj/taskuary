@@ -102,6 +102,26 @@ class TaskOutputsTests(unittest.TestCase):
         self.assertLessEqual(len(notes['rows'][0][1]), outputs.CELL)               # a cell is capped
         self.assertEqual(self.client.get(f'/api/task-outputs/{self.tid}/notes.md', params={'preview': 'true'}).status_code, 422)
 
+    # A WORKBOOK ASKED FOR WHILE ITS AGENT STILL WRITES IT (the owner's live task, 2026-11-17: the file card asked for its preview the second the
+    # agent was saving it, read half a zip - "File is not a zip file" - and kept "could not be read" over a workbook that was fine a moment later):
+    # a file that changed just now and does not read is waited on until it stops changing, then read
+    def test_a_workbook_still_being_written_is_read_once_it_settles(self):
+        import threading, time
+        whole = (self.dir / 'vendor comparison.xlsx').read_bytes(); half = self.dir / 'census.xlsx'
+        half.write_bytes(whole[:len(whole) // 2])
+        threading.Timer(1.0, lambda: half.write_bytes(whole)).start()
+        got = self.client.get(f'/api/task-outputs/{self.tid}/census.xlsx', params={'preview': 'true'})
+        self.assertEqual(got.status_code, 200, got.text)
+        self.assertEqual(got.json()['sheet'], 'Vendors')
+
+    def test_a_broken_workbook_that_is_not_changing_says_so_at_once(self):
+        import time
+        bad = self.dir / 'broken.xlsx'; bad.write_bytes(b'not a workbook')
+        old = time.time() - 120; os.utime(bad, (old, old))
+        t0 = time.monotonic()
+        self.assertEqual(self.client.get(f'/api/task-outputs/{self.tid}/broken.xlsx', params={'preview': 'true'}).status_code, 422)
+        self.assertLess(time.monotonic() - t0, 2)
+
     def test_rows_and_columns_are_capped(self):
         from openpyxl import Workbook
         wb = Workbook(); ws = wb.active
@@ -265,3 +285,29 @@ class OneOfEachTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# WHAT HE ATTACHED IS NOT WHAT THE AGENT MADE (the stress round of New's attachments, recorded): a file attached in New is copied into the task's
+# folder (outputs.take_in), and the chat's list of the files a turn made read every file in that folder - his own picture stood under the
+# agent's first turn as a file it made, a large preview over the chat, and went a beat later when the turn's times settled
+class HisFilesAreNotMadeTests(unittest.TestCase):
+    def setUp(self):
+        from taskuary import general
+        self.s = MemoryStore()
+        self.addCleanup(shutil.rmtree, config.home() / 'scratch' / 'outputs', True)
+        d = config.home() / 'attachments' / 'prompt' / '209903'; d.mkdir(parents=True, exist_ok=True)
+        pic = d / '20990301-090909-abc125-shot.png'; pic.write_bytes(b'\x89PNG fake'); self.addCleanup(pic.unlink, missing_ok=True)
+        p = mock.patch.object(server, 'store', self.s); p.start(); self.addCleanup(p.stop)
+        self.c = TestClient(server.app)
+        self.tid = self.c.post('/api/tasks', json={'Title': 'what is this', 'Summary': general.with_files('what is this', [str(pic)]), 'Kind': 'general'}).json()['taskId']
+        (outputs.folder(self.tid) / 'answer.md').write_text('# It is a chart', encoding='utf-8')
+
+    def test_the_chat_lists_only_what_the_agent_made(self):
+        self.assertTrue((outputs.folder(self.tid) / 'shot.png').is_file())
+        got = self.c.get(f'/api/tasks/{self.tid}/assistant').json()
+        self.assertEqual({r['name'] for r in got['outputs']}, {'answer.md'})
+
+    def test_one_a_turn_wrote_over_is_its_again(self):
+        turn = outputs.turns_folder(self.tid); turn.mkdir(parents=True, exist_ok=True); self.addCleanup(shutil.rmtree, turn, True)
+        (turn / '7.json').write_text('[{"path": "shot.png", "size": 1, "mtime": 1}]', encoding='utf-8')
+        self.assertEqual({r['name'] for r in outputs.made(self.s, self.tid)}, {'answer.md', 'shot.png'})

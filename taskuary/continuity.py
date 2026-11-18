@@ -140,9 +140,28 @@ def sent_since(store, tid) -> tuple:
     return (rv, mail_since(store, tid, str(rv.get('DecidedAt') or rv.get('CreatedAt') or ''))) if rv else (None, [])
 
 
-def sent_to(store, rv) -> str:
+def _env_to(rv) -> list:
+    try: env = json.loads((rv or {}).get('Deliver') or '{}') or {}
+    except (TypeError, ValueError): env = {}
+    to = env.get('to') if isinstance(env, dict) else None
+    return [str(x) for x in (to if isinstance(to, (list, tuple)) else [to]) if x] if to else []
+
+
+def addressees(store, rv) -> set:
+    "The addresses a reply or an email goes to, lower-cased - sent_to's, as addresses: its envelope's, else the sender of the message it answers."
+    to = _env_to(rv) or [(store.get_message((rv or {}).get('MessageId')) or {}).get('FromEmail') or '']
+    return {x.strip().lower() for x in to if x and x.strip()}
+
+
+def sent_to(store, rv, none: str = 'them') -> str:
+    """Whom a reply or an email goes to: where its envelope sends it, else who wrote the message it answers. The envelope first (2026-11-17):
+    a message the owner started answers his own ask, and the agent read its draft as going "to You"."""
+    to = _env_to(rv)
     m = store.get_message((rv or {}).get('MessageId')) or {}
-    return str(m.get('FromName') or m.get('FromEmail') or 'them').strip()
+    # ...each address by the person it is where the message answered says so - "Gail Moreno", never her address (CI, 2026-11-17)
+    named = {str(m.get('FromEmail') or '').lower(): str(m.get('FromName') or '').strip()} if m.get('FromName') else {}
+    if to: return ', '.join(named.get(x.lower()) or x for x in to)
+    return str(m.get('FromName') or m.get('FromEmail') or none).strip()
 
 
 def sent_block(store, tid, quote: int = 300, cmd: str = '') -> str:
@@ -157,6 +176,7 @@ def sent_block(store, tid, quote: int = 300, cmd: str = '') -> str:
             + (f' (then: {cmd})' if cmd else '') + '.')
 
 
+NEWS_SHOWN = 5            # how many of the messages since its last turn news_block says in their words
 def news_block(store, tid) -> str:
     """What a Continue tells the agent before anything else, when the thread moved after its last turn - or, when it did not, that
     the reply it remembers drafting already went. '' when neither."""
@@ -168,5 +188,5 @@ def news_block(store, tid) -> str:
         return f"- {m.get('FromName') or ''} <{m.get('FromEmail') or ''}> at {m.get('SentAt') or m.get('CreatedAt')}: {m.get('Subject') or ''}\n  {body}"
     return (f"NEW SINCE YOUR LAST TURN ({at}): {plural(len(mail), 'message')} came in on this task's thread after "
             "the conversation you remember - it is from BEFORE them, and the task was reopened because of them. Read them first; "
-            "what they ask is the work now, not what you finished last time.\n" + '\n'.join(one(m) for m in mail[-5:])
+            "what they ask is the work now, not what you finished last time.\n" + '\n'.join(one(m) for m in mail[-NEWS_SHOWN:])
             + (f'\n{s}' if (s := sent_block(store, tid)) else ''))     # ...unless the owner already answered them

@@ -8,8 +8,9 @@ once, on the server, with the rail's rules (funnel.left_by_facts, general_not_st
 words (lanes.json), and both pages draw what it says.
 
 The keys are lanes.json's own: a lane where the rail has one (blocked, working, approve, queued, saved, stopped,
-yours), `theirs` for a task waiting on somebody else, and for a closed task `agentdone` (the agent finished
-it) or `closed` (you did) - `agentdone` as well for an open task whose last run said it finished (workerstate.ended).
+yours), `held` for a new sender's task nothing starts on until the owner trusts them, `theirs` for a task waiting on
+somebody else, and for a closed task `agentdone` (the agent finished it) or `closed` (you did) - `agentdone` as well for an
+open task whose last run said it finished (workerstate.ended).
 
 And ONE RECORD under it (TaskState, the spine audit 2026-11-09): what is true of a task's agent - the facts, read once - and the
 rules over them, which the rail, All, the page's story and this key had each written out for themselves.
@@ -20,7 +21,7 @@ from . import funnel, workerstate
 from .processing_unread import OWNER_ACTORS, finish_evidence
 
 # the Board's columns, left to right: what each holds (T2, T3)
-BOARD = (('queued', ('queued',)), ('working', ('working',)), ('blocked', ('blocked',)),
+BOARD = (('queued', ('queued', 'held')), ('working', ('working',)), ('blocked', ('blocked',)),
          ('left', ('saved', 'stopped')), ('agentdone', ('agentdone', 'approve', 'closed')))
 
 
@@ -107,6 +108,11 @@ class TaskState:
         from . import terminal
         return terminal.SAVED in self.tags
     @property
+    def held(self) -> bool:
+        "A new sender's words hold it (ingest.HOLD_TAG, lifted by Trust): nothing starts on it until the owner says so."
+        from .ingest import HOLD_TAG
+        return HOLD_TAG in self.tags
+    @property
     def interrupted(self) -> bool:
         "Taskuary itself closed on top of a live worker (terminal.release_task, PW-262): nothing restarts by itself."
         from . import terminal
@@ -177,6 +183,10 @@ class TaskState:
         # a live session is the fact happening now - a done task continued is work in progress again (T8). A session that
         # PREDATES the close is a terminal nobody shut, not the task picked back up (the Board's old rule, kept).
         if live and t.get('Status') == 'done' and t.get('ClosedAt') and str(session.get('started') or '') < str(t['ClosedAt']): live = False
+        # ...and HIS PRESS ON A BULK CARD at work is the task at work (bulkcard.at_work, 2026-11-17): its rows wait until each is done, and the
+        # chip read "agent waiting on you" over the run doing them
+        from . import bulkcard
+        if t.get('Status') in ('open', 'in_progress') and bulkcard.at_work(store, tid): return 'working'
         if live:
             # ...by the one function every surface asks (general.working): the session's own word here, a line it was just handed (owed), or
             # an input on its way to its next turn (starting: a typed line from the press, a mail from its hand-over)
@@ -198,11 +208,17 @@ class TaskState:
         # coding task read "yours" while its adapter came up, a chat "working" (the audit, 2026-11-10)
         from .general import starting
         if starting(tid) and st in ('open', 'in_progress'): return 'working'
+        # ...and A ROUTINE RUNNING ITS STEPS is at work with no agent at all (workflows.at_work; the walk, 2026-11-17: it read "not started yet")
+        from . import workflows
+        if workflows.at_work(tid) and st in ('open', 'in_progress'): return 'working'
         if st == 'done':
             if str(t.get('UpdatedBy') or '') in OWNER_ACTORS: return 'closed'        # yours: no need to read its notes
             return 'agentdone' if finish_evidence(store, tid) else 'closed'
         if t.get('RunStatus') == 'running': return 'working'
         if waits_press(store, t, row=True): return 'approve'
+        # A NEW SENDER'S TASK IS HELD, never "waiting to start" (2026-11-17): nothing starts on it until the owner trusts the sender, and the
+        # chip, the list and the Board read the word the phone said alone (lanes.json `held`) - off the tag ingest leaves, which Trust lifts
+        if self.held: return 'held'
         # still waiting to start, a failed start included - the row carries the error and the page offers Start now / Cancel (T10)
         if self.queued: return 'queued'
         left = funnel.left_by_facts(t.get('Tags'), [{'Status': t.get('RunStatus')}] if t.get('RunStatus') else [])
@@ -255,7 +271,9 @@ def done_for_now(store, t: dict, session: dict) -> bool:
     # ...a chat agent in its own chat, unless its last turn was STOPPED (the audit, 2026-11-10: Remind me pressed mid-turn lit Mark done over the
     # turn it had just stopped, in the beat before its session rested); one of its kind in a pane (a routine's run) is read by its turns, as a
     # coding agent is
-    if handles(t) and (session.get('mode') or 'assistant') == 'assistant': return last not in ('stopped', 'failed')
+    # ...and never one that has not run a turn at all (never_ran, 2026-11-17: a held task's session, its first turn refused, read "agent done -
+    # type to carry on" on the rail over a chat no agent had worked)
+    if handles(t) and (session.get('mode') or 'assistant') == 'assistant': return last not in ('stopped', 'failed') and not never_ran(store, t, session)
     return last == 'turn_end' and not landing.asked(store, tid)
 
 
@@ -280,12 +298,12 @@ def closed_why(store, t: dict, comments=None) -> str | None:
     first line of its report. None for an open task, one the owner closed, or one its upstream item ended (`ended` says that)."""
     if not t or t.get('Status') != 'done': return None
     # ...A ROUTINE'S RUN CLOSED BY THE ROUTINE (flow.execute; the visual audit, 2026-11-13): it read "✓ Mark done just now", a press the owner
-    # never made, over nothing of what ran - its last line says that, and a draft step's line where its draft waits
+    # never made, over nothing of what ran - its last line says that. A draft step's email waits on this same task now (flow._draft,
+    # 2026-11-17), so a run closed by the routine has no draft waiting elsewhere to name
     if str(t.get('UpdatedBy') or '') == 'workflow':
         said = [str(c.get('Body') or '') for c in (comments if comments is not None else store.list_comments(t['TaskId'], internal=True) or [])
                 if c.get('Actor') == 'workflow']
-        waits = [b.split(': ', 1)[-1].rsplit(' (', 1)[0] for b in said if 'waiting for your yes on' in b]
-        if said: return 'Closed by the routine: ' + ' '.join([said[-1], *(f'{w[:1].upper()}{w[1:]}.' for w in waits)])[:400]
+        if said: return f'Closed by the routine: {said[-1]}'[:400]
     ev = finish_evidence(store, t['TaskId'])
     if not ev or str(ev.get('who') or '').startswith('Its '): return None
     from .wrapup import is_report, report_body

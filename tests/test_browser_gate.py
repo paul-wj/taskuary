@@ -1,7 +1,7 @@
 """BROWSER ACTS THAT CAN'T BE UNDONE WAIT FOR THE OWNER'S PRESS (browsergate.py): a look passes without a model; any other
 agent-browser command is judged by the model over the page; irreversible, unsure or unjudged is held as a proposal on the task and
 refused to the agent; the owner's Approve runs that exact command on that same page and tells the agent; Dismiss tells it no."""
-import json, time, unittest
+import json, re, time, unittest
 from types import SimpleNamespace
 from unittest import mock
 
@@ -21,12 +21,23 @@ class Brain:
 
 
 def verdict(v):
-    "ask_json stood in: the model's answer is `v` (a dict, or an exception to raise)."
+    "ask_json stood in: the model's answer is `v` for each act it is shown, in one call (a dict, or an exception to raise)."
     def ask(brain, system, user, want=None, need=(), **kw):
         brain.seen.append(user) if hasattr(brain, 'seen') else None
         if isinstance(v, Exception): raise v
-        return SimpleNamespace(data=v)
+        return SimpleNamespace(data={'acts': [v] * len(re.findall(r'^ACT \d+:', user, re.M))})
     return mock.patch('taskuary.llm.ask_json', ask)
+
+
+def answers(*vs, calls=None):
+    "ask_json stood in: the model's answer is the array `vs`, whatever it is shown; `calls` counts the asks."
+    def ask(brain, system, user, want=None, need=(), **kw):
+        if calls is not None: calls.append(user)
+        return SimpleNamespace(data={'acts': list(vs)})
+    return mock.patch('taskuary.llm.ask_json', ask)
+
+
+def one(store, act, pg, brain=None, **kw): return bg.judge(store, [act], pg, brain, **kw)[0]
 
 
 def on(url=CHECKOUT, snap=SNAP):
@@ -39,6 +50,22 @@ class Reading(unittest.TestCase):
                     'git status', 'grep -r agent-browser docs', 'agent-browser --session tq-1 snapshot'):
             self.assertEqual(bg.acts(cmd), [], cmd)
 
+    def test_a_read_that_fetches_a_magic_link_is_judged_as_opening_it(self):
+        link = 'https://vendor.example/invoices/approve?token=9f8e7d6c5b4a39281706f5e4d3c2b1a0ffeeddcc'
+        for cmd in (f'agent-browser open {link}', f'agent-browser read {link}', f'agent-browser read --outline {link}'):
+            self.assertEqual([x['verb'] for x in bg.acts(cmd)], ['navigate'], cmd)
+        for cmd in ('agent-browser read', 'agent-browser read https://docs.example/guide', 'agent-browser read --filter Total'):
+            self.assertEqual(bg.acts(cmd), [], cmd)
+
+    def test_a_find_that_only_reads_or_points_is_a_look(self):
+        "Searching the page is not acting on it - by agent-browser's own grammar for find's actions, never judged, never held."
+        for cmd in ('agent-browser find text "Total gross" text', 'agent-browser find role heading text --name Payroll',
+                    "agent-browser find first 'td.total' text", 'agent-browser find nth 2 ".run" hover'):
+            self.assertEqual(bg.acts(cmd), [], cmd)
+        for cmd in ('agent-browser find text "Pay now"', 'agent-browser find text "Pay now" click', 'agent-browser find role button --name Pay click',
+                    'agent-browser find nth 2 ".run" click', 'agent-browser find label "Amount" fill "412.50"'):
+            self.assertEqual([x['verb'] for x in bg.acts(cmd)], ['find'], cmd)
+
     def test_every_other_command_is_an_act_however_it_is_spelled(self):
         self.assertEqual([a['verb'] for a in bg.acts('agent-browser fill @e1 "alex" && agent-browser click @e12')], ['fill', 'click'])
         self.assertEqual(bg.acts('npx agent-browser click @e12')[0]['args'], ['click', '@e12'])
@@ -48,6 +75,34 @@ class Reading(unittest.TestCase):
         self.assertEqual(bg.acts('agent-browser find role button "Pay now" click')[0]['verb'], 'find')
         self.assertEqual(bg.acts('agent-browser click "@e12')[0]['verb'], '?')        # cannot be read: judged, never waved through
 
+    def test_a_command_run_by_another_or_inside_a_loop_is_still_an_act(self):
+        """`timeout 30 agent-browser click @e12`, `echo @e12 | xargs agent-browser click`, `sudo`, `nohup`, `env`, `nice`, and a click in a
+        `for ... do` or an `if ... then` read as no browser act at all - the click ran ungated. The shell's own grammar: its reserved words
+        open a command, and a program that runs the command after it (by its options) is no command of its own."""
+        for cmd in ('timeout 30 agent-browser click @e12', 'echo @e12 | xargs agent-browser click', 'sudo -u alex agent-browser click @e12',
+                    'nohup agent-browser click @e12 &', 'env FOO=1 agent-browser click @e12', 'time agent-browser click @e12',
+                    'nice -n 5 agent-browser click @e12', 'for r in e1 e12; do agent-browser click @$r; done',
+                    'if true; then agent-browser click @e12; fi', 'while true; do agent-browser click @e12; break; done',
+                    '{ agent-browser click @e12; }', '! agent-browser click @e12', 'stdbuf -oL timeout 9 agent-browser click @e12',
+                    'start /b agent-browser click @e12'):
+            self.assertEqual([a['verb'] for a in bg.acts(cmd)], ['click'], cmd)
+        self.assertTrue(bg.acts('Start-Process agent-browser -ArgumentList "click @e12"'))       # PowerShell's: judged, never a look
+        for cmd in ('grep -r agent-browser docs', 'echo agent-browser click', 'which agent-browser', 'timeout 5 agent-browser snapshot -i'):
+            self.assertEqual(bg.acts(cmd), [], cmd)
+
+    def test_a_press_behind_a_launcher_or_a_quote_is_still_an_act(self):
+        """`timeout 30 agent-browser click @e3` - a press on "Pay now" wrapped the way agents wrap a slow command - was read as a call of
+        `timeout` and ran past the gate, and `agent-brows''er` (one word to the shell) did not name the tool at all. A launcher runs what
+        follows it; the name is read as the shell joins it."""
+        for cmd in ('timeout 30 agent-browser click @e3', 'AGENT=1 timeout -s KILL 30 agent-browser click @e3', 'env DEBUG=1 agent-browser click @e3',
+                    'nohup agent-browser click @e3', 'sudo agent-browser click @e3', 'nice -n 5 agent-browser click @e3',
+                    'echo @e3 | xargs agent-browser click', "agent-brows''er click @e3", 'stdbuf -oL agent-browser click @e3'):
+            [a] = bg.acts(cmd)
+            self.assertEqual(a['verb'], 'click', cmd)
+            self.assertTrue(hooks.needs_gate(cmd), cmd)
+        self.assertEqual(bg.acts('timeout 30 agent-browser snapshot -i'), [], 'a look behind a launcher is still a look')
+        self.assertEqual(bg.acts('grep -rn agent-browser notes.md'), [], 'naming the tool to another program is no call of it')
+
     def test_a_line_break_in_typed_text_is_never_plain_typing(self):
         # _segments reads a newline as `;`, so a break inside quotes came back as " ; " and fill passed with no AI (2026-10-31)
         self.assertTrue(bg.typing(bg.acts('agent-browser fill @e1 "Dear Erin"')[0]))
@@ -55,6 +110,13 @@ class Reading(unittest.TestCase):
             a = bg.acts(cmd)
             if a: self.assertFalse(bg.typing(a[0]), cmd)
         self.assertEqual(bg.acts('npx agent-browser@0.41.0 click @e12')[0]['verb'], 'click')      # a pinned version is the same tool
+
+    def test_a_redirection_is_no_argument(self):
+        """The real-CLI walk, 2026-11-16: `fill @e1 "Alex Doyle" 2>/dev/null` read as fill @e1 "Alex Doyle" 2, and run for the owner the
+        box said "Alex Doyle 2". A redirection's descriptor and target are the shell's, never the command's; quoted text keeps its >."""
+        cmd = 'agent-browser fill @e1 "Alex Doyle" 2>/dev/null && agent-browser click @e3 2>&1 | tail -1; agent-browser fill @e2 x &>log.txt'
+        self.assertEqual([a['args'] for a in bg.acts(cmd)], [['fill', '@e1', 'Alex Doyle'], ['click', '@e3'], ['fill', '@e2', 'x']])
+        self.assertEqual(bg.acts('agent-browser type @e2 "a > b"')[0]['args'], ['type', '@e2', 'a > b'])
 
     def test_the_agents_own_session_flag_is_not_what_runs(self):
         self.assertEqual(bg._own_args(['--session', 'other', 'click', '@e12', '--headed']), ['click', '@e12'])
@@ -66,15 +128,15 @@ class Judging(unittest.TestCase):
     def test_the_model_reads_the_page_and_the_command(self):
         b = Brain(None)
         with verdict({'irreversible': True, 'sure': True, 'what': 'pays the $412.50 order on toll.example'}):
-            v = bg.judge(self.s, self.act, {'url': CHECKOUT, 'elements': SNAP}, b)
+            v = one(self.s, self.act, {'url': CHECKOUT, 'elements': SNAP}, b)
         self.assertEqual(v, {'hold': True, 'what': 'pays the $412.50 order on toll.example', 'why': "it can't be undone"})
         self.assertIn('button "Continue" [ref=e12]', b.seen[0]); self.assertIn('agent-browser click @e12', b.seen[0])
 
     def test_unsure_unread_or_unjudged_is_a_hold(self):
         for v in ({'irreversible': False, 'sure': False}, {'nonsense': 1}, RuntimeError('timed out')):
-            with verdict(v): self.assertTrue(bg.judge(self.s, self.act, {'url': CHECKOUT}, Brain(None))['hold'], v)
+            with verdict(v): self.assertTrue(one(self.s, self.act, {'url': CHECKOUT}, Brain(None))['hold'], v)
         with mock.patch('taskuary.llm.build_llm', return_value=None):
-            self.assertTrue(bg.judge(self.s, self.act, {'url': CHECKOUT})['hold'])      # no AI at all: it waits for the owner
+            self.assertTrue(one(self.s, self.act, {'url': CHECKOUT})['hold'])      # no AI at all: it waits for the owner
 
     def test_with_no_ai_typing_passes_and_everything_else_waits(self):
         typed = ('agent-browser fill @e1 "alex@northwind.example"', 'agent-browser type @e2 "hello"', 'agent-browser keyboard type "abc"',
@@ -84,9 +146,9 @@ class Judging(unittest.TestCase):
                    'agent-browser select @e5 "Express"', 'agent-browser find role button click --name Submit', 'agent-browser eval "1"',
                    'agent-browser find role x --exact fill click', 'agent-browser keyboard --delay 5 type "x"', 'agent-browser click "@e12')
         with mock.patch('taskuary.llm.build_llm', return_value=None):
-            for cmd in typed: self.assertFalse(bg.judge(self.s, bg.acts(cmd)[0], {'url': CHECKOUT})['hold'], cmd)
+            for cmd in typed: self.assertFalse(one(self.s, bg.acts(cmd)[0], {'url': CHECKOUT})['hold'], cmd)
             for cmd in pressed:
-                v = bg.judge(self.s, bg.acts(cmd)[0], {'url': CHECKOUT})
+                v = one(self.s, bg.acts(cmd)[0], {'url': CHECKOUT})
                 self.assertTrue(v['hold'], cmd); self.assertIn('no AI', v['why'])
             self.assertFalse(bg.typing({'args': ['type', '@e2', 'hi\nthere'], 'verb': 'type'}))     # a line break can be the form's Enter
             with on(): self.assertEqual(bg.check(self.s, self.tid, 'run1', 'agent-browser fill @e1 "a" && agent-browser fill @e2 "b"'), {})
@@ -94,14 +156,47 @@ class Judging(unittest.TestCase):
                                         ['hookSpecificOutput']['permissionDecision'], 'deny')
 
     def test_with_an_ai_typing_is_still_judged(self):
-        b = Brain(None)
+        # ...inside the line's one ask (2026-11-17): the fill is an entry of the same verdict as the click after it, never a free pass
+        b, todo = Brain(None), bg.acts('agent-browser fill @e1 "a" && agent-browser click @e12')
         with verdict({'irreversible': True, 'sure': True, 'what': 'x'}):
-            self.assertTrue(bg.judge(self.s, bg.acts('agent-browser fill @e1 "a"')[0], {'url': CHECKOUT}, b)['hold'])
-        self.assertTrue(b.seen)
+            self.assertEqual([v['hold'] for v in bg.judge(self.s, todo, {'url': CHECKOUT}, b)], [True, True])
+        [seen] = b.seen; self.assertIn('ACT 1: ', seen); self.assertIn('agent-browser fill @e1 a', seen); self.assertIn('ACT 2: ', seen)
+
+    def test_unsure_of_a_tick_or_a_choice_lets_it_go_but_sure_it_cannot_be_undone_still_holds(self):
+        """The real-CLI walk, 2026-11-16: ticking a sign-up's "I agree to the terms" box was held as "the AI could not tell whether it can be
+        undone" - the owner was handed a checkbox, and an Enter on the page could not tick it. A tick, an untick, a choice or typing sends
+        nothing: unsure on one of them it goes on. Sure it can't be undone (a toggle that saves itself), it is held as ever; a click unsure is held."""
+        unsure, sure = {'irreversible': True, 'sure': False, 'what': 'agrees to the terms'}, {'irreversible': True, 'sure': True, 'what': 'turns 2FA off'}
+        for cmd in ('agent-browser check @e4', 'agent-browser uncheck @e4', 'agent-browser select @e5 "free"', 'agent-browser fill @e1 "a"'):
+            with verdict(unsure): self.assertFalse(one(self.s, bg.acts(cmd)[0], {'url': CHECKOUT}, Brain(None))['hold'], cmd)
+            with verdict(sure): self.assertTrue(one(self.s, bg.acts(cmd)[0], {'url': CHECKOUT}, Brain(None))['hold'], cmd)
+        with verdict(unsure): self.assertTrue(one(self.s, self.act, {'url': CHECKOUT}, Brain(None))['hold'])
+
+    def test_what_the_owner_asked_for_in_his_own_words_is_done_save_money(self):
+        """The owner, 2026-11-17: "If you ask it to sign up to those sites it should do it, nothing else required." His own words are given to
+        the verdict; an act they ask for is not held for a second yes - unless it pays or moves money, which always waits. No words of his,
+        no such pass, whatever the model says."""
+        b = Brain(None)
+        said = 'Sign up for a free account on each of the ten vendors and collect their tables.'
+        with verdict({'irreversible': True, 'sure': True, 'what': 'creates an account on rentscope.example', 'asked': True, 'money': False}):
+            self.assertFalse(one(self.s, self.act, {'url': CHECKOUT, 'elements': SNAP}, b, said=said)['hold'])
+            self.assertTrue(one(self.s, self.act, {'url': CHECKOUT}, Brain(None), said='')['hold'], 'no words of his, no pass')
+        self.assertIn(said, b.seen[0])
+        with verdict({'irreversible': True, 'sure': True, 'what': 'pays $49 on dealflow.example', 'asked': True, 'money': True}):
+            self.assertTrue(one(self.s, self.act, {'url': CHECKOUT}, Brain(None), said='Sign up and pay for DealFlow Pro')['hold'])
+        # ...and a verdict that does not say whether it moves money is no "it does not": a CLI judge carries no schema, and one that left the
+        # key out passed a payment he had asked for with no press
+        with verdict({'irreversible': True, 'sure': True, 'what': 'pays $49 on dealflow.example', 'asked': True}):
+            self.assertTrue(one(self.s, self.act, {'url': CHECKOUT}, Brain(None), said='Sign up and pay for DealFlow Pro')['hold'])
+        from taskuary import general
+        self.s.add_comment(self.tid, 'owner', general.USER_TYPE, said)
+        self.s.add_comment(self.tid, general.BRIEF_ACTOR, general.USER_TYPE, 'Signed in to x - continue.')
+        self.s.add_comment(self.tid, 'assistant', general.ASSISTANT_TYPE, 'Sure.')
+        self.assertEqual(bg.asked(self.s, self.tid), said, "only his own lines, never Taskuary's or the agent's")
 
     def test_a_reversible_act_sure_of_it_passes(self):
         with verdict({'irreversible': False, 'sure': True, 'what': 'opens the order summary'}):
-            self.assertFalse(bg.judge(self.s, self.act, {'url': CHECKOUT}, Brain(None))['hold'])
+            self.assertFalse(one(self.s, self.act, {'url': CHECKOUT}, Brain(None))['hold'])
 
 
 class Holding(unittest.TestCase):
@@ -133,6 +228,69 @@ class Holding(unittest.TestCase):
         self.assertIn('pays the $412.50 order on toll.example', rv['Reason'])
         self.held()                                                                   # tried again: the same card, not a second
         self.assertEqual(len(self.pending()), 1)
+        # ...but the same ref on ANOTHER page is another act: it was folded into the first card - the agent told its "closes the account"
+        # waited on a card that said "pays $412.50", on a page the browser had left, and it never reached the owner
+        with on('https://pay.toll.example/account/close', '- button "Close my account" [ref=e12]'), \
+                verdict({'irreversible': True, 'sure': True, 'what': 'closes the account on toll.example'}):
+            bg.check(self.s, self.tid, 'run1', 'agent-browser click @e12', Brain(None))
+        self.assertEqual([json.loads(r['DraftText'])['what'] for r in self.pending()],
+                         ['pays the $412.50 order on toll.example', 'closes the account on toll.example'])
+
+    def test_the_boxes_filled_before_a_held_press_in_one_line_go_in_and_nothing_after_it_runs(self):
+        """The real-CLI walk, 2026-11-16: "fill name && fill email && click Next" was held whole - the boxes were never filled, the owner was
+        handed an empty form "left as you filled it", and every press of his was refused by the site. The acts the gate passes on their own,
+        before the held one, run first and in order; the held one waits; what comes after it does not run. One ask for the line (2026-11-17)."""
+        ran, calls, ok = [], [], {'irreversible': False, 'sure': True, 'what': 'fills the sign-up'}
+        cmd = ("agent-browser fill @e1 'Alex Doyle' && agent-browser fill @e2 alex@northwind.example && agent-browser check @e4 && "
+               "agent-browser click @e12 && agent-browser fill @e3 x")
+        with on(), answers(ok, ok, ok, {'irreversible': True, 'sure': True, 'what': 'goes to step 2 of the sign-up'}, ok, calls=calls),                 mock.patch.object(bg, '_run', lambda sid, args, wait, tag: ran.append(args) or (0, '')):
+            out = bg.check(self.s, self.tid, 'run1', cmd, Brain(None))
+        self.assertEqual(out['hookSpecificOutput']['permissionDecision'], 'deny')
+        self.assertEqual(ran, [['fill', '@e1', 'Alex Doyle'], ['fill', '@e2', 'alex@northwind.example'], ['check', '@e4']])
+        [rv] = self.pending(); self.assertEqual(json.loads(rv['DraftText'])['args'], ['click', '@e12'])
+        self.assertEqual(len(calls), 1)
+
+    def test_a_line_of_acts_is_one_ask_not_one_per_act(self):
+        # 2026-11-17: a sign-up's four fills and ticks were four model calls in a row, each with the same page, before the hook could answer
+        calls, ok = [], {'irreversible': False, 'sure': True, 'what': 'fills the form'}
+        with on(), answers(ok, ok, ok, ok, calls=calls):
+            out = bg.check(self.s, self.tid, 'run1', 'agent-browser fill @e1 "a" && agent-browser fill @e2 "b" && agent-browser check @e3 && '
+                                                     'agent-browser click @e4', Brain(None))
+        self.assertEqual((out, len(calls)), ({}, 1))
+
+    def test_an_answer_short_of_the_line_holds_from_the_first_act_it_left_out(self):
+        ran, ok = [], {'irreversible': False, 'sure': True, 'what': 'fills the form'}
+        with on(), answers(ok, ok), mock.patch.object(bg, '_run', lambda sid, args, wait, tag: ran.append(args) or (0, '')):
+            out = bg.check(self.s, self.tid, 'run1', 'agent-browser fill @e1 "a" && agent-browser fill @e2 "b" && agent-browser check @e3 && '
+                                                     'agent-browser click @e4', Brain(None))
+        self.assertIn("could not be read", out['hookSpecificOutput']['permissionDecisionReason'])
+        self.assertEqual(ran, [['fill', '@e1', 'a'], ['fill', '@e2', 'b']])
+        [rv] = self.pending(); self.assertEqual(json.loads(rv['DraftText'])['args'], ['check', '@e3'])
+
+    def test_his_words_pass_each_act_on_its_own_and_never_a_payment(self):
+        said = 'Sign up for DealFlow and buy the Pro plan.'
+        todo = bg.acts('agent-browser fill @e1 "a" && agent-browser click @e12')
+        with answers({'irreversible': True, 'sure': True, 'what': 'types', 'asked': True, 'money': False},
+                     {'irreversible': True, 'sure': True, 'what': 'pays $49', 'asked': True, 'money': True}):
+            self.assertEqual([v['hold'] for v in bg.judge(self.s, todo, {'url': CHECKOUT}, Brain(None), said=said)], [False, True])
+
+    def test_a_payment_in_a_line_that_also_pushes_is_still_judged_as_a_browser_act(self):
+        """A line that clicks Pay and pushes (`click @e12 && git push`) went to the shell gate alone: its card said "push", its Approve - or
+        a trusted repo, or the terminal's own prompt - ran the payment with it, unseen. Every gate a line touches judges its part of it."""
+        pay = {'irreversible': True, 'sure': True, 'what': 'pays the $412.50 order on toll.example', 'money': True}
+        for trust in (False, True):
+            self.s = MemoryStore(); self.tid = Factory(self.s).task('Pay the toll invoice')
+            with on(), verdict(pay), mock.patch('taskuary.shellgate.trusted', return_value='northwind/ledger' if trust else ''):
+                out = hooks.command_gate(self.s, self.tid, 'run1', 'agent-browser click @e12 && git push origin main', 'Bash', r'C:\work\ledger')
+            self.assertEqual(out['hookSpecificOutput']['permissionDecision'], 'deny', trust)
+            # ...and the agent hears that the rest of its line did not run either: told only of the click, it took its push as gone out
+            self.assertIn('Nothing else in your line ran', out['hookSpecificOutput']['permissionDecisionReason'])
+            [rv] = self.pending(); p = json.loads(rv['DraftText'])
+            self.assertEqual((p['action'], p['args']), ('browser_act', ['click', '@e12']), trust)
+            for ask in ('terminal', 'chat'):
+                with on(), verdict(pay):
+                    d = hooks.command_gate(self.s, self.tid, 'run1', 'git push origin main; agent-browser click @e12', 'Bash', r'C:\work\ledger', ask)
+                self.assertEqual(d['hookSpecificOutput']['permissionDecision'], 'deny', ask)
 
     def test_a_reversible_act_runs_and_nothing_is_queued(self):
         self.assertEqual(self.held('agent-browser fill @e1 "Northwind"', {'irreversible': False, 'sure': True, 'what': 'types a name'}), {})
@@ -146,7 +304,7 @@ class Holding(unittest.TestCase):
         ran = []
         with mock.patch.object(browserview, 'state', return_value={'open': True, 'url': CHECKOUT + '#top'}), \
                 mock.patch('taskuary.workerstate._live', return_value=self.sess), \
-                mock.patch.object(bg, '_run', lambda sid, args, wait, tag: ran.append((sid, args)) or (0, '✓ Done')):
+                mock.patch.object(bg, '_run', lambda sid, args, wait, tag: (0, SNAP) if args[0] == 'snapshot' else ran.append((sid, args)) or (0, '✓ Done')):
             out = verdicts.decide(self.s, rv, 'approve')
         self.assertTrue(out['ok'], out)
         self.assertEqual(ran, [('run1', ['click', '@e12'])])
@@ -161,6 +319,45 @@ class Holding(unittest.TestCase):
         self.assertFalse(out['ok']); self.assertIn('moved on', out['send_error'])
         run.assert_not_called()
         self.assertEqual(self.pending(), [], 'over, its error kept - the agent holds it anew (the owner, 2026-11-16: no Try again)')
+
+    def test_a_held_upload_runs_in_the_agents_folder_on_approve(self):
+        """`upload @e5 ./resume.pdf` held and approved ran from the SERVER's folder: the relative path named another file, or none, and a held
+        `download @e5 ./invoice.pdf` saved where nobody looks. The held command runs where the agent ran it, as a held shell step does."""
+        work = r'C:\work\offsite'
+        with on(snap='- button "Attach your resume" [ref=e5]'), verdict({'irreversible': True, 'sure': True, 'what': 'uploads resume.pdf to jobs.example'}):
+            hooks.command_gate(self.s, self.tid, 'run1', 'agent-browser upload @e5 ./resume.pdf', 'Bash', work)
+        [rv] = self.pending(); self.assertEqual(json.loads(rv['DraftText'])['cwd'], work)
+        ran = []
+        def run(sid, args, wait, tag, cwd=None):
+            ran.append((args, cwd)); return (0, '- button "Attach your resume" [ref=e5]') if args[0] == 'snapshot' else (0, '✓ Done')
+        with mock.patch.object(browserview, 'state', return_value={'open': True, 'url': CHECKOUT}), mock.patch.object(bg, '_run', run), \
+                mock.patch('taskuary.workerstate._live', return_value=self.sess):
+            self.assertTrue(verdicts.decide(self.s, rv, 'approve')['ok'])
+        self.assertIn((['upload', '@e5', './resume.pdf'], work), ran)
+
+    def test_a_hold_that_fails_to_be_filed_still_holds(self):
+        """The hook's route lets a command go on any error (server.cli_hook_browser), so a payment judged irreversible whose card failed to be
+        written - a busy store, a record that raised - ran with no card and no press. Once there is an act, a failure is a hold."""
+        with on(), verdict({'irreversible': True, 'sure': True, 'what': 'pays the $412.50 order on toll.example'}), \
+                mock.patch('taskuary.proposals.queue', side_effect=RuntimeError('database is locked')):
+            out = hooks.command_gate(self.s, self.tid, 'run1', 'agent-browser click @e12', 'Bash', '')
+        d = out['hookSpecificOutput']
+        self.assertEqual(d['permissionDecision'], 'deny'); self.assertIn('nothing was done', d['permissionDecisionReason'])
+
+    def test_a_ref_that_names_another_control_by_the_press_is_not_acted_on(self):
+        """A checkout on one address re-draws itself: held as @e12 "Continue", by the owner's Approve a fresh snapshot gave @e12 to "Remove
+        item" - the address was the same, so the click ran on a control nobody approved. The ref must still name what was held."""
+        self.held(); [rv] = self.pending()
+        self.assertEqual(json.loads(rv['DraftText'])['control'], {'name': 'Continue', 'role': 'button'})
+        moved = SNAP.replace('button "Continue" [ref=e12]', 'button "Remove item" [ref=e12]')
+        ran = []
+        def run(sid, args, wait, tag):
+            ran.append(args)
+            return (0, moved) if args[0] == 'snapshot' else (0, '✓ Done')
+        with mock.patch.object(browserview, 'state', return_value={'open': True, 'url': CHECKOUT}), mock.patch.object(bg, '_run', run):
+            out = verdicts.decide(self.s, rv, 'approve')
+        self.assertFalse(out['ok']); self.assertIn('no longer', out['send_error'])
+        self.assertNotIn(['click', '@e12'], ran)
 
     def test_dismiss_tells_the_agent_it_was_not_done(self):
         self.held(); [rv] = self.pending()
@@ -243,8 +440,11 @@ class HandingOver(unittest.TestCase):
         here = {'href': PAY, 'title': 'Pay for your order', 'there': True}
         done = {'href': 'http://127.0.0.1:8765/checkout/thanks', 'title': 'Thank you - payment received', 'there': False}
         self.assertTrue(bg.watch(self.s, self.tid, 'run1', rid, conn=Page(here, here, done), every=0))
-        self.assertIn('The owner pressed "Pay $42.00" on the page themselves', self.heard()[0])
+        self.assertIn('The page moved on from "Pay $42.00"', self.heard()[0])
         self.assertIn('Thank you - payment received', self.told[0])
+        # ...SAID AS SEEN: the page moving is not the press - "Back to cart" moves it too, and told "The owner pressed Pay", the agent
+        # reported a payment that was never made
+        self.assertNotIn('The owner pressed', self.told[0]); self.assertIn('not which control', self.told[0])
         self.assertIsNone(bg.handing(self.s, self.tid, 'run1'))                       # the hand-over is closed
         self.assertFalse(bg.watch(self.s, self.tid, 'run1', rid, conn=Page(done), every=0))   # ...once
 
@@ -372,6 +572,19 @@ class LooksThatAreNot(unittest.TestCase):
             out = bg.check(s, t, 's1', 'agent-browser open https://bank.example/approve?t=9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c', brain=Brain({}))
         self.assertEqual(out['hookSpecificOutput']['permissionDecision'], 'deny')
 
+    def test_an_address_that_runs_script_or_a_new_tabs_magic_link_is_judged(self):
+        """`open "javascript:document.forms[0].submit()"` sent a form as a look, never judged; and `tab new <address>` opened a magic link
+        with no look at its token - only open/goto/navigate were read for one."""
+        for cmd in ('agent-browser open "javascript:document.forms[0].submit()"', 'agent-browser goto JavaScript:void(0)',
+                    'agent-browser tab new "javascript:document.querySelector(\'#pay\').click()"',
+                    'agent-browser tab new https://bank.example/approve?t=9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c',
+                    # ...and `read <address>`, which fetches it without the browser: the same link, the same way out for what the agent read
+                    'agent-browser read https://bank.example/approve?t=9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c', 'agent-browser read https://x.example/?d=' + 'a' * 50):
+            self.assertEqual([a['verb'] for a in bg.acts(cmd)], ['navigate'], cmd)
+        for cmd in ('agent-browser tab new https://toll.example', 'agent-browser tab 2', 'agent-browser tab', 'agent-browser open about:blank',
+                    'agent-browser read', 'agent-browser read https://docs.example/guide --filter auth'):
+            self.assertEqual(bg.acts(cmd), [], cmd)
+
     def test_get_value_on_a_password_box_or_an_unknown_box_is_refused(self):
         snap = '- textbox "Email" [ref=e1]\n- textbox "Password" [ref=e2]'
         s = MemoryStore(); t = Factory(s).task()
@@ -379,6 +592,19 @@ class LooksThatAreNot(unittest.TestCase):
             self.assertEqual(bg.check(s, t, 's1', 'agent-browser get value @e1'), {})
             for ref in ('@e2', '@e9', '"#pw"'):
                 self.assertEqual(bg.check(s, t, 's1', f'agent-browser get value {ref}')['hookSpecificOutput']['permissionDecision'], 'deny', ref)
+
+
+    def test_a_script_run_while_a_password_box_holds_one_is_refused(self):
+        """`get value` on a password box is refused - and `eval` read the same box: judged only on whether it can be undone, a read passed,
+        and the password Taskuary had just typed (a sign-up's, waiting for the owner's press) was the agent's to print."""
+        snap = '- textbox "Email" [ref=e1]\n- textbox "Password" [ref=e2]'
+        cmd = 'agent-browser eval "document.querySelector(\'input[type=password]\').value"'
+        s = MemoryStore(); t = Factory(s).task()
+        with on(snap=snap), verdict({'irreversible': False, 'sure': True, 'what': 'reads the page'}):
+            with mock.patch('taskuary.signin.holds_password', return_value=True):
+                self.assertEqual(bg.check(s, t, 's1', cmd, brain=Brain({}))['hookSpecificOutput']['permissionDecision'], 'deny')
+            with mock.patch('taskuary.signin.holds_password', return_value=False):
+                self.assertEqual(bg.check(s, t, 's1', cmd, brain=Brain({})), {}, 'with no password in the page, a script is judged as before')
 
 
 class AFormFieldIsNotTheSending(unittest.TestCase):

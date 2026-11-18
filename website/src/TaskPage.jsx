@@ -6,7 +6,7 @@
 import { says, subState } from "./laneSays.js";
 import { outputRefs } from "./taskOutputs.js";
 import ContinueBox from "./ContinueBox.jsx";
-import { usePromptImages, withImages } from "./promptImages.jsx";
+import { usePromptImages, withImages, wordsOf } from "./promptImages.jsx";
 import { ASK_WHAT, RunForm } from "./RunForm.jsx";
 import CheckBackChip from "./CheckBackChip.jsx";
 import QueuedStart from "./QueuedStart.jsx";
@@ -40,6 +40,7 @@ import api from "./api";
 import { useViewExtras } from "./pageView.js";
 import { openReply as draftReply } from "./replyDraft.js";   // the component's own openReply below would shadow it, and call itself
 import { opError, runOperation } from "./taskOps.js";
+import { demoNo } from "./apiError.js";
 import { ClosingCard, WriteupBlock, WriteupLine, closeAfterSend, completeTask, writeUpThenClose } from "./closeAgent.jsx";
 import { writeupView } from "./writeupState.js";
 import { agentName } from "./agentWork.js";
@@ -50,13 +51,13 @@ import { outcomeOf } from "./dispatchOutcome.js";
 import { FailWays, failOf } from "./failure.jsx";
 import { noteKey, noteOf, onYouLine, progressLine, saveNote, settleTick, withTicks } from "./checklist.js";
 import { fmtDate, fmtTime } from "./dates.js";
-import { deliveryCc, deliveryFiles, deliveryMeta, deliverySubject, pressWords, replyContext } from "./replyDelivery.js";
+import { deliveryCc, deliveryFiles, deliveryMeta, replyContext, sentCardOf } from "./replyDelivery.js";
 import { sizeText } from "./replyFiles.js";
 import { completionTransition, cutAway, filterForSelectedState, remindWaiting, remindDay } from "./taskFilter.js";
 import ReviewDecision from "./ReviewDecision.jsx";
 import BulkCard from "./BulkCard.jsx";
 import HeldSteps from "./HeldSteps.jsx";
-import SlotList from "./SlotList.jsx";
+import SlotList, { Letter, letterItems } from "./SlotList.jsx";
 import BatchItems from "./BatchItems.jsx";
 import { progress as batchProgress } from "./batchItems.js";
 import CloseNote from "./CloseNote.jsx";
@@ -100,7 +101,7 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 // Recover once automatically; a real module error still reaches the view boundary on retry.
 import { autostartPlan, isGeneralKind, opensOnRegular } from "./autostart.js";
 import { agentWorkspaceMode, barContinues } from "./taskWorkspace.js";
-import { SECTIONS, cameFrom, chatLatch, homeSection, liveTerminal, soloTodo, replyHolds, agentStatus, agentWord, answeredOutside, reportLine, askInBody, askIsTitle, writeupAt, focusOf, fromLine as fromLineOf, fromStatus, layoutOf, sameWords, sectionFade, waitingOn, workPane } from "./taskLayout.js";
+import { SECTIONS, cameFrom, cameChip, chatLatch, homeSection, liveTerminal, soloTodo, replyHolds, agentStatus, agentWord, answeredOutside, reportLine, askInBody, askIsTitle, writeupAt, focusOf, fromLine as fromLineOf, fromStatus, layoutOf, sameWords, sectionFade, waitingOn, workPane } from "./taskLayout.js";
 import { mainView, stageOf } from "./stages.js";
 import { chatOf, taskStatus } from "./railStatus.js";
 import { StatusPill } from "./StatusMark.jsx";
@@ -810,6 +811,10 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // right often enough to be trusted, and wrong silently when it was not.
   const [repos, setRepos] = useState([]);
   const sessionAlive = !!detail?.session?.alive;
+  // ...and AT WORK unless it has answered (generalAnswered: only a chat's session says `busy`; a pty never does, and is read by its quiet).
+  // A chat's CLI stays open half an hour after its answer, and this page read the whole task every 12 s of it (stress round, 2026-11-18):
+  // its next turn - his line, a mail it wakes for - pokes task-changed, which reads at once
+  const sessionAtWork = sessionAlive && !generalAnswered(true, detail?.session);
   const hasRunningRun = (detail?.runs || []).some((r) => r.Status === "running");
   const hasAgentReport = (detail?.comments || []).some((c) => /^(?:AGENT|CODER) REPORT(?:\r?\n|$)/.test(String(c.Body || "").trimStart()));
   const hasTranscript = !!detail?.transcript;
@@ -999,8 +1004,8 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
     // a LIVE SESSION counts as much as a headless run here: the header chip is derived from
     // how long the pty has been quiet, so without re-asking it froze on whatever it said
     // when the task was opened - "needs you" over an agent that was mid-thought
-    const running = hasRunningRun || sessionAlive;
-    if (sessionAlive) sessionSettleUntil.current = Date.now() + 120000;
+    const running = hasRunningRun || sessionAtWork;
+    if (sessionAtWork) sessionSettleUntil.current = Date.now() + 120000;
     const settling = detailTaskStatus === "in_progress" && hasTranscript
       && (hasAgentReport || Date.now() < sessionSettleUntil.current);
     if (!((running || wrapping || settling || writingUp === selected) && selected)) return undefined;
@@ -1011,7 +1016,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
     // ...and it CALMS while nothing moves (2026-11-09): a running agent's page read the same task every 3 s, at up to 4 s a read on a
     // busy home. Unchanged reads stretch the gap to 12 s; a changed one - or a task-changed poke, which reads at once - brings it back.
     return pollCalming(active, async () => { const was = detailMoves.current; await loadDetail(selected); return detailMoves.current !== was; }, 3000, 12000);
-  }, [active, detailTaskStatus, hasAgentReport, hasRunningRun, hasTranscript, loadDetail, selected, sessionAlive, wrapping, writingUp]);
+  }, [active, detailTaskStatus, hasAgentReport, hasRunningRun, hasTranscript, loadDetail, selected, sessionAtWork, wrapping, writingUp]);
 
   // THE MENUS' CHANGES ARE THE TASK TOOLS (Stream B, the owner 2026-10-18: "every act leaves a receipt"): who does it, priority and
   // who holds it run down the operations road, so each is recorded and said in the chat when the task is on the Assistant's table
@@ -1191,7 +1196,6 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // a batch's items start FOLDED to their progress line: with them open, the agent's session - the thing being watched -
   // was pushed below the fold (the owner, 2026-10-13: "the coding agent should be the main view"). One click opens them.
   const [itemsOpen, setItemsOpen] = useState(false);
-  const [reportOpen, setReportOpen] = useState(false);
   // HAND IT TO A PERSON, ASKED FOR IN WORDS (the owner, 2026-11-03: "This should be sent to <an address>" did nothing): the Assistant's light
   // carries who and a note, and the form comes up with them in it - kept while it is open, so the light going out never empties what is typed
   const [handSaid, setHandSaid] = useState(null);
@@ -1199,7 +1203,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // disappears"): the draft read-only, marked, and the line that says it went and the task is closing - until the task leaves the view
   const [sentHere, setSentHere] = useState(null);
   useEffect(() => { setSentHere(null); }, [selected]);
-  useEffect(() => { setHandoff(false); setHandSaid(null); setReshape(false); setRepoPick(false); setResumeAfterRepo(null); setDiffOpen(false); setDiff(null); setShowAll(false); setOpenMsg(undefined); setPick(null); setReportOpen(false); setPeek(false); }, [selected]);
+  useEffect(() => { setHandoff(false); setHandSaid(null); setReshape(false); setRepoPick(false); setResumeAfterRepo(null); setDiffOpen(false); setDiff(null); setShowAll(false); setOpenMsg(undefined); setPick(null); setPeek(false); }, [selected]);
   useEffect(() => { if (saidHand?.to) { setHandSaid({ to: saidHand.to, note: saidHand.note || "" }); setHandoff(true); } }, [saidHand?.to, saidHand?.note]);
   // asked when the drawer opens, and only then: shelling out to git on every task poll would
   // spend a subprocess a second on an answer nobody is looking at
@@ -1580,7 +1584,8 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // equally useful. This is the human TODO, not an agent-launch advertisement.
   // ...except where Summary is Taskuary's own brief to the agent (a playbook built with AI: the setup instructions and the example
   // email's raw record - ownwork.BRIEFED): its title is the ask, and the owner's words are in the conversation
-  const taskAsk = cleanText(t?.SourceRef === "assistant:playbook" ? t?.Title : t?.Summary || sourceMessage?.BodyText || "");
+  // ...his words, never the files his ask names (wordsOf): those are pills on his line in the chat
+  const taskAsk = cleanText(t?.SourceRef === "assistant:playbook" ? t?.Title : wordsOf(t?.Summary) || sourceMessage?.BodyText || "");
   // WHAT THEY ACTUALLY SAID. A task opens on one message and then keeps collecting the rest of
   // the conversation - three WhatsApp voice notes seconds apart are one thought, and ingest
   // attaches the later ones to the same task. The panel showed the FIRST and nothing else, so a
@@ -1634,7 +1639,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // THE ASK IS TRIAGE'S SUMMARY, whole (the owner, 2026-10-16: "the ask should be the triage summary") - its first sentence alone
   // read as the sender's voice ("Assistant for Backend Monitoring flags…") with the point cut off
   // ...never Taskuary's own brief to the agent (ownwork.BRIEFED: a playbook built with AI) - its title is the ask (taskAsk)
-  const askText = (t?.SourceRef === "assistant:playbook" ? "" : cleanText(verdict?.summary || t?.Summary || opener?.ReadText || opener?.BodyText || "")) || taskAsk;
+  const askText = (t?.SourceRef === "assistant:playbook" ? "" : cleanText(verdict?.summary || wordsOf(t?.Summary) || opener?.ReadText || opener?.BodyText || "")) || taskAsk;
   const askQuoted = !verdict?.summary && !t?.Summary && !!(opener?.ReadText || opener?.BodyText);   // the sender's words, not triage's
   // ...said once where it is the title's own words (taskLayout.askIsTitle): the band under the head is for a different sentence, or who it waits on
   // ...nor under What came in when it IS that one message's words (the product audit, 2026-11-08: the to-do's paragraph stood twice) - askInBody
@@ -1746,7 +1751,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
     session: term?.alive ? { ...term, waiting: answered || isWaiting(term) } : null,
     run: liveRun, transcript: detail?.transcript, report,
     conversation: generalStarted, finished: rowState === "agentdone", state: rowState,
-    handed: !!assignedAgent(t?.Assignee) || rowState === "queued" || !!detail?.transcript || !!report || generalStarted,
+    handed: !!assignedAgent(t?.Assignee) || ["queued", "held"].includes(rowState) || !!detail?.transcript || !!report || generalStarted,
   });
   // a sender wrote again after the agent's last session (funnel.news_since_agent): the task stage leads with that message
   const news = !term?.alive && detail?.agentStory?.kind === "news" ? detail.agentStory : null;
@@ -1923,7 +1928,9 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
     const word = scope === "org" ? strangerLine(detail)?.trustOrg : detail?.origin?.trust?.person || (strangerLine(detail)?.trust ? uiMessage("Trust them") : "");
     setTrusting(scope || "person");
     try { await runOperation(api, "task.trust", selected, scope ? { scope } : undefined); await loadDetail(selected); loadTasks(); onChanged?.(); }
-    catch (e) { setErr(uiMessage("That didn't go through - {error}.{retry}", { error: opError(e, uiMessage("Taskuary didn't answer")), retry: word ? uiMessage(" Press {word} again.", { word }) : "" })); }
+    // ...the demo's no as its own line: "That didn't go through - This is the demo - ... Press Trust Priya again" asked for a press that
+    // can never work (the walk, 2026-11-18)
+    catch (e) { setErr(demoNo(e) || uiMessage("That didn't go through - {error}.{retry}", { error: opError(e, uiMessage("Taskuary didn't answer")), retry: word ? uiMessage(" Press {word} again.", { word }) : "" })); }
     finally { setTrusting(null); }
   };
   // the one white section on the shaded body (taskLayout.focusOf); a live session has no shade and no focus - it is the page
@@ -2818,6 +2825,8 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // ...AND A DRAFT THE AGENT REPLACED stays a dimmed record where it stood (the owner, 2026-11-10: "it should go gray and then it should generate
   // new email action box under it"): by its time, as it stood while it waited (agentSummary.draftHome), the new card in the turn that wrote it
   const sentBox = sentStands(sentHere, allReviews, inTurns);
+  const letterOf = Object.fromEntries((detail?.checklist || []).filter((i) => i.out).map((i) => [i.rid, i]));
+  const letters = new Set(letterItems(detail?.checklist, allReviews).map((x) => x.rv.ReviewId));
   const replacedCards = allReviews.filter(isReplaced).map((r) => ({ key: `replaced:${r.ReviewId}`, at: r.CreatedAt || "", rid: r.ReviewId, byRow: true, record: true,
     node: <ReplacedDraft review={r} /> }));
   const turnCards = [...passedCards, ...batches.map((rs) => ({ key: `batch:${rs[0].Batch}`, at: rs[0].CreatedAt || "", rid: rs[0].ReviewId, waits: true,
@@ -2826,11 +2835,16 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
     ...(inTurns ? askCards : []).map((g) => ({ key: g.key, at: g.reviews[0].CreatedAt || "", rid: g.reviews[0].ReviewId, waits: true, also: asksBelow, note: g.held ? "" : askNote(g.reviews[0]),
       node: g.held ? <HeldSteps reviews={g.reviews} toRow={inRow && !pendingReview && liveAsks === 1} onChanged={decided} />
         : <ReviewDecision review={g.reviews[0]} toRow={inRow && !pendingReview && proposals.length === 1} onChanged={decided} /> })),
-    // ...a task's email the same as a reply (the owner, 2026-11-13: "never close action boxes. once sent just say sent")
-    // ...and the one just pressed here says what the press did to the task beside it (`closing`, `kept`), as it did where its draft stood
-    ...allReviews.filter((r) => r.Kind !== "action" && WENT.includes(r.Status) && r.ReviewId !== sentBox?.id)
-      .map((r) => ({ key: `sent:${r.ReviewId}`, at: r.CreatedAt || "", rid: r.ReviewId, node: <SentCard id={r.ReviewId} text={r.FinalText || r.DraftText} channel={r.Channel || ""} done={pressWords(r).sentAs}
-        to={replyContext(r)} subject={deliverySubject(r)} at={r.DecidedAt} {...(sentHere?.id === r.ReviewId ? { closing: sentHere.closing, kept: sentHere.kept } : {})} /> }))];
+    // ...a task's email the same as a reply (the owner, 2026-11-13: "never close action boxes. once sent just say sent") - and ONE NODE from its
+    // draft to its Sent (the walk, 2026-11-17: its Send lit again, then nothing, then a sent card elsewhere at another width): the card that waits
+    // is the card that turns Sent, in its turn, by its review (`letter`: drawn with the letters while the chat's list places it nowhere yet)
+    ...allReviews.filter((r) => r.Kind === "slot" && (WENT.includes(r.Status) || (inTurns && letters.has(r.ReviewId))))
+      .map((r) => ({ key: `rv:${r.ReviewId}`, at: r.CreatedAt || "", rid: r.ReviewId, letter: true,
+        node: <Letter taskId={t?.TaskId} item={letterOf[r.ReviewId] || null} rv={r} onChanged={decided} /> })),
+    // ...and the reply just pressed here says what the press did to the task beside it (`closing`, `kept`), as it did where its draft stood
+    ...allReviews.filter((r) => r.Kind !== "action" && r.Kind !== "slot" && WENT.includes(r.Status) && r.ReviewId !== sentBox?.id)
+      .map((r) => ({ key: `sent:${r.ReviewId}`, at: r.CreatedAt || "", rid: r.ReviewId, node: <SentCard {...sentCardOf(r)}
+        {...(sentHere?.id === r.ReviewId ? { closing: sentHere.closing, kept: sentHere.kept } : {})} /> }))];
   // ...the reply that went is that card in its turn, so the chat's cards say it no second time - no "What was sent", no To over it
   const sentCarded = !!sentReview && turnCards.some((c) => c.key === `sent:${sentReview.ReviewId}`);
   // ...the reply in it only once it is written or something was said about it (replyCardShown): a reply owed that nobody wrote is the agent's
@@ -2859,8 +2873,9 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
           {calAsk?.invite && <Typography data-tq-invite="" variant="body2" sx={{ mb: 1, color: INK }}>{calAsk.line}
             {!!calAsk.clash && <Box component="span" sx={{ color: "var(--tq-danger, #7a2f3c)", fontWeight: 600 }}>{tr(" - it {clash}", { clash: calAsk.clash })}</Box>}</Typography>}
           {/* the emails that close it (slots.py), where a task's close is decided - each with its own draft */}
-          <SlotList taskId={t?.TaskId} checklist={detail?.checklist || []} reviews={allReviews}
-            onChanged={() => { loadDetail(selected); loadTasks(); onChanged?.(); }} />
+          {/* ...and where the chat has turns each stands in its own (turnCards, Letter) - here only over a to-do's box, which has none */}
+          {!inTurns && <SlotList taskId={t?.TaskId} checklist={detail?.checklist || []} reviews={allReviews}
+            onChanged={() => { loadDetail(selected); loadTasks(); onChanged?.(); }} />}
           {/* the bar comes FIRST, above the letter it acts on. What it no longer holds is
               that jump to another tab: the draft is right here, and a button whose whole job
               was sending you to another tab to do this card's own job is gone. */}
@@ -2995,7 +3010,8 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
               {unsentReview && (
                 <Box sx={{ bgcolor: PANEL2, border: `1px dashed ${BORDER}`, borderRadius: 1.25,
                   px: 1.1, py: 0.85, mt: 0.9 }}>
-                  <Typography sx={{ ...label, display: "block" }}>{tr("Not sent - closed without sending")}</Typography>
+                  {/* ...why, as the chat says it (proposals.passed_why, 2026-11-17): a draft the chat moved past was never "closed" */}
+                  <Typography sx={{ ...label, display: "block" }}>{unsentReview.Why || tr("Not sent - closed without sending")}</Typography>
                   <Typography variant="body2" sx={{ color: DIM, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
                     {unsentReview.DraftText}</Typography>
                   {/* ...and it can still go: the draft comes back to send, the task done or not (T11) */}
@@ -3034,7 +3050,8 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
   // ...only where it holds something (an empty Next steps said nothing), and marked while it waits on the owner: a resting Result keeps the chat
   // that holds it on screen (`data-tq-waits`, the agent room's :has)
   // ...the asks drawn in their turns are not this block's: with nothing else to hold it is not drawn (a "Next steps" over nothing)
-  const waits = !!(chatReview || proposals.length - (inTurns ? asks.length : 0) || owesEmails || handoff);
+  // ...nor the emails drawn in their turns (Letter)
+  const waits = !!(chatReview || proposals.length - (inTurns ? asks.length : 0) || (owesEmails && !inTurns) || handoff);
   // ...ONLY WHAT CAN STILL BE DONE (the owner, 2026-11-05: "it's a chat nothing else"): a draft waiting on Send, an invite to answer, emails owed -
   // never a closed task's "Mark done 11m ago", a reply sent outside or a draft closed without sending; the chat says those
   const chatCards = sentBox ? <SentCard {...sentBox} /> : !["done", "dropped"].includes(t?.Status) && (waits || (!inTurns && kept.length) || upFailed
@@ -3320,24 +3337,8 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                     result of the work is the thing you are looking at */}
                 {/* The checkout, and why. A wrong guess means an agent editing the wrong tree in
                     good faith, so it is stated on the page rather than buried in the prompt. */}
-                {/* In the agent view the task card (and its Came from) is not drawn, and a report task's
-                    whole substance is the report - so it is one click away here (the owner, 2026-09-30) */}
-                {sessionView && t?.Source === "report" && sourceMessage?.BodyText && (
-                  <Box sx={{ ...card, ...step, mb: 0, px: 1.5, py: 1.1, flexShrink: 0 }}>
-                    <Box onClick={() => setReportOpen((v) => !v)} sx={{ display: "flex", alignItems: "center", gap: 0.85, cursor: "pointer" }}>
-                      <Typography sx={{ ...label }}>{tr("The report")}</Typography>
-                      <Typography noWrap sx={{ color: DIM, fontSize: 11.5, flex: 1, minWidth: 0 }}>
-                        {sourceMessage.SourceName || sourceMessage.Subject} · {fmtDateTime(sourceMessage.SentAt)}</Typography>
-                      <ExpandMoreIcon sx={{ fontSize: 18, color: FAINT, transition: "transform .15s", transform: reportOpen ? "rotate(180deg)" : "none" }} />
-                    </Box>
-                    {reportOpen && (
-                      <Box sx={{ mt: 0.85, maxHeight: 420, overflowY: "auto", minWidth: 0, overflowWrap: "anywhere" }}>
-                        {looksMd(sourceMessage.BodyText) ? <Md text={cleanText(sourceMessage.BodyText)} />
-                          : <Typography variant="body2" sx={{ color: DIM, lineHeight: 1.55, whiteSpace: "pre-wrap" }}>{cleanText(sourceMessage.BodyText)}</Typography>}
-                      </Box>
-                    )}
-                  </Box>
-                )}
+                {/* ...A REPORT TASK'S REPORT IS ITS CAME FROM, and named in his first line (conversation `came`, the owner, 2026-11-17): no strip of
+                    its own over the chat */}
                 {/* ...and a BATCH's items stay in view while its agent works through them: each result lands on its line as the
                     agent reports it, and the presses on a finished line are usable without leaving the session (batch.py) */}
                 {sessionView && detail?.batch && (
@@ -3621,7 +3622,7 @@ export default function TaskPage({ taskId: selected, listRow = null, onListChang
                         onAnswered={() => { findTerm(selected); loadTasks(); loadDetail(selected); onChanged?.(); }}
                         toolsAt={canvas ? chatTools : null} noAiSaid={!notDone || (failedRun && runFix?.href === place("ai").href)} noTools={!liveSession} noComposer={isGeneral && continueHere && !chatPane} chat={home}
                         opening={agentOpening} seed={chatPane ? chatSeed : null}
-                        came={home ? { label: cameFrom(sourceMessage) ? `From ${cameFrom(sourceMessage)}` : sources.length ? cameFromLabel(sources) : fromWorkflow ? `Routine · ${fromWorkflow.title}` : "Came from",
+                        came={home ? { label: cameChip(sourceMessage) || (sources.length ? cameFromLabel(sources) : fromWorkflow ? `Routine · ${fromWorkflow.title}` : "Came from"),
                           title: "Where this came from - opens it", onOpen: twoUp ? () => openSection("from") : null } : null}
                         closedLine={closedSaid} term={term}
                         turnCards={turnCards}

@@ -219,9 +219,11 @@ def parse(text: str) -> list:
 def setting_changes(p: dict) -> tuple:
     """(changes, reason). Every named switch checked against the allow-list BEFORE it is proposed -
     so a proposal the owner sees is one that could actually be applied."""
-    out = []
-    for c in (p.get('changes') or []):
-        if not isinstance(c, dict): return [], 'a change must be an object'
+    out, got = [], p.get('changes') or []
+    # ...{switch: value} is the same changes written as one object - read as such: its keys came through below as "a change must be an object"
+    if isinstance(got, dict): got = [got] if 'name' in got else [{'name': k, 'value': v} for k, v in got.items()]
+    for c in (got if isinstance(got, list) else [got]):
+        if not isinstance(c, dict): return [], 'each change is {"name": a switch, "value": its new value} - {"connector", "name", "value"} for a connection\'s own switch'
         conn, name, val = str(c.get('connector') or '').strip().lower(), str(c.get('name') or '').strip(), c.get('value')
         if conn:
             if name not in CONNECTOR_ALLOW.get(conn, {}): return [], f'{conn}.{name} is not a switch a proposal may touch'
@@ -246,7 +248,8 @@ def validate(store, p: dict) -> tuple:
         changes, why = setting_changes(p)
         if not changes: return False, why
         return True, 'change ' + '; '.join(f"{c['name']} -> {c['value']}" for c in changes)
-    missing = [k for k in need if not str(p.get(k) or '').strip()]
+    # ...an MCP call is a call to one of its server's tools: none named could only fail at the press
+    missing = [k for k in (*need, *(('tool',) if a == 'run_tool' and p.get('type') == 'mcp' else ())) if not str(p.get(k) or '').strip()]
     if missing: return False, f'{a} needs {", ".join(missing)}'
     if a == 'publish_skill':
         from . import skillstate
@@ -323,6 +326,10 @@ def break_out(store, tid, p: dict) -> tuple:
                      + ' '.join(str(m.get('BodyText') or m.get('Subject') or '').split())[:140]
     moves = [line(msgs[m]) for m in want] + [f"to-do: {todo[i]['text']}" for i in items]
     return {**p, 'title': str(p['title']).strip()[:200], 'messages': want, 'items': items, 'moves': '\n'.join(moves)}, ''
+def _draft(r: dict) -> dict:
+    try: d = json.loads(r.get('DraftText') or '{}')
+    except ValueError: return {}
+    return d if isinstance(d, dict) else {}
 def break_out_words(p: dict) -> str:
     n = [plural(len(p[k]), w) for k, w in (('messages', 'message'), ('items', 'to-do')) if p.get(k)]
     return f"move {' and '.join(n)} to a task of its own, \"{p['title'][:120]}\""
@@ -369,12 +376,24 @@ def queue(store, task_id: int, p: dict, actor='agent', refused: list | None = No
     if p.get('action') == 'run_tool' and p.get('type') in trackers.TYPES and not str(p.get('item') or '').strip():
         it = trackers.item_of(store, task_id)
         if it and it['tracker'] == trackers.TYPES[p['type']][0]: p = {**p, 'item': it['item']}
+    # ...and an agent's says WHAT to run, never WHERE (reports.query_only, as tools/run): its connection by number, never a host, a
+    # credential or a program of its own - which the owner's Approve ran, the body winning over the card (resolve_cfg). A workflow's
+    # write is the owner's own saved step and keeps what he saved
+    several = ''
+    if p.get('action') == 'run_tool' and actor != 'workflow':
+        from .reports import REGISTRY, query_only, tool_card
+        p = {**query_only(p), **({'connector_id': p['connector_id']} if str(p.get('connector_id') or '').strip() else {})}
+        # ...on THE card it will run on, pinned now (reports.tool_card): the press ran the first card of its type, under a card naming it
+        if p.get('type') in REGISTRY and not p.get('connector_id'):
+            try: p = {**p, **({'connector_id': c['ConnectorId']} if (c := tool_card(store, p['type'])) else {})}
+            except ValueError as e: several = str(e)
     ok, why = validate(store, p)
     if ok and p.get('action') == 'publish_skill':
         from . import skillstate
         generation = skillstate.get(store, 'generation', int(p['generation_id']))
         if not generation or generation.get('task_id') != task_id:
             ok, why = False, 'a task may only propose its own Skill package'
+    if ok and several: ok, why = False, several
     # ...a new GitHub issue names its repository and a title, said to the agent now rather than at the press
     if ok and p.get('action') == 'run_tool' and p.get('type') == 'github_issue':
         from .github import issue_check, issue_labels
@@ -400,6 +419,17 @@ def queue(store, task_id: int, p: dict, actor='agent', refused: list | None = No
     if ok and p.get('action') == 'break_out':
         p, miss = break_out(store, task_id, p)
         if miss: ok, why = False, miss
+    # ...ONE CARD PER ASK (the stress round, 2026-11-18): the same proposal again - a retried call - is the card already waiting, and a
+    # break_out moving what a waiting one moves is refused: stood behind it, its press could only fail
+    if ok:
+        bare = lambda d: {k: v for k, v in d.items() if k != 'why'}
+        waiting = [(r, _draft(r)) for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Status='pending' AND Kind='action' ORDER BY ReviewId",
+                                                       (int(task_id),))]
+        if same := next((r for r, d in waiting if bare(d) == bare(p)), None):
+            return {'reviewId': same['ReviewId'], 'action': p['action'], 'already': True}
+        if p.get('action') == 'break_out' and (r := next((r for r, d in waiting if d.get('action') == 'break_out' and (
+                set(d.get('messages') or ()) & set(p['messages']) or set(d.get('items') or ()) & set(p['items']))), None)):
+            ok, why = False, f"rv{r['ReviewId']} already moves part of that to a task of its own - take it back or replace it rather than a second card"
     if ok and p.get('action') == 'save_routine':
         from . import origin, workflows
         # ...never from work a stranger started: what their mail said may be what wrote the script
@@ -519,14 +549,13 @@ def held_pending(store, tid) -> dict | None:
 SET_ASIDE = 'set aside when you moved on'
 LAND = 'land'                  # move_on's mark for the landing question (landing.pass_over) among the review ids
 LAND_LINE = '- the push/landing question you raised'
-PASSED_SAID = 'This was set aside when you moved on - ask the agent to bring it back.'
 
 
 NOT_NEEDED = 'not needed - the agent finished without it'
 
 
 def passed(rv: dict | None) -> bool:
-    "Whether review `rv` is a card the conversation moved past (move_on) - not pressable, and its press route says so (PASSED_SAID)."
+    "Whether review `rv` is a card the conversation moved past (move_on) - not pressable, and its press route says so (passed_why)."
     return bool(rv) and rv.get('Status') == 'superseded' and rv.get('DecideNote') in (SET_ASIDE, NOT_NEEDED)
 
 
@@ -638,9 +667,13 @@ AGAIN = ('If a step is still needed, raise it again as a new card (a step held f
          'say it still waits on them, and never ask them in words to press it.')
 PASSED_TOLD = ('THE OWNER MOVED ON PAST THESE CARDS OF YOURS WITHOUT PRESSING THEM - they are old news and nothing waits on the owner for '
                f'them now. {AGAIN}')
-def _passed_line(r: dict) -> str:
-    if r.get('Kind') in ('draft_reply', 'draft'): return f"- rv{r['ReviewId']}: your reply draft, which began: " + ' '.join(str(r.get('DraftText') or '').split())[:160]
-    if r.get('Kind') == 'slot': return f"- rv{r['ReviewId']}: the email you wrote, which began: " + ' '.join(str(r.get('DraftText') or '').split())[:160]
+# ...a letter with whom it was to and its words (2026-11-17): told "your reply draft, which began: Hi Gail," the agent asked whom it was for
+def _passed_line(store, r: dict) -> str:
+    from .continuity import sent_to
+    to = sent_to(store, r, '')
+    said = ' '.join(str(r.get('DraftText') or '').split())[:600] + (f' (to {to})' if to else '')
+    if r.get('Kind') in ('draft_reply', 'draft'): return f"- rv{r['ReviewId']}: your reply draft, which began: {said}"
+    if r.get('Kind') == 'slot': return f"- rv{r['ReviewId']}: the email you wrote, which began: {said}"
     try: p = json.loads(r.get('DraftText') or '{}') or {}
     except (TypeError, ValueError): p = {}
     return f"- rv{r['ReviewId']}: " + ' '.join(str(p.get('what') or p.get('command') or r.get('Reason') or p.get('action') or 'a card').split())[:200]
@@ -651,19 +684,41 @@ def passed_why(store, r: dict) -> str:
     line while the agent worked, the turn that never read it finished its draft after it, and the draft stood greyed reading "set aside when
     you moved on", as if he had done something to it). ONE sentence for every kind, from the input that moved the chat past it: the newest of
     his lines and the messages that came in, up to when it was set aside - written after it, or before the agent read it."""
-    from . import general
+    from . import continuity, general
     from .conversation import _mail, ep
     if r.get('DecideNote') == NOT_NEEDED: return 'Not needed - the agent finished without it'
     card, end = ep(r.get('DraftAt') or r.get('CreatedAt')), ep(r.get('DecidedAt')) or time.time()
-    tid = int(r['TaskId'])
+    # ...A REPLY TO FILED MAIL HAS NO TASK (2026-11-18): retired by his answer, its press crashed reading one - its thread is its own message's
+    tid = int(r['TaskId']) if r.get('TaskId') else None
     his = [x for x in store.list_comments(tid, internal=True) if x.get('ActorType') in (general.USER_TYPE, general.WAITING_TYPE)
-           and not general.is_brief(x) and x.get('Actor') == 'owner']
-    lines = [(ep(x['CreatedAt']), f'your line "{w}"', f'you wrote "{w}"') for x in his for w in [_cut(general._line_of(x.get('Body'))['text'])]]
-    mails = [(x['T'], 'your own message' if x.get('Own') else f"{x.get('FromName') or x.get('FromEmail') or 'a'}'s new message",
-              'you wrote again' if x.get('Own') else f"{x.get('FromName') or x.get('FromEmail') or 'someone'} wrote again") for x in _mail(store, tid)]
-    got = max((x for x in lines + mails if x[0] <= end + 1), key=lambda x: x[0], default=None)
+           and not general.is_brief(x) and x.get('Actor') == 'owner'] if tid else []
+    lines = [(ep(x['CreatedAt']), f'your line "{w}"', WROTE_PAST.format(line=w)) for x in his for w in [_cut(general.line_words(x))]]
+    # ...his own mail on the thread is his answer to whom it was with, never "you wrote again" (2026-11-17): the newest other sender before it
+    # ...each placed by when it CAME IN, his too (2026-11-18): his mail was placed by when he sent it and theirs by when it arrived, so mail
+    # polled together after a restart read "written before the agent read Erin's new message" over a draft his own answer had retired
+    mails, who = [], ''
+    came = lambda x: max(x['T'], ep(x.get('CreatedAt'))) if x.get('Own') else x['T']
+    # ...and his mail that went to others, not to whom the card was for (a forward to Gail on Erin's thread), says whom it went to
+    from .context import _recipients
+    mine = continuity.addressees(store, r)
+    from .ingest import is_ours
+    m = store.get_message(r.get('MessageId')) if not tid and r.get('MessageId') else None
+    rows = _mail(store, tid) if tid else [{**x, 'Own': is_ours(x), 'T': ep(x.get('CreatedAt'))}
+                                         for x in (store.thread_messages(m['ConversationId']) if m and m.get('ConversationId') else [])]
+    for at, x in sorted(((came(x), x) for x in rows), key=lambda p: (p[0], p[1]['MessageId'])):
+        n = x.get('FromName') or x.get('FromEmail')
+        if not x.get('Own'): who = n or who; mails.append((at, f"{n or 'a'}'s new message", f"Not sent - {n or 'someone'} wrote again after it")); continue
+        if (went := _recipients(x)) and mine and not mine & {a.lower() for a in went}:
+            mails.append((at, f"your mail to {', '.join(went)}", f"Not sent - you wrote to {', '.join(went)} yourself")); continue
+        to = who or continuity.sent_to(store, r, 'them')
+        mails.append((at, f'your answer to {to}', f'Not sent - you answered {to} yourself'))
+    # ...the later of two in one second (a stamp is no finer): the input listed last came in last
+    got = max(reversed([x for x in lines + mails if x[0] <= end + 1]), key=lambda x: x[0], default=None)
     if not got: return 'Not sent - set aside when the chat moved on'
-    return f'Not sent - {got[2]} after it' if got[0] >= card else f'Not sent - written before the agent read {got[1]}'
+    return got[2] if got[0] >= card else f'Not sent - written before the agent read {got[1]}'
+# ...the sentence his line greys a card with - sent with each card it could grey (conversation `aside`), so the page says it from the frame he
+# presses Enter, his line cut as _cut cuts it (chatStream.withMine), never words of its own that the read then swaps
+WROTE_PAST = 'Not sent - you wrote "{line}" after it'
 def _cut(w: str, n: int = 60) -> str: return (w := ' '.join(str(w or '').split()))[:n] + ('…' if len(w) > n else '')
 
 
@@ -672,13 +727,13 @@ def passed_since(store, tid: int, since: str) -> list:
     from . import landing
     p = (landing.record(store, int(tid)).get('proposal') or {})
     # ...from the answer's own second on: a stamp is no finer, and a draft he wrote past in the second of that answer was never told
-    return [_passed_line(r) for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Status='superseded' AND DecideNote=? AND DecidedAt>=? "
+    return [_passed_line(store, r) for r in store._rows("SELECT * FROM review WHERE TaskId=? AND Status='superseded' AND DecideNote=? AND DecidedAt>=? "
                                                  "ORDER BY ReviewId", (int(tid), SET_ASIDE, since or ''))] + ([LAND_LINE] if str(p.get('passed') or '') > (since or '') else [])
 
 
 def passed_note(store, rids: list) -> str:
     "PASSED_TOLD with the cards `rids` - for a coding agent, whose next prompt is the line that passed them; '' with none."
-    rows = [_passed_line(r) for r in (store.get_review(int(x)) for x in rids or [] if x != LAND) if r] + ([LAND_LINE] if LAND in (rids or []) else [])
+    rows = [_passed_line(store, r) for r in (store.get_review(int(x)) for x in rids or [] if x != LAND) if r] + ([LAND_LINE] if LAND in (rids or []) else [])
     return f"{PASSED_TOLD}\n" + '\n'.join(rows) if rows else ''
 
 
@@ -721,7 +776,7 @@ def closeout_due(store, tid: int):
         # a merge that already happened nor pins a commit older than the last push
         try:
             from . import github
-            cur = github.pr(ci._conn(store)['Secret'], repo, num)
+            cur = github.pr(ci._conn(store, repo)['Secret'], repo, num)
             if cur.get('state') == 'closed': return None
             sha = cur.get('sha') or sha
         except Exception as e: logger.warning(f'task {tid}: the pull request could not be read before its close-out ({e})')
@@ -814,7 +869,8 @@ def close_pr(store, rv: dict, actor='owner') -> dict:
     ok, why = validate(store, p)
     if not ok: raise RuntimeError(f'refused at execution: {why}')
     from . import ci, github
-    c, repo, num = ci._conn(store), p['repo'], int(p['number'])
+    repo, num = p['repo'], int(p['number'])
+    c = ci._conn(store, repo)
     cur = github.pr(c['Secret'], repo, num)
     if cur.get('merged'): raise RuntimeError(f'#{num} is already merged on GitHub - nothing to close')
     if cur.get('state') != 'closed': github.close_pr(c['Secret'], repo, num)
@@ -887,7 +943,8 @@ def _run(store, rv: dict, p: dict, tid, a: str, actor: str, edited, skip_checks:
         from . import github
         from .ci import _conn
         if not (at := linked(store, tid)): raise RuntimeError(NO_LINK)
-        c, (repo, num) = _conn(store), at
+        repo, num = at
+        c = _conn(store, repo)
         if a == 'comment_issue':
             url = github.comment_issue(c['Secret'], repo, num, p['body'])
             out = {'commented': f'{repo}#{num}', 'url': url}
@@ -896,7 +953,8 @@ def _run(store, rv: dict, p: dict, tid, a: str, actor: str, edited, skip_checks:
             out = {'closed': f'{repo}#{num}'}
     elif a == 'merge_pr':
         from . import ci, github, ghcloseout
-        c, repo, num = ci._conn(store), p['repo'], int(p['number'])
+        repo, num = p['repo'], int(p['number'])
+        c = ci._conn(store, repo)
         # GITHUB'S STATE DECIDES, the same reading that drew the card (ghcloseout.assess): what this repo's rules say about
         # this pull request, never our guess at them. "Close out anyway" passes only what the card offered it for.
         seen = ghcloseout.assess(store, repo, num)

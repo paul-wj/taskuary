@@ -206,3 +206,132 @@ def test_a_floor_denial_is_recorded_on_the_task_with_its_reason(monkeypatch, tmp
         ev = [e for e in s.worker_events(t) if e['Kind'] == 'floor_denied']
         assert len(ev) == 1 and ev[0]['Sid'] == 'run-p1' and 'config.toml is a protected file' in ev[0]['Text']
         assert ws.status(s, t)['state'] == 'working'                              # a refusal is a note on the run, not its state
+
+# ── L7: his line on a held task is kept, and nothing claims an agent took it (2026-11-17) ─────────────────────────
+# A no-reply sender's task, held for Trust, got Send to agent with a typed line: a session opened, its first turn was refused inside it, the
+# line was gone, and the row read "agent done - type to carry on" over a chat no agent had worked. Invented people.
+def _held(s):
+    t = s.create_task({'Title': 'Your order shipped', 'Kind': 'general', 'Source': 'email', 'Status': 'open'}, 'router')
+    s.add_message({'TaskId': t, 'Channel': 'email', 'SourceName': 'alex@northwind.example', 'FromEmail': 'no-reply@vendor.example',
+                   'FromName': 'Vendor', 'Subject': 'Shipped', 'BodyText': 'Your order shipped.', 'Status': 'routed'})
+    assert origin.hold(s, t); return t
+
+def test_a_line_sent_to_a_held_task_waits_by_the_box_and_starts_nothing(monkeypatch):
+    from taskuary import general, funnel, taskstate
+    s = MemoryStore(); t = _held(s); monkeypatch.setattr(server, 'store', s); started, opening = [], []
+    monkeypatch.setattr(general, 'provider_options', lambda *a, **k: [{'pick': 'cli:claude', 'type': 'cli'}])
+    class Ses:
+        provider, model, quick = 'Claude Code', '', False
+        def send_prompt(self, text, **kw): opening.append(t in general.OPENING)
+        def info(self, tail=0): return {'sid': 's1'}
+    monkeypatch.setattr(general, 'start_session', lambda *a, **k: started.append(a) or Ses())
+    with mock.patch.dict(terminal.SESSIONS, {}, clear=True):
+        r = TestClient(server.app).post(f'/api/tasks/{t}/dispatch', json={'kind': 'general', 'instruction': 'Reply and say thanks'})
+        assert r.status_code == 200, r.text
+        out = r.json()
+        assert not out['started'] and out['held'] == origin.hold(s, t)['line']
+        assert [w['text'] for w in general.waiting_lines(s, t)] == ['Reply and say thanks'], 'his line is kept'
+        assert started == [] and opening == [] and t not in general.OPENING and general.session_for(t) is None
+        assert taskstate.state(s, s.get_task(t)) != 'working'
+
+def test_a_chat_session_that_never_ran_a_turn_is_not_done_nor_waiting_on_him(monkeypatch):
+    "A session another road opened, whose first turn was refused for the hold: no turn ran, so no 'agent done' and no agent row."
+    from taskuary import funnel, taskstate
+    s = MemoryStore(); t = _held(s)
+    parked = {'taskId': t, 'sid': 'g1', 'agent': 'assistant', 'mode': 'assistant', 'alive': True, 'waiting': True, 'state': 'parked', 'tail': []}
+    assert not taskstate.done_for_now(s, s.get_task(t), parked)
+    assert funnel.from_agents(s, live_state=[parked]) == []
+
+def test_send_prompt_keeps_the_line_before_it_refuses_for_the_hold():
+    from taskuary import general
+    s = MemoryStore(); t = _held(s)
+    with pytest.raises(origin.RefusedForStranger): general.GeneralSession(s, t).send_prompt('Reply and say thanks')
+    assert [w['text'] for w in general.waiting_lines(s, t)] == ['Reply and say thanks']
+
+# ── L8: Trust starts the held agent with his kept line, and a start that breaks is kept on the task (2026-11-17) ──────────
+# His Trust on a held task raised TypeError (_spawn took no `vouched`): nobody started, while the chat read "You trusted the sender".
+def _held_with_line(monkeypatch):
+    from taskuary import general
+    s = MemoryStore(); t = _held(s); monkeypatch.setattr(server, 'store', s)
+    general.wait_line(s, t, 'Reply and say thanks'); return s, t
+
+def test_trust_with_an_agent_on_the_task_hands_it_the_line_vouched_for(monkeypatch):
+    "A session the old dispatch road had opened is still on it (live_agent): Trust hands the thread on, his press its vouch."
+    from taskuary import ingest
+    s, t = _held_with_line(monkeypatch); got, done = [], threading.Event()
+    monkeypatch.setattr(ingest, 'live_agent', lambda *a: 'general')
+    monkeypatch.setattr(ingest, 'thread_moved', lambda *a, **k: (got.append((a, k)), done.set()))
+    r = TestClient(server.app).post(f'/api/tasks/{t}/trust')
+    assert r.status_code == 200 and r.json()['started'] == 'handed', r.text
+    assert done.wait(5) and got[0][0][1] == t and got[0][1] == {'vouched': True}
+
+def test_trust_with_no_agent_yet_starts_one_whose_first_turn_takes_his_line(monkeypatch):
+    from taskuary import general
+    s, t = _held_with_line(monkeypatch); prompts, done = [], threading.Event()
+    monkeypatch.setattr(general, 'provider_options', lambda *a, **k: [{'pick': 'cli:claude', 'type': 'cli'}])
+    s.set_setting('general_auto_enabled', '1', 't')
+    class Ses:
+        quick = False
+        def send_prompt(self, text, *a, **kw):   # the first turn takes every line still kept with it (GeneralSession.send_prompt, take_kept)
+            prompts.append('\n\n'.join([text, *(w['text'] for w in general.waiting_lines(s, t))])); done.set(); return 'ok'
+        def info(self, tail=0): return {'sid': 's1'}
+    monkeypatch.setattr(general, 'start_session', lambda *a, **k: Ses())
+    with mock.patch.dict(terminal.SESSIONS, {}, clear=True):
+        r = TestClient(server.app).post(f'/api/tasks/{t}/trust')
+        assert r.status_code == 200 and r.json()['started'] == 'started', r.text
+        assert done.wait(5) and 'Reply and say thanks' in prompts[0]
+    general.OPENING.discard(t)
+
+def test_a_start_trust_makes_that_breaks_is_kept_on_the_task_not_a_500(monkeypatch):
+    s, t = _held_with_line(monkeypatch)
+    def boom(tid): raise RuntimeError('the CLI would not come up')
+    monkeypatch.setattr(server, '_trusted_starts', boom)
+    r = TestClient(server.app).post(f'/api/tasks/{t}/trust')
+    assert r.status_code == 200 and r.json()['started'] == '', r.text
+    assert any('would not come up' in (c['Body'] or '') for c in s.list_comments(t, internal=True)) and s.get_dispatch(t)
+
+def test_trust_pressed_twice_hands_the_waiting_line_over_once(monkeypatch):
+    """Pressed twice - a double tap, or the phone and the desk both - the second press found the task trusted and an agent on it, and
+    handed the same thread over again: the agent was told the stranger's mail twice. A press that changes nothing starts nothing."""
+    from taskuary import ingest
+    s, t = _held_with_line(monkeypatch); got = []
+    monkeypatch.setattr(ingest, 'live_agent', lambda *a: 'general')
+    monkeypatch.setattr(ingest, '_spawn', lambda fn, *a, **k: got.append(fn))
+    c = TestClient(server.app)
+    assert c.post(f'/api/tasks/{t}/trust').json()['started'] == 'handed'
+    again = c.post(f'/api/tasks/{t}/trust')
+    assert again.status_code == 200 and again.json()['origin'] == 'trusted'
+    assert len(got) == 1, got
+    assert again.json()['started']          # ...and it still says an agent has it: the first press's is at work
+
+def test_a_line_typed_in_a_held_task_s_box_is_kept_and_answered_not_a_500(monkeypatch):
+    """The box's own door (assistant/messages): his line on a held task is kept by take_line, which answers {'kept', 'held'} - and the
+    door unpacked that as (session, reply), so 'kept' was taken for a session and the request died; the page read a failed send."""
+    from taskuary import general
+    s = MemoryStore(); t = _held(s); monkeypatch.setattr(server, 'store', s)
+    with mock.patch.dict(terminal.SESSIONS, {}, clear=True):
+        c = TestClient(server.app, raise_server_exceptions=False)
+        r = c.post(f'/api/tasks/{t}/assistant/messages', json={'text': 'what does this mail want?'})
+        st = c.post(f'/api/tasks/{t}/assistant/stream', json={'text': 'and who sent it?'})
+    assert r.status_code == 200, r.text
+    assert st.status_code == 200 and [json.loads(x)['type'] for x in st.text.splitlines()] == ['done'], st.text
+    assert r.json()['reply'] == '' and origin.hold(s, t), 'nothing answers for a held task - its line waits behind Trust'
+    assert [w['text'] for w in general.waiting_lines(s, t)] == ['what does this mail want?', 'and who sent it?']
+
+def test_continue_on_a_held_task_says_the_hold_and_starts_no_session(monkeypatch):
+    """A worked task a stranger then wrote on is held again, and the rail's Continue still reaches it. Continue answered "continued",
+    opened a session and filed "The owner chose Resume" - the turn was refused for the hold and only the log said so: nothing at work
+    under a press that said it went. It answers the hold's own line now, and starts nothing; a note given with it waits behind Trust."""
+    from taskuary import general
+    s = MemoryStore(); t = _held(s); monkeypatch.setattr(server, 'store', s); opened = []
+    monkeypatch.setattr(general, 'provider_options', lambda *a, **k: [{'pick': 'cli:claude', 'type': 'cli'}])
+    monkeypatch.setattr(general, 'start_session', lambda *a, **k: opened.append(a))
+    c = TestClient(server.app)
+    with mock.patch.dict(terminal.SESSIONS, {}, clear=True):
+        r = c.post(f'/api/tasks/{t}/continue-work', json={})
+        assert r.status_code == 409 and r.json()['detail'] == origin.hold(s, t)['line'], r.text
+        n = c.post(f'/api/tasks/{t}/continue-work', json={'note': 'check the tracking number'})
+    assert n.status_code == 200 and n.json()['held'] == origin.hold(s, t)['line'] and not n.json()['continued'], n.text
+    assert [w['text'] for w in general.waiting_lines(s, t)] == ['check the tracking number']
+    assert opened == [] and t not in general.OPENING
+    assert not [x for x in s.list_comments(t, internal=True) if 'chose Resume' in (x['Body'] or '')]

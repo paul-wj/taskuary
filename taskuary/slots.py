@@ -38,11 +38,17 @@ def clean(outputs) -> list:
     return out
 
 
+# ONE ADDRESS, by its shape (a regex may parse structure): "a@x.example, b@y.example" stood as one recipient the provider refused at Send
+ADDRESS = re.compile(r'[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+')
+def is_address(a) -> bool: return bool(ADDRESS.fullmatch(str(a or '').strip()))
+
+
 def split(to: str) -> tuple:
     """('Ray Colton', 'ray@x.example') out of 'Ray Colton <ray@x.example>' - the recipient is the ADDRESS: the provider was
     handed the whole string as one and an agent writes them that way (TQ-0957). A bare name or address: ('', it)."""
-    name, addr = parseaddr(str(to or ''))
-    return (name.strip(), addr.strip()) if '@' in addr and '<' in str(to) else ('', ' '.join(str(to or '').split()))
+    to = re.sub(r'^\s*mailto:', '', str(to or ''), flags=re.I)          # ...a mailto: link copied as the address is the address
+    name, addr = parseaddr(to)
+    return (name.strip(), addr.strip()) if '@' in addr and '<' in to else ('', ' '.join(to.split()))
 
 
 def is_sender(sender, to: str, name: str = '') -> bool:
@@ -102,15 +108,21 @@ def settled(store, rv: dict, sent: bool, actor: str) -> bool:
     sid, tid = of_review(rv), rv.get('TaskId')
     if not (sid and tid): return False
     mark(store, tid, sid, done=True, actor=actor)
-    return _left(store, tid, f"{'Sent' if sent else 'Dropped'}: {rv.get('Reason') or 'one of its emails'}.", actor)
+    # ...said by whom it was to, never by the card's Reason: that is the card's prompt ("approve to send"), and after a failed press the
+    # failure itself - a second press that went read "Sent: Not sent: 550 ..." (the stress round, 2026-11-18)
+    from .cardqueue import what
+    return _left(store, tid, f"{'Sent' if sent else 'Dropped'}: {what(store, {'rids': [rv['ReviewId']], 'rows': [rv]})}.", actor)
 
 
 def _left(store, tid: int, said: str, actor: str) -> bool:
     """Say on the task what one email's send or drop leaves. False always: the task stays open - it used to close on the
     last one, past the reply's own guards; now only the owner's Mark done closes it."""
     if (store.get_task(tid) or {}).get('Status') in ('done', 'dropped'): return False
-    from . import buttons
+    from . import buttons, workflows
     n = len(open_(store, tid))
+    # ...a routine's steps still walking close their own task when nothing waits (flow._walk): "Mark done when the task is finished" was
+    # said over a run that closed itself the moment after
+    if not n and workflows.at_work(tid): store.add_comment(tid, actor, 'human', said); return False
     store.add_comment(tid, actor, 'human', f"{said} " + (f"{plural(n, 'email')} still to go." if n
                                                        else f"Every email is sent or dropped - {buttons.label('close')} when the task is finished."))
     return False
@@ -146,13 +158,14 @@ def _chat_id(to) -> bool:
     return str(to or '').split(':')[0].strip().lower() in CHAT_CHANNELS
 
 def draft(store, tid: int, text: str, to: str = '', subject: str = '', slot: str = '', agent: str = 'agent',
-          channel: str = 'email', name: str = '', cc=(), mailbox: str = '', guessed=()) -> dict:
+          channel: str = 'email', name: str = '', cc=(), mailbox: str = '', guessed=(), sends: bool = True) -> dict:
     """The agent that did the work writes one output itself - the slot named by id, else the open one to the same person,
     else a slot it adds (said on the task: the owner sees the list grow). Nothing is sent: the owner approves it. `cc`: who
     else is copied - kept on the envelope, so the card shows what the agent said it did (it said "Gail on cc" and dropped her).
     `mailbox`: the connected mailbox it leaves FROM - a + New task has no mail in to answer from, so "send it from my JOIN
     Gmail" fell to the first Outlook card, and the agent, with no way to say it, tried the Gmail card as a tool (TQ-1354).
-    `guessed`: the addresses on it the agent guessed (no address on record) - the card says so, and the owner's Send is the check."""
+    `guessed`: the addresses on it the agent guessed (no address on record) - the card says so, and the owner's Send is the check.
+    `sends`: False keeps a routine's email for his Send (flow._draft: an address a step read, not one fixed at setup)."""
     text = str(text or '').strip()
     # ...a recipient with no words is no email (the owner, 2026-11-10: "it created reply with nothing in it ... if you have nothing to reply just
     # ask what should i reply?"): nothing is filed, and the agent is told its two ways on
@@ -170,12 +183,28 @@ def draft(store, tid: int, text: str, to: str = '', subject: str = '', slot: str
         mailbox = box['address']
     cc = [a for a in (split(x)[1] for x in ([cc] if isinstance(cc, str) else cc or [])) if a]
     if cc and channel != 'email': return {'ok': False, 'why': f'{channel} has no cc - only an email can copy somebody in'}
-    if bad := [a for a in cc if '@' not in a]: return {'ok': False, 'why': f"cc takes email addresses - {', '.join(bad)} is not one"}
+    if bad := [a for a in cc if not is_address(a)]: return {'ok': False, 'why': f"cc takes email addresses - {', '.join(bad)} is not one"}
     cc = [a.lower() for a in cc]
     if (store.get_task(tid) or {}).get('Status') in ('done', 'dropped'): return {'ok': False, 'why': 'that task is closed'}
     to = split(to)[1] if channel == 'email' else ' '.join(str(to or '').split())
     if channel == 'email' and _chat_id(to): return {'ok': False, 'why': _NO_MAILBOX.format(to=to)}
+    if channel == 'email' and '@' in to and not is_address(to):
+        return {'ok': False, 'why': f"{to} is not one email address - `to` takes one; copy the others with `cc`, or give each its own email. Nothing was drafted."}
     want = ' '.join(str(to or '').split()).casefold()
+    # A GUESS WHERE HIS MAIL KNOWS THE COMPANY IS NOT MADE (the owner, 2026-11-17: an email to a made-up address at a bank bounced while the
+    # bank's contact had written three months before - "give it tool to search emails"): refused before anything stands, with the people at
+    # that company his mail knows, so the agent drafts to one of them or asks him. A company his mail never saw still takes a marked guess
+    # ...and one his mail knows is no guess, whatever the agent called it: it was refused for the others at its company, itself unlisted
+    guessed = [a.lower() for a in (split(x)[1] for x in ([guessed] if isinstance(guessed, str) else guessed or [])) if a]
+    if channel == 'email' and agent != 'owner':
+        from .people import at_domain
+        for g in [a for a in dict.fromkeys(guessed) if '@' in a]:
+            known = at_domain(store, g.rpartition('@')[2])
+            if g in {a.lower() for a, _ in known}: guessed = [a for a in guessed if a != g]; continue
+            if known: return {'ok': False, 'why': f"{g} is your guess, and the owner's mail knows {g.rpartition('@')[2]}: "
+                                                    + ', '.join(f'{a} ({n})' if n else a for a, n in known[:5])
+                                                    + ' - draft to the one this is for (search_messages and person tell you who each is), '
+                                                      'or ask the owner in one question. Nothing was drafted.'}
     hit = next((i for i in all_(store, tid) if slot and i['id'] == slot), None) or \
           next((i for i in open_(store, tid) if want and str(i['out'].get('to')).casefold() == want), None) or \
           (want and _reopen(store, tid, want, agent))
@@ -204,7 +233,6 @@ def draft(store, tid: int, text: str, to: str = '', subject: str = '', slot: str
     try: was = (json.loads(rv.get('Deliver') or '{}') or {}).get('mailbox') if rv and rv.get('Status') == 'pending' else None
     except (TypeError, ValueError): was = None
     box = (mailbox or was) if kind == 'email' else None
-    guessed = [a.lower() for a in (split(x)[1] for x in ([guessed] if isinstance(guessed, str) else guessed or [])) if a]
     if found and o['to'].lower() not in guessed: guessed.append(o['to'].lower())
     # ...an email's To holds addresses only: none found is an EMPTY To the card asks the owner to fill, never the name
     deliver = json.dumps({'channel': kind, 'to': [] if missing else [o['to']], 'cc': cc, 'subject': subj, 'slot': hit['id'], 'seen': seen(store, tid),
@@ -228,8 +256,29 @@ def draft(store, tid: int, text: str, to: str = '', subject: str = '', slot: str
         from .signatures import agent_signed
         text = agent_signed(store, store.get_review(rid), text) or text
     store.update_review_draft(rid, text, None, by=f'agent:{agent}')
-    return {'ok': True, 'review_id': rid, 'slot': hit['id'], 'added': added,
+    return {'ok': True, 'review_id': rid, 'slot': hit['id'], 'added': added, **(routine_sends(store, tid, rid, agent, missing) if sends else {}),
             **({'to_missing': to_missing(missing)} if missing else {})}
+
+
+# A ROUTINE'S OWN EMAIL GOES (the owner, 2026-11-17: "routines should send on their own too" - approval is only for what answers input from
+# outside): a routine run is his own work, so its agent's email is sent at once by the very press his Send makes (verdicts.decide, as the
+# bulk card's own run presses it), quietly - the agent is mid-turn, it hears the send in what this returns. One with no address waits for him.
+ROUTINE = 'routine'
+def routine_sends(store, tid: int, rid: int, agent: str, missing: str = '') -> dict:
+    "{'sent': True} where the task is a routine's run and its email went; {'send_error': why} where it did not; {} for any other task."
+    if agent == 'owner' or missing or (store.get_task(tid) or {}).get('Source') != 'workflow': return {}
+    from . import verdicts
+    tok = verdicts.QUIET.set(True)
+    try: out = verdicts.decide(store, store.get_review(rid), 'approve', actor=ROUTINE)
+    except Exception as e: out = {'ok': False, 'error': str(e)}
+    finally: verdicts.QUIET.reset(tok)
+    try: to = ', '.join((json.loads((store.get_review(rid) or {}).get('Deliver') or '{}') or {}).get('to') or []) or 'them'
+    except (TypeError, ValueError): to = 'them'
+    # ...and said to the agent as it happened: told the card "waits and nothing went", it reported a sent email as waiting for a press
+    if out.get('ok') and not out.get('send_error'):
+        return {'sent': True, 'says': f"Sent to {to} at once - a routine's own email goes without a press; say it went. No card waits on it."}
+    why = out.get('send_error') or out.get('error') or 'it did not go'
+    return {'send_error': why, 'says': f"Not sent to {to}: {str(why).rstrip(' .')}. Its card waits on the task for the owner's Send."}
 
 
 # ...said to the agent in the same words whichever road the draft took: the tool or `taskuary --draft` returns it at once; a draft MARKER in an

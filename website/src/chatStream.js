@@ -16,10 +16,13 @@ const argsOf = (s) => (s.args && Object.keys(s.args).length ? s.args
   : { file_path: s.file || s.text, command: s.detail || s.text, ...(s.detail ? { description: s.text } : {}), pattern: s.text, query: s.text, url: s.text });
 // ...a call over ACP is running until ACP says it ran (`status`); a log's, until something came after it. A turn that is over has nothing running
 const OVER = ["completed", "failed"];
-const runs = (s, running, last) => running && (s.status ? !OVER.includes(s.status) : last);
+// ...and a call put to the owner (permissions.calls) is neither: `held` waits on his answer, `refused` was never run - drawn as either, it read
+// "Deleted ledger-archive" over the card that asked for it, and after his Reject too (the stress round, 2026-11-18)
+const ASKED = { held: "Taskuary held this for the owner - it waits for your answer on its card.", refused: "Not run - nobody allowed it." };
+const runs = (s, running, last) => running && !ASKED[s.status] && (s.status ? !OVER.includes(s.status) : last);
 // ...and one ACP still called pending or running when nothing runs any more NEVER FINISHED - a permission left open when Taskuary restarted, a
 // session that died mid-call: drawn done, "Edited totals.py" read as made (the stress round, 2026-11-10)
-const ended = (s, output) => (s.status && !OVER.includes(s.status) ? { result: output || "It never finished.", is_error: true }
+const ended = (s, output) => (ASKED[s.status] ? { result: ASKED[s.status], is_error: true, state: s.status } : s.status && !OVER.includes(s.status) ? { result: output || "It never finished.", is_error: true }
   : { result: output, is_error: s.status === "failed" });
 export const eventsOf = (steps, running, tail = true) => steps.flatMap((s, i) => {
   const id = s.id || `t${i}`, output = String(s.output || "").trim();
@@ -123,7 +126,7 @@ export const workCount = (parts) => (parts || []).reduce((n, p) => n + (p.type =
 // turn that holds a block - a query, a script, a table - is a thing it made, not a note on its way; said before its last step, it stays in the turn
 export const isMade = (text) => /^[ \t]*(?:\x60{3}|~~~)/m.test(String(text || "")) || /^[ \t]*\|.+\|[ \t]*\n[ \t]*\|[ :|-]+\|[ \t]*$/m.test(String(text || ""));
 // A DRAFT WHERE IT STOOD, no longer the one to press (GeneralWorkspace PastCard): the list's card in one of these states, carrying what it said
-export const isPastCard = (c) => ["superseded", "passed", "withdrawn"].includes(c?.status) && !!c.was;
+export const isPastCard = (c) => ["superseded", "passed", "withdrawn", "rejected"].includes(c?.status) && !!c.was;
 // ...AND AN EARLIER VERSION NEVER TAKES ITS REVIEW'S OWN CARD (recorded 2026-11-15: a reply the agent rewrote and he then sent - the rewrite
 // is the same review - left no "Sent" card at all: the earlier draft's record, drawn first, had claimed every card of that review): the
 // reviews that still have a card of their own in the list, whatever earlier versions of them stand above it
@@ -193,7 +196,9 @@ export const withMine = (list, mine) => {
   // ...AND A REPLY DRAFT ABOVE IT GREYS IN ITS PLACE FROM THE SAME FRAME (the owner, 2026-11-12: "grey out buttons right away"): what the
   // server does as it hears the line (proposals.set_aside_drafts), drawn before its read comes back - its buttons stood lit ~300 ms
   // ...a line sent while a turn works too (the owner, 2026-11-16: "The second a new prompt comes in ... it should gray out the action card but never move")
-  const aside = (c) => (own.some((l) => !l.err) && c.status === "pending" && c.was ? { ...c, status: "passed" } : c);
+  // ...in the server's own sentence (`aside`, proposals.WROTE_PAST) with his newest line cut as proposals._cut cuts it: its read never swaps the words
+  const by = own.findLast((l) => !l.err), cut = (w) => ((w = String(w || "").trim().split(/\s+/).join(" ")).length > 60 ? `${w.slice(0, 60)}…` : w);
+  const aside = (c) => (by && c.status === "pending" && c.was ? { ...c, status: "passed", ...(c.aside ? { why: c.aside.replace("{line}", cut(by.text)) } : {}) } : c);
   const greyed = items.map((x) => (x.kind === "card" ? aside(x) : x.kind === "turn" && (x.cards || []).length ? { ...x, cards: x.cards.map(aside) } : x));
   return { items: [...greyed.slice(0, at), ...rest, ...greyed.slice(at), ...tail], pending: [...pending, ...wait] };
 };
@@ -231,14 +236,15 @@ export const waitingChips = (pending, came = "") => {
 // dots, from what the list already holds - what the turn waits on him for (`ask`), else the newest step at work in its own words
 // (agentSteps.stepLabel), else the model writing; a turn not begun yet waits for its agent to start. Plain code, never a model call
 // ...but only the CHAT'S FIRST turn says it waits for its agent (the owner, 2026-11-16, mid-conversation on a session gone idle: "Waiting for the
-// agent to start" is the app's mechanics) - a `later` turn starting is the work going on: its dots and no words, until it has a step to name
+// agent to start" is the app's mechanics) - a `later` turn starting is the work going on, and reads as the turn it becomes: bare dots stood
+// over it, then words (the walks, 2026-11-17). One whose CLI is opening is not `later` (ConvTurn), so a later line never steps back
 // `doing`: the answer it is writing, while that is the newest thing it did (conversation `doing`)
 export const workingLine = (parts, label, { starting = false, later = false, ask = "", doing = "" } = {}) => {
   if (ask) return ask;
   const steps = (parts || []).filter((p) => p.type === "work").flatMap((p) => p.steps || []), last = steps.at(-1);
   if (last?.status === "running") return String(label(last) || "").split(/\r?\n/)[0].trim() || "Working…";
   if (doing && thinkingLine(doing)) return `Writing: ${thinkingLine(doing)}`;
-  if (!last) return !starting ? "Thinking…" : later ? "" : "Waiting for the agent to start";
+  if (!last) return starting && !later ? "Waiting for the agent to start" : "Thinking…";
   // ...and WHAT IT IS THINKING, where its newest step is a thought (the owner, 2026-11-16: "Thinking..." for three minutes with nothing else):
   // that thought's latest words, as it writes them (agents.ACPSteps._thinking) - never a bare word for minutes
   return last.kind === "thought" ? thinkingLine(last.detail || last.summary) || "Thinking…" : "Thinking…";
@@ -273,6 +279,14 @@ export const askedFirst = (asking, reviews = []) => !!asking && !(reviews || [])
   && !(reviews || []).some((r) => ["draft_reply", "draft"].includes(r.Kind) && r.Status === "pending" && words(r));
 export const lettersTurn = (list, items) => { const xs = items || [], i = list?.letters ? xs.findIndex((x) => x.kind === "turn" && x.id === list.letters) : -1;
   return i >= 0 && !["starting", "working"].includes(xs[i].state) && !xs.slice(i + 1).some((x) => x.kind === "line") ? xs[i].id : ""; };
+// THE ONE TURN THAT SAYS WHAT IS LEFT TO HIM ("For you to do", the summary's `on_you`; the walk, 2026-11-17): it is the state of what is left,
+// not a record of each turn - an old turn whose ask was withdrawn grew "Give the three agenda topics" above his own answer. The newest turn, at
+// rest, with nothing of his under it (nothing new is drawn above his line), and never one whose own ask, card or letters wait: those ARE the step
+export const onYouTurn = (items, { askAt = "", lettersAt = "", landAt = "" } = {}) => {
+  const xs = items || [], i = xs.map((x) => x.kind === "turn").lastIndexOf(true), t = xs[i];
+  if (!t || ["starting", "working"].includes(t.state) || xs.slice(i + 1).some((x) => x.kind !== "arrival")) return "";
+  return [askAt, lettersAt, landAt].includes(t.id) || (t.cards || []).some((c) => c.status === "pending") ? "" : t.id;
+};
 // ...what a turn at work waits on HIM for, in words: the step its session is stopped at, a sign-in, a question
 // ...(a question the agent asked before is no wait while it works: the recorded walk, 2026-11-12, read "Waiting for your answer" over a turn
 // already at work on his answer - only a step it is stopped at, or a sign-in on the page, holds a turn at work)

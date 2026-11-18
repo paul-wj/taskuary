@@ -122,6 +122,57 @@ class TheServer(unittest.TestCase):
         text, _ = tool(self.tid, 'read_message', id=self.mid)
         self.assertIn('6% uplift', text); self.assertIn('"attachments"', text); self.assertTrue(text.startswith('⟦') and text.endswith('⟧'))
 
+    def test_an_attachment_is_read_by_the_id_as_the_tools_spell_it(self):
+        # the attach parameter names a mail's file as "attachment 12"; read_attachment took only a bare number and answered that spelling
+        # with Python's own "invalid literal for int() with base 10"
+        d = config.home() / 'attachments' / 'toolbox'; d.mkdir(parents=True, exist_ok=True)
+        (d / 'note.txt').write_text('The uplift is capped at 4%.')
+        aid = self.s.add_attachment({'MessageId': self.mid, 'ExternalId': 'r1:n', 'Name': 'note.txt', 'ContentType': 'text/plain', 'Size': 27,
+                                     'Path': str(d / 'note.txt')})
+        for spelt in (f'attachment {aid}', f'#{aid}', str(aid)):
+            text, err = tool(self.tid, 'read_attachment', id=spelt)
+            self.assertFalse(err, text); self.assertIn('capped at 4%', text)
+        text, err = tool(self.tid, 'read_attachment', id='the pdf')
+        self.assertTrue(err); self.assertNotIn('int()', text); self.assertIn('read_message', text)
+
+    def test_a_long_mail_is_read_whole_in_parts_and_never_hides_its_attachments(self):
+        """A mail is kept up to 20,000 characters and a tool's answer is cut at 12,000: read_message cut a long contract mail mid-body, so
+        the attachments listed after the body - the ids read_attachment and attach take - and the rest of the body were never seen, and
+        the cut said to "narrow the search", which a single message cannot do."""
+        words = ' '.join(f'clause{i}' for i in range(2600)) + ' THE END'
+        big = self.s.add_message({'TaskId': None, 'ExternalId': 'L1', 'ConversationId': 'conv-L', 'Channel': 'email', 'FromName': 'Gail Moreno',
+                                  'FromEmail': 'gail@northwind.example', 'Subject': 'Contract', 'BodyText': words,
+                                  'SentAt': '2026-10-21 08:00:00', 'Status': 'routed'})
+        aid = self.s.add_attachment({'MessageId': big, 'ExternalId': 'L1:1', 'Name': 'contract.pdf', 'ContentType': 'application/pdf', 'Size': 9})
+        text, err = tool(self.tid, 'read_message', id=big)
+        self.assertFalse(err, text); self.assertLessEqual(len(text), agenttools.CAP + 4)
+        self.assertIn('contract.pdf', text); self.assertIn(f'"id": {aid}', text); self.assertNotIn('narrow the search', text)
+        got, start = '', 0
+        for _ in range(5):
+            one = json.loads(text.strip('⟦⟧'))
+            got += one['body']
+            if 'body_goes_on' not in one: break
+            start = int(re.search(r'start=(\d+)', one['body_goes_on'])[1])
+            text, err = tool(self.tid, 'read_message', id=big, start=start)
+        self.assertEqual(got, words)
+
+    def test_a_long_attachment_is_read_in_parts_and_says_how_far_it_was_kept(self):
+        """read_attachment cut a long file's text at the answer's 12,000 characters behind "narrow the search" - nothing an attachment can
+        be narrowed by - and never said the file ran on past the 20,000 Taskuary keeps of it."""
+        from taskuary import attachtext
+        d = config.home() / 'attachments' / 'toolbox'; d.mkdir(parents=True, exist_ok=True)
+        words = ' '.join(f'row{i}' for i in range(6000))
+        (d / 'ledger.txt').write_text(words)
+        aid = self.s.add_attachment({'MessageId': self.mid, 'ExternalId': 'r1:l', 'Name': 'ledger.txt', 'ContentType': 'text/plain',
+                                     'Size': len(words), 'Path': str(d / 'ledger.txt')})
+        text, err = tool(self.tid, 'read_attachment', id=aid)
+        self.assertFalse(err, text); self.assertNotIn('narrow the search', text); self.assertLessEqual(len(text), agenttools.CAP + 4)
+        start = int(re.search(r'start=(\d+)', text)[1])
+        rest, err = tool(self.tid, 'read_attachment', id=aid, start=start)
+        self.assertFalse(err, rest)
+        self.assertIn(f'{len(words):,}', rest)                       # ...the whole file's length, past what is kept of it
+        self.assertTrue(words[:attachtext.KEEP_CHARS].endswith(rest.split('⟧')[0].lstrip('⟦')))      # ...the rest of what is kept, to its end
+
     def test_another_tasks_proof_is_refused(self):
         other = self.s.create_task({'Title': 'Someone else', 'Status': 'open'}, 'owner')
         r = c.post(f'/api/mcp?task={other}', headers=hdr(self.tid), json={'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})
@@ -141,7 +192,7 @@ class TheServer(unittest.TestCase):
             self.assertIn('unknown tool', r['error']['message'])
         # ...with no day, on a task with no reminder, nothing is "taken off": it says what to give
         r = rpc(theirs, 'tools/call', {'name': 'remind', 'arguments': {}}, headers=st).json()['result']
-        self.assertTrue(r['isError'], r); self.assertIn('no reminder is set', str(r))
+        self.assertTrue(r['isError'], r); self.assertIn('remind needs `when`', str(r)); self.assertFalse(self.s.get_task(theirs).get('RemindAt'))
         r = rpc(theirs, 'tools/call', {'name': 'remind', 'arguments': {'when': 'in 2 days'}}, headers=st).json()['result']
         self.assertFalse(r['isError'], r); self.assertTrue(self.s.get_task(theirs).get('RemindAt'))
         r = rpc(theirs, 'tools/call', {'name': 'check_back', 'arguments': {'when': 'tomorrow 9am', 'what': 'the export ran'}}, headers=st).json()['result']
@@ -333,3 +384,207 @@ class EverySessionGetsThem(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+
+# AN AGENT STARTS A NEW TASK BY ITSELF (the owner, 2026-11-17: "seems like the agent can not create a new task by itself? why is there a action
+# button? I think it should be able to create new task from the agent"): asked on one task for a separate job ("build a bed board in the
+# app"), the agent reached for break_out - a split of this task's own mail, which needs ids and waits for a press - and stood a card
+# "Approve all 1". A task is made inside the app and nothing leaves, so the new_task tool makes it and starts its agent, no card
+class NewTaskTool(unittest.TestCase):
+    def setUp(self):
+        self.s, self.tid, _ = world()
+        self.s.add_comment(self.tid, 'owner', 'assistant_user', 'Build a bed board in the portal for admins, and run it on the stronger model.')
+        self.p = mock.patch.object(server, 'store', self.s); self.p.start()
+
+    def tearDown(self): self.p.stop()
+
+    def test_it_makes_the_task_and_starts_its_agent_with_no_card(self):
+        with mock.patch.object(server, 'dispatch_task', return_value={'started': True, 'ref': 'TQ-0002'}) as go:
+            said, err = tool(self.tid, 'new_task', title='Bed board in the portal', ask='Build a bed board tab, admins only.', kind='general', model='claude-fable-5-2')
+        self.assertFalse(err, said)
+        new = max(t['TaskId'] for t in self.s.list_tasks())
+        self.assertNotEqual(new, self.tid)
+        t = self.s.get_task(new)
+        self.assertEqual((t['Title'], t['Kind']), ('Bed board in the portal', 'general'))
+        body = go.call_args[0][1]
+        self.assertEqual((go.call_args[0][0], body.instruction, body.model), (new, 'Build a bed board tab, admins only.', 'claude-fable-5-2'))
+        self.assertEqual(self.s._rows("SELECT * FROM review WHERE Status='pending'"), [])         # no card for a press
+        self.assertIn('TQ-', said)
+
+    def test_a_stranger_task_cannot_start_work(self):
+        from taskuary import origin
+        with mock.patch.object(origin, 'of_task', return_value=('stranger', None)), mock.patch.object(server, 'dispatch_task') as go:
+            said, err = tool(self.tid, 'new_task', title='Anything', ask='Do it.')
+        self.assertTrue(err); go.assert_not_called()
+
+    def test_the_same_job_asked_twice_is_one_task(self):
+        """An agent's tool call repeated - a retry after a timeout, a resumed session replaying its last step - made the job twice: two tasks
+        "Bed board", two agents building it. The second call is answered with the task already made, and nothing is started again."""
+        with mock.patch.object(server, 'dispatch_task', return_value={'started': True}) as go:
+            one, _ = tool(self.tid, 'new_task', title='Bed board', ask='Build it.')
+            with mock.patch('taskuary.general.history', return_value=[{'role': 'user', 'content': 'Build it.'}]):
+                two, err = tool(self.tid, 'new_task', title=' bed  Board ', ask='Build it, please.')
+        self.assertFalse(err, two)
+        self.assertEqual(len(self.s.list_tasks()), 2)
+        self.assertEqual(go.call_count, 1)
+        self.assertEqual(json.loads(one)['task'], json.loads(two)['task'])
+        self.assertEqual(sum('Started TQ-' in str(c.get('Body')) for c in self.s.list_comments(self.tid, internal=True)), 1)
+
+    def test_a_coding_job_whose_session_is_up_is_not_started_twice(self):
+        "...a coding job's CLI session keeps no general chat history: its live session is what says the first start went."
+        from types import SimpleNamespace
+        with mock.patch.object(server, 'dispatch_task', return_value={'started': True}) as go:
+            one, _ = tool(self.tid, 'new_task', title='Bed board', ask='Build it.')
+            with mock.patch.object(server.hub_term, 'session_for', return_value=SimpleNamespace(alive=True)):
+                two, _ = tool(self.tid, 'new_task', title='Bed board', ask='Build it.')
+        self.assertEqual(go.call_count, 1)
+        self.assertTrue(json.loads(two)['already'])
+
+    def test_a_coding_ask_made_general_says_so(self):
+        """With developer mode off a coding ask is made a general task, and its `repo` dropped - the answer said neither, so the agent told the
+        owner a coding agent was at work in northwind/ledger. It says what was made instead."""
+        with mock.patch.object(server, 'dispatch_task', return_value={'started': True}), mock.patch.object(server.hub_agents, 'developer_mode', return_value=False):
+            said, err = tool(self.tid, 'new_task', title='Fix rounding', ask='Fix it.', kind='coding', repo='northwind/ledger')
+        out = json.loads(said)
+        self.assertEqual(self.s.get_task(max(t['TaskId'] for t in self.s.list_tasks()))['Kind'], 'general')
+        self.assertEqual(out['kind'], 'general')
+        self.assertIn('northwind/ledger', out['repo_not_set'])
+
+    def test_the_line_on_this_task_says_whether_it_started(self):
+        """"Started TQ-0002: Bed board" was written before the start and stood in the chat over one that was refused: nothing was working on
+        it. The line says what happened - made and not started, with why; started once its start goes."""
+        lines = lambda: [c['Body'] for c in self.s.list_comments(self.tid, internal=True) if 'TQ-' in str(c.get('Body'))]
+        with mock.patch.object(server, 'dispatch_task', side_effect=server.HTTPException(422, 'No AI is connected')):
+            tool(self.tid, 'new_task', title='Bed board', ask='Build it.')
+        self.assertEqual(lines(), ['Made TQ-0002: Bed board - its agent did not start: No AI is connected'])
+        with mock.patch.object(server, 'dispatch_task', return_value={'started': True}):
+            tool(self.tid, 'new_task', title='Bed board', ask='Build it.')
+        self.assertEqual(lines()[1:], ['Started TQ-0002: Bed board'])
+
+    def test_a_job_made_but_not_started_is_started_on_the_second_ask(self):
+        "...and where the first start was refused (no AI yet), the second call starts that same task - never a second one beside it."
+        with mock.patch.object(server, 'dispatch_task', side_effect=server.HTTPException(422, 'no AI')):
+            one, _ = tool(self.tid, 'new_task', title='Bed board', ask='Build it.')
+        self.assertFalse(json.loads(one)['started'])
+        with mock.patch.object(server, 'dispatch_task', return_value={'started': True}) as go:
+            two, _ = tool(self.tid, 'new_task', title='Bed board', ask='Build it.')
+        self.assertEqual(len(self.s.list_tasks()), 2)
+        self.assertEqual((json.loads(two)['task'], json.loads(two)['started']), (json.loads(one)['task'], True))
+        self.assertEqual(go.call_args[0][0], max(t['TaskId'] for t in self.s.list_tasks()))
+
+    def test_a_start_refused_is_kept_on_the_new_task(self):
+        """A plain refusal under the new task's start ("no coding agent is set up to take it") was said only to the agent that called: the
+        owner, opening the new task, met an open task with nothing running, nothing said and nothing lit. Kept on the task, as a press's is."""
+        with mock.patch.object(server, 'dispatch_task', side_effect=server.HTTPException(422, 'no coding agent is set up to take it')):
+            said, _ = tool(self.tid, 'new_task', title='Bed board', ask='Build it.')
+        new = max(t['TaskId'] for t in self.s.list_tasks())
+        ops = [o for o in self.s.operations_for(new) if o.get('Kind') == 'dispatch.prepare' and o.get('Status') == 'error']
+        self.assertEqual(len(ops), 1, said)
+        self.assertIn('coding agent', ops[0]['Error'])
+
+    def test_the_new_task_is_asked_from_where_the_owner_asked(self):
+        """The new task was marked asked via "agent" - no door the owner has: the Assistant's list of their asks named it as asked on "Agent",
+        and its moves were said back nowhere they were talking. It is the owner's ask, made where they asked: the task they spoke on's door."""
+        from taskuary import asks
+        self.s._exec('UPDATE task SET AskedVia=? WHERE TaskId=?', ('telegram:42', self.tid))
+        with mock.patch.object(server, 'dispatch_task', return_value={'started': True}):
+            tool(self.tid, 'new_task', title='Bed board', ask='Build it.')
+            other = self.s.create_task({'Title': 'Plan the offsite', 'Kind': 'general', 'Status': 'open', 'OriginBase': 'owner'}, 'owner')
+            self.s.add_comment(other, 'owner', 'assistant_user', 'And book the venue as its own job.')
+            tool(other, 'new_task', title='Book the venue', ask='Book it.')
+        got = {t['Title']: asks.of(t) for t in self.s.list_tasks()}
+        self.assertEqual((got['Bed board'], got['Book the venue']), ('telegram:42', 'desktop'))
+
+    def test_one_item_on_a_card_tool_is_one_card_not_a_batch(self):
+        said, err = tool(self.tid, 'propose_email', items=[{'to': ['gail@northwind.example'], 'subject': 'Offsite', 'text': 'Friday it is. Alex'}])
+        self.assertFalse(err, said)
+        rows = self.s._rows("SELECT Batch FROM review WHERE TaskId=?", (self.tid,))
+        self.assertEqual([r['Batch'] for r in rows], [None])
+
+    def test_a_bulk_item_its_door_refused_is_said_never_dropped_and_none_filed_is_no_card(self):
+        "An item with no words is refused by the draft door's {ok: false}: it is named as refused, and a run where every item was says no card stands."
+        said, err = tool(self.tid, 'propose_email', items=[{'to': 'gail@northwind.example', 'subject': 'Offsite', 'text': ''},
+                                                           {'to': 'erin@northwind.example', 'subject': 'Offsite', 'text': 'Friday it is. Alex'}])
+        got = json.loads(said)
+        self.assertEqual(got['on_the_card'], 1); self.assertEqual(len(got['refused']), 1); self.assertIn('item 1', got['refused'][0])
+        said, err = tool(self.tid, 'propose_email', items=[{'to': 'ray@northwind.example', 'subject': 'Offsite', 'text': ''},
+                                                           {'to': 'omar@northwind.example', 'subject': 'Offsite', 'text': ''}])
+        got = json.loads(said)
+        self.assertFalse(got['ok']); self.assertEqual(len(got['refused']), 2); self.assertNotIn('ONE card', got['shown'])
+
+    def test_find_tools_names_only_the_tools_this_session_is_offered(self):
+        "The owner's own ask has no reply tools: find_tools for a reply named propose_reply anyway, and calling it answered \"unknown tool\"."
+        said, err = tool(self.tid, 'find_tools', query='reply to the sender')
+        self.assertFalse(err); self.assertNotIn('propose_reply', said); self.assertNotIn('reply_not_needed', said)
+        said, _ = tool(self.tid, 'find_tools', query='propose_reply')
+        self.assertIn('not offered on this task', said)
+        said, _ = tool(self.tid, 'find_tools', query='pick the git checkout')         # a coding agent's tool, on a general task
+        self.assertNotIn('use_repo', said)
+        r = rpc(self.tid, 'tools/call', {'name': 'propose_reply', 'arguments': {'text': 'x'}}).json()
+        self.assertIn('tools/list names', r['error']['message'])
+
+    def test_a_routines_email_that_went_at_once_is_never_spoken_of_as_a_waiting_card(self):
+        "A routine run's own email is sent by the draft itself (slots.routine_sends): the agent was told its card \"shows that it waits and that nothing went\"."
+        from taskuary import selfclose, slots
+        self.s._exec("UPDATE task SET Source='workflow' WHERE TaskId=?", (self.tid,))
+        with mock.patch.object(slots, 'routine_sends', return_value={'sent': True}):
+            said, err = tool(self.tid, 'propose_email', to='ray@northwind.example', subject='Quote', text='Any update on the quote? Alex')
+            self.assertFalse(err, said)
+            got = json.loads(said)
+            self.assertTrue(got['sent']); self.assertNotEqual(got['shown'], selfclose.CARD_SAID); self.assertIn('sent', got['shown'])
+            said, err = tool(self.tid, 'propose_email', items=[{'to': 'erin@northwind.example', 'subject': 'Quote', 'text': 'Any update? Alex'},
+                                                               {'to': 'gail@northwind.example', 'subject': 'Quote', 'text': 'Any update? Alex'}])
+            got = json.loads(said)
+            self.assertTrue(got['ok'], got); self.assertEqual(got['sent'], 2); self.assertNotIn('Nothing was filed', got['shown'])
+        with mock.patch.object(slots, 'routine_sends', return_value={'send_error': 'the mailbox refused the sign-in'}):
+            got = json.loads(tool(self.tid, 'propose_email', to='paula@northwind.example', subject='Quote', text='Any update? Alex')[0])
+            self.assertIn('did not go (the mailbox refused the sign-in)', got['shown'])
+
+    def test_a_settings_proposal_written_as_one_object_of_switches_is_read_as_its_changes(self):
+        "`changes: {poll_minutes: 5}` came back \"a change must be an object\" - an object, refused for not being one, with no shape said."
+        said, err = tool(self.tid, 'propose', action='settings', why='Mail should come in faster.', changes={'poll_minutes': 5})
+        self.assertFalse(err, said); self.assertTrue(json.loads(said)['queued'])
+        said, err = tool(self.tid, 'propose', action='settings', why='x', changes=['poll_minutes'])
+        self.assertTrue(err); self.assertIn('"name"', said)
+
+    def test_an_attachment_that_was_never_kept_is_a_failure_with_its_way_past_it(self):
+        "read_attachment answered \"not kept here - open the original message\" as if it were the file's text - to an agent that has no mailbox to open."
+        mid = self.s.add_message({'TaskId': self.tid, 'ExternalId': 'r9', 'ConversationId': 'conv-r', 'Channel': 'email', 'FromName': 'Gail Moreno',
+                                  'FromEmail': 'gail@northwind.example', 'Subject': 'Renewal terms', 'BodyText': 'Terms attached.',
+                                  'SentAt': '2026-10-21 08:00:00', 'Status': 'routed'})
+        aid = self.s.add_attachment({'MessageId': mid, 'Name': 'terms.pdf', 'Size': 900, 'Path': ''})
+        from taskuary import origin
+        with mock.patch.object(origin, 'of_message', return_value=('person', None)), mock.patch.object(origin, 'of_task', return_value=('person', None)):
+            said, err = tool(self.tid, 'read_attachment', id=aid)
+        self.assertTrue(err, said); self.assertIn('tell the owner', said); self.assertNotIn('open the original', said)
+
+    def test_a_list_or_a_number_given_in_another_shape_is_read_as_the_schema_has_it(self):
+        "A lone cc address, an `answers` written m12, an attachment named \"attachment 12\": read as meant - never a Pydantic dump or a cc spelled letter by letter."
+        mid = self.s.add_message({'TaskId': self.tid, 'ExternalId': 'r0', 'ConversationId': 'conv-r', 'Channel': 'email', 'FromName': 'Gail Moreno',
+                                  'FromEmail': 'gail@northwind.example', 'Subject': 'Renewal terms', 'BodyText': 'Ready for the call?',
+                                  'SentAt': '2026-10-21 08:00:00', 'Status': 'routed'})
+        from taskuary import origin
+        with mock.patch.object(origin, 'of_message', return_value=('person', None)), mock.patch.object(origin, 'of_task', return_value=('person', None)):
+            said, err = tool(self.tid, 'propose_reply', text='Yes - see you at ten.', cc='paula@northwind.example', answers=f'm{mid}')
+            self.assertFalse(err, said)
+            self.assertEqual(json.loads(said)['recipients']['cc'], ['paula@northwind.example'])
+            said, err = tool(self.tid, 'propose_email', to='erin@northwind.example', subject='Renewal', text='Notes attached.', cc='ray@northwind.example')
+            self.assertNotIn('p, a', said); self.assertNotIn('r, a, y', said)
+            self.assertEqual(json.loads(self.s.get_review(json.loads(said)['review_id'])['Deliver']).get('cc'), ['ray@northwind.example'])
+            said, err = tool(self.tid, 'read_attachment', id='attachment 77')
+            self.assertTrue(err); self.assertIn('no attachment 77', said)
+            said, err = tool(self.tid, 'search_messages', limit='ten')
+            self.assertTrue(err); self.assertIn('`limit` is a number', said)
+            for name, args, need in (('answer_invite', {}, '`answer`'), ('propose', {'why': 'x'}, '`action`'), ('person', {}, '`name`'),
+                                     ('set_up_meeting', {'title': 'Renewal'}, '`with`')):
+                said, err = tool(self.tid, name, **args)
+                self.assertTrue(err, said); self.assertIn(f'{name} needs {need}', said); self.assertNotIn('pydantic', said)
+
+
+def test_an_agent_is_told_to_offer_to_keep_code_it_wrote_as_a_routine():
+    """The owner, 2026-11-17: "if it generates code ... it should save it in taskuary deterministic scripts ... it should also offer you to
+    save it for later". Asked to save the script it wrote, the agent left a .py in Downloads: save_routine sat only in propose's long words,
+    which an agent reads by name (find_tools). The tool's own line and the guide both say it."""
+    from pathlib import Path
+    assert 'save_routine' in agenttools.SHORT['propose']
+    assert 'save_routine' in (Path(agenttools.__file__).parent / 'templates' / 'agent.md').read_text(encoding='utf-8')

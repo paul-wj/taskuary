@@ -215,6 +215,10 @@ async def _lifespan(_app):
     from . import general as _general
     try: _general.keep_cut_turns(store)
     except Exception as e: logger.warning(f'turns cut by the restart not kept: {e}')
+    # ...and a routine's run of steps it cut says so on its task (flow.keep_cut_runs) - never walked again by itself
+    from . import flow as _flow
+    try: _flow.keep_cut_runs(store)
+    except Exception as e: logger.warning(f'routine runs cut by the restart not said: {e}')
     # ...and which coding tasks run on an AI card is known again before anything reads a task (general.recall_cards)
     try: _general.recall_cards(store)
     except Exception as e: logger.warning(f'coding tasks on an AI card not recalled: {e}')
@@ -394,10 +398,10 @@ async def request_log(request: Request, call_next):
         # the error anywhere"). One line of it here, and where the rest of it is.
         logger.exception(f'{request.method} {request.url.path} crashed')
         if not request.url.path.startswith('/api'): raise
-        from .config import home
+        from . import logs
         return JSONResponse({'detail': f'{type(e).__name__}: {str(e)[:300] or "no message"}',
                              'where': f'{request.method} {request.url.path}',
-                             'log': str(home() / 'taskuary.log'), 'code': 'crashed'}, status_code=500)
+                             'log': logs.where(), 'code': 'crashed'}, status_code=500)
     # ...except a status poll that answered: the page asks every second or so, and those lines were three
     # quarters of taskuary.log - the 5 MB rotation then kept a day and a half of anything else (P13)
     if request.url.path.startswith('/api') and not (request.method == 'GET' and request.url.path in QUIET_GETS and resp.status_code < 300):
@@ -992,7 +996,9 @@ from . import __version__ as _ver
 _started = datetime.now().isoformat(sep=' ', timespec='seconds')
 
 @app.get('/api/version')
-def version(): return {'version': _ver, 'started': _started, 'cli_installer_revision': 2}
+def version():
+    from . import logs
+    return {'version': _ver, 'started': _started, 'cli_installer_revision': 2, 'log': logs.where()}
 
 # ── update in place (update.py): Settings → Updates ─────────────────────────────────────
 @app.get('/api/update')
@@ -1074,8 +1080,10 @@ def _send_state(memo: dict, channel, has_message=True) -> tuple:
 
 
 def _review_connect(memo: dict, r: dict) -> dict | None:
-    "A draft's channel not connected: the card's Connect instead of its Send (outbound.connect_fix), once per channel a request."
-    return None if r.get('Kind') == 'action' else outbound.review_connect(store, r, memo)
+    """A draft's channel not connected: the card's Connect instead of its Send (outbound.connect_fix), once per channel a request - and an
+    act's card its connector's (a post's LinkedIn), as the chat's card says it: left out for every act, a review drawn as its ActionCard off
+    this list offered Post over a network nothing had connected. A proposal no catalogue card draws has none (review_connect)."""
+    return outbound.review_connect(store, r, memo)
 
 
 def _review_send_state(memo: dict, r: dict) -> tuple:
@@ -1255,6 +1263,9 @@ def create_task(body: TaskBody):
     if len(fields['Title']) > 120: fields = {**fields, 'Summary': fields.get('Summary') or fields['Title'], 'Title': _title_cut(' '.join(fields['Title'].split()))}
     # made by the owner on the page: an ask from the desktop once an agent works it (asks.py)
     tid = store.create_task({**fields, 'AskedVia': 'desktop', 'OriginBase': 'owner'}, ACTOR)
+    # ...and a file attached in New is the task's own, in its folder - named under attachments/, its agent's Read was refused (2026-11-17)
+    from . import outputs
+    outputs.take_in_summary(store, tid, ACTOR)
     # A task created by the owner is their durable TODO. Agent runs may come and go without
     # silently completing it; only routed/triaged work is eligible for automatic completion.
     from . import selfclose
@@ -1526,11 +1537,11 @@ def _run_kind(op: dict, background: BackgroundTasks):
             except ValueError as e: raise HTTPException(422, str(e))
             prev = full_route(cfg)[line]
             # ...and who gets it, the same box the card's "to - who gets it" fills (the owner, 2026-11-02): an address, placed by the chat
-            # (concierge.route_to) - a send line's gate stays the card's own, review unless the owner set another
+            # (concierge.route_to) - a send line's gate stays the card's own (reports.GATE unless the owner set another)
             to = str(p.get('to') or '').strip()
             if to and line in ('send', 'alert'):
                 k = 'deliver' if line == 'send' else 'alert'
-                new[k] = {**({'gate': 'review'} if k == 'deliver' else {}), **(new.get(k) or {}), 'channel': 'email', 'to': to}
+                new[k] = {**(new.get(k) or {}), 'channel': 'email', 'to': to}
             store.save_source({'SourceId': tid, 'ConfigJson': json.dumps(new)}, ACTOR)
             store.audit('source', tid, 'route', 'assistant', detail={'title': title, 'line': line, 'from': prev, 'to': new['route'][line],
                                                                      **({'recipient': to} if to else {})})
@@ -2109,18 +2120,22 @@ def task_trust(task_id: int, scope: str = ''):
     """The owner vouches for everything on this task so far (origin.raise_to). Not on guard.AGENT_WRITES, so a session
     cannot vouch for itself; a stranger who writes afterwards lowers it again. `scope` 'org': for the sender's whole organisation
     (senders.trust_org) - everyone at that domain, by mail or Teams, from now on."""
-    from . import origin, senders
+    from . import origin, senders, ingest as _ing
     if not store.get_task(task_id): raise HTTPException(404, 'task not found')
+    # ...a press that lifts nothing starts nothing (pressed twice, or on the phone and the desk): the second handed the same thread over again
+    lifts = store.task_has_tag(task_id, _ing.HOLD_TAG) or origin.of_task(store, task_id)[0] == 'stranger'
     org = None
     if scope == 'org':
         try: org = senders.trust_org(store, task_id, ACTOR)
         except ValueError as e: raise HTTPException(422, str(e))
-    else: origin.raise_to(store, task_id, 'trusted', ACTOR)
-    # ...and a mail's sender is remembered for the mailbox it came to: their next message starts its agent by itself
-    m = next((m for m in store.list_messages(task_id) if m.get('Channel') == 'email' and m.get('Direction') != 'out'), None)
-    if m: store.remember_trust(m.get('SourceName'), m.get('FromEmail'), 'trusted by the owner')
+    else: origin.raise_to(store, task_id, 'trusted', ACTOR)    # ...which remembers the sender its press named (senders.vouch, the one road)
     o, why = origin.of_task(store, task_id)
-    started = _trusted_starts(task_id) if o != 'stranger' else ''
+    # ...A START THAT BREAKS IS KEPT ON THE TASK with its retry (blackboard.record_failure), never a bare 500 under "You trusted the sender"
+    # with nobody at work (2026-11-17)
+    try: started = (_trusted_starts(task_id) if lifts else 'already' if _ing.live_agent(store, task_id) or _ing.started(store, task_id) else '') if o != 'stranger' else ''
+    except Exception as e:
+        from . import blackboard as bb
+        logger.warning(f'task {task_id}: the start Trust makes failed - {e}'); bb.record_failure(store, task_id, e, 'assistant'); started = ''
     return {'origin': o, 'why': why, 'started': started, **({'org': org} if org else {})}
 
 
@@ -2209,10 +2224,12 @@ def task_detail(task_id: int):
     q = cardqueue.state(store, task_id)
     if (held := set(q['held'])): d['reviews'] = [r for r in d['reviews'] if r['ReviewId'] not in held]
     # ...and what the chat moved past reads as it will once its agent hears that (proposals.written_past): greyed in place, from this read on
-    from .proposals import SET_ASIDE
+    from .proposals import SET_ASIDE, passed, passed_why
     past = q['past']
     for r in d['reviews']:
         if r['ReviewId'] in past: r.update(Status='superseded', DecideNote=SET_ASIDE)
+        # ...and why, in the sentence the chat and a press say (2026-11-17): the kept draft read "closed without sending" over his own answer
+        if passed(r): r['Why'] = passed_why(store, r)
     # a session that has ended still leaves work to close out, so the page has to know one
     # happened - the Done and Pause buttons used to vanish with the pty
     tr = store.last_transcript(task_id)
@@ -2361,9 +2378,9 @@ def _ended_line(task_id: int, comments=None):
 
 
 def _trust_offer(task_id: int, msgs=None):
-    "funnel.held_offer, never in the way of opening the task: an offer that could not be worded is the plain Trust them."
-    from . import funnel
-    try: return funnel.held_offer(store, task_id, msgs)
+    "senders.trust_offer, never in the way of opening the task: an offer that could not be worded is the plain Trust them."
+    from . import senders
+    try: return senders.trust_offer(store, task_id, msgs)
     except Exception as e:
         logger.debug(f'task {task_id}: trust offer skipped - {e}'); return {'person': 'Trust them', 'org': None}
 
@@ -2461,7 +2478,7 @@ def _assistant_payload(task_id: int, session=None):
         cards.append({**{k: r.get(k) for k in ('ReviewId', 'Status', 'CreatedAt', 'DecidedAt', 'Reason', 'ActError')}, 'post': p, 'after': at_turn(r.get('CreatedAt')),
                       'network': _proposals.POSTS.get(p['type']) or (_cat.by_type(act['card']) or {}).get('title') or act['card'],
                       'as': who or (c or {}).get('Name') or '',
-                      'connect': outbound.connect_fix(store, act['card']) if r.get('Status') == 'pending' else None})
+                      'connect': outbound.review_connect(store, r) if r.get('Status') == 'pending' else None})
     # ...AND SO IS EVERY OTHER CARD OF THE TASK (the spine audit, 2026-11-09): a held step, a proposal, a reply waiting or gone - each named
     # with the answer it stands in, by that one rule. The page placed these itself, reading an answer's stamp as when its turn BEGAN: a step
     # held while the second turn worked stood in the first. A reply's turn is the one that last left it (wrapup.left_by); None: no answer yet
@@ -2485,9 +2502,9 @@ def _assistant_payload(task_id: int, session=None):
             # the files the agent made for this task (outputs.py): listed on the canvas, and a chip where an answer names one
             # ...each under the answer of the turn that made it (`after`, as a published page), so the turn shows what it made
             # ...by the turn that wrote it where that turn kept it (outputs.made_by), else by when it was made
-            # ...never a file a card carries: it is drawn on that card (outputs.on_cards)
+            # ...never a file a card carries: it is drawn on that card (outputs.on_cards); nor one he attached, until a turn writes it (outputs.made)
             'outputs': [{**o, 'after': by.get(o['path']) or at_turn(o.get('at'))} for by, cards in [(outputs.made_by(task_id), outputs.on_cards(store, task_id))]
-                        for o in outputs.listing(task_id) if o.get('name') not in cards],
+                        for o in outputs.made(store, task_id) if o.get('name') not in cards],
             # ...and each EARLIER turn's own version of a file a later turn changed (outputs.turn_versions): drawn under that turn instead
             'turnOutputs': [o for cards in [outputs.on_cards(store, task_id)] for o in outputs.turn_versions(task_id) if o.get('name') not in cards],
             # ONE ENTRY PER CLI, and only the installed ones: this listed a provider per worker
@@ -2625,8 +2642,12 @@ def waiting_now(task_id: int):
 def _say(task_id: int, body, **kw):
     "A typed line on the one road (general.take_line), as the chat's doors send it - his words straight to the agent, nothing fetched first."
     from . import general
-    return general.take_line(store, task_id, body.text, body.attachments, ACTOR, _line_id(body),
-                             **({k: v for k, v in (('connector_id', body.connector_id), ('model', body.model), ('pick', body.pick)) if v} if general.handles(store.get_task(task_id)) else {}), **kw)
+    chat = general.handles(store.get_task(task_id))
+    out = general.take_line(store, task_id, body.text, body.attachments, ACTOR, _line_id(body),
+                            **({k: v for k, v in (('connector_id', body.connector_id), ('model', body.model), ('pick', body.pick)) if v} if chat else {}), **kw)
+    # ...a line KEPT, no turn taken (a held stranger's task: take_line's {'kept', 'held'}) is a chat's (no session, no reply) - both chat doors
+    # unpacked the dict as (session, reply) and died on 'kept'.info(), his line drawn with an error under it while it waited behind Trust
+    return (None, '') if chat and kw.get('wait', True) and isinstance(out, dict) else out
 def _line_id(body): return (getattr(body, 'line_id', None) or '')[:80] or None
 
 @app.post('/api/tasks/{task_id}/assistant/browser')
@@ -3075,7 +3096,13 @@ def continue_work(task_id: int, body: ContinueBody = None):
     if task.get('Status') == 'dropped': raise HTTPException(409, 'This task was dismissed.')
     note = ' '.join(str((body.note if body else '') or '').split())[:4000]
     imgs = prompt_images(body.images if body else [])
-    if note:
+    # ...A HELD STRANGER'S TASK CONTINUES BEHIND ITS TRUST, as every start does (origin.hold): its note waits by the box (take_line, below), and a
+    # bare Continue says the hold's line - it opened a session whose turn the hold refused, and answered "continued" with nothing at work
+    from . import origin
+    if (h := origin.hold(store, task_id)) and not note and not imgs: raise HTTPException(409, h['line'])
+    # ...A PICTURE WITH NO WORDS IS A LINE OF HIS TOO (the attach stress rounds, 2026-11-18): Continue's box sends one alone, and only a note
+    # took this road - a chat's rode Taskuary's own brief with no pill of his, a coding session reopened on the resume prompt alone
+    if note or imgs:
         # A NOTE IS A LINE THE OWNER TYPED, and takes the one road every typed line takes (general.take_line): kept as his, the turn at work
         # from the press, then whatever agent works the task reopened, woken or started by its own starter - a coding session that ended
         # (its own conversation, else a fresh one with the handover), one that idled out, one at rest. What came in since rides as Taskuary's
@@ -3088,7 +3115,7 @@ def continue_work(task_id: int, body: ContinueBody = None):
         store.audit('task', task_id, 'continue-work', ACTOR, detail={'kind': kind, 'note': True})
         from . import outcomes
         outcomes.record(store, 'agent.continued', 'task', task_id, ACTOR, next_move=note, facts={'door': 'continue-work', 'kind': kind})
-        return {'continued': True, 'taskId': task_id, 'kind': kind, **(out if isinstance(out, dict) else {})}
+        return {'continued': not (isinstance(out, dict) and out.get('held')), 'taskId': task_id, 'kind': kind, **(out if isinstance(out, dict) else {})}
     if general.handles(task):
         # THE THREAD MOVED AFTER ITS LAST TURN: the mail that reopened the task goes in first, in the turn's instructions - "pick up
         # where work stopped" alone woke the assistant at "reply sent, task closed" while two people had since asked for more (2026-10-14)
@@ -3100,14 +3127,17 @@ def continue_work(task_id: int, body: ContinueBody = None):
         store.add_comment(task_id, general.BRIEF_ACTOR, general.USER_TYPE, brief)
         turn = '\n\n'.join(x for x in [news, continuity.RESUME_PROMPT] if x)
         def go():
+            # ...ON THE ONE ROAD A LINE TAKES (general.say_line): a session that ended under the press - a CLI that died, still closing - hands
+            # the turn once to a fresh one; started here on its own, the turn met "this assistant session has ended" and nothing said so
+            got = []
             try:
-                try: ses = general.start_session(store, task_id, actor=ACTOR)
-                except Exception as e: _walk_cannot(task_id, f'The session could not continue: {e}. Your saved conversation is still here.'); return
-                # ...a turn that fails is its run's own failure, said by the run (workerstate `failed`) with Try again: a line here said it twice,
-                # "Failed - Claude: API Error ..." over "The session could not continue: claude: API Error ..." (the desktop run, 2026-11-04)
-                try: ses.send_prompt(turn, imgs or None, brief=True, kept=True)
+                try: general.say_line(store, task_id, turn, imgs or None, actor=ACTOR, started=got.append, brief=True, kept=True)
                 except general.Stopped: pass       # the owner stopped it again: nothing to say
-                except Exception as e: logger.info(f'task {task_id}: the continued turn failed - {e}')
+                except Exception as e:
+                    # ...a turn that fails is its run's own failure, said by the run (workerstate `failed`) with Try again: a line here said it
+                    # twice, "Failed - Claude: API Error ..." over "The session could not continue: ..." (the desktop run, 2026-11-04)
+                    if not got: _walk_cannot(task_id, f'The session could not continue: {e}. Your saved conversation is still here.')
+                    else: logger.info(f'task {task_id}: the continued turn failed - {e}')
             finally: general.OPENING.discard(task_id)
         # marked HERE, as /resume and the walk are: the page reloads the conversation the moment this answers, before the thread has
         # a session, read "nothing running" and never looked again - Continue and Try again left the new turn unseen (the agents walk,
@@ -3166,8 +3196,7 @@ def _resume_assistant(task_id):
     from . import continuity, general
     try:
         news = continuity.news_block(store, task_id)     # the mail since, or that its reply already went (2026-10-20)
-        general.start_session(store, task_id, actor=ACTOR).send_prompt(
-            continuity.RESUME_PROMPT, as_owner=False, echo=False, **({'delivery_instructions': news} if news else {}))
+        general.say_line(store, task_id, continuity.RESUME_PROMPT, actor=ACTOR, as_owner=False, echo=False, delivery_instructions=news or None)
     except Exception as e:
         _walk_cannot(task_id, f'The session could not resume: {e}. Your saved conversation is still here.')
     finally:
@@ -4548,6 +4577,11 @@ def _no_brain(task: dict | None, body: DispatchBody, kind: str = '') -> str:
 
 
 def _dispatch_task_to_its_agent(tid: int, body: DispatchBody, background: BackgroundTasks) -> dict:
+    # ...WHAT HE ATTACHED ON THE BOX IS THE TASK'S OWN at this door too, as on his typed line (general.take_line): Send to agent on a report,
+    # a dashboard or an FYI named the upload under Taskuary's own attachments, a path the agent's Read is refused
+    if body is not None and body.instruction and not body.app_words:
+        from . import outputs
+        body = body.model_copy(update={'instruction': outputs.take_in_text(tid, body.instruction)})
     with _STARTING_LOCK: gate = _STARTING.setdefault(int(tid), threading.Lock())
     waited = not gate.acquire(blocking=False)
     if waited: gate.acquire()
@@ -4610,6 +4644,17 @@ def _dispatch_one(tid: int, body: DispatchBody, background: BackgroundTasks) -> 
     regular = general.handles(task) or bool(card)
 
     if regular:
+        # ...AN UNTRUSTED SENDER'S TASK HANDS NOTHING TO AN AGENT, at the door before a session or a start is made (2026-11-17: Send to agent
+        # with a line typed on a no-reply sender's task opened a session, its turn was refused inside it, the line was lost and the row read
+        # "agent done"): his line waits by the box as every typed line on a held task does (general.take_line), and Trust starts it
+        from . import origin
+        if (h := origin.hold(store, tid)):
+            if (typed := str(body.instruction or '').strip()) and not body.app_words:
+                general.wait_line(store, tid, **general.split_files(typed))      # ...its files kept as files, a pill each, as take_line keeps them
+                return {'dispatch': 'held', 'started': False, 'existing': False, 'held': h['line'], 'taskId': tid, 'ref': task_ref(tid)}
+            # ...and a press with no words of his is a start refused at the door, said with its way on (Trust) - as the offer's press is
+            # (accept_offer): kept on the task for the Advisor, said as not done on the phone (2026-11-17, CI)
+            _start_refused(tid, body, origin.RefusedForStranger(h['line']))
         had_session = general.session_for(tid) is not None
         # THE PROFILE IS THE ASSIGNEE. A general hand-off may now name the worker it goes to, and
         # `agent:<name>` is where general.assigned_role already reads it from to seed PROFILE RULES -
@@ -4987,9 +5032,11 @@ def handoff(task_id: int, body: HandoffBody):
         # only the DRAFT is the model's. A send with no words wrote the forward and sent it in the same step, unseen (the spine audit,
         # 2026-11-09): what goes is what the owner was shown
         if not text and not body.draft_only: raise HTTPException(422, 'write what it says first')
-        text = text or outbound.draft_handoff(store, task_id, body.to or 'a colleague', body.note)
-        # a forward by email is an email from the owner: signed once, in the draft they see and in what goes (signatures.py)
-        if body.channel == 'email': text = responder.with_signature(text, responder.signature_for(store))
+        # a forward by email is an email from the owner: signed once, when the draft they see is made - their own words go as written
+        # (2026-11-17: signing again at send put a second name under their own sign-off, a line the box never showed)
+        if not text:
+            text = outbound.draft_handoff(store, task_id, body.to or 'a colleague', body.note)
+            if body.channel == 'email': text = responder.with_signature(text, responder.signature_for(store))
         if body.draft_only: return {'draft': text}
         subject = f"{task_ref(task_id)} {t.get('Title') or ''}".strip()
         chat = [m for m in store.list_messages(task_id) if m['Channel'] == 'teams'] if body.channel == 'teams' else []
@@ -5099,20 +5146,18 @@ async def review_attach(rid: int, request: Request, name: str = ''):
     _owners(rid); return out
 
 @app.get('/api/reviews/{rid}/attachment')
-def review_attachment_read(rid: int, name: str, download: bool = False):
+def review_attachment_read(rid: int, name: str, download: bool = False, preview: bool = False, sheet: str = ''):
     """A file on a pending reply, read back for its preview (the owner, 2026-11-05: "can't click the file"): only one named in that reply's
-    envelope, from the path it was stored at - never a path from the request."""
-    import mimetypes, os
-    from fastapi.responses import FileResponse
+    envelope, from the path it was stored at - never a path from the request. Served as every file route serves it (_serve_file): it handed
+    the page a workbook's bytes where it asked for its preview, and a 15,018-row sheet read "This sheet is empty." (2026-11-17)"""
+    import os
+    from . import outputs, verdicts
     rv = store.get_review(rid)
     if not rv: raise HTTPException(404, 'no such reply')
-    from . import verdicts
     env = verdicts._envelope(rv)
     f = next((x for x in (env.get('attachments') or []) if x.get('name') == name), None)
     if not f or not f.get('path') or not os.path.isfile(f['path']): raise HTTPException(404, 'that file is not on this reply')
-    kind = mimetypes.guess_type(name)[0] or 'application/octet-stream'
-    return FileResponse(f['path'], media_type=kind, filename=name if download else None,
-                        content_disposition_type='attachment' if download else 'inline')
+    return _serve_file(Path(f['path']), name, outputs.content_type(name), download, preview, sheet, f'reply {rid} file')
 
 @app.delete('/api/reviews/{rid}/attachment')
 def review_detach(rid: int, name: str):
@@ -5249,10 +5294,18 @@ def closeout_act(rid: int, act: str):
     p = json.loads(rv.get('DraftText') or '{}')
     seen = ghcloseout.assess(store, p['repo'], int(p['number']))
     if act not in seen['offers']: raise HTTPException(422, f"{'Update branch' if act == 'update' else 'Re-run checks'} is not offered for this pull request now")
-    tok = ci._conn(store)['Secret']
+    tok = ci._conn(store, p['repo'])['Secret']
     try:
         if act == 'update': said = f"Update branch: {github.update_branch(tok, p['repo'], int(p['number']), seen['pr'].get('sha'))}"
-        else: said = f"Re-ran the failed checks on {github.rerun_failed(tok, p['repo'], seen['pr']['sha'])} workflow run(s)"
+        else:
+            n = github.rerun_failed(tok, p['repo'], seen['pr']['sha'])
+            # ...none of the red checks is a GitHub Actions run (another CI's status): nothing re-ran, and nothing will pass by waiting
+            if not n:
+                try: red = ', '.join(f['name'] or '?' for f in github.checks(tok, p['repo'], seen['pr']['sha'])['failed'])
+                except Exception: red = ''
+                raise HTTPException(422, f"Nothing was re-run: no GitHub Actions run failed on this commit{f' - {red} runs elsewhere; re-run it there' if red else ''}")
+            from .timewords import plural
+            said = f"Re-ran the failed checks on {plural(n, 'workflow run')}"
     except github.Refused as e:
         github.learn(tok, p['repo'], e); raise HTTPException(422, str(e))
     except (RuntimeError, requests.RequestException) as e: raise HTTPException(422, str(e))
@@ -5655,10 +5708,11 @@ def agent_messages(request: Request, task_id: int, sender: str = '', subject: st
     """`taskuary --search` from an agent's own shell: the owner's mail and messages by sender, subject, words and date (mailsearch)."""
     from . import mailsearch, search
     _owner_history(request, task_id)
-    hits = mailsearch.search(store, sender, subject, words, since, until, limit)
+    try: hits = mailsearch.search(store, sender, subject, words, since, until, limit)
+    except ValueError as e: raise HTTPException(422, str(e))
     # ...and what earlier tasks settled on those words (search.outcomes): the CLI's one search reads both, so it asks the owner neither
     done = search.outcomes(store, f'{subject} {words}', skip=task_id) if (words or subject).strip() else []
-    return {'data': hits, 'outcomes': done, 'says': mailsearch.says(hits) + (f'\n\n{search.says_outcomes(done)}' if done else '')}
+    return {'data': hits, 'outcomes': done, 'says': mailsearch.says(hits, store) + (f'\n\n{search.says_outcomes(done)}' if done else '')}
 
 @app.get('/api/agent/messages/{mid}')
 def agent_message(mid: str, request: Request, task_id: int):
@@ -5848,6 +5902,80 @@ def agent_remind(body: AgentRemindBody, request: Request):
     if out.get('remindAt'):
         store.add_comment(body.task_id, body.agent, 'agent', f"Reminder set for you: {out['when']}." + (f" {out['warn']}" if out.get('warn') else ''))
     return {'ok': True, **out}
+
+_NEW_TASK_LOCK = threading.Lock()
+
+def _made_from(tid: int, title: str) -> int | None:
+    "The open task the new_task tool already made from task `tid` under `title` (spacing and case aside) - None when there is none."
+    same = lambda x: ' '.join(str(x or '').split()).casefold()
+    for r in store._rows("SELECT EntityId, Detail FROM audit WHERE EntityType='task' AND Action='create' AND Detail LIKE ? ORDER BY Id DESC",
+                         (f'%"from_task": {int(tid)}%',)):
+        try: d = json.loads(r.get('Detail') or '{}')
+        except ValueError: continue
+        t = store.get_task(int(r['EntityId'])) if d.get('from_task') == int(tid) else None
+        if t and t.get('Status') not in ('done', 'dropped') and same(t.get('Title')) == same(title): return int(t['TaskId'])
+    return None
+
+class AgentNewTaskBody(BaseModel): task_id: int; title: str = ''; ask: str = ''; kind: str = 'general'; model: str = ''; repo: str = ''; agent: str = 'agent'
+
+@app.post('/api/agent/new-task')
+def agent_new_task(body: AgentNewTaskBody, request: Request):
+    """The new_task tool: a separate job the owner asked for on this task, made a task of its own and started at once (the owner, 2026-11-17:
+    "I think it should be able to create new task from the agent"). It is the owner's own work - made as New makes it, started by the task
+    page's own dispatch door - so nothing is held for a press: nothing leaves. Never from a stranger's task, nor one the owner never spoke on."""
+    from . import general, origin, repochoice
+    _own_task_only(request, body.task_id)
+    if not store.get_task(body.task_id): raise HTTPException(404, 'no such task')
+    if origin.of_task(store, body.task_id)[0] == 'stranger' or not general.owner_spoke(store, body.task_id):
+        raise HTTPException(403, 'not started: only the owner starts new work, and they have not asked for it on this task - say what you '
+                                 'would start in your answer instead.')
+    title, ask = ' '.join(str(body.title or '').split())[:120], str(body.ask or '').strip()
+    if not title or not ask: raise HTTPException(422, 'give `title` (a line) and `ask` (the whole brief) - nothing was started')
+    kind = str(body.kind or 'general').strip().lower()
+    if kind not in task_kinds.AGENT: raise HTTPException(422, f'`kind` is general or coding, not {kind!r} - nothing was started')
+    if kind == 'coding' and not hub_agents.developer_mode(store): kind = 'general'
+    # ...ONE JOB IS ONE TASK (the stress round, 2026-11-18): the call repeated - a retry, a resumed session replaying its last step - made
+    # a second task and a second agent beside the first. The same title from the same task, still open, is that task: answered as made,
+    # and started only if its first start never went
+    with _NEW_TASK_LOCK:
+        new = _made_from(body.task_id, title)
+        if new and (general.history(store, new) or general.starting(new) or getattr(hub_term.session_for(new), 'alive', False)):
+            return {'ok': True, 'task': task_ref(new), 'title': title, 'already': True, 'started': True,
+                    'next': f'{task_ref(new)} was already started from here and is working on it - nothing new was made'}
+        made = not new
+        if made:
+            # ...the owner's ask, made at the door they asked from - the task they spoke on's ("agent" is no door: the Assistant named it one)
+            from . import asks
+            via = asks.of(store.get_task(body.task_id)) or 'desktop'
+            new = store.create_task({'Title': title, 'Summary': ask, 'Kind': kind, 'AskedVia': via, 'OriginBase': 'owner'}, body.agent)
+            from . import selfclose
+            selfclose.claim(store, new, ACTOR)           # the owner's own work: its agent never closes it by itself
+            store.audit('task', new, 'create', body.agent, detail={'from_task': body.task_id, 'title': title})
+    out = {'ok': True, 'task': task_ref(new), 'title': title, 'kind': kind}
+    # ...a checkout named for what is not a coding task (developer mode off made it general) is said dropped, never silently
+    if body.repo and kind != 'coding': out['repo_not_set'] = f'{body.repo} was not set: {task_ref(new)} is a general task, which works in no checkout'
+    if body.repo and kind == 'coding':
+        try: repochoice.use(store, new, body.repo, f'named by the agent on {task_ref(body.task_id)}')
+        except (PermissionError, ValueError) as e: out['repo_not_set'] = str(e)
+    res = _start_new_task(new, kind, ask, body.model)
+    # ...said on this task once it is known: "Started" was written before the start, and stood over one that was refused
+    if res['started']: store.add_comment(body.task_id, body.agent, 'agent', f'Started {task_ref(new)}: {title}')
+    elif made: store.add_comment(body.task_id, body.agent, 'agent', f"Made {task_ref(new)}: {title} - its agent did not start: {res['why']}")
+    return {**out, **res}
+
+def _start_new_task(new: int, kind: str, ask: str, model: str) -> dict:
+    "The new_task tool's start of task `new` by the task page's own dispatch door: {started, why?, next}."
+    bg = BackgroundTasks()
+    try: got = dispatch_task(new, DispatchBody(kind=kind, instruction=ask, model=model or None, app_words=True), bg)
+    except HTTPException as e:
+        # ...kept on the new task, where the owner meets it: a refusal said only in this answer left it open with nothing said (StartRefused
+        # is kept by the door that raised it)
+        if not isinstance(e, StartRefused): _start_failed(new, e)
+        return {'started': False, 'why': str(e.detail), 'next': f'{task_ref(new)} is made but its agent did not start - say why in your answer'}
+    # ...its first turn runs off this call: the agent that asked goes on with its own turn meanwhile
+    if bg.tasks: threading.Thread(target=lambda: asyncio.run(bg()), daemon=True, name=f'new-task-{new}').start()
+    if got.get('dispatch') == 'needs_repo': return {'started': False, 'why': got.get('reason'), 'next': 'the owner picks its checkout on that task'}
+    return {'started': bool(got.get('started') or got.get('existing')), 'next': f'say in one line that {task_ref(new)} is working on it'}
 
 class AgentRememberBody(BaseModel): task_id: int; note: str = ''; about: str = ''; replaces: str = ''; agent: str = 'agent'
 AGENT_KEEPS = 5          # new memory lines one task's agent may write in a day; a correction (`replaces`) adds none and is always taken
@@ -6086,7 +6214,8 @@ def agent_propose(body: AgentProposeBody, request: Request):
     except ValueError as e: raise HTTPException(422, str(e))
     q = proposals.queue(store, body.task_id, p, 'agent', refused=(miss := []))
     if not q: raise HTTPException(422, proposals.refusal_line(miss[0] if miss else ''))
-    return {'ok': True, 'queued': True, 'review': q['reviewId'], 'says': "Waiting on the owner's press - nothing happens until they approve it."}
+    return {'ok': True, 'queued': True, 'review': q['reviewId'], 'says': f"rv{q['reviewId']} already asks this and waits on the owner's press - no second card."
+            if q.get('already') else "Waiting on the owner's press - nothing happens until they approve it."}
 
 # ...and the calendar and a share, SET UP like an email (calwrite.answer / meeting, sharing.agent_share): a card with the owner's press
 class AgentInviteBody(BaseModel): task_id: int; answer: str; start: str | None = None; end: str | None = None; note: str | None = None
@@ -6190,6 +6319,7 @@ async def mcp_rpc(request: Request, task: int = 0):
              'check_back': lambda tid, when, what: agent_check_back(AgentCheckBackBody(task_id=tid, when=when, what=what), request),
              'todos': lambda tid, a: agent_todos(AgentTodosBody(**{k: v for k, v in a.items() if k in ('add', 'reword', 'merge')}, task_id=tid), request),
              'remind': lambda tid, until: agent_remind(AgentRemindBody(task_id=tid, until=until), request),
+             'new_task': lambda tid, a: agent_new_task(AgentNewTaskBody(**{**{k: v for k, v in a.items() if k in AgentNewTaskBody.model_fields}, 'task_id': tid}), request),
              'remember': lambda tid, note, about='', replaces='': agent_remember(AgentRememberBody(task_id=tid, note=note, about=about, replaces=replaces), request),
              'ask_stronger': lambda tid, q, c: agent_ask_stronger(AgentAskStrongerBody(task_id=tid, question=q, context=c), request),
              'reply': lambda tid, text, to='', files=(), **who: agent_reply(AgentReplyBody(task_id=tid, text=text, to=to, files=list(files), **who), request),
@@ -6208,7 +6338,7 @@ async def mcp_rpc(request: Request, task: int = 0):
                 name == 'read_message' and agenttools.own_message(store, task, args)): _owner_history(request, task)
         # ...this door is never a stranger's session's, so a stranger's words on its own task are never read through it (agenttools.UNVOUCHED)
         if name == 'read_message' and agenttools.unvouched(store, task, args): raise HTTPException(403, agenttools.UNVOUCHED)
-        out = agenttools.call(store, task, name, args, doors)
+        out = agenttools.call(store, task, name, args, doors, skip)
         return out.body.decode() if isinstance(out, JSONResponse) else out
     from .wrapup import no_correspondent
     from .general import GENERAL_KINDS
@@ -6322,11 +6452,12 @@ def clarify_with_sender(tid: int, body: ClarifyBody):
     rv = store.pending_review(tid, 'clarification')
     if rv:
         rid = rv['ReviewId']
-        store.save_review_draft(rid, text)
     else:
         rid = store.add_review({'TaskId': tid, 'MessageId': m['MessageId'], 'Kind': 'clarification',
                                 'Status': 'pending', 'DraftText': text,
                                 'Reason': 'the agent needs missing information from the sender'})
+    # an email question is signed as it is filed, like every agent draft: the send road no longer signs (2026-11-17)
+    store.save_review_draft(rid, text := signatures.agent_signed(store, store.get_review(rid), text, m) or text)
     store.add_comment(tid, ACTOR, 'human', 'Clarification drafted for the sender; waiting for your approval on the task.')
     store.audit('review', rid, 'clarification_drafted', ACTOR, detail={'message_id': m['MessageId']})
     return {'reviewId': rid, 'taskId': tid, 'draft': text}
@@ -7158,7 +7289,7 @@ IMG_MAX = 12 * 1024 * 1024
 async def waitroom_image(tid: int, request: Request):
     """A screenshot pasted into the Tell-the-agent box, posted as the raw body (no multipart
     dependency, like /api/voice/transcribe). The pty carries text only, so the image goes to
-    disk under ~/.taskuary/attachments/waitroom/<task>/ and the NOTE names the file - a coding
+    disk in the task's own folder (outputs.take_in) and the NOTE names the file - a coding
     CLI reads images from a path (Claude Code's Read does), which is how it gets to see it."""
     return await _save_prompt_image(tid, request)
 
@@ -7175,11 +7306,10 @@ async def prompt_file(request: Request):
     """ANY FILE for a prompt (the owner, 2026-11-05: "does drop in the prompt box attach it in all prompt boxes?"): a PDF, a sheet, a log,
     dropped, pasted or picked into any box - the image road's bytes-as-body contract and its 12 MB cap, the name in X-File-Name. Saved
     under attachments/prompt/ like a picture, so the same prompt_images check is the one that lets its path reach a prompt."""
-    from urllib.parse import unquote
     data = await request.body()
     if not data: raise HTTPException(422, 'no file in the request')
     if len(data) > IMG_MAX: raise HTTPException(413, 'file over 12 MB - send a smaller one')
-    name = re.sub(r'[^\w.\- ]+', '_', Path(unquote(request.headers.get('x-file-name') or 'file')).name).strip(' .')[:80] or 'file'
+    name = _upload_name(request) or 'file'
     d = config.home() / 'attachments' / 'prompt' / time.strftime('%Y%m')
     p = d / f'{time.strftime("%Y%m%d-%H%M%S")}-{secrets.token_hex(3)}-{name}'
     def keep(): d.mkdir(parents=True, exist_ok=True); p.write_bytes(data)
@@ -7200,10 +7330,16 @@ def prompt_images(paths) -> list[str]:
 
 
 def with_images(text: str, paths) -> str:
-    """The words, then the files - how a CLI agent is shown a picture: it reads the path (general.py says it the same way)."""
-    from .general import files_head
-    ps = prompt_images(paths)
-    return (text or '') + (f'\n\n{files_head(ps)} (read these files)\n' + '\n'.join(ps) if ps else '')
+    "The words, then the files this server saved - general.with_files, the one block every door writes."
+    from .general import with_files
+    return with_files(text, prompt_images(paths))
+
+
+def _upload_name(request: Request, ext: str = '') -> str:
+    "The owner's own name for an upload (X-File-Name), made safe - with `ext`, that extension - or '' where none was sent."
+    from urllib.parse import unquote
+    name = re.sub(r'[^\w.\- ]+', '_', Path(unquote(request.headers.get('x-file-name') or '')).name).strip(' .')[:80]
+    return f'{Path(name).stem[:72].strip(" .")}.{ext}' if name and ext and Path(name).stem.strip(' .') else name if not ext else ''
 
 
 async def _save_prompt_image(tid: int | None, request: Request):
@@ -7217,11 +7353,19 @@ async def _save_prompt_image(tid: int | None, request: Request):
     if len(data) > IMG_MAX: raise HTTPException(413, 'image over 12 MB - crop it')
     d = config.home() / 'attachments' / ('waitroom' if tid is not None else 'prompt') / (str(tid) if tid is not None else time.strftime('%Y%m'))
     d.mkdir(parents=True, exist_ok=True)
-    p = d / f'{time.strftime("%Y%m%d-%H%M%S")}-{secrets.token_hex(3)}.{ext}'
+    # ...UNDER HIS NAME FOR IT where the page sent one, as any file is (prompt_file): a picture's pill on his line, and its copy in the task's
+    # folder (outputs.take_in), read "20991231-235959-abc123.png" where his box had said "shot.png" (the stress round of New's attachments)
+    name = _upload_name(request, ext)
+    p = d / (f'{time.strftime("%Y%m%d-%H%M%S")}-{secrets.token_hex(3)}' + (f'-{name}' if name else f'.{ext}'))
     def keep():
         p.write_bytes(data)
         if tid is not None: store.audit('task', tid, 'waitroom_image', ACTOR, detail={'path': str(p), 'size': len(data)})
     await run_in_threadpool(keep)
+    # ...ON A TASK IT IS THE TASK'S OWN (outputs.take_in, as a line's attached file is): its path is typed for the agent to Read, and one left
+    # under attachments/ was refused as Taskuary's own data (readgate) - the agent never saw the screenshot it was handed
+    if tid is not None:
+        from . import outputs
+        p = (await run_in_threadpool(outputs.take_in, tid, [p]))[0]
     return {'path': str(p), 'size': len(data)}
 
 
@@ -7368,16 +7512,13 @@ def _owners(rid: int):
 
 @app.patch('/api/reviews/{rid}')
 def save_review_text(rid: int, body: TextBody):
-    """Save what is in the reply box without deciding or sending it - with the owner's signature applied once
-    on an email draft (PW-065); an edit that already carries it is kept as written."""
+    """Save what is in the reply box without deciding or sending it - exactly as written. The box opened on the signature (signatures.py),
+    so what he left there is his: signing it again here put the block under his own "Thanks, Alex" (2026-11-17)."""
     rv = store.get_review(rid)
     if not rv: raise HTTPException(404, 'review not found')
     if rv.get('Status') not in ('pending', 'held'):
         raise HTTPException(409, 'this reply has already been decided')
     text = str(body.body or '')[:50_000]
-    m = store.get_message(rv.get('MessageId')) if rv.get('MessageId') else None
-    if m and str(m.get('Channel') or '').lower() == 'email' and text.strip():
-        text = responder.with_signature(text, responder.signature_for(store, outbound.sending_mailbox(store, rv, m)))
     store.save_review_draft(rid, text); _owners(rid)
     store.audit('review', rid, 'edit_draft', ACTOR, detail={'characters': len(text)})
     return {'ok': True, 'draft': text}
@@ -7512,6 +7653,7 @@ def save_source(body: SourceBody):
             from . import dashboards
             ok, why = dashboards.validate(rcfg, store)
             if not ok: raise HTTPException(422, f'Not saved: {why}.')
+            if (named := dashboards.keyed(rcfg)) != rcfg: fields['ConfigJson'] = json.dumps(named)     # kept under the names it was checked by
         if flow_cfg is not None:
             from . import flow
             ok, why = flow.validate(store, flow_cfg)
@@ -7820,6 +7962,17 @@ def save_connector(body: ConnectorBody):
     if not fields.get('ConnectorId') and not (fields.get('Type') and fields.get('Name')):
         raise HTTPException(422, 'new connectors need Type and Name')
     if not fields.get('ConnectorId'):
+        # ...OF A TYPE SOMETHING WORKS: a mailbox preset the catalogue names by its own type (Fastmail) is the card it is made into - IMAP,
+        # its servers filled in (connectorCatalog.presetBody) - and a type no card, no seed and no row knows is refused. Taken as sent, it was
+        # a card no page draws whose Test said "no test for connector type"
+        from . import connectorcatalog
+        known = connectorcatalog.by_type(fields['Type'])
+        if (pre := (known or {}).get('preset')):
+            try: given = json.loads(fields.get('ConfigJson') or '{}')
+            except ValueError: raise HTTPException(422, 'ConfigJson is not JSON')
+            fields = {**fields, 'Type': pre['type'], 'ConfigJson': json.dumps({**pre.get('config', {}), **given, 'preset': known['type']})}
+        elif not known and not store.connectors_by_type(fields['Type']):
+            raise HTTPException(422, f"no connector type {fields['Type']!r} - the catalogue's cards name the ones there are")
         # New instances start with the normal role for their type, but never inherit credentials,
         # cursors, sources or test state from the card they were added beside.
         fields.setdefault('Roles', store_mod.DEFAULT_ROLES.get(fields['Type'], ''))
@@ -8748,8 +8901,14 @@ def tool_run(body: dict, request: Request):
     from .reports import card_of, query_only
     from . import scopes
     connector_id = (body or {}).get('connector_id')
-    try: conn = store.get_connector(int(connector_id)) if connector_id else store.get_connector_by_type(card_of(t))
+    from .reports import tool_card
+    try: int(connector_id or 0)
     except (TypeError, ValueError): raise HTTPException(422, 'connector_id must be a number')
+    try: conn = tool_card(store, t, connector_id)
+    except ValueError as e: raise HTTPException(422, str(e))
+    # ...a number that is no card is said as that: "no connection card an owner turned on" was untrue of a card standing on
+    if connector_id and not conn:
+        raise HTTPException(404, f'there is no connection {connector_id} - YOUR SYSTEMS (list_systems) names each one with its connector_id')
     if conn and conn.get('Type') != card_of(t):
         raise HTTPException(422, f'connector {connector_id} is {conn.get("Type")}, not {card_of(t)}')
     if not conn:
@@ -8770,6 +8929,11 @@ def tool_run(body: dict, request: Request):
     if guard.scope_of(cfg['server'], request.headers) == guard.AGENT:
         tool = _mcp_tool(conn, body) if t == 'mcp' else None
         if why := scopes.reaches(t, body, tool): return _agent_proposes(request, t, conn, body, why)
+        # ...and a change above the card's Authority is the same proposal (docsync.agent_systems tells the agent so): the 403 below said
+        # "raise it under the card", a step only the owner can take, and lit nothing for them to press
+        if not scopes.allows(conn, t):
+            return _agent_proposes(request, t, conn, body, f"needs {scopes.needs(t)} Authority on {conn.get('Name') or t}, which is set to "
+                                                           f"{scopes.scope_of(conn)}")
     try:
         scopes.require(conn, t)
     except PermissionError as e:
@@ -8788,8 +8952,10 @@ def tool_run(body: dict, request: Request):
             tool_cfg['author'] = actor
         head, out = REGISTRY[t](resolve_cfg(store, tool_cfg))
     except Exception as e:
+        # ...in the words every Taskuary tool's failure takes (agenttools.failed): a field it needs and was not given is named, never "'query'"
+        from .agenttools import failed
         store.audit('tool', (conn or {}).get('ConnectorId', 0), 'run_failed', actor, detail={'type': t, 'error': str(e)[:300]})
-        return {'ok': False, 'error': str(e)[:1000]}
+        return {'ok': False, 'error': failed(t, e)[:1000]}
     store.audit('tool', (conn or {}).get('ConnectorId', 0), 'run', actor, detail={'type': t, 'headline': str(head)[:200]})
     return {'ok': True, 'headline': head, 'output': (out or '')[:20000]}
 
@@ -8909,8 +9075,8 @@ def dashboard_get(sid: int):
     if not src or not dashboards.is_dashboard(cfg): raise HTTPException(404, 'dashboard not found')
     data = dashboards.last(store, sid)
     # ...every tile with its sentence: one saved before tiles were sentences is described from its config, and kept on the next Save
-    return {'source_id': sid, 'active': bool(src.get('Active')), 'config': dashboards.with_said(cfg), 'data': data,
-            'problems': dashboards.problems(cfg, data) if data else []}
+    return {'source_id': sid, 'active': bool(src.get('Active')), 'config': dashboards.with_said(dashboards.keyed(cfg)), 'data': data,
+            'problems': dashboards.said_on_page(store, sid, cfg, data)}
 
 
 @app.get('/api/workflows')
@@ -10022,12 +10188,6 @@ def agents():
     # menu app-wide and failed only when it was started (the owner, 2026-09-18).
     conns = cfg.get('cli_connections') or {}
     brains_here = sorted(k for k in conns if hub_agents.runs_here(cli_connections.with_defaults(conns[k])))
-    _cats = {}
-    def _brain_cat(key):
-        """One catalog read per CLI per request: `catalog` goes to disk, and this is asked twice a brain."""
-        if key not in _cats: _cats[key] = climodels.catalog(cli_connections.cli_key(conns[key].get('cmd')) or key,
-                                                            cmd=conns[key].get('cmd'))
-        return _cats[key]
     from . import general as _general
     head = hub_agents.default_agent(store)
     rows = sorted(store.list_agents(), key=lambda a: a['Name'] != head)
@@ -10058,10 +10218,9 @@ def agents():
             'developer_mode': hub_agents.developer_mode(store),
             # every connection keeps its models, installed or not: a task still pinned to a CLI that
             # has since gone has to be able to SAY so, and the picker renders it from this.
-            'brain_models': {k: {'choices': _brain_cat(k)['choices'], 'models': _brain_cat(k)['models'],
-                                 'installed': k in brains_here,
+            'brain_models': {k: {'choices': c['choices'], 'models': c['models'], 'installed': k in brains_here,
                                  'default': (cli_connections.gears(cfg, k) or {}).get('model') or ''}
-                             for k in (cfg.get('cli_connections') or {})},
+                             for k in conns for c in [climodels.catalog(cli_connections.cli_key(conns[k].get('cmd')) or k)]},
             'work': _agent_work(store)}
 
 @app.post('/api/agents/{name}/test')

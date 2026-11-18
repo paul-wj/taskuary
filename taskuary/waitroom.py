@@ -20,7 +20,7 @@ from .store import task_ref
 
 TAIL_LINES = 6
 WATCH_EVERY = 10          # seconds between looks - delivery lands within IDLE_WAITING + this of the agent parking
-MAX_BATCH = 6000          # chars typed in one go; a TUI paste past this is asking for dropped frames
+MAX_BATCH = 6000          # how much of Taskuary's own notes one hand-over carries (together); the owner's words are never cut to it
 
 
 # A NOTE THE ASSISTANT PASSED ON keeps the owner's own words and what the Assistant added, apart (general.relayed): one row, so the drip
@@ -59,7 +59,7 @@ def batch(notes: list, after_restart: bool = False, remaining: int = 0, waited: 
     once = ends[0] if len(ends) > 1 and ends[0] and len(set(ends)) == 1 else ''
     cut = lambda x: str(x.get('Note') or '')[:-len(once)] if once and x.get('CreatedBy') == 'router' else x.get('Note')
     each = ' '.join(f'({i}) {said(cut(x))}' for i, x in enumerate(notes, 1))
-    return ' '.join((head + ' ' + each + (f' FOR EACH MESSAGE ABOVE: {once}' if once else '') + tail).split())[:MAX_BATCH]
+    return ' '.join((head + ' ' + each + (f' FOR EACH MESSAGE ABOVE: {once}' if once else '') + tail).split())
 def together(lines: list, waiting: list) -> list:
     """What one hand-over takes of the waiting room, behind the owner's typed `lines`. WHAT TASKUARY ITSELF TELLS THE AGENT GOES IN TOGETHER
     (the owner, 2026-11-11: a flood is one hand-over): each message that came in and each press, as many as one message holds whole
@@ -79,15 +79,18 @@ def together(lines: list, waiting: list) -> list:
 # ...and the head round them ("Taskuary left 1 note for you. Take them in order:") is the AGENT'S, typed with the notes - filed, it drew on the
 # owner's screen as an event line where the card he had just approved had stood (the overnight audit, 2026-11-10). What the Assistant added
 # to his note is the one part of Taskuary's that the record keeps
-def to_general(store, tid, session, notes: list, after_restart: bool = False, remaining: int = 0, waited: bool = True) -> None:
+def to_general(store, tid, session, notes: list, after_restart: bool = False, remaining: int = 0, waited: bool = True, steer: bool = False) -> bool:
+    "`steer`: into the turn at work where it can take them now (GeneralSession.steer), else the next turn - True when they went in now."
     from . import general
     if (extra := ' '.join(f'{general.RELAY} ({i}) {e}' for i, x in enumerate(notes, 1) if (e := parts(x.get('Note'))[1]))):
         store.add_comment(tid, general.BRIEF_ACTOR, general.USER_TYPE, extra)
     for x in notes:
         store.add_comment(tid, 'owner' if (x.get('CreatedBy') or 'owner') not in ('router', TEAMMATE) else general.BRIEF_ACTOR, general.USER_TYPE,
                           parts(x.get('Note'))[0])
+    if steer and session.steer(batch(notes, after_restart, remaining, waited=waited)): return True
     threading.Thread(target=session.send_prompt, args=(batch(notes, after_restart, remaining, waited=waited),), kwargs={'kept': True, 'brief': True},
                      daemon=True).start()
+    return False
 
 
 def drip(store) -> bool:
@@ -215,7 +218,7 @@ def _lines(store, tid: int) -> list:
     from . import general
     if general.handles(store.get_task(tid) or {}): return []
     return [{'WId': None, 'line': w['id'], **({'name': w['line']} if w.get('line') else {}), 'CreatedBy': 'owner', 'CreatedAt': w['at'],
-             'Note': w['text'] + (f"\n\n{general.files_head(w['files'])} (read these files)\n" + '\n'.join(w['files']) if w['files'] else '')}
+             'Note': general.with_files(w['text'], w['files'])}
             for w in general.waiting_lines(store, tid)]
 
 
@@ -257,7 +260,11 @@ def _deliver(store, tid: int, new: int = None) -> dict:
     left = len(pending) - len(notes)
     # MID-TURN, INTO THE TURN (the owner, 2026-11-06): an ACP coding session whose adapter steers (acpcoding.steerable) takes the words now,
     # into the turn at work, rather than at its end - the parked road below, under every one of its holds
-    steer = st == 'working' and t is not None and term.is_acp(t) and bool(getattr(t, 'steerable', lambda: False)())
+    # ...and a chat's general agent on a CLI that takes them mid-turn (GeneralSession.can_steer, 2026-11-17): held to the turn's end, it finished
+    # on old facts and then did the whole job again
+    # ...his own typed lines only: Taskuary's notes - a press, a message that came in - wait for the turn's end, as on every other agent (the
+    # audit's parity, 2026-11-17: a Send pressed mid-turn was steered in, and that chat's turn read at work on through its own answer)
+    steer = st == 'working' and t is not None and (term.is_acp(t) or all(x.get('line') for x in notes)) and         bool(getattr(t, 'steerable' if term.is_acp(t) else 'can_steer', lambda: False)())
     # "WHILE YOU WERE WORKING" ONLY WHEN IT WAS (agent walk 2, 2026-11-10): a line typed to an agent at rest reached it as "While you were
     # working, the owner queued 1 note for you ... after finishing the step you are on". Only a note that waited behind a turn says so
     waited = steer or any(x['WId'] not in (new, None) for x in notes)
@@ -313,7 +320,7 @@ def _deliver(store, tid: int, new: int = None) -> dict:
         return {'delivered': len(notes), 'state': 'answered', 'left': left}
     if st == 'parked' or steer:
         from . import general
-        if isinstance(t, general.GeneralSession): to_general(store, tid, t, notes, remaining=left, waited=waited); how = 'typed into'
+        if isinstance(t, general.GeneralSession): steer = to_general(store, tid, t, notes, remaining=left, waited=waited, steer=steer); how = 'typed into'
         # ...an ACP coding session (acpcoding.py) takes it as its next prompt, the batch as Taskuary's brief and each of the owner's own notes
         # drawn as theirs in the coding chat - never "While you were working, the owner queued..." in the owner's bubble (to_general's rule)
         elif term.is_acp(t):

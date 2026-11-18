@@ -78,8 +78,9 @@ squarespace.com webflow.io bubbleapps.io notion.site'''.split())
 class SignInError(Exception): pass
 class NotAccepted(SignInError):
     """Typed, and the site kept its password box up: not a sign-in. Every surface said "Signed in", the vault kept a password that never
-    worked and typed it again (the owner's computer-use walk, 2026-10-25). `again`: a fresh fill link's token, for the form shown again."""
-    again = ''
+    worked and typed it again (the owner's computer-use walk, 2026-10-25). `again`: a fresh fill link's token, for the form shown again.
+    `own`: the reason names what the form also needed (refused) - the password was not shown to be wrong."""
+    again, own = '', False
 def _now() -> float: return time.time()
 def _hash(tok) -> str: return hashlib.sha256(str(tok or '').encode('utf-8', 'surrogateescape')).hexdigest()
 
@@ -258,6 +259,15 @@ def _forget_live(site):
         except Exception as e: logger.debug(f'signin: {site} cookies not cleared from the live browser of {sid} - {e}')
 
 
+def _unsave(store, site):
+    "A sign-in kept ahead of a sign-up the site turned down: out of the vault, its seals forgotten - no Undo line, no account was made."
+    from . import vault
+    _tables(store)
+    if not (row := saved(store, site)): return
+    store._exec('DELETE FROM signin_vault WHERE Site=?', (str(site).lower(),))
+    for v in row.get('User'), row.get('Secret'), row.get('Totp'), row.get('Extra'): vault.forget(v)
+
+
 def _used(store, site): store._exec('UPDATE signin_vault SET LastUsed=? WHERE Site=?', (_now(), site))
 
 
@@ -379,6 +389,17 @@ def on_password_page(sid: str) -> bool:
     except Exception: return False
 
 
+def holds_password(sid: str, conn=None) -> bool:
+    """Does a password box of the page the browser is on hold one now - typed by Taskuary (a sign-in, a sign-up waiting for his press) or by
+    him? True too when the page cannot be read: what a script would read there is then not known to be no secret."""
+    try:
+        c = conn or connect(sid)
+        try: return bool(c.js("(() => { " + DEEP + " return deepAll('input[type=password]').some((e) => !!e.value); })()"))
+        finally:
+            if conn is None: c.close()
+    except Exception: return True
+
+
 def asks_code(sid: str, conn=None) -> bool:
     "Is the page the browser is on asking for a sign-in code? False whenever it cannot be read."
     try:
@@ -415,10 +436,13 @@ def needs(store, tid: int, sid: str, claimed: str = '', fill=None, watch=...) ->
     if not site:
         # no page to sign in on (or not one a password goes to): the owner reads the agent's words, and no fill is ever offered
         # ...said as what to DO (2026-10-25): "a sign-in page Taskuary can fill" explained the app, and plain-http portals are common
-        text = (f"Sign in to {said or 'the site'} yourself in the browser pane, then say {DONE} - Taskuary only types passwords into "
+        # ...and a sign-up is asked as one: "Sign in to ... then say Signed in" stood over a sign-up form on plain http
+        up = signing_up(claimed)
+        do, then, page = ('Sign up on', 'Signed up', 'sign-up') if up else ('Sign in to', DONE, 'sign-in')
+        text = (f"{do} {said or 'the site'} yourself in the browser pane, then say {then} - Taskuary only types passwords into "
                 "secure (https) pages" if st.get('open') and st.get('url') and not str(st.get('url')).startswith('about:') else
-                f"Sign in to {said or 'the site'} to continue - the agent has no sign-in page open; ask it to open one")
-        ws.record(store, tid, sid, 'input_needed', request_id=ws.request_id_for(text), text=text, choices=[DONE] if _chat(sid) else None,
+                f"{do} {said or 'the site'} to continue - the agent has no {page} page open; ask it to open one")
+        ws.record(store, tid, sid, 'input_needed', request_id=ws.request_id_for(text), text=text, choices=[then] if _chat(sid) else None,
                   source='api')
         return {'site': '', 'auto': False}
     rid, text = f'{PREFIX}{site}', f'Sign in to {site} to continue'
@@ -490,6 +514,7 @@ def _auto(store, tid, sid, site, rid, fill, ask=None):
         # (the owner's own sign-in, 2026-11-14: the agent asked again on the code page, the saved sign-in was tried on it, "there is no
         # sign-in form", and the task read "the saved sign-in was not used")
         if ask and not code and asks_code(sid) and not on_password_page(sid): return _ready_code(store, tid, sid, site) or ask(CODE_ASK.format(site=site))
+        typing(store, tid, site)
         got = fill(sid, site, user, pw, **({'code': code} if code else {}), **({'extra': ex} if ex else {})) or {}
         _used(store, site)
         # THE PASSWORD WENT IN AND THE SITE ASKS A CODE NOBODY KEEPS: that step is the owner's, on the page, and it is said in one line - the
@@ -505,13 +530,13 @@ def _auto(store, tid, sid, site, rid, fill, ask=None):
         _continue(store, tid, rid, site, 'taskuary', bool(got.get('code')))
     except NotAccepted as e:
         _audit(store, tid, site, 'vault', False, str(e))
-        why = str(e) if 'also asks for' in str(e) else (f'The saved password for {site} did not work - {site} kept its sign-in form up. '
+        why = str(e) if e.own else (f'The saved password for {site} did not work - {site} kept its sign-in form up. '
                                                       'Sign in on the page, or fill it in securely with the right one - it is saved when it works.')
         back(f'The saved sign-in for {site} did not go in.')
         store.add_comment(tid, 'taskuary', 'agent', why[0].upper() + why[1:] + ('.' if not why.endswith('.') else ''))
         # ...and the ask itself says why the page is in front of him (the recorded walk, 2026-11-11: it read "Sign in to ... to continue" over a
         # form the site had just refused the saved password on)
-        if ask: ask(FAILED_ASK.format(site=site) if 'also asks for' not in str(e) else None)
+        if ask: ask(None if e.own else FAILED_ASK.format(site=site))
     except Exception as e:
         why = str(e) if isinstance(e, SignInError) else 'the browser could not be reached'
         _audit(store, tid, site, 'vault', False, why)
@@ -632,7 +657,7 @@ def signed_in(store, tid: int, rid: str) -> dict:
     """The owner signed in by hand and said so (workerstate.answer). Told as a fill is (_continue), on every kind of agent: a terminal
     CLI's ask had no Signed in press, only a box to type it in, and the bare words reached its prompt with no site and no "continue"
     (the owner, 2026-10-25: both kinds of agent ask alike)."""
-    told = _continue(store, tid, rid, rid[len(PREFIX):], 'owner')
+    told = _through(store, tid, rid, rid[len(PREFIX):], seen=False)
     return {'delivered': True, 'state': 'delivered'} if told else {'delivered': False, 'state': 'failed', 'why': 'the agent could not be told - see the task'}
 
 
@@ -652,6 +677,8 @@ def _audit(store, tid, site, how, ok, why='', saved=None, code=None):
 #   agent is told as a fill tells it, and a password typed on the way is SEALED to the vault for that site (save) - the one store - with
 #   one line on the task saying so and where to remove it. A password the site refused is never kept: it is only kept once past.
 # Nothing typed is logged, put in an event, a comment or the audit; captures while Taskuary itself types a sign-in (FILLING) are ignored.
+# A BOX THE PAGE NAMES AS THE USER'S, by its own words: the vault's look at the page (FIELDS) and the owner's typing heard (CAPTURE) read it alike
+NAMED = r'/user|mail|login|account|ident|member|customer/i'
 CAPTURE = r'''(() => {
   if (window !== window.top || window.__tqSigninHooked) return;
   window.__tqSigninHooked = true;
@@ -667,12 +694,15 @@ CAPTURE = r'''(() => {
     const coded = (e) => e.autocomplete === 'one-time-code' || /otp|one.?time|totp|2fa|mfa|passcode|verif|auth.*code|security.?code|^code$|^pin$/i
       .test([e.name, e.id, e.getAttribute('aria-label'), e.placeholder].join(' ').trim());
     const user = before.filter((e) => texty(e) && e.value && !coded(e)).pop();
+    const h = user && user.getRootNode().host;
+    const named = !!user && (''' + NAMED + r'''.test([user.name, user.id, user.autocomplete, user.getAttribute('aria-label'), user.placeholder,
+      h && h.id, h && h.getAttribute('name'), h && h.getAttribute('label'), h && h.getAttribute('aria-label')].join(' ')));
     if ((!pw && !user) || typeof __tqSignin !== 'function') return;
     // ...and the form's other boxes the owner filled (a "Customer ID"), by their label - kept with the sign-in, filled by it next time
     const labelOf = (e) => { const r = e.getRootNode(), h = r && r.host, l = e.labels && e.labels[0];
       return String((l && l.textContent) || e.getAttribute('aria-label') || e.placeholder || (h && (h.getAttribute('label') || h.getAttribute('aria-label'))) || e.name || '').trim().slice(0, 40); };
     const o = {}; for (const e of before) if (texty(e) && e !== user && e.value && labelOf(e)) o[labelOf(e)] = e.value;
-    try { __tqSignin(JSON.stringify({ u: user ? user.value : '', p: pw ? pw.value : '', o, href: location.href })); } catch (_) {}
+    try { __tqSignin(JSON.stringify({ u: user ? user.value : '', n: named, p: pw ? pw.value : '', o, href: location.href })); } catch (_) {}
   };
   document.addEventListener('submit', grab, true);
   // ...AND AS IT IS TYPED, not only as the form is sent (the owner's own sign-ins, 2026-11: seen through, and nothing kept). A page sends
@@ -704,7 +734,7 @@ def heard(tid, site: str, raw) -> bool:
     cur = _TYPED.setdefault(tid, {'site': site, 'user': '', 'pw': ''})
     if cur.get('site') != site: cur.update(site=site, user='', pw='')
     # ...and once the password is held, a box typed into WITHOUT one is no user name: the page after the password asks a code, a search
-    if d.get('u') and (d.get('p') or not cur.get('pw')): cur['user'] = str(d['u'])[:256]
+    if d.get('u') and (d.get('p') or not cur.get('pw')): cur['user'], cur['named'] = str(d['u'])[:256], bool(d.get('n'))
     if d.get('p'): cur['pw'] = str(d['p'])[:512]
     if isinstance(d.get('o'), dict) and d['o']:
         cur['extra'] = {str(k)[:60]: str(v)[:256] for k, v in list(d['o'].items())[:5] if str(k).strip() and str(v)}
@@ -735,6 +765,98 @@ def keep_typed(store, tid, site) -> bool:
 def _asked(store, tid, rid) -> bool: return (pending(store, tid) or {}).get('request_id') == rid
 
 
+# A CODE THE SITE EMAILED (the real-CLI walk, 2026-11-16): signed up, the site sent "Your code is 383972" to his inbox and asked for it on
+# its page. Triage filed the mail, the task kept saying "press its button" over a code page, and nobody knew the code was in the inbox. While
+# the ask is watched, a mail from the page's own site that came in since holds the code: typed on the pinned page like an authenticator's
+# (the agent never sees it), the mail named on the task by its subject. A mail with no single code is his to read, said in one line. The
+# mail stays where triage filed it: put on the task, a site's no-reply mail made his own task a stranger's, held until he trusted the site.
+CODE_RE = re.compile(r'(?<![\w-])\d{4,8}(?![\w-])')
+CODE_SYSTEM = ('A site sent this email while the owner was signing in or signing up there. Which of the numbers listed is the one-time code '
+               '(verification, sign-in or security code) the site asks to be typed? Answer JSON {"code": "<that number exactly as listed>"}, '
+               'or {"code": ""} when none of them is one.')
+CODE_WANT = {'type': 'object', 'properties': {'code': {'type': 'string'}}, 'required': ['code']}
+
+
+def _pick_code(store, text: str, found: set, brain=None) -> str:
+    """WHICH NUMBER IS THE CODE, when the mail holds several - the footer's year, a street address, a zip (real code mails all do): the model's
+    to read, and only one of the numbers the mail holds may come back. '' - no AI, or no clear answer: his to read."""
+    from .llm import build_llm, ask_json
+    from .terminal import fence
+    try:
+        b = brain or build_llm(store, job='judge')
+        if not b: return ''
+        v = ask_json(b, CODE_SYSTEM, f"THE EMAIL:\n{fence(text[:4000])}\nTHE NUMBERS IN IT: {', '.join(sorted(found))}", want=CODE_WANT, need=('code',)).data
+    except Exception as e: logger.debug(f'signin: no reading of which number a code mail holds - {e}'); return ''
+    c = str((v or {}).get('code') or '').strip() if isinstance(v, dict) else ''
+    return c if c in found else ''
+
+
+def mailed_code(store, site: str, after: int, brain=None):
+    """(message id, code) of the newest mail from `site` - its sender's registrable domain the page's pinned site - since message `after`,
+    and the one code it holds (one code-shaped number, or the one the model reads as the code among several); (message id, '') for one with
+    none, or none clear; None for no such mail."""
+    for r in store._rows('SELECT MessageId, FromEmail, Subject, BodyText FROM message WHERE MessageId>? ORDER BY MessageId DESC', (int(after or 0),)):
+        dom = str(r.get('FromEmail') or '').rsplit('@', 1)[-1]
+        if '@' not in str(r.get('FromEmail') or '') or registrable(dom) != site: continue
+        text = f"{r.get('Subject') or ''}\n{r.get('BodyText') or ''}"
+        found = set(CODE_RE.findall(text))
+        return r['MessageId'], (found.pop() if len(found) == 1 else _pick_code(store, text, found, brain) if found else '')
+    return None
+
+
+_TYPING = {}                    # (task, site) -> (the newest mail, when) as Taskuary typed a password there: a code the site mails for it comes after
+CODE_FRESH = 10 * 60            # ...and is looked for from there this long; past it, from when the ask's watch begins
+
+
+def _newest_mail(store) -> int: return (store._one('SELECT MAX(MessageId) AS m FROM message') or {}).get('m') or 0
+
+
+def typing(store, tid, site): _TYPING[(int(tid), site)] = (_newest_mail(store), _now())
+
+
+def mail_since(store, tid, site) -> int:
+    """The mail a code for this sign-in can be in: from just before Taskuary typed its password - the site mails the code as the password goes,
+    and the code step is raised a turn later (its agent makes the page ready), when the code was in the inbox already - else from now."""
+    mid, at = _TYPING.pop((int(tid), site), (None, 0))
+    return mid if mid is not None and _now() - at < CODE_FRESH else _newest_mail(store)
+
+
+def _code_from_mail(store, tid, site, c, mid, code) -> bool:
+    mail = f'"{str((store.get_message(mid) or {}).get("Subject") or "").strip()[:120]}"'
+    if not code:
+        store.add_comment(tid, 'taskuary', 'agent', f'{site} emailed you {mail} - type its code on the page to continue.')
+        return True
+    try: _type_code(c, site, lambda: code)
+    except SignInError as e:
+        store.add_comment(tid, 'taskuary', 'agent', f'{site} emailed you {mail}, and its code could not be typed ({e}) - type it on the page.')
+        return True
+    _audit(store, tid, site, 'vault', True, 'the code it emailed', code=True)
+    store.add_comment(tid, 'taskuary', 'agent', f'Typed the code {site} emailed you ({mail}).')
+    return True
+
+
+def _through(store, tid, rid, site, seen=True):
+    """The sign-in or sign-up is past - seen on the page (watch), or the owner said so (`seen` False, signed_in): keep what was typed for it,
+    and tell the agent once, in words that say who did it."""
+    up = SIGNING_UP.pop((int(tid), site), None)
+    # ...A SIGN-UP'S PASSWORD IS TASKUARY'S OWN, known without hearing it: he said "done" before the watch saw the page through (or no watch
+    # could reach it), and the password the site was sent - typed by Taskuary, seen by nobody - was never kept
+    if up and up.get('pw'):
+        t = _TYPED.get(tid) or {}
+        if t.get('site') != site: t = _TYPED[tid] = {'site': site, 'user': '', 'pw': ''}
+        t['pw'] = t.get('pw') or up['pw']
+    # ...and a sign-up's user name is a box the page names as the user's (NAMED): a wizard's last step shows a Company box over the password
+    if up is not None and not (_TYPED.get(tid) or {}).get('named'): (_TYPED.get(tid) or {}).pop('user', None)
+    kept = keep_typed(store, tid, site)
+    # ...A SIGN-UP IS SAID AS ONE (the real-CLI walk, 2026-11-16: every account it made read "You signed in to ..."), and one Taskuary
+    # sent is never said as his press
+    if up and up.get('sent'):
+        _audit(store, tid, site, 'vault', True, 'signed up', saved=True)
+        return _continue(store, tid, rid, site, 'taskuary', words=signed_up_words(site, up.get('user') or ''))
+    if seen: _audit(store, tid, site, 'page', True, 'signed up' if up is not None else '', saved=kept)
+    return _continue(store, tid, rid, site, 'owner', words=signed_up_words(site, sent=False) if up is not None else None)
+
+
 def watch(store, tid: int, sid: str, site: str, rid: str, conn=None, every: float = WATCH_EVERY, until: float = WATCH_FOR):
     """While the ask is open: hear what the owner sends on the page, and when the page is past the sign-in, keep it and tell the agent.
     `conn`: the DevTools connection (tests stand one in)."""
@@ -748,6 +870,7 @@ def watch(store, tid: int, sid: str, site: str, rid: str, conn=None, every: floa
             c.js(CAPTURE)
         except SignInError as e: logger.debug(f'signin: the {site} page of task {tid} could not be listened to - {e}')
         start, end, steady = (c.fields('') or {}).get('href') or '', time.time() + until, 0
+        after, coded = mail_since(store, tid, site), False      # mail from here on (mailed_code)
         while time.time() < end and _asked(store, tid, rid):
             time.sleep(every)
             for ev in c.drain():
@@ -756,12 +879,9 @@ def watch(store, tid: int, sid: str, site: str, rid: str, conn=None, every: floa
             if sid in browserview.FILLING: continue
             try: f = c.fields('')
             except SignInError: continue                         # mid-navigation: the page cannot be read for a moment
+            if not coded and code_step(f) and (got := mailed_code(store, site, after)): coded = _code_from_mail(store, tid, site, c, *got)
             steady = steady + 1 if past(f, site, start) else 0
-            if steady >= PAST_STEADY and _asked(store, tid, rid):
-                kept = keep_typed(store, tid, site)
-                _audit(store, tid, site, 'page', True, saved=kept)
-                _continue(store, tid, rid, site, 'owner')
-                return True
+            if steady >= PAST_STEADY and _asked(store, tid, rid): _through(store, tid, rid, site); return True
         return False
     finally:
         _TYPED.pop(tid, None)
@@ -790,7 +910,7 @@ FIELDS = r'''(want) => {
   const texty = (e) => ['text', 'email', 'tel', ''].includes(e.type);
   const words = (e) => { const h = hostOf(e); return [e.name, e.id, e.autocomplete, e.getAttribute('aria-label'), e.placeholder,
     h && h.id, h && h.getAttribute('name'), h && h.getAttribute('label'), h && h.getAttribute('aria-label')].join(' '); };
-  const named = (e) => /user|mail|login|account|ident|member|customer/i.test(words(e));
+  const named = (e) => ''' + NAMED + r'''.test(words(e));
   const before = pw ? ins.slice(0, ins.indexOf(pw)).filter(texty) : [];
   // ...A BOX THE PAGE MARKS AS A CODE IS NEVER THE USER-NAME BOX (recorded 2026-11-14: a code page's one box, alone on it, read as "a user
   // box" - so the saved sign-in's code prompt was not seen, the agent was told "signed in" over it, and the ask that followed read "sign in")
@@ -897,6 +1017,8 @@ class Cdp:
 def _cdp_url(sid: str) -> str:
     """The session's Chrome DevTools address, from agent-browser itself. Output to a FILE, not a pipe: see browserview.navigate."""
     from . import browserview, spawn
+    # ...read off the Chrome Taskuary started for the session first: asking agent-browser hung while a page it was loading never answered
+    if (own := browserview.devtools_url(sid)): return own
     exe = browserview.program()
     if not exe: raise SignInError('agent-browser is not installed')
     log = Path(tempfile.gettempdir()) / f'{browserview.session_name(sid)}-cdp.log'
@@ -998,7 +1120,8 @@ def fill_page(c: Cdp, site: str, user: str, pw: str, wait: float = STEP_WAIT, co
     if not s.get('password') or not on_site(s.get('href'), site): raise SignInError('the page changed under the sign-in - nothing was typed')
     c.type(pw)
     c.enter()
-    return {'code': bool(code) and _await_code(c, site, code, code_wait), 'others': left}
+    # ...and a user box left empty is said (refused): a sign-up whose user name no box named keeps its password alone (send_new)
+    return {'code': bool(code) and _await_code(c, site, code, code_wait), 'others': left, **({'nouser': True} if f.get('user') and not user else {})}
 
 
 REJECT_WAIT = 4.0               # after SETTLE: how long a site is given to take its password box away before the password is called refused
@@ -1017,9 +1140,11 @@ def accepted(c, site: str, wait: float = REJECT_WAIT) -> bool:
         time.sleep(.5)
 
 
-def refused(site: str, others=None) -> str:
+def refused(site: str, others=None, nouser=False) -> str:
     "Why a typed sign-in stayed on its form - the box the form also needed, when it showed one empty, before blaming the password."
     o = [str(x) for x in (others or []) if str(x).strip()]
+    if nouser: return (f'{site} also asks for the user name, and none was given - type it on the page, then sign in there; the password '
+                       'was not shown to be wrong')
     if o: return (f'{site} also asks for {o[0]!r}, which Taskuary does not keep - type it on the page, then sign in there; the saved '
                   'password was not shown to be wrong')
     return f'{site} did not accept that password'
@@ -1038,7 +1163,9 @@ def type_in(sid: str, site: str, user: str, pw: str, code=None, extra=None) -> d
             ok = out.get('code') or accepted(c, site)
             try: c.js(CLEAR)
             except SignInError: pass                          # the page moved on: nothing of it is left to clear
-            if not ok: raise NotAccepted(refused(site, out.get('others')))
+            if not ok:
+                e = NotAccepted(refused(site, out.get('others'), out.get('nouser'))); e.own = bool(out.get('others') or out.get('nouser'))
+                raise e
             return out
         finally: c.close()
 
@@ -1050,6 +1177,10 @@ def type_in(sid: str, site: str, user: str, pw: str, code=None, extra=None) -> d
 # every password box. SENDING the form makes an account somewhere: what can't be undone is his press (browsergate - which held a wizard's
 # Next on the same walk), so the page is then his, as a sign-in's is - and what he sends on it is kept and the agent told (watch). The agent
 # never sees the password, and he never types one.
+ENDED_WAIT = 30                 # how long a sign-up's answer waits for the turn that asked to end
+SIGNING_UP = {}                 # (task, site) whose open ask is a sign-up -> {pw, sent: Taskuary sent the form, user}: the watch says "signed up"
+                                # when it goes through, never "signed in"
+MAILED_ASK = '{site} emailed a code to finish the sign-up - Taskuary types it from the mail when it comes, or type it on the page'
 NEW = 'new:'                    # signin_marker's claim for a sign-up: this, then the site the agent named
 def signing_up(claimed) -> bool: return str(claimed or '').startswith(NEW)
 
@@ -1099,6 +1230,11 @@ def new_account(store, tid, sid, site, rid, fill=None, watch=...) -> dict:
     general.hand(tid)
     def run():
         try:
+            # ...AND ONLY ONCE THE TURN THAT ASKED HAS ENDED (the real-CLI walk, 2026-11-16): told in the same instant, that turn ended a beat after
+            # the news was stamped, send_prompt read it as news a later turn had worked past (`since`), dropped it - and the agent never woke
+            from . import workerstate as ws
+            end = time.time() + ENDED_WAIT
+            while time.time() < end and getattr(ws._live(tid), 'busy', False): time.sleep(.1)
             if kept: _continue(store, tid, rid, site, 'taskuary', words=(f'Already signed up on {site}', f'The owner already has an account on '
                                f'{site}, kept with the saved sign-ins - do not sign up again. Open its sign-in page and end your turn with '
                                f'[[TASKUARY-SIGNIN: {site}]].'))
@@ -1108,15 +1244,88 @@ def new_account(store, tid, sid, site, rid, fill=None, watch=...) -> dict:
     return {'site': site, 'auto': False}
 
 
+def signed_up_words(site, user='', sent=True) -> tuple[str, str]:
+    "(the task's receipt, what the agent is told) for a sign-up that went through - sent by Taskuary as he asked, or by his press on the page."
+    who = f' as {user}' if user else ''
+    how = ('As the owner asked, Taskuary made a strong password, typed it and sent the form' if sent else
+           "The owner pressed the site's button; the password Taskuary made")
+    return f'Signed up on {site}{who}', f"Signed up on {site}{who} - continue. {how}{'; it' if sent else ''} is kept with the owner's saved sign-ins."
+
+
 def _signup(store, tid, sid, site, rid, fill, watch):
-    try: fill(sid, site, new_password())
+    pw = new_password(); typing(store, tid, site)
+    try: fill(sid, site, pw)
     except Exception as e:
         why = str(e) if isinstance(e, SignInError) else 'the browser could not be reached'
         _audit(store, tid, site, 'vault', False, why)
         return _continue(store, tid, rid, site, 'taskuary', words=(f'The sign-up on {site} was not filled', f'The password for {site} was not '
                          f'typed: {why}. Look at the page and go on from what it shows.'))
     _audit(store, tid, site, 'vault', True, 'a new password typed')
+    # ...HE ASKED FOR IT, SO IT IS SENT (the owner, 2026-11-17: "If you ask it to sign up to those sites it should do it, nothing else required"):
+    # the browser gate's own verdict, given his words - asked for, Taskuary presses the form's Enter and keeps the password it made; else his press
+    from . import browsergate
+    if not browsergate.judge(store, [{'verb': 'press', 'args': [], 'raw': f'send the filled sign-up form on {site}, creating an account there'}], browsergate.page(sid),
+                             said=browsergate.asked(store, tid))[0]['hold']:
+        return _sent_up(store, tid, sid, site, rid, pw, watch=watch)
+    SIGNING_UP[(int(tid), site)] = {'pw': pw}       # memory only, as what he types on the page is (_TYPED)
     _ask(store, tid, sid, site, rid, f'Sign up on {site}: check the form and press its button - the password is made and kept for you', watch)
+
+
+USER = "(() => { " + DEEP + " const a = deepActive(); return a && a.type !== 'password' ? String(a.value || '').slice(0, 200) : ''; })()"
+SAYS = (r"(() => [...document.querySelectorAll('[role=alert], [aria-invalid=true], .error, .err, .errors, .invalid-feedback, .field-error')]"
+        r".map((e) => e.innerText.trim()).filter(Boolean).join(' ').replace(/\s+/g, ' ').slice(0, 240))()")
+
+
+def send_new(sid: str, site: str) -> dict:
+    """Send the sign-up form the password was typed into: Enter in its password box on the pinned site. {'ok', 'user', 'why'} - `why` the
+    page's own error marks when the form stayed up; the password boxes emptied after either way."""
+    from . import browserview
+    with browserview.filling(sid):
+        c = connect(sid)
+        try:
+            f, user = _guard(c, site, ''), ''
+            # ...the user box only where the page NAMES it so (FIELDS `named`): a wizard's last step shows a Company box over the password, and
+            # read as the user box the account was kept as the company - and the next sign-in typed it into the email box
+            if f.get('user') and f.get('named'): _guard(c, site, 'user'); user = str(c.js(USER) or '')
+            _guard(c, site, 'password'); c.enter()
+            time.sleep(SETTLE)
+            ok, why = accepted(c, site), ''
+            if not ok:
+                try: why = str(c.js(SAYS) or '')
+                except SignInError: pass
+            try: c.js(CLEAR)
+            except SignInError: pass
+            return {'ok': ok, 'user': user, 'why': why}
+        finally: c.close()
+
+
+def _sent_up(store, tid, sid, site, rid, pw, send=None, watch=None):
+    # KEPT BEFORE IT IS SENT (the timeline stress round, 2026-11-18): held only in memory while the form went and the page settled, a restart in
+    # those seconds left an account on the site that nobody could sign in to. Sealed now, its user name added once the page is past; taken
+    # out again if the site keeps its form up. A site with a saved sign-in never reaches here (new_account signs in to it instead)
+    try: save(store, site, '', pw, by='taskuary'); early = True
+    except ValueError: early = False                       # ...no keychain: said below, where the save after the send says it
+    try: got = (send or send_new)(sid, site)
+    except Exception as e: got = {'ok': False, 'why': str(e) if isinstance(e, SignInError) else 'the browser could not be reached'}
+    if not got.get('ok'):
+        if early: _unsave(store, site)
+        _audit(store, tid, site, 'vault', False, got.get('why') or 'the form stayed up')
+        return _continue(store, tid, rid, site, 'taskuary', words=(f'The sign-up on {site} did not go through', f"{site} kept its sign-up form up"
+                         + (f' - it says "{got["why"]}"' if got.get('why') else '') + '. No account was kept. Look at the page: fix what it asks for and '
+                         'end your turn with the sign-up marker again; a box only the owner can fill is theirs - hand it over with the your-turn marker.'))
+    user = got.get('user') or ''
+    try: save(store, site, user, pw, by='taskuary'); kept = ''
+    except ValueError as e: kept = f' The password could not be kept: {e}.'
+    # ...AND A CODE PAGE AFTER IT IS NO SIGN-UP YET: the site emailed its code as the form went, and the agent was told "signed up - continue"
+    # over the page asking for it - the mail had come before any watch began, so nothing ever typed it. The ask's watch reads mail from before
+    # the password was typed (typing) and types the code; the code step is his only when no mail holds one
+    if asks_code(sid):
+        _audit(store, tid, site, 'vault', True, 'a code was asked', saved=not kept)
+        SIGNING_UP[(int(tid), site)] = {'sent': True, 'user': user}
+        return _ask(store, tid, sid, site, rid, MAILED_ASK.format(site=site), watch)
+    _audit(store, tid, site, 'vault', True, 'signed up', saved=not kept)
+    did, said = signed_up_words(site, user)
+    return _continue(store, tid, rid, site, 'taskuary', words=(did, said + kept))
 
 
 # ── the fill page: one site, two boxes, one press - served by the app itself on 127.0.0.1, never on the share port ───────────

@@ -22,7 +22,7 @@ from .inboxes import TYPES as INBOXES      # helpdesks and the newer project too
 BOOT = datetime.now().isoformat(sep=' ', timespec='seconds')
 
 GRAPH = 'https://graph.microsoft.com/v1.0'
-MAIL_SELECT = ('id,subject,from,toRecipients,ccRecipients,receivedDateTime,sentDateTime,bodyPreview,body,'
+MAIL_SELECT = ('id,subject,from,replyTo,toRecipients,ccRecipients,receivedDateTime,sentDateTime,bodyPreview,body,'
                'conversationId,webLink,hasAttachments,isRead,inferenceClassification,flag')
 # ...and the same thing without the one field that carries the weight. A folder page LISTS; the
 # bodies come back afterwards (_mail_bodies) for the mail that survives the policy, so a flood
@@ -39,6 +39,7 @@ MAIL_LIST_SELECT = ','.join(f for f in MAIL_SELECT.split(',') if f != 'body')
 MAIL_BODY_SELECT = 'id,body,uniqueBody,internetMessageHeaders'
 MAIL_FULL_SELECT = MAIL_SELECT + ',uniqueBody,internetMessageHeaders'
 BODY_BATCH = 20              # Graph's $batch ceiling
+BODY_RETRIES = 3             # a throttled body is asked again this many times before the folder waits for the next poll
 
 
 def _cfg(c): return json.loads(c.get('ConfigJson') or '{}')
@@ -190,13 +191,15 @@ ACTOR_DISCOVER = 'connector-test'
 _DNS = re.compile(r'getaddrinfo failed|Name or service not known|nodename nor servname|Temporary failure in name resolution|NameResolutionError|No address associated', re.I)
 _TIMEOUT = re.compile(r'timed? ?out|ReadTimeout|ConnectTimeout', re.I)
 _REFUSED = re.compile(r'Connection refused|actively refused|ECONNREFUSED|WinError 10061', re.I)
+# ...a connection that dropped part-way through a read, as the socket, imaplib and requests each word it
+_DROPPED = re.compile(r'Connection aborted|Connection reset|RemoteDisconnected|socket error|EOF occurred|Broken pipe|IncompleteRead', re.I)
 _AUTH_WORDS = re.compile(r'\b(invalid_auth|not_authed|token_revoked|token_expired|account_inactive|bad credentials|invalid[_ ]api[_ ]key|incorrect api key)\b', re.I)
 def _status(e):
     r = getattr(e, 'response', None)
     code = getattr(r, 'status_code', None) or getattr(e, 'code', None) or getattr(e, 'status_code', None)
     if isinstance(code, int): return code
     # requests/httpx spell it "401 Client Error: Unauthorized for url" when only the text survives a re-raise
-    m = re.search(r'\b(401|403|5\d\d)\b[^\n]{0,20}(?:Client Error|Server Error|Unauthori[sz]ed|Forbidden)', str(e), re.I)
+    m = re.search(r'\b(401|403|429|5\d\d)\b[^\n]{0,20}(?:Client Error|Server Error|Unauthori[sz]ed|Forbidden|Too Many Requests)', str(e), re.I)
     if m: return int(m.group(1))
     # ...and an API that answers 200 with its own word for it: Slack's "invalid_auth" was printed to the owner as it came
     return 401 if _AUTH_WORDS.search(str(e)) else None
@@ -222,6 +225,8 @@ def plain_failure(e: Exception, signin: bool = False) -> str:
     if isinstance(code, int) and 500 <= code < 600:
         return (f"The service is having trouble on its side (it answered {code}). Nothing here needs changing - "
                 "it is tried again on every poll, and what came in meanwhile is read once it is back.")
+    if code == 429: return ("The service asked Taskuary to slow down (too many requests at once). Nothing is lost - it is tried again on "
+                            "every poll, and the rest is read then.")
     # ...a sign-in card has no key to paste: its sign-in still renews (a lapsed one says LAPSED above), so the service refused the read
     if code == 401 and signin: return ("Microsoft refused the read though the sign-in still works - usually trouble on its side, and it "
                                        "is tried again on every poll. If it lasts, sign in again on the card.")
@@ -236,7 +241,14 @@ def plain_failure(e: Exception, signin: bool = False) -> str:
     # setup has one box for the server and none for a port: the name is what can be checked, and IT knows the rest (2026-10-17)
     if _REFUSED.search(raw): return ("The server turned the connection away. Check the server name, or ask your IT team "
                                      "for the right server and port.")
-    return raw[:500] or type(e).__name__
+    # ...a read cut off part-way, or a server never reached (failures._UNREACHED, the road the run cards read): the socket's words
+    # and requests' repr - the folder, the host, the mailbox in its URL - reached the card and the bell with no word of what happens next
+    from .failures import _UNREACHED
+    if _DROPPED.search(raw): return ("The connection to the server dropped part-way through the read. Nothing already in is lost, "
+                                     "and it is tried again on every poll.")
+    if _UNREACHED.search(raw): return ("The server could not be reached - check this computer is online. It is tried again on every poll.")
+    # ...and any other answer as requests words it, without the address it was asked at - the mailbox is in that URL
+    return re.sub(r' for url: \S+', '', raw)[:500] or type(e).__name__
 
 class DraftStore:
     """The store as a card's Test sees it while the values on screen are not saved yet (2026-10-30, the owner: "a connection's Test can
@@ -554,6 +566,10 @@ def test_connector(store, cid: int, draft: dict | None = None) -> dict:
         elif c['Type'] == 'knowledge':
             from . import knowledge
             detail = knowledge.test(store, c)
+        elif c['Type'] == 'handbook':
+            # the Company Hub is Taskuary's own store - nothing to reach, so its Test says what it holds rather than failing for want of a branch
+            n = store.lore_count()
+            detail = f"kept here in Taskuary, nothing to reach · {plural(n['posts'], 'live post')} in {plural(n['topics'], 'topic')}"
         elif c['Type'] in ('smb_file', 'sftp'):
             from . import files
             detail = files.test_smb(store, c) if c['Type'] == 'smb_file' else files.test_sftp(store, c)
@@ -575,6 +591,8 @@ def test_connector(store, cid: int, draft: dict | None = None) -> dict:
             out['setup'] = setup_info('ready', None)
         return out
     except Exception as e:
+        from . import deps
+        e = deps.missing(e, c.get('Name') or c['Type']) or e        # a missing package said as one, whichever card's import met it
         store.touch_connector(cid, str(e))
         out = {'ok': False, 'ms': int((time.time() - t0) * 1000), 'detail': plain_failure(e)}
         # a failure the owner fixes in the OS (macOS privacy consent) carries the structured
@@ -583,7 +601,6 @@ def test_connector(store, cid: int, draft: dict | None = None) -> dict:
         # ...and a failure that is only a missing package carries the package, so the card offers
         # Install rather than a pip command the owner has to take somewhere else (deps.py)
         if getattr(e, 'package', None):
-            from . import deps
             can, why = deps.can_install()
             out['install'] = {'package': e.package, 'name': deps.pip_name(e.package), 'can': can, 'why': why}
         return out
@@ -848,6 +865,10 @@ def source_folders(s: dict) -> list:
     return [f for f in fs if f] or ['inbox']
 
 
+GONE_FOLDER = ("One of the folders this mailbox reads is not in it any more - deleted or moved in Outlook. Choose its folders again "
+               "on the card; the rest of its mail is read meanwhile.")
+
+
 MAIL_BATCH = 500   # one _mail_msgs call; _mail_folder keeps asking until a short batch comes back
 
 
@@ -893,16 +914,32 @@ def _mail_bodies(tok: str, upn: str, ids: list) -> list:
     already carried, which is what the old single-request page would have given a stripped mail."""
     out = []
     for i in range(0, len(ids), BODY_BATCH):
-        chunk = ids[i:i + BODY_BATCH]
-        r = requests.post(f'{GRAPH}/$batch', timeout=60, headers={'Authorization': f'Bearer {tok}'},
-                          json={'requests': [{'id': str(k), 'method': 'GET',
-                                              'url': f'/users/{upn}/messages/{x}?$select={MAIL_BODY_SELECT}'}
-                                             for k, x in enumerate(chunk)]})
-        r.raise_for_status()
-        for resp in r.json().get('responses') or []:
-            body = resp.get('body')
-            if resp.get('status') == 200 and isinstance(body, dict) and body.get('id'): out.append(body)
-            else: logger.debug(f"mail body {resp.get('id')} came back {resp.get('status')}")
+        chunk, tries = ids[i:i + BODY_BATCH], 0
+        while chunk:
+            r = requests.post(f'{GRAPH}/$batch', timeout=60, headers={'Authorization': f'Bearer {tok}'},
+                              json={'requests': [{'id': str(k), 'method': 'GET',
+                                                  'url': f'/users/{upn}/messages/{x}?$select={MAIL_BODY_SELECT}'}
+                                                 for k, x in enumerate(chunk)]})
+            r.raise_for_status()
+            again, wait = [], 1.0
+            for resp in r.json().get('responses') or []:
+                body, status = resp.get('body'), resp.get('status')
+                if status == 200 and isinstance(body, dict) and body.get('id'): out.append(body); continue
+                # ...a request Graph THROTTLED inside the batch (429 - a mailbox takes only a few at once) or failed on its side is asked
+                # again: kept as its listing's preview, the mail's 255 characters stood for its whole body for good
+                if status == 429 or (isinstance(status, int) and status >= 500):
+                    try: again.append(chunk[int(resp.get('id'))])
+                    except (TypeError, ValueError, IndexError): continue
+                    try: wait = max(wait, float(((resp.get('headers') or {}).get('Retry-After')) or 1))
+                    except (TypeError, ValueError): pass
+                else: logger.debug(f"mail body {resp.get('id')} came back {status}")
+            if not again: break
+            tries += 1
+            if tries > BODY_RETRIES:
+                raise RuntimeError(f'Outlook is throttling this mailbox - {len(again)} mail bodies were not given; the folder is read again '
+                                   'on the next poll')
+            time.sleep(min(wait, 10))
+            chunk = again
     return out
 
 
@@ -1028,8 +1065,12 @@ def _same_words(a: str, b: str, n: int = 160) -> bool:
     """Two renderings of the SAME reply. The copy that comes back from the Sent folder went out
     through the provider's HTML and back through our stripper, so it is never byte-identical to
     the text approved here - the opening words are what survive both, and the quoted thread the
-    provider appends is what makes a prefix the only honest comparison."""
-    x, y = (re.sub(r'\s+', ' ', a or '').strip().lower()[:n], re.sub(r'\s+', ' ', b or '').strip().lower()[:n])
+    provider appends is what makes a prefix the only honest comparison. ...and both are read down to
+    their own words first (triage.split_own: cut at the quote head), each the same way: a reply
+    shorter than `n` came back with the quoted thread under it and never matched its own copy."""
+    from .triage import split_own
+    norm = lambda t: re.sub(r'\s+', ' ', split_own(t or '', floor=1)[0]).strip().lower()[:n]
+    x, y = norm(a), norm(b)
     return bool(x) and x == y
 
 
@@ -1042,7 +1083,7 @@ REREAD_SYSTEM = ('You read words written for the owner and not acted on yet - a 
                  'only: {"covered": "covered" | "partly" | "none", "left": "the cut words for partly, else empty"}')
 REREAD_WANT = {'type': 'object', 'properties': {'covered': {'type': 'string', 'enum': ['covered', 'partly', 'none']}, 'left': {'type': 'string'}},
                'required': ['covered']}
-COVERED, CHECK_IT = 'Your line covers this, nothing more to send.', 'You wrote on the thread since - check the draft still fits.'
+CHECK_IT = 'You wrote on the thread since - check the draft still fits.'
 
 
 def reread(store, tid, words: str, line: str, brain=None) -> tuple:
@@ -1059,23 +1100,23 @@ def reread(store, tid, words: str, line: str, brain=None) -> tuple:
 
 def reread_draft(store, tid, rv: dict, sent: dict, brain=None) -> str:
     """A pending draft on a chat, re-read against the line the owner wrote there since (reread):
-    covered -> retired (COVERED), partly -> its text cut to what is still unanswered (same recipient, same quote), none -> left as it is.
+    covered -> set aside (SET_ASIDE), partly -> its text cut to what is still unanswered (same recipient, same quote), none -> left as it is.
     Unreadable, or no AI: the draft stays untouched and the task says CHECK_IT. Returns which it was."""
     from .sessionrecord import NOTE_ACTOR
+    from .proposals import SET_ASIDE
     from . import funnel
     line, draft = ' '.join(str(sent.get('BodyText') or '').split())[:2000], str(rv.get('DraftText') or '').strip()
     note = lambda t: tid and store.add_comment(tid, NOTE_ACTOR, 'assistant_agent', t)
     if not draft: return 'none'
-    # ...said in one line that never quotes the owner's words again: their line stands on the chat's left, just above (general.shown_history)
-    m = store.get_message(rv.get('AnswersMid') or rv.get('MessageId')) or {}
-    who = str(m.get('FromName') or '').strip() if m.get('FromName') != 'You' else ''
+    who = _answered_who(store, rv)
     got, left = reread(store, tid, draft, line, brain=brain)
     if got == 'covered':
-        store.decide_review(rv['ReviewId'], 'superseded', None, 'you', COVERED)
+        from .proposals import SET_ASIDE      # ...greyed where it stood, as every card his answer moved past (retire_draft_answered_elsewhere)
+        store.decide_review(rv['ReviewId'], 'superseded', None, 'you', SET_ASIDE)
         if tid:
             from . import verdicts
             verdicts._settle_task_after_sent_reply(store, rv, 'you', True)
-        note(f"You answered {who or 'them'} yourself - no new response needed.")
+        note(answered_line(store, rv))
     elif got == 'partly' and left and store.update_review_draft(rv['ReviewId'], left, rv.get('RunId'), by=rv.get('DraftBy')):
         note(f"You answered {who or 'them'} on part of it yourself - the draft now says only what is still open.")
     elif got != 'none': got = 'unread'; note(CHECK_IT)
@@ -1083,12 +1124,29 @@ def reread_draft(store, tid, rv: dict, sent: dict, brain=None) -> str:
     return got or 'unread'
 
 
+def _answered_who(store, rv) -> str:
+    m = store.get_message(rv.get('AnswersMid') or rv.get('MessageId')) or {}
+    return str(m.get('FromName') or '').strip() if m.get('FromName') != 'You' else ''
+
+
+def answered_line(store, rv) -> str:
+    """What the task says when the owner's own answer settled reply `rv` - ONE line for a chat and a mail alike, that never quotes his words
+    again (they stand on the chat's left, just above - general.shown_history) and never says a draft was removed: it stands greyed where it was."""
+    return f"You answered {_answered_who(store, rv) or 'them'} yourself - no new response needed."
+
+
 def answered_drafts(store, tid, sent: dict) -> list:
-    "Task `tid`'s pending replies on the conversation the owner's own line `sent` is on, drafted before it: what that line may have answered."
+    """Task `tid`'s pending replies on the conversation the owner's own line `sent` is on, drafted before it: what that line may have answered.
+    ...and, where his line keeps whom it went to, only a reply to someone it reached: a forward to Gail keeps Erin's conversation and is no
+    answer to Erin (her draft stays the agent's to re-plan, as every input it hears)."""
+    from .context import _recipients
+    from .continuity import addressees
     conv, at = sent.get('ConversationId'), sent.get('SentAt')
     if not conv or not at: return []
+    went = {a.lower() for a in _recipients(sent)}
+    reached = lambda rv: not went or not (to := addressees(store, rv)) or bool(to & went)
     return [rv for rv in store.list_reviews('pending') if rv.get('TaskId') == tid and rv.get('Kind') != 'action'
-            and rv.get('ConversationId') == conv and (not rv.get('SentAt') or rv['SentAt'] <= at)]
+            and rv.get('ConversationId') == conv and (not rv.get('SentAt') or rv['SentAt'] <= at) and reached(rv)]
 
 
 # THE OWNER'S LINE ON A CHAT IS THE AGENT'S TO RE-PLAN (the owner, 2026-11-09: "if we respond show on left side and then agent reevaluates if
@@ -1136,10 +1194,12 @@ def retire_draft_answered_elsewhere(store, tid: int | None, sent: dict, later: b
         stale = [rv for rv in stale if rv not in worded]
         if not stale: return []
 
-    place = SENT_FROM.get(sent.get('Channel'), 'outside Taskuary')
+    # ...SET ASIDE BY THE ONE RULE A CARD THE CHAT MOVED PAST IS (proposals.passed): under a note of its own no surface read it as passed, so
+    # the chat had no words to draw greyed and the card went from it. Now it stays where it stood, greyed, and says why (passed_why: "Not
+    # sent - you answered Erin yourself") - on the chat, the task page and a press alike
+    from .proposals import SET_ASIDE
     for rv in stale:
-        store.decide_review(rv['ReviewId'], 'superseded', None, 'you',
-                            f'The owner replied {place}; this draft was not sent.')
+        store.decide_review(rv['ReviewId'], 'superseded', None, 'you', SET_ASIDE)
 
     # Treat this exactly like a successful send through Review - which closes nothing (the owner, 2026-10-18: "sending and
     # closing are two steps"): the task stays open for Mark done.
@@ -1147,17 +1207,6 @@ def retire_draft_answered_elsewhere(store, tid: int | None, sent: dict, later: b
         from . import verdicts
         verdicts._settle_task_after_sent_reply(store, stale[0], 'you', True)
 
-    task = store.get_task(tid) if tid else {}
-    body = re.sub(r'\s+', ' ', sent.get('BodyText') or '').strip()
-    excerpt = f': "{body[:180]}"' if body else ''
-    if not tid:
-        subject = (store.get_message(stale[0].get('MessageId')) or {}).get('Subject') or 'this thread'
-        where = subject
-        state = ''
-    else:
-        where = f'TQ-{tid:04d}'
-        from . import buttons
-        state = f" The task stays open until you {buttons.label('close')}." if task.get('Status') not in ('done', 'dropped') else ''
     # ...said in the Assistant's conversation - and never as a dead end: the page offers Next under the newest line that has
     # nothing to press (the owner, 2026-09-30: "it can write that and close task ... but then should move to next or at least
     # have buttons to navigate")
@@ -1166,8 +1215,8 @@ def retire_draft_answered_elsewhere(store, tid: int | None, sent: dict, later: b
     # else"). The rail drops the row by itself; the task keeps the record.
     from . import funnel
     from .sessionrecord import NOTE_ACTOR
-    if tid: store.add_comment(tid, NOTE_ACTOR, 'assistant_agent', f'You replied {place} on {where}{excerpt}. '
-                                                                   f'I removed the unused draft; the reply was taken care of.{state}')
+    # ...in the one line a chat answer gets (answered_line): it quoted his words again under his own bubble, and said a draft "removed"
+    if tid: store.add_comment(tid, NOTE_ACTOR, 'assistant_agent', answered_line(store, stale[0]))
     funnel.invalidate()
     # The review transition already wakes the UI, but this final wake happens after the durable
     # Assistant line was written, avoiding a race where an open chat fetched one write too early.
@@ -1215,6 +1264,9 @@ def ingest_own_message(store, msg: dict, why: str, keep_unmatched: bool = True) 
                              'Subject': msg.get('subject'), 'FromName': 'You', 'FromEmail': msg.get('from_email'),
                              'SentAt': msg.get('sent_at'), 'BodyText': msg.get('body'),
                              'OwnText': msg.get('own_text') or None,
+                             # ...and whom it went to, as an arrival keeps them (ingest): a forward to Gail on Erin's thread is no answer to Erin
+                             **({'RecipientsJson': json.dumps({'to': list(msg.get('to') or []), 'cc': list(msg.get('cc') or [])})}
+                                if msg.get('to') or msg.get('cc') else {}),
                              'SourceLink': msg.get('source_link'), 'Status': 'context', 'Direction': 'out',   # yours: outgoing (X1)
                              'MailMetaJson': json.dumps(msg.get('mail_meta')) if msg.get('mail_meta') else None})
     sent = store.get_message(mid) or {}
@@ -1237,7 +1289,13 @@ def ingest_own_message(store, msg: dict, why: str, keep_unmatched: bool = True) 
         # - at once where its draft waits or it is at work (owner_line)
         if ingest.is_chat(msg): owner_line(store, tid, msg, mid, sent); return 1
         if not ingest.is_ack(store, sent):
-            ingest.thread_moved(store, tid, msg, mid, None, 'router', own=True)
+            went = ingest.thread_moved(store, tid, msg, mid, None, 'router', own=True)
+            # ...and a reply his mail did not answer (it went to others - answered_drafts) where no agent heard it: the arrival writer's draft
+            # on a task no agent worked stood greyed under his newer mail with nothing at work. It is owed still, the agent's to write as an
+            # arrival's is (reply_to_agent) - it reads the thread, his mail with it
+            left = [rv for rv in store.list_reviews('pending') if rv.get('TaskId') == tid and rv.get('Kind') in ('draft', 'draft_reply')
+                    and rv.get('ConversationId') == conv]
+            if not went and left: ingest._spawn(ingest.reply_to_agent, store, tid, left[0]['ReviewId'])
             # ...and every OTHER open task on the thread hears it too (the stress run, 2026-11-05): a follow-up that was a new ask made a
             # second task on one thread, the owner's answer was filed on the newer one, and the first's agent never heard that he had answered
             for other in sorted(set(on) - {tid}):
@@ -1250,7 +1308,7 @@ def ingest_outbound_mail(store, mailbox: str, m: dict) -> int:
     return ingest_own_message(store, {
         'external_id': f"graph:{m['id']}", 'channel': 'email', 'source_name': mailbox,
         'subject': m.get('subject'), 'from_email': mailbox, 'body': _body(m), 'own_text': _own(m),
-        'conversation_id': m.get('conversationId'), 'source_link': m.get('webLink'),
+        'to': _addrs(m.get('toRecipients')), 'cc': _addrs(m.get('ccRecipients')), 'conversation_id': m.get('conversationId'), 'source_link': m.get('webLink'),
         'sent_at': _local(m.get('receivedDateTime') or m.get('sentDateTime') or ''),
         'mail_meta': {'folder': 'sentitems', 'focus': m.get('inferenceClassification'),
                       'flag': (m.get('flag') or {}).get('flagStatus'), 'invite': is_invite(m)}},
@@ -1501,10 +1559,39 @@ def slack_msg(src: dict, m: dict, own: str = '', names: dict | None = None) -> d
     name = ' '.join(str((m.get('user_profile') or {}).get('real_name') or '').split())
     meta = {**({'dm': True} if str(src.get('Address') or '').startswith('D') else {}), **({'team': team} if team else {}),
             **({'internal': team == own} if team and own else {}), **({'team_name': names[team]} if team and (names or {}).get(team) else {}),
-            **({'name': name} if name else {})}
+            **({'name': name} if name else {}),
+            # a reply in a thread shown in the channel too (thread_broadcast): its answer goes under the thread's first line, not under it
+            **({'thread': str(m['thread_ts'])} if m.get('thread_ts') and str(m['thread_ts']) != str(m.get('ts')) else {})}
     return {'external_id': f"slack:{src['Address']}:{m.get('ts')}", 'channel': 'slack', 'subject': None, 'body': m.get('text'),
             'from_name': m.get('user'), 'conversation_id': f"slack:{src['Address']}", 'source_name': src['Address'],
             'sent_at': datetime.fromtimestamp(float(m.get('ts', 0))).strftime('%Y-%m-%d %H:%M:%S'), **({'mail_meta': meta} if meta else {})}
+
+
+# A PERSON'S LINE in Slack's history: no subtype, or one of these - "also send to the channel" (a thread reply shown in it), a line with a file
+# or a picture in it, and /me. Every other subtype is Slack's own (a join, a topic, an edit) or an app's.
+SLACK_SAID = frozenset({'thread_broadcast', 'file_share', 'me_message'})
+def slack_said(m: dict) -> bool: return not m.get('subtype') or m['subtype'] in SLACK_SAID
+
+
+def slack_files(tok: str, m: dict, cap: int = 4) -> tuple[list, list]:
+    """The files on one Slack line, shaped like a Graph fileAttachment (save_attachments, vision), and the kinds that could not be read
+    (messengers.unread_note). Without files:read Slack answers the download with its sign-in PAGE, 200 OK - that is not the picture."""
+    from urllib.parse import urlparse
+    out, missed = [], []
+    for f in (m.get('files') or [])[:cap]:
+        kind, ct = ('picture' if str(f.get('mimetype') or '').startswith('image/') else 'file'), str(f.get('mimetype') or 'application/octet-stream')
+        url = f.get('url_private_download') or f.get('url_private') or ''
+        try:
+            if (urlparse(url).hostname or '').lower().rsplit('.', 2)[-2:] != ['slack', 'com']: raise ValueError('not a Slack address')
+            if int(f.get('size') or 0) > 25 * 2**20: raise ValueError('over 25 MB')
+            r = requests.get(url, headers={'Authorization': f'Bearer {tok}'}, timeout=60)
+            r.raise_for_status()
+            if 'text/html' in (r.headers.get('Content-Type') or '') and 'html' not in ct: raise ValueError('Slack sent its sign-in page - the app lacks files:read')
+        except Exception as e:
+            logger.warning(f"slack file {f.get('id')} not readable: {str(e)[:160]}"); missed.append(kind); continue
+        out.append({'id': str(f.get('id') or '')[:60], 'name': f.get('name') or f"{kind}.{ct.split('/')[-1]}", 'contentType': ct.split(';')[0],
+                    'size': len(r.content), 'contentBytes': base64.b64encode(r.content).decode(), 'isInline': kind == 'picture'})
+    return out, missed
 
 
 def slack_own_team(store, c: dict, tok: str) -> str:
@@ -1549,6 +1636,7 @@ def ingest_teams_chats(store, upn: str, tok: str, since, llm=None, file_only=Fal
         except requests.RequestException:
             pass
     if feed is None: feed = _teams_user_delta(tok, since_iso, state=state) if user else _teams_delta(tok, upn, since_iso, state=state)
+    as_him = user                    # read as the owner (his own sign-in) or as an app - `user` is each message's sender below
     tenant = _token_tenant(tok)
     # oldest first, so threads read in order - by when each was written: a delta link's pages need not be newest first
     for m in sorted(reversed(feed), key=lambda m: m.get('createdDateTime') or ''):
@@ -1569,8 +1657,13 @@ def ingest_teams_chats(store, upn: str, tok: str, since, llm=None, file_only=Fal
         from . import agentchannels
         if cid and agentchannels.bound(store, 'teams', cid):
             addr_ = _graph_user(tok, user['id'], users)[1]
+            raw_ = (m.get('body') or {}).get('content') or ''
+            def media(raw_=raw_):
+                from .messengers import _files
+                got = hosted_images(tok, raw_)
+                return _files(got, ['picture'] * (len(set(_HOSTED.findall(raw_))) - len(got)))
             agentchannels.heard(store, 'teams', cid, [user['id'], addr_], body, f'teams:{cid}:{m["id"]}', from_me=user['id'] == me,
-                                name=user.get('displayName') or '')
+                                name=user.get('displayName') or '', media=media)
             continue
         topic, kind = _chat_meta(tok, cid, chats) if cid else ('', 'chat')
         name, addr = _graph_user(tok, user['id'], users)
@@ -1589,11 +1682,14 @@ def ingest_teams_chats(store, upn: str, tok: str, since, llm=None, file_only=Fal
         # a MEMBERSHIP check on the chat, not a scope check. An app-only connection is not in
         # the chat, so no permission grant fixes it; that would take delegated auth.
         missed = len(set(_HOSTED.findall(raw_html))) - len(atts)
+        # ...WITH THE WAY PAST (the owner, 2026-11-17: "need this fixed"): read as an app, the card's own Sign in with Microsoft - as him, a
+        # member of the chat, the picture is his to read; read as him already, only Teams itself shows it
         if missed > 0:
             body += ('\n\n[' + f"{missed} image{'s' if missed > 1 else ''} in this message could not be read: "
-                     'Microsoft refused the download for THIS chat (403) - it happens on group '
-                     'threads with external participants, whatever the app is consented for. '
-                     'Images in your other chats come through normally. Open it in Teams to see it.]')
+                     + ("Microsoft gives a picture in a chat with people outside the company only to someone in the chat, and the Teams card "
+                        "reads as an app. Press Sign in with Microsoft on the Teams card to read Teams as you, and pictures like this come "
+                        "through. Until then, open it in Teams to see it.]" if not as_him else
+                        "Microsoft refused the download for this chat (403). Open it in Teams to see it.]"))
         common = {'external_id': f'teams:{cid}:{m["id"]}', 'channel': 'teams',
                   'subject': topic or (f'Teams chat with {name}' if kind == 'oneOnOne' else f'Teams {kind}'),
                   'body': body[:20000], 'conversation_id': f'teams:{cid}',
@@ -2289,7 +2385,11 @@ def _poll_one(store, c, file_only, backfill_hours, llm) -> int:
                         atts = []
                         if wants_attachments(m) and not store.message_exists(f"graph:{m['id']}"):
                             try: atts = mail_attachments(tok, s['Address'], m['id'])
-                            except Exception as e: logger.warning(f"attachments for {m['id']} failed: {e}")
+                            except Exception as e:
+                                # ...a miss Graph may yet answer (a throttle, its own trouble, a token that lapsed mid-poll, a dropped
+                                # line) holds this mail for the next poll: let in without its files, it never asked for them again
+                                if _status(e) not in (400, 403, 404): raise
+                                logger.warning(f"attachments for {m['id']} failed: {e}")
                         # an invite is read in full once, as it arrives: the meeting to answer and whether it still needs answering
                         inv = is_invite(m)
                         cal_ = None
@@ -2306,6 +2406,7 @@ def _poll_one(store, c, file_only, backfill_hours, llm) -> int:
                             'images': images_for_triage(store, atts), **files_for_triage(atts), 'invite': inv, **({'cal': cal_} if cal_ else {}),
                             **_header_marks(m),
                             'mail_meta': {'folder': folder, 'focus': m.get('inferenceClassification'),
+                                          **({'reply_to': rt} if (rt := _addrs(m.get('replyTo'))) else {}),
                                           'flag': (m.get('flag') or {}).get('flagStatus'),
                                           'invite': inv, **({'cal': cal_} if cal_ else {}), **att_marks(atts),
                                           **links_meta((m.get('body') or {}).get('content'))}}, llm=llm)
@@ -2348,7 +2449,11 @@ def _poll_one(store, c, file_only, backfill_hours, llm) -> int:
                         broken.append(f'{folder}: {e}')
                         break                           # disabled/retargeted source: make no more provider calls
                     except Exception as e:
-                        logger.warning(f"outlook {s['Address']} {folder}: {e}"); broken.append(f'{folder}: {e}')
+                        logger.warning(f"outlook {s['Address']} {folder}: {e}")
+                        # ...a folder the card chose that is not there any more (deleted in Outlook: 404 on every poll) has nothing left
+                        # to wait for - held as unfinished, it froze the cycle's cutoff, and mail into the Inbox after it was never read
+                        if folder not in ('inbox', 'sentitems') and _status(e) == 404: errors.append(GONE_FOLDER); continue
+                        broken.append(f'{folder}: {e}')
                 if broken:
                     errors += broken; continue     # the watermark waits for the folders that did not finish
                 if not store.patch_source_poll_state(
@@ -2444,13 +2549,22 @@ def _poll_one(store, c, file_only, backfill_hours, llm) -> int:
                 except Exception as e:
                     logger.warning(f"slack poll failed ({s['Address']}): {e}"); errors.append(f"{s['Address']}: {e}")
                     continue
-                msgs = [m for m in reversed(hist_all) if not m.get('subtype')]
+                msgs = [m for m in reversed(hist_all) if slack_said(m)]
                 # the channel's read cursor is ONE timestamp - the newest line we took
                 if read_it and msgs: mark_slack_read(tok, s['Address'], msgs[-1].get('ts'))
                 own = slack_own_team(store, full, tok)
                 names = {t: slack_team_name(tok, t) for t in {str(m.get('user_team') or m.get('team') or '') for m in msgs} - {'', own}}
                 for m in msgs:
-                    n += ingest_message(store, file_only=file_only, msg=slack_msg(s, m, own, names), llm=llm)['status'] != 'duplicate'
+                    msg = slack_msg(s, m, own, names)
+                    # files fetched once: a line read again (an edit is judged by ingest) does not download them again
+                    atts, missed = slack_files(tok, m) if m.get('files') and not store.message_exists(msg['external_id']) else ([], [])
+                    from .messengers import unread_note
+                    msg['body'] = '\n\n'.join(x for x in (msg['body'], unread_note(missed, 'Slack')) if x) or ('(no text - see the attachment)' if atts else '')
+                    out = ingest_message(store, file_only=file_only, msg={**msg, 'images': images_for_triage(store, atts), **files_for_triage(atts)}, llm=llm)
+                    n += out['status'] != 'duplicate'
+                    if atts and out.get('message_id') and out['status'] != 'duplicate':
+                        try: save_attachments(store, out['message_id'], atts, msg['external_id'])
+                        except Exception as e: logger.warning(f'slack attachments failed: {e}')
             store.touch_source(s['SourceId'])
         store.touch_connector(c['ConnectorId'], '; '.join(errors) if errors else None)
         _watch(store, full, '; '.join(errors) if errors else None)

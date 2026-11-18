@@ -151,9 +151,19 @@ TRIGGER_TAG = 'workflow-trigger:'
 STARTED_BY = {'schedule': 'its schedule', 'manual': 'you (Run now)', 'assistant': ASSISTANT, 'phone': 'you, from your phone',
               'mail': 'a mail that arrived'}
 _STARTING, _LOCK = set(), threading.Lock()      # runs whose worker is on its way: no session yet, and no queue row
+# ...and ONE START AT A TIME: "is a run working?" and the new run's mark are one step, or two presses in the same second (Run now on the
+# desktop and the phone) each heard "no" before either had made its task, and two agents worked the same job
+_CLAIM = threading.Lock()
 
 
 def _spawn(fn): threading.Thread(target=fn, daemon=True, name='workflow-start').start()
+
+
+def at_work(tid) -> bool:
+    """A RUN OF A ROUTINE HAS THIS TASK NOW - its steps going, or its worker on its way (_STARTING, held until the last step is done). The one
+    read for it (the walk, 2026-11-17: a run of code steps read "not started yet" over an empty chat while it ran - only Taskuary's own
+    housekeeping asked): the task's state, its idle line, its chat and what still works on it all ask here."""
+    with _LOCK: return int(tid) in _STARTING
 
 
 def trigger_of(task) -> str:
@@ -337,7 +347,7 @@ def running(store, sid) -> dict | None:
     for t in store.dock_tasks(f'workflow:{sid}', limit=3):
         if t.get('Status') not in LIVE_STATUSES: continue
         q = store.get_dispatch(t['TaskId'])
-        if t['TaskId'] in _STARTING or terminal.for_task(t['TaskId'], details=False) or (q and q.get('State') != 'failed'): return t
+        if at_work(t['TaskId']) or terminal.for_task(t['TaskId'], details=False) or (q and q.get('State') != 'failed'): return t
     return None
 
 
@@ -380,6 +390,15 @@ def run(store, src, actor: str = 'schedule', trigger: str = 'schedule', context:
 
     `background`: the task is made now and the worker starts on its own thread - a general session's first turn holds the call
     for as long as the agent works, which kept the owner from their task and held every report behind it on the clock."""
+    with _CLAIM: out = _run(store, src, actor, trigger, context, mail)
+    # ...the run is marked as working before the claim is let go; its work goes on outside it, so the next routine's start never waits on it
+    if start := out.pop('start', None):
+        if background: _spawn(start)
+        else: start()
+    return out
+
+
+def _run(store, src, actor, trigger, context, mail) -> dict:
     from . import ingest, browserview, flow
     from .agents import CODING_KINDS
     defn, steps = definition(store, src), flow.is_flow(cfg_of(src))
@@ -421,6 +440,5 @@ def run(store, src, actor: str = 'schedule', trigger: str = 'schedule', context:
             else: ingest._auto_general(store, tid, text)
         finally:
             with _LOCK: _STARTING.discard(tid)
-    if background: _spawn(start)
-    else: start()
-    return {'task_id': tid, 'ref': task_ref(tid), 'kind': kind, 'title': defn['title'], 'trigger': trigger, 'steps': steps}
+    out = {'task_id': tid, 'ref': task_ref(tid), 'kind': kind, 'title': defn['title'], 'trigger': trigger, 'steps': steps}
+    return {**out, 'start': start}

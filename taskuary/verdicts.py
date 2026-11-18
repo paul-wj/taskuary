@@ -189,6 +189,24 @@ def _envelope(rv: dict) -> dict:
 _RUNNING, _RUNNING_LOCK = set(), threading.Lock()   # action reviews whose act is running right now (one server process per home)
 
 
+# AN ACT A RESTART CUT IS SAID ON ITS CARD (the timeline stress round, 2026-11-18): the claim above lives in the process, so the next start drew
+# a card whose comment or push was going up as never pressed - Approve lit, a second press ran it twice, and its agent heard nothing. The
+# press is written down when it starts and when it ends; one started and never ended is told at start-up, its card left for his press
+ACT_STARTED, ACT_ENDED = 'act_started', 'act_ended'
+def cut_acts(store) -> list:
+    "At start-up: every pressed act the last run did not see end, kept on its card as cut (general.ACT_CUT): [review ids]."
+    from . import general
+    out = []
+    for r in store._rows("SELECT ReviewId FROM review WHERE Kind='action' AND Status IN ('pending','held')"):
+        last = store._one("SELECT Action, Actor FROM audit WHERE EntityType='review' AND EntityId=? AND Action IN (?,?) ORDER BY Id DESC LIMIT 1",
+                          (r['ReviewId'], ACT_STARTED, ACT_ENDED))
+        if not last or last['Action'] != ACT_STARTED: continue
+        store.review_act_failed(r['ReviewId'], general.ACT_CUT, last['Actor'])
+        store.audit('review', r['ReviewId'], ACT_ENDED, 'startup', 'system', {'cut': True})
+        out.append(r['ReviewId'])
+    return out
+
+
 def _claim_act(store, rid) -> bool:
     """This press may run the act: no other press is running it and its row still waits. A reply's send is claimed in the store before it
     leaves (claim_review_delivery); an action ran first and was marked answered after, so a double click - or the desk and the phone -
@@ -204,12 +222,22 @@ def _act_busy(store, rid):
     return out if out.get('already') else {**out, 'send_error': 'This is already being done; nothing was run again.'}
 
 
+# A PRESS THAT LOST TO AN ANSWER says what that answer was in words, one sentence on every road (the stress round, 2026-11-18: a phone pick
+# of an email its agent had taken back read "already closed_unsent" - the store's own word)
+STATUS_WORDS = {'approved': 'approved', 'edited': 'approved with changes', 'rejected': 'turned down', 'no_reply': 'marked as needing no reply',
+                'closed_unsent': 'taken back unsent', 'superseded': 'replaced'}
+def already(rv: dict) -> str:
+    "'already turned down by you' - what became of a review no longer waiting, and whose answer it was."
+    st, by = str(rv.get('Status') or ''), str(rv.get('DecidedBy') or '')
+    word = 'sent' if rv.get('DeliveryState') == 'sent' else STATUS_WORDS.get(st, st.replace('_', ' ') or 'gone')
+    return f"already {word}" + (f" by {'you' if by == 'owner' else by}" if by else '')
+
+
 def _delivery_busy(store, rid):
     current = store.get_review(rid) or {}
     state = current.get('DeliveryState')
     if current.get('Status') != 'pending':
-        return {'ok': False, 'status': current.get('Status'), 'sent': None, 'already': True,
-                'send_error': f"this one was already {current.get('Status')}"}
+        return {'ok': False, 'status': current.get('Status'), 'sent': None, 'already': True, 'send_error': f"this one was {already(current)}"}
     return {'ok': False, 'status': 'pending', 'sent': None, 'delivery': state or 'pending',
             'send_error': ('A delivery check or send is already in progress; nothing was sent again.'
                            if current.get('DeliveryClaim') else 'This draft changed before approval; review it and approve again.')}
@@ -261,6 +289,16 @@ def _reconcile_snapshot(store, snapshot):
         return {'state': 'unknown', 'reason': f'the provider could not verify delivery ({str(e)[:160]})'}
 
 
+def _drafted(rv) -> str:
+    """The draft the owner's words are measured against: what was DRAFTED - never the words a refused Send left in the box
+    (finish_review_delivery keeps the attempted text as the draft so the box shows it), while the box still holds them."""
+    if rv.get('DeliveryState') == 'failed':
+        try: snap = json.loads(rv.get('DeliveryEnvelope') or '{}') or {}
+        except (TypeError, ValueError): snap = {}
+        if isinstance(snap.get('drafted'), str) and snap.get('body') == rv.get('DraftText'): return snap['drafted']
+    return rv.get('DraftText')
+
+
 def _deliver_review(store, rv, final, verb, actor, note=None, cc=None, envelope=None, send_fn=None, anyway=False, bcc=None, subject=None):
     """Claim, send or reconcile, persist the outcome, then settle the task.
 
@@ -298,7 +336,7 @@ def _deliver_review(store, rv, final, verb, actor, note=None, cc=None, envelope=
         try: mail_file(store, rv.get('TaskId'), f['attachment'], kept=False)
         except ValueError as e:
             return {'ok': False, 'status': 'pending', 'sent': None, 'send_error': f"Nothing was sent: {f.get('name')} - {e}. Take it off and Send again."}
-    snapshot ={'envelope': env, 'message': msg, 'body': final, 'status': VERB2STATUS[verb],
+    snapshot ={'envelope': env, 'message': msg, 'body': final, 'status': VERB2STATUS[verb], 'drafted': _drafted(rv),
                 'actor': actor, 'note': note, 'attempted_at': _now_iso()}
     claim = store.claim_review_delivery(rid, snapshot, rv)
     if not claim: return _delivery_busy(store, rid)
@@ -446,6 +484,11 @@ def withdraw(store, tid: int, why: str, by: str, which='', keep: int = 0) -> dic
     from .wrapup import WITHDRAWN
     why, which = ' '.join(str(why or '').split()), ' '.join(str(which or '').split()).casefold().removeprefix('rv')
     if not why: return {'ok': False, 'why': 'say in one line why the draft no longer answers - what the newest message changed'}
+    # ...SEVERAL BY THEIR IDS, as a bulk card is named to its agent ("rv1 + rv2 + ...", cardqueue.says): each taken back, one call for the card
+    if re.fullmatch(r'\d+(?:\s*[,+]\s*(?:rv)?\d+)+', which):
+        got = [(x, withdraw(store, tid, why, by, x, keep)) for x in dict.fromkeys(re.findall(r'\d+', which))]
+        done, bad = [g['review_id'] for _, g in got if g.get('ok')], [f"rv{x}: {g.get('why')}" for x, g in got if not g.get('ok')]
+        return {'ok': bool(done), 'review_id': done[0] if done else None, 'review_ids': done, **({'why': '; '.join(bad)[:600]} if bad else {})}
     left = [r for r in unsent(store, tid) if r['rid'] != keep]
     if not left: return {'ok': False, 'why': 'nothing unsent is waiting on this task, so there is nothing to withdraw'}
     if which.isdigit(): hit = [r for r in left if r['rid'] == int(which)]
@@ -558,7 +601,7 @@ def _post_with_closeout(store, closeout: dict, reply: dict, text: str, actor: st
     if not blanks_ok and (gap := _blanked(body)): return gap
     envelope = {'kind': 'closeout_comment', 'channel': 'github', 'to': [f'{repo}#{num}']}
     def post(snapshot):
-        url = github.comment_issue(_conn(store)['Secret'], repo, num, snapshot['body'])
+        url = github.comment_issue(_conn(store, repo)['Secret'], repo, num, snapshot['body'])
         return {'channel': 'github', 'to': [f'{repo}#{num}'], 'url': url}
     verb = 'edit' if body != str(reply.get('DraftText') or '').strip() else 'approve'
     return _deliver_review(store, reply, body, verb, actor, f'posted on {repo}#{num} with the close-out',
@@ -592,7 +635,7 @@ def decide(store, rv: dict, verb_in: str, *a, closes: bool = False, **kw) -> dic
         from . import demo
         if demo.enabled(): demo.after_send(store, rv['TaskId'])
         elif proposals._action(rv) not in proposals.HELD_ACTS and not (out.get('shut') or {}).get('closed'):
-            try: general.approved(store, rv['TaskId'], *pressed(rv, out), actor, review=rv.get('ReviewId'))
+            try: general.approved(store, rv['TaskId'], *pressed(store, rv, out), actor, review=rv.get('ReviewId'))
             except Exception as e: logger.warning(f"rv{rv.get('ReviewId')}: the agent was not told it went - {e}")
     # ...AND EVERY ONE THAT RAN AND FAILED (general.failed): an act's error, a send that did not go or may have - never a refusal before it
     # ran (stale, a blank, already answered), and never a held turn's steps, whose card tells its agent once for all (shellgate.approve_steps)
@@ -626,7 +669,7 @@ def in_words(got, n: int = 300) -> str:
                      if isinstance(v, (str, int, float)) and not isinstance(v, bool) and str(v).strip())[:n]
 
 
-def pressed(rv: dict, out: dict) -> tuple:
+def pressed(store, rv: dict, out: dict) -> tuple:
     "(the press, what it did) of an answered review, in words for its agent."
     if rv.get('Kind') == 'action':
         from . import proposals
@@ -636,7 +679,15 @@ def pressed(rv: dict, out: dict) -> tuple:
     if (env := _envelope(rv)).get('kind') == 'calendar':
         from .calwrite import head_of
         return 'Send', f'the calendar was told: {head_of(env)}'
-    return 'Send', f"the {'reply' if rv.get('MessageId') else 'message'} was sent" + (f" ({out['sent']})" if isinstance(out.get('sent'), str) else '')
+    # ...the card by its number and in the owner's words, as a No names it (cardqueue.said_no): with two emails out, "the message was sent"
+    # left its agent guessing which one went (the stress round, 2026-11-18) - and to whom it went where that is not whom the card named (he
+    # readdressed it, or copied someone): "the reply was sent" let its next turn tell him it had answered the person it drafted it for
+    from .cardqueue import what
+    named, got = what(store, {'rids': [rv['ReviewId']], 'rows': [rv]}), out.get('sent')
+    to, cc = ((got.get('to') or [], got.get('cc') or []) if isinstance(got, dict) else ([], []))
+    to = [str(a) for a in to if str(a).lower() not in named.lower()]
+    whom = ' - it went' + (f" to {', '.join(to)}" if to else '') + (f", copying {', '.join(map(str, cc))}" if cc else '') if to or cc else ''
+    return 'Send', f"rv{rv['ReviewId']} ({named}) was sent{whom}" + (f" ({got})" if isinstance(got, str) else '')
 
 
 def _decide(store, rv: dict, verb_in: str, final_text: str = None, note: str = None,
@@ -660,8 +711,9 @@ def _decide(store, rv: dict, verb_in: str, final_text: str = None, note: str = N
     # A CARD THE CONVERSATION MOVED PAST presses nothing, from any page or phone however stale (proposals.move_on, the owner 2026-11-10)
     from . import proposals
     # ...nor one it moved past that no agent has heard yet (written_past): greyed on every surface from the moment the input came
+    # ...refused with the one sentence its greyed card reads (passed_why, 2026-11-17), never a fixed "set aside when you moved on"
     if proposals.passed(rv) or rv.get('Status') == 'pending' and rv.get('TaskId') and rv['ReviewId'] in proposals.written_past(store, rv['TaskId']):
-        return {'ok': False, 'status': rv['Status'], 'sent': None, 'passed': True, 'send_error': proposals.PASSED_SAID}
+        return {'ok': False, 'status': rv['Status'], 'sent': None, 'passed': True, 'send_error': proposals.passed_why(store, rv)}
     if rv.get('Status') == 'pending' and verb_in in ('approve', 'edit'):
         def content_envelope(row):
             return {k: v for k, v in _envelope(row).items() if k not in ('delivery', 'attempted_at', 'attempts')}
@@ -701,7 +753,7 @@ def _decide(store, rv: dict, verb_in: str, final_text: str = None, note: str = N
     # clicked - or one double click - sent the same mail twice (2026-09-03).
     if str(rv.get('Status') or 'pending') != 'pending':
         return {'ok': False, 'status': rv.get('Status'), 'sent': None, 'already': True,
-                'send_error': f"this one was already {rv.get('Status')}" + (f" by {rv['DecidedBy']}" if rv.get('DecidedBy') else '')}
+                'send_error': f"this one was {already(rv)}"}
     # ...and approving an EMPTY draft sent nothing, marked the review approved and closed the task
     # anyway: the person never got an answer and nothing was left in the pipe to say so.
     # ...and an email to a name nobody has resolved to an address goes nowhere: the provider is never handed a bare name
@@ -746,8 +798,9 @@ def _decide(store, rv: dict, verb_in: str, final_text: str = None, note: str = N
         return {'ok': True, 'status': 'closed_unsent', 'sent': None, 'send_error': None}
     # ONE approve: if the text differs from the draft, it was edited - no need to declare it
     if verb_in in ('approve', 'edit'):
-        # THE SIGNATURE GOES ON ONCE, HERE (signatures.py): the box shows it, so a box holding only the signature is an empty box,
-        # and the owner's words are compared with the draft above it - adding the block is not an edit the drafter learns from
+        # THE SIGNATURE IS NOT ADDED HERE (signatures.py): it went on when the draft was made and the box shows it, so a box holding only
+        # the signature is an empty box, the owner's words are compared with the draft above it, and what goes is what the box held -
+        # signing again here put the block under his own "Thanks, Alex" (2026-11-17)
         from . import signatures
         sig = signatures.for_review(store, rv)
         if sig and (final_text or '').strip() and not signatures.unsigned(final_text, sig).strip(): final_text = ''
@@ -756,8 +809,8 @@ def _decide(store, rv: dict, verb_in: str, final_text: str = None, note: str = N
                     'send_error': 'there is only your signature in the box - write the reply (or let the AI draft it) and send that'}
         final = final_text if (final_text or '').strip() or (cal and final_text is not None) else rv.get('DraftText')
         bare = lambda t: signatures.unsigned(t, sig).strip()
-        verb = 'edit' if bare(final) != bare(rv.get('DraftText')) else 'approve'
-        if sig or final is not None: final = signatures.sign(store, rv, final)     # ...and an email goes as plain text (chatformat.plain_text)
+        verb = 'edit' if bare(final) != bare(_drafted(rv)) else 'approve'
+        if final is not None: final = signatures.as_sent(store, rv, final)     # ...an email as plain text (chatformat.plain_text)
     else:
         final, verb = None, verb_in
     # a PROPOSAL is not a draft reply: approving it RUNS the action the agent asked for
@@ -767,7 +820,16 @@ def _decide(store, rv: dict, verb_in: str, final_text: str = None, note: str = N
         return {'ok': False, 'status': 'pending', 'sent': None, 'send_error': 'only a pull request close-out can be closed or merged that way'}
     if rv.get('Kind') == 'action':
         from . import proposals
+        # ...A HELD STEP ITS AGENT IS STILL WORKING BESIDE is not run, and not failed (shellgate.mid_turn): it waits, lit, for the press it asks
+        # for - raised inside the act, it was settled as failed under "press it again" and its agent, mid-turn, was woken with "IT FAILED"
+        # ...a read let in runs nothing in that folder, so it never waits on the turn (readgate)
+        if verb in ('approve', 'edit') and proposals._action(rv) == 'shell_act' and (p_ := json.loads(rv.get('DraftText') or '{}') or {}).get('command'):
+            from . import shellgate
+            if (busy := shellgate.mid_turn(store, rv['TaskId'], p_.get('sid'))):
+                return {'ok': False, 'status': 'pending', 'sent': None, 'busy': busy, 'send_error': busy}
         if not _claim_act(store, rid): return _act_busy(store, rid)   # every verb: a No over a running Yes would mark a merged pull request rejected
+        runs = verb in ('approve', 'edit', 'merge_anyway', 'close_pr')
+        if runs: store.audit('review', rid, ACT_STARTED, actor)      # ...and written down before it runs, so a restart under it is known (cut_acts)
         try:
             if verb == 'close_pr':
                 try: out = proposals.close_pr(store, rv, actor)
@@ -800,7 +862,9 @@ def _decide(store, rv: dict, verb_in: str, final_text: str = None, note: str = N
             store.add_comment(rv['TaskId'], actor, 'human', f'Proposal {VERB2STATUS[verb]} - nothing was done.')
             proposals.settle(store, rv, verb, actor)
             return {'ok': True, 'status': VERB2STATUS[verb], 'sent': None, 'send_error': None}
-        finally: _RUNNING.discard(rid)
+        finally:
+            _RUNNING.discard(rid)
+            if runs: store.audit('review', rid, ACT_ENDED, actor)
     # A BLANK LEFT IN IT (the owner, 2026-10-30): "[REASON]" went out as written. The one door refuses it, so the phone and the
     # assistant meet the same "Fill in [REASON] first" the Send button does - nothing is decided, the draft stays as it is
     # ...but a send already attempted is checked as attempted (Check delivery), its text frozen - never a new refusal over it
@@ -845,7 +909,7 @@ def _decide(store, rv: dict, verb_in: str, final_text: str = None, note: str = N
             except Exception as e: logger.warning(f'style feedback not saved: {e}')
         ev = (f"rv{rid}: owner verdict '{verb}' on a drafted reply to \"{(m.get('Subject') or rv.get('Kind') or '')[:80]}\" "
               f"from {m.get('FromEmail') or '?'}" + (f"; their note: {note[:200]}" if note and verb != 'edit' else ''))
-        if verb == 'edit': ev += f"\nDRAFT:\n{(rv.get('DraftText') or '')[:700]}\nSENT INSTEAD:\n{(final or '')[:700]}"
+        if verb == 'edit': ev += f"\nDRAFT:\n{(_drafted(rv) or '')[:700]}\nSENT INSTEAD:\n{(final or '')[:700]}"
         if learn_async: learn_async(learn.learn_from, store, ev)
         else: learn.learn_from(store, ev)
     return result or {'ok': True, 'status': VERB2STATUS[verb], 'sent': sent, 'send_error': None}

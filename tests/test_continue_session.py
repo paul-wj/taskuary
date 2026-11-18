@@ -86,6 +86,44 @@ class OneRoadTests(unittest.TestCase):
         self.assertIsNotNone(session.send_prompt.call_args.kwargs['waiting'], 'and the turn does not write it a second time')
         general.OPENING.discard(tid)
 
+    def test_a_picture_with_no_note_is_his_line_too(self):
+        """The attach stress round, 2026-11-18: Continue's box lets a picture go with no words ("(images)", the page says), and the server took the
+        line road only for a note - the picture was dropped and the agent carried on as if nothing was sent. What he attached is a line of his."""
+        from taskuary import config, general, outputs
+        s = MemoryStore()
+        tid = s.create_task({'Title': 'Draft the vendor letter', 'Kind': 'general', 'Status': 'open'}, 'o')
+        up = config.home() / 'attachments' / 'prompt' / '209901' / '20991231-235959-abc123-letterhead.png'
+        up.parent.mkdir(parents=True, exist_ok=True); up.write_bytes(b'\x89PNG letterhead'); self.addCleanup(up.unlink, missing_ok=True)
+        session = mock.Mock(alive=True)
+        with mock.patch.object(server, 'store', s), mock.patch('taskuary.general.handles', return_value=True), \
+             mock.patch('taskuary.general.provider_options', return_value=['x']), \
+             mock.patch('taskuary.general.start_session', return_value=session), \
+             mock.patch('threading.Thread', side_effect=lambda target, **k: mock.Mock(start=target)):
+            TestClient(server.app).post(f'/api/tasks/{tid}/continue-work', json={'note': None, 'images': [str(up)]}).json()
+        args, kw = session.send_prompt.call_args
+        self.assertEqual((args[0], args[1]), ('', [str(outputs.folder(tid) / 'letterhead.png')]))
+        self.assertEqual(kw['waiting'], general.waiting_lines(s, tid)[0]['id'], 'his line, kept with its picture')
+        general.answered(tid, every=True)
+
+    def test_continue_on_a_session_that_just_ended_goes_to_a_fresh_one(self):
+        """The Continue round, 2026-11-18, recorded: a general agent's CLI died mid-turn, and Continue (Try again) was pressed while that session was
+        still closing. The press answered "continued", the turn met "this assistant session has ended", and that was logged and said nowhere -
+        nothing ran, nothing lit. A typed line in the same spot is handed once to a fresh session (say_line); Continue takes that road too."""
+        from taskuary import general
+        s = MemoryStore()
+        tid = s.create_task({'Title': 'Compare payroll vendors', 'Kind': 'general', 'Status': 'open'}, 'o')
+        dying, fresh = mock.Mock(alive=False), mock.Mock(alive=True)
+        dying.send_prompt.side_effect = general.Ended()
+        with mock.patch.object(server, 'store', s), mock.patch('taskuary.general.handles', return_value=True), \
+             mock.patch('taskuary.general.provider_options', return_value=['x']), \
+             mock.patch('taskuary.general.start_session', side_effect=[dying, fresh]), \
+             mock.patch('threading.Thread', side_effect=lambda target, **k: mock.Mock(start=target)):
+            out = TestClient(server.app).post(f'/api/tasks/{tid}/continue-work', json={}).json()
+        self.assertTrue(out['continued'])
+        args, kw = fresh.send_prompt.call_args
+        self.assertTrue(args[0].endswith(continuity.RESUME_PROMPT)); self.assertEqual((kw['brief'], kw['kept']), (True, True))
+        self.assertNotIn(tid, general.OPENING)
+
     def test_a_coding_agent_reopens_its_own_session_or_a_fresh_one(self):
         from taskuary import general, ingest, terminal
         s = MemoryStore()
@@ -103,6 +141,23 @@ class OneRoadTests(unittest.TestCase):
              mock.patch.object(server, 'continue_task', return_value={'session': 'sid'}) as fresh:
             TestClient(server.app).post(f'/api/tasks/{tid}/continue-work', json={})
         fresh.assert_called_once()
+
+    def test_a_coding_continue_with_only_a_picture_hands_the_picture_over(self):
+        """Continue on a coding task with a screenshot and no words: the coding branch never looked at the pictures, so the session
+        reopened on the resume prompt alone and what he attached was lost. It is a line like any other (take_line), its file the task's."""
+        from taskuary import config, general, ingest, outputs, terminal
+        s = MemoryStore()
+        tid = s.create_task({'Title': 'Fix the export', 'Kind': 'coding', 'Status': 'open'}, 'o')
+        shot = config.home() / 'attachments' / 'prompt' / '202611' / '20261118-101500-abc123-broken-header.png'
+        shot.parent.mkdir(parents=True, exist_ok=True); shot.write_bytes(b'\x89PNG-shot')
+        with mock.patch.object(server, 'store', s), mock.patch('taskuary.general.handles', return_value=False), \
+             mock.patch.object(ingest, '_resumable_coding', return_value=({'Agent': 'coding', 'Cwd': '/w', 'ExtId': 'conv-1'}, '')), \
+             mock.patch.object(server, '_brainless', return_value=''), mock.patch.object(server, '_refresh_chat_context', return_value={}), \
+             mock.patch('threading.Thread', side_effect=lambda target, **k: mock.Mock(start=target)), \
+             mock.patch.object(terminal, 'start_on_task', return_value={'sid': 'sid'}) as reopen:
+            TestClient(server.app).post(f'/api/tasks/{tid}/continue-work', json={'images': [str(shot)]}).json()
+        self.assertIn(str(outputs.folder(tid) / 'broken-header.png'), reopen.call_args.kwargs['instruction'])
+        general.answered(tid, every=True)
 
     def test_continue_stays_on_the_cli_that_made_the_conversation_even_when_it_cannot_reopen(self):
         """TQ-0887 shape: codex made the conversation, codex could not reopen it - the way on is a fresh CODEX session with the
@@ -156,6 +211,34 @@ class BriefInParagraphsTests(unittest.TestCase):
 
 
 class PhoneTests(unittest.TestCase):
+    def test_a_note_held_behind_trust_is_said_as_held_never_as_continuing(self):
+        """The Continue round, 2026-11-18: Continue from the phone on a stranger's task. The note was kept by the box behind Trust - nothing went
+        to an agent - and the phone said "Continuing TQ-0001 with your note - it picks up where it left off". It says what happened: kept, and why."""
+        from taskuary import general, origin
+        s = MemoryStore()
+        tid = s.create_task({'Title': 'Quote request', 'Kind': 'general', 'Status': 'done'}, 'o')
+        line = 'You have not trusted Pat Lee (pat@vendor.example) yet - nothing goes to an agent until you do.'
+        with mock.patch.object(server, 'store', s), mock.patch.object(origin, 'hold', return_value={'line': line}), \
+             mock.patch('taskuary.general.provider_options', return_value=['x']), mock.patch.object(server, '_brainless', return_value=''):
+            said = ra._continue(s, str(tid), 'send them our price list')
+        self.assertNotIn('Continuing', said); self.assertNotIn('picks up', said)
+        self.assertIn('Your note waits on TQ-0001', said); self.assertIn(line, said)
+        self.assertEqual([w['text'] for w in general.waiting_lines(s, tid)], ['send them our price list'])
+
+    def test_the_assistant_says_a_held_note_as_held_too(self):
+        "The same press from the Assistant's chat said \"Picked up TQ-0001 again with your note\" - one sentence for both (general.kept_held)."
+        from taskuary import general, origin
+        s = MemoryStore()
+        tid = s.create_task({'Title': 'Quote request', 'Kind': 'general', 'Status': 'done'}, 'o')
+        dock = s.create_task({'Title': 'Assistant', 'Kind': 'general', 'Status': 'open'}, 'o')
+        line = 'You have not trusted Pat Lee (pat@vendor.example) yet - nothing goes to an agent until you do.'
+        with mock.patch.object(server, 'store', s), mock.patch.object(origin, 'hold', return_value={'line': line}), \
+             mock.patch('taskuary.general.provider_options', return_value=['x']), mock.patch.object(server, '_brainless', return_value=''), \
+             mock.patch.object(concierge, 'continuable', return_value=True):
+            out = concierge._task_writes(s, dock, 'agent.continue', tid, {'note': 'send them our price list'}, 'TQ-0001', 'owner',
+                                         said='send them our price list')
+        self.assertEqual(out['say'], f'Your note waits on TQ-0001 - {line}')
+
     def test_the_pick_asks_and_the_next_typed_line_is_the_note(self):
         s = MemoryStore()
         tid = s.create_task({'Title': 'Fix the export', 'Kind': 'coding', 'Status': 'open'}, 'o')

@@ -95,8 +95,18 @@ def _edit(a: dict) -> dict | None:
     return {'parts': parts[:20]} if parts else None
 
 
+def _parsed(args):
+    "A call's arguments as given, or the object a JSON string of them holds (Codex's function_call, an OpenAI-style tool call)."
+    if not isinstance(args, str): return args
+    try: j = json.loads(args)
+    except ValueError: return args
+    return j if isinstance(j, dict) else args
+
+
 def _tool(name, args, at=None) -> dict:
-    args = hide_draft(name, args)
+    # ...read as the object they are (2026-11-17): kept as a string, a call had no args, file or edit, so the chat drew a write by its own
+    # text and an email draft as "Running a command" (agentSteps.describeCall)
+    args = hide_draft(name, _parsed(args))
     s = {'k': 'tool', 'name': str(name or 'tool'), 'text': _target(args), 'at': at}
     a = args if isinstance(args, dict) else {}
     if (kept := _args(a)): s['args'] = kept
@@ -570,6 +580,9 @@ def trace_steps(trace: list) -> list:
     steps, calls = [], {}
     for e in trace or []:
         k, name, d = e.get('type'), e.get('name'), e.get('detail')
+        # ...A CALL WHOSE RESULT CAME BACK HAS FINISHED (walk evidence, 2026-11-17): left without a status, the newest call read as running until
+        # another step came (chatStream.eventsOf) - "Reading notes.md" stood on the working line for 10 s while the model wrote its answer
+        if k == 'tool_result' and isinstance(d, dict) and (s := calls.get(d.get('tool_call_id') or name)): s['status'] = 'completed'
         if k == 'tool_call':
             steps.append(s := _tool(name, (d or {}).get('args') if isinstance(d, dict) else d))
             if isinstance(d, dict): calls[d.get('tool_call_id')] = s

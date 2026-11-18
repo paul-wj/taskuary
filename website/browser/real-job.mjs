@@ -33,7 +33,7 @@ c.commit()`, db]);
     return api("/api/connectors", { Type: "database", Name: "County parcels", ConfigJson: JSON.stringify({ conn_str: `sqlite:///${db.replace(/\\/g, "/")}` }), Active: true, Roles: "tool", Scope: "read" });
   },
   contacts() {
-    const f = path.join(info.home, "Documents", "event-contacts.csv");
+    const f = path.join(out, "owner-files", "event-contacts.csv")     // ...a folder of his own, outside Taskuary's data (the harness HOME sits inside it);
     execFileSync(PY, ["-c", `
 import csv, os, random, sys
 r = random.Random(3); os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)
@@ -46,7 +46,9 @@ with open(sys.argv[1], 'w', newline='') as o:
         w.writerow([fn, ln, co, f"{fn.lower()}.{ln.lower()}{i}@{co.lower()}.example", r.choice(['Harbor City','Millbrook','Oak Ridge']), r.choice(['2025 Summit','2026 Expo','never'])])`, f]);
     return f;
   },
-  signups() {
+  async signups() {
+    // ...a fresh world each run: the sites forget their accounts when they start, so the sign-ins kept for them go too (Remove, as he would)
+    for (const r of ((await api("/api/signins"))?.data || [])) if (/^127\./.test(r.Site || r.site || "")) await api(`/api/signins/${r.Site || r.site}`, null, "DELETE");
     const p = spawn(PY, [path.join(here, "fake_signup.py"), String(SITE), INBOX], { stdio: "ignore", detached: false });
     process.on("exit", () => { try { p.kill(); } catch {} });
     return `http://127.0.0.1:${SITE}`;
@@ -62,12 +64,16 @@ const JOBS = {
     ask: () => `Email everyone in ${worlds.contacts()} to invite them to our open house on Thursday 4 December, 5-7pm at Northwind, 12 Harbor St. ` +
       "Personalise each one with their first name and company, and mention their last event if they came to one. Then tell me how many went out." },
   signups: { world: "signups", title: "Market data from ten vendors",
-    ask: () => `Sign up for a free account on each of the ten data vendors listed at ${worlds.signups()}/ using my work email alex@northwind.example, ` +
+    ask: async () => `Sign up for a free account on each of the ten data vendors listed at ${await worlds.signups()}/ using my work email alex@northwind.example, ` +
       "collect each one's table, and put them together into one sheet by city with a column per vendor. Tell me which ones you could not get and why." },
   report: { world: null, title: null, ask: "Which site is closest to a cap of 140 people, and draft a note to its manager about it." },
+  // ...one letter, to say no to (JOB_REJECT): its card has its own Don't send
+  email1: { world: null, title: "Tell Erin the open house moved", ask: "Email Erin Blake (erin@northwind.example) a two-line note that the open house " +
+    "moved to Thursday 3 December, 5-7pm, same place." },
 };
 // what the owner says when asked: a fact only he has, or his go-ahead
-const ANSWERS = [[/phone|mobile|number/i, "Use 555-0142 - it is the office line."], [/card|pay|\$49|subscri/i, "Skip the paid one - do not pay for anything."],
+const ANSWERS = [[/thursday|friday|which date|the date/i, "Thursday 3 December - my mistake on the date."],
+  [/(phone|mobile) number/i, "Use 555-0142 - it is the office line."], [/\$\d|by card|card number|subscri/i, "Skip the paid one - do not pay for anything."],
   [/password/i, "Make up a strong one for each and keep them in the sign-in vault."], [/.*/, "Yes - go ahead and do it the way you think best."]];
 const STOP = /^(Reject|Not now|Withdraw|Cancel|Skip|Edit|Change|Dismiss|Stop)/i, GO = /^(Send all|Send|Approve|Allow once|Allow|Trust|Yes|Go ahead|Run|Sign|Pay|Confirm|Continue)/i;
 
@@ -75,7 +81,7 @@ const J = JOBS[job]; if (!J) { console.log("no such job", job, Object.keys(JOBS)
 await api("/api/fixture/outbox", {});
 const outbox = path.join(info.home, "outbox.jsonl"), sentBefore = existsSync(outbox) ? readFileSync(outbox, "utf8").split("\n").filter(Boolean).length : 0;
 if (J.world === "parcels") console.log("world", JSON.stringify(await worlds.parcels()).slice(0, 160));
-const ask = typeof J.ask === "function" ? J.ask() : J.ask;
+const ask = typeof J.ask === "function" ? await J.ask() : J.ask;
 
 const { browser, page } = await connect();
 await page.reload({ waitUntil: "domcontentloaded" }); await sleep(3000);
@@ -88,15 +94,23 @@ await page.evaluate((tid) => { window.__tid = tid; }, t); await page.evaluate(sa
 await type(page, ask);
 
 // ── PLAY THE OWNER until the job rests: press cards, answer the one question, deliver mail, watch the working line ──
-let pagePresses = 0, inboxSeen = 0, calm = 0, lastLine = "", sameLine = 0, n = 0;
+let restarted = false, pagePresses = 0, inboxSeen = 0, calm = 0, lastLine = "", sameLine = 0, n = 0;
+// a site's code, emailed: into his inbox as mail, on the arrival road - the moment it is sent, whatever the walk is waiting on
+const deliver = async () => { if (!existsSync(INBOX)) return; const lines = readFileSync(INBOX, "utf8").split("\n").filter(Boolean);
+  for (const l of lines.slice(inboxSeen)) { const m = JSON.parse(l); console.log(`[${s()}s] MAIL in: ${m.subject}`);
+    await api("/api/fixture/incoming", { from_email: m.from, from_name: m.from.split("@")[1], subject: m.subject, body: m.body }); }
+  inboxSeen = lines.length; };
 const MAX = (+process.env.JOB_MIN || 75) * 60000;
 while (Date.now() - t0 < MAX) {
   await sleep(5000); n++;
-  // a site's code, emailed: into his inbox as mail, on the arrival road
-  if (existsSync(INBOX)) { const lines = readFileSync(INBOX, "utf8").split("\n").filter(Boolean);
-    for (const l of lines.slice(inboxSeen)) { const m = JSON.parse(l); console.log(`[${s()}s] MAIL in: ${m.subject}`);
-      await api("/api/fixture/incoming", { from_email: m.from, from_name: m.from.split("@")[1], subject: m.subject, body: m.body }); }
-    inboxSeen = lines.length; }
+  await deliver();
+  // A RESTART IN THE MIDDLE (the owner's stress round: "a restart in the middle"): JOB_RESTART_AT seconds in, Taskuary's server is stopped and
+  // started again on the same home (real-run's `restart`), the page left open - the job must go on, its cards kept, nothing asked twice
+  if (process.env.JOB_RESTART_AT && !restarted && s() >= +process.env.JOB_RESTART_AT) {
+    restarted = true; console.log(`[${s()}s] RESTART of the server`); writeFileSync(path.join(out, "restart"), "");
+    while (existsSync(path.join(out, "restart"))) await sleep(1000);
+    console.log(`[${s()}s] RESTARTED`); await sleep(5000); await shot(page, `${name}-after-restart`); continue;
+  }
   const c = await api(`/api/tasks/${t}/conversation`);
   const st = await page.evaluate(() => {
     const tp = document.querySelector("[data-tq-task-page]"), vp = tp?.querySelector(".tq-aui-viewport");
@@ -118,12 +132,19 @@ while (Date.now() - t0 < MAX) {
   if (pane && !c.working) {
     if ((pagePresses += 1) > 25) { note("pressed on the page 25 times and it is still handed to him"); break; }
     await shot(page, `${name}-page-${pagePresses}`);
-    const [x, y, w, h] = pane; await page.mouse.click(x + w / 2, y + h * 0.3); await sleep(400); await page.keyboard.press("Enter");
-    pressed.push({ s: s(), go: "Enter on the page", what: st.tail.slice(-160) }); console.log(`[${s()}s] PRESSED Enter on the page: ${st.tail.slice(-160).replace(/\n/g, " ")}`);
-    calm = 0; await sleep(4000); continue;
+    const r = await api('/api/fixture/press-page', { taskId: t });     // ...his click on the form's own button (the pane relays it; measured)
+    pressed.push({ s: s(), go: "the page's button", what: st.tail.slice(-160) }); console.log(`[${s()}s] PRESSED the page's button (${JSON.stringify(r)}): ${st.tail.slice(-160).replace(/\n/g, " ")}`);
+    // ...once, as he would: the page is given a minute to move on, and one still handed to him after it is a finding, never a second press
+    const was = st.tail.slice(-200); let moved = false;
+    for (let k = 0; k < 30 && !moved; k++) { await sleep(2000); await deliver(); moved = (await api(`/api/tasks/${t}/conversation`)).working || !(await page.evaluate(() => !!document.querySelector("[data-tq-task-page] canvas")))
+      || (await page.evaluate(() => (document.querySelector("[data-tq-task-page] .tq-aui-viewport")?.innerText || "").slice(-200))) !== was; }
+    if (!moved) note(`pressed the page and a minute later it is still handed to him: "${was.slice(-120)}"`);
+    calm = 0; continue;
   }
   // A CARD: pressed as he would, its go-ahead - and what it said kept, to catch the same thing asked again
-  const go = st.lit.find((b) => GO.test(b) && !STOP.test(b));
+  // ...or his NO to the first card (JOB_REJECT=1 - every action against every answer): the agent hears whose no it was and never lays the same card again
+  const no = process.env.JOB_REJECT && !pressed.length && st.lit.find((b) => /^(Don't send|Reject|Not now|Dismiss)/i.test(b));
+  const go = no || st.lit.find((b) => GO.test(b) && !STOP.test(b));
   if (go && !c.working || go && /Allow|Trust/.test(go)) {
     const what = st.cards.at(-1) || st.tail.slice(-200);
     if (pressed.some((p) => p.what === what)) note(`asked again for what he already pressed: "${what.slice(0, 140)}"`);
@@ -135,7 +156,8 @@ while (Date.now() - t0 < MAX) {
   if (c.working) { calm = 0; continue; }
   // AT REST: a question of his to answer, or the end
   const last = String(c.items.filter((x) => x.kind === "turn").at(-1)?.text || "");
-  const q = /\?\s*$/.test(last.trim()) || /\?\s*\n/.test(last.slice(-300));
+  // ...a question: the app's own word for one (an open ask), else a ? in its last paragraph - mid-sentence too
+  const q = !!c.asking || /\?/.test(last.trim().split(/\n\s*\n/).pop() || "");
   if (q && asked.length < 6) {
     if (asked.some((a) => a.q === last.slice(-300))) note("the same question twice");
     if (pressed.length && /should I|shall I|do you want me to|want me to (send|go)|ready to send|go ahead/i.test(last.slice(-300))) note(`asked for a go-ahead in words after a press, not a card: "${last.slice(-200)}"`);

@@ -36,7 +36,7 @@ somewhere else, a pipe into Remove-Item - is held, never let through for being h
 """
 import contextvars, json, ntpath, os, re, shlex, shutil, subprocess, tempfile, threading
 from loguru import logger
-from .browsergate import _segments, _deny, _tell, not_approved, NEXT, OWNER_NO
+from .browsergate import _segments, _deny, _tell, joined, launched, not_approved, NEXT, OWNER_NO, words
 
 HELD = 'Taskuary held this for the owner'
 _FILING = threading.Lock()
@@ -65,13 +65,26 @@ GLAB = {('mr', 'merge'): 'merge a merge request', ('mr', 'create'): 'open a merg
 PUBLISH = {'npm', 'pnpm', 'yarn', 'cargo', 'poetry', 'gem', 'dotnet', 'nuget'}             # `<tool> publish` / `nuget push` publish a package
 MAIL = {'sendmail': 'send an email', 'mailx': 'send an email', 'mutt': 'send an email', 'msmtp': 'send an email', 'send-mailmessage': 'send an email'}
 _WRITES = {'post', 'put', 'patch', 'delete'}
-HTTP = {'curl', 'wget', 'http', 'https', 'xh', 'invoke-webrequest', 'iwr', 'invoke-restmethod', 'irm'}
-# curl's short flags are case-sensitive (-F is a form post, -f is --fail); the long ones and PowerShell's -Body / -InFile are not
-_SHORT = ('-d', '-F', '-T')
-_DATA = ('--data', '--data-raw', '--data-binary', '--data-urlencode', '--json', '--form', '--upload-file', '-body', '-infile',
-         '--post-data', '--post-file', '--body-data', '--body-file')
+HTTP = {'curl', 'wget', 'http', 'https', 'xh', 'xhs', 'invoke-webrequest', 'iwr', 'invoke-restmethod', 'irm'}
+_PS, _PIE = {'invoke-webrequest', 'iwr', 'invoke-restmethod', 'irm'}, {'http', 'https', 'xh', 'xhs'}
+# each client's own grammar for a write: curl's short flags are case-sensitive (-F a form post, -f --fail) and bundle (`-sXPOST`, `-sd x`) - the
+# letters that take a value end a bundle; a long option that sends a body starts with one of these; -K/--config sends what a file it reads says
+_CURL_VAL = 'AbcCdDeEFHKmoPQrtTuUwxXyYz'
+_BODY = ('--data', '--form', '--upload', '--post-', '--body-', '--json', '--raw', '--config')
+_PIE_VAL = 'aAop'
+_VERBS = {'get', 'head', 'options', 'post', 'put', 'patch', 'delete'}
+# the programs whose own grammar says a step goes out - what a launcher (`timeout 60 git push`) is read through to (browsergate.launched)
+_TOOLS = frozenset({'git', 'gh', 'glab', 'twine', 'docker', 'bash', 'sh', 'powershell', 'pwsh', 'cmd', *PUBLISH, *MAIL, *HTTP})
 _LOCAL = re.compile(r'^https?://(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:\d+)?(/|$)', re.I)
+# ...and Taskuary's own address as it hands it to a session (terminal.session_env), the way docsync.agent_systems spells the call to the
+# owner's systems: held as "send data to a web address", a read of his own books was an Approve card. Never where the command sets it
+_OWN = re.compile(r'^\$(TASKUARY_URL|\{TASKUARY_URL\})(/|$)')
+_SETS_OWN = re.compile(r'\bTASKUARY_URL\s*=')
 _PREFIX = ('&', 'npx', 'command', 'call', 'exec', 'sudo', 'time', 'nohup')
+
+
+
+def _tool(t: str) -> bool: return _name(t) in _TOOLS or _name(t) in DELETERS or _name(t) in ('find', 'cd', 'chdir', 'set-location', 'sl', 'pushd', 'push-location')
 
 
 def _name(tok: str) -> str:
@@ -82,11 +95,8 @@ def _name(tok: str) -> str:
 def _words(argv: list) -> tuple:
     """(tool, its words with every option and an option's value taken out) of one simple command, through env prefixes and the like."""
     import re
-    i = 0
-    while i < len(argv) and re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', argv[i]): i += 1
-    while i < len(argv) and argv[i].lower() in _PREFIX: i += 1
-    if i >= len(argv): return '', []
-    tool, rest, out, j = _name(argv[i]), argv[i + 1:], [], 0
+    if not argv: return '', []
+    tool, rest, out, j = _name(argv[0]), argv[1:], [], 0
     # git's own options before the subcommand that take a value (`git -C repo push`, `git -c k=v push`)
     while tool == 'git' and j < len(rest) and rest[j].startswith('-'): j += 2 if rest[j] in ('-C', '-c', '--git-dir', '--work-tree', '--namespace') else 1
     for t in rest[j:]:
@@ -94,17 +104,45 @@ def _words(argv: list) -> tuple:
     return tool, out
 
 
-def _http_write(argv: list) -> str:
-    "'' unless this HTTP client writes to a host off this machine - then what it does, in words. Taskuary's own API answers its own guard."
-    a = [str(t) for t in argv[1:]]
-    urls = [t for t in a if re.match(r'^https?://', t, re.I)]
-    if urls and all(_LOCAL.match(u) for u in urls): return ''
-    meth = next((a[i + 1] for i, t in enumerate(a[:-1]) if t.lower() in ('-x', '--request', '-method')), '')
-    meth = meth or next((t[2:] for t in a if t.startswith('-X') and len(t) > 2), '')
-    data = any(t in _SHORT or t.lower().split('=', 1)[0] in _DATA or (t.startswith('-d') and not t.startswith('--') and len(t) > 2) for t in a)
+def _http_write(argv: list, own: bool = False) -> str:
+    """'' unless this HTTP client writes to a host off this machine - then what it does, in words. Read by each client's own grammar: its
+    method option (`-X`, `--request`, `--method`, PowerShell's `-Method` however abbreviated or `-Method:Post`), an option that sends a body,
+    and httpie's / xh's own `[METHOD] URL item=value`. Taskuary's own API answers its own guard - `own`: $TASKUARY_URL is Taskuary's (nothing
+    in the command set it)."""
+    tool, a = _name(argv[0]), [str(t) for t in argv[1:]]
+    meth, data, pos, i = '', False, [], 0
+    while i < len(a):
+        t, nxt = a[i], (a[i + 1] if i + 1 < len(a) else '')
+        if t.startswith('--'):
+            k, eq, v = t.partition('=')
+            k = k.lower()
+            if k in ('--request', '--method'): meth = v if eq else nxt; i += not eq
+            elif k.startswith(_BODY) or (tool in _PIE and k == '--form'): data = True
+        elif t.startswith('-') and len(t) > 1 and tool in _PS:
+            k, col, v = t[1:].partition(':')
+            k = k.lower()
+            if len(k) > 1 and 'method'.startswith(k): meth = v if col else nxt; i += not col
+            elif len(k) > 1 and ('body'.startswith(k) or 'infile'.startswith(k)): data = True
+        elif t.startswith('-') and len(t) > 1 and tool == 'curl':
+            for j, c in enumerate(t[1:], 1):
+                if c in 'dFTK': data = True
+                if c == 'X': meth = t[j + 1:] or nxt
+                if c in _CURL_VAL:
+                    i += j == len(t) - 1; break
+        elif t.startswith('-') and len(t) > 1 and tool in _PIE: i += t[-1] in _PIE_VAL
+        elif not t.startswith('-'): pos.append(t)
+        i += 1
+    urls = [t for t in pos if re.match(r'^https?://', t, re.I) or (own and _OWN.match(t))]
+    if tool in _PIE and pos:
+        # httpie / xh: [METHOD] URL then items - `k=v`, `k:=json`, `k@file` send a body (a POST), `k==v` is a query and `K:v` a header
+        if len(pos) > 1 and pos[0].lower() in _VERBS: meth, pos = meth or pos[0], pos[1:]
+        u = pos[0]
+        urls = [u if re.match(r'^https?://', u, re.I) or (own and _OWN.match(u)) else 'http://' + ('localhost' + u if u.startswith(':') else u)]
+        data = data or any(re.match(r'^[^:=@]*(:=|=(?!=)|@)', x) for x in pos[1:])
+    if urls and all(_LOCAL.match(u) or (own and _OWN.match(u)) for u in urls): return ''
     if meth.lower() not in _WRITES and not data: return ''
     host = re.sub(r'^https?://([^/?#]+).*', r'\1', urls[0]) if urls else 'a web address'
-    return f'send data to {host} ({_name(argv[0])})'
+    return f'send data to {host} ({tool})'
 
 
 def _api_writes(argv: list) -> bool:
@@ -131,6 +169,24 @@ _DEL_WORDS = ('rm', 'del', 'erase', 'remove', 'unlink', 'shred', 'rd', 'rmtree')
 _VAR = re.compile(r'\$(?:env:)?(\w+)|%(\w+)%', re.I)
 _SPLIT = re.compile(r'\r?\n|;|&&|\|\||\||\{|\}')
 _VALUED_DEL = frozenset('-erroraction -ea -filter -include -exclude -depth -credential -stream -warningaction -wa'.split())
+
+
+_HEREDOC = re.compile(r"(?<!<)<<(?!<)-?\s*(['\"]?)([A-Za-z_][\w.-]*)\1")
+_SHELLS = ('bash', 'sh', 'zsh', 'dash', 'powershell', 'pwsh', 'cmd')
+
+
+def shell_text(raw: str) -> str:
+    """The line as its shell reads it: a heredoc's body fed to any program but a shell (`python - <<'PY'`, `cat > f <<EOF`) is that
+    program's data, dropped - its words are not commands (the owner's live task, 2026-11-17: Python lines `del rows[unit]` held as
+    "delete not in .., in in .., unit:"). A delete call inside a snippet is still caught on the whole line (_API_DEL)."""
+    lines, out, i = str(raw or '').split('\n'), [], 0
+    while i < len(lines):
+        ln = lines[i]; out.append(ln); i += 1
+        for m in _HEREDOC.finditer(ln):
+            w = _SPLIT.split(ln[:m.start()])[-1].split()
+            if w and _name(w[0]) in _SHELLS: continue
+            while i < len(lines) and lines[i].strip() != m.group(2): i += 1
+    return '\n'.join(out)
 
 
 def _expand(t: str, env: dict) -> str:
@@ -190,9 +246,9 @@ def _deletes(raw: str, cwd: str, env: dict, here='') -> dict:
     # (the stress test's second delete, 2026-11-03). '' is the agent's own folder; None a `cd` it could not read
     named, places, blind, tools = [], [], False, []
     done = lambda: {'named': named, 'places': places, 'blind': blind, 'tools': tools, 'here': here}
-    if not any(w in raw.lower() for w in _DEL_WORDS + ('cd', 'location')): return done()             # the cheap test first
+    if not any(w in joined(raw) for w in _DEL_WORDS + ('cd', 'location')): return done()             # the cheap test first
     raw = re.sub(r'\$\{(\w+(?::\w+)?)\}', r'$\1', raw)                         # ${dst} is $dst - and its braces are not a block
-    for seg in _SPLIT.split(raw):
+    for seg in _SPLIT.split(shell_text(raw)):
         seg = seg.strip()
         if not seg: continue
         if (m := re.match(r'^\$?([A-Za-z_]\w*)\s*=\s*(\S.*)$', seg)) and not m.group(2).startswith('='):
@@ -200,9 +256,9 @@ def _deletes(raw: str, cwd: str, env: dict, here='') -> dict:
             except ValueError: v = []
             if len(v) == 1: env[m.group(1).lower()] = _expand(v[0].strip('"\''), env)
             continue
-        try: w = [x.strip('"\'') for x in shlex.split(seg, posix=False)]
-        except ValueError: w = [x.strip('"\'') for x in seg.split()]      # a quote the split cut in two (`cmd /c "cd X && rd Y"`)
-        while w and (w[0].lower() in _PREFIX or w[0].lower() in ('if', 'else', 'elseif', 'then', 'do')): w = w[1:]
+        w = words(seg)
+        while w and w[0].lower() in ('if', 'else', 'elseif', 'then', 'do'): w = w[1:]
+        w = launched(w, _tool)
         if not w: continue
         tool = _name(w[0])
         if tool in ('cd', 'chdir', 'set-location', 'sl', 'pushd', 'push-location'):
@@ -248,11 +304,12 @@ def acts(cmd: str, cwd: str = '') -> list:
     return _outward(cmd) + deletes(cmd, cwd)
 
 
-def _outward(cmd: str) -> list:
+def _outward(cmd: str, own: bool = True) -> list:
     """Every step in a shell command that goes out: [{'tool', 'what', 'why', 'command'}]. A command that cannot be read and names one of
     these tools is one step - held, never let through for being hard to read."""
-    raw = str(cmd or '')
-    low = raw.lower()
+    raw = shell_text(str(cmd or ''))
+    low = joined(raw)
+    own = own and not _SETS_OWN.search(raw)
     if not any(w in low for w in ('git', 'gh', 'glab', 'publish', 'push', 'upload', 'mail', 'mutt', 'msmtp', 'http', 'curl', 'wget', 'xh', 'iwr', 'irm',
                                   'invoke-')): return []      # the cheap test first
     segs = _segments(raw)
@@ -260,12 +317,14 @@ def _outward(cmd: str) -> list:
         import re
         return [{'tool': '?', 'what': 'run a command that may push, publish or send', 'why': OUT, 'command': raw[:400]}] if re.search(
             r'\b(git\s+push|gh\s+(pr|issue|release|repo|api)|glab|publish|sendmail|send-mailmessage)\b', low) else []
-    out = []
+    out, moved = [], False
     for argv in segs:
+        whole, argv = argv, launched(argv, lambda t: _name(t) in _TOOLS)   # `timeout 60 git push` is git's push, read as git's - its env still aims it
         tool, w = _words(argv)
+        if tool in MOVES: moved = True
         if tool in ('bash', 'sh', 'powershell', 'pwsh', 'cmd'):                 # `bash -c "git push"`: the string is a command of its own
             for t in argv[1:]:
-                if ' ' in t.strip(): out += _outward(t)
+                if ' ' in t.strip(): out += _outward(t, own)
             continue
         what = (GIT.get(w[0]) if tool == 'git' and w else
                 GH.get(tuple(w[:2])) if tool == 'gh' else GLAB.get(tuple(w[:2])) if tool == 'glab' else
@@ -273,9 +332,52 @@ def _outward(cmd: str) -> list:
                 or (tool == 'docker' and w[:1] == ['push']) else MAIL.get(tool))
         if not what and tool in ('gh', 'glab') and w[:1] == ['api'] and _api_writes(argv): what = 'change something on the code host through its API'
         if not what and tool == 'git' and w[:1] == ['push']: what = GIT['push']
-        if not what and tool in HTTP: what = _http_write(argv)
-        if what: out.append({'tool': tool, 'what': what, 'why': OUT, 'command': ' '.join(argv)[:400]})
+        if not what and tool in HTTP: what = _http_write(argv, own)
+        if what: out.append({'tool': tool, 'what': what, 'why': OUT, 'command': ' '.join(argv)[:400], 'to': '?' if moved else _to(tool, whole, w)})
     return out
+
+
+# WHERE A STEP GOES, as its tool's own grammar names it (trusted): '' the checkout's own origin, else the owner/name it names, '?' when the
+# line names some other place - a URL or another remote for git, another folder, a `cd` before it. The trust is one repository's.
+MOVES = {'cd', 'pushd', 'popd', 'chdir', 'set-location', 'sl', 'push-location', 'pop-location'}
+
+
+def _named(n: str) -> str:
+    "owner/name of a repository a GitHub or GitLab CLI flag or URL names - `owner/name`, `HOST/owner/name` or an item's URL; '?' off the code hosts."
+    if n == '?': return '?'
+    m = re.match(r'^(?:https?://)?(?:([^/\s]+\.[^/\s]+)/)?([\w.-]+/[\w.-]+?)(?:\.git)?(?:/.*)?$', n, re.I)
+    if not m or (m.group(1) and m.group(1).lower() not in HOSTS): return '?'
+    return m.group(2).lower()
+
+
+_API_VALUED = {'-X', '--method', '-H', '--header', '-f', '-F', '--field', '--raw-field', '--input', '-q', '--jq', '-t', '--template', '--hostname',
+               '--cache', '-p', '--preview'}
+
+
+def _to(tool: str, argv: list, w: list) -> str:
+    a = [str(t) for t in argv]
+    env = {t.split('=', 1)[0].upper() for t in a if re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', t)}
+    if env & {'GIT_DIR', 'GIT_WORK_TREE', 'GH_REPO', 'GH_HOST', 'GITLAB_HOST'}: return '?'
+    if tool == 'git':
+        if any(t in ('-C', '--git-dir', '--work-tree') or t.startswith(('--git-dir=', '--work-tree=', '--repo', '--receive-pack', '--exec')) for t in a): return '?'
+        remote = w[1] if len(w) > 1 else ''
+        if remote in ('', 'origin'): return ''
+        h, r = host_repo(remote) if re.match(r'^([a-z][a-z0-9+.-]*://|[^@/\s]+@)', remote, re.I) else ('', '')
+        return r if h in HOSTS and r else '?'
+    named = [a[i + 1] for i, t in enumerate(a[:-1]) if t in ('-R', '--repo')] + [t.split('=', 1)[1] for t in a if t.startswith('--repo=')]
+    named += [t[2:] for t in a if t.startswith('-R') and len(t) > 2]
+    if w[:1] == ['api']:
+        rest, end = a[a.index('api') + 1:] if 'api' in a else [], ''
+        while rest and not end:
+            t = rest.pop(0)
+            if t in _API_VALUED: rest = rest[1:]
+            elif not t.startswith('-'): end = t
+        m = re.match(r'^/?(?:repos|projects)/([^/]+/[^/]+)(?:/|$)', end)
+        named.append(m.group(1) if m else '?')
+    named += [t for t in w if re.match(r'^https?://', t, re.I)]
+    got = {_named(n) for n in named}
+    got.discard('{owner}/{repo}')                                                       # gh fills these from the checkout itself
+    return '' if not got else got.pop() if len(got) == 1 else '?'
 
 
 def _pending(store, tid: int, sid: str, cmd: str, reads: list = ()):
@@ -313,12 +415,39 @@ RANK = {'read': 0, 'write': 1, 'admin': 2}
 
 def repo_of(cwd: str) -> str:
     "owner/repo of the checkout the command runs in, from its origin - '' when it is not one."
-    if not cwd: return ''
+    return next((r for _, r in _remote(cwd)), '')
+
+
+_URL = re.compile(r'^(?:[a-z][a-z0-9+.-]*://)?(?:[^@/\s]+@)?([^/:\s]+)(?::\d+)?[:/]+(.+?)(?:\.git)?/*$', re.I)
+
+
+def host_repo(url: str) -> tuple:
+    "(host, owner/name) of a git remote's URL - https, ssh or scp form - else ('', '')."
+    m = _URL.match(str(url or '').strip())
+    if not m: return '', ''
+    parts = [p for p in m.group(2).split('/') if p]
+    return (m.group(1).lower(), '/'.join(parts[-2:])) if len(parts) >= 2 else ('', '')
+
+
+def _remote(cwd: str, push: bool = False) -> list:
+    "[(host, owner/name)] of origin's URLs, insteadOf rewrites applied by git itself - every push URL when `push`, else only a code host's."
+    if not cwd: return []
     from . import spawn
-    try: url = spawn.run(['git', '-C', cwd, 'remote', 'get-url', 'origin'], capture_output=True, text=True, timeout=5).stdout.strip()
-    except (OSError, subprocess.SubprocessError): return ''
-    m = re.search(r'[:/]([^/:]+/[^/]+?)(?:\.git)?/?$', url)
-    return m.group(1) if m and ('github' in url or 'gitlab' in url) else ''
+    try: out = spawn.run(['git', '-C', cwd, 'remote', 'get-url', *(['--push', '--all'] if push else []), 'origin'], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError): return []
+    urls = [u.strip() for u in str(out or '').splitlines() if u.strip()]
+    return [host_repo(u) for u in urls if push or 'github' in u or 'gitlab' in u]       # a push's every URL counts: the card's host decides
+
+
+def card_host(card: dict) -> str:
+    "The host a code-host card reaches: github.com, or a GitLab card's own instance (gitlab.com unless its base_url says otherwise)."
+    if str(card.get('Type') or '').lower() != 'gitlab': return 'github.com'
+    try: base = str((json.loads(card.get('ConfigJson') or '{}') or {}).get('base_url') or '')
+    except (TypeError, ValueError): base = ''
+    return (host_repo((base or 'https://gitlab.com').rstrip('/') + '/x/y')[0]) or 'gitlab.com'
+
+
+HOSTS = {'github.com', 'gitlab.com'}
 
 
 def trusted(store, cwd: str, todo: list) -> str:
@@ -326,14 +455,17 @@ def trusted(store, cwd: str, todo: list) -> str:
     # ...asked of git only when some code-host card trusts its repos at all: a command on a machine with none never runs `git remote`
     srcs = [s for s in store.list_sources(active_only=False) if s.get('Channel') in ('github', 'gitlab') and s.get('ConnectorId')]
     if not any(RANK.get(str((store.get_connector(s['ConnectorId']) or {}).get('Scope') or 'read').lower(), 0) >= 1 for s in srcs): return ''
-    repo = repo_of(cwd)
-    if not repo: return ''
+    # ...WHERE A PUSH GOES, not what the fetch URL says: origin's push URLs, every one of them on the card's own host. An origin that only
+    # mentions a code host (`https://evil.example/github/northwind/ledger.git`) or a pushurl set apart from it is not that repository
+    got = set(_remote(cwd, push=True))
+    if len(got) != 1: return ''
+    host, repo = got.pop()
     src = next((s for s in srcs if str(s.get('Address') or '').lower() == repo.lower()), None)
     card = store.get_connector(src['ConnectorId']) if src else None
-    if not card: return ''
+    if not card or host not in (card_host(card), 'ssh.' + card_host(card)): return ''
     level = RANK.get(str(card.get('Scope') or card.get('ScopeDefault') or 'read').lower(), 0)
     ok = ADMIN_OK if level >= 2 else WRITE_OK if level >= 1 else set()
-    return repo if all(a.get('what') in ok and a.get('why') == OUT for a in todo) else ''
+    return repo if all(a.get('what') in ok and a.get('why') == OUT and str(a.get('to', '?')).lower() in ('', repo.lower()) for a in todo) else ''
 
 
 def check(store, tid: int, sid: str, cmd: str, shell: str = 'Bash', cwd: str = '', ask: bool | str = False, about: str = '', reads: list = ()) -> dict:
@@ -462,7 +594,6 @@ def perform(store, tid: int, p: dict, run=None) -> dict:
         store.audit('task', tid, 'shell_act_done', 'owner', 'human', {'what': p.get('what'), 'reads': p['reads']})
         return {'performed': p.get('what') or 'a read', 'said': ''}
     if not cmd: raise RuntimeError('this held step names no command')
-    if (busy := mid_turn(store, tid, p.get('sid'))): raise RuntimeError(busy)
     if cwd and not os.path.isdir(cwd): raise RuntimeError(f'the folder it was held in is gone ({cwd}) - nothing was done')
     def go(argv, folder):
         from . import spawn
@@ -486,23 +617,28 @@ def approve_steps(store, rids: list, decide, actor: str = 'owner', verb: str = '
     """The owner's one Approve on a held-steps card: each review, in the order given, through `decide` (verdicts.decide - the same checks a
     single Approve gets: pending, re-validated, run by perform). Stops at the first that does not go and says which; the rest stay waiting.
     `verb` 'reject': the card's one Dismiss - every step dismissed, the agent told once."""
+    from .timewords import plural
     rvs = [store.get_review(int(r)) for r in rids]
     if not rvs or any(not r or r.get('Kind') != 'action' or json.loads(r.get('DraftText') or '{}').get('action') != 'shell_act' for r in rvs):
         raise ValueError('only held shell steps are approved together')
     if len({r.get('TaskId') for r in rvs}) != 1: raise ValueError('held steps of one task only')
-    tid, told, done, failed = rvs[0]['TaskId'], [], [], None
-    if verb == 'approve' and (busy := mid_turn(store, tid, json.loads(rvs[0].get('DraftText') or '{}').get('sid'))):
-        return {'ok': False, 'done': [], 'failed': None, 'left': [r['ReviewId'] for r in rvs], 'busy': busy}
+    tid, told, done, failed, refused, busy = rvs[0]['TaskId'], [], [], None, '', ''
     tok = _batch.set(told)
     try:
         for i, rv in enumerate(rvs):
             out = decide(store, rv, verb, actor=actor)
+            # ...A STEP REFUSED BEFORE IT RAN DID NOT FAIL (the held-steps round, 2026-11-18): a second press of an answered card - a double
+            # click, a page or phone that had not read the first - woke the agent with "step 1 failed: this one was already approved". Only a
+            # step that ran and failed (its act's own error) is a failure; a refusal stops the card, leaves every step as it stands, tells nobody
+            # ...and one its agent's turn is working beside (mid_turn, said by the decide door) waits, lit, for the press it asks for
+            if not out.get('ok') and not out.get('act_failed'): refused, busy = out.get('send_error') or 'it was answered already', out.get('busy') or ''; break
             if not out.get('ok'): failed = {'review': rv['ReviewId'], 'step': i + 1, 'error': out.get('send_error') or 'it did not run'}; break
             done.append({'review': rv['ReviewId'], 'result': out.get('result')})
     finally: _batch.reset(tok)
     left = [r['ReviewId'] for r in rvs[len(done) + (1 if failed else 0):]]
+    if refused and not done: return {'ok': False, **({'busy': busy} if busy else {'already': True}), 'send_error': refused, 'done': [], 'failed': None, 'left': left}
     ran = '; '.join(told) or 'nothing ran'
-    if verb != 'approve': _tell(store, tid, f"The owner dismissed {len(rvs)} held steps: {ran} - NOT done. {OWNER_NO}")
+    if verb != 'approve': _tell(store, tid, f"The owner dismissed {plural(len(done), 'held step')}: {ran} - NOT done. {OWNER_NO}")
     elif failed:
         # ...A STEP THAT FAILED IS OVER, AND THE AGENT'S (the owner, 2026-11-10: "no idea what this is. it's broken"): the card read "1 of 2 ran -
         # the rest wait" with Approve still lit under the failure, and the agent - told they still waited - worked the failure while the owner's
@@ -513,8 +649,8 @@ def approve_steps(store, rids: list, decide, actor: str = 'owner', verb: str = '
                           f"failed: {failed['error'][:300]}. Nothing on that card waits on the owner now - the steps after it were not run. Find out "
                           "why and put it right if you can; a step still needed is run again by you and held as a new card for their press. " + NEXT,
               wake=True)
-    else: _tell(store, tid, f"The owner approved {len(rvs)} held steps together and Taskuary ran them in order: {ran}. " + NEXT, wake=True)
-    return {'ok': not failed, 'done': done, 'failed': failed, 'left': left}
+    else: _tell(store, tid, f"The owner approved {plural(len(done), 'held step')} together and Taskuary ran them in order: {ran}. " + NEXT, wake=True)
+    return {'ok': not (failed or refused), 'done': done, 'failed': failed, 'left': left, **({'send_error': refused} if refused else {})}
 
 
 def declined(store, tid: int, p: dict) -> None:

@@ -191,7 +191,7 @@ function NextIn({ atRef, render }) {
   return render(atRef.current ? Math.max(0, Math.round((atRef.current - Date.now()) / 1000)) : null);
 }
 
-export default function FeedView({ onOpenTask, onChanged, active = true, top = null, stage = null, onPull = null, railOnNarrow = false, onInventoryFilter = null, unreadInventory = null, onGo = null, navOn = "", openNew = 0, setupMode = false, setupRail = null }) {
+export default function FeedView({ onOpenTask, active = true, top = null, stage = null, onPull = null, railOnNarrow = false, onInventoryFilter = null, unreadInventory = null, onGo = null, navOn = "", openNew = 0, setupMode = false, setupRail = null }) {
   useLocale();
   // below md there is no stage beside the rail; whatever is opened slides over it instead, so a
   // tap on a row is never a tap that did nothing
@@ -688,7 +688,7 @@ export default function FeedView({ onOpenTask, onChanged, active = true, top = n
       </Box>
 
       <NewSheet open={newOpen} onClose={() => setNewOpen(false)} onOpenTask={onOpenTask}
-        onDone={() => { load(); onChanged?.(); }} />
+        onDone={() => load()} />
     </Box>
   );
 }

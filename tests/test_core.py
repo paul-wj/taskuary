@@ -72,8 +72,8 @@ class CoreTests(unittest.TestCase):
         import taskuary.ingest as ing
 
         class InlineThread:
-            def __init__(self, target=None, args=(), daemon=None): self.t, self.a = target, args
-            def start(self): self.t(*self.a)
+            def __init__(self, target=None, args=(), kwargs=None, daemon=None, name=None): self.t, self.a, self.k = target, args, kwargs or {}
+            def start(self): self.t(*self.a, **self.k)
 
         s = MemoryStore()
         s.set_setting('coding_auto_enabled', '1', 't')
@@ -731,6 +731,13 @@ class CoreTests(unittest.TestCase):
         self.assertIn('capped at the default 5', rows_out(rows, 5, mine=False)[0])   # nobody set this
         self.assertIn('capped at 5 ', rows_out(rows, 5, mine=True)[0])               # you did
 
+    def test_a_row_cap_given_as_text_is_read_or_said(self):
+        """An agent's run_system sent max_rows "50", "50.0" and "all": the second and third failed as "invalid literal for int() with
+        base 10" - Python's words. A number in text is that number; anything else says what max_rows is."""
+        from taskuary.reports import row_limit
+        self.assertEqual((row_limit({'max_rows': '50'}), row_limit({'max_rows': '50.0'})), ((50, True), (50, True)))
+        with self.assertRaisesRegex(ValueError, "max_rows is a number of rows - not 'all'"): row_limit({'max_rows': 'all'})
+
     def test_interactive_argv_carries_the_model_but_not_the_headless_flags(self):
         from unittest import mock
         from taskuary.terminal import agent_argv
@@ -980,6 +987,19 @@ class CoreTests(unittest.TestCase):
         self.assertEqual([r['Decision'] for r in s.list_routes(new)], ['split'])
         self.assertIn(task_ref(new), s.list_comments(tid)[-1]['Body'])                 # each side says where
         self.assertIn(task_ref(tid), s.list_comments(new)[-1]['Body'])
+
+    def test_split_leaves_the_source_ref_with_the_task_it_names(self):
+        """A task's SourceRef is what it IS - the issue it closes, the batch an arrival joins, the meeting Prepare finds again. The split copied
+        it onto the part broken out: that part became the newest open batch of its input and took the next arrivals, a Prepare pressed again
+        landed on it, and its agent could close the original's issue. The ref stays with the task it names; the part is another matter."""
+        s, tid, mid = self._two_job_task()
+        for ref in ('https://github.com/northwind/ledger/issues/7', 'calendar:2026-11-20 10:00:Offsite'):
+            with self.subTest(ref):
+                s.update_task(tid, {'SourceRef': ref}, 'owner')
+                new = reshape.split_task(s, tid, {'title': 'Book the venue'})
+                self.assertFalse(s.get_task(new).get('SourceRef'))
+                self.assertEqual(s.open_batch(ref), tid)
+                self.assertEqual(s.get_task(new)['Source'], 'email')
 
     def test_split_never_hands_the_new_task_an_agent_but_keeps_your_own_name_on_it(self):
         s, tid, _mid = self._two_job_task()

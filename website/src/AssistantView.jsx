@@ -25,7 +25,7 @@ import OpenInFullIcon from "@mui/icons-material/OpenInFull";
 import ViewSidebarIcon from "@mui/icons-material/ViewSidebar";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import api from "./api.js";
-import { DEMO_SAID } from "./apiError.js";
+import { DEMO_SAID, demoNo } from "./apiError.js";
 import { runOperation } from "./taskOps.js";
 import { draftJob, openReply, rewriteReceipt } from "./replyDraft.js";
 import { DEMO } from "./demoApi.js";
@@ -74,7 +74,7 @@ import { SlotPicker } from "./CalendarPick.jsx";
 import ContinueBox from "./ContinueBox.jsx";
 import { AgentAsk } from "./RunForm.jsx";
 import CloseNote from "./CloseNote.jsx";
-import { AttachImage, ImageTray, usePromptImages, withImages } from "./promptImages.jsx";
+import { AttachImage, ImageTray, usePromptImages, useSendWhenUp, withImages } from "./promptImages.jsx";
 import { handToItem } from "./ItemSections.jsx";
 import { afterCancel, afterConfirm, afterExecute, holdsProposal, markExecuted, proposalSay } from "./proposalCard.js";
 import { LEVEL_META, LEVEL_ROLE, arrivals, isUrgent, arrivedAt, asPressed, stillLeaving, bandsOf, canAdvance as canWalkOn, cardFor, currentItemFromPile, displayRevision, drawOrder, fillCaps, followsItem, foldsAs, inOrder, interactiveCardIndex, tableCardIndex, keysOf, liveBrowseId, lastActIndex, chipsOf, receiptChips, CAPPED, FLOOR, FOOT_PX, levelHint, levelLabel, nextMarkerKey, trimCaps, ROW_PX, refreshCurrentPresentation, refreshPilePresentation, rowMeta, tableItemOf, settledHistory, sinceOpener, walkOf } from "./funnelPile.js";
@@ -187,7 +187,6 @@ const errNotice = (e) => {
 // red with "Report this bug" under it, as if the app had broken. setErr below routes any sentence in this set to the chat - the set every
 // refusal lands in as it is answered (apiError.DEMO_SAID), so a card's own catch passing one on is the demo's line too.
 const picksOf = (providers) => (providers || []).map((p) => p.pick).join("|");
-const demoNo = (e) => (e?.response?.status === 403 && e.response.data?.demo ? String(e.response.data.detail || "This is the demo - nothing is sent.") : "");
 // a press the server answered with a reason and no proposal fails as a refused request does: every catch that draws a row's or a card's
 // own line (errText, failOf, proposeFailed) reads its `detail`
 const refusedPress = (say) => Object.assign(new Error(say || "That did not go through."), { response: { data: { detail: say || "That did not go through." } } });
@@ -1197,7 +1196,7 @@ function WorkingFor() {
   return line ? <span className="tq-working" data-tq-working="">{line}</span> : null;
 }
 
-export default function AssistantView({ onOpenTask, onNavigate, onChanged, active = true, request = null }) {
+export default function AssistantView({ onOpenTask, onNavigate, active = true, request = null }) {
   const locale = useLocale();
   const [state, setState] = useState(null);           // /api/concierge: the dock task, its turns, the AI choices
   // A set-up walk-through, running HERE. The conversation binds to that task's own session - which
@@ -1237,7 +1236,7 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
                                                       // a read's: [{ key, keys, coming, at }] - `keys` every rail key it took off
   // the moves pressed on the table's task, counted: the rail lets its row go where a move of the owner's put it (funnelPile.pinOf)
   const [presses, setPresses] = useState(0);
-  const tablePressed = useCallback(() => { setPresses((n) => n + 1); onChanged?.(); }, [onChanged]);
+  const tablePressed = useCallback(() => setPresses((n) => n + 1), []);
   const putDownRef = useRef([]);
   useEffect(() => { putDownRef.current = leaving; }, [leaving]);
   const dropLeaving = (key) => setLeaving((l) => (l.some((x) => x.key === key) ? l.filter((x) => x.key !== key) : l));
@@ -1329,6 +1328,8 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
   const noteFor = (tid) => (continueNote.current && Number(continueNote.current.tid) === Number(tid) ? continueNote.current.note : "");
   // pictures sent with the chat line - and any file (the owner, 2026-11-05): the turn names its path; an API AI is handed pictures only
   const pics = usePromptImages({ files: true });
+  // ...a line typed while his files upload waits for them, then goes with them (promptImages.useSendWhenUp) - the box every other box is
+  const { go: sendTyped, waiting: sendHeld } = useSendWhenUp(pics, () => send());
   // ...A CONTINUE IN THE AGENT PANE (the owner, 2026-10-29: "Continue box should be inside the canvas always"): a Continue for the task on
   // the table - the walk's, or the Assistant's lit with notes - is the task view's own card, in its Agent pane, when it lays its panes
   // (TaskPage claims it, tq-continue-here, at any width); only an item with no task view up leaves it to the card under the item here.
@@ -2201,7 +2202,6 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
       // ...held as a close is (stillLeaving): until a rail no longer has them, or one read begun after this answer still does
       if (reads) { const at = Date.now(); setLeaving((l) => l.map((x) => (x.keys && x.key === putDown ? { ...x, keys: x.keys.filter((k) => !back.includes(k)), at } : x))
         .filter((x) => !x.keys || x.keys.length)); }
-      if (how === "leave") onChanged?.();            // a draft may have gone out: the Review badge recounts
       // ...and the close is written now: a rail read begun after this moment that still has the row is the server's word on it
       if (how === "leave" && fromKey) { const at = Date.now(); setLeaving((l) => l.map((x) => (x.key === fromKey && !x.at ? { ...x, at } : x))); }
       // ...and A CLOSE KEPT OPEN (a Send with work still live on it, 2026-11-01) is back on the rail as well as the table: the row put down
@@ -2388,7 +2388,7 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
             // ...folded as done() folds the card a press lands on
             setMsgs((m) => { const i = interactiveCardIndex(m); return i < 0 ? m : m.map((x, j) => (j === i ? { ...x, done: true } : x)); });
             canvasState.putDown(here.key || pr.key, pr.tid ?? null); leave(here.key || pr.key, "left");
-          } else { onChanged?.(); loadPile(); }
+          } else loadPile();
         }
         // a connector card brought up lights its first step - the line is finished with what it lit ("press Sign in with LinkedIn")
         if (String(data.say || "").includes(STEP_SAID)) {
@@ -2509,7 +2509,6 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
       // failure over a success and left the walk sitting on finished work (2026-09-10 walk).
       if (verb === "confirm" || verb === "cancel") {
         setMsgs((m) => markExecuted(m, data?.executed));
-        onChanged?.();
         if (data?.settled) walkOn(); else loadPile();
         return;
       }
@@ -2599,7 +2598,6 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
         return quiet && worn !== ms ? worn
           : [...worn, { id: `r${Date.now()}`, role: "receipt", status: out.status, text: out.receipt, ...(out.receipt_i18n ? { text_i18n: out.receipt_i18n } : {}), tid: p.tid || res?.outcome?.taskId, ref: p.ref || res?.outcome?.ref, chips }];
       });
-      onChanged?.();
       // the server already settled or closed the item; a settle proposal (later, tomorrow, done) must not be
       // re-marked "done" by the page, so it advances without the settle post. A hand-off that STARTED advances
       // once the same way (PW-135): the delegated task stays in Unread as Working, nothing is settled; a
@@ -2746,7 +2744,6 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
       try {
         await runOperation(api, c.follow.kind, c.follow.target, c.follow.params);
         setMsgs((m) => pressChip(m, c));          // its badge on the line it was under, not "<word> - done." (2026-10-22)
-        onChanged?.();
       } catch (e) { setErr(errNotice(e)); } finally { setBusy(false); }
       return;
     }
@@ -2764,7 +2761,7 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
       try {
         await runOperation(api, "task.complete", c.tid);
         setMsgs((m) => pressChip(m, c));          // ...and Mark done's badge on the send's line, not "TQ-0001 marked done." (2026-10-22)
-        onChanged?.(); loadPile(true);
+        loadPile(true);
       } catch (e) { setErr(errNotice(e)); } finally { setBusy(false); }
       return;
     }
@@ -2874,7 +2871,7 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
       if (tid) for (let j = m.length - 1; j >= 0; j -= 1) if (Number(m[j]?.card?.tid) === Number(tid)) { i = j; break; }
       if (i < 0) i = interactiveCardIndex(m);
       return i < 0 ? m : m.map((x, j) => (j === i ? { ...x, done: true, sent: true, ...(pressed ? { pressed } : {}), ...sentChips(tid, ref) } : x)); });
-    onChanged?.(); loadPile();
+    loadPile();
   };
   // Setting Taskuary up: the scripted walk, one stop per message so the conversation keeps the
   // trail. Nothing here reaches a model - a question typed during it is an ordinary turn, answered
@@ -3729,10 +3726,11 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
       placeholder={!boxWide && isMini && winLines.length ? (phone || deskChat ? t("Continue…") : t("Continue chat…"))
         : boxNarrow && !boxWide ? t("Ask…") : tableSays.phone /* the chat window's words */}
       onChange={(e) => { const v = e.target.value; setText(heard && v.endsWith(heard) ? v.slice(0, -heard.length).trimEnd() : v); openBox(); }} onKeyDown={(e) => {
-        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendTyped(); }
         // Esc shuts the window, the box back to its pill (escShut, on the box)
       }} />
-    <button type="button" className="tq-send" aria-label={t("Send")} disabled={busy || resetting || pics.busy || !(text.trim() || heard || pics.imgs.length)} onClick={() => send()}><SendIcon fontSize="small" /></button>
+    <button type="button" className="tq-send" aria-label={t("Send")} disabled={busy || resetting || sendHeld || !(text.trim() || heard || pics.imgs.length || pics.busy)} onClick={sendTyped}>
+      {sendHeld ? <CircularProgress size={14} color="inherit" /> : <SendIcon fontSize="small" />}</button>
     {/* THE MODEL PICKER, bottom right (the owner, 2026-10-29: a modern chat composer): the brain this chat speaks on, the Assistant's default
         until another is chosen here - for this chat only, Settings stay as they are. A press opens its list, never the chat window */}
     {chatApart && !!state && <button type="button" className="tq-model-pick" data-tq-model-pick="" aria-haspopup="menu" aria-expanded={!!modelEl}
@@ -4013,11 +4011,11 @@ export default function AssistantView({ onOpenTask, onNavigate, onChanged, activ
   pressRowRef.current = pressRow;
   return (
     <>
-    {DEMO && <DemoJourney onChanged={() => { loadPile(true); onChanged?.(); }} />}
-    <FeedView onOpenTask={onOpenTask} onChanged={onChanged} active={active} onGo={(tab, key) => browse(key)} navOn={navOn}
+    {DEMO && <DemoJourney onChanged={() => loadPile(true)} />}
+    <FeedView onOpenTask={onOpenTask} active={active} onGo={(tab, key) => browse(key)} navOn={navOn}
       onInventoryFilter={inventoryFilterChanged} unreadInventory={pile}
       // a task Removed as not a task leaves the rail with "Removed <title> - Undo" over it (Removed.jsx); Undo puts it back on the rail
-      top={<><UndoLine kinds={["task"]} onRestored={() => { loadPile(true); onChanged?.(); }} sx={{ mx: 1, mt: 1, mb: 1 }} /><Pile pile={railPile} settingUp={firstRun ? (["about your work", "pick your AI", "connect your main source", "reading what came in"].includes(setupTodo) ? t(setupTodo) : setupTodo || t("finish setting up")) : ""} noAi={!!state && !(state.providers || []).length}
+      top={<><UndoLine kinds={["task"]} onRestored={() => loadPile(true)} sx={{ mx: 1, mt: 1, mb: 1 }} /><Pile pile={railPile} settingUp={firstRun ? (["about your work", "pick your AI", "connect your main source", "reading what came in"].includes(setupTodo) ? t(setupTodo) : setupTodo || t("finish setting up")) : ""} noAi={!!state && !(state.providers || []).length}
         // ...folded by a walk press, its rows keep their place on the rail until the answer lands (rule 7): a batch folded by "All read, next"
         // lost the cap's hold on its rows, and the band counted them as "10 more fyi" between the batch and the next
         // ...unless the press read them: then they are off the pile already (readGone), the ring would only put them back (onTable), and

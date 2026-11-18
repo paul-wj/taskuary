@@ -77,8 +77,30 @@ class DeskTests(unittest.TestCase):
         # the visual audit, 2026-11-13: "draft a reminder to Gail Moreno <gail@northwind.example>" - the address was in the ask, and the
         # Assistant said nobody by that name had written here and left To empty
         self.assertEqual(concierge.route_to(self.s, 'Gail Moreno <Gail@Northwind.example>'), ('gail@northwind.example', ''))
-        self.assertEqual(concierge.send_to(self.s, 'email', '"Moreno, Gail" <gail@northwind.example>'), ('email', 'gail@northwind.example', ''))
+        self.assertEqual(concierge.send_to(self.s, 'email', '"Moreno, Gail" <gail@northwind.example>'), ('email', 'gail@northwind.example'))
         self.assertIn('Nobody called', concierge.route_to(self.s, 'Gail Moreno <nobody>')[1])
+
+    def test_a_message_to_two_people_reaches_both_and_one_nobody_can_place_is_his_sentence_to_an_agent(self):
+        # 2026-11-17: "Email Erin and Gail that the offsite moved to Friday" was looked up as one person called "Erin, Gail", came up in New
+        # cut to "The offsite moved to Friday.", To empty, under a line naming Draft it - a button New, with nothing to send on, had dropped
+        tid = self.s.create_task({'Title': 'chat', 'Kind': 'general', 'Status': 'open'}, 'owner')
+        typed, model = 'Email Erin and Gail that the offsite moved to Friday', 'The offsite moved to Friday.'
+        two = [{'to': 'erin@northwind.example', 'name': 'Erin Blake'}, {'to': 'gail@northwind.example', 'name': 'Gail Moreno'}]
+        made = lambda s, t, op, params, lead='': {'say': 'made', 'op': op, 'params': params}
+        tok = concierge._TURN.set({'typed': typed})
+        try:
+            with mock.patch('taskuary.peoplesearch.known', return_value=two), mock.patch.object(concierge, '_made_now', side_effect=made):
+                for who in ('Erin and Gail', 'Erin, Gail', 'Erin Blake & gail@northwind.example'):
+                    out = concierge._new(self.s, tid, None, 'send', model, who, channel='email')
+                    self.assertEqual((out['op'], out['params']['to']), ('outbox', 'erin@northwind.example, gail@northwind.example'), who)
+            # ...nobody by those names has written, and nothing can send: his words as typed, to an agent - no New, no Draft it line
+            with mock.patch('taskuary.peoplesearch.known', return_value=two[:1]), mock.patch('taskuary.outbound.send_channels', return_value=[]),                     mock.patch.object(concierge, '_made_now', side_effect=made), mock.patch.object(concierge, 'record') as rec:
+                for who, ch in (('Erin and Gail', 'email'), ('', ''), ('Northwind team', 'whatsapp')):
+                    out = concierge._new(self.s, tid, None, 'send', model, who, channel=ch)
+                    self.assertNotIn('new', out)
+                    self.assertEqual((out['op'], out['params']), ('task.create_from_text', {'kind': 'general', 'text': typed}), who)
+        finally: concierge._TURN.reset(tok)
+        rec.assert_not_called()
 
     def test_a_setting_opens_its_group_with_the_knob_named(self):
         out = self._turn('setting.set', label='sort new mail with AI', value='off')
@@ -171,7 +193,8 @@ class ActsTests(unittest.TestCase):
     def test_route_with_who_fills_the_cards_to_box(self):
         done = concierge.run_proposal(self.s, self._turn('report.route', title='ar report', line='send', how='always', to='gail@northwind.example')['proposal'])
         cfg = json.loads(self.s.get_source(self.sid)['ConfigJson'])
-        self.assertEqual(cfg['deliver'], {'gate': 'review', 'channel': 'email', 'to': 'gail@northwind.example'})
+        # ...no gate set for him: his own report sends on its own (reports.GATE - the owner, 2026-11-17)
+        self.assertEqual(cfg['deliver'], {'channel': 'email', 'to': 'gail@northwind.example'})
         self.assertEqual(cfg['route']['send'], {'how': 'always'})
         self.assertIn('to gail@northwind.example', concierge.receipt(self.s, done))
 

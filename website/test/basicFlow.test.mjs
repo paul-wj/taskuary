@@ -40,6 +40,17 @@ test("his line greys the reply card above it in the same frame, before the serve
   assert.deepEqual(withMine(read, []).items[1].cards.map((c) => c.status), ["pending"]);     // ...and only then
 });
 
+// ...IN THE SERVER'S OWN WORDS FROM THAT FRAME (chat-render, 2026-11-18): greyed by the page it read "Earlier draft - not sent; set aside when you
+// moved on", and a beat later, as the read came back, "Not sent - you wrote "what is on my plate" after it" - one fact said two ways, swapped
+// under his eyes. The list names the sentence a line of his would grey it with (`aside`, proposals.WROTE_PAST); the page fills in his line
+test("his line greys the card above it with the sentence the server will say, in the same frame", () => {
+  const card = { id: "r:1", review: 1, what: "draft_reply", status: "pending", was: { text: "Hi Gail, yes." }, aside: 'Not sent - you wrote "{line}" after it' };
+  const read = { items: [mail, { ...answer, cards: [card] }], pending: [], working: false };
+  const long = "what is   on my plate today, and which of it is for Gail Moreno before the vendor call";
+  const got = withMine(read, [{ id: "l-2", kind: "line", text: long, at: new Date(), rest: true }]);
+  assert.equal(got.items[1].cards[0].why, 'Not sent - you wrote "what is on my plate today, and which of it is for Gail Moren…" after it');
+});
+
 test("a line whose send failed stays where it stands in his own words; the failure is one line under it with Try again", async () => {
   const read = { items: [mail, answer], pending: [], working: false };
   const got = withMine(read, [{ id: "l-2", kind: "line", text: "try now", at: new Date(), rest: true, err: "The agent did not start" }]);
@@ -125,8 +136,9 @@ test("a turn at work says what is happening, or what we wait for, beside its dot
   // ...and what we wait for, where no step runs: the model writing, a session opening, his press (waitingOn)
   assert.equal(workingLine([{ type: "work", steps: [{ summary: "Read a.csv", status: "done" }] }], label), "Thinking…");
   assert.equal(workingLine([], label, { starting: true }), "Waiting for the agent to start");
-  // ...on the chat's first turn only: a later one starting again is the work going on - its dots, no words of the app's (the owner, 2026-11-16)
-  assert.equal(workingLine([], label, { starting: true, later: true }), "");
+  // ...on the chat's first turn only: a later one starting again is the work going on - no words of the app's (the owner, 2026-11-16), and
+  // never bare dots either (the walks, 2026-11-17): it reads as the turn it becomes, its agent at work - a later one OPENING is not `later` (ConvTurn)
+  assert.equal(workingLine([], label, { starting: true, later: true }), "Thinking…");
   // ...and where the newest step is a thought, its latest words - never a bare "Thinking…" for minutes (the owner, 2026-11-16)
   const thought = { kind: "thought", status: "done", summary: "The owner wants two bakeries.", detail: "The owner wants two bakeries. Tatte opens at 7 on Sundays, so I should check Bakey next." };
   assert.equal(workingLine([{ type: "work", steps: [thought] }], label), "Tatte opens at 7 on Sundays, so I should check Bakey next");

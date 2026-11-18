@@ -3,8 +3,11 @@
 // research turn - so what is asserted here is what that backend's real parser hands the canvas.
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import test from "node:test";
+import test, { beforeEach } from "node:test";
 import { describeCall, isWork, stepsOf } from "../src/agentSteps.js";
+import { setLocale } from "../src/i18n.js";
+
+beforeEach(() => setLocale("en"));
 
 test("a heredoc written into a file reads as that file written, never 'Read <<EOF, and N more' (stress test 2026-11-02)", () => {
   const said = (command) => describeCall("Bash", { command });
@@ -226,3 +229,37 @@ test("each ACP tool kind reads as one plain step, the way the same act reads fro
   assert.deepEqual(claude.map(([n, a]) => describeCall(n, a).summary), [2, 3, 4, 5, 6, 7, 9, 10].map((i) => steps[i].summary));
 });
 
+test("a file command reads as what it did, in bash or PowerShell, and stays a lesser step beside real work", () => {
+  const said = (command) => describeCall("Bash", { command }).summary;
+  assert.equal(said("Remove-Item -LiteralPath notes.txt"), "Deleted notes.txt");
+  assert.equal(said("rm a.txt b.txt"), "Deleted 2 files");
+  assert.equal(said("Rename-Item -LiteralPath README.md -NewName README2.md"), "Renamed README.md to README2.md");
+  assert.equal(said("mv build/out.zip dist/out.zip"), "Moved out.zip to dist/");
+  assert.equal(said("Copy-Item budget.py budget.bak"), "Copied budget.py to budget.bak");
+  assert.equal(said("Add-Content -LiteralPath budget.py -Value '# ok'"), "Edited budget.py");
+  assert.equal(said("(Get-ChildItem -Force -File | Measure-Object).Count"), "Listed the files here");
+  assert.equal(said("mkdir -p out && cp a.txt out && python build.py"), "Ran python build.py");
+  assert.equal(said("rm -rf $d"), "Deleted a file");
+});
+
+test("the agent's pick of a checkout is one line in the chat: Working in <repo> - <why> (repochoice.py)", () => {
+  const said = (a) => describeCall("mcp__taskuary__use_repo", a).summary;
+  assert.equal(said({ path_or_name: "northwind/ledger", why: "the export lives here" }), "Working in northwind/ledger - the export lives here");
+  assert.equal(said({ path_or_name: "C:\\code\\portal", why: "the login page" }), "Working in portal - the login page");
+  assert.equal(describeCall("mcp__taskuary__find_repos", { query: "portal" }).summary, "Looked for the code on this computer for 'portal'");
+});
+
+// THE WORKING LINE NAMES THE WORK, NEVER THE MACHINERY (the walk, 2026-11-17: "Reading TQ-0006.stranger.md", "Writing n @pa…", "Showing you a
+// view", "Running a command" for an email draft) - every label from parsed arguments, Taskuary's own tools by what they are for
+test("a step says what it did: a seeded file by what is in it, a view by its title, a draft as a draft, string arguments parsed", () => {
+  const said = (n, a) => describeCall(n, a).summary;
+  assert.equal(said("Read", { file_path: "C:/tq/stranger/6/TQ-0006.stranger.md" }), "Read what the sender wrote");
+  assert.equal(said("Bash", { command: "cat /tmp/tq/TQ-0006.stranger.md" }), "Read what the sender wrote");
+  assert.equal(said("mcp__taskuary__show", { title: "Run sheet", root: "t", elements: { t: { type: "table" } } }), "Showed you 'Run sheet'");
+  assert.equal(said("show", { root: "t", elements: { t: { type: "table", props: {} } } }), "Showed you a table");
+  assert.equal(said("taskuary__show", { files: ["/work/out/budget.pdf"] }), "Showed you budget.pdf");
+  // ...a draft whose arguments were kept without its words reads as a draft, never as a command made of its one line of text
+  assert.equal(said("mcp__taskuary__propose_email", { command: "erin@northwind.example", file_path: "erin@northwind.example" }), "Drafted an email");
+  assert.equal(said("taskuary__propose_email", JSON.stringify({ to: "erin@northwind.example", subject: "Run sheet" })), "Drafted an email");
+  assert.equal(said("write_file", JSON.stringify({ path: "/work/run-sheet.md", content: "see n @path" })), "Wrote run-sheet.md");
+});

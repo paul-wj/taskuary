@@ -12,6 +12,7 @@
 import { forScreen } from "./agentMarkers.js";
 import { plural } from "./timeWords.js";
 import { t } from "./i18n.js";
+import stepKinds from "../../taskuary/stepkinds.json" with { type: "json" };
 
 const flat = (s) => String(s || "").split(/\s+/).join(" ").trim();
 const clip = (s, n = 90) => { const t = flat(s); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
@@ -20,6 +21,11 @@ const parts = (p) => String(p || "").replace(/[\\/]+$/, "").split(/[\\/]+/).filt
 export const baseName = (p) => parts(p).pop() || String(p || "");
 // `$d`, `$env:TEMP`, `%TEMP%`: the shell fills these in, so they name nothing a person can read ("Listed the files in $d", 2026-11-03)
 const named = (p) => !!p && !/\$|%\w+%/.test(String(p));
+// A FILE TASKUARY SEEDED FOR THE TASK reads as what is in it, never its name (the walk, 2026-11-17: "Reading TQ-0006.stranger.md"):
+// origin.stranger_file_path names it, and it holds the sender's own words
+const seeded = (f) => /^TQ-\d+\.stranger\.md$/i.test(baseName(f));
+// what reading a file said, by whichever tool read it - a Read call or a `cat` in a shell
+const readSaid = (f) => (seeded(f) ? t("Read what the sender wrote") : named(f) ? t("Read {file}", { file: baseName(f) }) : t("Read a file"));
 const parent = (p) => { const x = parts(p); return x.length > 1 ? x[x.length - 2] : ""; };
 // ...past any `user:password@` the address carries: a host is all a person needs, and a sign-in in a URL is a secret
 const hostOf = (u) => (/^https?:\/\/(?:[^/@\s]*@)?(?:www\.)?([^/?#:@]+)/i.exec(String(u || "")) || [])[1] || "";
@@ -177,7 +183,7 @@ const commandStep = (cmd, depth = 0) => {
     // `cat > desk.svg` WRITES desk.svg: it read "Read <<EOF" (the stress test, 2026-11-02)
     const to = args.findIndex((a) => /^>>?$/.test(a)), into = to >= 0 ? args[to + 1] : (args.find((a) => /^>>?[^>&]/.test(a)) || "").replace(/^>+/, "");
     if (READERS.has(p) && into && !/^(\/dev\/null|nul|\$null)$/i.test(into)) { found.push({ kind: "edit", summary: named(into) ? t("Wrote {file}", { file: baseName(into) }) : t("Wrote a file"), file: into, vague: !named(into) }); continue; }
-    if (READERS.has(p) && plain.length) { const f = plain[plain.length - 1]; found.push({ kind: "read", summary: named(f) ? t("Read {file}", { file: baseName(f) }) : t("Read a file"), file: f, vague: !named(f) }); continue; }
+    if (READERS.has(p) && plain.length) { const f = plain[plain.length - 1]; found.push({ kind: "read", summary: readSaid(f), file: f, vague: !named(f) }); continue; }
     if (GREPS.has(p) || (p === "git" && args[0] === "grep")) {
       const e = args.indexOf("-e"), pat = e >= 0 ? args[e + 1] : plain[p === "git" ? 1 : 0];
       found.push({ kind: "search", summary: pat ? t("Searched files for {pattern}", { pattern: quoted(pat) }) : t("Searched files"), pattern: pat, asked: plain }); continue;
@@ -222,6 +228,8 @@ const TOOLS = {
   plan: ["todowrite", "updateplan", "plan", "todoread"],
   sync: ["syncmessages"],
 };
+const SHOWN = { table: "Showed you a table", chart: "Showed you a chart", checklist: "Showed you a checklist",
+  list: "Showed you a list", steps: "Showed you the steps", stats: "Showed you the figures" };
 const OWN = {
   mytask: () => ({ kind: "task", summary: t("Looked at the task's emails") }),
   searchmessages: (a) => { const q = a.words || a.subject || a.sender || ""; return { kind: "mail", summary: q ? t("Searched your mail for {what}", { what: quoted(q) }) : t("Searched your mail"),
@@ -243,7 +251,11 @@ const OWN = {
   replynotneeded: () => ({ kind: "plan", summary: t("Marked the reply as not needed") }),
   signform: () => ({ kind: "edit", summary: t("Filled in and signed a form") }),
   propose: () => ({ kind: "plan", summary: t("Asked for your yes") }),
-  show: () => ({ kind: "plan", summary: t("Showed you a view") }),
+  // A view says what it shows: its title, file, or kind, rather than a generic view.
+  show: (a) => { const el = a.elements?.[a.root] || {}, title = a.title || el.props?.title, fs = [a.files || []].flat().filter(Boolean);
+    const shown = title ? t("Showed you {what}", { what: quoted(title) }) : fs.length ? t("Showed you {what}", { what: baseName(fs[0]) }) : "";
+    return { kind: "plan", summary: shown ? (fs.length > 1 && !title ? t("{summary}, and {count} more", { summary: shown, count: fs.length - 1 }) : shown)
+      : SHOWN[el.type] ? t(SHOWN[el.type]) : t("Laid it out for you") }; },
   // ...and where it works (repochoice.py): the one line the chat shows for the agent's pick - "Working in northwind/ledger - <why>"
   userepo: (a) => { const w = String(a.path_or_name || "").trim(), at = /[\\/]/.test(w) && !/^[\w.-]+\/[\w.-]+$/.test(w) ? baseName(w) : w;
     return { kind: "plan", summary: `${t("Working in {checkout}", { checkout: at || t("a checkout") })}${a.why ? ` - ${clip(a.why, 100)}` : ""}` }; },
@@ -251,9 +263,17 @@ const OWN = {
 };
 const KIND = Object.fromEntries(Object.entries(TOOLS).flatMap(([k, names]) => names.map((n) => [n, k])));
 
+// ...and every label is built from PARSED arguments: a call whose arguments came as a JSON string (Codex's function_call, an OpenAI-style
+// tool call) read as none, so a draft fell through to "Running a command" and a write to its own text (the walk, 2026-11-17)
+const parsed = (x) => { if (typeof x !== "string") return x && typeof x === "object" ? x : {}; try { const j = JSON.parse(x); return j && typeof j === "object" ? j : {}; } catch { return {}; } };
 export const describeCall = (name, args = {}) => {
-  const a = args && typeof args === "object" ? args : {};
-  const mcp = /^mcp__(.+?)__(.+)$/.exec(String(name || ""));
+  const a = parsed(args);
+  // a server's tool by its own name: Claude's mcp__server__tool, and Codex's server__tool
+  const mcp = /^(?:mcp__)?(.+?)__(.+)$/.exec(String(name || ""));
+  // TASKUARY'S OWN TOOLS (agenttools.TOOLS), by what each one is for, BEFORE any guess from its arguments: a draft kept without them was
+  // read as a command ("Running a command" for an email, 2026-11-17)
+  const own = OWN[key(mcp ? mcp[2] : name)];
+  if (own && (!mcp || key(mcp[1]) === "taskuary")) return own(a);
   let kind = KIND[key(mcp ? mcp[2] : name)] || "";
   // an ACP "search" is either kind, and says which by what it was given: a pattern searches files, a query searches the web
   if (kind === "search" && a.query && !a.pattern) kind = "web";
@@ -267,7 +287,7 @@ export const describeCall = (name, args = {}) => {
     if (a.description) return { kind: s?.browser ? "page" : s?.vague ? s.kind : "run", summary: clip(a.description), ...(s?.vague && s.asked ? { asked: s.asked } : {}) };
     return s || { kind: "run", summary: t("Ran a command") };
   }
-  if (kind === "read") { const f = fileOf(a); return { kind, summary: f ? t("Read {file}", { file: baseName(f) }) : t("Read a file"), file: f }; }
+  if (kind === "read") { const f = fileOf(a); return { kind, summary: readSaid(f), file: f }; }
   if (kind === "search") { const pat = a.pattern || a.query || a.regex; return { kind, summary: pat ? t("Searched files for {pattern}", { pattern: quoted(pat) }) : t("Searched files"), pattern: pat }; }
   if (kind === "list") { const g = a.pattern || a.glob, d = a.path || a.dir_path || a.directory; return { kind, summary: g ? t("Looked for files matching {pattern}", { pattern: quoted(g) }) : d ? t("Listed the files in {directory}", { directory: baseName(d) }) : t("Listed the files") }; }
   if (kind === "web") { const q = a.query || a.q || a.search_term;
@@ -290,9 +310,6 @@ export const describeCall = (name, args = {}) => {
   if (kind === "plan") { const n = (a.todos || a.plan || []).length; return { kind, summary: n ? t("Updated its plan ({count} steps)", { count: n }) : t("Updated its plan") }; }
   // ...whatever channel the task came in on - a WhatsApp task read "Checking for new mail" (the owner, 2026-11-05: "this is not mail")
   if (kind === "sync") return { kind, summary: a.new ? t("Found {count} on the thread", { count: plural(a.new, "new message") }) : t("Checked the thread for new messages") };
-  // TASKUARY'S OWN TOOLS (agenttools.TOOLS), by what each one is for: "Used my task (taskuary)" said nothing
-  const own = OWN[key(mcp ? mcp[2] : name)];
-  if (own && (!mcp || key(mcp[1]) === "taskuary")) return own(a);
   // anything else: its own name in words, and the one argument a person would want - a query, a host, a file
   const label = String(mcp ? mcp[2] : a.title || name || t("a tool")).replace(/[_-]+/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").trim();
   const target = a.query ? quoted(a.query) : hostOf(a.url) || (fileOf(a) ? baseName(fileOf(a)) : "");
@@ -307,7 +324,7 @@ const ING = { Read: "Reading", Searched: "Searching", Wrote: "Writing", Edited: 
   Checked: "Checking", Went: "Going", Reloaded: "Reloading", Scrolled: "Scrolling", Closed: "Closing", Pressed: "Pressing", Ticked: "Ticking",
   Unticked: "Unticking", Chose: "Choosing", Uploaded: "Uploading", Saved: "Saving", Started: "Starting", Drafted: "Drafting", Marked: "Marking",
   Filled: "Filling", Asked: "Asking", Showed: "Showing", Deleted: "Deleting", Moved: "Moving", Renamed: "Renaming", Copied: "Copying",
-  Thought: "Thinking" };
+  Thought: "Thinking", Laid: "Laying" };
 export const present = (s) => { const t = String(s || ""), m = /^([A-Z][a-z]+)\b/.exec(t); return m && ING[m[1]] ? ING[m[1]] + t.slice(m[1].length) : t; };
 // the row's words: what it is doing while it runs, what it did once done
 export const stepLabel = (s) => (s?.status === "running" ? s.doing || present(s.summary) : s?.summary || "");
@@ -319,7 +336,7 @@ const countOf = (out) => {
   return list ? list.length : null;
 };
 const rawOf = (name, args) => {
-  const a = args && typeof args === "object" ? args : {};
+  const a = parsed(args);
   const cmd = a.command || a.cmd;
   if (cmd) return `$ ${Array.isArray(cmd) ? cmd.join(" ") : cmd}`;
   return `${name} ${JSON.stringify(a, null, 2)}`;
@@ -344,8 +361,9 @@ const ECHO = /^(→ |· |✗ |session started\b)/;            // agents._live_li
 const RETRY = /^Can't reach Claude's servers right now/;      // agents._live_line's line for Claude's own api_retry
 const QUICK_RAW =/^\s*(?:```(?:json)?\s*)?\{\s*"(?:report|draft|question|done|escalate|why)"\s*:/i;
 // a CLI's own plumbing, never a step of the work: Claude's ToolSearch loads a tool it has not loaded yet ("Used Tool Search on
-// 'select:WebSearch'", ACP step 1, 2026-11-06) - the call it loads it for is the step
-const MACHINERY = new Set(["toolsearch"]);
+// 'select:WebSearch'", ACP step 1, 2026-11-06) - the call it loads it for is the step. ONE LIST, the server's too (conversation._said, the walks
+// 2026-11-17): it kept a stopped turn for a ToolSearch this page drew as nothing - a "1 step" trail for 100 ms, then gone
+const MACHINERY = new Set(stepKinds.machinery);
 export function stepsOf(trace, { answer = "", keepStart = true } = {}) {
   const events = trace || [];
   // A structured backend says everything twice: its tool call and text as events, and the same again as readable `live` lines for
@@ -387,8 +405,8 @@ export function stepsOf(trace, { answer = "", keepStart = true } = {}) {
       if (!step) continue;
       step.output = String(e.detail?.result || "");
       // a step Taskuary HELD for the owner's yes (shellgate, browsergate) did not fail: it waits - red "failed" over a held delete read
-      // as something gone wrong (the desktop stress test, 2026-11-03)
-      step.status = !e.detail?.is_error ? "done" : /Taskuary held this for the owner/.test(step.output) ? "held" : foundNone(step) ? "none" : "error";
+      // as something gone wrong (the desktop stress test, 2026-11-03); a call the server marked as put to the owner says how it stands (`state`)
+      step.status = e.detail?.state || (!e.detail?.is_error ? "done" : /Taskuary held this for the owner/.test(step.output) ? "held" : foundNone(step) ? "none" : "error");
       if (step.kind === "mail" && step.q !== undefined) { const n = countOf(step.output); if (n !== null) step.count = n; }
     } else if (e.type === "progress" && e.detail) {
       const name = String(e.name || "");
@@ -451,7 +469,7 @@ const together = (run) => {
   return run.every((s) => s.summary === run[0].summary) ? t("{summary} ({count} times)", { summary: run[0].summary, count: n }) : null;
 };
 const statusOf = (run) => run.some((s) => s.status === "running") ? "running" : run.some((s) => s.status === "error") ? "error"
-  : run.some((s) => s.status === "held") ? "held" : run.some((s) => s.status === "recovered") ? "recovered" : run.every((s) => s.status === "none") ? "none" : "done";
+  : run.some((s) => s.status === "held") ? "held" : run.some((s) => s.status === "refused") ? "refused" : run.some((s) => s.status === "recovered") ? "recovered" : run.every((s) => s.status === "none") ? "none" : "done";
 const detailOf = (s) => [s.raw, s.output && `→ ${s.output.length > 1500 ? `${s.output.slice(0, 1500)}…` : s.output}`].filter(Boolean).join("\n");
 const withCount = (summary, run) => {
   if (run[0].kind !== "mail" || !run.every((s) => s.count !== undefined)) return summary;

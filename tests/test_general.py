@@ -295,6 +295,7 @@ class SharedSessionTests(unittest.TestCase):
 
         def fake_build(*args, trace=None, **kwargs):
             def brain(system, user, **brain_kwargs):
+                trace('prompt', 'prompt_sent_to_agent', user)          # ...as every CLI road does as it hands the turn over
                 trace('tool_call', 'WebSearch', {'tool_call_id': 'search-1', 'args': {'query': 'competitors'}})
                 entered.set(); release.wait(5)
                 trace('tool_result', 'search-1', {'result': 'three sources', 'is_error': False})
@@ -308,11 +309,12 @@ class SharedSessionTests(unittest.TestCase):
             worker.start(); self.assertTrue(entered.wait(2))
             live = session.info()
             self.assertTrue(live['busy'])
-            self.assertEqual([e['type'] for e in live['trace']], ['start', 'tool_call'])
+            # ...opening from its start, its CLI not up yet, until the prompt is handed over (general.cold, 2026-11-17)
+            self.assertEqual([e['type'] for e in live['trace']], ['start', 'opening', 'prompt', 'tool_call'])
             release.set(); worker.join(5)
         finished = session.info()
         self.assertFalse(finished['busy'])
-        self.assertEqual([e['type'] for e in finished['trace']], ['start', 'tool_call', 'tool_result'])
+        self.assertEqual([e['type'] for e in finished['trace']], ['start', 'opening', 'prompt', 'tool_call', 'tool_result'])
         self.assertGreater(finished['trace_revision'], live['trace_revision'])
 
     def test_an_owner_started_conversation_does_not_close_itself_after_answering(self):
@@ -766,3 +768,21 @@ def test_a_message_in_the_chat_carries_its_files_both_chats_alike():
     assert (x['mid'], x['files'], x['words']) == (mid, 1, 'This seems to be not working')
     [y] = codingchat.mails(s, tid)
     assert {k: y[k] for k in x} == x and y['joined']
+
+
+def test_a_chat_turn_tells_its_task_s_tabs_as_it_moves():
+    """THE OPEN CHAT READ ITS LIST EVERY 600 MS WHILE A TURN RAN (stress round, 2026-11-18): nothing of a chat's turn was pushed, so the
+    page could only poll - ~100 builds a minute, through silent thinking as much as through steps. A step recorded and a turn's start and
+    end each push run-tail for the task, as a pty's output does; the page reads on it."""
+    from taskuary import live
+    store = MemoryStore()
+    tid = general_task(store)
+    session = general.GeneralSession(store, tid)
+    told = []
+    with mock.patch.object(live, 'emit', lambda kind, **p: told.append((kind, p.get('task_id')))):
+        session._remember_trace('tool_call', 'Read', {'args': {'path': 'vendors.csv'}})
+        assert told == [(live.RUN, tid)], told
+        session.busy = True; session.busy = True; session.busy = False
+        assert told == [(live.RUN, tid)] * 3, 'a start and an end are told once each; the same state again is no news'
+    try: session.close()
+    except Exception: pass

@@ -1361,6 +1361,11 @@ class SQLiteStore:
             # the owner's own replies were stored as INCOMING (X1, 2026-09-25) - everything that counts senders, and the
             # triage accuracy measure, counted the owner as one. 'You' on a context row is the owner, never a bot.
             self.cx.execute("UPDATE message SET Direction='out' WHERE Status='context' AND FromName='You' AND IFNULL(Direction,'in')='in'")
+            # ...and his New-box ask was filed as mail he SENT, its recipient as its source (outbox.ask_row, 2026-11-17): his line now, to them
+            for r in self.cx.execute("SELECT MessageId, SourceName FROM message WHERE ExternalId LIKE 'outbox:%' AND Direction='out'").fetchall():
+                to = [a.strip() for a in str(r[1] or '').split(',') if a.strip()]
+                self.cx.execute("UPDATE message SET Direction='in', SourceName=NULL, RecipientsJson=COALESCE(RecipientsJson, ?) WHERE MessageId=?",
+                                (json.dumps({'to': to, 'cc': []}), r[0]))
             # WHICH BRAIN ran a session, beside the role that owned it. A role is always the same
             # for coding work, so the session is the only place the actual CLI is recorded
             # (docs/superpowers/specs/2026-09-16-profile-brain-separation-design.md)
@@ -3027,7 +3032,15 @@ class SQLiteStore:
     def deliver_promise(self, mid, by):
         self._exec('UPDATE sent_verdict SET DeliveredBy=? WHERE MessageId=? AND Promise=1 AND DeliveredBy IS NULL', (by, mid))
         t = self.promise_task(mid)
-        if t and t.get('Status') not in ('done', 'dropped'): self.update_task(t['TaskId'], {'Status': 'done'}, 'promise')
+        if t and t.get('Status') not in ('done', 'dropped'):
+            # ...AN AUTOMATIC CLOSE, so it asks what every automatic close asks (workerstate.live_work, the owner 2026-11-01: "If anything
+            # still working never close the task automatically") and what still waits on the owner there (proposals.owed): an agent put on
+            # the promise kept working a closed task, and a reply drafted on it waited where no page shows one. Kept open, and said
+            from . import buttons, proposals, workerstate as ws
+            live = ws.live_work(self, t['TaskId'])
+            if not live and not proposals.owed(self, t['TaskId']): self.update_task(t['TaskId'], {'Status': 'done'}, 'promise')
+            else: self.add_comment(t['TaskId'], 'promise', 'agent', 'Your sent mail delivered this promise. It stays open - '
+                                   + (live[0] if live else 'something on it still waits on you') + f" - {buttons.label('close')} when it is finished.")
         if t:                                           # delivered: the ledger row resolves now, not at the sweep
             try:
                 from . import outcomes
@@ -4851,6 +4864,9 @@ class SQLiteStore:
         """A workflow run's steps as they land (flow.execute), so the run is readable while it works."""
         self._exec('UPDATE report_run SET StepsJson=?, Failed=?, Error=?, Ms=COALESCE(?, Ms), Summary=COALESCE(?, Summary) WHERE RunId=?',
                    (json.dumps(steps or [], default=str), int(bool(failed)), error, ms, summary, int(rid)))
+    def set_report_run_inputs(self, rid: int, inputs: str) -> None:
+        """What a stopped workflow run read in full (flow._walk), for the run that goes on after a yes (flow.resume)."""
+        self._exec('UPDATE report_run SET Inputs=? WHERE RunId=?', (inputs, int(rid)))
     def set_report_run_repairs(self, rid: int, repairs: list) -> None:
         """The repairs a run made to its own steps (flow.execute), each with the steps it replaced - what Undo puts back."""
         self._exec('UPDATE report_run SET RepairsJson=? WHERE RunId=?', (json.dumps(repairs or [], default=str), int(rid)))
@@ -5720,8 +5736,12 @@ class SQLiteStore:
                 if claim:
                     state = 'unknown'; env['delivery'] = state
                     reason = 'Delivery unknown after an interrupted attempt; check with the provider before any retry.'
-                    self.cx.execute("UPDATE review SET DeliveryState=?, DeliveryClaim=NULL, Deliver=?, Reason=? WHERE ReviewId=? AND DeliveryClaim=?",
-                                    (state, json.dumps(env), reason, row['ReviewId'], claim))
+                    # ...with who pressed it, as an attempt that ends unknown in its own process keeps them (finish_review_delivery): without them
+                    # its agent heard nothing of a send that may have gone (general.owner_did), and could set it up again
+                    try: by = json.loads(row.get('DeliveryEnvelope') or '{}').get('actor') or 'owner'
+                    except (TypeError, ValueError, AttributeError): by = 'owner'
+                    self.cx.execute("UPDATE review SET DeliveryState=?, DeliveryClaim=NULL, Deliver=?, Reason=?, DecidedBy=?, DecidedAt=? WHERE ReviewId=? AND DeliveryClaim=?",
+                                    (state, json.dumps(env), reason, by, _now(), row['ReviewId'], claim))
                 elif state in ('sent', 'failed', 'unknown'):
                     self.cx.execute('UPDATE review SET DeliveryState=? WHERE ReviewId=? AND DeliveryState IS NULL', (state, row['ReviewId']))
                 else: continue

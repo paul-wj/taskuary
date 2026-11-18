@@ -69,6 +69,28 @@ class TheList(unittest.TestCase):
         self.s.add_comment(self.tid, 'assistant', general.ASSISTANT_TYPE, 'Four permits, listed below.')
         self.assertIsNone(self.list()['idle'], 'said only while nothing has worked it')
 
+    def test_a_failed_turn_stays_under_the_line_it_failed_on_when_he_moves_on(self):
+        """The Continue round, 2026-11-18: his ask's turn failed ("API Error: 529"), and he pressed Continue with a note. The failure was drawn
+        only while it was the run's last word: at the press it went from above his note, and his first ask stood with nothing under it. It stays
+        where it happened - while the next turn works and after it answers - and only its way past it (Try again) goes."""
+        real = self.brain
+        def flaky(system, user, **k):
+            if not real.calls: real.calls.append('failed'); raise RuntimeError('API Error: 529 overloaded')
+            return real(system, user, **k)
+        with mock.patch.object(general.llm_mod, 'build_llm', side_effect=lambda *a, **k: flaky):
+            with self.assertRaises(Exception): self.say('Suggest two.', 'l-one')
+            got = self.list()
+            self.assertEqual([(x['id'], x.get('state')) for x in got['items'][-2:]], [('l-one', None), ('t:l-one:0', 'failed')])
+            t = time.time(); self.assertTrue(until(lambda: time.time() >= int(t) + 1.05))      # (a stamp is a whole second: his note comes in a later one)
+            real.delay = 0.8
+            self.say('Try once more, just the Mill.', 'l-two', wait=False)
+            for when in ('at work', 'answered'):
+                if when == 'answered': self.rest()
+                got = self.list()
+                self.assertEqual([(x['id'], x.get('state')) for x in got['items'][-4:-1]], [('l-one', None), ('t:l-one:0', 'failed'), ('l-two', None)], when)
+                self.assertEqual(got['items'][-3]['fail'], 'API Error: 529 overloaded.', when)
+            self.assertIsNone(got['items'][-3]['fix']); self.assertEqual(got['items'][-1]['text'], 'Answer 2.')
+
     def test_an_answer_from_before_the_ledger_stands_under_the_message_it_answered(self):
         """Every task whose agent answered before hand-overs were written down (the owner's older tasks, the demo's): an answer with no
         turn mark before it was placed at the start of time, above the mail it answered - "the chat begins with the agent's turn". A turn
@@ -108,6 +130,55 @@ class TheList(unittest.TestCase):
         self.assertEqual([i for i in ids if not i.startswith('t:')], [*before, 'l-two', 'l-three'])      # nothing entered above what was drawn
         self.assertEqual(self.kinds(got)[-4:], [('turn', 'done'), ('line', ''), ('line', ''), ('turn', 'done')])    # both, ONE turn
         self.assertEqual(len(self.brain.calls), 2)
+
+    def test_two_mails_of_one_poll_on_an_ended_session_are_one_turn_and_each_told_once(self):
+        """Two mails of one poll on a task whose conversation had ended (a restart, an idle-out): the first set the turn going with its own
+        words as the turn, the second rode in behind it - and the turn's "came in since your last turn" said the first mail again, under
+        the turn that already carried it."""
+        from taskuary import ingest
+        self.say('Suggest two.', 'l-one'); self.rest(); self.end()
+        opens = general.start_session          # the router's own start, on this stand-in brain
+        p = mock.patch.object(general, 'start_session', lambda store, tid, **k: opens(store, tid, **{**k, 'actor': 'owner'})); p.start(); self.addCleanup(p.stop)
+        mids = [self.mail('ALPHA, the first mail of the poll.'), self.mail('BRAVO, the second mail of the poll.')]
+        for m in mids: self.assertTrue(ingest.thread_moved(self.s, self.tid, ingest._from_row(self.s.get_message(m), self.s), m, {'intent': 'task'}, 'router'))
+        self.assertTrue(until(lambda: len(self.brain.calls) >= 2)); self.rest(); time.sleep(ingest.PASS_GATHER + 0.5)
+        self.assertEqual(len(self.brain.calls), 2, 'two mails of one poll are one turn')
+        came = self.brain.calls[1].split('CAME IN ON THIS TASK SINCE YOUR LAST TURN', 1)[-1].split('\n\n', 1)[0]
+        self.assertIn('BRAVO', came)
+        self.assertNotIn('ALPHA', came, 'the mail the turn itself carries is not said again beside it')
+        self.assertTrue(conversation.heard(self.s, self.tid, 'mail', mids))
+
+    def test_a_carried_on_turn_says_the_mail_that_woke_it_once(self):
+        """The carry-on road, the same shape: a sender's new work carried the ended conversation on (ingest._continue_general) with their
+        mail as the turn's head, a second mail of the poll beside it - and "came in since your last turn" said the first one again."""
+        from taskuary import ingest
+        self.say('Suggest two.', 'l-one'); self.rest(); self.end()
+        opens = general.start_session
+        p = mock.patch.object(general, 'start_session', lambda store, tid, **k: opens(store, tid, **{**k, 'actor': 'owner'})); p.start(); self.addCleanup(p.stop)
+        mids = [self.mail('ALPHA, the first mail of the poll.'), self.mail('BRAVO, the second mail of the poll.')]
+        ingest._continue_general(self.s, self.tid, ingest._from_row(self.s.get_message(mids[0]), self.s), mids[0]); self.rest()
+        turn = self.brain.calls[-1]
+        came = turn.split('CAME IN ON THIS TASK SINCE YOUR LAST TURN', 1)[-1].split('\n\n', 1)[0]
+        self.assertIn('BRAVO', came)
+        self.assertNotIn('ALPHA', came, 'the mail the turn itself carries is not said again beside it')
+        self.assertTrue(conversation.heard(self.s, self.tid, 'mail', mids))
+
+    def test_a_mail_delayed_in_delivery_enters_after_the_line_typed_before_it_came(self):
+        """A line typed while the agent worked, then a mail that came in a moment later - sent an hour before, held up on its way. The hand-
+        over placed the mail by the sender's own clock (its Date), above the line that came first: by the box it waited after the line, and
+        on the hand-over it jumped above it."""
+        self.brain.delay = 2.5
+        self.say('Suggest two.', 'l0', wait=False)
+        self.assertTrue(until(lambda: getattr(general.session_for(self.tid), 'busy', False)))
+        t = time.time(); self.assertTrue(until(lambda: time.time() >= t + 1.1))
+        self.say('LINE typed while it works.', 'l1', wait=False)
+        t = time.time(); self.assertTrue(until(lambda: time.time() >= t + 1.1))
+        late = self.s.add_message({'TaskId': self.tid, 'ExternalId': 'late', 'ConversationId': 'conv-1', 'Channel': 'email', 'Subject': 'Offsite venue',
+                                   'BodyText': 'MAIL delayed in delivery.', 'FromName': 'Gail Moreno', 'FromEmail': 'gail@northwind.example',
+                                   'Status': 'routed', 'SentAt': conversation.stamp(time.time() - 3600)})
+        self.rest()
+        ids = [x['id'] for x in self.list()['items']]
+        self.assertLess(ids.index('l1'), ids.index(f'm:{late}'), ids)
 
     def test_a_flood_is_one_hand_over_and_every_input_is_heard_once_and_told_once(self):
         self.brain.delay = 1.0
@@ -194,6 +265,30 @@ class TheList(unittest.TestCase):
         self.assertEqual(ids[-3:], ['l-two', *drawn, 'l-three'])
         self.assertEqual([x['state'] for x in got['items'] if x['kind'] == 'turn'][0], 'done')                 # the answer above was never stopped
 
+    def test_a_stopped_turn_whose_only_step_is_machinery_is_no_item_on_any_read(self):
+        """The walks, 2026-11-17: he stopped a turn whose only step was Claude loading a tool (ToolSearch). The server kept it for that step, the
+        page drew none - a "1 step" trail for 100 ms, then head and trail gone. One list says what is machinery (stepkinds.json), on every read."""
+        from taskuary import codingchat
+        load = {'type': 'tool_call', 'name': 'ToolSearch', 'detail': {'tool_call_id': 'ts1', 'args': {'query': 'select:WebSearch'}}}
+        self.say('Suggest two.', 'l-one'); self.rest()
+        self.brain.delay = 30
+        self.say('Compare both in detail.', 'l-two', wait=False)
+        self.assertTrue(until(lambda: getattr(general.session_for(self.tid), 'busy', False)))
+        ses = general.session_for(self.tid); ses.trace = [*ses.trace, load]
+        self.assertTrue(general.stop_turn(self.s, self.tid))
+        got = self.list()                                                    # ...the live trace, while its CLI lets go
+        self.brain.delay = 0; self.rest()
+        self.assertFalse([x for x in got['items'] if x.get('state') == 'stopped'], self.kinds(got))
+        # ...and a session's record whose turn did nothing but load a tool
+        at = '2026-11-17 09:12:03.200'
+        ups = [{'sessionUpdate': 'tool_call', 'toolCallId': 'ts1', 'title': 'ToolSearch', 'rawInput': {'query': 'select:WebSearch'},
+                '_meta': {'claudeCode': {'toolName': 'ToolSearch'}}, 'status': 'completed', '_at': at, '_t': conversation.ep(at)}]
+        with mock.patch.object(codingchat, 'owned', return_value=[{'sid': 's1', 'source': 'acp', 'updates': ups, 'at': at}]), \
+             mock.patch.object(codingchat, 'sessions', return_value=[]), mock.patch.object(general, 'handles', return_value=False):
+            got = self.list()
+        self.assertFalse([s for x in got['items'] if x['kind'] == 'turn' for s in x['steps'] if s.get('name') == 'ToolSearch'], self.kinds(got))
+        self.assertFalse([x for x in got['items'] if x.get('sid') == 's1'], self.kinds(got))
+
     def test_a_line_typed_while_the_stopped_turn_lets_go_stands_under_the_stop_from_the_first_read(self):
         """The bug hunt's stop, 2026-11-12: he stopped a turn whose CLI took seconds to let go, then typed his next line. The chat read at
         rest, so the page drew the line under the stop; the server kept it unheard behind the stopped turn, so the next read moved it down by
@@ -216,6 +311,71 @@ class TheList(unittest.TestCase):
         got = self.list(); ids = [x['id'] for x in got['items'] if not x['id'].startswith('t:')]
         self.assertEqual(ids[-3:], ['l-two', press, 'l-three'])
         self.assertEqual(self.kinds(got)[-2:], [('line', ''), ('turn', 'done')])
+
+    def test_the_turn_after_a_stop_runs_from_its_own_hand_over_not_the_stopped_one(self):
+        """The real-CLI walk, 2026-11-17: he stopped a turn that had said nothing, typed his next line, and its 12 s turn read "ran 37s" from
+        the stopped turn's start - a stopped turn files no answer, so the clock ran from the hand-over after the last answer. A turn starts at
+        the first hand-over after the turn before it ended, answered or stopped."""
+        self.say('Suggest two.', 'l-one'); self.rest()
+        self.brain.delay = 30
+        self.say('Compare both in detail.', 'l-two', wait=False)
+        self.assertTrue(until(lambda: getattr(general.session_for(self.tid), 'busy', False)))
+        self.brain.delay = 0
+        self.assertTrue(general.stop_turn(self.s, self.tid))
+        self.say('Go on, compare them now.', 'l-three', wait=False); self.rest()
+        # ...the stopped turn's hand-over 25 s before the line that began the next
+        grp = self.s._one("SELECT Grp FROM heard WHERE TaskId=? AND Ref='l-three'", (self.tid,))['Grp']
+        self.s._exec('UPDATE heard SET At=At-25 WHERE TaskId=? AND Grp<?', (self.tid, grp))
+        began = self.s._one("SELECT At FROM heard WHERE TaskId=? AND Ref='l-three'", (self.tid,))['At']
+        last = [x for x in self.list()['items'] if x['kind'] == 'turn'][-1]
+        self.assertAlmostEqual(last['started'], began, delta=0.5)
+
+    def test_a_turn_reads_opening_from_its_first_read_to_its_prompt_on_one_clock_and_one_stamp(self):
+        """The walks, 2026-11-17 (7 of 20): a turn read "Thinking..." from its first read, stepped back to "Waiting for the agent to start" once
+        the road opening its CLI said so, and its clock and stamp went back from his press to the hand-over. A turn whose CLI is not up is
+        opening from the press until its prompt is handed over, and one whose CLI is up never is; all of it on one clock and one stamp."""
+        from taskuary import clipool
+        gates, tr = [threading.Event() for _ in range(3)], {}
+        real_take, real_parts = general.take_kept, general.prompt_parts
+        def take(*a, **k): k.get('turn') and gates[0].wait(10); return real_take(*a, **k)       # ...the hand-over held: a slow start
+        def parts(*a, **k): gates[1].wait(10); return real_parts(*a, **k)                       # ...after the hand-over, before the prompt
+        def brain(system, user, **k): tr['f']('prompt', 'prompt_sent_to_agent', user); gates[2].wait(10); return 'Answer.'
+        def build(*a, **k): tr['f'] = k['trace']; return brain
+        def walk(name, warm):
+            for g in gates: g.clear()
+            with mock.patch.object(general, 'take_kept', take), mock.patch.object(general, 'prompt_parts', parts), \
+                    mock.patch.object(general.llm_mod, 'build_llm', side_effect=build), mock.patch.object(clipool, 'is_live', return_value=warm):
+                self.say('Suggest two.', name, wait=False)
+                tail = lambda: self.list()['items'][-1]
+                a = tail(); time.sleep(1.1); gates[0].set()
+                self.assertTrue(until(lambda: getattr(general.session_for(self.tid), 'busy', False) and tail()['state'] == 'working'))
+                b = tail(); gates[1].set()
+                self.assertTrue(until(lambda: 'f' in tr and len(general.session_for(self.tid).trace) > 1 and tail().get('opening') is None))
+                c = tail(); gates[2].set(); self.rest(); tr.clear()
+            self.assertEqual([(x['state'], bool(x.get('opening'))) for x in (a, b, c)], [('starting', not warm), ('working', not warm), ('working', False)])
+            self.assertEqual({x['at'] for x in (a, b, c)}, {a['at']}, 'one stamp')
+            for x in (b, c): self.assertAlmostEqual(x['started'], a['started'], delta=0.05)
+        walk('l-one', False)      # ...the chat's first turn, its CLI starting
+        walk('l-two', True)       # ...a later one on a CLI already up
+
+    def test_the_turn_his_new_line_starts_never_reads_the_last_turns_steps(self):
+        """The walks, 2026-11-17: for about 200 ms under his new answer the previous turn was drawn again - the session read busy while its
+        trace was still the last turn's, so the turn at work read with that turn's thinking in it. Every read that finds it at work finds
+        its own trace."""
+        from taskuary import clipool
+        tr, seen, real_live = {}, [], clipool.is_live
+        def brain(system, user, **k): tr['f']('progress', 'thinking', 'Comparing the Harbour Room with the Quay Loft.'); return 'Answer.'
+        def build(*a, **k): tr['f'] = k['trace']; return brain
+        def live(key):          # ...a read in the start's own steps, as the page's poll lands mid-start
+            ses = general.session_for(self.tid)
+            if ses is not None and ses.busy and not tr.get('in'):
+                tr['in'] = True; seen.extend(t for t in self.list()['items'] if t['kind'] == 'turn' and t['state'] == 'working'); tr['in'] = False
+            return real_live(key)
+        with mock.patch.object(general.llm_mod, 'build_llm', side_effect=build):
+            self.say('Suggest two.', 'l-one'); self.rest()
+            with mock.patch.object(clipool, 'is_live', side_effect=live): self.say('Which is cheaper?', 'l-two'); self.rest()
+        self.assertTrue(seen, 'the turn at work was read')
+        self.assertEqual([s for t in seen for s in t['steps'] if 'Harbour' in str(s.get('text'))], [])
 
     def test_a_stop_pressed_in_the_second_its_line_was_heard_still_stands_under_that_line(self):
         """A press is stamped by the whole second: one made in the second the turn's own line was heard sorted above it by the tie, and the
@@ -305,6 +465,23 @@ class TheList(unittest.TestCase):
         self.assertEqual(got['pending'], []); self.assertEqual(got['items'][-1]['id'], f'm:{mid}')    # nobody took it: it stands after the turn it came in under
         self.say('And that?', 'l-two'); self.rest()
         self.assertEqual([x['id'] for x in self.list()['items'][-3:-1]], [f'm:{mid}', 'l-two'])        # heard with his line, before it: it did not move
+
+    def test_his_own_reply_that_came_in_mid_turn_with_a_note_stands_after_the_turn_it_came_in_under(self):
+        """The stress round, 2026-11-18 (invented people): the agent was drafting when the owner answered from his mailbox - the sync filed his
+        reply and Taskuary's note that the draft was put down, both while the turn worked. Once the turn had answered, the note (placed at the
+        end of its own second) pushed the answer after the reply, which read at its own time: for a read the finished turn stood UNDER his
+        reply, named as the next turn's, then went back - a turn and its card gone from the canvas and drawn again."""
+        from taskuary.sessionrecord import NOTE_ACTOR
+        self.brain.delay = 3
+        self.say('Suggest two.', 'l-one', wait=False)
+        self.assertTrue(until(lambda: getattr(general.session_for(self.tid), 'busy', False)))
+        time.sleep(1.1); mid = self.mail('I booked the Harbour Room myself.', own=True)
+        self.s.add_comment(self.tid, NOTE_ACTOR, 'assistant_agent', 'You replied from your mailbox; I removed the unused draft.')
+        turn = [x['id'] for x in self.list()['items'] if x['kind'] == 'turn']
+        self.rest()
+        got = self.list()
+        self.assertEqual([x['id'] for x in got['items'] if x['kind'] == 'turn'], turn, self.kinds(got))   # the turn keeps its name
+        self.assertEqual(got['items'][-1]['id'], f'm:{mid}')                                              # ...and the reply stands after it
 
     def test_a_coding_run_that_left_without_finishing_says_so_last_in_its_chat(self):
         """Decided 2026-11-12: a stopped coding task said it on its header chip ("agent stopped") and its rail row (cut by the row's width),
@@ -408,6 +585,7 @@ class TheList(unittest.TestCase):
         ray, erin = mail('ray@northwind.example', 'Ray - a quote for a bus for 40? Alex'), mail('erin@northwind.example', 'Erin - the bus is booked. Alex')
         self.brain.delay = 0; self.rest()
         was = self.list(); self.assertEqual(was['queue']['held'], [erin])
+        import time; time.sleep(1.1)            # ...in the second after its last answer: an agent's own take-back is no press that holds Ray's back
         verdicts.withdraw(s, tid, 'Ray has not quoted yet', 'agent', which=str(erin))
         got = self.list()
         self.assertNotIn(erin, [c['review'] for x in got['items'] for c in ([x] if x['kind'] == 'card' else x.get('cards') or [])])
@@ -616,6 +794,21 @@ class TheList(unittest.TestCase):
         self.assertTrue(any(b.startswith('h:') for b in conversation.flow_breaks({'items': [mail], 'pending': []}, held)))   # ...and then nowhere
         self.assertFalse(any(b.startswith('h:') for b in conversation.flow_breaks({'items': [mail], 'pending': [], 'dropped': ['l-2']}, held)))
 
+    def test_his_outside_reply_that_starts_a_turn_stands_above_it_from_the_first_read(self):
+        """The walks, 2026-11-17: his own reply on the thread came in at rest and was handed to the agent (general.hand) - for the ~3 s before
+        the hand-over was written it sat as a chip by the box under a turn's bare dots, then jumped up into the chat. The input that starts a
+        turn is drawn in its place from the first read, the turn under it, and both keep their names once it is heard."""
+        self.say('Suggest two.', 'l-one'); self.rest(); time.sleep(1.1)              # an earlier turn: its session stays, at rest
+        first = [x['id'] for x in self.list()['items']]
+        mid = self.mail('I booked the Harbour Room myself.', own=True)
+        general.hand(self.tid); self.addCleanup(general.hand, self.tid, -1)
+        got = self.list()
+        self.assertEqual((got['pending'], [x['id'] for x in got['items']][:-1]), ([], [*first, f'm:{mid}']), self.kinds(got))
+        self.assertEqual(self.kinds(got)[-1], ('turn', 'starting')); live = got['items'][-1]['id']
+        conversation.hear(self.s, self.tid, [], turn=True)
+        got = self.list()
+        self.assertEqual(([x['id'] for x in got['items']][-2:], got['pending']), ([f'm:{mid}', live], []))
+
     def test_a_message_drawn_never_goes_back_by_the_box_when_a_turn_begins_in_its_second(self):
         """The release run on macOS, 2026-11-12 (the basic flow's check, on seven coding scenarios): the first mail was drawn, a turn began in
         the second it had joined - before any hand-over named it - and the mail left the canvas for the waiting room. Drawn once, it stays."""
@@ -625,6 +818,43 @@ class TheList(unittest.TestCase):
         with mock.patch.object(general, 'working', return_value=True), mock.patch.object(general, 'turn_started', return_value=joined - 0.5):
             got = self.list()
         self.assertIn(f'm:{mid}', [x['id'] for x in got['items']]); self.assertEqual(got['pending'], [])
+
+    def test_his_close_drawn_never_goes_back_by_the_box_when_the_turn_a_reopening_mail_starts_begins(self):
+        """A stress round, 2026-11-18: Mark done drew "You marked it done"; a question that came in a beat later reopened the task and handed it
+        to the agent, and while that turn was starting the close left the canvas for the waiting room, coming back above the mail once the turn
+        was at work - a jump. A press drawn once stays, as a drawn mail does."""
+        from taskuary import concierge
+        self.say('Suggest two.'); self.rest()
+        self.assertTrue(concierge.close_task(self.s, self.tid, 'owner'))
+        shut = next(x['id'] for x in self.list()['items'] if x.get('closes'))
+        at = conversation.ep(self.s._one("SELECT CreatedAt FROM audit WHERE Id=?", (int(shut[2:]),))['CreatedAt'])
+        with mock.patch.object(general, 'working', return_value=True), mock.patch.object(general, 'turn_started', return_value=at + 0.5):
+            got = self.list()
+        self.assertIn(shut, [x['id'] for x in got['items']]); self.assertEqual(got['pending'], [])
+
+    def test_the_work_a_reopening_mail_begins_stands_under_his_close_from_the_first_read(self):
+        """A stress round, 2026-11-18: Mark done pressed while a turn worked (the close stopped it, no answer filed), then a question reopened
+        the task and its agent was started on it. In the beat before that hand-over was written the turn at work read from the stopped turn's
+        hand-over: drawn as that old turn, at work again ABOVE "You marked it done", and the reply card the close had put down was hidden
+        inside it. A close ends the turn above it as a stop does: what works after it stands under it, and what came in stands above that."""
+        from types import SimpleNamespace
+        from taskuary import concierge
+        self.say('Suggest two.', 'l-one'); self.rest()
+        self.brain.delay = 30
+        self.say('Compare both in detail.', 'l-two', wait=False)
+        self.assertTrue(until(lambda: getattr(general.session_for(self.tid), 'busy', False)))
+        self.brain.delay = 0
+        self.assertTrue(concierge.close_task(self.s, self.tid, 'owner'))
+        shut = next(x['id'] for x in self.list()['items'] if x.get('closes'))                 # drawn: "You marked it done"
+        self.s.update_task(self.tid, {'Status': 'open'}, 'router')                  # ...a question reopened it
+        mid = self.mail('One more - which of the two has parking?')
+        busy = SimpleNamespace(busy=True, trace=[], sid='s-new', last=0, alive=True, quick=False)
+        with mock.patch.object(general, 'working', return_value=True), mock.patch.object(general, 'session_for', return_value=busy):
+            got = self.list()
+        ids = [x['id'] for x in got['items']]
+        self.assertFalse([x['id'] for x in got['items'][:ids.index(shut)] if x.get('state') in ('working', 'starting')], self.kinds(got))
+        self.assertEqual(ids[-2:], [f'm:{mid}', ids[-1]], self.kinds(got))
+        self.assertIn(got['items'][-1].get('state'), ('working', 'starting'))
 
     def test_what_was_drawn_keeps_its_place_through_any_read(self):
         """The chat only grows at its foot (`shown`): an item's place is the one it was first served in - an answer filed late for a turn
@@ -759,6 +989,81 @@ class TheList(unittest.TestCase):
         got = self.list()
         self.assertEqual((got['pending'], [x['kind'] for x in got['items']].count('press'), got['working']), ([], 1, True))
         self.brain.delay = 0; self.rest()
+
+    def test_a_turn_its_session_was_closed_under_is_no_turn_a_restart_cut_days_later(self):
+        """A session closed under its turn while Taskuary ran on (Stop and save, a hand-off) left the turn on disk as one still under way: the
+        next restart, whenever it came, filed its old words at the foot of the chat as "Cut short when Taskuary restarted - type to carry on"
+        - a restart that cut nothing, under lines written since. Only a close that takes the process down keeps it."""
+        from taskuary import sessionrecord, terminal
+        self.say('Suggest two.', 'l-one'); self.rest()
+        self.brain.delay = 30
+        self.say('Compare both in detail.', 'l-two', wait=False)
+        self.assertTrue(until(lambda: getattr(general.session_for(self.tid), 'busy', False)))
+        ses = general.session_for(self.tid)
+        ses._remember_trace('progress', 'text', 'The lakeside venue costs more.')
+        ses.close(learn=False, report=False)
+        self.brain.delay = 0
+        self.assertTrue(until(lambda: not ses.busy))
+        self.assertFalse(sessionrecord._live_path(self.tid).exists())
+        terminal.recover_after_restart(self.s); general.keep_cut_turns(self.s)
+        self.assertFalse([c for c in self.s.list_comments(self.tid) if 'Cut short' in c['Body']])
+
+    def test_a_line_heard_by_a_turn_still_coming_up_is_cut_with_it(self):
+        """His line was taken and heard by the turn before that turn was first written to disk - a provider picked, the cards before it moved
+        on: a restart in between left the line heard with nothing under it, nothing running and nothing saying it was cut."""
+        from taskuary import proposals
+        self.say('Suggest two.', 'l-one'); self.rest()
+        up, go, cut = threading.Event(), threading.Event(), []
+        real = proposals.move_on
+        def coming_up(*a, **k):
+            if not up.is_set(): up.set(); cut.extend(general.keep_cut_turns(self.s)); go.wait(5)      # the next start reads the disk here
+            return real(*a, **k)
+        with mock.patch.object(proposals, 'move_on', coming_up):
+            self.say('Compare both in detail.', 'l-two', wait=False)
+            self.assertTrue(up.wait(5)); go.set()
+            self.rest()
+        self.assertEqual(cut, [self.tid])
+
+    def test_a_line_a_cut_turn_took_is_heard_by_the_resumed_conversation_after_the_restart(self):
+        """The turn a restart cut had taken his line, and went before its CLI was handed it. The next session picked the CLI's conversation
+        back up, which is told only the new turn: his line stood heard in the chat, and no agent ever read it."""
+        from taskuary import proposals, terminal
+        self.say('Suggest two.', 'l-one'); self.rest()
+        old = general.session_for(self.tid)
+        up, go = threading.Event(), threading.Event()
+        class Gone(BaseException): pass
+        def coming_up(*a, **k):
+            up.set(); general.keep_cut_turns(self.s); go.wait(5); raise Gone()      # the next start reads the disk here; nothing after runs
+        def turn():
+            try: old.send_prompt('Compare both venues on price.', echo=False)
+            except Gone: pass
+        with mock.patch.object(proposals, 'move_on', coming_up):
+            t = threading.Thread(target=turn, daemon=True); t.start()
+            self.assertTrue(up.wait(5)); go.set(); t.join(5)
+        old.alive = False; terminal.SESSIONS.pop(old.sid, None); general.drop_session(self.tid); general.answered(self.tid, every=True)
+        terminal.recover_after_restart(self.s)
+        new = general.start_session(self.s, self.tid)
+        new.cli_sid = 'cli-conversation-1'                       # its CLI's own conversation, picked back up: only the turn is said
+        self.say('And book the cheaper one.', 'l-three'); self.rest()
+        self.assertIn('Compare both venues on price.', self.brain.calls[-1])
+        self.assertIn(getattr(general, 'CUT_HEARD', 'CUT SHORT WHEN TASKUARY RESTARTED'), self.brain.calls[-1])
+        self.say('Thanks.', 'l-four'); self.rest()
+        self.assertNotIn(general.CUT_HEARD, self.brain.calls[-1], 'said once')
+
+    def test_a_turn_the_app_closing_cut_is_kept_for_the_next_start(self):
+        from taskuary import sessionrecord, terminal
+        self.say('Suggest two.', 'l-one'); self.rest()
+        self.brain.delay = 30
+        self.say('Compare both in detail.', 'l-two', wait=False)
+        self.assertTrue(until(lambda: getattr(general.session_for(self.tid), 'busy', False)))
+        ses = general.session_for(self.tid)
+        ses._remember_trace('progress', 'text', 'The lakeside venue costs more.')
+        terminal.shutdown_sessions()
+        self.brain.delay = 0
+        self.assertTrue(until(lambda: not ses.busy))
+        terminal.recover_after_restart(self.s); general.keep_cut_turns(self.s)
+        got = [c['Body'] for c in self.s.list_comments(self.tid) if c['ActorType'] == general.ASSISTANT_TYPE]
+        self.assertTrue(got[-1].startswith('The lakeside venue costs more.') and 'Cut short when Taskuary restarted' in got[-1], got)
 
     def test_a_reply_waiting_for_his_send_stands_with_its_send_through_a_restart_and_the_session_after_it(self):
         """The recorded restart, 2026-11-11, and the owner's ruling on it ("reply cards should survive untouched"): the agent's reply waited
@@ -962,6 +1267,21 @@ class TheCodingRoadsSignInTests(unittest.TestCase):
         ws.record(s, tid, 'acp-1', 'answered', request_id='signin:payworth.example', text='Signed in', source='owner')
         self.assertTrue(general._at_work(sess))
 
+    def test_a_coding_turn_its_protocol_says_ended_is_not_at_work_whatever_its_record_last_said(self):
+        """The owner's live task, 2026-11-17: a coding agent over ACP ended its turn "set up for you to push ... once that runs, I'll watch
+        the deploy" - its push held as a card. Its session read at rest, but the run's record still said `working` (no turn end was
+        written), so the chat spun "Thinking..." for twenty minutes and held the push card back as a turn at work does."""
+        from taskuary import acpcoding, workerstate as ws
+        s = MemoryStore(); tid = s.create_task({'Title': 'Ship the floor board', 'Kind': 'coding', 'Status': 'in_progress'}, 'owner')
+        sess = acpcoding.ACPCoding.__new__(acpcoding.ACPCoding)
+        sess.store, sess.task_id, sess.sid, sess.alive, sess.busy = s, tid, 'acp-2', True, False
+        ws.record(s, tid, 'acp-2', 'working', source='hook')
+        with mock.patch.object(general, '_live_of', return_value=sess), mock.patch.object(general, 'starting', return_value=False), \
+                mock.patch.object(general, 'owed', return_value=False):
+            self.assertTrue(general.waits(s, sess)); self.assertFalse(general.working(s, tid))
+            sess.busy = True
+            self.assertFalse(general.waits(s, sess)); self.assertTrue(general.working(s, tid), 'a turn its protocol has open is at work')
+
 
 if __name__ == '__main__':
     unittest.main()
@@ -974,3 +1294,73 @@ def test_a_turn_has_one_clock_live_and_finished():
     marks = [{'Seq': 3, 'At': 100.0}, {'Seq': 5, 'At': 160.0}, {'Seq': 9, 'At': 200.0}, {'Seq': 9, 'At': 230.0}]
     assert turn_start(marks, 0, 6) == 100.0, 'a second hand-over mid-turn does not move its start'
     assert turn_start(marks, 9) == 200.0 and turn_start(marks, 12) == 0.
+    assert turn_start(marks, 0, 6, stops=[150.0]) == 160.0 and turn_start(marks, 0, 6, stops=[170.0]) == 100.0, 'a stop ends a turn; one after the last hand-over cuts nothing'
+
+
+def test_a_card_he_said_no_to_keeps_its_words_where_it_stood():
+    """The real-CLI walk, 2026-11-16: Don't send took the email's card off the chat and left only "You dropped the email" - the basic flow's
+    "no card gone from the canvas". A rejected draft is drawn where it stood, greyed, with what it said."""
+    from taskuary import conversation
+    c = conversation._card({'ReviewId': 9, 'Kind': 'slot', 'Status': 'rejected', 'DraftText': 'Hi Erin, the open house moved to Thursday.',
+                            'DecideNote': '', 'CreatedAt': '2026-11-17 03:41:00', 'DecidedAt': '2026-11-17 03:41:20'})
+    assert (c['status'], c['was']['text']) == ('rejected', 'Hi Erin, the open house moved to Thursday.'), c
+
+
+def test_an_email_he_said_dont_send_to_stays_in_the_list_where_it_stood():
+    "The same, read through the task's list: the rejected email's card is placed, greyed, with its words - never dropped from it."
+    from taskuary import conversation
+    from taskuary.store import MemoryStore
+    from taskuary.testing import Factory
+    s = MemoryStore(); tid = Factory(s).task('Tell Erin the open house moved')
+    rid = s.add_review({'TaskId': tid, 'Kind': 'slot', 'Status': 'pending', 'DraftText': 'Hi Erin, the open house moved to Thursday.',
+                        'Deliver': '{"channel": "email", "to": ["erin@northwind.example"], "slot": "s1"}'})
+    s._exec("UPDATE review SET Status='rejected', DecidedBy='owner' WHERE ReviewId=?", (rid,))
+    cards = [c for x in conversation.items(s, tid)['items'] for c in ([x] if x['kind'] == 'card' else x.get('cards') or [])]
+    assert [(c['review'], c['status'], c['was']['text']) for c in cards] == [(rid, 'rejected', 'Hi Erin, the open house moved to Thursday.')], cards
+
+
+def test_his_first_line_on_a_report_he_sent_on_carries_its_name():
+    """The owner, 2026-11-17: Send to agent on a report puts it on the box as a pill, and what he types "says report name then your prompt" - his
+    first line names the report it was sent with; the report itself is the task's Came from. A task from mail names nothing."""
+    from taskuary import conversation, general
+    from taskuary.store import MemoryStore
+    from taskuary.testing import Factory
+    s = MemoryStore()
+    tid = s.create_task({'Title': 'Headcount by site', 'Kind': 'general', 'Status': 'open', 'Source': 'report'}, 'owner')
+    s.add_message({'TaskId': tid, 'Channel': 'report', 'SourceName': 'Headcount by site, nightly', 'Subject': 'Headcount - 5 rows', 'BodyText': 'x', 'Status': 'routed'})
+    s.add_comment(tid, 'owner', general.USER_TYPE, 'Which site is closest to its cap?')
+    s.add_comment(tid, 'owner', general.USER_TYPE, 'And by how much?')
+    lines = [x for x in conversation.items(s, tid)['items'] if x['kind'] == 'line']
+    assert [(x['text'], x.get('came')) for x in lines] == [('Which site is closest to its cap?', 'Headcount by site, nightly'), ('And by how much?', None)], lines
+    t2 = Factory(s).task('From mail'); s.add_comment(t2, 'owner', general.USER_TYPE, 'Reply to her')
+    assert all('came' not in x for x in conversation.items(s, t2)['items'])
+
+
+def test_his_answer_to_a_permission_request_is_its_card_greyed_where_it_stood():
+    """The owner, 2026-11-17: "the approve card should never go anywhere and just say it was approved ... keep the action cards but gray out
+    if passed" - his Allow on a coding agent's permission request left only "You allowed: ..." in its place. The press carries what it asked
+    and his answer, and the page draws the card it was."""
+    s = MemoryStore()
+    tid = s.create_task({'Title': 'Ship the board', 'Kind': 'coding', 'Status': 'open'}, 'o')
+    s.audit('task', tid, 'permission_answered', 'owner', detail={'pid': 'p1', 'answer': 'allow_once', 'pattern': 'Bash:git push', 'asked': 'Push the merge to deploy'})
+    p = next(x for x in conversation.items(s, tid)['items'] if x['kind'] == 'press')
+    assert p['perm'] == {'asked': 'Push the merge to deploy', 'answer': 'allow_once'}
+
+
+def test_an_act_he_dismissed_stays_its_own_card_with_its_words():
+    """The card round, 2026-11-18: Dismiss on a tracker comment's card (ActionCard) said "Not posted · dismissed" over the comment, and a beat
+    later the list's read swapped it for the generic "Not sent - you said don't send" card carrying the agent's reason, the comment's words gone.
+    An act a connector declares a card for is drawn by that card in every state: the list hands it no `was` to draw in its place."""
+    import json
+    from taskuary.store import MemoryStore
+    from taskuary.testing import Factory
+    s = MemoryStore(); tid = Factory(s).task('Comment on the ledger ticket')
+    rid = s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'Reason': 'the comment Erin asked for',
+                        'DraftText': json.dumps({'action': 'run_tool', 'type': 'jira_comment', 'item': 'NW-12', 'body': 'Fixed in the ledger totals.'})})
+    s._exec("UPDATE review SET Status='rejected', DecidedBy='owner' WHERE ReviewId=?", (rid,))
+    cards = [c for x in conversation.items(s, tid)['items'] for c in ([x] if x['kind'] == 'card' else x.get('cards') or [])]
+    assert [(c['review'], c['status'], 'was' in c) for c in cards] == [(rid, 'rejected', False)], cards
+    # ...a step with no card of its own keeps its words under "not sent", as before
+    step = s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'Reason': 'r', 'DraftText': json.dumps({'action': 'shell_act', 'command': 'echo hi', 'what': 'say hi'})})
+    s._exec("UPDATE review SET Status='rejected', DecidedBy='owner' WHERE ReviewId=?", (step,))
+    assert conversation._card(s.get_review(step))['was'] == {'text': 'say hi'}

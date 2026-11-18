@@ -25,6 +25,21 @@ def _part(words: list, address: str, name: str = '') -> bool:
     return bool(words) and all(w in hay for w in words)
 
 
+def at_domain(store, domain: str) -> list:
+    """[(address, name)] of everyone at `domain` in the owner's mail - who wrote in, and whom he wrote to - most written-with first.
+    A public mail service is nobody's company: [] - those who use it are strangers to each other. The owner himself is never one of them."""
+    from .peoplesearch import org_of
+    from .senders import own_addresses
+    d = str(domain or '').strip().lower().lstrip('@')
+    if not d or not org_of('@' + d): return []
+    out = {h['Email']: h.get('Name') or '' for h in (store.senders_like(f'@{d}', limit=8) if hasattr(store, 'senders_like') else [])
+           if h['Email'].endswith('@' + d)}
+    for a in written_to(store):
+        if a.lower().endswith('@' + d): out.setdefault(a.lower(), '')
+    mine = own_addresses(store)
+    return [(a, n) for a, n in out.items() if a.lower() not in mine]
+
+
 def written_to(store) -> dict:
     """{address: (times, last sent)} over the To and Cc of the owner's own sent mail - one scan per new message."""
     # kept ON the store, rescanned only when mail arrives. Keyed by id(store) it outlived its store: a closed store's id
@@ -64,4 +79,14 @@ def resolve(store, name: str) -> dict:
     rank = lambda d: [a for a, _ in sorted(d.items(), key=lambda kv: kv[1], reverse=True)]    # most written-to, then newest
     if len(whole) == 1: return {'address': next(iter(whole))}       # one whole-word match outranks fragments of other names
     found = rank(whole) or rank(part)
+    # ...AND WHERE THE WHOLE NAME FINDS NOBODY, WHO SHARES A WORD OF IT, offered and never picked (2026-11-17: asked for "Anna Carlini", the
+    # bank's contact "Garlanian, Anna" was never offered, and an address was made up, sent and bounced)
+    if not found and len(words) > 1:
+        some = {}
+        for w in (w for w in words if len(w) > 2):
+            for h in store.senders_like(w, limit=6) if hasattr(store, 'senders_like') else []:
+                if w in _words(h.get('Name') or '') or w in _words(h['Email'].split('@', 1)[0]): add(some, h['Email'], h.get('N') or 1, str(h.get('Last') or ''))
+            for a_, (n, last) in written_to(store).items():
+                if _whole([w], a_): add(some, a_, n, last)
+        found = rank(some)
     return {'candidates': found[:5]} if found else {}

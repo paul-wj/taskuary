@@ -181,7 +181,8 @@ FLOW_RULES = (
     'a file transform - is a "source" step of type python_script: you write the script (standard library only; it reads the earlier '
     'step\'s rows from stdin, given as its "input", and prints JSON rows), and an "ai" step after it reads what it printed. The owner '
     'reads the script before saving. Never use it for a judgement, and never peek with it.\n'
-    '- "task" opens a task, "draft" leaves an email for the owner to approve - that is how results land; neither needs a connection.\n'
+    '- "task" opens a task, "draft" writes an email and sends it by itself to the address set here (one whose address an earlier step '
+    'reads waits for the owner\'s Send) - that is how results land; neither needs a connection.\n'
     '- "agent" ONLY when the work needs an agent\'s hands - a web page, open-ended investigation - and it is always the last step. A job '
     'that is nothing but that is ONE agent step (or just "prompt").\n'
     '- A step reads earlier output with {{s1}} (its rows/text), {{s1.head}}, {{s1.rows}} (a count), {{s2.answer}}, {{s2.why}}, '
@@ -202,7 +203,7 @@ WORKFLOW_SYSTEM = (
     'one. A job that only retrieves or summarizes data is a report, not a workflow.\n\n'
     'TASKUARY IS WHERE RESULTS LAND. Each run is itself a task in Taskuary - scheduled or run by hand, its agent works it there and '
     'nothing is filed as a report or read by triage - and it may open tasks for people, write notes '
-    'and leave drafts - emails, messages, invoices - for the owner to approve, with no connection at all. Never ask which '
+    'and send its own emails and messages - they go out by themselves - or leave invoices for the owner to approve, with no connection at all. Never ask which '
     'connection opens a task or where a result should go. A connection is only for a system the work happens IN (Intacct '
     'to read, a portal to drive). Opening tasks or drafting IS doing work: such a job is a workflow, never "really a report".\n\n'
     'Answer JSON only in one of four shapes:\n'
@@ -456,10 +457,11 @@ def flat_schedule(cfg: dict) -> dict:
     return {**{k: v for k, v in cfg.items() if k != 'schedule'}, **{k: s[k] for k in SCHEDULE_KEYS if s.get(k) not in (None, '') and not cfg.get(k)}}
 
 
-def _rounds(store, llm, system, user, rounds, finish):
+def _rounds(store, llm, system, user, rounds, finish, garbled: str = ''):
     """The loop both composers share: the model may go and READ a real schema before it writes
-    anything, a question comes back as a question, and `finish` reads its final answer."""
-    looked = []
+    anything, a question comes back as a question, and `finish` reads its final answer. `garbled`: what an answer that could not be
+    read is said as - the owner's ask is "said another way" only where the owner asked; a repair nobody typed says its own."""
+    looked, garbled = [], garbled or AGAIN.format('a report')
     for _ in range(max(1, rounds + 1)):
         # ...and a brain that fails is the answer too, in its own words with its way past (failures.classify): raised, the builder's describe
         # answered 500 and the Assistant's setup turn ended on nothing to say (an API card's quick model ran out of room, 2026-11-12)
@@ -469,7 +471,7 @@ def _rounds(store, llm, system, user, rounds, finish):
             logger.warning(f'compose: the brain failed - {e}')
             return {'error': classify(e)['sentence']}
         out = _json(said)
-        if not out: return {'error': AGAIN.format('a report')}
+        if not out: return {'error': garbled}
         for k in ('config', 'report'):
             if isinstance(out.get(k), dict): out[k] = flat_schedule(out[k])
         if out.get('questions'):
@@ -483,7 +485,7 @@ def _rounds(store, llm, system, user, rounds, finish):
                 {'you_asked_for': spec, 'result': _peek(store, spec)})
             continue
         return finish(out, looked)
-    return {'error': AGAIN.format('a report')}
+    return {'error': garbled}
 
 
 def _repositories(store) -> dict:
@@ -656,9 +658,7 @@ def compose_dashboard(store, ask: str, llm, answers: dict = None, rounds: int = 
         cfg = out.get('config')
         if not isinstance(cfg, dict): return {'error': AGAIN.format('a dashboard')}
         cfg = {k: v for k, v in cfg.items() if k in DASHBOARD_KEYS} | {'type': 'dashboard'}
-        for i, s in enumerate(cfg.get('sources') or [], 1):
-            if isinstance(s, dict): s.setdefault('key', f's{i}')
-        cfg, dropped = _tiles_of(store, cfg, llm)
+        cfg, dropped = _tiles_of(store, dashboards.keyed(cfg), llm)
         ok, why = dashboards.validate(cfg, store)
         if not ok and dropped and not cfg.get('components'): why = dropped[0]
         if not ok: return {'error': why, 'config': cfg}

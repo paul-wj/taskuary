@@ -13,7 +13,7 @@ API road's file tools), and in a shell line every argument that is a path - driv
 A path built from a variable this cannot read is held, as an unreadable delete is. Programs' own folders (Program Files, the system's,
 Python's) are no one's files and pass.
 """
-import os, re, shlex, sys, tempfile
+import os, re, sys, tempfile
 from pathlib import Path
 
 WHY = "it is outside this task's own folders"
@@ -23,7 +23,8 @@ ALLOWED = 'Allowed - this task may read that folder'      # a read's Approve, sa
 GRANT = 'read:'                                         # a folder the owner let this task read (store.set_perm_rule)
 READ_TOOLS = ('Read', 'Glob', 'Grep', 'LS', 'NotebookRead')
 _KEYS = ('file_path', 'notebook_path', 'path', 'pattern', 'dir', 'directory')
-_SPLIT = re.compile(r'\r?\n|;|&&|\|\||\||\{|\}|\(|\)')
+# ...a `${NAME}` is one word, never a block's braces: cut there, `cat ${HOME}/.ssh/x` named only `/.ssh/x`, which exists nowhere
+_SPLIT = re.compile(r'(\$\{[^}\s]*\})|\r?\n|;|&&|\|\||\||\{|\}|\(|\)')
 _VAR = re.compile(r'\$\{?(?:env:)?(\w+)\}?|%(\w+)%', re.I)
 _WILD = re.compile(r'[*?\[]')
 
@@ -90,8 +91,28 @@ def _open() -> list:
     """The temp folder, where a CLI keeps its scratchpad, and installed programs' folders - nobody's files: reading a library or a tool
     there is not reading the owner's things. Judged after the never-list: Taskuary's home in a temp folder is still Taskuary's."""
     rs = [tempfile.gettempdir(), sys.base_prefix, sys.prefix, *(os.environ.get(v) for v in ('ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'SystemRoot'))]
+    # ...and a program installed for this user alone (%LOCALAPPDATA%\Programs - Python, VS Code, most per-user installers): the real-CLI walk,
+    # 2026-11-16 - an agent looking for its python (`ls .../AppData/Local/Programs/Python`) was held as a card asking him to let it read "Python"
+    if os.name == 'nt' and os.environ.get('LOCALAPPDATA'): rs.append(os.path.join(os.environ['LOCALAPPDATA'], 'Programs'))
     if os.name != 'nt': rs += ['/tmp', '/usr', '/bin', '/lib', '/opt', '/dev', '/proc', '/sys', '/System', '/Library', '/Applications']
+    # ...and A CLI'S OWN INSTRUCTIONS - the skills, plugins, agents and commands it loads to work (the owner's live task, 2026-11-17: a coding
+    # agent reading ~/.claude/skills/impeccable/reference/craft-floor.md stood as a card "Read craft-floor.md in reference"). Its sign-ins and
+    # settings in the same home stay on the never-list (floor.kept_secret), judged before this
+    from .climodels import claude_home, codex_home
+    rs += [Path(h) / d for h in (claude_home(), codex_home(), Path.home() / '.agents') for d in ('skills', 'plugins', 'agents', 'commands')]
     return [_n(r) for r in rs if r]
+
+
+def opened(store, tid, p: dict) -> bool:
+    """A held step that was only reads the gate lets through now (`p` a shell_act payload): never his to answer, so never drawn (the owner,
+    2026-11-17: "Read craft-floor.md in reference · Dismissed" stood after the CLI's own skills were opened - "it told you to get rid of it").
+    His own Approve is no opening here: a folder he let in stays his press, on its card."""
+    from . import floor, shellgate
+    if p.get('action') != 'shell_act' or not p.get('reads'): return False
+    cwd = p.get('cwd') or ''
+    if p.get('command') and shellgate.acts(p['command'], cwd): return False
+    ok, nev = own(store, tid, cwd) + _open(), [_n(x) for x in floor.kept_secret()]
+    return all(not any(_in(_n(f), r) for r in nev) and any(_in(_n(f), r) for r in ok) for f in p['reads'])
 
 
 def granted(store, tid) -> list:
@@ -112,16 +133,32 @@ def judge(store, tid, paths, cwd: str = '') -> tuple:
     held, blind = {}, False
     for raw in paths or []:
         if raw is None: blind = True; continue
-        p = _n(raw)
-        if any(_in(p, r) for r in mine) or fetched(p, cwd, sids): continue
-        if any(_in(p, r) for r in nev): return [], NEVER
+        p, pat = _n(_cut(raw)), _n(raw)
+        # ...a never-place is never the work's: only a work folder INSIDE it (the task's scratch, outputs, mail in Taskuary's home) lets a
+        # read there through - a checkout at the home folder does not open the sign-ins in it. A glob that can reach one is that one
+        sec = [r for r in nev if _in(p, r) or (pat != p and _reaches(pat, r))]
+        if any(_in(p, r) and (not sec or any(_in(r, n) for n in sec)) for r in mine) or (not sec and fetched(p, cwd, sids)): continue
+        if sec: return [], NEVER
         if any(_in(p, r) for r in ok): continue
-        p = os.path.realpath(os.path.expanduser(str(raw)))           # ...said as the owner's own spelling of it, never case-folded
+        p = os.path.realpath(os.path.expanduser(_cut(str(raw))))     # ...said as the owner's own spelling of it, never case-folded
         folder = p if os.path.isdir(p) else os.path.dirname(p)
         held.setdefault(folder, []).append('' if folder == p else os.path.basename(p))
     out = [{'tool': 'read', 'what': _said(f, ns), 'why': WHY, 'where': f, 'folder': f} for f, ns in held.items()]
     if blind: out.append({'tool': 'read', 'what': 'read files at a path it builds from a variable', 'why': WHY, 'where': '', 'folder': ''})
     return out, ''
+
+
+def _cut(p: str) -> str:
+    "A glob's path up to the folder it lists - the part that names a real place."
+    return re.split(r'[\\/](?=[^\\/]*' + _WILD.pattern + ')', str(p), maxsplit=1)[0]
+
+
+def _reaches(pat: str, root: str) -> bool:
+    """Can glob `pat` (normalised) match `root` or reach inside it? Matched name by name as a shell does: `*` takes no leading dot, so
+    `~/*` is not `~/.ssh`, while `~/.s*` is."""
+    import fnmatch
+    ps, rs = pat.split(os.sep), root.split(os.sep)
+    return len(ps) > 1 and all(fnmatch.fnmatchcase(r, q) and (q == r or not r.startswith('.') or q.startswith('.')) for r, q in zip(rs, ps))
 
 
 def _said(folder: str, names: list) -> str:
@@ -137,6 +174,7 @@ def _expand(t: str, cwd: str, env: dict) -> str | None:
         if v is None and n == 'home': v = os.path.expanduser('~')
         if v is None: raise KeyError(n)
         return v
+    if re.search(r'\$\{(?:env:)?\w+[^\w}]', t): return None          # `${HOME:-/x}` and its kin pick their value at run time: unread, held
     try: t = _VAR.sub(sub, t)
     except KeyError: return None
     return os.path.expanduser(t)
@@ -149,18 +187,28 @@ def _pathish(t: str) -> bool:
     return t.startswith('/') and (bool(re.match(r'^/[A-Za-z](?=/|$)', t)) if os.name == 'nt' else len(t) > 1)
 
 
+def _segments(cmd: str) -> list:
+    "The line cut where one command ends and another begins - a `${NAME}` kept whole."
+    out, cur = [''], 0
+    for m in _SPLIT.finditer(cmd):
+        out[-1] += cmd[cur:m.start()] + (m[1] or ''); cur = m.end()
+        if not m[1]: out.append('')
+    out[-1] += cmd[cur:]
+    return out
+
+
 def command_paths(cmd: str, cwd: str = '', env: dict = None) -> list:
     """Every path a shell line names as an argument, through `cd`, `bash -c "..."` and `--opt=value` - None for one built from a variable
     it cannot read. The program itself, options, URLs and switches (`/s`) are not paths."""
+    from .browsergate import words
     out, here, env = [], cwd, dict(env or {})
-    for seg in _SPLIT.split(str(cmd or '')):
+    for seg in _segments(str(cmd or '')):
         # ...a path kept in a variable is read where the variable is (`$p='C:/x.csv'; Get-Content $p` - the real-CLI walk, 2026-11-16)
         if (m := re.match(r'^\s*\$?([A-Za-z_]\w*)\s*=\s*([^=].*)$', seg)):
             v = m[2].strip().strip('"\'')
             env[m[1].lower()] = v
             seg = f'= {v}'
-        try: w =[x.strip('"\'') for x in shlex.split(seg, posix=False)]
-        except ValueError: w = [x.strip('"\'') for x in seg.split()]
+        w = words(seg)
         while w and (re.match(r'^[A-Za-z_]\w*=', w[0]) or w[0].lower() in ('&', 'sudo', 'time', 'nohup', 'command', 'exec', 'call', 'then', 'do', 'if', 'else')): w = w[1:]
         if not w: continue
         tool = re.sub(r'\.(exe|cmd|ps1|bat)$', '', os.path.basename(w[0].replace('\\', '/')).lower())
@@ -173,17 +221,21 @@ def command_paths(cmd: str, cwd: str = '', env: dict = None) -> list:
             x = re.sub(r'^\d?[<>]+&?', '', x)
             if x.startswith('-'): x = x.split('=', 1)[1] if '=' in x else ''
             if (v := _VAR.fullmatch(x)) and (v[1] or v[2]).lower() in env: x = env[(v[1] or v[2]).lower()]
-            if not x or '://' in x or re.match(r'^/\w$', x) or re.match(r'^(/dev/|\d$)', x) or not _pathish(x): continue
+            # ...after a `cd` away, a plain name that is there is read there (`cd ~ && cat .ssh/x`)
+            near = here != cwd and here and x and not x.startswith('-') and os.path.exists(os.path.join(here, x))
+            if not x or '://' in x or re.match(r'^/\w$', x) or re.match(r'^(/dev/|\d$)', x) or not (near or _pathish(x)): continue
             e = _expand(x, here, env)
             if e is None: out.append(None); continue
             e = re.sub(r'^/([A-Za-z])(?=/|$)', r'\1:', e) if os.name == 'nt' else e
             if not os.path.isabs(e): e = os.path.join(here or os.getcwd(), e)
-            e = re.split(r'[\\/](?=[^\\/]*' + _WILD.pattern + ')', e, maxsplit=1)[0]     # a glob reads the folder it lists
-            # ...a rooted token whose first folder does not exist is a pattern or an API path, not a file (`grep /api/ x`)
-            parts = Path(e).parts
+            # ...a rooted token whose first folder does not exist is a pattern or an API path, not a file (`grep /api/ x`). A glob stays
+            # whole: judge reads the folder it lists, and whether it can reach a sign-in place
+            parts = Path(_cut(e)).parts
             if len(parts) > 1 and not os.path.exists(os.path.join(parts[0], parts[1])): continue
-            if cd: here = e; break
+            if cd: here = _cut(e); break
             out.append(e)
+        else:
+            if cd and len(w) == 1: here = os.path.expanduser('~')          # a bare `cd` goes home
         # ...a step that names no path reads where the line has moved to: `cd ~/Documents && ls`
         if not cd and len(out) == named and here != cwd: out.append(here)
     return out
@@ -198,7 +250,7 @@ def tool_paths(inp: dict, locations=None, cwd: str = '') -> list:
     for p in ps:
         p = os.path.expanduser(p)
         if not os.path.isabs(p): p = os.path.join(cwd or os.getcwd(), p)
-        out.append(re.split(r'[\\/](?=[^\\/]*' + _WILD.pattern + ')', p, maxsplit=1)[0])
+        out.append(p)
     return out
 
 

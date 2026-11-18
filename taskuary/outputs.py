@@ -55,21 +55,39 @@ _DRIVE = re.compile(r'^[A-Za-z]:|^[\\/]{2}')
 # A FILE THE OWNER ATTACHES IN THE CHAT IS THE TASK'S (the owner, 2026-11-09): a PDF dropped in the box stayed under attachments/prompt/, and
 # sign_form and the propose tools - which take a file in the task folder only - refused it, so the agent had to copy it over first
 _STAMPED = re.compile(r'^\d{8}-\d{6}-[0-9a-f]{6}-')       # the upload's own prefix (server.prompt_file), not the owner's name for it
+# ...AND ONLY WHAT HE UPLOADED IS HIS FILE (the attach stress round, 2026-11-18): any other path a request names - Taskuary's own config with
+# its tokens - went to the agent as "read these files", and to an API brain as a picture; one already in the task's folder is his already
 def take_in(tid: int, paths) -> list:
-    "`paths` as files in task `tid`'s folder: each one this server saved under attachments/ copied in under its own name; the rest as given."
+    "`paths` as files in task `tid`'s folder: each one this server saved under attachments/ copied in under its own name; one there already kept; no other."
     root, out = (config.home() / 'attachments').resolve(), []
     for raw in paths or []:
         try:
             p = Path(str(raw)).resolve()
-            if not (p.is_file() and p.is_relative_to(root)): out.append(raw); continue
+            if not p.is_file(): continue
+            if p.parent == folder(tid).resolve(): out.append(str(p)); continue
+            if not p.is_relative_to(root): continue
             d = folder(tid); d.mkdir(parents=True, exist_ok=True)
             stem, ext = Path(_STAMPED.sub('', p.name) or p.name).stem, p.suffix
             q = next(d / f'{stem}{f"-{i}" if i else ""}{ext}' for i in range(1000) if not (d / f'{stem}{f"-{i}" if i else ""}{ext}').exists()
                      or (d / f'{stem}{f"-{i}" if i else ""}{ext}').read_bytes() == p.read_bytes())
             if not q.exists(): shutil.copyfile(p, q)
             out.append(str(q))
-        except (OSError, ValueError, StopIteration): out.append(raw)
-    return out
+        except (OSError, ValueError, StopIteration): continue
+    return list(dict.fromkeys(out))
+
+
+def take_in_text(tid: int, text: str) -> str:
+    "`text` with every file this server saved under attachments/ that it names copied into task `tid`'s folder and named there (take_in)."
+    if not text: return text
+    root = str((config.home() / 'attachments').resolve())
+    return re.sub(re.escape(root) + r'[^\r\n]*', lambda m: (take_in(tid, [m.group(0)]) or [m.group(0)])[0], str(text), flags=re.I)
+
+
+def take_in_summary(store, tid: int, actor: str) -> str:
+    "Task `tid`'s Summary with every file it names that this server saved taken into its folder (take_in_text) - kept, and returned."
+    s = str((store.get_task(tid) or {}).get('Summary') or '')
+    if (s2 := take_in_text(tid, s)) != s: store.update_task(tid, {'Summary': s2}, actor)
+    return s2
 
 
 def resolve(tid: int, rel: str, base: Path = None):
@@ -183,6 +201,23 @@ def on_cards(store, tid: int) -> set:
     return out
 
 
+# ...NOR A FILE HE SENT (the attach stress round, 2026-11-18): what he attaches is copied in here (take_in), and his picture stood under the answer
+# of the turn at work when he sent it, as the thing it made - until an agent writes it again, it is his
+def sent(store, tid: int) -> set:
+    "The files of task `tid`'s folder that a line of his sent, as he sent them: {path in the folder}. One written since is the agent's."
+    from . import general
+    from .conversation import ep
+    base, out = folder(tid).resolve(), set()
+    for c in store.list_comments(int(tid), internal=True):
+        if c.get('ActorType') not in (general.WAITING_TYPE, general.USER_TYPE) or general.is_brief(c): continue
+        for f in general.his_line(c)['files']:
+            try:
+                p = Path(f).resolve()
+                if p.is_relative_to(base) and p.is_file() and p.stat().st_mtime <= ep(c['CreatedAt']) + 2: out.add(p.relative_to(base).as_posix())
+            except (OSError, ValueError): continue
+    return out
+
+
 def turns_made(tid: int) -> list:
     "[(turn, [what keep_turn kept])], oldest turn first - [] for a task none kept."
     base, out = turns_folder(tid), []
@@ -215,6 +250,26 @@ def turn_versions(tid: int) -> list:
                 out.append({**row(tid, c, k['path']), **mine, 'url': f"/api/task-outputs/{int(tid)}/{quote(k['path'])}?turn={turn}"})
             elif cur: out.append({**cur, **mine, 'later': True, 'note': 'Changed later - this opens its newest version.'})
     return out
+
+
+def his(store, tid: int) -> set:
+    """The files in task `tid`'s folder the owner attached, as he attached them: what a line of his sent (sent), and what the task's own
+    words name (New's ask, general.split_files) - one written since is the agent's."""
+    from . import general
+    from .conversation import ep
+    t, out = store.get_task(tid) or {}, sent(store, tid)
+    for f in general.split_files(t.get('Summary'))['files']:
+        try:
+            q = folder(tid) / rel(tid, Path(f))
+            if q.is_file() and q.stat().st_mtime <= ep(t.get('CreatedAt')) + 2: out.add(rel(tid, Path(f)))
+        except (OSError, ValueError): continue
+    return out
+
+
+def made(store, tid: int) -> list:
+    "listing(tid) without what the owner attached (his) - unless a turn wrote it since (made_by): the files the work made."
+    mine, wrote = his(store, tid), made_by(tid)
+    return [r for r in listing(tid) if r['path'] not in mine or r['path'] in wrote]
 
 
 def listing(tid: int) -> list:
@@ -394,8 +449,30 @@ def previewed(p: Path, name: str = '', sheet_name: str = '') -> dict:
     from . import attachtext
     how = PREVIEW.get(Path(name or p.name).suffix.lower())
     if how not in ('sheet', 'document'): raise ValueError(how)
-    key = f'preview-{hashlib.sha256(p.read_bytes()).hexdigest()}-{how}-{sheet_name}-v{PREVIEW_VERSION}'
-    return attachtext.cached(key, lambda: document(p) if how == 'document' else sheet(p, sheet_name))
+    def read():
+        key = f'preview-{hashlib.sha256(p.read_bytes()).hexdigest()}-{how}-{sheet_name}-v{PREVIEW_VERSION}'
+        return attachtext.cached(key, lambda: document(p) if how == 'document' else sheet(p, sheet_name))
+    try: return read()
+    except Exception:
+        # ...A FILE ITS AGENT STILL WRITES (the owner's live task, 2026-11-17: a card asked the second the workbook was being saved, read half a
+        # zip and said "could not be read" over a file that was whole a moment later): one that changed just now is waited on until it stops
+        # changing, then read once more; one that is not changing is broken, said at once
+        if not settled(p): raise
+        return read()
+
+
+SETTLE = 20
+def settled(p: Path, wait: float = SETTLE) -> bool:
+    "True once a file that changed in the last `wait` seconds has stood still for a second; False at once for one not being written."
+    import time
+    def stamp(): st = p.stat(); return st.st_size, st.st_mtime_ns
+    if time.time() - p.stat().st_mtime > wait: return False
+    end, last = time.monotonic() + wait, stamp()
+    while time.monotonic() < end:
+        time.sleep(0.5)
+        if (now := stamp()) == last and time.time() - p.stat().st_mtime >= 1: return True
+        last = now
+    return False
 
 
 def brief(tid: int) -> str:

@@ -104,9 +104,11 @@ def resolution_text(rep: dict) -> str:
 
 
 def from_owner(store, m: dict, own: set = None) -> bool:
-    """Did the owner write this row - mail from one of their own addresses (ingest.own_addresses)? Nobody else is behind it."""
+    """Did the owner write this row - mail from one of their own addresses (ingest.own_addresses), or his ask from the New box (outbox.is_ask,
+    2026-11-17)? Nobody else is behind it."""
     from .ingest import own_addresses
-    return str((m or {}).get('FromEmail') or '').strip().lower() in (own if own is not None else own_addresses(store)) - {''}
+    from .outbox import is_ask
+    return is_ask(m) or str((m or {}).get('FromEmail') or '').strip().lower() in (own if own is not None else own_addresses(store)) - {''}
 
 
 def reply_target(store, task_id: int):
@@ -267,8 +269,11 @@ def left_by(store, rid):
 def _turn_after(store, task_id: int, rv) -> bool:
     """Has a turn begun on the task since draft `rv` was written - the owner's line or a brief after it? Only a written draft counts.
     ...his line still KEPT for the turn counts too (general.WAITING_TYPE): a coding turn files its letter before its record takes the line it
-    was given (waitroom._handed), and the old draft was rewritten in place under his line (the overnight audit, 2026-11-10)"""
+    was given (waitroom._handed), and the old draft was rewritten in place under his line (the overnight audit, 2026-11-10)
+    ...and his Send on it that did not go is his answer to it too: rewritten in place, the words he pressed Send on were gone under a card
+    still reading the failure (the stress round, 2026-11-18) - it stays his record, greyed, and the agent's letter is a new card"""
     from .general import USER_TYPE, WAITING_TYPE
+    if rv.get('DeliveryState') == 'failed': return True
     return bool(str(rv.get('DraftText') or '').strip()) and bool(store._one(
         'SELECT 1 AS x FROM comment WHERE TaskId=? AND ActorType IN (?,?) AND CreatedAt>? LIMIT 1', (task_id, USER_TYPE, WAITING_TYPE, str(rv.get('CreatedAt') or ''))))
 def an_earlier_turns(store, rv) -> bool:
@@ -456,7 +461,8 @@ def agent_reply(store, task_id: int, text: str, agent: str = 'agent', run_id: in
     # ...and who else hears it: `only` is the sender alone, so it copies nobody; an address the thread never had is said on the card
     ccs = _addrs(cc)
     if only and ccs: return {'ok': False, 'why': '--only sends it to that one person - leave --cc out, or drop --only to copy others'}
-    bad = [a for a in ccs or [] if not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', a)]
+    from .slots import is_address
+    bad = [a for a in ccs or [] if not is_address(a)]
     if bad: return {'ok': False, 'why': f"{', '.join(bad)} is not an email address - nothing was saved"}
     new = [a for a in ccs or [] if a not in on_thread(store, task_id)]
     # work the owner started here (a brief typed in the chat) has only their own words behind it: the agent's
@@ -496,6 +502,12 @@ def agent_reply(store, task_id: int, text: str, agent: str = 'agent', run_id: in
     # greys it for good, so a letter filed after his line - the same words kept, too - is this turn's new card, the old one its record
     if live and (an_earlier_turns(store, live) and _words(live.get('DraftText')) != _words(text) or _turn_after(store, task_id, live)):
         store.decide_review(live['ReviewId'], 'closed_unsent', None, agent, note=REPLACED); live = None
+    # ...AND THE OWNER'S HAND ON IT MAKES IT HIS (OWNER_SID): a new letter is never written over his edit or his readdress - his version is
+    # closed as replaced, kept under Not sent, the new card goes to whom he chose, and the agent is told what he had left there
+    mine = next((r for r in (held, live) if r and r.get('DraftSid') == OWNER_SID and _words(r.get('DraftText')) != _words(text)), None)
+    if mine:
+        store.decide_review(mine['ReviewId'], 'closed_unsent', None, agent, note=REPLACED)
+        held, live = ({} if mine is held else held), (None if mine is live else live)
     why = f'{agent} wrote this reply in its session - approve to send'
     if sent:
         from .continuity import clock
@@ -528,6 +540,8 @@ def agent_reply(store, task_id: int, text: str, agent: str = 'agent', run_id: in
         if (env := reply_envelope(store, m, 'reply_to' if only else 'reply_all')):
             if ccs is not None: env = {**env, 'cc': [a for a in ccs if a not in env['to']]}
             store.set_review_envelope(rid, env)
+    if mine and not (str(to or '').strip() or answers or only or ccs is not None) and (his := store.review_envelope(mine['ReviewId'])):
+        store.set_review_envelope(rid, his)
     from .signatures import agent_signed, for_review
     wrote = str(text or '').strip()
     text = agent_signed(store, store.get_review(rid) or rv, text, m) or text
@@ -552,6 +566,7 @@ def agent_reply(store, task_id: int, text: str, agent: str = 'agent', run_id: in
     meanwhile = [' '.join(str(x.get('OwnText') or x.get('BodyText') or '').split())[:300] for x in own_replies(store, task_id, turn)] if turn else []
     return {'ok': True, 'review_id': rid, 'message_id': mid, 'answers': ans or mid, 'to': m.get('FromName') or m.get('FromEmail') or '', **ends,
             **({'owner_wrote_on_the_thread_while_you_worked': meanwhile} if meanwhile else {}),
+            **({'replaced_the_owners_version': str(mine.get('DraftText') or '')} if mine else {}),
             **({'recipients': {'to': env.get('to') or [], 'cc': env.get('cc') or []}} if env else {}),
             **({'new_on_thread': new} if new else {}),
             **({'people': many} if len(many) > 1 else {}), **_told(store, rid, attach_files(store, rid, files, agent))}

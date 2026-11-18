@@ -76,6 +76,7 @@ def lane_word(item: dict) -> str:
     on the rail. A coding task keeps its own."""
     it = item or {}
     if it.get('chat_done'): return lanes.word('chat_done')
+    if it.get('hold'): return lanes.word('held')                 # a new sender's held row (processing_unread, 2026-11-17)
     if it.get('chat') and it.get('lane') in CHAT_READY_LANES: return lanes.word('chat_ready')
     return lanes.word('owed') if owed_no_draft(item) else (LANE_WORDS.get(str(it.get('lane') or '')) or ('',))[0]
 
@@ -84,6 +85,7 @@ def mark_for(item: dict) -> str:
     """The one emoji that identifies a row: its kind's when that says more than its lane's."""
     if not item: return ''
     if owed_no_draft(item): return KIND_MARKS['owed']
+    if item.get('hold'): return lanes.MARK['held']
     return KIND_MARKS.get(str(item.get('kind') or '')) or LANE_MARKS.get(str(item.get('lane') or ''), '')
 ALERT_MIN, STARTED_MIN = lanes.ALERT_MIN, 5   # when a meeting comes onto the rail and rings (lanes.json `urgent`); grace after the start
 SETUP_GRACE_MIN = 15              # a walk-through the owner is still in does not raise its own hand
@@ -348,7 +350,7 @@ def from_feed(store, rows: list, *, canonical=False) -> list:
                              why='an agent proposed an action - it runs only if you say so' if action
                                  # ...a draft its channel cannot send says what the task's chip says (lanes.json `unsendable`, decided 2026-11-12)
                                  else (('a reply is drafted for you to send' if capabilities.can_send_draft(store, r['ReviewId']) else lanes.hint('unsendable'))
-                                       if r.get('HasDraft') else 'a reply is owed - draft it with AI or write it'),
+                                       if r.get('HasDraft') else 'a reply is owed - no draft yet'),   # the agent drafts on arrival, never a chore for him (2026-11-17)
                              draft=bool(r.get('HasDraft')), summary=agent_found(store, r.get('TaskId')),
                              stale=stale,
                              sig=hashlib.sha1(str(rv.get('DraftText') or '').encode()).hexdigest()[:10],   # the draft's fingerprint: a rewrite is news
@@ -586,11 +588,21 @@ def run_failed(store, tid, live_too: bool = False, st=None) -> dict | None:
     plain words (failures.classify) and the place that fixes it - Connect an AI for an agent with no AI to run on - else None.
     `st`: the task's record (taskstate.TaskState), when the caller holds it - its ending is read there."""
     from . import workerstate
-    from .failures import classify
     # live_too: whatever the session does (R2)
     if (workerstate.ended(store, tid, live_too) if st is None or live_too else st.end) != 'failed': return None
     last = (st.last(('failed',)) if st else store.last_worker_event(tid, kinds=('failed',))) or {}
-    c = classify(' '.join(str(last.get('Text') or '').split()) or 'it stopped without saying why', tid=tid)
+    return failure(last.get('Text'), tid)
+
+
+def failure_of(ev: dict, tid=None) -> dict:
+    "A `failed` worker event in plain words: {sentence, fix} - the one reading run_failed and the chat's failed turn share."
+    return failure((ev or {}).get('Text'), tid)
+
+
+def failure(text, tid=None) -> dict:
+    "{sentence, fix} of a run's failure, from the words it failed with - what run_failed says, and what a failed turn keeps (general.file_turn)."
+    from .failures import classify
+    c = classify(' '.join(str(text or '').split()) or 'it stopped without saying why', tid=tid)
     return {'sentence': _sentence(c['sentence']), 'fix': c['fix']}
 
 def _story_i18n(source, **values):
@@ -620,18 +632,6 @@ def timed_out(store, tid, st=None) -> str:
     ok = (last and last['Kind'] == 'stopped' and last.get('Source') == general.TIMED_OUT
           and (workerstate.ended(store, tid) if st is None else st.end) == 'stopped')
     return str(last.get('Text') or '') if ok else ''
-
-
-def held_offer(store, tid, msgs=None) -> dict | None:
-    """THE HOLD'S PRESSES, one function for every surface that draws them (the held box, the chat's HeldStart, the phone): the Trust presses
-    worded for the channel (senders.trust_offer), and `once` - whether Run anyway can start it. A hold that is a start REFUSED for a
-    stranger's words (ingest.held_start) offers no Run anyway: on the same AI it is refused again, and a press that cannot work is not
-    shown (the owner's rules, part 3: tell the truth; the recorded walk, 2026-11-10)."""
-    from .ingest import REFUSED
-    from .senders import trust_offer
-    if (offer := trust_offer(store, tid, msgs)) is None: return None
-    last = next((a['Action'] for a in store.list_audit('task', tid, 50) if a.get('Action') in (REFUSED, 'release', 'release_once')), None)
-    return {**offer, 'once': last != REFUSED}
 
 
 def idle_state(store, tid, st=None) -> dict:
@@ -721,6 +721,10 @@ def idle_state(store, tid, st=None) -> dict:
     # a parked one fell through every fact below to "Not started yet" - and NOT "LEFT" EITHER (the audit, 2026-11-10): a coding session parked
     # over its reply read "ran on this and left without finishing it" off the transcript an earlier session of it filed
     if (live := live_session_state(tid, agent)): return out('live', *live, line_i18n=_story_i18n(live[0]))
+    # A routine can be running without an agent session or run row.
+    from . import workflows
+    if workflows.at_work(tid): return out('live', 'Its routine is running its steps.', 'working',
+                                        line_i18n=_story_i18n('Its routine is running its steps.'))
     # ...NOR ONE THAT IDLED OUT AT REST (recorded on the real CLI, 2026-11-16: a coding agent answered, its session closed quietly, and its chat
     # ended "ran on this and left without finishing it" under the answer): it waits on you as it did live (taskstate.left reads the close)
     from . import workerstate
@@ -767,7 +771,7 @@ def idle_state(store, tid, st=None) -> dict:
         # ...and so is one the owner vouched for on this very task (Trust them, the Trust buttons below): a mail sender's say-so is the
         # task's TrustedThrough, not a remembered person, and the box went on asking for the press it had just had
         if str(msg.get('Channel') or '') != 'github' and 'no agent starts on' in said:
-            from . import origin
+            from . import origin, senders
             if msg['MessageId'] <= int(t.get('TrustedThrough') or 0) or origin.of_message(store, msg)[0] == 'trusted':
                 origin.of_task(store, tid); lifted = True; continue
             # THE HOLD OFFERS ITS WAY OUT (the owner, 2026-10-26: "we should have button on untrusted user to either trust user or trust
@@ -780,6 +784,7 @@ def idle_state(store, tid, st=None) -> dict:
     # ...and a start refused for a stranger's words since (ingest.held_start) is that same hold, its Trust presses with it - never "couldn't
     # start" over a Trust nowhere to press (the owner, 2026-11-10: "this is also weird bug?")
     from .ingest import HOLD_TAG, NOT_STARTED
+    from . import senders
     refused = lambda: next((_cap(_sentence(str(c['Body'])[len(NOT_STARTED):])) for c in reversed(store.list_comments(tid) or [])
                             if str(c.get('Body') or '').startswith(NOT_STARTED)), '')
     if HOLD_TAG in st.tags and (said := refused()):
@@ -794,8 +799,18 @@ def idle_state(store, tid, st=None) -> dict:
                           'not started yet', line_i18n=_idle_i18n('Not started yet. The sender is trusted now - start {agent} when you want it; what was held never starts by itself.', agent, old))
     # ...and ANY START REFUSED ON ITS WAY IN says its reason here, as the log line that refused it did (ingest.not_started): a reply owed held
     # by the day's ceiling, a switch or no AI read "Nothing has started the agent on this" in the box while the line under it said why
-    if not st.runs and not st.events and (said := refused()): return out('held', f'Waiting for you. {said}' + old, 'held for you - not started',
-                                 line_i18n=_story_i18n('Waiting for you. {reason}', reason=_story_i18n(said)))
+    if not st.runs and not st.events and (said := refused()):
+        # Re-evaluate the intake gate; a cleared hold still needs the owner's Start.
+        from . import ingest
+        own = 'coding' if t.get('Kind') == 'coding' else 'general'
+        gate = next((k for k in (own, *({'coding', 'general'} - {own})) if ingest.gated(said, k)), '')
+        if gate and (now := ingest.gate_why(store, gate)) != said:
+            if not now: return out('idle', f'Not started yet. What held it when it came in has cleared - start {agent} when you want it; '
+                                            'it does not start by itself.' + old, 'not started yet',
+                                   line_i18n=_idle_i18n('Not started yet. What held it when it came in has cleared - start {agent} when you want it; it does not start by itself.', agent, old))
+            said = now
+        return out('held', f'Waiting for you. {said}' + old, 'held for you - not started',
+                   line_i18n=_story_i18n('Waiting for you. {reason}', reason=_story_i18n(said)))
     return out('idle', f'Not started yet. Nothing has started {agent} on this.' + old, 'not started yet',
                line_i18n=_idle_i18n('Not started yet. Nothing has started {agent} on this.', agent, old))
 
@@ -1079,6 +1094,10 @@ def from_agents(store, live_state=_LIVE_UNSET, now: datetime = None) -> list:
         if task.get('SourceRef') == 'assistant:setup' and _ts(t.get('started')) >= fresh_setup: continue
         waiting = t.get('waiting') if t.get('waiting') is not None else (t.get('idle') or 0) >= term.IDLE_WAITING
         if not waiting: continue
+        # ...A CHAT SESSION THAT NEVER RAN A TURN IS NO AGENT ROW (2026-11-17: a held task's, its first turn refused for the hold, read "agent
+        # waiting on you"): the task's own row stands, as its state reads it (taskstate.never_ran)
+        from . import taskstate
+        if taskstate.never_ran(store, task, {**t, 'mode': t.get('mode') or 'terminal'}): continue
         tail = [str(x).strip() for x in (t.get('tail') or []) if str(x).strip()]
         # ...read off the RENDERED screen when there is one, with the TUI's chrome dropped: the
         # card showed a theme toolbar where the agent's question belonged (2026-09-03)
@@ -1105,7 +1124,6 @@ def from_agents(store, live_state=_LIVE_UNSET, now: datetime = None) -> list:
         # ...AN AGENT THAT ASKED NOTHING is done for now (the owner, 2026-11-07; after a Send too, 2026-11-06; a coding agent's as well,
         # 2026-11-10): its row said "Taskuary is waiting on you" - it is the task's wrap-up, "agent done", until something is typed again. A
         # reply or an email it drafted still waits on you. One reading with the task's own state (taskstate.done_for_now)
-        from . import taskstate
         if not asking and taskstate.done_for_now(store, task, {**t, 'mode': t.get('mode') or 'terminal'}):       # a row with no mode is a pane's, as below
             out.append(chat_done(store, task, t.get('started'))); continue
         out.append(_item(f"agent:{tid}", 'agent', 'blocked', task.get('Title') or f'task {tid}', who=agent, when=t.get('started'),

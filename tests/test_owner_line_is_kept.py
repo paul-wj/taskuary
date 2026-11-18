@@ -6,7 +6,7 @@ with the time the next turn took them. And a line held behind a turn that failed
 where the first line's road started again quietly. One road now: kept at once with its typed time, shown on every screen as waiting for the
 agent, taken together when the turn ends, and started again on a fresh session where the old one ended under it.
 """
-import json, threading, time, unittest
+import json, os, threading, time, unittest
 from unittest import mock
 
 from fastapi.testclient import TestClient
@@ -157,3 +157,209 @@ class OwnerLineIsKept(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# EVERY FILE HE ATTACHES REACHES THE AGENT, AND STAYS ON HIS LINE (the owner, 2026-11-17: "if you attach item on prompt it's not being sent to
+# agnet. Make sure all attachmetns work"): on a coding task the picture he attached stayed in Taskuary's own attachments folder, and the
+# agent's Read of it was refused as "Taskuary's own data"; and once a turn took his line its files were dropped, so his bubble drew the words
+# alone. Every door copies what he attached into the task's own folder first, and his line keeps its files once heard
+class AttachedFilesReachTheAgent(unittest.TestCase):
+    def setUp(self):
+        from taskuary import config
+        self.s = MemoryStore()
+        self.d = config.home() / 'attachments' / 'prompt' / '209901'; self.d.mkdir(parents=True, exist_ok=True)
+        self.pic = self.d / '20991231-235959-abc123-the person.png'; self.pic.write_bytes(b'\x89PNG fake')
+        self.addCleanup(self.pic.unlink, missing_ok=True)
+        p = mock.patch.object(server, 'store', self.s); p.start(); self.addCleanup(p.stop)
+        import shutil
+        from taskuary import outputs
+        shutil.rmtree(outputs.folder(1), ignore_errors=True)          # ...each store's first task is TQ-0001: no file of another test's in its folder
+
+    def inside(self, tid, path):
+        from taskuary import outputs
+        return str(path).startswith(str(outputs.folder(tid)))
+
+    def test_a_coding_tasks_line_hands_over_a_file_in_its_own_folder(self):
+        from taskuary import waitroom
+        tid = self.s.create_task({'Title': 'Check the Relias account', 'Kind': 'coding', 'Status': 'in_progress'}, 'o')
+        with mock.patch.object(waitroom, 'deliver', return_value={'delivered': 0, 'state': 'working'}):
+            general.take_line(self.s, tid, 'it was this person', [str(self.pic)], 'owner')
+        files = general.waiting_lines(self.s, tid)[0]['files']
+        self.assertEqual(len(files), 1); self.assertTrue(self.inside(tid, files[0]), files)
+
+    def test_a_heard_line_keeps_its_files_in_the_chat(self):
+        from taskuary import conversation
+        tid = self.s.create_task({'Title': 'Check the Relias account', 'Kind': 'general', 'Status': 'in_progress'}, 'o')
+        general.wait_line(self.s, tid, 'it was this person', [str(self.pic)])
+        general.take_kept(self.s, tid)
+        line = next(x for x in conversation.items(self.s, tid)['items'] if x['kind'] == 'line')
+        self.assertEqual((line['text'], line['files']), ('it was this person', [str(self.pic)]))
+
+    def test_a_task_new_makes_with_a_file_names_it_in_its_own_folder(self):
+        c = TestClient(server.app)
+        tid = c.post('/api/tasks', json={'Title': 'Who is this', 'Summary': f'Who is this?\n\nATTACHED IMAGES (read these files)\n{self.pic}'}).json()['taskId']
+        summary = self.s.get_task(tid)['Summary']
+        self.assertNotIn(str(self.pic), summary)
+        from taskuary import outputs
+        self.assertIn(str(outputs.folder(tid)), summary)
+
+    # ...AND A CARD HIS LINE GREYED SAYS HIS WORDS, NEVER THE FILE BLOCK (the attach stress round, 2026-11-18): once heard, his line's body is the
+    # words and the block (with_files), and the greyed card's sentence read it as JSON - the block's path ran into "you wrote ... after it",
+    # a line of the file alone read as the path, and a heard "42" (JSON, but no line) threw, taking the whole chat's payload with it
+    def heard_card(self, text, files=()):
+        from taskuary import conversation, proposals
+        tid = self.s.create_task({'Title': 'Price site two', 'Kind': 'general', 'Status': 'in_progress'}, 'o')
+        rid = self.s.add_review({'TaskId': tid, 'Kind': 'action', 'Status': 'pending', 'Reason': 'close the issue', 'DraftText': json.dumps({'action': 'close_issue'})})
+        self.s._exec("UPDATE review SET CreatedAt='2026-11-16 09:00:00' WHERE ReviewId=?", (rid,))
+        general.wait_line(self.s, tid, text, list(files), line_id='l-1')
+        general.take_kept(self.s, tid)
+        self.assertEqual(general.split_files(self.s.list_comments(tid, internal=True)[-1]['Body'])['files'], list(files))
+        return tid, proposals.passed_why(self.s, self.s.get_review(rid))
+
+    def test_a_card_his_line_with_a_file_greyed_says_his_words(self):
+        self.assertEqual(self.heard_card('it was this person', [str(self.pic)])[1], 'Not sent - you wrote "it was this person · the person.png" after it')
+
+    def test_a_card_a_file_alone_greyed_names_the_file(self):
+        why = self.heard_card('', [str(self.pic)])[1]
+        self.assertNotIn('ATTACHED', why); self.assertNotIn(str(self.d), why)
+        self.assertEqual(why, 'Not sent - you wrote "the person.png" after it')
+
+    def test_a_heard_line_that_reads_as_json_never_breaks_the_chat(self):
+        from taskuary import conversation
+        tid, why = self.heard_card('42')
+        self.assertEqual(why, 'Not sent - you wrote "42" after it')
+        self.assertTrue(conversation.items(self.s, tid)['items'])
+
+    # ...AND ONLY A FILE HE UPLOADED IS HIS FILE (the attach stress round, 2026-11-18): the chat's box handed the agent whatever path the request
+    # named - Taskuary's own config, with its tokens, read "ATTACHED FILES (read these files)" on his line and in the turn - where Continue's door
+    # names only what this server saved under attachments/ (server.prompt_images). One rule, where every door's line goes (take_line)
+    def test_a_line_names_only_the_files_this_server_saved(self):
+        from taskuary import config, conversation, waitroom
+        tid = self.s.create_task({'Title': 'Who is this', 'Kind': 'coding', 'Status': 'in_progress'}, 'o')
+        # ...a file of Taskuary's own home - never its config.toml, which every later test reads (made here, it held one line, was cached
+        # as the whole config, and every test after it in CI's shard read no AI connected and an out-of-date token)
+        own = config.home() / 'kept-by-taskuary.txt'; own.write_text('token = "x"'); self.addCleanup(own.unlink, missing_ok=True)
+        with mock.patch.object(waitroom, 'deliver', return_value={'delivered': 0, 'state': 'working'}):
+            general.take_line(self.s, tid, 'look at these', [str(own), str(self.pic)], 'owner')
+            with self.assertRaises(ValueError): general.take_line(self.s, tid, '', [str(own)], 'owner')    # ...nothing left to send: said, never an empty line
+        [w] = general.waiting_lines(self.s, tid)
+        self.assertEqual([os.path.basename(p) for p in w['files']], ['the person.png'])
+        self.assertTrue(self.inside(tid, w['files'][0]))
+
+    # ...AND WHAT HE SENT IS NEVER DRAWN AS WHAT THE AGENT MADE (the attach stress round, 2026-11-18, recorded): his file is copied into the
+    # task's folder, and every file there is listed as the agent's work - his picture stood under the answer of the turn at work when he sent
+    # it, a preview card with Download, though that turn never read it. A file on a line of his is his until an agent writes it again
+    def test_a_file_he_sent_is_not_listed_as_the_agents_work_until_it_writes_it(self):
+        import os
+        from taskuary import outputs
+        tid = self.s.create_task({'Title': 'Who is this', 'Kind': 'general', 'Status': 'in_progress'}, 'o')
+        general.wait_line(self.s, tid, 'and this one', outputs.take_in(tid, [str(self.pic)]), line_id='l-1')
+        general.take_kept(self.s, tid)
+        self.s.add_comment(tid, 'assistant', general.ASSISTANT_TYPE, 'That is Gail Moreno at the offsite.')
+        made = lambda: [o['name'] for o in server._assistant_payload(tid)['outputs']]
+        self.assertEqual(made(), [])
+        mine = outputs.named(tid, 'the person.png'); later = time.time() + 30
+        os.utime(mine, (later, later))                                          # ...the agent wrote over it: now it is its work
+        self.assertEqual(made(), ['the person.png'])
+
+    # ...AND A LINE HE TAKES BACK TAKES ITS FILE BACK (the attach stress round, 2026-11-18): the trash dropped the line, and its copy stayed in the
+    # task's folder - where the agent works, and where the chat then listed it as the agent's own. One another line of his sent stays
+    def test_a_line_taken_back_takes_back_the_file_it_alone_sent(self):
+        from taskuary import outputs
+        tid = self.s.create_task({'Title': 'Who is this', 'Kind': 'general', 'Status': 'in_progress'}, 'o')
+        other = self.d / '20991231-235959-def456-the venue.png'; other.write_bytes(b'\x89PNG venue'); self.addCleanup(other.unlink, missing_ok=True)
+        general.wait_line(self.s, tid, 'this one', outputs.take_in(tid, [str(self.pic), str(other)]), line_id='l-1')
+        general.wait_line(self.s, tid, 'and again', outputs.take_in(tid, [str(other)]), line_id='l-2')
+        self.assertEqual(general.drop_line(self.s, tid, 'l-1'), {'ok': True})
+        self.assertEqual(sorted(o['name'] for o in outputs.listing(tid)), ['the venue.png'])
+        self.assertEqual(server._assistant_payload(tid)['outputs'], [])
+
+
+# A TASK MADE IN NEW WITH A FILE OPENS ITS CHAT WITH HIS WORDS AND THE FILE'S PILL (the stress round of New's attachments): its ask line is the
+# task's own Summary - his words, then the block naming the file - and it was drawn with no files at all, so the paths stood in his bubble as
+# text and no pill was drawn. The ask is read the way every other line of his is (general.split_files)
+class NewTasksAskKeepsItsFiles(unittest.TestCase):
+    def setUp(self):
+        from taskuary import config
+        self.s = MemoryStore()
+        self.d = config.home() / 'attachments' / 'prompt' / '209901'; self.d.mkdir(parents=True, exist_ok=True)
+        p = mock.patch.object(server, 'store', self.s); p.start(); self.addCleanup(p.stop)
+
+    def made(self, name, data, words='what does this say?'):
+        f = self.d / f'20991231-235959-abc123-{name}'; f.write_bytes(data); self.addCleanup(f.unlink, missing_ok=True)
+        c = TestClient(server.app)
+        tid = c.post('/api/tasks', json={'Title': words, 'Summary': general.with_files(words, [str(f)]), 'Kind': 'general'}).json()['taskId']
+        from taskuary import ownwork, conversation
+        ownwork.ensure(self.s, tid)
+        return tid, next(x for x in conversation.items(self.s, tid)['items'] if x['kind'] == 'line')
+
+    def test_each_kind_of_file_is_a_pill_on_the_ask_not_a_path_in_its_words(self):
+        from taskuary import outputs
+        for name, data in (('shot.png', b'\x89PNG fake'), ('q3 report.pdf', b'%PDF-1.4'), ('ledger.xlsx', b'PK\x03\x04'),
+                           ('rows.csv', b'a,b\n1,2\n'), ('memo.docx', b'PK\x03\x04')):
+            with self.subTest(name):
+                tid, line = self.made(name, data)
+                self.assertEqual(line['text'], 'what does this say?')
+                self.assertEqual(line['files'], [str(outputs.folder(tid) / name)])
+                self.assertTrue((outputs.folder(tid) / name).is_file())
+                from taskuary import ownwork
+                self.assertEqual(ownwork.row_for(self.s, tid)['BodyText'], 'what does this say?', 'his message in Came from is his words, no path')
+
+
+# ...AND SEND TO AGENT ON A REPORT, A DASHBOARD OR AN FYI IS THE SAME (the stress round, 2026-11-18): his words and the picture he put on the
+# box ride the dispatch's instruction, which never went through the task's folder - the agent was told the upload's path under Taskuary's own
+# attachments, and on a held sender's task the line waited with the files block spelled out as words, no pill
+class SendToAgentCarriesItsFiles(AttachedFilesReachTheAgent):
+    class Session:
+        quick, provider, model = False, 'Claude Code', ''
+        def __init__(self): self.said = []
+        def send_prompt(self, prompt, brief=False): self.said.append(prompt)
+        def info(self, tail=0): return {}
+
+    def send(self, mid, words):
+        from fastapi import BackgroundTasks
+        bg, ses = BackgroundTasks(), self.Session()
+        with mock.patch.object(general, 'start_session', return_value=ses), mock.patch('taskuary.ingest._reads_quick', return_value=False):
+            out = server.dispatch_message(mid, server.DispatchBody(kind='general', instruction=f'{words}\n\nATTACHED IMAGES (read these files)\n{self.pic}'), bg)
+            for t in bg.tasks: t.func(*t.args, **t.kwargs)
+        return out, ses.said
+
+    def test_a_report_sent_on_with_a_picture_names_it_in_the_tasks_folder(self):
+        mid = self.s.add_message({'ExternalId': 'r1', 'Channel': 'report', 'SourceName': 'Weekly AR aging', 'Subject': 'Weekly AR aging', 'BodyText': '| Payworth | 95 |'})
+        with mock.patch('taskuary.origin.hold', return_value=None):
+            out, said = self.send(mid, 'Is this invoice on it?')
+        self.assertEqual(len(said), 1, out)
+        self.assertNotIn(str(self.pic), said[0]); self.assertIn(str(outputs_folder(out['taskId'])), said[0])
+
+    def test_a_held_senders_fyi_keeps_his_line_with_its_files_as_files(self):
+        mid = self.s.add_message({'ExternalId': 'f1', 'Channel': 'email', 'FromEmail': 'billing@vendor.example', 'FromName': 'Trainly',
+                                  'Subject': 'Renewal notice', 'BodyText': 'Your plan renews on Dec 1.', 'Status': 'filed'})
+        with mock.patch('taskuary.origin.hold', return_value={'line': 'You have not trusted Trainly yet.'}):
+            out, said = self.send(mid, 'Is this invoice theirs?')
+        self.assertEqual((out['dispatch'], said), ('held', []))
+        line = general.waiting_lines(self.s, out['taskId'])[0]
+        self.assertEqual(line['text'], 'Is this invoice theirs?')
+        self.assertEqual(len(line['files']), 1); self.assertTrue(self.inside(out['taskId'], line['files'][0]), line['files'])
+
+    def test_an_fyi_handfuls_line_draws_his_words_and_the_agent_still_reads_the_other_lines(self):
+        """Send to agent on one line of an FYI handful: the page writes the handful's other lines under his words for the agent to read - his
+        bubble drew them, minted ids and all, as if he had typed them."""
+        from taskuary import conversation
+        mid = self.s.add_message({'ExternalId': 'f1', 'Channel': 'email', 'FromEmail': 'erin@northwind.example', 'FromName': 'Erin Blake',
+                                  'Subject': 'Office closed Friday', 'BodyText': 'The office is closed on Friday.', 'Status': 'filed'})
+        also = '\n\nTHE OTHER MESSAGES OF THIS LIST IT IS ABOUT (read each with read_message)\nm7 - Gail Moreno: Parking moves Monday'
+        with mock.patch('taskuary.origin.hold', return_value=None):
+            out, said = self.send(mid, f'Which of these change my week?{also}')
+        self.assertIn('m7 - Gail Moreno: Parking moves Monday', said[0])                            # ...the agent is told
+        self.s.add_comment(out['taskId'], 'owner', general.USER_TYPE, said[0])                     # ...and the turn keeps it as his line
+        line = next(x for x in conversation.items(self.s, out['taskId'])['items'] if x['kind'] == 'line')
+        self.assertEqual(line['text'], 'Which of these change my week?')
+        self.assertEqual(len(line['files']), 1)
+        # ...held for a sender not yet trusted, the same line by the box
+        general.wait_line(self.s, out['taskId'], f'And this one?{also}')
+        self.assertEqual([p['text'] for p in conversation.items(self.s, out['taskId'])['pending']], ['And this one?'])
+
+
+def outputs_folder(tid):
+    from taskuary import outputs
+    return outputs.folder(tid)

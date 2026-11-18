@@ -14,7 +14,7 @@ import { Md } from "./md.jsx";
 import { MicButton } from "./ui.jsx";
 import { MESSAGE } from "./kinds.js";
 import { keepUnsent, unsent } from "./unsent.js";
-import { AttachChip, AttachRow, IMAGE_ACCEPT, INLINE_CHIPS, fileChips, fileState, usePromptImages, withImages } from "./promptImages.jsx";
+import { AttachChip, AttachRow, IMAGE_ACCEPT, INLINE_CHIPS, fileChips, fileState, usePromptImages, useSendWhenUp, withImages } from "./promptImages.jsx";
 import { label as btn } from "./buttons.js";
 import { t } from "./i18n.js";
 import { useLocale } from "./LocaleProvider.jsx";
@@ -178,8 +178,9 @@ export const micInto = (put) => (t) => put((w) => (w.trim() ? `${w.trimEnd()} ${
 // is the job; `onSend` null: a box whose press is the form's own (RunForm's Start), so Enter adds nothing and no Send is drawn)
 export function PromptBox({ text, setText, pics, busy = false, onSend = null, placeholder, label = "", title, chips = null, inputRef = null, cannot = null,
   boxAttrs = {}, sendAttrs = {}, extra = null, sendOff = false, emptyOk = false, autoFocus = false }) {
-  const empty = !emptyOk && !(text.trim() || pics.imgs.length), any = !!(chips || pics.imgs.length || pics.busy || pics.err), go = () => onSend?.();
   useLocale();
+  const empty = !emptyOk && !(text.trim() || pics.imgs.length || pics.busy), any = !!(chips || pics.imgs.length || pics.busy || pics.err);
+  const { go, waiting } = useSendWhenUp(pics, () => onSend?.()), spin = busy || waiting;
   return <OneBox rootProps={{ "data-tq-prompt-box": "", onSubmit: (e) => { e.preventDefault(); go(); }, ...pics.drop, style: { flexShrink: 0, minWidth: 0 } }}
     onFiles={pics.add} accept={pics.files ? undefined : IMAGE_ACCEPT} attachBusy={pics.busy} attachTitle={pics.files ? t("Attach a file - or paste or drop one here") : t("Attach an image - or paste or drop one here")}
     chips={any ? <>{chips}{fileChips(pics, cannot)}{fileState(pics)}</> : null}
@@ -187,6 +188,6 @@ export function PromptBox({ text, setText, pics, busy = false, onSend = null, pl
       onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent?.isComposing) { e.preventDefault(); go(); } }}
       placeholder={placeholder} aria-label={label} />}
     onMic={micInto(setText)} extra={extra}
-    send={onSend && <button type="submit" className="tq-aui-send" {...sendAttrs} aria-label={label} title={title} disabled={busy || pics.busy || empty || sendOff}>
-      {busy ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : <SendIcon fontSize="small" />}</button>} />;
+    send={onSend && <button type="submit" className="tq-aui-send" {...sendAttrs} aria-label={label} title={title} disabled={spin || empty || sendOff}>
+      {spin ? <CircularProgress size={14} sx={{ color: "#fff" }} /> : <SendIcon fontSize="small" />}</button>} />;
 }

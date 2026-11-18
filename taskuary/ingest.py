@@ -168,6 +168,15 @@ _GH_WHO = {'FIRST_TIME_CONTRIBUTOR': 'a first-time contributor', 'FIRST_TIMER': 
 _GH_WHOM = {'off': 'nobody', 'team': 'the team', 'contributors': 'the team and past contributors'}
 
 
+# A CHANNEL THAT WAITS SAYS WHY ONE WAY, on every road a line takes - its arrival, a reply that needs an agent, a line on a task an agent had:
+# they read "It is from someone outside the repository, and ... only for the team", "items from GitHub wait for you to start them" and "the
+# channel waits for the owner" for one fact
+def channel_hold(store, msg: dict) -> str:
+    "Why an item of a channel that waits for the owner (`no_auto`) started no agent - a GitHub item says who wrote it and whom its repo trusts."
+    if msg.get('channel') == 'github': return gh_hold_why(store, msg)
+    return f'Items from {senders.channel_name(msg.get("channel")) or "this channel"} wait for you to start them.'
+
+
 def gh_hold_why(store, msg: dict) -> str:
     """Why a GitHub item did not start by itself, in words the card can show: WHO wrote it and whom the repo lets
     start an agent. "github items queue for you to promote" read as a queue that clears when a slot frees - and it
@@ -242,6 +251,29 @@ def danger(store, msg: dict, mid=None, verdict: dict = None) -> str:
     return ''
 
 
+# WHAT HOLDS EVERY START OF A KIND, the home's own facts and not the task's or its sender's: the day's ceiling, the owner's switch, no AI.
+# One function: the start asks it (auto_start_ok), and the box that says why a start was held asks it again (funnel.idle_state) - a held
+# line whose cause has cleared said "No AI is set up" after one was connected, "switched off" after it was switched on
+def gate_why(store, kind: str, own: bool = False) -> str:
+    "Why no `kind` agent may start by itself now, as the sentence the task says - '' when nothing of the home's holds it."
+    if not own and (held := brainroute.auto_held(store)): return held[0].upper() + held[1:] + '.'
+    if kind == 'coding': return '' if auto_code_enabled(store) else _off_line(kind)
+    if store.get_settings().get('general_auto_enabled', '1') != '1': return _off_line(kind)
+    from . import general
+    return '' if general.provider_options(store) else _no_ai_line()
+
+
+def _off_line(kind: str) -> str:
+    if kind == 'coding': return f"Starting the coding agent by itself is switched off in {words.name('coding')}."
+    return f"Starting an agent by itself is switched off in {words.name('agents')}."
+def _no_ai_line() -> str: return f"No AI is set up for an agent to run on yet ({words.name('ai')})."
+
+
+def gated(said: str, kind: str) -> bool:
+    "Is `said` (a held task's reason, as its box reads it) a sentence gate_why writes for `kind`? Our own sentences, matched as written."
+    return str(said).lower().startswith(brainroute.CEILING_HEAD.lower()) or said in (_off_line(kind), _no_ai_line())
+
+
 def auto_start_ok(store, msg: dict, mid: int, kind: str, own: bool = False) -> tuple:
     """May this task start ITS worker by itself? (ok, why-not). Both kinds start by default (owner,
     2026-09-05, PW-069): coding opens its CLI, general opens its assistant session, a personal `task`
@@ -249,19 +281,12 @@ def auto_start_ok(store, msg: dict, mid: int, kind: str, own: bool = False) -> t
     configured; and the stranger gate (senders.known) is last because it is the expensive one - a
     Sent Items search no task already staying on the Board should pay for. A hold is about the
     unattended start only: the task is still triaged, shown and dispatchable by hand."""
-    cfg = store.get_settings()
     said = senders._said
     # MAIL THAT TRIES TO STEER AN AI STARTS NOTHING BY ITSELF (the Advisor design rev 2, the owner's ruling 2026-10-28): what triage or
     # ranking read it as trying to make an AI do (message.Danger - the model's reading, never a word list) holds the start for the owner
     if not own and (d := danger(store, msg, mid)): return False, said(f'It reads as an attempt to steer an AI ({d}) - nothing starts until you press.')
-    if not own and (held := brainroute.auto_held(store)): return False, said(held[0].upper() + held[1:] + '.')
-    if kind == 'general':
-        if cfg.get('general_auto_enabled', '1') != '1': return False, said(f"Starting an agent by itself is switched off in {words.name('agents')}.")
-        from . import general
-        if not general.provider_options(store): return False, said(f"No AI is set up for an agent to run on yet ({words.name('ai')}).")
-    elif kind == 'coding':
-        if not auto_code_enabled(cfg): return False, said(f"Starting the coding agent by itself is switched off in {words.name('coding')}.")
-    else: return False, said('A person has to do this one, so it is on your list.')
+    if kind not in task_kinds.AGENT: return False, said('A person has to do this one, so it is on your list.')
+    if (held := gate_why(store, kind, own)): return False, said(held)
     return (True, '') if own else senders.start_known(store, msg, mid)      # `own`: the owner's own line or press - no sender to check
 
 
@@ -1262,8 +1287,7 @@ def ingest_message(store, msg: dict, actor: str = 'router', llm=None, file_only:
     act = (('a reply draft goes to the task for you' + (f' - {unsendable}, so it cannot be sent from here' if unsendable else '')) if f['kind'] == 'reply'
            else f"under {words.name('watching')} - nothing asked of you until the thread moves" if watching
            else 'on your list - no agent works it' if f['kind'] == 'task'
-           else f'{HELD} {gh_hold_why(store, msg)}' if msg.get('no_auto') and msg.get('channel') == 'github'
-           else f'{HELD} items from {senders.channel_name(msg.get("channel")) or "this channel"} wait for you to start them.' if msg.get('no_auto')
+           else f'{HELD} {channel_hold(store, msg)}' if msg.get('no_auto')
            else f'{HELD} {held}' if held
            else f'{agent_word(f["kind"])} was set to start by itself')
     head = route_head(intent['intent'], f['kind'])
@@ -1520,6 +1544,7 @@ def joinable(store, tid, shut: bool = True):
     return tid if t and t['TaskId'] < INTERNAL_TASK_BASE and t.get('Status') != 'dropped' and (shut or t.get('Status') != 'done') else None
 
 
+CLOSING_WAIT = 120                # seconds a mail waits for its task's Mark done write-up to close it (land_on)
 def land_on(store, msg: dict, tid: int, v: dict | None, actor: str, how: str = 'thread', *, fail: dict = None, cfg: dict = None,
             pol: dict = None, mine=(), score=1.0, cands=(), reason: str = '', notes_note: str = '', step: dict = None) -> dict:
     """THE ONE ROAD ONTO A TASK THAT EXISTS (the spine audit, 2026-11-09). A message reaches a task three ways - by its own thread or
@@ -1534,6 +1559,11 @@ def land_on(store, msg: dict, tid: int, v: dict | None, actor: str, how: str = '
     from . import waiton
     from .outbound import send_block
     cfg, pol = store.get_settings() if cfg is None else cfg, pol or {}
+    # A TASK CLOSING BEHIND MARK DONE (writeup.closing: the live agent written up, the close when that ends) is as good as closed: a mail
+    # landed meanwhile met it open, nothing reopened, and the close then shut it over that mail - a question owed an answer, its draft put
+    # down unsent. It lands once the close has, as every close waits (writeup.wait_for), so the one rule below reads it on a closed task
+    from . import writeup
+    if writeup.closing(tid) and not writeup.in_job(): writeup.wait_for(tid, CLOSING_WAIT)
     t, ref = store.get_task(tid) or {}, task_ref(tid)
     closed = t.get('Status') == 'done'
     # ...the GOAL itself, under a step nobody holds, is a container: its date, its boxes and the agent it does not have are not this mail's
@@ -1682,7 +1712,13 @@ def land_on(store, msg: dict, tid: int, v: dict | None, actor: str, how: str = '
         # it is now behind (its freshness marker - whom it answers stays its own, AnswersMid). One nobody wrote stays owed to whom it was
         # raised for: its agent hears the new line (reply_to_agent, thread_moved) and names who its letter goes to where it writes it
         # (wrapup.agent_reply)
+        # ...and the pin is ONLY the freshness marker: a draft that never named whom it answers (the owner's own words typed into the
+        # card) answered its MessageId, so moving that to a line from somebody else readdressed it - a person's reply went "to" the
+        # helpdesk notice that joined the thread, a no-reply address the send then answered. Whom it answers is pinned first
         if v and not talking:
+            from .wrapup import _person
+            if drafted and not behind.get('AnswersMid') and _person(store, behind.get('MessageId')) != _person(store, mid):
+                store.set_review_answers(behind['ReviewId'], behind['MessageId'])
             if drafted: store.update_review_message(behind['ReviewId'], mid)
             if not msg.get('_reply_agent') and not agent_drafts(store, tid, went):
                 if drafted: store.add_comment(tid, 'triage', 'agent', 'The thread moved - the drafted reply is behind it.')
@@ -2131,6 +2167,22 @@ def _hand_to_agent(store, cfg: dict, tid, msg: dict, actor: str):
 
 PASS_GATHER = 3.0           # seconds a passed-in line waits once the session is free, for the rest of a burst to join it (_pass_general)
 _PASSING, _PASS_LOCK = {}, threading.Lock()     # task id -> the turns waiting together for its session
+# ...AND WHAT IS TYPED INTO A CODING SESSION GOES IN THE ORDER IT CAME (two mails of one poll on a coding task whose session was opening: each
+# pass waited on its own beat, and the second was typed in above the first). Each pass is entered here as it is set going (_spawn, in the order
+# ingest got to it) and types once no earlier mail of the task is still on its way - a burst on a chat agent is put in order where it is said
+_TYPING, _TYPING_CV = {}, threading.Condition()  # task id -> the message ids passed to its coding session and not yet typed
+
+
+def _typing_turn(tid, mid, secs: float = None) -> None:
+    "Wait (at most `secs`, else PASS_WAIT) until no message that came before `mid` is still being passed into task `tid`'s coding session."
+    with _TYPING_CV: _TYPING_CV.wait_for(lambda: not any(m < mid for m in _TYPING.get(tid, ())), timeout=max(0., PASS_WAIT if secs is None else secs))
+
+
+def _typed(tid, mid) -> None:
+    with _TYPING_CV:
+        if mid in (q := _TYPING.get(tid, [])): q.remove(mid)
+        if not q: _TYPING.pop(tid, None)
+        _TYPING_CV.notify_all()
 PASS_WAIT = 180             # seconds a passed-in line waits for a session still opening before it is said as not passed
 
 
@@ -2151,10 +2203,10 @@ def live_agent(store, tid) -> str:
 # matches, and the words the owner reads. Roads compare the code, never the sentence, so a sentence reworded here changes nothing else
 WHY = {'not_new': 'not new work', 'live': 'an agent is live on it', 'closed': 'the task is closed', 'off': 'passing lines to the agent is switched off',
        'no_session': 'no live session to pass it to', 'not_assistant': 'not an assistant task', 'no_conversation': 'no agent conversation',
-       'degraded': 'triage could not read it', 'channel': 'the channel waits for the owner', 'another': 'another agent is live on it',
-       'no_carry': 'no conversation to carry on', 'own_task': 'it is your own task, so no agent works it', 'no_coding_session': 'no saved coding session to reopen'}
+       'degraded': 'triage could not read it', 'another': 'another agent is live on it',
+       'no_carry': 'no conversation to carry on', 'queued': 'its agent is queued to start and hears it then', 'own_task': 'it is your own task, so no agent works it', 'no_coding_session': 'no saved coding session to reopen'}
 class Why(str): code = ''
-def reason(code: str) -> Why: w = Why(WHY[code]); w.code = code; return w
+def reason(code: str, said: str = '') -> Why: w = Why(said or WHY[code]); w.code = code; return w      # `said`: words of its own (channel_hold)
 def code_of(why) -> str: return getattr(why, 'code', '')
 
 
@@ -2183,6 +2235,9 @@ def carry_on_why(store, tid, msg: dict, mid, follow: dict | None) -> str:
     t = store.get_task(tid) or {}
     if not follow or follow.get('degraded') or follow.get('intent') != 'task': return reason('not_new')
     if live_agent(store, tid): return reason('live')
+    # ...nor over a START STILL QUEUED (a full house): it opens on the task with every message on it, this one too - "No agent started: no
+    # conversation to carry on" stood under "Waiting its turn". A queued TURN is a conversation's next one: the carry-on joins it (queue_turn)
+    if (q := store.get_dispatch(tid)) and not q.get('Turn'): return reason('queued')
     kind = 'general' if general.handles(t) else t.get('Kind')
     lack = (reason('own_task') if kind not in task_kinds.AGENT else reason('no_carry')
             if kind == 'general' and not general.history(store, tid) else _resumable_coding(store, tid)[1] if kind == 'coding' else '')
@@ -2213,7 +2268,7 @@ def reach_why(store, tid, msg: dict, mid, follow: dict | None, kind: str, own: b
     if (follow or {}).get('degraded'): return reason('degraded')
     if not joinable(store, tid): return reason('closed')      # dismissed: a done task new work reopens first (land_on)
     if store.get_setting('answer_to_agent') == 'off': return reason('off')
-    if msg.get('no_auto'): return reason('channel')
+    if msg.get('no_auto'): return reason('channel', channel_hold(store, msg))
     if not own and (held := brainroute.auto_held(store)): return held
     if live and live != kind: return reason('another')
     # ...nor a line that reads as steering an AI (the owner, 2026-10-28): it waits for the owner's press
@@ -2299,7 +2354,8 @@ def queued_turn(store, tid, turn: str, said: str = '') -> None:
     from . import general
     if not general.handles(store.get_task(tid) or {}): general.OPENING.add(tid); return _continue_coding(store, tid, said)
     general.OPENING.add(tid)
-    _replan_general(store, tid, '\n\n---\n\n'.join(x for x in [carry_on_turn(store, tid) if turn == 'carry_on' else '', said] if x))
+    news, carried = carry_on_told(store, tid) if turn == 'carry_on' else ('', [])
+    _replan_general(store, tid, '\n\n---\n\n'.join(x for x in [news, said] if x), mails=carried)
 
 
 # THE FIRST REAL ASK ON A ROW NO AGENT HAS WORKED STARTS ONE (the owner, 2026-11-09): a colleague's opening "Alex!" was read as a watch, his
@@ -2343,7 +2399,7 @@ def first_agent(store, tid, msg: dict, mid, follow: dict | None, actor: str) -> 
 # answered "not an agent's task" and wrote it nowhere, so a task that needed an agent sat looking as if nobody had got round to it.
 # Silent only where nothing was asked of an agent, the owner switched it off, one is already on it or another road is its own (the line
 # went nowhere an agent was ever going to be): ONE list for carrying on, passing in and waking - three had drifted apart
-QUIET_WHY = ('not_new', 'live', 'closed', 'off', 'no_session', 'not_assistant', 'no_conversation', 'degraded')
+QUIET_WHY = ('not_new', 'live', 'queued', 'closed', 'off', 'no_session', 'not_assistant', 'no_conversation', 'degraded')
 NOT_STARTED = 'No agent started:'
 
 
@@ -2356,7 +2412,7 @@ def not_started(store, tid, why) -> None:
     if (last or {}).get('Body') != line: store.add_comment(tid, 'router', 'agent', line)
 
 
-REFUSED = 'held_refused'               # a start refused for a stranger's words (held_start): a release once would be refused again
+REFUSED = 'held_refused'               # a start refused for a stranger's words (held_start), as the task's record has it
 
 
 def held_start(store, tid, err) -> bool:
@@ -2364,7 +2420,7 @@ def held_start(store, tid, err) -> bool:
     from . import origin
     if not isinstance(err, (origin.Refusal, origin.RefusedForStranger)): return False
     store.clear_dispatch(tid); not_started(store, tid, senders._said(str(err)[:1].upper() + str(err)[1:], stranger=True))
-    # ...recorded as a refusal: Run anyway would start it on the same AI and be refused again, so the hold offers only Trust (funnel.held_offer)
+    # ...recorded as a refusal (the task's record: what was refused, and when); the hold's one way on is Trust (senders.trust_offer)
     store.audit('task', tid, REFUSED, 'router')
     return True
 
@@ -2387,9 +2443,15 @@ REPLY_JOB = ('THIS TASK IS A REPLY OWED to {who}. Work out the answer - read, lo
 
 def reply_job(store, tid) -> str:
     """What an agent started on a reply task is told its job is - '' on any other task."""
-    if not store.task_has_tag(tid, REPLY_TAG): return ''
-    first = next((m for m in store.list_messages(tid) if not is_ours(m)), None) or {}
-    return REPLY_JOB.format(who=first.get('FromName') or first.get('FromEmail') or 'the person who wrote')
+    return REPLY_JOB.format(who=owed_to(store, tid)) if store.task_has_tag(tid, REPLY_TAG) else ''
+
+
+def owed_to(store, tid) -> str:
+    "Whom a reply task's reply goes to, by name: the first person on it who reads a reply - never a notice that joined it, nor the owner."
+    from .wrapup import reads_reply_row
+    rows = [m for m in store.list_messages(tid) if not is_ours(m)]
+    first = next((m for m in rows if reads_reply_row(store, m)), None) or (rows[0] if rows else {})
+    return first.get('FromName') or first.get('FromEmail') or 'the person who wrote'
 
 
 def agent_on_reply(store, tid, msg: dict, mid, verdict: dict | None, actor: str, opening: bool = False) -> bool:
@@ -2401,7 +2463,7 @@ def agent_on_reply(store, tid, msg: dict, mid, verdict: dict | None, actor: str,
     if v.get('degraded') or v.get('intent') != 'task' or kind not in task_kinds.AGENT: return False
     if (store.get_task(tid) or {}).get('Status') == 'dropped': return False
     if msg.get('no_auto'):
-        not_started(store, tid, f'items from {senders.channel_name(msg.get("channel")) or "this channel"} wait for you to start them'); return False
+        not_started(store, tid, channel_hold(store, msg)); return False
     ok, who = auto_start_ok(store, msg, mid, kind)
     if not ok:
         not_started(store, tid, who)
@@ -2412,8 +2474,10 @@ def agent_on_reply(store, tid, msg: dict, mid, verdict: dict | None, actor: str,
     if not (kind == 'general' and general.handles(store.get_task(tid))): store.update_task(tid, {'Kind': kind}, 'triage')
     store.tag_task(tid, REPLY_TAG, actor='triage')
     if (store.get_task(tid) or {}).get('Status') in ('done', 'waiting'): store.update_task(tid, {'Status': 'open'}, 'triage')
-    store.add_comment(tid, 'router', 'agent', f"{_who_said(msg)}'s message needs {task_kinds.worker(kind)} before it can be answered: it "
-                      "works out the answer, then drafts the reply for your Send." + (f' Starting by itself: {who}' if who else ''))
+    # ...naming whom that reply goes to: the line that needed the agent may be a machine's notice on the person's thread, and "before it
+    # can be answered" promised a reply to a no-reply address
+    store.add_comment(tid, 'router', 'agent', f"{_who_said(msg)}'s message needs {task_kinds.worker(kind)}: it works out the answer, then "
+                      f"drafts the reply to {owed_to(store, tid)} for your Send." + (f' Starting by itself: {who}' if who else ''))
     store.audit('task', tid, 'reply_to_agent', actor, 'agent', {'message_id': mid, 'kind': kind})
     msg['_reply_agent'] = True
     if opening and kind != 'coding': general.OPENING.add(tid)
@@ -2582,6 +2646,10 @@ def _pass_general(store, tid, msg: dict, turn: str = None):
     # a conversation still opening (carry-on, Continue) takes ITS turn first: this one waits until that turn has the session -
     # past the deadline while a quick call is in flight, whose session opens only once its answer is in (a wait for a quick slot plus the call)
     while (time.time() < end or tid in quickwork.RUNNING) and tid in general.OPENING and not getattr(general.session_for(tid), 'busy', False): time.sleep(.25)
+    # ...and the turn that opened heard it as it began (general.send_prompt hears all that came in): that turn answers for it - "it is the
+    # assistant's next turn" written under its answer was a turn nobody was going to take
+    from . import conversation
+    if (mid := msg.get('message_id')) and conversation.heard(store, tid, 'mail', [mid]): return
     ses = general.session_for(tid)
     # an agent that idled out is started again, as the same run on its saved conversation, to take the line (general.idle_out)
     if not ses and general.idled(tid, store):
@@ -2590,7 +2658,7 @@ def _pass_general(store, tid, msg: dict, turn: str = None):
     if not ses:
         # ...a session that ENDED before the line reached it is carried on as one that ends under it is (below): "type to carry on" here
         # was a turn owed with nothing running (the owner, 2026-11-10: "job of agent is to be helpful and do as much as possible")
-        if joinable(store, tid, shut=False): general.OPENING.add(tid); _replan_general(store, tid, turn or _pass_turn(msg)); return
+        if joinable(store, tid, shut=False): general.OPENING.add(tid); _replan_general(store, tid, turn or _pass_turn(msg), mails=(msg.get('message_id'),)); return
         store.add_comment(tid, 'router', 'agent', f"{_who_said(msg)}'s new message could not be passed in: the assistant's session ended - {general.CARRY_ON}.")
         return
     # A BURST IS ONE RE-THINK (the owner's stress run, 2026-11-05): five mails in a few seconds were five queued turns, the agent re-reading
@@ -2612,10 +2680,14 @@ def _pass_general(store, tid, msg: dict, turn: str = None):
         time.sleep(PASS_GATHER)                    # ...and the rest of a burst still landing
     finally:
         with _PASS_LOCK: got = _PASSING.pop(tid, None) or [(turn or _pass_turn(msg), msg.get('message_id'))]
+    # ...in the order the mails CAME (the store's id), never the order their threads woke: two mails of one poll each polled for the session
+    # on its own beat, and the second took the head of the burst
+    got.sort(key=lambda x: (x[1] is None, x[1] if isinstance(x[1], int) else 0))
+    # ...what a turn since has already heard (general.send_prompt hears everything that came in when it begins, and tells it) is not said a
+    # second time - each mail by itself: a turn that heard the first of two left the second the burst's to say, and the burst said both
+    got = [x for x in got if not (x[1] and conversation.heard(store, tid, 'mail', [x[1]]))]
+    if not got: return
     lines, mails = [x[0] for x in got], [x[1] for x in got if x[1]]
-    # ...what a turn since has already heard (general.send_prompt hears everything that came in when it begins) is not said a second time
-    from . import conversation
-    if mails and len(mails) == len(got) and conversation.heard(store, tid, 'mail', mails): return
     said = lines[0] if len(lines) == 1 else f'{len(lines)} NEW LINES ON THIS TASK, in the order they came - one turn for all of them:\n\n' + '\n\n---\n\n'.join(lines)
     try:
         # a session of quick answers re-decides on the task's depth now: still quick, the warm agent's turn on it; else the full agent's
@@ -2626,7 +2698,7 @@ def _pass_general(store, tid, msg: dict, turn: str = None):
         # ...the session ended under it - the agent closed its own at the end of the turn this line waited behind (the stress run,
         # 2026-11-05): the line is not lost to a Continue, it carries the conversation on in a session of its own, as a mail on a quiet task does
         if getattr(ses, "alive", True) is False and joinable(store, tid, shut=False):
-            general.OPENING.add(tid); _replan_general(store, tid, said); return
+            general.OPENING.add(tid); _replan_general(store, tid, said, mails=kept); return
         logger.warning(f'passing a line to the assistant failed for task {tid}: {e}')
         store.add_comment(tid, 'router', 'agent', f"The assistant couldn't take {_who_said(msg)}'s new message: {' '.join(str(e).split())[:200]} - {general.CARRY_ON}.")
 
@@ -2646,6 +2718,7 @@ def _pass_coding(store, tid, msg: dict):
     live = lambda: next((x for x in list(terminal.SESSIONS.values()) if x.task_id == tid and x.alive), None)
     end = time.time() + PASS_WAIT
     while time.time() < end and (tid in general.OPENING or getattr(live(), 'accepted', True) is None): time.sleep(.5)
+    if isinstance(mid := msg.get('message_id'), int): _typing_turn(tid, mid, end - time.time())
     t = live()
     try: chooser = bool(t) and terminal.chooser_in(waitroom._screen(t))
     except Exception: chooser = False
@@ -2663,12 +2736,17 @@ def _pass_coding(store, tid, msg: dict):
 # A resumed CLI is handed the turn alone, so the news rode only as instructions appended to its system prompt, under a turn that said
 # "the owner chose Resume ... restate that one question and wait" - and nothing on the task showed it had been told. Now the turn
 # leads with what came in, as coding's seed does (terminal.resume_seed), filed as Taskuary's brief so the chat shows the line it got.
-def carry_on_turn(store, tid, msg: dict = None, mid=None) -> str:
-    "A carried-on turn: the mail since its last turn, the line that woke it when that read missed it, then CARRY_ON_PROMPT."
+def carry_on_turn(store, tid, msg: dict = None, mid=None) -> str: return carry_on_told(store, tid, msg, mid)[0]
+def carry_on_told(store, tid, msg: dict = None, mid=None) -> tuple[str, list]:
+    """A carried-on turn: the mail since its last turn, the line that woke it when that read missed it, then CARRY_ON_PROMPT - with the
+    messages (ids) it carries in their words, which the turn's own "came in since" leaves out (general.came_in): said in both, one mail
+    reached the agent twice in one turn."""
     from . import continuity
-    news = continuity.news_block(store, tid)
-    missed = msg and mid not in {m['MessageId'] for m in continuity.mail_since(store, tid)}
-    return '\n\n'.join(x for x in [news, _pass_turn(msg) if missed else '', CARRY_ON_PROMPT] if x)
+    news, since = continuity.news_block(store, tid), continuity.mail_since(store, tid)
+    missed = msg and mid not in {m['MessageId'] for m in since}
+    carried = [m['MessageId'] for m in since[-continuity.NEWS_SHOWN:]] if news and since else []
+    return ('\n\n'.join(x for x in [news, _pass_turn(msg) if missed else '', CARRY_ON_PROMPT] if x),
+            carried + ([mid] if missed and mid else []))
 # ...in words of its own (the owner, 2026-11-09): Resume's "the owner chose Resume ... restate that one question and wait" was false here -
 # nobody pressed anything - and it pushed the agent to wait instead of working
 CARRY_ON_PROMPT = 'New messages came in on this task (above). Pick up where you left off and do what you can now.'
@@ -2677,7 +2755,8 @@ CARRY_ON_PROMPT = 'New messages came in on this task (above). Pick up where you 
 def _continue_general(store, tid, msg: dict = None, mid=None):
     from . import general
     try:
-        general.start_session(store, tid, actor='router').send_prompt(carry_on_turn(store, tid, msg, mid), brief=True)
+        turn, carried = carry_on_told(store, tid, msg, mid)
+        general.start_session(store, tid, actor='router').send_prompt(turn, brief=True, mails=carried)
     except general.Stopped: pass           # the owner stopped the carried-on turn: nothing failed
     except Exception as e:
         # said, not retried: the start queue's retry opens a conversation without a turn (_start_general prompts a fresh one only)
@@ -2708,7 +2787,10 @@ def replan_turn(msg: dict, follow: dict | None = None, own: bool = False) -> str
     "The turn a change on the thread hands the agent: who wrote and their words, triage's reading when it has one, then REPLAN."
     body = ' '.join(agent_words(msg).split())[:4000]
     ch = senders.channel_name(msg.get('channel')) or 'another channel'
-    head = (f"THE THREAD CHANGED: you already answered on {ch} - the owner's own words:" if own else
+    # ...his mail says whom it went to where it keeps them: a forward to Gail on Erin's thread is no answer to Erin
+    to = ', '.join(str(a) for a in (msg.get('to') or []) + (msg.get('cc') or []) if a) if own else ''
+    head = (f"THE THREAD CHANGED: you wrote on {ch} to {to} - the owner's own words:" if to else
+            f"THE THREAD CHANGED: you already answered on {ch} - the owner's own words:" if own else
             f"THE THREAD CHANGED: {sender_called(msg)} wrote on this task (by {ch}) - their words, not the owner's:")
     th = (follow or {}).get('thread')
     th = th if isinstance(th, dict) else {}
@@ -2760,19 +2842,22 @@ def thread_moved(store, tid, msg: dict, mid, follow: dict | None, actor: str, ow
     general.OPENING.add(tid)
     store.add_comment(tid, 'router', 'agent', ('You answered' if own else f'{_who_said(msg)} wrote') +
                       ' on the thread - the assistant looks again at what is left to do here.')
-    _spawn(_replan_general, store, tid, turn)
+    _spawn(_replan_general, store, tid, turn, mails=(mid,))
     return True
 
 
 def _replan_pass(store, tid, msg: dict, turn: str):
     from . import general           # ...a coding agent's by the one road Taskuary's words to it take (general.tell)
     if general.handles(store.get_task(tid) or {}): _pass_general(store, tid, msg, turn)
-    else: general.tell(store, tid, turn)
+    else:
+        if isinstance(mid := msg.get('message_id'), int): _typing_turn(tid, mid)
+        general.tell(store, tid, turn)
 
 
-def _replan_general(store, tid, turn: str):
+def _replan_general(store, tid, turn: str, mails=()):
+    "`mails`: the messages (ids) `turn` carries in their words - the turn's \"came in since\" leaves them out (general.came_in)."
     from . import general
-    try: general.start_session(store, tid, actor='router').send_prompt(turn, brief=True)
+    try: general.start_session(store, tid, actor='router').send_prompt(turn, brief=True, mails=[m for m in mails if m])
     except general.Stopped: pass
     except Exception as e:
         logger.warning(f'assistant re-plan failed for task {tid}: {e}')
@@ -3202,7 +3287,9 @@ def split_message(store, mid: int, actor: str = 'owner', kind: str = None) -> in
     return tid
 
 
-def _spawn(fn, *args):
+def _spawn(fn, *args, **kw):
+    # ...what the caller names goes through to fn as named (2026-11-17: Trust handed thread_moved `vouched=True`, _spawn took no keywords, and
+    # the press raised TypeError - nobody started while the chat read "You trusted the sender")
     # ...an agent's start is at work from the moment it is set going, as a hand-over's is (agent_on_reply `opening`): read before its thread
     # had run, a mail's new task said "yours" with nothing at work for the seconds its CLI took to come up (the audit, 2026-11-10)
     from . import general
@@ -3211,10 +3298,15 @@ def _spawn(fn, *args):
     # (PASS_GATHER), the idled agent it starts again - as a typed line is from the press (the owner, 2026-11-13: "it's like typing")
     elif fn in (_pass_general, _replan_pass) and general.handles(args[0].get_task(args[1]) or {}):
         general.hand(args[1])
-        def fn(*a, _f=fn):
-            try: _f(*a)
+        def fn(*a, _f=fn, **k):
+            try: _f(*a, **k)
             finally: general.hand(a[1], -1)
-    threading.Thread(target=fn, args=args, daemon=True).start()
+    elif fn in (_pass_coding, _replan_pass) and isinstance(mid := (args[2] or {}).get('message_id'), int):
+        with _TYPING_CV: _TYPING.setdefault(args[1], []).append(mid)
+        def fn(*a, _f=fn, **k):
+            try: _f(*a, **k)
+            finally: _typed(a[1], mid)
+    threading.Thread(target=fn, args=args, kwargs=kw, daemon=True).start()
 
 
 # A BUTTON NEVER WAITS ON THE AI (the owner, 2026-10-01: "Split, Make a task are buttons - act instantly, triage enriches

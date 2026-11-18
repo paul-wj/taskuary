@@ -84,7 +84,10 @@ def _going_on(store, tid: int, since: float, own=()) -> bool:
     A press on the front itself (`own`: a Send that did not go, which still waits on its card) holds nothing back: it never left its place."""
     from . import general
     from .conversation import ep
-    pressed = max([ep(r['at']) for r in store._rows("SELECT ReviewId, DecidedAt AS at FROM review WHERE TaskId=? AND DecidedAt IS NOT NULL", (int(tid),))
+    # ...a PRESS: the agent taking back its own card is none - nothing wakes it, and the front stood held for WAKING seconds over it (a CI
+    # flake twice, 2026-11-17: whenever the take-back fell in the second after its last answer)
+    pressed = max([ep(r['at']) for r in store._rows("SELECT ReviewId, DecidedAt AS at FROM review WHERE TaskId=? AND DecidedAt IS NOT NULL "
+                                                    "AND COALESCE(DecidedBy, '') NOT LIKE 'agent%'", (int(tid),))
                    if r['ReviewId'] not in own] or [0.])
     from . import landing
     if LAND not in own: pressed = max(pressed, ep((landing.record(store, int(tid)).get('landed') or {}).get('at')))
@@ -131,11 +134,16 @@ def what(store, u: dict) -> str:
     "A card in the owner's words: 'the email to erin@northwind.example', 'the reply to Gail Moreno', 'the push', 'delete the old export'."
     from . import landing
     if u['rids'] == [LAND]: return f"the {landing.HOW.get(u.get('how'), 'push').lower()}"
-    r = u['rows'][0]
+    rows = _waits(u) or u['rows']; r = rows[0]
     if r.get('Batch') and len(u['rows']) > 1:
         from .timewords import plural
-        return plural(len(u['rows']), 'email') if r['Kind'] == 'slot' else f"{len(u['rows'])} like {what(store, {'rids': [r['ReviewId']], 'rows': [{**r, 'Batch': None}]})}"
-    if r['Kind'] == 'action':
+        # ...as the card heads itself (bulkCard.countOf): "24 emails", "40 issues" - the noun of the act's own press words, else "steps"
+        if r.get('Kind') == 'slot': return plural(len(rows), 'email')
+        if r.get('Kind') != 'action': return f"{len(rows)} like {what(store, {'rids': [r['ReviewId']], 'rows': [{**r, 'Batch': None}]})}"
+        from .connectorcatalog import action_for
+        press = str((action_for(_p(r).get('type')) or {}).get('press') or '').split()
+        return plural(len(rows), press[1] if len(press) == 2 else 'step')
+    if r.get('Kind') == 'action':
         if (p := _p(r)).get('repo') and p.get('number') is not None: return f"{p['repo']}#{p['number']}"       # ...an issue by its own name
         why = ' '.join(str(r.get('Reason') or '').split())
         for lead in ('the agent proposes to ', 'the workflow asks to '): why = why[len(lead):] if why.lower().startswith(lead) else why
@@ -147,7 +155,12 @@ def what(store, u: dict) -> str:
     to = env.get('to') if isinstance(env, dict) else None
     to = ', '.join(to) if isinstance(to, list) else str(to or '')
     if not to and r.get('MessageId'): m = store.get_message(r.get('AnswersMid') or r['MessageId']) or {}; to = m.get('FromName') or m.get('FromEmail') or ''
-    return f"the {'email' if r['Kind'] == 'slot' else 'reply'}" + (f' to {to}' if to else '')
+    return f"the {'email' if r.get('Kind') == 'slot' else 'reply'}" + (f' to {to}' if to else '')
+
+
+def _waits(u: dict) -> list:
+    "The rows of a card that still wait - a bulk card part-run (a send that did not go, a stop) is what is left on it, not what it once held."
+    return [r for r in u.get('rows') or [] if r.get('Status') == 'pending']
 
 
 def line(s: dict) -> str:
@@ -161,7 +174,7 @@ def says(store, tid: int, pressed: bool = False) -> str:
     us = (st := state(store, tid))['units']
     mark(store, tid, st)
     if len(us) < (1 if pressed else 2): return ''
-    name = lambda u: ' + '.join(f'rv{x}' if x != LAND else 'the landing question' for x in u['rids']) + f" ({what(store, u)})"
+    name = lambda u: ' + '.join(f"rv{x['ReviewId']}" for x in _waits(u)) + f" ({what(store, u)})" if u['rows'] else f"the landing question ({what(store, u)})"
     return (f"YOUR CARDS STILL WAITING, IN ORDER: {name(us[0])} {'stands in front of the owner' if st['live'] else 'is shown to the owner once this turn ends'}"
             + (f"; then {', then '.join(map(name, us[1:]))}" if len(us) > 1 else '')
             + '. Each is shown once the one before it is pressed and you have heard how it went; take back or replace one that an outcome changes.')
@@ -177,6 +190,5 @@ def said_no(store, rv: dict, verb: str, actor: str = 'owner') -> str:
     if _p(rv).get('action') in HELD_ACTS or verb == 'close_unsent' and rv.get('Kind') != 'slot': return ''
     if not tid or not (rest := says(store, tid, pressed=True)): return ''
     no = {'reject': 'turned down', 'no_reply': 'said no reply is needed for', 'close_unsent': 'closed without sending', 'close_pr': 'turned down'}.get(verb, 'turned down')
-    got = general.tell(store, tid, f"The owner {no} rv{rv['ReviewId']} ({what(store, {'rids': [rv['ReviewId']], 'rows': [rv]})}) - their own no. {rest}", actor)
-    if got: store.audit('review', int(rv['ReviewId']), general.TOLD, actor, 'system', {'task': int(tid), 'how': got, 'no': verb})
-    return got
+    return general.tell(store, tid, f"The owner {no} rv{rv['ReviewId']} ({what(store, {'rids': [rv['ReviewId']], 'rows': [rv]})}) - their own no. {rest}", actor,
+                        heard=lambda how: store.audit('review', int(rv['ReviewId']), general.TOLD, actor, 'system', {'task': int(tid), 'how': how, 'no': verb}))

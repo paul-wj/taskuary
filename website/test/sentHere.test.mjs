@@ -13,7 +13,7 @@ test("a reply that went says where, and that the task is closing or why it stays
   assert.equal(sentLine({ channel: "", to: "Ray Colton", closing: false }), "Sent to Ray Colton");
   const page = read("TaskPage.jsx");
   assert.match(page, /const chatCards = sentBox \? <SentCard \{\.\.\.sentBox\} \/> :/);
-  assert.match(read("ReviewDecision.jsx"), /said: verb === "approve" \? \{ text: value, channel: r\.Channel \|\| "", to: replyContext\(r\), subject: deliverySubject\(r\), id: r\.ReviewId, done: pw\.sentAs \} : null/);
+  assert.match(read("ReviewDecision.jsx"), /said: verb === "approve" \? \{ text: value, channel: r\.Channel \|\| "", to: sentTo\(r\), subject: deliverySubject\(r\), id: r\.ReviewId, done: pw\.sentAs \} : null/);
 });
 
 // the owner, 2026-11-09: "leave the card in the turn with the pressed button" - the sent block said it with no card around it
@@ -76,9 +76,42 @@ test("an invite's Accept and close says Accepting… at once, then Accepted - cl
   assert.equal(sentLine(p), "Accepted - closing the task");
   assert.equal(sentSaid(p), "closing the task");
   const rd = read("ReviewDecision.jsx");
-  // ...his press is a line at once, until its answer: what he pressed and what it is doing
+  // ...his press is said on the button he pressed, and nothing else on the card moves until it is the pressed card (the owner, 2026-11-17:
+  // "when you click buttons on card it flickers then presses"): no line drawn over it at the press, its subject and copies kept in place
   assert.match(rd, /const going = busyNow && !sent && \["approve", "send_close"\]\.includes\(pressed\)/);
-  assert.match(rd, /\{going \? <Alert severity="info" data-tq-pressed-line="" sx=\{\{ mb: 1 \}\}>\{`You pressed \$\{pressedWord\} - \$\{goingWord\.toLowerCase\(\)\}`\}<\/Alert>/);
+  assert.doesNotMatch(rd, /data-tq-pressed-line/);
+  assert.match(rd, /\{!going && delivery\.line && <Alert/);
+  assert.match(rd, /\{isEmail && !proposal && !isCal && \(sent \|\| delivery\.frozen \? \(/);
   // ...and while the review itself says it is going, the card keeps the act's own word - "Checking delivery…" only for a check
   assert.match(rd, /\{delivery\.active \? spinning\(pw\.busy\) : busy \? "Checking delivery…" : delivery\.label\}/);
+});
+
+// THE LIVE SHAPE (the walk, 2026-11-17): he pressed Send on one of the task's emails. The card read "You pressed Send - sending…", then its Send
+// and Don't send lit again (the answer had come, the re-read had not), then it was gone (the re-read had it sent, the chat's list did not yet),
+// then a Sent card stood at the turn's cards at another width. One node per email, in its turn, from its draft to its Sent: what it looks like
+// comes from where its press stands, kept by the review and not by the card, so a card drawn again mid-send never resets to a lit Send
+test("an email's card goes sending… then Sent in its one place, and a card drawn again keeps where its press stands", async () => {
+  const { cardLook, markOf, pressMark } = await import("../src/sentLine.js");
+  const r = { ReviewId: 41, Kind: "slot", Status: "pending" };
+  assert.equal(cardLook(r), "live");
+  pressMark(41, { state: "going", pressed: "approve" });
+  assert.equal(cardLook(r), "going", "mounted again mid-send: sending…, never a lit Send");
+  assert.equal(markOf(41).pressed, "approve");
+  pressMark(41, { state: "sent" });
+  assert.equal(cardLook(r), "sent", "answered: Sent, whatever a read a beat behind still says");
+  assert.equal(cardLook({ ...r, DeliveryState: "sending" }), "sent", "and never the frozen form again");
+  pressMark(41, null);
+  assert.equal(cardLook({ ...r, Status: "sent" }), "sent", "read as gone: Sent from the review alone");
+  assert.equal(cardLook({ ...r, Status: "edited" }), "sent");
+  assert.equal(cardLook(r), "live", "a send that did not go is the live card again");
+  const rd = read("ReviewDecision.jsx"), page = read("TaskPage.jsx"), gw = read("GeneralWorkspace.jsx");
+  assert.doesNotMatch(rd, /const \[sent, setSent\] = useState/, "the press is the review's, not the card's");
+  assert.doesNotMatch(rd, /if \(delivery\.frozen\) setSent\(false\);/);
+  assert.match(rd, /if \(look === "sent" && !proposal && !co\) return <SentCard /, "Sent is the card's own last look");
+  assert.match(rd, /else if \(data\.ok && verb === "approve" && !proposal\) setSent\(true\);/, "an email's Send with no page behind it is Sent from its answer");
+  // ...one node per email, keyed by its review, drawn by the chat in its turn - pending and sent alike; the block under the chat holds none
+  assert.match(page, /key: `rv:\$\{r\.ReviewId\}`[^\n]*letter: true/);
+  assert.doesNotMatch(page, /r\.Kind !== "action" && WENT\.includes/, "no second sent card for an email");
+  assert.match(page, /\{!inTurns && <SlotList /);
+  assert.match(gw, /x\.id === lettersAt \? \[\.\.\.lettersHere\(\)/);
 });
