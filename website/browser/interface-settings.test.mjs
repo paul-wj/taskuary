@@ -95,3 +95,46 @@ test("settings controls save their individual values and keep bookkeeping out of
   assert.deepEqual(errors, []);
   assert.deepEqual(page.fixtureEscapes, []);
 });
+
+test("the language selector stays readable while switching locale and appearance", { timeout: 300000 }, async (t) => {
+  const harness = await startHarness();
+  t.after(() => harness.close());
+  const page = await harness.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: "light" }]);
+  await page.goto(`${harness.ui}/#settings=config`, { waitUntil: "domcontentloaded" });
+  const selector = "#taskuary-language";
+  await page.waitForSelector(selector, { visible: true, timeout: 60000 });
+  for (const locale of ["zh-CN", "en"]) {
+    await page.select(selector, locale);
+    const language = locale === "en" ? "Language" : "语言";
+    await page.waitForFunction((label) => document.querySelector("#taskuary-language")?.getAttribute("aria-label") === label, {}, language);
+    for (const mode of ["dark", "light"]) {
+      const label = locale === "en" ? `Switch to ${mode} theme` : mode === "dark" ? "切换到深色主题" : "切换到浅色主题";
+      await page.click(`button[aria-label="${label}"]`);
+      await page.waitForFunction((want) => document.documentElement.dataset.theme === want, {}, mode);
+      await page.focus(selector);
+      const colors = await page.$eval(selector, (select) => {
+        const luminance = (color) => {
+          const rgb = color.match(/[\d.]+/g).slice(0, 3).map((part) => {
+            const value = Number(part) / 255;
+            return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+          });
+          return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+        };
+        const ink = luminance(getComputedStyle(select).color);
+        const ground = luminance(getComputedStyle(select.closest(".MuiInputBase-root")).backgroundColor);
+        return { contrast: (Math.max(ink, ground) + 0.05) / (Math.min(ink, ground) + 0.05), ground,
+          scheme: getComputedStyle(select).colorScheme, focused: document.activeElement === select, value: select.value };
+      });
+      assert.ok(colors.contrast >= 4.5, `${locale}/${mode}: language text has readable contrast (${colors.contrast})`);
+      assert.ok(mode === "dark" ? colors.ground < 0.1 : colors.ground > 0.8, `${locale}/${mode}: the selector follows the surface theme`);
+      assert.equal(colors.scheme, mode, "native options inherit the active color scheme");
+      assert.equal(colors.focused, true);
+      assert.equal(colors.value, locale, "appearance changes retain the selected language");
+    }
+  }
+  assert.deepEqual(errors, []);
+  assert.deepEqual(page.fixtureEscapes, []);
+});

@@ -1,4 +1,7 @@
 {
+  "Finished work": "已结束任务",
+  "All finished agent work, including older tasks, and drafts waiting for your approval.": "全部已结束的智能体任务（含历史任务），以及等待你批准的草稿。",
+  "Finished today or handled today, and drafts waiting for your approval. Choose All to see older finished work.": "今天结束或今天处理过的任务，以及等待你批准的草稿。选择“全部”查看历史已结束任务。",
   "a file": "一个文件",
   "Deleted {count} files": "删除了 {count} 个文件",
   "Renamed {from} to {to}": "将 {from} 重命名为 {to}",
@@ -673,7 +676,6 @@
   "Queue prompts for an agent - one, or a whole list. They land one per stop, in order, never mid-turn.": "为代理排队提示词——一条或一整组。它们按顺序在代理每次停下时送达，不会在执行中途插入。",
   "No open coding task yet - make one with New task for the agent, then feed it.": "还没有未完成的编程任务——使用“新建任务”为代理创建一个，然后向它投喂。",
   "Pick the task above - ▮ marks one with an agent on it right now.": "选择上方任务——▮ 表示当前有代理在处理。",
-  "Finished today, or a reply it drafted waiting for your yes — search finds older finished work.": "今天完成的工作，或已起草并等待你批准的回复——可通过搜索找到更早完成的工作。",
   "Nothing here.": "这里没有内容。",
   "{name} works this task": "{name} 负责此任务",
   "uses {items}": "使用 {items}",

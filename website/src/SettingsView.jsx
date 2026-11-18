@@ -65,7 +65,7 @@ function LanguageSelector() {
   return <Box sx={{ display: "flex", alignItems: "center", gap: 1, my: 1.5 }}>
     <Typography component="label" htmlFor="taskuary-language" sx={{ color: DIM, fontSize: 12.5 }}>{t("Language")}</Typography>
     <Select native id="taskuary-language" value={locale} onChange={(e) => setLocale(e.target.value)}
-      inputProps={{ "aria-label": t("Language") }} size="small" sx={{ bgcolor: "#fff", fontSize: 12.5 }}>
+      inputProps={{ "aria-label": t("Language") }} size="small" sx={{ bgcolor: "var(--tq-panel, #fff)", fontSize: 12.5 }}>
       <option value="en">English</option>
       <option value="zh-CN">简体中文</option>
     </Select>

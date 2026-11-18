@@ -4,6 +4,9 @@ What each release changed, newest first. Ask the Assistant "what changed in the 
 
 ## Unreleased
 
+- Keep the English/Chinese language selector readable in both light and dark themes; its background now follows the application panel palette.
+- Desktop Agent board columns scroll independently beneath fixed column headings and filters. The board fits the viewport even with full history loaded; narrow screens retain natural stacked page scrolling.
+- The Agent board now offers **Finished work: Today / All**. Today remains the default; All loads historical finished agent tasks. Queued, working, blocked and approval work stay visible regardless of this date filter.
 - Merge upstream 0.4.0.17 while retaining English/Chinese switching, reviewed task-derived Skills, Oh My Pi, Jira Data Center and Jira reference deduplication, per-connection thinking controls, and the Windows/LAN launcher. Regenerate application, demo and documentation output from the merged sources.
 - Keep the new light/dark theme switch, task chat controls and API/MCP connection choices localized in English and Chinese. The connection catalogue no longer crashes when a connector type shadows the translation function.
 - Keep open Jira references on the work rail after the owner's own comment; a comment does not resolve an issue. Resolved references still leave the rail without deleting their history.

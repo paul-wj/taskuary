@@ -3,7 +3,7 @@
 // working it). No drag-and-drop: dragging between columns changed status behind every other rule, so a
 // card "moved to Done" skipped Mark done (the owner, 2026-09-24: "remove that feature"). House design.
 import { says, subState } from "./laneSays.js";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert, Box, Button, Chip, CircularProgress, Dialog, DialogContent,
   DialogTitle, MenuItem, Select, Switch, TextField, Tooltip, Typography,
@@ -242,8 +242,7 @@ const COLUMN_OF = { queued: "queued", working: "working", blocked: "blocked", sa
   agentdone: "agentdone", approve: "agentdone", closed: "agentdone" };
 const laneOf = (t) => COLUMN_OF[t.State] || null;
 
-// Done is a TODAY column: yesterday's finished work is history, not board furniture - it
-// lives on in Tasks, reopenable any time.
+// Finished work defaults to today; the board can also load its full history.
 const localToday = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -270,6 +269,8 @@ export default function BoardView({ onOpenTask, active = true }) {
   const [tasks, setTasks] = useState(null);
   const [err, setErr] = useState("");
   const [view, setView] = useState("columns");   // columns | wall - the Studio's office is the Game's now (2026-10-15)
+  const [finishedRange, setFinishedRange] = useState("today");
+  const loadId = useRef(0);
   const [boardTick, setBoardTick] = useState(0); // bumped when a session starts here: the active board view reloads at once
   const [newOpen, setNewOpen] = useState(false);
   const [noteFor, setNoteFor] = useState(null);   // the task whose handover note is open
@@ -287,10 +288,16 @@ export default function BoardView({ onOpenTask, active = true }) {
   const load = useCallback(async () => {
     // the floor shows work a SESSION runs: a reply is drafted by the model triage uses and never
     // opens one, a to-do is the owner's own list. Both stay in Tasks and Review (isAgentKind).
-    try { setTasks(((await api.get("/api/tasks", { params: { active: 1 } })).data.data || [])
-      .filter((t) => t.Status !== "dropped" && isAgentKind(t.Kind))); }
-    catch (e) { setErr(e?.response?.data?.detail || { fallback: "Failed to load the board" }); }
-  }, []);
+    const id = ++loadId.current;
+    try {
+      const { data } = await api.get("/api/tasks", { params: { active: finishedRange === "today" ? 1 : 0 } });
+      if (id !== loadId.current) return;
+      setTasks((data.data || []).filter((t) => t.Status !== "dropped" && isAgentKind(t.Kind)));
+      setErr("");
+    } catch (e) {
+      if (id === loadId.current) setErr(e?.response?.data?.detail || { fallback: "Failed to load the board" });
+    }
+  }, [finishedRange]);
   useEffect(() => { load(); return active ? onLive("task-changed", load) : undefined; }, [load, active]);
   // live tails arrive as run-tail (the cards are a status wall you watch); the task page has the full trace
   useEffect(() => {
@@ -314,12 +321,22 @@ export default function BoardView({ onOpenTask, active = true }) {
   return (
     // THE BOARD IS A VIEW THE ASSISTANT READS (pageView.js, the assistant audit 2026-11-02): unmarked, "switch to the wall" asked on it had
     // no page under it, and a VIEW open of the Board waited on a root that never drew
-    <Box data-tq-browse="board" data-tq-view-label="Agent board">
+    <Box data-tq-browse="board" data-tq-view-label="Agent board"
+      sx={{ height: { xs: "auto", md: "100%" }, minHeight: 0, display: view === "columns" ? "flex" : "block", flexDirection: "column",
+        overflowY: { xs: "visible", md: view === "columns" ? "visible" : "auto" } }}>
       {err && <Alert severity="error" onClose={() => setErr("")} sx={{ mb: 1.5 }}>{err.fallback ? tr(err.fallback) : err}</Alert>}
       {/* four things on one line is a laptop's worth of room; below that they wrap rather than
           push the page sideways */}
-      <Box sx={{ display: "flex", alignItems: "center", mb: 1.25, gap: 1.5, flexWrap: "wrap" }}>
+      <Box sx={{ display: "flex", alignItems: "center", mb: 1.25, gap: 1.5, flexWrap: "wrap", flexShrink: 0 }}>
         <Typography sx={{ color: INK, fontWeight: 600, fontSize: 15, flex: "1 1 auto" }}>{tr("Agent board")}</Typography>
+        {view === "columns" && <Box data-tq-board-history="" sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+          <Typography component="label" htmlFor="board-finished-range" sx={{ color: DIM, fontSize: 12 }}>{tr("Finished work")}</Typography>
+          <Select size="small" value={finishedRange} onChange={(e) => setFinishedRange(e.target.value)}
+            inputProps={{ id: "board-finished-range", "aria-label": tr("Finished work") }} sx={{ fontSize: 12, minWidth: 85 }}>
+            <MenuItem value="today">{tr("Today")}</MenuItem>
+            <MenuItem value="all">{tr("All")}</MenuItem>
+          </Select>
+        </Box>}
         {view === "notes" && <Typography variant="caption" sx={{ color: FAINT, fontSize: 10.5 }}>
           {tr("Short-lived task and checkout coordination — agents read it before starting; hard-earned reusable discoveries belong in the Hub.")}
         </Typography>}
@@ -380,39 +397,39 @@ export default function BoardView({ onOpenTask, active = true }) {
       {view === "notes" && <AgentWall onOpenTask={onOpenTask} refresh={boardTick} active={active} />}
       {view === "wall" && <WallView onOpenTask={onOpenTask} refresh={boardTick} active={active} />}
 
-      <Box sx={{ display: view === "columns" ? "grid" : "none", gridTemplateColumns: { xs: "minmax(0, 1fr)", md: "repeat(5, minmax(0, 1fr))" }, gap: 1.5, alignItems: "start" }}>
+      <Box sx={{ display: view === "columns" ? "grid" : "none", gridTemplateColumns: { xs: "minmax(0, 1fr)", md: "repeat(5, minmax(0, 1fr))" },
+        gridTemplateRows: { md: "minmax(0, 1fr)" }, gap: 1.5, flex: { md: 1 }, minHeight: 0 }}>
         {COLS.map((col) => {
           const today = localToday();
-          // Done is agent work finished today. A reply the owner answered by hand, or a to-do
-          // ticked off in Tasks, never came through here - it lives in Tasks, not on this board.
+          // Only agent work belongs here; the date filter applies to finished work, never live or approval work.
           const agentWork = (t) => t.HadAgent || t.Kind === "coding" || t.Kind === "setup" || !!t.Session
             || String(t.Assignee || "").startsWith("agent:");
           const cards = tasks.filter((t) => laneOf(t) === col.key && agentWork(t)
             // REMIND ME holds a card off the board until its day - unless its agent is asking you (T7, A11)
             && (!remindWaiting(t) || t.State === "blocked")
-            // ...and a finished one is today's: finished today, or handled on the work rail today (2026-09-24)
-            && (col.key !== "agentdone" || t.State === "approve" || String(t.ClosedAt || t.UpdatedAt || "").startsWith(today) || t.OnWorkToday));
+            // Today keeps work handled today; All includes the archive. Approval work stays in either view.
+            && (col.key !== "agentdone" || finishedRange === "all" || t.State === "approve" || String(t.ClosedAt || t.UpdatedAt || "").startsWith(today) || t.OnWorkToday));
           // rank mode: the Queued lane reads top-down in the order the funnel will take them
           if (col.key === "queued") cards.sort((a, b) => (b.Queued?.value ?? 0.5) - (a.Queued?.value ?? 0.5));
           return (
-            // the lanes run to the bottom of the window: four columns of different heights
-            // read as four unrelated boxes floating on the page
-            <Box key={col.key}
+            // Desktop lanes share the remaining viewport; only their card bodies scroll. Phones keep natural page flow.
+            <Box key={col.key} data-tq-board-column={col.key}
               sx={{ bgcolor: "var(--tq-inset, #e9e3d8)", border: `1px solid ${BORDER}`, borderRadius: 2.5, p: 0.85,
-                // stacked on a phone, an EMPTY column that keeps a desktop's height is 200px of
-                // "Nothing here." between you and the column that has the work in it
-                minHeight: { xs: cards.length ? 200 : 0, md: "calc(100vh - 190px)" }, alignSelf: "stretch" }}>
+                display: "flex", flexDirection: "column", minWidth: 0, minHeight: { xs: cards.length ? 200 : 0, md: 0 } }}>
               {/* the dot and the count on the title's FIRST line: a title that wraps ("stopped and saved · agent stopped" on a laptop) dropped
                   both to the middle of two lines, out of line with the columns beside it (the 2026-10-27 sweep) */}
-              <Box sx={{ display: "flex", alignItems: "flex-start", gap: 0.6, px: 0.4, pb: 0.85 }}>
+              <Box sx={{ display: "flex", alignItems: "flex-start", gap: 0.6, px: 0.4, pb: 0.85, flexShrink: 0 }}>
                 <Box sx={{ width: 7, height: 7, mt: "5px", flexShrink: 0, borderRadius: "50%", bgcolor: col.dot }} />
                 <Typography variant="body2" sx={{ color: INK, fontWeight: 600, flex: 1, fontSize: 11.5 }}>{titleOf(col, cards)}</Typography>
                 <Chip size="small" label={cards.length} sx={{ height: 16, fontSize: 9.5, bgcolor: PANEL,
                   border: `1px solid ${BORDER}`, color: DIM, "& .MuiChip-label": { px: 0.65 } }} />
               </Box>
-              {col.key === "agentdone" && <Typography variant="caption" sx={{ display: "block", color: FAINT, fontSize: 10, px: 0.4, mb: 0.85, lineHeight: 1.3 }}>
-                {tr("Finished today, or a reply it drafted waiting for your yes — search finds older finished work.")}
+              {col.key === "agentdone" && <Typography variant="caption" sx={{ display: "block", color: FAINT, fontSize: 10, px: 0.4, mb: 0.85, lineHeight: 1.3, flexShrink: 0 }}>
+                {tr(finishedRange === "all" ? "All finished agent work, including older tasks, and drafts waiting for your approval."
+                  : "Finished today or handled today, and drafts waiting for your approval. Choose All to see older finished work.")}
               </Typography>}
+              <Box sx={{ flex: { md: 1 }, minHeight: 0, overflowY: { xs: "visible", md: "auto" },
+                overscrollBehaviorY: "contain", scrollbarGutter: { md: "stable" }, pt: 0.25 }}>
               {!cards.length && <Empty>{tr("Nothing here.")}</Empty>}
               {cards.map((t) => {
                 // a chat session reports its agent as the literal string "assistant" - the name of
@@ -498,6 +515,7 @@ export default function BoardView({ onOpenTask, active = true }) {
                 </Box>
                 );
               })}
+              </Box>
             </Box>
           );
         })}

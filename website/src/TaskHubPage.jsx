@@ -605,7 +605,8 @@ export default function TaskHubPage() {
   return (
     <>
       {/* textAlign left kills the CRA-default .App { text-align: center } leaking in */}
-      <Box sx={{ minHeight: "100vh", bgcolor: BG, textAlign: "left" }}>
+      <Box sx={{ minHeight: "100vh", bgcolor: BG, textAlign: "left",
+        ...(tab === "Board" ? { height: { xs: "auto", md: "100dvh" }, display: "flex", flexDirection: "column" } : {}) }}>
         {/* bottom-right, not under the top bar: up there it covered the row every tab keeps its
             actions on (the Board's buttons, a task's Mark done) for twelve seconds per hand raised */}
         {/* ...and not on the Assistant tab: the pipe and its by-the-way line already carry a raised hand */}
@@ -633,7 +634,7 @@ export default function TaskHubPage() {
             in one row; at 390 that row set the page's layout width to 493, so every screen drew zoomed out with
             the right-hand icons off the edge (the 2026-10-02 pane pass, a 390-wide phone on a task with a browser). */}
         <Box id="tqTopNav" sx={{ display: "flex", alignItems: "center", gap: { xs: 0.75, md: 1.25 },
-          flexWrap: { xs: "wrap", md: "nowrap" }, rowGap: 0.5,
+          flexWrap: { xs: "wrap", md: "nowrap" }, rowGap: 0.5, flexShrink: 0,
           px: { xs: 1.25, md: 2.5 }, py: 1,
           bgcolor: PANEL, borderBottom: `1px solid ${BORDER}`, position: "sticky", top: 0, zIndex: 30 }}>
           {/* THE LOGO IS THE WAY HOME (Gabi, 2026-11-08: "we need an easy way to get back to your feed. Maybe the taskuary logo"): from a task,
@@ -693,7 +694,8 @@ export default function TaskHubPage() {
 
         {/* tighter side padding than top/bottom: the horizontal margin is dead space on a wide
             window, and every tab inside already caps its own content width where it wants to */}
-        <Box sx={{ px: { xs: 1.5, md: 1.75 }, py: { xs: 1.5, md: 2.25 } }}>
+        <Box sx={{ px: { xs: 1.5, md: 1.75 }, py: { xs: 1.5, md: 2.25 },
+          ...(tab === "Board" ? { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" } : {}) }}>
           {/* Timeline and Board stay MOUNTED behind another tab, like Tasks: each can hold a live
               pty session, and unmounting closed its websocket - so coming back replayed the whole
               scrollback and ran the pane top to bottom. Their polling is gated on `active`. */}
@@ -714,7 +716,7 @@ export default function TaskHubPage() {
             </Box>
           )}
           {(everBoard || tab === "Board") && (
-            <Box sx={{ display: tab === "Board" ? "block" : "none" }}>
+            <Box sx={{ display: tab === "Board" ? "block" : "none", flex: 1, minHeight: 0 }}>
               <BoardView key={`b${tick}`} onOpenTask={openTask} active={tab === "Board"} />
             </Box>
           )}

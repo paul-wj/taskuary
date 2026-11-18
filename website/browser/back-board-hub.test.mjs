@@ -37,7 +37,7 @@ test("owner-completed agent work stays on the Board after refresh in both locale
     await page.evaluate((locale) => localStorage.setItem("taskuary.language", locale), locale);
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForSelector(card, { visible: true, timeout: 30000 });
-    assert.ok(await page.$eval(card, (el) => el.parentElement === el.parentElement.parentElement.lastElementChild), "finished work belongs in the last column");
+    assert.equal(await page.$eval(card, (el) => el.closest('[data-tq-board-column]').dataset.tqBoardColumn), "agentdone", "finished work belongs in the last column");
     assert.equal(await page.$(`[data-tq-board-task="${todoId}"]`), null, "a completed personal to-do is not agent work");
   }
   assert.deepEqual(errors, []);
@@ -71,4 +71,94 @@ test("Board navigation does not wait for agent model discovery in either locale"
     assert.deepEqual(page.fixtureEscapes, []);
     await page.close();
   }
+});
+
+test("Board finished-work filter reveals history without hiding live or approval work in both locales", { timeout: 180000 }, async (t) => {
+  const h = await startHarness(); t.after(() => h.close());
+  await setDeveloperMode(h, true);
+  const now = new Date(), today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} 12:00:00`;
+  const task = (id, fields) => ({ TaskId: id, ref: `TQ-${id}`, Title: `Fictional board task ${id}`, Kind: "coding", Status: "done", State: "closed", HadAgent: true, CreatedAt: "2020-01-01 12:00:00", UpdatedAt: "2020-01-02 12:00:00", ClosedAt: "2020-01-02 12:00:00", ...fields });
+  const rows = [task(901), task(902, { ClosedAt: today }), task(903, { Status: "open", State: "working", ClosedAt: null }),
+    task(904, { Status: "open", State: "approve", ClosedAt: null }), task(905, { OnWorkToday: true }),
+    task(906, { Kind: "task", HadAgent: false }), task(907, { Status: "dropped" })];
+  for (const locale of ["en", "zh-CN"]) {
+    const page = await h.newPage(), errors = [];
+    page.on("pageerror", e => errors.push(e.message));
+    await page.evaluateOnNewDocument(value => localStorage.setItem("taskuary.language", value), locale);
+    page.off("request", page.fixtureRequestGuard);
+    page.on("request", request => {
+      const url = new URL(request.url());
+      if (url.pathname === "/api/tasks" && request.method() === "GET") return request.respond({ status: 200, contentType: "application/json", body: JSON.stringify({ data: url.searchParams.get("active") === "1" ? rows.filter(r => r.TaskId !== 901) : rows }) });
+      page.fixtureRequestGuard(request);
+    });
+    await page.goto(`${h.ui}/#board`, { waitUntil: "domcontentloaded" });
+    const filter = '[data-tq-board-history] [role=combobox]';
+    await page.waitForSelector(filter, { visible: true, timeout: 5000 });
+    assert.equal(await page.$eval(filter, el => el.textContent.trim()), locale === "en" ? "Today" : "今天");
+    const check = async (history) => {
+      await page.waitForFunction((history) => !!document.querySelector('[data-tq-board-task="901"]') === history, {}, history);
+      for (const id of [902, 903, 904, 905]) assert.ok(await page.$(`[data-tq-board-task="${id}"]`), `task ${id} stays visible`);
+      for (const id of [906, 907]) assert.equal(await page.$(`[data-tq-board-task="${id}"]`), null, `task ${id} stays outside the agent board`);
+    };
+    await page.waitForSelector('[data-tq-board-task="902"]'); await check(false);
+    for (const value of ["all", "today", "all"]) {
+      await page.click(filter);
+      await page.waitForSelector(`[role=option][data-value="${value}"]`, { visible: true });
+      await page.click(`[role=option][data-value="${value}"]`);
+      await page.waitForSelector('[role=listbox]', { hidden: true });
+      await check(value === "all");
+    }
+    assert.deepEqual(errors, []); assert.deepEqual(page.fixtureEscapes, []);
+    await page.close();
+  }
+});
+
+test("Board columns scroll independently on desktop and flow naturally on mobile", { timeout: 180000 }, async (t) => {
+  const h = await startHarness(); t.after(() => h.close());
+  await setDeveloperMode(h, true);
+  const page = await h.newPage(), errors = [];
+  page.on("pageerror", e => errors.push(e.message));
+  const rows = ["working", "closed"].flatMap((state, lane) => Array.from({ length: 35 }, (_, i) => ({
+    TaskId: 2000 + lane * 100 + i, ref: `TQ-${2000 + lane * 100 + i}`, Title: `Fictional ${state} task ${i} with enough detail to wrap`,
+    Kind: "coding", Status: state === "closed" ? "done" : "in_progress", State: state, HadAgent: true, OnWorkToday: true,
+    CreatedAt: "2020-01-01 12:00:00", UpdatedAt: "2020-01-02 12:00:00",
+  })));
+  page.off("request", page.fixtureRequestGuard);
+  page.on("request", request => {
+    if (new URL(request.url()).pathname === "/api/tasks" && request.method() === "GET") return request.respond({ status: 200, contentType: "application/json", body: JSON.stringify({ data: rows }) });
+    page.fixtureRequestGuard(request);
+  });
+  await page.setViewport({ width: 1440, height: 900 });
+  await page.goto(`${h.ui}/#board`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector('[data-tq-board-task="2034"]');
+  const desktop = async () => {
+    const sizes = await page.evaluate(() => {
+      const card = document.querySelector('[data-tq-board-task="2000"]'), column = card.parentElement;
+      return { overflow: getComputedStyle(column).overflowY, height: column.clientHeight, content: column.scrollHeight,
+        pageHeight: document.scrollingElement.scrollHeight, viewport: innerHeight, width: document.scrollingElement.scrollWidth, viewportWidth: innerWidth };
+    });
+    assert.equal(sizes.overflow, "auto", "cards scroll within their own column body");
+    assert.ok(sizes.content > sizes.height + 100, "long columns overflow inside their bounded body");
+    assert.ok(sizes.pageHeight <= sizes.viewport + 1, "long columns never lengthen the page");
+    assert.ok(sizes.width <= sizes.viewportWidth + 1, "columns fit the viewport width");
+    const head = await page.$eval('[data-tq-board-task="2000"]', el => el.parentElement.previousElementSibling.getBoundingClientRect().top);
+    const box = await page.$eval('[data-tq-board-task="2000"]', el => { const r = el.parentElement.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
+    await page.mouse.move(box.x, box.y); await page.mouse.wheel({ deltaY: 400 });
+    await page.waitForFunction(() => document.querySelector('[data-tq-board-task="2000"]').parentElement.scrollTop > 0);
+    assert.equal(await page.$eval('[data-tq-board-task="2100"]', el => el.parentElement.scrollTop), 0, "scrolling one lane leaves another alone");
+    assert.equal(await page.evaluate(() => scrollY), 0, "the page does not scroll with the cards");
+    assert.equal(await page.$eval('[data-tq-board-task="2000"]', el => el.parentElement.previousElementSibling.getBoundingClientRect().top), head, "the lane header stays fixed");
+    await page.$eval('[data-tq-board-task="2034"]', el => { el.parentElement.scrollTop = el.parentElement.scrollHeight; });
+    assert.ok(await page.$eval('[data-tq-board-task="2034"]', el => { const a = el.getBoundingClientRect(), b = el.parentElement.getBoundingClientRect(); return a.top >= b.top && a.bottom <= b.bottom; }), "last task stays reachable");
+    await page.$eval('[data-tq-board-task="2000"]', el => { el.parentElement.scrollTop = 0; });
+  };
+  await desktop();
+  await page.setViewport({ width: 1000, height: 600 });
+  await desktop();
+  await page.setViewport({ width: 390, height: 844 });
+  assert.equal(await page.$eval('[data-tq-board-task="2000"]', el => getComputedStyle(el.parentElement).overflowY), "visible");
+  assert.ok(await page.evaluate(() => document.scrollingElement.scrollHeight > innerHeight), "stacked mobile columns use page scrolling");
+  await page.$eval('[data-tq-board-task="2134"]', el => el.scrollIntoView({ block: "center" }));
+  assert.ok(await page.$eval('[data-tq-board-task="2134"]', el => { const r = el.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; }), "last mobile task is reachable");
+  assert.deepEqual(errors, []); assert.deepEqual(page.fixtureEscapes, []);
 });
